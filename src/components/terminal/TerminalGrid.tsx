@@ -564,7 +564,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 
       // Register the session in SessionManager (required before assigning branch)
       if (projectPath) {
-        const sessionConfig = await createSession(sessionId, slot.mode, projectPath);
+        const sessionConfig = await createSession(
+          sessionId,
+          slot.mode,
+          projectPath,
+          workingDirectory,
+        );
         // Add project to MCP status monitor for polling status updates
         await invoke("add_mcp_project", { projectPath });
         // Add session to store directly (don't refetch all sessions to avoid status reset)
@@ -704,7 +709,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 
             // Build CLI command with user-configured flags
             const cliFlags = useCliSettingsStore.getState().getFlags(slot.mode);
-            const cliCommand = buildCliCommand(slot.mode, cliFlags);
+            const cliCommand = buildCliCommand(slot.mode, cliFlags, slot.resumeSessionId ?? undefined);
 
             // Send CLI launch command
             await writeStdin(sessionId, `${cliCommand}\r`);
@@ -911,7 +916,15 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const updateSlotMode = useCallback((slotId: string, mode: AiMode) => {
     setSlots((prev) =>
       prev.map((s) =>
-        s.id === slotId ? { ...s, mode } : s
+        s.id === slotId ? { ...s, mode, resumeSessionId: mode !== "Claude" ? null : s.resumeSessionId } : s
+      )
+    );
+  }, []);
+
+  const updateSlotResumeSession = useCallback((slotId: string, sessionId: string | null) => {
+    setSlots((prev) =>
+      prev.map((s) =>
+        s.id === slotId ? { ...s, resumeSessionId: sessionId } : s
       )
     );
   }, []);
@@ -1222,12 +1235,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         onPluginsUnselectAll={() => unselectAllPlugins(slot.id)}
         onLaunch={() => launchSlot(slot.id)}
         onRemove={() => removeSlot(slot.id)}
+        onResumeSessionChange={(sessionId) => updateSlotResumeSession(slot.id, sessionId)}
         isZoomed={false}
         onToggleZoom={() => handleToggleZoom(slot.id)}
       />
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps -- Deps cover all render-affecting state
-  }, [slots, focusedSlotId, isActive, isDraggingFiles, dropTargetSlotId, getFocusCallback, handleKill, handleToggleZoom, projectPath, branches, isLoadingBranches, isGitRepo, hasManagedWorktree, repositories, workspaceType, effectiveRepoPath, onRepoChange, mcpServers, skills, plugins, handleCreateBranch, updateSlotMode, updateSlotBranch, updateSlotWorktreeMode, refreshBranches, toggleSlotMcp, toggleSlotSkill, toggleSlotPlugin, selectAllMcp, unselectAllMcp, selectAllPlugins, unselectAllPlugins, launchSlot, removeSlot]);
+  }, [slots, focusedSlotId, isActive, isDraggingFiles, dropTargetSlotId, getFocusCallback, handleKill, handleToggleZoom, projectPath, branches, isLoadingBranches, isGitRepo, hasManagedWorktree, repositories, workspaceType, effectiveRepoPath, onRepoChange, mcpServers, skills, plugins, handleCreateBranch, updateSlotMode, updateSlotBranch, updateSlotWorktreeMode, refreshBranches, toggleSlotMcp, toggleSlotSkill, toggleSlotPlugin, selectAllMcp, unselectAllMcp, selectAllPlugins, unselectAllPlugins, launchSlot, removeSlot, updateSlotResumeSession]);
 
   const handleRatioChange = useCallback((nodeId: string, ratio: number) => {
     setLayoutTree((prev) => updateRatio(prev, nodeId, ratio));
@@ -1355,6 +1369,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                 onPluginsUnselectAll={() => unselectAllPlugins(zoomedSlot.id)}
                 onLaunch={() => launchSlot(zoomedSlot.id)}
                 onRemove={() => removeSlot(zoomedSlot.id)}
+                onResumeSessionChange={(sessionId) => updateSlotResumeSession(zoomedSlot.id, sessionId)}
                 isZoomed={true}
                 onToggleZoom={() => handleToggleZoom(zoomedSlot.id)}
               />

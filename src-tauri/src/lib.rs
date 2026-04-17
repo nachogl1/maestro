@@ -3,10 +3,24 @@ mod core;
 mod git;
 mod github;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_cli::CliExt;
+
+/// Holds a CLI-argument project path captured at startup, before the frontend
+/// has mounted. The frontend drains this via [`take_pending_cli_path`] once it
+/// is ready to handle the event, which eliminates the old 500ms race.
+#[derive(Default)]
+struct PendingCliPath(Mutex<Option<String>>);
+
+/// Frontend-invoked on mount to claim any project path passed on the CLI.
+/// Subsequent invocations return `None`.
+#[tauri::command]
+fn take_pending_cli_path(state: State<'_, PendingCliPath>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut g| g.take())
+}
 
 use core::marketplace_manager::MarketplaceManager;
 use core::mcp_manager::McpManager;
@@ -33,6 +47,25 @@ pub fn run() {
     log::info!("Maestro starting up...");
 
     let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_cli::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second instance was launched with these args — forward to the
+            // existing (already-mounted) window. We scan every arg past the
+            // executable for the first one that points at an existing path,
+            // skipping flags. This tolerates the extra flags `open -b ...
+            // --args` may prepend without letting a flag masquerade as the
+            // project path.
+            let resolved = args
+                .iter()
+                .skip(1)
+                .find_map(|arg| commands::cli::resolve_existing_path_arg(arg));
+            if let Some(p) = resolved {
+                let _ = app.emit("cli-open-project", p.to_string_lossy().to_string());
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -168,6 +201,25 @@ pub fn run() {
             app.manage(event_bus);
             app.manage(transcript_watcher);
 
+            // Capture any CLI-supplied path into PendingCliPath state. The
+            // frontend drains this on mount via `take_pending_cli_path`, which
+            // avoids the fragile "wait N ms then emit" race.
+            let pending = PendingCliPath::default();
+            if let Ok(matches) = app.cli().matches() {
+                if let Some(path_arg) = matches.args.get("path") {
+                    if let Some(path_str) = path_arg.value.as_str() {
+                        if !path_str.is_empty() {
+                            if let Some(resolved) = commands::cli::resolve_cli_path(path_str) {
+                                if let Ok(mut slot) = pending.0.lock() {
+                                    *slot = Some(resolved.to_string_lossy().into_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            app.manage(pending);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -209,6 +261,9 @@ pub fn run() {
             commands::git::is_git_repository,
             commands::git::is_git_worktree,
             commands::git::detect_repositories,
+            // Claude session history
+            commands::claude_sessions::list_claude_sessions,
+            commands::claude_sessions::delete_claude_session,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,
@@ -310,6 +365,11 @@ pub fn run() {
             // Hooks commands
             commands::hooks::write_session_hooks_config,
             commands::hooks::remove_session_hooks_config,
+            // CLI commands
+            commands::cli::install_cli,
+            commands::cli::uninstall_cli,
+            commands::cli::is_cli_installed,
+            take_pending_cli_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Maestro");

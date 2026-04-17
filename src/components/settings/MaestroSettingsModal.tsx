@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Loader2,
   RefreshCw,
+  Terminal,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,6 +15,12 @@ import { useUpdateStore } from "@/stores/useUpdateStore";
 interface MaestroSettingsModalProps {
   onClose: () => void;
 }
+
+/** Sentinel the backend returns when the user dismisses the admin auth prompt.
+ *  Must match `CANCEL_SENTINEL` in `src-tauri/src/commands/cli.rs`. */
+const CLI_CANCEL_SENTINEL = "CANCELLED_BY_USER";
+
+type CliStatus = { kind: "ok" | "error"; message: string };
 
 const INTERVAL_OPTIONS = [
   { label: "30 minutes", value: 30 },
@@ -40,6 +47,8 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [endpointInput, setEndpointInput] = useState("");
+  const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
+  const [cliStatus, setCliStatus] = useState<CliStatus | null>(null);
 
   const status = useUpdateStore((s) => s.status);
   const lastCheckedAt = useUpdateStore((s) => s.lastCheckedAt);
@@ -50,6 +59,10 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
   const setAutoCheckEnabled = useUpdateStore((s) => s.setAutoCheckEnabled);
   const setCheckInterval = useUpdateStore((s) => s.setCheckInterval);
   const setCustomEndpoint = useUpdateStore((s) => s.setCustomEndpoint);
+
+  useEffect(() => {
+    invoke<boolean>("is_cli_installed").then(setCliInstalled).catch(() => setCliInstalled(false));
+  }, []);
 
   useEffect(() => {
     invoke<string>("get_app_version")
@@ -194,6 +207,79 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
                 </select>
               </div>
             )}
+          </div>
+
+          {/* CLI Command */}
+          <div>
+            <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
+              <Terminal size={13} className="text-maestro-accent" />
+              CLI Command
+            </div>
+            <div className="space-y-1.5 px-1">
+              <p className="text-[11px] text-maestro-muted">
+                Install the <code className="rounded bg-maestro-border/40 px-1 py-0.5 text-maestro-text">maestro</code> command to open projects from your terminal.
+              </p>
+              {cliStatus && (
+                <div className={`text-[11px] ${cliStatus.kind === "error" ? "text-maestro-red" : "text-maestro-green"}`}>
+                  {cliStatus.message}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                {cliInstalled ? (
+                  <>
+                    <div className="flex items-center gap-1.5 text-[11px] text-maestro-green">
+                      <Check size={11} />
+                      Installed
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCliStatus(null);
+                        invoke("uninstall_cli")
+                          .then(() => {
+                            setCliInstalled(false);
+                            setCliStatus({ kind: "ok", message: "CLI command removed" });
+                          })
+                          .catch((err) => {
+                            const msg = String(err);
+                            if (msg === CLI_CANCEL_SENTINEL) {
+                              setCliStatus(null);
+                              return;
+                            }
+                            setCliStatus({ kind: "error", message: `Error: ${msg}` });
+                          });
+                      }}
+                      className="rounded px-2 py-0.5 text-[11px] text-maestro-red hover:bg-maestro-border/40"
+                    >
+                      Uninstall
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCliStatus(null);
+                      invoke<string>("install_cli")
+                        .then((path) => {
+                          setCliInstalled(true);
+                          setCliStatus({ kind: "ok", message: `Installed to ${path}` });
+                        })
+                        .catch((err) => {
+                          const msg = String(err);
+                          if (msg === CLI_CANCEL_SENTINEL) {
+                            setCliStatus(null);
+                            return;
+                          }
+                          setCliStatus({ kind: "error", message: `Error: ${msg}` });
+                        });
+                    }}
+                    className="rounded border border-maestro-accent/50 bg-maestro-accent/10 px-3 py-1 text-[11px] font-medium text-maestro-accent hover:bg-maestro-accent/20"
+                  >
+                    Install &apos;maestro&apos; command in PATH
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Advanced */}
