@@ -5,7 +5,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Circle,
   Cpu,
   Edit2,
   FileText,
@@ -17,7 +16,6 @@ import {
   Loader2,
   Moon,
   Package,
-  Play,
   Plus,
   PlusCircle,
   RefreshCw,
@@ -43,7 +41,6 @@ import { useMarketplaceStore } from "@/stores/useMarketplaceStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { useProcessTreeStore, type ProcessInfo, type SessionProcessTree } from "@/stores/useProcessTreeStore";
 import { GitSettingsModal, RemoteStatusIndicator } from "@/components/git";
-import { QuickActionsManager } from "@/components/quickactions/QuickActionsManager";
 import { MarketplaceBrowser } from "@/components/marketplace";
 import { McpServerEditorModal } from "@/components/mcp";
 import { ClaudeMdEditorModal } from "@/components/claudemd";
@@ -305,8 +302,6 @@ function ConfigTab({
       <MCPServersSection />
       {divider}
       <PluginsSection />
-      {divider}
-      <QuickActionsSection />
       {divider}
       <AppearanceSection theme={theme} onToggle={onToggleTheme} />
     </>
@@ -1423,62 +1418,7 @@ function PluginsSection() {
   );
 }
 
-/* ── 7. Quick Actions ── */
-
-function QuickActionsSection() {
-  const [showManager, setShowManager] = useState(false);
-
-  const actions = [
-    { label: "Run App", icon: Play, color: "text-maestro-green" },
-    { label: "Commit & Push", icon: Circle, color: "text-maestro-accent" },
-    { label: "Fix Errors", icon: AlertTriangle, color: "text-maestro-orange" },
-    { label: "Lint & Format", icon: Wrench, color: "text-maestro-purple" },
-  ];
-
-  return (
-    <>
-      <div className={cardClass}>
-        <SectionHeader
-          icon={Zap}
-          label="Quick Actions"
-          iconColor="text-maestro-orange"
-          breathe
-          right={
-            <div className="flex items-center gap-1">
-              <span className="h-2 w-2 shrink-0 rounded-full bg-maestro-yellow" />
-              <button
-                type="button"
-                className="rounded p-0.5 hover:bg-maestro-border/40"
-                onClick={() => setShowManager(true)}
-                title="Manage Quick Actions"
-              >
-                <Settings size={12} className="text-maestro-muted" />
-              </button>
-            </div>
-          }
-        />
-        <div className="space-y-0.5">
-          {actions.map((a) => (
-            <button
-              type="button"
-              key={a.label}
-              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
-            >
-              <a.icon size={14} className={a.color} />
-              <span>{a.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {showManager && (
-        <QuickActionsManager onClose={() => setShowManager(false)} />
-      )}
-    </>
-  );
-}
-
-/* ── 8. Settings ── */
+/* ── 7. Settings ── */
 
 function AppearanceSection({
   theme,

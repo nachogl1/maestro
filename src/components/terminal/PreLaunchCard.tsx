@@ -417,9 +417,13 @@ export function PreLaunchCard({
   const selectedRepoName = selectedRepo?.name ?? getRepoDisplayName(selectedRepoPath ?? "");
 
   return (
-    <div className="content-dark terminal-cell flex h-full flex-col items-center justify-center bg-maestro-bg p-4">
+    // `overflow-y-auto` lets the user scroll to reach the launch button when
+    // the pane is shorter than the configuration card. `justify-center` is
+    // dropped because flex centering clips overflowing children — the card
+    // sits at the top of the cell instead, which is acceptable.
+    <div className="content-dark terminal-cell flex h-full flex-col items-center overflow-y-auto bg-maestro-bg p-4">
       {/* Card content */}
-      <div className="flex w-full max-w-xs flex-col gap-4">
+      <div className="flex w-full max-w-xs flex-col gap-4 my-auto">
         {/* Header with remove button */}
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-maestro-text">Configure Session</span>

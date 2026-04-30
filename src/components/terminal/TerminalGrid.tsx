@@ -1474,12 +1474,17 @@ function DraggablePane({
   return (
     <div
       className="relative h-full w-full"
+      onDragEnter={(e) => {
+        // Always allow the drag to enter — the type check happens on drop.
+        // (WebView2 does not surface custom MIME types in dataTransfer.types
+        // during dragover/dragenter, so any types-based gating here would
+        // wrongly reject same-origin drags and show the "no drop" cursor.)
+        e.preventDefault();
+        if (!isOver) setIsOver(true);
+      }}
       onDragOver={(e) => {
-        if (Array.from(e.dataTransfer.types).includes(SLOT_DRAG_TYPE)) {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-          if (!isOver) setIsOver(true);
-        }
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
       }}
       onDragLeave={(e) => {
         // Only clear when leaving the wrapper, not when entering nested children.
@@ -1487,10 +1492,10 @@ function DraggablePane({
         setIsOver(false);
       }}
       onDrop={(e) => {
+        e.preventDefault();
         const src = e.dataTransfer.getData(SLOT_DRAG_TYPE);
         setIsOver(false);
         if (src && src !== slotId) {
-          e.preventDefault();
           onSwap(src, slotId);
         }
       }}
