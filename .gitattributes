@@ -1,0 +1,17 @@
+# Normalize line endings: auto-detect text, store as LF in repo and check
+# out as LF. Prevents Windows checkouts from generating phantom CRLF diffs.
+* text=auto eol=lf
+
+# Binary asset hints (auto-detection covers these too, but being explicit
+# avoids accidental text munging on edge tools).
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.icns binary
+*.gif  binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
