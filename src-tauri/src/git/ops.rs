@@ -82,6 +82,68 @@ pub struct RemoteInfo {
     pub url: String,
 }
 
+/// Per-worktree snapshot of "what is at risk of being lost" if the worktree
+/// or its branch is deleted. Aggregates working-tree status, unpushed
+/// commits, and stashes that originated on this branch.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorktreeStatus {
+    pub path: String,
+    pub branch: Option<String>,
+    pub head: String,
+    pub is_main_worktree: bool,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    pub staged: Vec<FileStatusEntry>,
+    pub unstaged: Vec<FileStatusEntry>,
+    pub untracked: Vec<String>,
+    pub unpushed_commits: Vec<UnpushedCommit>,
+    pub stashes: Vec<StashEntry>,
+}
+
+/// A single file changed in the working tree (either staged or unstaged).
+#[derive(Debug, Clone, Serialize)]
+pub struct FileStatusEntry {
+    pub path: String,
+    pub status: FileStatusKind,
+    /// Source path for renames and copies; `None` otherwise.
+    pub old_path: Option<String>,
+}
+
+/// Kind of working-tree change for a single file.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FileStatusKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Unmerged,
+    Unknown,
+}
+
+/// A commit that is reachable from HEAD but not from the upstream branch.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnpushedCommit {
+    pub hash: String,
+    pub short_hash: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub summary: String,
+}
+
+/// A single entry from `git stash list`. `branch` is parsed from the stash
+/// message ("WIP on <branch>" / "On <branch>") and used by the UI to
+/// associate the stash with the worktree where it was created.
+#[derive(Debug, Clone, Serialize)]
+pub struct StashEntry {
+    pub ref_name: String,
+    pub message: String,
+    pub branch: Option<String>,
+}
+
 impl Git {
     /// Lists all local and remote branches, excluding `HEAD` pointer entries.
     ///
@@ -694,6 +756,287 @@ impl Git {
 
         Ok(git_dir_canon != common_dir_canon)
     }
+
+    /// Returns `(ahead, behind)` for HEAD vs its configured upstream.
+    ///
+    /// `ahead` is commits on HEAD not on upstream; `behind` is the inverse.
+    /// Returns `None` if the current branch has no configured upstream
+    /// (detached HEAD, brand-new branch, etc.).
+    pub async fn upstream_ahead_behind(&self) -> Result<Option<(usize, usize)>, GitError> {
+        let result = self
+            .run(&["rev-list", "--count", "--left-right", "HEAD...@{u}"])
+            .await;
+        match result {
+            Ok(out) => {
+                // Output format: "<ahead>\t<behind>"
+                let trimmed = out.trimmed();
+                let mut parts = trimmed.split_whitespace();
+                let ahead: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let behind: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                Ok(Some((ahead, behind)))
+            }
+            Err(GitError::CommandFailed { stderr, .. })
+                if stderr.contains("no upstream")
+                    || stderr.contains("does not have an upstream")
+                    || stderr.contains("unknown revision")
+                    || stderr.contains("ambiguous argument") =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Returns the upstream tracking branch name (e.g. `origin/main`), or
+    /// `None` when the branch has no upstream configured.
+    pub async fn upstream_name(&self) -> Result<Option<String>, GitError> {
+        let result = self
+            .run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+            .await;
+        match result {
+            Ok(out) => {
+                let name = out.trimmed().to_string();
+                if name.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(name))
+                }
+            }
+            Err(GitError::CommandFailed { stderr, .. })
+                if stderr.contains("no upstream")
+                    || stderr.contains("does not have an upstream")
+                    || stderr.contains("unknown revision")
+                    || stderr.contains("ambiguous argument") =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Lists commits reachable from HEAD but not from upstream. Empty when
+    /// there is no upstream or the branch is fully pushed.
+    pub async fn unpushed_commits(&self) -> Result<Vec<UnpushedCommit>, GitError> {
+        // Bail early if no upstream so we don't degenerate into "all commits".
+        if self.upstream_name().await?.is_none() {
+            return Ok(Vec::new());
+        }
+
+        // Custom format: hash|short|timestamp|author|summary
+        let out = self
+            .run(&[
+                "log",
+                "@{u}..HEAD",
+                "--pretty=format:%H|%h|%at|%an|%s",
+            ])
+            .await?;
+
+        let mut commits = Vec::new();
+        for line in out.stdout.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(5, '|');
+            let hash = parts.next().unwrap_or("").to_string();
+            let short = parts.next().unwrap_or("").to_string();
+            let ts = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let author = parts.next().unwrap_or("").to_string();
+            let summary = parts.next().unwrap_or("").to_string();
+            if hash.is_empty() {
+                continue;
+            }
+            commits.push(UnpushedCommit {
+                hash,
+                short_hash: short,
+                timestamp: ts,
+                author,
+                summary,
+            });
+        }
+        Ok(commits)
+    }
+
+    /// Lists all stashes in the repo. Stashes are repository-global rather
+    /// than worktree-scoped; the `branch` field is parsed from the stash
+    /// message so callers can group them by the branch they were created on.
+    pub async fn stash_list(&self) -> Result<Vec<StashEntry>, GitError> {
+        // `git stash list` is silent (exit 0, empty stdout) when no stashes exist.
+        let out = self
+            .run(&["stash", "list", "--pretty=format:%gd|%s"])
+            .await?;
+
+        let mut entries = Vec::new();
+        for line in out.stdout.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(2, '|');
+            let ref_name = parts.next().unwrap_or("").to_string();
+            let message = parts.next().unwrap_or("").to_string();
+            if ref_name.is_empty() {
+                continue;
+            }
+            let branch = parse_stash_branch(&message);
+            entries.push(StashEntry {
+                ref_name,
+                message,
+                branch,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Parses `git status --porcelain=v1 --untracked-files=all` into
+    /// (staged, unstaged, untracked) lists.
+    ///
+    /// Each non-untracked line is `XY <path>` or `XY <orig> -> <new>`.
+    /// `X` is the index status (staged), `Y` is the worktree status (unstaged).
+    /// Untracked lines start with `??`.
+    pub async fn working_tree_changes(
+        &self,
+    ) -> Result<(Vec<FileStatusEntry>, Vec<FileStatusEntry>, Vec<String>), GitError> {
+        let out = self
+            .run(&["status", "--porcelain=v1", "--untracked-files=all"])
+            .await?;
+
+        let mut staged = Vec::new();
+        let mut unstaged = Vec::new();
+        let mut untracked = Vec::new();
+
+        for line in out.stdout.lines() {
+            if line.len() < 3 {
+                continue;
+            }
+            let bytes = line.as_bytes();
+            let x = bytes[0] as char;
+            let y = bytes[1] as char;
+            let rest = &line[3..];
+
+            if x == '?' && y == '?' {
+                untracked.push(rest.to_string());
+                continue;
+            }
+
+            // Split on " -> " for rename/copy entries.
+            let (path, old_path) = if let Some(idx) = rest.find(" -> ") {
+                let old = rest[..idx].to_string();
+                let new = rest[idx + 4..].to_string();
+                (new, Some(old))
+            } else {
+                (rest.to_string(), None)
+            };
+
+            if x != ' ' && x != '?' {
+                staged.push(FileStatusEntry {
+                    path: path.clone(),
+                    status: classify_status(x),
+                    old_path: old_path.clone(),
+                });
+            }
+            if y != ' ' && y != '?' {
+                unstaged.push(FileStatusEntry {
+                    path,
+                    status: classify_status(y),
+                    old_path,
+                });
+            }
+        }
+
+        Ok((staged, unstaged, untracked))
+    }
+
+    /// Builds a [`WorktreeStatus`] for this repo path. Aggregates branch,
+    /// upstream tracking, working-tree changes, unpushed commits, and stashes.
+    pub async fn worktree_status(
+        &self,
+        path: String,
+        is_main_worktree: bool,
+    ) -> Result<WorktreeStatus, GitError> {
+        let head = self
+            .run(&["rev-parse", "HEAD"])
+            .await
+            .map(|o| o.trimmed().to_string())
+            .unwrap_or_default();
+        let branch = self.current_branch().await.ok();
+        let upstream = self.upstream_name().await?;
+        let (ahead, behind) = self.upstream_ahead_behind().await?.unwrap_or((0, 0));
+        let (staged, unstaged, untracked) = self.working_tree_changes().await?;
+        let unpushed_commits = self.unpushed_commits().await?;
+        let all_stashes = self.stash_list().await?;
+        let stashes = match &branch {
+            Some(b) => all_stashes
+                .into_iter()
+                .filter(|s| s.branch.as_deref() == Some(b.as_str()))
+                .collect(),
+            None => Vec::new(),
+        };
+
+        Ok(WorktreeStatus {
+            path,
+            branch,
+            head,
+            is_main_worktree,
+            upstream,
+            ahead,
+            behind,
+            staged,
+            unstaged,
+            untracked,
+            unpushed_commits,
+            stashes,
+        })
+    }
+
+    /// Aggregates [`worktree_status`] across every worktree returned by
+    /// `git worktree list`. Worktrees that fail to inspect are skipped with a
+    /// log warning so a single bad worktree does not poison the response.
+    pub async fn all_worktrees_status(&self) -> Result<Vec<WorktreeStatus>, GitError> {
+        let worktrees = self.worktree_list().await?;
+        let mut result = Vec::with_capacity(worktrees.len());
+        for wt in worktrees {
+            let git = Git::new(&wt.path);
+            match git
+                .worktree_status(wt.path.clone(), wt.is_main_worktree)
+                .await
+            {
+                Ok(status) => result.push(status),
+                Err(e) => {
+                    log::warn!("worktree_status failed for {}: {:?}", wt.path, e);
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// Maps a single porcelain v1 status character to a [`FileStatusKind`].
+fn classify_status(ch: char) -> FileStatusKind {
+    match ch {
+        'A' => FileStatusKind::Added,
+        'M' => FileStatusKind::Modified,
+        'D' => FileStatusKind::Deleted,
+        'R' => FileStatusKind::Renamed,
+        'C' => FileStatusKind::Copied,
+        'T' => FileStatusKind::TypeChanged,
+        'U' => FileStatusKind::Unmerged,
+        _ => FileStatusKind::Unknown,
+    }
+}
+
+/// Extracts the source branch from a stash message of the form
+/// `WIP on <branch>: ...` or `On <branch>: ...`. Returns `None` for any
+/// other shape (custom messages, detached-HEAD stashes).
+fn parse_stash_branch(message: &str) -> Option<String> {
+    let rest = message
+        .strip_prefix("WIP on ")
+        .or_else(|| message.strip_prefix("On "))?;
+    let end = rest.find(':')?;
+    let branch = rest[..end].trim();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -883,5 +1226,185 @@ mod tests {
             "Detached HEAD should return a commit hash, got: {}",
             current
         );
+    }
+
+    // ── parse_stash_branch ───────────────────────────────────────────
+
+    #[test]
+    fn test_parse_stash_branch_wip_form() {
+        assert_eq!(
+            parse_stash_branch("WIP on main: 1c93923 some commit"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_stash_branch_on_form() {
+        // `git stash push -m "msg"` produces "On <branch>: msg"
+        assert_eq!(
+            parse_stash_branch("On feature/x: my custom message"),
+            Some("feature/x".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_stash_branch_unknown_shape() {
+        assert_eq!(parse_stash_branch("just some message"), None);
+        assert_eq!(parse_stash_branch(""), None);
+    }
+
+    // ── classify_status ──────────────────────────────────────────────
+
+    #[test]
+    fn test_classify_status_known_codes() {
+        assert_eq!(classify_status('A'), FileStatusKind::Added);
+        assert_eq!(classify_status('M'), FileStatusKind::Modified);
+        assert_eq!(classify_status('D'), FileStatusKind::Deleted);
+        assert_eq!(classify_status('R'), FileStatusKind::Renamed);
+        assert_eq!(classify_status('C'), FileStatusKind::Copied);
+        assert_eq!(classify_status('T'), FileStatusKind::TypeChanged);
+        assert_eq!(classify_status('U'), FileStatusKind::Unmerged);
+        assert_eq!(classify_status('?'), FileStatusKind::Unknown);
+    }
+
+    // ── working_tree_changes ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_working_tree_changes_clean_repo() {
+        let (_dir, git) = create_test_repo().await;
+        let (staged, unstaged, untracked) = git.working_tree_changes().await.unwrap();
+        assert!(staged.is_empty());
+        assert!(unstaged.is_empty());
+        assert!(untracked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_working_tree_changes_mixed() {
+        let (dir, git) = create_test_repo().await;
+        let path = dir.path();
+
+        // Staged new file
+        tokio::fs::write(path.join("staged-new.txt"), "new")
+            .await
+            .unwrap();
+        git.run(&["add", "staged-new.txt"]).await.unwrap();
+
+        // Modified-and-staged then modified-again file
+        tokio::fs::write(path.join("README.md"), "# Test 2")
+            .await
+            .unwrap();
+        git.run(&["add", "README.md"]).await.unwrap();
+        tokio::fs::write(path.join("README.md"), "# Test 3")
+            .await
+            .unwrap();
+
+        // Untracked file
+        tokio::fs::write(path.join("untracked.txt"), "junk")
+            .await
+            .unwrap();
+
+        let (staged, unstaged, untracked) = git.working_tree_changes().await.unwrap();
+
+        assert!(staged.iter().any(|f| f.path == "staged-new.txt"
+            && f.status == FileStatusKind::Added));
+        assert!(staged.iter().any(|f| f.path == "README.md"
+            && f.status == FileStatusKind::Modified));
+        assert!(unstaged.iter().any(|f| f.path == "README.md"
+            && f.status == FileStatusKind::Modified));
+        assert_eq!(untracked, vec!["untracked.txt".to_string()]);
+    }
+
+    // ── stash_list ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_stash_list_empty_when_no_stashes() {
+        let (_dir, git) = create_test_repo().await;
+        let stashes = git.stash_list().await.unwrap();
+        assert!(stashes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stash_list_records_branch() {
+        let (dir, git) = create_test_repo().await;
+
+        tokio::fs::write(dir.path().join("README.md"), "# changed")
+            .await
+            .unwrap();
+        git.run(&["stash", "push", "-m", "saving"]).await.unwrap();
+
+        let stashes = git.stash_list().await.unwrap();
+        assert_eq!(stashes.len(), 1);
+        assert!(stashes[0].ref_name.starts_with("stash@{"));
+        assert!(stashes[0].branch.is_some());
+    }
+
+    // ── upstream + ahead/behind ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_upstream_none_when_no_remote() {
+        let (_dir, git) = create_test_repo().await;
+        let upstream = git.upstream_name().await.unwrap();
+        assert!(upstream.is_none());
+        let ab = git.upstream_ahead_behind().await.unwrap();
+        assert!(ab.is_none());
+    }
+
+    // ── unpushed_commits ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_unpushed_commits_empty_without_upstream() {
+        let (_dir, git) = create_test_repo().await;
+        let commits = git.unpushed_commits().await.unwrap();
+        assert!(commits.is_empty());
+    }
+
+    // ── worktree_status ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_worktree_status_clean_main() {
+        let (dir, git) = create_test_repo().await;
+        let path = dir.path().to_string_lossy().to_string();
+        let status = git.worktree_status(path.clone(), true).await.unwrap();
+
+        assert!(status.is_main_worktree);
+        assert!(status.staged.is_empty());
+        assert!(status.unstaged.is_empty());
+        assert!(status.untracked.is_empty());
+        assert!(status.upstream.is_none());
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+        assert!(status.unpushed_commits.is_empty());
+        assert!(status.stashes.is_empty());
+        assert_eq!(status.path, path);
+    }
+
+    #[tokio::test]
+    async fn test_worktree_status_with_changes() {
+        let (dir, git) = create_test_repo().await;
+        tokio::fs::write(dir.path().join("new.txt"), "hi")
+            .await
+            .unwrap();
+
+        let status = git
+            .worktree_status(dir.path().to_string_lossy().to_string(), true)
+            .await
+            .unwrap();
+        assert_eq!(status.untracked, vec!["new.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_all_worktrees_status_covers_every_worktree() {
+        let (dir, git) = create_test_repo().await;
+        git.run(&["branch", "feature"]).await.unwrap();
+        let wt = dir.path().join("wt-feature");
+        git.worktree_add(&wt, None, Some("feature")).await.unwrap();
+
+        let statuses = git.all_worktrees_status().await.unwrap();
+        assert_eq!(statuses.len(), 2);
+        assert!(statuses.iter().any(|s| s.is_main_worktree));
+        assert!(statuses.iter().any(|s| !s.is_main_worktree));
+
+        // Cleanup
+        git.worktree_remove(&wt, true).await.unwrap();
     }
 }

@@ -93,3 +93,76 @@ export async function getDeduplicatedCurrentBranch(repoPath: string): Promise<st
   activeFetches.set(repoPath, promise);
   return promise;
 }
+
+// ── Worktree status (per-worktree "what's at risk if I delete this") ──
+
+export type FileStatusKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "typechanged"
+  | "unmerged"
+  | "unknown";
+
+export interface FileStatusEntry {
+  path: string;
+  status: FileStatusKind;
+  old_path: string | null;
+}
+
+export interface UnpushedCommit {
+  hash: string;
+  short_hash: string;
+  author: string;
+  timestamp: number;
+  summary: string;
+}
+
+export interface StashEntry {
+  ref_name: string;
+  message: string;
+  branch: string | null;
+}
+
+export interface WorktreeStatus {
+  path: string;
+  branch: string | null;
+  head: string;
+  is_main_worktree: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  staged: FileStatusEntry[];
+  unstaged: FileStatusEntry[];
+  untracked: string[];
+  unpushed_commits: UnpushedCommit[];
+  stashes: StashEntry[];
+}
+
+/**
+ * Returns the WorktreeStatus for every worktree of `repoPath`. Aggregates
+ * staged/unstaged/untracked files, unpushed commits, and stashes — i.e.
+ * everything that would be lost if the worktree or its branch were deleted.
+ */
+export async function getWorktreesStatus(
+  repoPath: string
+): Promise<WorktreeStatus[]> {
+  return invoke<WorktreeStatus[]>("git_worktrees_status", { repoPath });
+}
+
+/**
+ * `true` when the worktree has anything that would be lost on delete:
+ * unpushed commits, working-tree changes, or stashes.
+ */
+export function isWorktreeAtRisk(status: WorktreeStatus): boolean {
+  return (
+    status.ahead > 0 ||
+    status.staged.length > 0 ||
+    status.unstaged.length > 0 ||
+    status.untracked.length > 0 ||
+    status.unpushed_commits.length > 0 ||
+    status.stashes.length > 0
+  );
+}
