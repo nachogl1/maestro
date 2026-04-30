@@ -1,6 +1,24 @@
-import { GitBranch, GitPullRequest, CircleDot, MessageCircle } from "lucide-react";
+import {
+  GitBranch,
+  GitPullRequest,
+  CircleDot,
+  MessageCircle,
+  FileWarning,
+} from "lucide-react";
 
-export type GitPanelTab = "commits" | "prs" | "issues" | "discussions";
+export type GitPanelTab =
+  | "commits"
+  | "status"
+  | "prs"
+  | "issues"
+  | "discussions";
+
+/** Tabs that require GitHub auth + the `gh` CLI. */
+export const GITHUB_TABS: ReadonlyArray<GitPanelTab> = [
+  "prs",
+  "issues",
+  "discussions",
+];
 
 interface GitPanelTabsProps {
   activeTab: GitPanelTab;
@@ -15,6 +33,7 @@ const TABS: Array<{
   icon: typeof GitBranch;
 }> = [
   { id: "commits", label: "Commits", icon: GitBranch },
+  { id: "status", label: "Status", icon: FileWarning },
   { id: "prs", label: "PRs", icon: GitPullRequest },
   { id: "issues", label: "Issues", icon: CircleDot },
   { id: "discussions", label: "Discussions", icon: MessageCircle },

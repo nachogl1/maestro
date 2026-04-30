@@ -246,6 +246,8 @@ pub fn run() {
             commands::git::git_worktree_list,
             commands::git::git_worktree_add,
             commands::git::git_worktree_remove,
+            commands::git::git_worktree_status,
+            commands::git::git_worktrees_status,
             commands::git::git_commit_log,
             commands::git::git_checkout_branch,
             commands::git::git_create_branch,

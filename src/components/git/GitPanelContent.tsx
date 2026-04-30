@@ -4,6 +4,7 @@ import type { GitPanelTab } from "./GitPanelTabs";
 import { PullRequestList } from "./pulls/PullRequestList";
 import { IssueList } from "./issues/IssueList";
 import { DiscussionList } from "./discussions/DiscussionList";
+import { WorktreeStatusList } from "./status/WorktreeStatusList";
 
 interface GitPanelContentProps {
   activeTab: GitPanelTab;
@@ -42,6 +43,8 @@ export function GitPanelContent({
           currentBranch={currentBranch}
         />
       );
+    case "status":
+      return <WorktreeStatusList repoPath={repoPath} />;
     case "prs":
       return (
         <PullRequestList

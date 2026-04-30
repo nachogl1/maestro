@@ -5,7 +5,7 @@ import { useGitStore } from "../../stores/useGitStore";
 import { useGitHubStore } from "../../stores/useGitHubStore";
 import type { RepositoryInfo, WorkspaceType } from "../../stores/useWorkspaceStore";
 import { CommitDetailPanel } from "./CommitDetailPanel";
-import { GitPanelTabs, type GitPanelTab } from "./GitPanelTabs";
+import { GitPanelTabs, GITHUB_TABS, type GitPanelTab } from "./GitPanelTabs";
 import { GitPanelContent } from "./GitPanelContent";
 import { PullRequestDetailPanel } from "./pulls/PullRequestDetailPanel";
 import { IssueDetailPanel } from "./issues/IssueDetailPanel";
@@ -70,7 +70,7 @@ export function GitGraphPanel({
 
   // Re-check auth whenever user switches to a GitHub tab or repo changes
   useEffect(() => {
-    if (!repoPath || activeTab === "commits") return;
+    if (!repoPath || !GITHUB_TABS.includes(activeTab)) return;
     checkAuth(repoPath);
   }, [repoPath, activeTab, checkAuth]);
 
@@ -204,9 +204,9 @@ export function GitGraphPanel({
   const hasGhError =
     (authError != null && ghMissingPattern.test(authError)) ||
     (prsError != null && ghMissingPattern.test(prsError));
-  const isGhError = activeTab !== "commits" && hasGhError;
+  const isGhError = GITHUB_TABS.includes(activeTab) && hasGhError;
   const showAuthPrompt =
-    activeTab !== "commits" && authStatus && !authStatus.logged_in;
+    GITHUB_TABS.includes(activeTab) && authStatus && !authStatus.logged_in;
 
   // Show PR detail panel full width when a PR is selected
   const showPRDetail = selectedPRNumber && repoPath && activeTab === "prs";

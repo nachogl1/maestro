@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use crate::git::{BranchInfo, CommitInfo, FileChange, Git, GitError, GitUserConfig, RemoteInfo, WorktreeInfo};
+use crate::git::{
+    BranchInfo, CommitInfo, FileChange, Git, GitError, GitUserConfig, RemoteInfo, WorktreeInfo,
+    WorktreeStatus,
+};
 
 /// Information about a detected repository or directory within a workspace.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -98,6 +101,37 @@ pub async fn git_worktree_remove(
     let git = Git::new(&repo_path);
     let wt_path = PathBuf::from(&path);
     git.worktree_remove(&wt_path, force).await
+}
+
+/// Exposes `Git::worktree_status` to the frontend.
+///
+/// `worktree_path` should be the absolute path to the worktree (or main repo)
+/// to inspect; `is_main_worktree` indicates whether it's the primary working
+/// tree. Returns a snapshot of every change that would be lost if the
+/// worktree or branch were deleted: staged/unstaged/untracked files,
+/// unpushed commits, and stashes that originated on the branch.
+#[tauri::command]
+pub async fn git_worktree_status(
+    worktree_path: String,
+    is_main_worktree: bool,
+) -> Result<WorktreeStatus, GitError> {
+    validate_repo_path(&worktree_path)?;
+    let git = Git::new(&worktree_path);
+    git.worktree_status(worktree_path.clone(), is_main_worktree)
+        .await
+}
+
+/// Exposes `Git::all_worktrees_status` to the frontend.
+///
+/// Returns the [`WorktreeStatus`] for every worktree of `repo_path`. Bad
+/// worktrees are skipped server-side rather than failing the whole call.
+#[tauri::command]
+pub async fn git_worktrees_status(
+    repo_path: String,
+) -> Result<Vec<WorktreeStatus>, GitError> {
+    validate_repo_path(&repo_path)?;
+    let git = Git::new(&repo_path);
+    git.all_worktrees_status().await
 }
 
 /// Exposes `Git::commit_log` to the frontend.
