@@ -41,7 +41,6 @@ export function GitGraphPanel({
   const [selectedPRNumber, setSelectedPRNumber] = useState<number | null>(null);
   const [selectedIssueNumber, setSelectedIssueNumber] = useState<number | null>(null);
   const [selectedDiscussionNumber, setSelectedDiscussionNumber] = useState<number | null>(null);
-  const setActiveTab = onActiveTabChange;
 
   const { checkoutBranch, createBranch } = useGitStore();
   const {
@@ -138,7 +137,7 @@ export function GitGraphPanel({
 
   // Handle tab change
   const handleTabChange = useCallback((tab: GitPanelTab) => {
-    setActiveTab(tab);
+    onActiveTabChange(tab);
     // Clear selections when switching tabs
     setSelectedNode(null);
     setSelectedPRNumber(null);
@@ -147,7 +146,7 @@ export function GitGraphPanel({
     clearSelectedPR();
     clearSelectedIssue();
     clearSelectedDiscussion();
-  }, [clearSelectedPR, clearSelectedIssue, clearSelectedDiscussion]);
+  }, [onActiveTabChange, clearSelectedPR, clearSelectedIssue, clearSelectedDiscussion]);
 
   // Handle commit selection
   const handleSelectCommit = useCallback((node: GraphNode) => {
