@@ -35,7 +35,7 @@ export function GitGraphPanel({
   const [selectedPRNumber, setSelectedPRNumber] = useState<number | null>(null);
   const [selectedIssueNumber, setSelectedIssueNumber] = useState<number | null>(null);
   const [selectedDiscussionNumber, setSelectedDiscussionNumber] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<GitPanelTab>("commits");
+  const [activeTab, setActiveTab] = useState<GitPanelTab>("status");
 
   const { checkoutBranch, createBranch } = useGitStore();
   const {
