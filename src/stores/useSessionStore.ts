@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { samePath } from "@/lib/path";
 
 /** AI provider variants supported by the backend orchestrator. */
 export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
@@ -278,7 +279,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   },
 
   getSessionsByProject: (projectPath: string) => {
-    return get().sessions.filter((s) => s.project_path === projectPath);
+    return get().sessions.filter((s) => samePath(s.project_path, projectPath));
   },
 
   initListeners: async () => {

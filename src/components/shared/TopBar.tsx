@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { isMac } from "@/lib/platform";
+import { samePath } from "@/lib/path";
 import { useGitStore } from "../../stores/useGitStore";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { BranchDropdown } from "./BranchDropdown";
@@ -54,7 +55,7 @@ export function TopBar({
 
       // Warn if there are active non-worktree sessions that share the main checkout
       const activeSessions = useSessionStore.getState().sessions.filter(
-        (s) => s.project_path === repoPath && !s.worktree_path
+        (s) => samePath(s.project_path, repoPath) && !s.worktree_path
       );
       if (activeSessions.length > 0) {
         const proceed = window.confirm(
