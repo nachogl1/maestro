@@ -1,7 +1,8 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { GripVertical } from "lucide-react";
 
 import { getBranchesWithWorktreeStatus, type BranchWithWorktreeStatus } from "@/lib/git";
 import { removeSessionMcpConfig, removeOpenCodeMcpConfig, setSessionMcpServers, writeSessionMcpConfig, writeOpenCodeMcpConfig, type McpServerConfig } from "@/lib/mcp";
@@ -43,7 +44,7 @@ import { useWorkspaceStore, type RepositoryInfo, type WorkspaceType } from "@/st
 import { shellEscapePaths } from "@/lib/shellEscape";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
-import { createLeaf, splitLeaf, removeLeaf, updateRatio, collectSlotIds, findSiblingSlotId, buildGridTree, type TreeNode, type SplitDirection } from "./splitTree";
+import { createLeaf, splitLeaf, removeLeaf, updateRatio, collectSlotIds, findSiblingSlotId, buildGridTree, swapSlots, type TreeNode, type SplitDirection } from "./splitTree";
 import { TerminalView } from "./TerminalView";
 
 /** Stable empty arrays to avoid infinite re-render loops in Zustand selectors. */
@@ -1200,6 +1201,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [zoomedSlotId, handleToggleZoom]);
 
+  /** Swap the contents of two leaves so the user can rearrange panes. */
+  const handleSwapSlots = useCallback((srcSlotId: string, destSlotId: string) => {
+    if (!srcSlotId || !destSlotId || srcSlotId === destSlotId) return;
+    setLayoutTree((prev) => swapSlots(prev, srcSlotId, destSlotId));
+  }, []);
+
   const renderLeaf = useCallback((slotId: string) => {
     const slot = slots.find((s) => s.id === slotId);
     if (!slot) return null;
@@ -1210,9 +1217,15 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       </div>
     );
 
+    const showReorderHandle = slots.length > 1;
+
     if (slot.sessionId !== null) {
       return (
-        <>
+        <DraggablePane
+          slotId={slot.id}
+          showHandle={showReorderHandle}
+          onSwap={handleSwapSlots}
+        >
           <TerminalView
             key={slot.id}
             sessionId={slot.sessionId}
@@ -1225,11 +1238,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             onToggleZoom={() => handleToggleZoom(slot.id)}
           />
           {dropOverlay}
-        </>
+        </DraggablePane>
       );
     }
 
     return (
+      <DraggablePane
+        slotId={slot.id}
+        showHandle={showReorderHandle}
+        onSwap={handleSwapSlots}
+      >
       <PreLaunchCard
         key={slot.id}
         slot={slot}
@@ -1265,9 +1283,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         isZoomed={false}
         onToggleZoom={() => handleToggleZoom(slot.id)}
       />
+      </DraggablePane>
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps -- Deps cover all render-affecting state
-  }, [slots, focusedSlotId, isActive, isDraggingFiles, dropTargetSlotId, getFocusCallback, handleKill, handleToggleZoom, projectPath, branches, isLoadingBranches, isGitRepo, hasManagedWorktree, repositories, workspaceType, effectiveRepoPath, onRepoChange, mcpServers, skills, plugins, handleCreateBranch, updateSlotCustomName, updateSlotMode, updateSlotBranch, updateSlotWorktreeMode, refreshBranches, toggleSlotMcp, toggleSlotSkill, toggleSlotPlugin, selectAllMcp, unselectAllMcp, selectAllPlugins, unselectAllPlugins, launchSlot, removeSlot, updateSlotResumeSession]);
+  }, [slots, focusedSlotId, isActive, isDraggingFiles, dropTargetSlotId, getFocusCallback, handleKill, handleToggleZoom, handleSwapSlots, projectPath, branches, isLoadingBranches, isGitRepo, hasManagedWorktree, repositories, workspaceType, effectiveRepoPath, onRepoChange, mcpServers, skills, plugins, handleCreateBranch, updateSlotCustomName, updateSlotMode, updateSlotBranch, updateSlotWorktreeMode, refreshBranches, toggleSlotMcp, toggleSlotSkill, toggleSlotPlugin, selectAllMcp, unselectAllMcp, selectAllPlugins, unselectAllPlugins, launchSlot, removeSlot, updateSlotResumeSession]);
 
   const handleRatioChange = useCallback((nodeId: string, ratio: number) => {
     setLayoutTree((prev) => updateRatio(prev, nodeId, ratio));
@@ -1423,3 +1442,76 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     </div>
   );
 });
+
+/** MIME-style key used for the pane reorder dataTransfer payload. */
+const SLOT_DRAG_TYPE = "application/x-maestro-slot";
+
+/**
+ * Wraps a terminal pane in a relative container that supports drag-to-reorder.
+ *
+ * - Drag source: a small grip icon overlay in the top-left of each pane
+ *   (visible only when there is more than one pane).
+ * - Drop target: the entire pane area. When another pane's slotId is
+ *   dropped, fires `onSwap(srcSlotId, destSlotId)`.
+ *
+ * Native HTML5 DnD is used (not @dnd-kit) so the implementation stays
+ * confined to this file and doesn't interfere with xterm.js pointer
+ * handling — the only interactive surface is the small grip icon.
+ */
+function DraggablePane({
+  slotId,
+  showHandle,
+  onSwap,
+  children,
+}: {
+  slotId: string;
+  showHandle: boolean;
+  onSwap: (srcSlotId: string, destSlotId: string) => void;
+  children: ReactNode;
+}) {
+  const [isOver, setIsOver] = useState(false);
+
+  return (
+    <div
+      className="relative h-full w-full"
+      onDragOver={(e) => {
+        if (Array.from(e.dataTransfer.types).includes(SLOT_DRAG_TYPE)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (!isOver) setIsOver(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        // Only clear when leaving the wrapper, not when entering nested children.
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setIsOver(false);
+      }}
+      onDrop={(e) => {
+        const src = e.dataTransfer.getData(SLOT_DRAG_TYPE);
+        setIsOver(false);
+        if (src && src !== slotId) {
+          e.preventDefault();
+          onSwap(src, slotId);
+        }
+      }}
+    >
+      {children}
+      {showHandle && (
+        <div
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData(SLOT_DRAG_TYPE, slotId);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          title="Drag to swap with another pane"
+          className="absolute left-1 top-1 z-20 flex h-5 w-4 cursor-grab items-center justify-center rounded text-maestro-muted/30 transition-colors hover:bg-maestro-card/80 hover:text-maestro-text active:cursor-grabbing"
+        >
+          <GripVertical size={12} />
+        </div>
+      )}
+      {isOver && (
+        <div className="pointer-events-none absolute inset-0 z-10 rounded-md ring-2 ring-inset ring-maestro-accent" />
+      )}
+    </div>
+  );
+}

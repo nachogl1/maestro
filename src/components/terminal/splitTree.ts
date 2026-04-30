@@ -181,6 +181,39 @@ export function buildGridTree(slotIds: string[]): TreeNode {
 }
 
 /**
+ * Swap the positions of two leaves identified by their slot IDs.
+ *
+ * Mutates the slotId on each matching leaf in-place (returns a new tree) so
+ * existing `ratio` values for split nodes are preserved — the layout the
+ * user has carefully resized is kept, only the contents of two cells move.
+ *
+ * Returns the original tree unchanged if either slot ID is not found or
+ * if both IDs refer to the same slot.
+ */
+export function swapSlots(tree: TreeNode, slotIdA: string, slotIdB: string): TreeNode {
+  if (slotIdA === slotIdB) return tree;
+
+  function rewrite(node: TreeNode): TreeNode {
+    if (node.type === "leaf") {
+      if (node.slotId === slotIdA) return { ...node, slotId: slotIdB };
+      if (node.slotId === slotIdB) return { ...node, slotId: slotIdA };
+      return node;
+    }
+    const [left, right] = node.children;
+    const newLeft = rewrite(left);
+    const newRight = rewrite(right);
+    if (newLeft === left && newRight === right) return node;
+    return { ...node, children: [newLeft, newRight] };
+  }
+
+  // Verify both slots exist before mutating.
+  const ids = collectSlotIds(tree);
+  if (!ids.includes(slotIdA) || !ids.includes(slotIdB)) return tree;
+
+  return rewrite(tree);
+}
+
+/**
  * Find the sibling slot ID of a given slot in the tree.
  * Returns null if the slot is the root or not found.
  */

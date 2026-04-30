@@ -50,7 +50,7 @@ import { ClaudeMdEditorModal } from "@/components/claudemd";
 import { CliSettingsModal } from "@/components/terminal/CliSettingsModal";
 import { TerminalSettingsModal } from "@/components/terminal/TerminalSettingsModal";
 import { MaestroSettingsModal } from "@/components/settings";
-import type { McpCustomServer } from "@/lib/mcp";
+import type { McpCustomServer, McpServerConfig } from "@/lib/mcp";
 import { checkClaudeMd, type ClaudeMdStatus } from "@/lib/claudemd";
 import { samePath } from "@/lib/path";
 import { OpenCodeIcon } from "@/components/icons/OpenCodeIcon";
@@ -784,6 +784,48 @@ function StatusSection() {
 
 /* ── 5. MCP Servers ── */
 
+/**
+ * Renders a labelled group of MCP servers for one scope (project / local / user).
+ * Shows nothing when the group is empty so the section stays compact.
+ *
+ * Status dot: green = configured (Claude will load it on session launch).
+ * No live "running" check exists yet — the indicator reflects configured state.
+ */
+function McpScopeGroup({
+  label,
+  servers,
+}: {
+  label: string;
+  servers: McpServerConfig[];
+}) {
+  if (servers.length === 0) return null;
+  return (
+    <>
+      <div className="px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-maestro-muted/60">
+        {label} ({servers.length})
+      </div>
+      {servers.map((server) => {
+        const isHttp = server.type === "http";
+        return (
+          <div
+            key={`${server.source ?? "project"}:${server.name}`}
+            className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
+          >
+            <span
+              title="Configured — loaded into sessions on launch"
+              className="h-2 w-2 shrink-0 rounded-full bg-maestro-green"
+            />
+            <span className="flex-1 truncate font-medium">{server.name}</span>
+            <span className="text-[10px] text-maestro-muted">
+              {isHttp ? "HTTP" : "stdio"}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function MCPServersSection() {
   const [expanded, setExpanded] = useState(false);
   const [showEditorModal, setShowEditorModal] = useState(false);
@@ -895,30 +937,21 @@ function MCPServersSection() {
 
         {expanded && (
           <div className="space-y-0.5">
-            {/* Discovered servers from .mcp.json */}
-            {discoveredServers.length > 0 && (
-              <>
-                <div className="px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-maestro-muted/60">
-                  Discovered ({discoveredServers.length})
-                </div>
-                {discoveredServers.map((server) => {
-                  const serverType = server.type;
-                  const isHttp = serverType === "http";
-                  return (
-                    <div
-                      key={server.name}
-                      className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
-                    >
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-maestro-green" />
-                      <span className="flex-1 truncate font-medium">{server.name}</span>
-                      <span className="text-[10px] text-maestro-muted">
-                        {isHttp ? "HTTP" : "stdio"}
-                      </span>
-                    </div>
-                  );
-                })}
-              </>
-            )}
+            {/* Discovered servers grouped by scope. Project = repo's .mcp.json,
+                Local = ~/.claude.json projects[path] (per-machine), User = top-level
+                ~/.claude.json (user-global). */}
+            <McpScopeGroup
+              label="Project (.mcp.json)"
+              servers={discoveredServers.filter((s) => (s.source ?? "project") === "project")}
+            />
+            <McpScopeGroup
+              label="Local (this machine)"
+              servers={discoveredServers.filter((s) => s.source === "local")}
+            />
+            <McpScopeGroup
+              label="User (global)"
+              servers={discoveredServers.filter((s) => s.source === "user")}
+            />
 
             {/* Custom servers */}
             {customServers.length > 0 && (
@@ -985,7 +1018,27 @@ function MCPServersSection() {
 
 /* ── 6. Plugins & Skills ── */
 
-import type { SkillSource } from "@/lib/plugins";
+import type { PluginConfig, SkillConfig, SkillSource } from "@/lib/plugins";
+
+/** Maps a plugin source to a coarse Project/User/Global scope. */
+type PluginScope = "project" | "user" | "global";
+function pluginScope(p: PluginConfig): PluginScope {
+  switch (p.plugin_source) {
+    case "project":
+      return "project";
+    case "builtin":
+      return "global";
+    case "installed":
+    case "marketplace":
+    case "cli_installed":
+      return "user";
+  }
+}
+
+/** Maps a skill source to a coarse Project/User scope (plugin-owned skills are grouped under their plugin). */
+function skillScope(s: SkillConfig): "project" | "user" {
+  return s.source.type === "project" ? "project" : "user";
+}
 
 /** Returns badge styling and text for a skill source. */
 function getSkillSourceBadge(source: SkillSource): { text: string; className: string; icon: React.ElementType } {
@@ -1201,13 +1254,21 @@ function PluginsSection() {
             </>
           ) : (
             <>
-              {/* Plugins with their skills */}
-              {plugins.length > 0 && (
-                <>
-                  <div className="px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-maestro-muted/60">
-                    Plugins ({plugins.length})
-                  </div>
-                  {plugins.map((plugin) => {
+              {/* Plugins grouped by scope (Project / User / Global). */}
+              {plugins.length > 0 && (() => {
+                const buckets: Record<PluginScope, PluginConfig[]> = {
+                  project: [],
+                  user: [],
+                  global: [],
+                };
+                for (const p of plugins) buckets[pluginScope(p)].push(p);
+                const scopeLabel: Record<PluginScope, string> = {
+                  project: "Project Plugins",
+                  user: "User Plugins",
+                  global: "Global Plugins",
+                };
+                const order: PluginScope[] = ["project", "user", "global"];
+                const renderPluginRow = (plugin: PluginConfig) => {
                     const pluginSkills = pluginSkillsMap.get(plugin.name) ?? [];
                     const isPluginExpanded = expandedPlugins.has(plugin.id);
                     // Check if plugin is being uninstalled/deleted
@@ -1279,49 +1340,73 @@ function PluginsSection() {
                         )}
                       </div>
                     );
-                  })}
-                </>
-              )}
-
-              {/* Standalone Skills */}
-              {standaloneSkills.length > 0 && (
-                <>
-                  <div className="px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-maestro-muted/60">
-                    Skills ({standaloneSkills.length})
-                  </div>
-                  {standaloneSkills.map((skill) => {
-                    const badge = getSkillSourceBadge(skill.source);
-                    const isDeleting = deletingSkillId === skill.id;
-                    return (
-                      <div
-                        key={skill.id}
-                        className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
-                        title={skill.description || skill.path || undefined}
-                      >
-                        <Zap size={12} className="shrink-0 text-maestro-orange" />
-                        <span className="flex-1 truncate font-medium">{skill.name}</span>
-                        <span className={`shrink-0 rounded px-1 text-[9px] ${badge.className}`}>
-                          {badge.text}
-                        </span>
-                        {canDeleteSkill(skill) && (
-                          <button
-                            type="button"
-                            onClick={(e) => handleDeleteSkill(e, skill.id, skill.path)}
-                            disabled={isDeleting}
-                            className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-maestro-red/10 transition-opacity"
-                            title="Delete skill"
-                          >
-                            <Trash2
-                              size={10}
-                              className={isDeleting ? "text-maestro-muted animate-pulse" : "text-maestro-red"}
-                            />
-                          </button>
-                        )}
+                };
+                return order
+                  .filter((scope) => buckets[scope].length > 0)
+                  .map((scope) => (
+                    <div key={`plugin-scope-${scope}`}>
+                      <div className="px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-maestro-muted/60">
+                        {scopeLabel[scope]} ({buckets[scope].length})
                       </div>
-                    );
-                  })}
-                </>
-              )}
+                      {buckets[scope].map(renderPluginRow)}
+                    </div>
+                  ));
+              })()}
+
+              {/* Standalone Skills grouped by scope (Project / User). */}
+              {standaloneSkills.length > 0 && (() => {
+                const skillBuckets: Record<"project" | "user", SkillConfig[]> = {
+                  project: [],
+                  user: [],
+                };
+                for (const s of standaloneSkills) skillBuckets[skillScope(s)].push(s);
+                const skillOrder: Array<"project" | "user"> = ["project", "user"];
+                const skillLabel: Record<"project" | "user", string> = {
+                  project: "Project Skills",
+                  user: "User Skills",
+                };
+                const renderSkillRow = (skill: SkillConfig) => {
+                  const badge = getSkillSourceBadge(skill.source);
+                  const isDeleting = deletingSkillId === skill.id;
+                  return (
+                    <div
+                      key={skill.id}
+                      className="group flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
+                      title={skill.description || skill.path || undefined}
+                    >
+                      <Zap size={12} className="shrink-0 text-maestro-orange" />
+                      <span className="flex-1 truncate font-medium">{skill.name}</span>
+                      <span className={`shrink-0 rounded px-1 text-[9px] ${badge.className}`}>
+                        {badge.text}
+                      </span>
+                      {canDeleteSkill(skill) && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteSkill(e, skill.id, skill.path)}
+                          disabled={isDeleting}
+                          className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-maestro-red/10 transition-opacity"
+                          title="Delete skill"
+                        >
+                          <Trash2
+                            size={10}
+                            className={isDeleting ? "text-maestro-muted animate-pulse" : "text-maestro-red"}
+                          />
+                        </button>
+                      )}
+                    </div>
+                  );
+                };
+                return skillOrder
+                  .filter((scope) => skillBuckets[scope].length > 0)
+                  .map((scope) => (
+                    <div key={`skill-scope-${scope}`}>
+                      <div className="px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-maestro-muted/60">
+                        {skillLabel[scope]} ({skillBuckets[scope].length})
+                      </div>
+                      {skillBuckets[scope].map(renderSkillRow)}
+                    </div>
+                  ));
+              })()}
             </>
           )}
         </div>
@@ -1516,7 +1601,7 @@ function AgentSessionsSection() {
             >
               <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_CLASS[s.status]}`} />
               <span className="flex-1 truncate">
-                <span className="font-medium">#{s.id}</span>{" "}
+                <span className="font-medium">{s.name || `#${s.id}`}</span>{" "}
                 <span className="text-maestro-muted">{s.mode}</span>{" "}
                 <span className="text-maestro-muted">-</span>{" "}
                 <span className="text-maestro-muted">{STATUS_LABEL[s.status]}</span>
@@ -1734,7 +1819,7 @@ function ProcessTreeSection() {
                     )}
                     <Bot size={12} className="shrink-0 text-maestro-purple" />
                     <span className="flex-1 text-left font-medium">
-                      Session #{tree.sessionId}
+                      {session?.name || `Session #${tree.sessionId}`}
                       {session && (
                         <span className="ml-1 text-maestro-muted font-normal">
                           ({session.mode})
