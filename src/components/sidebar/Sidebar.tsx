@@ -52,6 +52,7 @@ import { TerminalSettingsModal } from "@/components/terminal/TerminalSettingsMod
 import { MaestroSettingsModal } from "@/components/settings";
 import type { McpCustomServer } from "@/lib/mcp";
 import { checkClaudeMd, type ClaudeMdStatus } from "@/lib/claudemd";
+import { samePath } from "@/lib/path";
 import { OpenCodeIcon } from "@/components/icons/OpenCodeIcon";
 
 type SidebarTab = "config" | "processes";
@@ -300,8 +301,6 @@ function ConfigTab({
       <SessionsSection />
       {divider}
       <StatusSection />
-      {divider}
-      <MaestroMCPSection />
       {divider}
       <MCPServersSection />
       {divider}
@@ -599,7 +598,7 @@ function SessionsSection() {
   const activeProjectPath = activeTab?.projectPath ?? "";
 
   // Filter sessions to only show those belonging to the active project
-  const sessions = allSessions.filter((s) => s.project_path === activeProjectPath);
+  const sessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
 
   const startEditing = (s: { id: number; name?: string | null }) => {
     setEditingId(s.id);
@@ -714,7 +713,7 @@ function StatusSection() {
   const activeProjectPath = activeTab?.projectPath ?? "";
 
   // Filter sessions to only count those belonging to the active project
-  const sessions = allSessions.filter((s) => s.project_path === activeProjectPath);
+  const sessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
   const counts = sessions.reduce(
     (acc, session) => {
       acc.status[session.status] = (acc.status[session.status] ?? 0) + 1;
@@ -783,33 +782,7 @@ function StatusSection() {
   );
 }
 
-/* ── 5. Maestro MCP ── */
-
-function MaestroMCPSection() {
-  return (
-    <div className={cardClass}>
-      <SectionHeader
-        icon={Server}
-        label="Maestro MCP"
-        iconColor="text-maestro-green"
-        right={
-          <button type="button" className="rounded p-0.5 hover:bg-maestro-border/40">
-            <RefreshCw size={12} className="text-maestro-muted" />
-          </button>
-        }
-      />
-      <div className="flex items-center gap-2 px-1 py-1">
-        <span className="h-2 w-2 shrink-0 rounded-full bg-maestro-green" />
-        <span className="text-xs text-maestro-text font-medium">Available</span>
-      </div>
-      <div className="pl-5 text-[10px] text-maestro-muted truncate">
-        /usr/lib/maestro...MCPServer
-      </div>
-    </div>
-  );
-}
-
-/* ── 6. MCP Servers ── */
+/* ── 5. MCP Servers ── */
 
 function MCPServersSection() {
   const [expanded, setExpanded] = useState(false);
@@ -1010,7 +983,7 @@ function MCPServersSection() {
   );
 }
 
-/* ── 7. Plugins & Skills ── */
+/* ── 6. Plugins & Skills ── */
 
 import type { SkillSource } from "@/lib/plugins";
 
@@ -1365,7 +1338,7 @@ function PluginsSection() {
   );
 }
 
-/* ── 8. Quick Actions ── */
+/* ── 7. Quick Actions ── */
 
 function QuickActionsSection() {
   const [showManager, setShowManager] = useState(false);
@@ -1420,7 +1393,7 @@ function QuickActionsSection() {
   );
 }
 
-/* ── 9. Settings ── */
+/* ── 8. Settings ── */
 
 function AppearanceSection({
   theme,
@@ -1517,7 +1490,7 @@ function AgentSessionsSection() {
   const activeProjectPath = activeTab?.projectPath ?? "";
 
   // Filter sessions to only show those belonging to the active project
-  const sessions = allSessions.filter((s) => s.project_path === activeProjectPath);
+  const sessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
 
   return (
     <div className={cardClass}>
@@ -1569,7 +1542,7 @@ function ProcessTreeSection() {
   const activeProjectPath = activeTab?.projectPath ?? "";
 
   // Filter sessions to only show those belonging to the active project
-  const projectSessions = allSessions.filter((s) => s.project_path === activeProjectPath);
+  const projectSessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
   const projectSessionIds = new Set(projectSessions.map((s) => s.id));
 
   // Filter trees to only show those for the active project's sessions
