@@ -1443,20 +1443,18 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   );
 });
 
-/** MIME-style key used for the pane reorder dataTransfer payload. */
-const SLOT_DRAG_TYPE = "application/x-maestro-slot";
-
 /**
  * Wraps a terminal pane in a relative container that supports drag-to-reorder.
  *
- * - Drag source: a small grip icon overlay in the top-left of each pane
- *   (visible only when there is more than one pane).
- * - Drop target: the entire pane area. When another pane's slotId is
- *   dropped, fires `onSwap(srcSlotId, destSlotId)`.
+ * Uses pointer events (mousedown/move/up) instead of HTML5 DnD because
+ * Tauri's WebView2 keeps showing the "no drop" cursor when custom MIME
+ * types aren't surfaced in `dataTransfer.types` during dragover. Pointer
+ * events are also lighter — no drag image, no system cursor switching —
+ * and let us use `document.elementFromPoint` to find the destination pane.
  *
- * Native HTML5 DnD is used (not @dnd-kit) so the implementation stays
- * confined to this file and doesn't interfere with xterm.js pointer
- * handling — the only interactive surface is the small grip icon.
+ * `min-h-0 min-w-0` keep the flex/overflow chain working so children with
+ * `overflow-y-auto` (e.g. PreLaunchCard) can shrink past their intrinsic
+ * content size and become scrollable.
  */
 function DraggablePane({
   slotId,
@@ -1469,53 +1467,83 @@ function DraggablePane({
   onSwap: (srcSlotId: string, destSlotId: string) => void;
   children: ReactNode;
 }) {
-  const [isOver, setIsOver] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const startDrag = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0 && e.pointerType !== "touch") return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      setIsDragging(true);
+
+      // Outline every other pane so the user can see they're valid drop targets.
+      const allWrappers = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-slot-id]"),
+      );
+      const decorate = (el: HTMLElement, hovered: boolean) => {
+        el.style.outline = hovered
+          ? "2px solid rgb(var(--maestro-accent))"
+          : "1px dashed rgb(var(--maestro-border))";
+        el.style.outlineOffset = "-2px";
+      };
+      const cleanup = () => {
+        for (const el of allWrappers) {
+          el.style.outline = "";
+          el.style.outlineOffset = "";
+        }
+      };
+      for (const el of allWrappers) {
+        if (el.getAttribute("data-slot-id") !== slotId) decorate(el, false);
+      }
+
+      const findTarget = (clientX: number, clientY: number): HTMLElement | null => {
+        const elem = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+        return elem?.closest("[data-slot-id]") as HTMLElement | null;
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        const target = findTarget(ev.clientX, ev.clientY);
+        const targetId = target?.getAttribute("data-slot-id");
+        for (const el of allWrappers) {
+          const id = el.getAttribute("data-slot-id");
+          if (id === slotId) continue;
+          decorate(el, id === targetId && id !== slotId);
+        }
+      };
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        cleanup();
+        setIsDragging(false);
+        const target = findTarget(ev.clientX, ev.clientY);
+        const dest = target?.getAttribute("data-slot-id");
+        if (dest && dest !== slotId) onSwap(slotId, dest);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [slotId, onSwap],
+  );
 
   return (
-    <div
-      className="relative h-full w-full"
-      onDragEnter={(e) => {
-        // Always allow the drag to enter — the type check happens on drop.
-        // (WebView2 does not surface custom MIME types in dataTransfer.types
-        // during dragover/dragenter, so any types-based gating here would
-        // wrongly reject same-origin drags and show the "no drop" cursor.)
-        e.preventDefault();
-        if (!isOver) setIsOver(true);
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      }}
-      onDragLeave={(e) => {
-        // Only clear when leaving the wrapper, not when entering nested children.
-        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-        setIsOver(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const src = e.dataTransfer.getData(SLOT_DRAG_TYPE);
-        setIsOver(false);
-        if (src && src !== slotId) {
-          onSwap(src, slotId);
-        }
-      }}
-    >
+    <div className="relative h-full w-full min-h-0 min-w-0">
       {children}
       {showHandle && (
         <div
-          draggable
-          onDragStart={(e) => {
-            e.dataTransfer.setData(SLOT_DRAG_TYPE, slotId);
-            e.dataTransfer.effectAllowed = "move";
-          }}
+          onPointerDown={startDrag}
           title="Drag to swap with another pane"
-          className="absolute left-1 top-1 z-20 flex h-5 w-4 cursor-grab items-center justify-center rounded text-maestro-muted/30 transition-colors hover:bg-maestro-card/80 hover:text-maestro-text active:cursor-grabbing"
+          className={`absolute left-1 top-1 z-20 flex h-5 w-4 items-center justify-center rounded transition-colors hover:bg-maestro-card/80 hover:text-maestro-text ${
+            isDragging
+              ? "cursor-grabbing text-maestro-accent"
+              : "cursor-grab text-maestro-muted/40"
+          }`}
         >
           <GripVertical size={12} />
         </div>
-      )}
-      {isOver && (
-        <div className="pointer-events-none absolute inset-0 z-10 rounded-md ring-2 ring-inset ring-maestro-accent" />
       )}
     </div>
   );
