@@ -417,13 +417,19 @@ export function PreLaunchCard({
   const selectedRepoName = selectedRepo?.name ?? getRepoDisplayName(selectedRepoPath ?? "");
 
   return (
-    // `overflow-y-auto` lets the user scroll to reach the launch button when
-    // the pane is shorter than the configuration card. `justify-center` is
-    // dropped because flex centering clips overflowing children — the card
-    // sits at the top of the cell instead, which is acceptable.
-    <div className="content-dark terminal-cell flex h-full flex-col items-center overflow-y-auto bg-maestro-bg p-4">
-      {/* Card content */}
-      <div className="flex w-full max-w-xs flex-col gap-4 my-auto">
+    // The `terminal-cell` class (globals.css) sets `overflow: hidden` and
+    // is loaded after Tailwind utilities, so an `overflow-y-auto` on this
+    // same element loses the cascade. Put the scroll responsibility on an
+    // inner div instead — terminal-cell still clips visually for the
+    // rounded border, and the inner div handles overflow.
+    //
+    // `my-auto` on the innermost card vertically centers it when there is
+    // surplus room, and collapses to 0 (top-aligned, scrollable) when the
+    // pane is too short to fit the whole card.
+    <div className="content-dark terminal-cell flex h-full flex-col bg-maestro-bg">
+      <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto p-4">
+        {/* Card content */}
+        <div className="flex w-full max-w-xs flex-col gap-4 my-auto">
         {/* Header with remove button */}
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-maestro-text">Configure Session</span>
@@ -1596,6 +1602,7 @@ export function PreLaunchCard({
           <Play size={16} fill="currentColor" />
           {slot.resumeSessionId ? "Resume Session" : "Launch Session"}
         </button>
+        </div>
       </div>
     </div>
   );
