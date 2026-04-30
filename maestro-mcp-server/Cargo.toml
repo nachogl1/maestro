@@ -21,9 +21,4 @@ log = "0.4"
 [dev-dependencies]
 axum = "0.8"
 
-[profile.release]
-panic = "abort"
-codegen-units = 1
-lto = true
-opt-level = "s"
-strip = true
+# Note: Release profile is defined at the workspace root (see ../Cargo.toml).

@@ -45,7 +45,8 @@ impl StdCommandExt for std::process::Command {
 #[cfg(windows)]
 impl TokioCommandExt for tokio::process::Command {
     fn hide_console_window(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
+        // `creation_flags` is an inherent method on tokio's Command on Windows,
+        // so no `CommandExt` import is needed here.
         self.creation_flags(CREATE_NO_WINDOW)
     }
 }

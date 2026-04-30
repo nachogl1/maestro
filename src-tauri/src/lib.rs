@@ -46,6 +46,10 @@ pub fn run() {
 
     log::info!("Maestro starting up...");
 
+    // `mut` is required on macOS (see the macos-permissions plugin block
+    // below); on other platforms the cfg block is removed and `mut` becomes
+    // unused, so we silence that warning explicitly.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_cli::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {

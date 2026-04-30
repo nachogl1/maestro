@@ -1,7 +1,6 @@
 //! IPC commands for CLAUDE.md file detection and editing.
 
 use serde::Serialize;
-use std::path::PathBuf;
 
 /// Status of CLAUDE.md file at project root.
 #[derive(Debug, Clone, Serialize)]

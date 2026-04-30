@@ -169,6 +169,7 @@ fn install_cli_elevated(dest: &Path) -> Result<(), String> {
         return Err("CLI install is not yet supported on this platform.".to_string());
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     Ok(())
 }
 

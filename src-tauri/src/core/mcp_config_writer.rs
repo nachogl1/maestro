@@ -509,7 +509,7 @@ pub async fn write_opencode_mcp_config(
 fn merge_with_opencode_existing(
     opencode_path: &Path,
     new_servers: HashMap<String, Value>,
-    session_id: u32,
+    _session_id: u32,
 ) -> Result<Value, String> {
     let mut final_servers = new_servers;
 

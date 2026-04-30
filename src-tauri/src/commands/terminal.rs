@@ -6,7 +6,6 @@ use tauri::{AppHandle, State};
 
 use crate::core::session_manager::SessionManager;
 use crate::core::status_server::StatusServer;
-use crate::core::windows_process::TokioCommandExt;
 use crate::core::{BackendCapabilities, BackendType, ProcessManager, PtyError, SessionProcessTree};
 
 /// Backend information returned to the frontend.
