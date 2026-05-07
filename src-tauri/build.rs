@@ -13,6 +13,20 @@ fn main() {
     // tauri_build validates that externalBin paths exist.
     copy_mcp_server_binary();
 
+    // Tauri's build helper does not always invalidate the compiled Windows
+    // resource (resource.lib) when only icon files change, so the embedded
+    // exe icon can go stale after an icon swap. Track the bundle icons
+    // explicitly so Cargo reruns this build script and rebuilds the resource.
+    for icon in [
+        "icons/icon.ico",
+        "icons/icon.icns",
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+    ] {
+        println!("cargo:rerun-if-changed={}", icon);
+    }
+
     // Standard Tauri build (validates externalBin paths)
     tauri_build::build();
 }
