@@ -22,7 +22,7 @@ export function ToastStack() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-20 right-4 z-50 flex w-80 flex-col gap-2">
+    <div className="pointer-events-none fixed bottom-20 right-4 z-50 flex max-h-[calc(100vh-7rem)] w-80 flex-col gap-2 overflow-y-auto pr-1">
       {toasts.map((t) => {
         const Icon = t.title.toLowerCase().includes("pr ") || t.title.toLowerCase().startsWith("pr")
           ? GitPullRequest

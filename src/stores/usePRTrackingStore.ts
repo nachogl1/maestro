@@ -61,7 +61,8 @@ async function pollOnce(repoPath: string): Promise<void> {
     const prev = snapshots.get(key);
 
     if (!isBaseline) {
-      // New PR appeared (no prior snapshot, currently open)
+      // PR-movement toasts are persistent (durationMs=0) — a burst of merges
+      // shouldn't disappear while the user is away. They dismiss with the X.
       if (!prev && pr.state === "OPEN") {
         pushToast(
           {
@@ -70,7 +71,7 @@ async function pollOnce(repoPath: string): Promise<void> {
             body: `${pr.author.login}: ${truncate(pr.title, 80)}`,
             href: pr.url,
           },
-          8000
+          0
         );
       }
       // OPEN → MERGED transition
@@ -82,7 +83,7 @@ async function pollOnce(repoPath: string): Promise<void> {
             body: truncate(pr.title, 100),
             href: pr.url,
           },
-          8000
+          0
         );
       }
     }
