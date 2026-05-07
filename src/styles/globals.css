@@ -9,18 +9,18 @@
     /* macOS overlay title bar: left inset for native traffic lights; set from JS when needed */
     --mac-title-bar-inset: 0;
 
-    /* Dark theme — warm gunmetal, matching macOS Maestro */
-    --maestro-bg: 26 26 30; /* #1a1a1e — warm charcoal */
-    --maestro-surface: 30 31 35; /* #1e1f23 — sidebar/topbar */
-    --maestro-card: 37 37 41; /* #252529 — card/section bg */
-    --maestro-border: 51 51 56; /* #333338 — borders */
-    --maestro-text: 229 229 233; /* #e5e5e9 — primary text */
-    --maestro-muted: 140 140 150; /* #8c8c96 — secondary text */
+    /* Dark theme — deep obsidian, matching the Maestro samurai-mask icon */
+    --maestro-bg: 13 13 16; /* #0d0d10 — near-black */
+    --maestro-surface: 18 19 22; /* #121316 — sidebar/topbar */
+    --maestro-card: 24 25 28; /* #18191c — card/section bg */
+    --maestro-border: 38 38 44; /* #26262c — borders */
+    --maestro-text: 232 232 236; /* #e8e8ec — primary text */
+    --maestro-muted: 130 130 142; /* #82828e — secondary text */
 
     /* Accent & status — constant across themes */
-    --maestro-accent: 88 166 255; /* #58a6ff */
+    --maestro-accent: 255 26 58; /* #ff1a3a — neon red, brand */
     --maestro-green: 63 185 80; /* #3fb950 */
-    --maestro-red: 248 81 73; /* #f85149 */
+    --maestro-red: 220 38 38; /* #dc2626 — error red, distinct from neon accent */
     --maestro-orange: 245 158 11; /* #f59e0b — matches design spec */
     --maestro-yellow: 234 179 8; /* #eab308 — needs input */
     --maestro-purple: 188 140 255; /* #bc8cff */
@@ -28,11 +28,11 @@
 
   /* Light theme — clean neutral with strong contrast */
   [data-theme="light"] {
-    --maestro-bg: 241 241 243; /* #f1f1f3 */
-    --maestro-surface: 252 252 253; /* #fcfcfd */
-    --maestro-card: 245 245 247; /* #f5f5f7 */
-    --maestro-border: 210 210 216; /* #d2d2d8 */
-    --maestro-text: 20 20 24; /* #141418 */
+    --maestro-bg: 246 246 248; /* #f6f6f8 */
+    --maestro-surface: 255 255 255; /* #ffffff */
+    --maestro-card: 250 250 252; /* #fafafc */
+    --maestro-border: 220 220 226; /* #dcdce2 */
+    --maestro-text: 16 16 20; /* #101014 */
     --maestro-muted: 100 100 112; /* #646470 */
   }
 
@@ -319,37 +319,37 @@
 .terminal-cell-starting {
   border-color: rgb(var(--maestro-orange));
   box-shadow:
-    0 0 12px rgba(245, 158, 11, 0.4),
-    0 0 24px rgba(245, 158, 11, 0.2);
+    0 0 12px rgb(var(--maestro-orange) / 0.4),
+    0 0 24px rgb(var(--maestro-orange) / 0.2);
   animation: starting-glow 2s ease-in-out infinite;
 }
 
 .terminal-cell-working {
   border-color: rgb(var(--maestro-accent));
   box-shadow:
-    0 0 12px rgba(88, 166, 255, 0.4),
-    0 0 24px rgba(88, 166, 255, 0.2);
+    0 0 12px rgb(var(--maestro-accent) / 0.4),
+    0 0 24px rgb(var(--maestro-accent) / 0.2);
 }
 
 .terminal-cell-needs-input {
   border-color: rgb(var(--maestro-yellow));
   box-shadow:
-    0 0 12px rgba(234, 179, 8, 0.5),
-    0 0 24px rgba(234, 179, 8, 0.25);
+    0 0 12px rgb(var(--maestro-yellow) / 0.5),
+    0 0 24px rgb(var(--maestro-yellow) / 0.25);
 }
 
 .terminal-cell-done {
   border-color: rgb(var(--maestro-green));
   box-shadow:
-    0 0 10px rgba(63, 185, 80, 0.3),
-    0 0 20px rgba(63, 185, 80, 0.15);
+    0 0 10px rgb(var(--maestro-green) / 0.3),
+    0 0 20px rgb(var(--maestro-green) / 0.15);
 }
 
 .terminal-cell-error {
   border-color: rgb(var(--maestro-red));
   box-shadow:
-    0 0 12px rgba(248, 81, 73, 0.5),
-    0 0 24px rgba(248, 81, 73, 0.25);
+    0 0 12px rgb(var(--maestro-red) / 0.5),
+    0 0 24px rgb(var(--maestro-red) / 0.25);
 }
 
 .terminal-cell-focused {
@@ -382,13 +382,13 @@
   0%,
   100% {
     box-shadow:
-      0 0 12px rgba(245, 158, 11, 0.4),
-      0 0 24px rgba(245, 158, 11, 0.2);
+      0 0 12px rgb(var(--maestro-orange) / 0.4),
+      0 0 24px rgb(var(--maestro-orange) / 0.2);
   }
   50% {
     box-shadow:
-      0 0 20px rgba(245, 158, 11, 0.6),
-      0 0 40px rgba(245, 158, 11, 0.3);
+      0 0 20px rgb(var(--maestro-orange) / 0.6),
+      0 0 40px rgb(var(--maestro-orange) / 0.3);
   }
 }
 

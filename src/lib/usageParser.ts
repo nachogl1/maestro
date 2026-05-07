@@ -12,8 +12,18 @@ export interface UsageData {
   needsAuth: boolean;
 }
 
-export async function getClaudeUsage(): Promise<UsageData> {
-  return invoke<UsageData>("get_claude_usage");
+export async function getClaudeUsage(forceRefresh = false): Promise<UsageData> {
+  return invoke<UsageData>("get_claude_usage", { forceRefresh });
+}
+
+export interface ClaudeAccount {
+  loggedIn: boolean;
+  email: string | null;
+  subscriptionType: string | null;
+}
+
+export async function getClaudeAccount(): Promise<ClaudeAccount> {
+  return invoke<ClaudeAccount>("get_claude_account");
 }
 
 /** Format a reset time as a short relative string (e.g. "2h 30m", "3d"). */

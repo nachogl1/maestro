@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { RefreshCw } from "lucide-react";
 import { useUsageStore } from "@/stores/useUsageStore";
 import { formatResetTime } from "@/lib/usageParser";
 
@@ -10,7 +11,7 @@ function barColor(percent: number): string {
 }
 
 export function UsageBar() {
-  const { usage, needsAuth, error, startPolling } = useUsageStore();
+  const { usage, needsAuth, error, isLoading, fetchUsage, startPolling } = useUsageStore();
 
   useEffect(() => startPolling(), [startPolling]);
 
@@ -26,8 +27,11 @@ export function UsageBar() {
 
   if (error || !usage) {
     return (
-      <div className="text-[10px] text-maestro-muted/50" title={error ?? undefined}>
-        Usage unavailable
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-maestro-muted/50" title={error ?? undefined}>
+          Usage unavailable
+        </span>
+        <RefreshButton onClick={() => fetchUsage(true)} spinning={isLoading} />
       </div>
     );
   }
@@ -36,14 +40,32 @@ export function UsageBar() {
   const sessionReset = formatResetTime(usage.sessionResetsAt);
 
   return (
-    <div className="flex items-center gap-3" title={
+    <div className="flex items-center gap-2" title={
       `Session: ${Math.round(usage.sessionPercent)}% (resets ${sessionReset || "—"})\n` +
       `Weekly: ${Math.round(usage.weeklyPercent)}% (resets ${weeklyReset || "—"})\n` +
       `Weekly Opus: ${Math.round(usage.weeklyOpusPercent)}%`
     }>
-      <Bar label="Session" percent={usage.sessionPercent} reset={sessionReset} />
-      <Bar label="Week" percent={usage.weeklyPercent} reset={weeklyReset} />
+      <RefreshButton onClick={() => fetchUsage(true)} spinning={isLoading} />
+      <div className="flex items-center gap-3">
+        <Bar label="Session" percent={usage.sessionPercent} reset={sessionReset} />
+        <Bar label="Week" percent={usage.weeklyPercent} reset={weeklyReset} />
+      </div>
     </div>
+  );
+}
+
+function RefreshButton({ onClick, spinning }: { onClick: () => void; spinning: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={spinning}
+      title="Refresh usage data"
+      aria-label="Refresh usage data"
+      className="flex h-6 w-6 items-center justify-center rounded-md text-maestro-muted/60 transition-colors hover:bg-maestro-border/40 hover:text-maestro-text disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      <RefreshCw size={12} className={spinning ? "animate-spin" : ""} />
+    </button>
   );
 }
 

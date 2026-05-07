@@ -23,7 +23,7 @@ export function SessionPodGrid({ sessionCount = 6 }: SessionPodGridProps) {
               <BrainCircuit
                 size={28}
                 strokeWidth={1.5}
-                className="motion-safe:animate-breathe motion-reduce:animate-none text-violet-500 drop-shadow-[0_0_6px_rgba(139,92,246,0.6)]"
+                className="motion-safe:animate-breathe motion-reduce:animate-none text-maestro-accent drop-shadow-[0_0_6px_rgb(var(--maestro-accent)/0.6)]"
               />
               <span className="text-lg font-semibold text-maestro-text">#{n}</span>
             </div>

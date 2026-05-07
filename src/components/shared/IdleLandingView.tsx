@@ -11,7 +11,7 @@ export function IdleLandingView({ onAdd }: IdleLandingViewProps) {
       <BrainCircuit
         size={56}
         strokeWidth={1.2}
-        className="motion-safe:animate-breathe motion-reduce:animate-none text-violet-500 drop-shadow-[0_0_10px_rgba(139,92,246,0.6)]"
+        className="motion-safe:animate-breathe motion-reduce:animate-none text-maestro-accent drop-shadow-[0_0_10px_rgb(var(--maestro-accent)/0.6)]"
       />
 
       {/* Prompt text */}

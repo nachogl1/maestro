@@ -11,7 +11,7 @@ interface UsageState {
   lastFetch: Date | null;
   needsAuth: boolean;
 
-  fetchUsage: () => Promise<void>;
+  fetchUsage: (force?: boolean) => Promise<void>;
   /** Subscribe to polling. Ref-counted across mounts; returns cleanup. */
   startPolling: () => () => void;
 }
@@ -27,11 +27,11 @@ export const useUsageStore = create<UsageState>()((set, get) => ({
   lastFetch: null,
   needsAuth: false,
 
-  fetchUsage: async () => {
+  fetchUsage: async (force = false) => {
     if (get().isLoading) return;
     set({ isLoading: true, error: null });
     try {
-      const usage = await getClaudeUsage();
+      const usage = await getClaudeUsage(force);
       const needsAuth = usage.needsAuth;
       const hasError = !needsAuth && !!usage.errorMessage;
       if (hasError) consecutiveErrors++;

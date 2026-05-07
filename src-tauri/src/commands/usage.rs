@@ -209,14 +209,18 @@ async fn get_access_token() -> Result<String, String> {
 /// Fetch usage data from Anthropic's OAuth API.
 /// Responses are cached for 30 seconds to prevent 429 errors when multiple
 /// components or re-renders trigger concurrent requests.
+/// Pass `force_refresh: true` to bypass the cache (e.g. user-initiated refresh).
 #[tauri::command]
-pub async fn get_claude_usage() -> Result<UsageData, String> {
-    // Return cached response if still fresh
-    if let Ok(guard) = USAGE_CACHE.lock() {
-        if let Some((fetched_at, ttl, ref data)) = *guard {
-            if fetched_at.elapsed().as_secs() < ttl {
-                log::debug!("Returning cached usage data (age: {}s, ttl: {}s)", fetched_at.elapsed().as_secs(), ttl);
-                return Ok(data.clone());
+pub async fn get_claude_usage(force_refresh: Option<bool>) -> Result<UsageData, String> {
+    let force = force_refresh.unwrap_or(false);
+    // Return cached response if still fresh (skip when force=true)
+    if !force {
+        if let Ok(guard) = USAGE_CACHE.lock() {
+            if let Some((fetched_at, ttl, ref data)) = *guard {
+                if fetched_at.elapsed().as_secs() < ttl {
+                    log::debug!("Returning cached usage data (age: {}s, ttl: {}s)", fetched_at.elapsed().as_secs(), ttl);
+                    return Ok(data.clone());
+                }
             }
         }
     }
@@ -337,4 +341,87 @@ async fn fetch_usage_from_api() -> Result<UsageData, String> {
     );
 
     Ok(usage)
+}
+
+/// Account info reported by `claude auth status`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAccount {
+    pub logged_in: bool,
+    pub email: Option<String>,
+    pub subscription_type: Option<String>,
+}
+
+/// Subset of `claude auth status` JSON we care about.
+#[derive(Debug, Deserialize)]
+struct ClaudeAuthStatus {
+    #[serde(default)]
+    logged_in: bool,
+    email: Option<String>,
+    subscription_type: Option<String>,
+}
+
+/// Cached account info — `claude auth status` shells out, so cache for the lifetime
+/// of the app (account doesn't change without an explicit re-login).
+static ACCOUNT_CACHE: Mutex<Option<ClaudeAccount>> = Mutex::new(None);
+
+/// Returns the email of the currently logged-in Claude Code account, by parsing
+/// `claude auth status --json`. Returns `logged_in: false` if the CLI isn't on
+/// PATH or reports a logged-out state.
+#[tauri::command]
+pub async fn get_claude_account() -> Result<ClaudeAccount, String> {
+    if let Ok(guard) = ACCOUNT_CACHE.lock() {
+        if let Some(ref data) = *guard {
+            return Ok(data.clone());
+        }
+    }
+
+    let output = {
+        #[cfg(windows)]
+        {
+            use crate::core::windows_process::TokioCommandExt;
+            tokio::process::Command::new("claude")
+                .args(["auth", "status"])
+                .hide_console_window()
+                .output()
+                .await
+        }
+        #[cfg(not(windows))]
+        {
+            tokio::process::Command::new("claude")
+                .args(["auth", "status"])
+                .output()
+                .await
+        }
+    };
+
+    let account = match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            match serde_json::from_str::<ClaudeAuthStatus>(stdout.trim()) {
+                Ok(parsed) => ClaudeAccount {
+                    logged_in: parsed.logged_in,
+                    email: parsed.email,
+                    subscription_type: parsed.subscription_type,
+                },
+                Err(e) => {
+                    log::debug!("Failed to parse claude auth status JSON: {}", e);
+                    ClaudeAccount::default()
+                }
+            }
+        }
+        Ok(out) => {
+            log::debug!("claude auth status exited with {:?}", out.status);
+            ClaudeAccount::default()
+        }
+        Err(e) => {
+            log::debug!("Could not run `claude auth status`: {}", e);
+            ClaudeAccount::default()
+        }
+    };
+
+    if let Ok(mut guard) = ACCOUNT_CACHE.lock() {
+        *guard = Some(account.clone());
+    }
+    Ok(account)
 }

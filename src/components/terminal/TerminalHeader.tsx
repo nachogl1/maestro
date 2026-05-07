@@ -237,7 +237,7 @@ export const TerminalHeader = memo(function TerminalHeader({
           <ProviderIcon
             size={adaptive.providerIconSize}
             strokeWidth={1.5}
-            className="text-violet-500 drop-shadow-[0_0_4px_rgba(139,92,246,0.5)]"
+            className="text-maestro-accent drop-shadow-[0_0_4px_rgb(var(--maestro-accent)/0.5)]"
           />
           {!isZoomed && terminalCount <= 4 && <ChevronDown size={9} className="text-maestro-muted/60" />}
         </button>

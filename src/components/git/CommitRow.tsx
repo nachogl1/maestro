@@ -101,7 +101,7 @@ export function CommitRow({ node, isSelected, isHead, refs, onClick, graphAreaWi
               cx={GRAPH_PADDING + column * RAIL_WIDTH + RAIL_WIDTH / 2}
               cy={ROW_HEIGHT / 2}
               r={DOT_RADIUS - 2}
-              fill="#1a1a1a"
+              fill="rgb(var(--maestro-bg))"
             />
           )}
         </svg>

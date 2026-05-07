@@ -1,5 +1,7 @@
-import { FolderOpen, Play, Plus } from "lucide-react";
+import { useEffect } from "react";
+import { FolderOpen, Play, Plus, UserRound } from "lucide-react";
 import { UsageBar } from "./UsageBar";
+import { useClaudeAccountStore } from "@/stores/useClaudeAccountStore";
 
 interface BottomBarProps {
   /** Whether in the grid view (project selected and launched) */
@@ -25,9 +27,24 @@ export function BottomBar({
 }: BottomBarProps) {
   const hasUnlaunchedSlots = slotCount > launchedCount;
   const unlaunchedCount = slotCount - launchedCount;
+  const account = useClaudeAccountStore((s) => s.account);
+  const fetchAccount = useClaudeAccountStore((s) => s.fetch);
+
+  useEffect(() => {
+    fetchAccount();
+  }, [fetchAccount]);
 
   return (
     <div className="no-select relative flex h-11 items-center justify-center gap-3 px-4">
+      {account?.email && (
+        <div
+          className="absolute left-4 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-[11px] text-maestro-muted/70 max-w-[40%] truncate"
+          title={`Claude Code account: ${account.email}`}
+        >
+          <UserRound size={12} className="shrink-0" />
+          <span className="truncate">{account.email}</span>
+        </div>
+      )}
       <button
         type="button"
         onClick={inGridView ? undefined : onSelectDirectory}

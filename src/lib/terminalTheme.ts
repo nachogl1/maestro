@@ -50,11 +50,11 @@ export interface TerminalTheme {
  * Maestro's default terminal theme (GitHub Dark inspired).
  */
 export const DEFAULT_THEME: TerminalTheme = {
-  background: "#0d1117",
-  foreground: "#e6edf3",
-  cursor: "#58a6ff",
-  cursorAccent: "#0d1117",
-  selectionBackground: "#264f78",
+  background: "#0d0d10",
+  foreground: "#e8e8ec",
+  cursor: "#ff1a3a",
+  cursorAccent: "#0d0d10",
+  selectionBackground: "#5a0f1c",
   selectionForeground: undefined,
 
   // Standard colors
