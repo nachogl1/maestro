@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { GitFork, RefreshCw, X } from "lucide-react";
+import { GitFork, RefreshCw, StickyNote, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getDeduplicatedCurrentBranch } from "@/lib/git";
 import { killSession } from "@/lib/terminal";
@@ -14,6 +14,7 @@ import { useTerminalSettingsStore } from "./stores/useTerminalSettingsStore";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useUpdateStore } from "./stores/useUpdateStore";
+import { useNotesStore } from "./stores/useNotesStore";
 import { usePRTrackingStore } from "./stores/usePRTrackingStore";
 import { useAgentStatusToastStore } from "./stores/useAgentStatusToastStore";
 import { initActivityListener, stopActivityListener } from "./stores/useActivityStore";
@@ -23,7 +24,10 @@ import { GitGraphPanel } from "./components/git/GitGraphPanel";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
 import { BottomBar } from "./components/shared/BottomBar";
 import { FDADialog } from "./components/shared/FDADialog";
-import { MultiProjectView, type MultiProjectViewHandle } from "./components/shared/MultiProjectView";
+import {
+  MultiProjectView,
+  type MultiProjectViewHandle,
+} from "./components/shared/MultiProjectView";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { isMac } from "@/lib/platform";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
@@ -59,7 +63,9 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [gitPanelTab, setGitPanelTab] = useState<GitPanelTab>("status");
-  const [sessionCounts, setSessionCounts] = useState<Map<string, { slotCount: number; launchedCount: number }>>(new Map());
+  const [sessionCounts, setSessionCounts] = useState<
+    Map<string, { slotCount: number; launchedCount: number }>
+  >(new Map());
   const [isStoppingAll, setIsStoppingAll] = useState(false);
   const [currentBranch, setCurrentBranch] = useState<string | undefined>(undefined);
   const [theme, setTheme] = useState<Theme>(() => {
@@ -153,6 +159,16 @@ function App() {
     return startAgentStatusToasts();
   }, [startAgentStatusToasts]);
 
+  // Reconcile notepad tabs against the live session list. The store subscribes
+  // to `sessions` so this fires whenever a session is added/renamed/removed.
+  // Reconciliation is cheap (no-op if nothing changed) and the result is
+  // persisted by the store's `persist` middleware.
+  const sessions = useSessionStore((s) => s.sessions);
+  const syncNotesWithSessions = useNotesStore((s) => s.syncWithSessions);
+  useEffect(() => {
+    syncNotesWithSessions(sessions.map((s) => ({ id: s.id, name: s.name ?? null })));
+  }, [sessions, syncNotesWithSessions]);
+
   // Listen for CLI-initiated project open events (from `maestro /path`).
   //
   // Two triggers:
@@ -170,7 +186,9 @@ function App() {
         console.error("cli-open-project failed:", err);
         return;
       }
-      getCurrentWindow().setFocus().catch(() => {});
+      getCurrentWindow()
+        .setFocus()
+        .catch(() => {});
     };
 
     // Drain any path captured before we mounted.
@@ -364,16 +382,18 @@ function App() {
     }
   };
 
-  const handleSessionCountChange = useCallback((tabId: string, slotCount: number, launchedCount: number) => {
-    setSessionCounts((prev) => {
-      const next = new Map(prev);
-      next.set(tabId, { slotCount, launchedCount });
-      return next;
-    });
-  }, []);
+  const handleSessionCountChange = useCallback(
+    (tabId: string, slotCount: number, launchedCount: number) => {
+      setSessionCounts((prev) => {
+        const next = new Map(prev);
+        next.set(tabId, { slotCount, launchedCount });
+        return next;
+      });
+    },
+    [],
+  );
 
-  const macTitleBarInset =
-    isMac() && macTitleBarPadding ? `${MAC_TITLE_BAR_INSET_PX}px` : "0";
+  const macTitleBarInset = isMac() && macTitleBarPadding ? `${MAC_TITLE_BAR_INSET_PX}px` : "0";
 
   return (
     <div
@@ -430,20 +450,32 @@ function App() {
                 className="flex h-10 shrink-0 items-center border-l border-maestro-border px-3 gap-2 bg-maestro-bg"
                 style={{ width: 560 }}
               >
-                <GitFork size={14} className="text-maestro-muted" />
-                {activeTab?.workspaceType === "multi-repo" && activeTab.selectedRepoPath && (
-                  <span className="text-xs font-medium text-maestro-accent">
-                    {activeTab.repositories.find((r) => r.path === activeTab.selectedRepoPath)?.name}
-                  </span>
-                )}
-                <span className="text-sm font-medium text-maestro-text">Commits</span>
-                {commits.length > 0 && (
-                  <span className="rounded-full bg-maestro-accent/15 px-1.5 py-px text-[10px] font-medium text-maestro-accent">
-                    {commits.length}
-                  </span>
+                {gitPanelTab === "notes" ? (
+                  <>
+                    <StickyNote size={14} className="text-maestro-muted" />
+                    <span className="text-sm font-medium text-maestro-text">Notes</span>
+                  </>
+                ) : (
+                  <>
+                    <GitFork size={14} className="text-maestro-muted" />
+                    {activeTab?.workspaceType === "multi-repo" && activeTab.selectedRepoPath && (
+                      <span className="text-xs font-medium text-maestro-accent">
+                        {
+                          activeTab.repositories.find((r) => r.path === activeTab.selectedRepoPath)
+                            ?.name
+                        }
+                      </span>
+                    )}
+                    <span className="text-sm font-medium text-maestro-text">Commits</span>
+                    {commits.length > 0 && (
+                      <span className="rounded-full bg-maestro-accent/15 px-1.5 py-px text-[10px] font-medium text-maestro-accent">
+                        {commits.length}
+                      </span>
+                    )}
+                  </>
                 )}
                 <div className="flex-1" />
-                {activeRepoPath && (
+                {gitPanelTab !== "notes" && activeRepoPath && (
                   <button
                     type="button"
                     onClick={handleRefreshGit}
