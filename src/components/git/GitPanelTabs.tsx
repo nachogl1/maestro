@@ -4,21 +4,13 @@ import {
   CircleDot,
   MessageCircle,
   FileWarning,
+  StickyNote,
 } from "lucide-react";
 
-export type GitPanelTab =
-  | "commits"
-  | "status"
-  | "prs"
-  | "issues"
-  | "discussions";
+export type GitPanelTab = "commits" | "status" | "prs" | "issues" | "discussions" | "notes";
 
 /** Tabs that require GitHub auth + the `gh` CLI. */
-export const GITHUB_TABS: ReadonlyArray<GitPanelTab> = [
-  "prs",
-  "issues",
-  "discussions",
-];
+export const GITHUB_TABS: ReadonlyArray<GitPanelTab> = ["prs", "issues", "discussions"];
 
 interface GitPanelTabsProps {
   activeTab: GitPanelTab;
@@ -37,14 +29,12 @@ const TABS: Array<{
   { id: "prs", label: "PRs", icon: GitPullRequest },
   { id: "issues", label: "Issues", icon: CircleDot },
   { id: "discussions", label: "Discussions", icon: MessageCircle },
+  // Notes is a per-app (not per-repo) view but lives alongside these tabs so
+  // users get a single right-pane home. It doesn't need a repo to function.
+  { id: "notes", label: "Notes", icon: StickyNote },
 ];
 
-export function GitPanelTabs({
-  activeTab,
-  onTabChange,
-  prCount,
-  issueCount,
-}: GitPanelTabsProps) {
+export function GitPanelTabs({ activeTab, onTabChange, prCount, issueCount }: GitPanelTabsProps) {
   return (
     <div className="flex shrink-0 border-b border-maestro-border">
       {TABS.map((tab) => {

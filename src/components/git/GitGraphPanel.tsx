@@ -94,7 +94,7 @@ export function GitGraphPanel({
       setSelectedPRNumber(prNumber);
       await fetchPullRequestDetail(repoPath, prNumber);
     },
-    [repoPath, fetchPullRequestDetail]
+    [repoPath, fetchPullRequestDetail],
   );
 
   // Handle closing PR detail panel
@@ -110,7 +110,7 @@ export function GitGraphPanel({
       setSelectedIssueNumber(issueNumber);
       await fetchIssueDetail(repoPath, issueNumber);
     },
-    [repoPath, fetchIssueDetail]
+    [repoPath, fetchIssueDetail],
   );
 
   // Handle closing Issue detail panel
@@ -126,7 +126,7 @@ export function GitGraphPanel({
       setSelectedDiscussionNumber(discussionNumber);
       await fetchDiscussionDetail(repoPath, discussionNumber);
     },
-    [repoPath, fetchDiscussionDetail]
+    [repoPath, fetchDiscussionDetail],
   );
 
   // Handle closing Discussion detail panel
@@ -136,17 +136,20 @@ export function GitGraphPanel({
   }, [clearSelectedDiscussion]);
 
   // Handle tab change
-  const handleTabChange = useCallback((tab: GitPanelTab) => {
-    onActiveTabChange(tab);
-    // Clear selections when switching tabs
-    setSelectedNode(null);
-    setSelectedPRNumber(null);
-    setSelectedIssueNumber(null);
-    setSelectedDiscussionNumber(null);
-    clearSelectedPR();
-    clearSelectedIssue();
-    clearSelectedDiscussion();
-  }, [onActiveTabChange, clearSelectedPR, clearSelectedIssue, clearSelectedDiscussion]);
+  const handleTabChange = useCallback(
+    (tab: GitPanelTab) => {
+      onActiveTabChange(tab);
+      // Clear selections when switching tabs
+      setSelectedNode(null);
+      setSelectedPRNumber(null);
+      setSelectedIssueNumber(null);
+      setSelectedDiscussionNumber(null);
+      clearSelectedPR();
+      clearSelectedIssue();
+      clearSelectedDiscussion();
+    },
+    [onActiveTabChange, clearSelectedPR, clearSelectedIssue, clearSelectedDiscussion],
+  );
 
   // Handle commit selection
   const handleSelectCommit = useCallback((node: GraphNode) => {
@@ -173,7 +176,7 @@ export function GitGraphPanel({
         window.alert(`Failed to create branch: ${err}`);
       }
     },
-    [repoPath, createBranch]
+    [repoPath, createBranch],
   );
 
   // Handle checkout commit
@@ -181,9 +184,7 @@ export function GitGraphPanel({
     async (commitHash: string) => {
       if (!repoPath) return;
 
-      const confirm = window.confirm(
-        "This will checkout a detached HEAD. Continue?"
-      );
+      const confirm = window.confirm("This will checkout a detached HEAD. Continue?");
       if (!confirm) return;
 
       try {
@@ -193,7 +194,7 @@ export function GitGraphPanel({
         window.alert(`Failed to checkout: ${err}`);
       }
     },
-    [repoPath, checkoutBranch]
+    [repoPath, checkoutBranch],
   );
 
   const hasRepo = Boolean(repoPath);
@@ -210,8 +211,7 @@ export function GitGraphPanel({
     (authError != null && ghMissingPattern.test(authError)) ||
     (prsError != null && ghMissingPattern.test(prsError));
   const isGhError = GITHUB_TABS.includes(activeTab) && hasGhError;
-  const showAuthPrompt =
-    GITHUB_TABS.includes(activeTab) && authStatus && !authStatus.logged_in;
+  const showAuthPrompt = GITHUB_TABS.includes(activeTab) && authStatus && !authStatus.logged_in;
 
   // Show PR detail panel full width when a PR is selected
   const showPRDetail = selectedPRNumber && repoPath && activeTab === "prs";
@@ -232,41 +232,46 @@ export function GitGraphPanel({
       {/* PR Detail panel - full width when shown */}
       {showPRDetail ? (
         <div className="flex min-w-[320px] flex-1 flex-col">
-          <PullRequestDetailPanel
-            repoPath={repoPath}
-            onClose={handleClosePRDetail}
-          />
+          <PullRequestDetailPanel repoPath={repoPath} onClose={handleClosePRDetail} />
         </div>
       ) : showIssueDetail ? (
         <div className="flex min-w-[320px] flex-1 flex-col">
-          <IssueDetailPanel
-            repoPath={repoPath}
-            onClose={handleCloseIssueDetail}
-          />
+          <IssueDetailPanel repoPath={repoPath} onClose={handleCloseIssueDetail} />
         </div>
       ) : showDiscussionDetail ? (
         <div className="flex min-w-[320px] flex-1 flex-col">
-          <DiscussionDetailPanel
-            repoPath={repoPath}
-            onClose={handleCloseDiscussionDetail}
-          />
+          <DiscussionDetailPanel repoPath={repoPath} onClose={handleCloseDiscussionDetail} />
         </div>
       ) : (
         <>
           {/* Main panel */}
           <div className="flex min-w-[320px] flex-1 flex-col">
-            {/* Tabs - only show when repo is available */}
-            {hasRepo && (
-              <GitPanelTabs
-                activeTab={activeTab}
-                onTabChange={handleTabChange}
-                prCount={openPRCount}
-                issueCount={openIssueCount}
-              />
-            )}
+            {/* Tabs — shown whenever the panel is open. The Notes tab works
+                without a repo, so we no longer gate the tab strip on hasRepo. */}
+            <GitPanelTabs
+              activeTab={activeTab}
+              onTabChange={handleTabChange}
+              prCount={openPRCount}
+              issueCount={openIssueCount}
+            />
 
             {/* Content */}
-            {!hasRepo ? (
+            {activeTab === "notes" ? (
+              // Notes work independently of any repository / GitHub auth.
+              <GitPanelContent
+                activeTab={activeTab}
+                repoPath={repoPath ?? ""}
+                currentBranch={currentBranch}
+                onSelectCommit={handleSelectCommit}
+                selectedCommitHash={selectedNode?.commit.hash ?? null}
+                onSelectPR={handleSelectPR}
+                selectedPRNumber={selectedPRNumber}
+                onSelectIssue={handleSelectIssue}
+                selectedIssueNumber={selectedIssueNumber}
+                onSelectDiscussion={handleSelectDiscussion}
+                selectedDiscussionNumber={selectedDiscussionNumber}
+              />
+            ) : !hasRepo ? (
               // Empty state - no repo
               <div className="flex flex-1 items-center justify-center px-4 text-center">
                 <div className="flex flex-col items-center gap-3">
@@ -284,14 +289,8 @@ export function GitGraphPanel({
               // gh CLI not installed
               <div className="flex flex-1 items-center justify-center px-4 text-center">
                 <div className="flex flex-col items-center gap-3">
-                  <Terminal
-                    size={32}
-                    className="text-maestro-muted/30"
-                    strokeWidth={1}
-                  />
-                  <p className="text-xs text-maestro-muted/60">
-                    GitHub CLI not found
-                  </p>
+                  <Terminal size={32} className="text-maestro-muted/30" strokeWidth={1} />
+                  <p className="text-xs text-maestro-muted/60">GitHub CLI not found</p>
                   <a
                     href="https://cli.github.com"
                     target="_blank"
@@ -306,16 +305,11 @@ export function GitGraphPanel({
               // Not authenticated
               <div className="flex flex-1 items-center justify-center px-4 text-center">
                 <div className="flex flex-col items-center gap-3">
-                  <AlertCircle
-                    size={32}
-                    className="text-maestro-yellow/50"
-                    strokeWidth={1}
-                  />
-                  <p className="text-xs text-maestro-muted/60">
-                    Not authenticated with GitHub
-                  </p>
+                  <AlertCircle size={32} className="text-maestro-yellow/50" strokeWidth={1} />
+                  <p className="text-xs text-maestro-muted/60">Not authenticated with GitHub</p>
                   <p className="text-[10px] text-maestro-muted/40">
-                    Run <code className="rounded bg-maestro-card px-1 py-0.5">gh auth login</code> in your terminal
+                    Run <code className="rounded bg-maestro-card px-1 py-0.5">gh auth login</code>{" "}
+                    in your terminal
                   </p>
                   <button
                     type="button"
@@ -323,9 +317,7 @@ export function GitGraphPanel({
                     disabled={isCheckingAuth}
                     className="mt-1 flex items-center gap-1.5 rounded bg-maestro-card px-3 py-1 text-xs text-maestro-muted/60 transition-colors hover:bg-maestro-border hover:text-maestro-text disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isCheckingAuth && (
-                      <Loader2 size={12} className="animate-spin" />
-                    )}
+                    {isCheckingAuth && <Loader2 size={12} className="animate-spin" />}
                     {isCheckingAuth ? "Checking..." : "Retry"}
                   </button>
                 </div>
