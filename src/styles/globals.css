@@ -407,8 +407,27 @@
   }
 }
 
+/* Staggered dot pulse used by <ThinkingIndicator />. Three dots share the
+   same keyframe but get different animation-delays so they ripple. */
+@keyframes thinking-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+
 .animate-breathe {
   animation: subtle-breathe 3s ease-in-out infinite;
+}
+
+.animate-thinking-dot {
+  animation: thinking-dot 1.2s ease-in-out infinite;
 }
 
 .animate-glow {
@@ -424,6 +443,7 @@
   .animate-breathe,
   .animate-glow,
   .animate-pod-wake,
+  .animate-thinking-dot,
   .terminal-cell-starting {
     animation: none;
     transform: none;
@@ -458,7 +478,8 @@
 
 /* Disable breathe/glow animations */
 .platform-linux .animate-breathe,
-.platform-linux .animate-glow {
+.platform-linux .animate-glow,
+.platform-linux .animate-thinking-dot {
   animation: none;
 }
 

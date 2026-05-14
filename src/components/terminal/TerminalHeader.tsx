@@ -14,6 +14,7 @@ import {
   ZoomIn,
 } from "lucide-react";
 import { OpenCodeIcon, type IconComponent } from "@/components/icons";
+import { ThinkingIndicator } from "./ThinkingIndicator";
 
 export type SessionStatus = "idle" | "starting" | "working" | "needs-input" | "done" | "error" | "timeout";
 
@@ -386,8 +387,9 @@ export const TerminalHeader = memo(function TerminalHeader({
           </div>
         )}
 
-        {/* Status indicator */}
-        <span className={`font-medium ${STATUS_COLOR[status]} ${adaptive.statusSize}`}>
+        {/* Status indicator + thinking pulse */}
+        <span className={`flex items-center gap-1 font-medium ${STATUS_COLOR[status]} ${adaptive.statusSize}`}>
+          <ThinkingIndicator sessionId={sessionId} size={terminalCount <= 4 ? 4 : 3} />
           {STATUS_LABEL[status]}
         </span>
 

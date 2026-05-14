@@ -46,6 +46,7 @@ import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
 import { createLeaf, splitLeaf, removeLeaf, updateRatio, collectSlotIds, findSiblingSlotId, buildGridTree, swapSlots, type TreeNode, type SplitDirection } from "./splitTree";
 import { TerminalView } from "./TerminalView";
+import { ThinkingIndicator } from "./ThinkingIndicator";
 
 /** Stable empty arrays to avoid infinite re-render loops in Zustand selectors. */
 const EMPTY_MCP_SERVERS: McpServerConfig[] = [];
@@ -1390,8 +1391,11 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                   >
                     <span className="font-mono text-[10px] opacity-60">{index + 1}</span>
                     <span className="max-w-[180px] truncate">{label}</span>
-                    {hasSession && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-maestro-green" />
+                    {hasSession && slot.sessionId !== null && (
+                      <>
+                        <ThinkingIndicator sessionId={slot.sessionId} size={3} />
+                        <span className="h-1.5 w-1.5 rounded-full bg-maestro-green" />
+                      </>
                     )}
                   </button>
                 );
