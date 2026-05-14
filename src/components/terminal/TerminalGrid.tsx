@@ -332,6 +332,11 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         return orderedSlotIds[(idx - 1 + orderedSlotIds.length) % orderedSlotIds.length];
       });
     }, [orderedSlotIds]),
+    // When a terminal is zoomed the tab strip is the navigation UI, so
+    // Alt+Left/Right should cycle tabs (handled in capture phase so xterm
+    // doesn't swallow them). In normal split-pane mode Alt+Arrow stays as
+    // xterm's word-movement.
+    isZoomed: zoomedSlotId !== null,
     enabled: isActive,
   });
 

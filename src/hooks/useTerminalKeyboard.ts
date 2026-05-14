@@ -23,6 +23,13 @@ interface UseTerminalKeyboardOptions {
   onZoomedNext?: () => void;
   /** Callback when Alt+ArrowLeft is pressed (used to cycle zoomed terminal backward) */
   onZoomedPrev?: () => void;
+  /**
+   * Whether a single terminal is currently zoomed/maximized. When true, the
+   * tab strip is visible and Alt+Left/Alt+Right cycle between tabs. When
+   * false, those keys must fall through to xterm.js so Alt+Arrow keeps its
+   * default meaning (word-movement inside the terminal).
+   */
+  isZoomed?: boolean;
   /** Whether this keyboard handler is active (e.g. only for the active project tab) */
   enabled?: boolean;
 }
@@ -54,29 +61,47 @@ export function useTerminalKeyboard({
   onToggleZoomFocused,
   onZoomedNext,
   onZoomedPrev,
+  isZoomed = false,
   enabled = true,
 }: UseTerminalKeyboardOptions): void {
+  // Alt+Arrow needs CAPTURE-phase handling. xterm.js's key handler calls
+  // event.stopPropagation() for keys it processes, which kills any later
+  // bubble-phase listener — so a bubble-phase Alt+Arrow shortcut never fires
+  // while a terminal has focus. By registering in capture we win the race
+  // before xterm sees the event.
+  //
+  // We only consume Alt+Arrow when a terminal is currently zoomed, so users
+  // still get default Alt+Arrow word-movement inside the terminal in normal
+  // split-pane mode.
+  useEffect(() => {
+    if (!enabled || !isZoomed) return;
+
+    function handleAltArrowCapture(event: KeyboardEvent) {
+      if (event.type !== "keydown") return;
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key === "ArrowRight" && onZoomedNext) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onZoomedNext();
+        return;
+      }
+      if (event.key === "ArrowLeft" && onZoomedPrev) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onZoomedPrev();
+        return;
+      }
+    }
+
+    window.addEventListener("keydown", handleAltArrowCapture, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handleAltArrowCapture, { capture: true });
+  }, [enabled, isZoomed, onZoomedNext, onZoomedPrev]);
+
   useEffect(() => {
     if (!enabled) return;
 
     function handleKeyDown(event: KeyboardEvent) {
-      // Alt+ArrowLeft / Alt+ArrowRight: cycle zoomed terminal.
-      // Handled before the modifierKey gate so it works without Cmd/Ctrl.
-      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        if (event.key === "ArrowRight" && onZoomedNext) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          onZoomedNext();
-          return;
-        }
-        if (event.key === "ArrowLeft" && onZoomedPrev) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          onZoomedPrev();
-          return;
-        }
-      }
-
       const modifierKey = isMac() ? event.metaKey : event.ctrlKey;
       if (!modifierKey) return;
 
@@ -160,5 +185,5 @@ export function useTerminalKeyboard({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [enabled, terminalCount, focusedIndex, onFocusTerminal, onCycleNext, onCyclePrevious, onSplitVertical, onSplitHorizontal, onClosePane, onToggleZoomFocused, onZoomedNext, onZoomedPrev]);
+  }, [enabled, terminalCount, focusedIndex, onFocusTerminal, onCycleNext, onCyclePrevious, onSplitVertical, onSplitHorizontal, onClosePane, onToggleZoomFocused]);
 }
