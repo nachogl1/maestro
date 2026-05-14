@@ -15,6 +15,7 @@ import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useUpdateStore } from "./stores/useUpdateStore";
 import { usePRTrackingStore } from "./stores/usePRTrackingStore";
+import { useAgentStatusToastStore } from "./stores/useAgentStatusToastStore";
 import { initActivityListener, stopActivityListener } from "./stores/useActivityStore";
 import { UpdateNotification } from "./components/update/UpdateNotification";
 import { ToastStack } from "./components/shared/ToastStack";
@@ -143,6 +144,14 @@ function App() {
       stopActivityListener();
     };
   }, []);
+
+  // Watch session-status transitions and emit long-running / done-thinking toasts.
+  // Piggy-backs on useSessionStore (which already listens to `session-status-changed`),
+  // so no extra Tauri subscription is created.
+  const startAgentStatusToasts = useAgentStatusToastStore((s) => s.start);
+  useEffect(() => {
+    return startAgentStatusToasts();
+  }, [startAgentStatusToasts]);
 
   // Listen for CLI-initiated project open events (from `maestro /path`).
   //
