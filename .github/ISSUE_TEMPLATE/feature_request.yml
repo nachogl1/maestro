@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose new functionality or an enhancement
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: agent_posture
+    attributes:
+      label: Agent posture
+      description: Can an autonomous coding agent take this end-to-end, or does it need a human decision first?
+      options:
+        - "🤖 Agent-ready — scope clear; an agent can proceed"
+        - "🧑 Needs human decision — see the field below"
+    validations:
+      required: true
+  - type: textarea
+    id: human_decision
+    attributes:
+      label: Human decision needed (if any)
+      description: What ambiguity, design choice, or product question must a human resolve before work starts?
+    validations:
+      required: false
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? Who is it for?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: Concrete, checkable conditions for "done".
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - frontend
+        - rust
+        - mcp-server
+        - ci
+        - docs
+    validations:
+      required: false
