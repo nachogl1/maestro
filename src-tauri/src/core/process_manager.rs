@@ -639,27 +639,6 @@ impl ProcessManager {
         Ok(())
     }
 
-    /// Returns the child PID for a specific session.
-    ///
-    /// Returns None if the session doesn't exist.
-    pub fn get_session_pid(&self, session_id: u32) -> Option<i32> {
-        self.inner
-            .sessions
-            .get(&session_id)
-            .map(|session| session.child_pid)
-    }
-
-    /// Returns all active session IDs with their root PIDs.
-    ///
-    /// Used for building process trees for all sessions at once.
-    pub fn get_all_session_pids(&self) -> Vec<(u32, i32)> {
-        self.inner
-            .sessions
-            .iter()
-            .map(|entry| (*entry.key(), entry.value().child_pid))
-            .collect()
-    }
-
     /// Kills all active PTY sessions.
     ///
     /// This is used to clean up orphaned sessions when the frontend reloads.

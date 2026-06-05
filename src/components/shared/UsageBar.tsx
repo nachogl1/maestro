@@ -70,7 +70,8 @@ function RefreshButton({ onClick, spinning }: { onClick: () => void; spinning: b
 }
 
 function Bar({ label, percent, reset }: { label: string; percent: number; reset: string }) {
-  const pct = Math.min(100, Math.max(0, percent));
+  // Guard NaN/Infinity (Math.min/max alone propagate NaN) → default to 0, then clamp to [0,100].
+  const pct = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
   return (
     <div className="flex flex-col gap-1 w-28">
       <div className="flex items-baseline justify-between gap-1 text-[11px] leading-none">

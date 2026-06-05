@@ -4,7 +4,6 @@ import {
   useGitHubStore,
   type PrFilterState,
 } from "../../../stores/useGitHubStore";
-import { usePRTrackingStore } from "../../../stores/usePRTrackingStore";
 
 const STATE_FILTERS: Array<{ value: PrFilterState; label: string }> = [
   { value: "open", label: "Open" },
@@ -26,7 +25,6 @@ interface PullRequestFiltersProps {
 
 export function PullRequestFilters({ repoPath }: PullRequestFiltersProps) {
   const { prFilter, prSearch, fetchPullRequests } = useGitHubStore();
-  const { tracking, toggleTracking } = usePRTrackingStore();
   const [searchInput, setSearchInput] = useState(prSearch);
 
   // Keep input in sync if store search changes externally (e.g. on tab switch).
@@ -86,29 +84,6 @@ export function PullRequestFilters({ repoPath }: PullRequestFiltersProps) {
             {f.label}
           </button>
         ))}
-        <div className="ml-auto">
-          <button
-            type="button"
-            onClick={toggleTracking}
-            title={
-              tracking
-                ? "Tracking PR movements (click to disable)"
-                : "Track PR movements (toast on new/merged PRs)"
-            }
-            className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-colors ${
-              tracking
-                ? "bg-maestro-green/15 text-maestro-green"
-                : "bg-maestro-card text-maestro-muted hover:text-maestro-text"
-            }`}
-          >
-            <span
-              className={`inline-block h-1.5 w-1.5 rounded-full ${
-                tracking ? "bg-maestro-green animate-pulse" : "bg-maestro-muted/50"
-              }`}
-            />
-            {tracking ? "Tracking" : "Track"}
-          </button>
-        </div>
       </div>
 
       <div className="flex items-center gap-1 flex-wrap">

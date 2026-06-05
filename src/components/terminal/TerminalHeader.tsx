@@ -1,12 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   BrainCircuit,
-  CheckCircle,
   ChevronDown,
   Code2,
   Expand,
   GitBranch,
-  GitCompareArrows,
   Minimize,
   Sparkles,
   Terminal,
@@ -14,7 +12,6 @@ import {
   ZoomIn,
 } from "lucide-react";
 import { OpenCodeIcon, type IconComponent } from "@/components/icons";
-import { ThinkingIndicator } from "./ThinkingIndicator";
 
 export type SessionStatus = "idle" | "starting" | "working" | "needs-input" | "done" | "error" | "timeout";
 
@@ -24,10 +21,6 @@ interface TerminalHeaderProps {
   sessionId: number;
   sessionName?: string | null;
   provider?: AIProvider;
-  status?: SessionStatus;
-  mcpCount?: number;
-  activeCount?: number;
-  statusMessage?: string;
   branchName?: string;
   showLaunch?: boolean;
   isWorktree?: boolean;
@@ -41,26 +34,6 @@ interface TerminalHeaderProps {
   onSetZoomLevel?: (level: number) => void;
 }
 
-const STATUS_COLOR: Record<SessionStatus, string> = {
-  idle: "text-maestro-muted",
-  starting: "text-maestro-orange",
-  working: "text-maestro-accent",
-  "needs-input": "text-maestro-yellow",
-  done: "text-maestro-green",
-  error: "text-maestro-red",
-  timeout: "text-maestro-red",
-};
-
-const STATUS_LABEL: Record<SessionStatus, string> = {
-  idle: "Idle",
-  starting: "Starting...",
-  working: "Working",
-  "needs-input": "Needs Input",
-  done: "Done",
-  error: "Error",
-  timeout: "Startup Timeout",
-};
-
 const providerConfig: Record<AIProvider, { icon: IconComponent; label: string }> = {
   claude: { icon: BrainCircuit, label: "Claude Code" },
   gemini: { icon: Sparkles, label: "Gemini CLI" },
@@ -73,10 +46,6 @@ export const TerminalHeader = memo(function TerminalHeader({
   sessionId,
   sessionName,
   provider = "claude",
-  status = "idle",
-  mcpCount = 1,
-  activeCount = 0,
-  statusMessage,
   branchName = "...",
   showLaunch = false,
   isWorktree = false,
@@ -266,44 +235,6 @@ export const TerminalHeader = memo(function TerminalHeader({
             {sessionName || defaultLabel}
           </span>
         )}
-
-        {/* MCP badge */}
-        {(adaptive.showAllElements || terminalCount <= 6) && (
-          <span className={`shrink-0 rounded-full bg-maestro-accent/15 font-medium text-maestro-accent ${adaptive.badgePadding} ${adaptive.badgeSize}`}>
-            {mcpCount} MCP
-          </span>
-        )}
-
-        {/* Blue checkmark (verified/ready) - hide in very compact mode */}
-        {adaptive.showAllElements && (
-          <CheckCircle size={terminalCount <= 4 ? 11 : 9} className="shrink-0 text-maestro-accent" />
-        )}
-
-        {/* Active count - hide in compact mode */}
-        {adaptive.showAllElements && (
-          <span
-            className={`shrink-0 rounded-full font-medium ${adaptive.badgePadding} ${adaptive.badgeSize} ${
-              activeCount > 0
-                ? "bg-maestro-orange/15 text-maestro-orange"
-                : "bg-maestro-muted/10 text-maestro-muted"
-            }`}
-          >
-            {activeCount} Active
-          </span>
-        )}
-
-        {/* Git arrows + change count - hide in compact mode */}
-        {adaptive.showAllElements && (
-          <span className="flex shrink-0 items-center gap-0.5 text-maestro-muted">
-            <GitCompareArrows size={terminalCount <= 4 ? 11 : 9} />
-            <span className={adaptive.badgeSize}>0</span>
-          </span>
-        )}
-
-        {/* Truncated status message - hide in very compact mode */}
-        {statusMessage && (adaptive.showAllElements || terminalCount <= 6) && (
-          <span className={`min-w-0 truncate text-maestro-muted ${adaptive.badgeSize}`}>{statusMessage}</span>
-        )}
       </div>
 
       {/* Right cluster */}
@@ -386,12 +317,6 @@ export const TerminalHeader = memo(function TerminalHeader({
             )}
           </div>
         )}
-
-        {/* Status indicator + thinking pulse */}
-        <span className={`flex items-center gap-1 font-medium ${STATUS_COLOR[status]} ${adaptive.statusSize}`}>
-          <ThinkingIndicator sessionId={sessionId} size={terminalCount <= 4 ? 4 : 3} />
-          {STATUS_LABEL[status]}
-        </span>
 
         {/* Close button */}
         <button

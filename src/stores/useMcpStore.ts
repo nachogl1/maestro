@@ -84,11 +84,6 @@ interface McpState {
   ) => Promise<void>;
 
   /**
-   * Gets the count of enabled MCP servers for a session.
-   */
-  getEnabledCount: (projectPath: string, sessionId: number) => number;
-
-  /**
    * Gets the total count of available MCP servers for a project.
    */
   getTotalCount: (projectPath: string) => number;
@@ -244,10 +239,6 @@ export const useMcpStore = create<McpState>()((set, get) => ({
       : [...currentEnabled, serverName];
 
     await get().setSessionEnabled(projectPath, sessionId, newEnabled);
-  },
-
-  getEnabledCount: (projectPath: string, sessionId: number) => {
-    return get().getSessionEnabled(projectPath, sessionId).length;
   },
 
   getTotalCount: (projectPath: string) => {
