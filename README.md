@@ -1,6 +1,5 @@
 # Maestro
 
-<!-- Add your banner: save as assets/banner.png -->
 ![Claude Maestro Banner](assets/banner.png)
 
 **Orchestrate multiple AI coding assistants in parallel**
@@ -19,6 +18,7 @@ A cross-platform desktop application that lets you run 1-6 Claude Code (or other
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/3tQyFUYPVP)
 
 [![Docs](https://img.shields.io/badge/docs-website-blue)](https://its-maestro-baby.github.io/maestro/)
+[![CI](https://github.com/nachogl1/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/nachogl1/maestro/actions/workflows/ci.yml)
 
 **Star us on GitHub — your support motivates us a lot!**
 
@@ -189,7 +189,7 @@ A cross-platform desktop application that lets you run 1-6 Claude Code (or other
 
 ### Requirements
 
-- **Node.js** 18+ and npm
+- **Node.js** 20+ and npm
 - **Rust** 1.78+ (for building from source) - install via [rustup](https://rustup.rs/), not system packages
 - **Git** (for worktree operations)
 
@@ -237,7 +237,7 @@ sudo pacman -S base-devel pkgconf openssl \
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/its-maestro-baby/maestro.git
+   git clone https://github.com/nachogl1/maestro.git
    cd maestro
    ```
 
