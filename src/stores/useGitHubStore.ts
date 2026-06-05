@@ -219,6 +219,15 @@ interface GitHubState {
   reset: () => void;
 }
 
+/**
+ * Default search filters applied on first load (and on `reset()`).
+ * The quick chips in PullRequestFilters/IssueFilters derive their active
+ * state from these clauses, so "Mine"/"Assigned" light up automatically.
+ * Clearing the search box still shows everything.
+ */
+const DEFAULT_PR_SEARCH = "author:@me";
+const DEFAULT_ISSUE_SEARCH = "assignee:@me";
+
 export const useGitHubStore = create<GitHubState>()((set, get) => ({
   // Initial state
   authStatus: null,
@@ -226,14 +235,14 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
   authError: null,
   pullRequests: [],
   prFilter: "open",
-  prSearch: "",
+  prSearch: DEFAULT_PR_SEARCH,
   isPRsLoading: false,
   prsError: null,
   selectedPR: null,
   isLoadingPRDetail: false,
   issues: [],
   issueFilter: "open",
-  issueSearch: "",
+  issueSearch: DEFAULT_ISSUE_SEARCH,
   isIssuesLoading: false,
   issuesError: null,
   discussions: [],
@@ -501,14 +510,14 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
       authError: null,
       pullRequests: [],
       prFilter: "open",
-      prSearch: "",
+      prSearch: DEFAULT_PR_SEARCH,
       isPRsLoading: false,
       prsError: null,
       selectedPR: null,
       isLoadingPRDetail: false,
       issues: [],
       issueFilter: "open",
-      issueSearch: "",
+      issueSearch: DEFAULT_ISSUE_SEARCH,
       isIssuesLoading: false,
       issuesError: null,
       discussions: [],
