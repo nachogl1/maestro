@@ -9,6 +9,7 @@ pub mod marketplace;
 pub mod mcp;
 pub mod plugin;
 pub mod session;
+pub mod system;
 pub mod terminal;
 pub mod update;
 pub mod usage;

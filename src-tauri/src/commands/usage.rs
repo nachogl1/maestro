@@ -305,10 +305,23 @@ async fn fetch_usage_from_api() -> Result<UsageData, String> {
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    // Helper to convert utilization to percentage
-    // API returns 0-1 (multiply by 100) or already 0-100 (use as-is)
-    let to_percent = |val: f64| {
-        if val > 1.0 { val } else { val * 100.0 }
+    // Helper to convert utilization to percentage.
+    //
+    // Fix: the old heuristic `if val > 1.0 { val } else { val * 100.0 }` misfired
+    // for the session (`five_hour`) window. Anthropic's API reports `utilization`
+    // already on a 0-100 scale (matching the weekly window, which renders
+    // correctly). When session usage was low — e.g. exactly `1.0` (1%) or any
+    // value in (0, 1] — the `> 1.0` check failed and the value got multiplied by
+    // 100, pinning the bar to 100%. It also passed NaN/Infinity straight through
+    // (NaN > 1.0 is false → NaN * 100 = NaN → garbage / 100% in the UI).
+    //
+    // All windows share the same 0-100 scale, so we treat the value uniformly,
+    // guard non-finite inputs (→ 0, never 100), and clamp to [0, 100].
+    let to_percent = |val: f64| -> f64 {
+        if !val.is_finite() {
+            return 0.0;
+        }
+        val.clamp(0.0, 100.0)
     };
 
     let usage = UsageData {

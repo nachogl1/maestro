@@ -148,6 +148,7 @@ pub fn run() {
         .manage(ProcessManager::new())
         .manage(SessionManager::new())
         .manage(WorktreeManager::new())
+        .manage(commands::system::SystemMetricsState::new())
         .setup(|app| {
             // Generate a unique instance ID for this Maestro run
             // This prevents status pollution between different app instances
@@ -235,9 +236,6 @@ pub fn run() {
             commands::terminal::kill_all_sessions,
             commands::terminal::check_cli_available,
             commands::terminal::get_backend_info,
-            commands::terminal::get_session_process_tree,
-            commands::terminal::get_all_process_trees,
-            commands::terminal::kill_process,
             commands::terminal::save_pasted_image,
             // Git commands
             commands::git::git_branches,
@@ -248,6 +246,8 @@ pub fn run() {
             commands::git::git_worktree_remove,
             commands::git::git_worktree_status,
             commands::git::git_worktrees_status,
+            commands::git::git_discard_file,
+            commands::git::git_remove_file,
             commands::git::git_commit_log,
             commands::git::git_checkout_branch,
             commands::git::git_create_branch,
@@ -352,6 +352,8 @@ pub fn run() {
             // Usage tracking commands
             commands::usage::get_claude_usage,
             commands::usage::get_claude_account,
+            // System metrics
+            commands::system::get_system_metrics,
             // GitHub commands
             commands::github::github_auth_status,
             commands::github::github_list_prs,

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { FolderOpen, Play, Plus, UserRound } from "lucide-react";
 import { UsageBar } from "./UsageBar";
+import { SystemMetrics } from "./SystemMetrics";
 import { useClaudeAccountStore } from "@/stores/useClaudeAccountStore";
 
 interface BottomBarProps {
@@ -87,7 +88,8 @@ export function BottomBar({
         </button>
       )}
 
-      <div className="absolute right-4 top-1/2 -translate-y-1/2">
+      <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-4">
+        <SystemMetrics />
         <UsageBar />
       </div>
     </div>

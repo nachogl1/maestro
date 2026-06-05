@@ -14,11 +14,8 @@ import { useTerminalSettingsStore } from "./stores/useTerminalSettingsStore";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useUpdateStore } from "./stores/useUpdateStore";
-import { usePRTrackingStore } from "./stores/usePRTrackingStore";
-import { useAgentStatusToastStore } from "./stores/useAgentStatusToastStore";
 import { initActivityListener, stopActivityListener } from "./stores/useActivityStore";
 import { UpdateNotification } from "./components/update/UpdateNotification";
-import { ToastStack } from "./components/shared/ToastStack";
 import { GitGraphPanel } from "./components/git/GitGraphPanel";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
 import { BottomBar } from "./components/shared/BottomBar";
@@ -150,14 +147,6 @@ function App() {
     };
   }, []);
 
-  // Watch session-status transitions and emit long-running / done-thinking toasts.
-  // Piggy-backs on useSessionStore (which already listens to `session-status-changed`),
-  // so no extra Tauri subscription is created.
-  const startAgentStatusToasts = useAgentStatusToastStore((s) => s.start);
-  useEffect(() => {
-    return startAgentStatusToasts();
-  }, [startAgentStatusToasts]);
-
   // Listen for CLI-initiated project open events (from `maestro /path`).
   //
   // Two triggers:
@@ -232,14 +221,6 @@ function App() {
   // Git store for commit count and refresh
   const { commits, fetchCommits } = useGitStore();
   const [isRefreshingGit, setIsRefreshingGit] = useState(false);
-
-  // Background PR tracking — toast on new/merged PRs when enabled.
-  const prTracking = usePRTrackingStore((s) => s.tracking);
-  const startPRTracking = usePRTrackingStore((s) => s.start);
-  useEffect(() => {
-    if (!prTracking || !activeRepoPath) return;
-    return startPRTracking(activeRepoPath);
-  }, [prTracking, activeRepoPath, startPRTracking]);
 
   const handleRefreshGit = useCallback(async () => {
     if (!activeRepoPath) return;
@@ -422,15 +403,9 @@ function App() {
             <TopBar
               sidebarOpen={sidebarOpen}
               onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-              branchName={currentBranch}
-              repoPath={activeRepoPath}
               onToggleGitPanel={() => setGitPanelOpen((prev) => !prev)}
               gitPanelOpen={gitPanelOpen}
               hideWindowControls
-              onBranchChanged={(newBranch) => {
-                setCurrentBranch(newBranch);
-                multiProjectRef.current?.refreshBranchesInActiveProject();
-              }}
             />
 
             {/* Git panel header - inline at same level as TopBar */}
@@ -543,7 +518,6 @@ function App() {
       )}
 
       <UpdateNotification />
-      <ToastStack />
     </div>
   );
 }

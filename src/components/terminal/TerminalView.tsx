@@ -15,7 +15,6 @@ import { useSessionBranch } from "@/hooks/useSessionBranch";
 import { buildFontFamily, waitForFont } from "@/lib/fonts";
 import { getBackendInfo, killSession, onPtyOutput, resizePty, savePastedImage, signalTerminalReady, writeStdin, type BackendInfo } from "@/lib/terminal";
 import { DEFAULT_THEME, LIGHT_THEME, toXtermTheme } from "@/lib/terminalTheme";
-import { useMcpStore } from "@/stores/useMcpStore";
 import { type AiMode, type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 import { useShallow } from "zustand/react/shallow";
@@ -167,12 +166,6 @@ export const TerminalView = memo(function TerminalView({
   const getEffectiveFontFamily = useTerminalSettingsStore((s) => s.getEffectiveFontFamily);
   const getEffectiveFontSize = useTerminalSettingsStore((s) => s.getEffectiveFontSize);
   const setZoomLevel = useTerminalSettingsStore((s) => s.setZoomLevel);
-
-  // Get MCP count for this session (primitive values are stable, no reference issues)
-  const mcpCount = useMcpStore((s) => {
-    if (!projectPath) return 0;
-    return s.getEnabledCount(projectPath, sessionId);
-  });
 
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -754,10 +747,7 @@ export const TerminalView = memo(function TerminalView({
       <TerminalHeader
         sessionId={sessionId}
         provider={effectiveProvider}
-        status={effectiveStatus}
         sessionName={sessionData?.name}
-        statusMessage={sessionData?.statusMessage || sessionData?.needsInputPrompt}
-        mcpCount={mcpCount}
         branchName={effectiveBranch}
         isWorktree={isWorktree}
         onKill={handleKill}

@@ -13,10 +13,14 @@ import {
   Loader2,
   Package,
   RefreshCw,
+  Trash2,
+  Undo2,
 } from "lucide-react";
 import {
+  discardFile,
   getWorktreesStatus,
   isWorktreeAtRisk,
+  removeFile,
   type FileStatusEntry,
   type FileStatusKind,
   type WorktreeStatus,
@@ -96,14 +100,20 @@ export function WorktreeStatusList({ repoPath }: WorktreeStatusListProps) {
       </div>
       <div className="flex-1 overflow-y-auto">
         {worktrees.map((wt) => (
-          <WorktreeCard key={wt.path} status={wt} />
+          <WorktreeCard key={wt.path} status={wt} onChanged={refresh} />
         ))}
       </div>
     </div>
   );
 }
 
-function WorktreeCard({ status }: { status: WorktreeStatus }) {
+function WorktreeCard({
+  status,
+  onChanged,
+}: {
+  status: WorktreeStatus;
+  onChanged: () => void;
+}) {
   const [expanded, setExpanded] = useState(true);
   const atRisk = isWorktreeAtRisk(status);
   const branchLabel = status.branch ?? "(detached)";
@@ -189,7 +199,12 @@ function WorktreeCard({ status }: { status: WorktreeStatus }) {
             color="text-maestro-green"
           >
             {status.staged.map((f) => (
-              <FileRow key={`s-${f.path}`} entry={f} />
+              <FileRow
+                key={`s-${f.path}`}
+                entry={f}
+                worktreePath={status.path}
+                onChanged={onChanged}
+              />
             ))}
           </Section>
 
@@ -200,7 +215,12 @@ function WorktreeCard({ status }: { status: WorktreeStatus }) {
             color="text-maestro-yellow"
           >
             {status.unstaged.map((f) => (
-              <FileRow key={`u-${f.path}`} entry={f} />
+              <FileRow
+                key={`u-${f.path}`}
+                entry={f}
+                worktreePath={status.path}
+                onChanged={onChanged}
+              />
             ))}
           </Section>
 
@@ -211,12 +231,12 @@ function WorktreeCard({ status }: { status: WorktreeStatus }) {
             color="text-maestro-muted"
           >
             {status.untracked.map((path) => (
-              <li
+              <UntrackedRow
                 key={`n-${path}`}
-                className="truncate px-1 py-0.5 text-[11px] text-maestro-text"
-              >
-                {path}
-              </li>
+                path={path}
+                worktreePath={status.path}
+                onChanged={onChanged}
+              />
             ))}
           </Section>
 
@@ -315,19 +335,148 @@ function Section({
   );
 }
 
-function FileRow({ entry }: { entry: FileStatusEntry }) {
+function FileRow({
+  entry,
+  worktreePath,
+  onChanged,
+}: {
+  entry: FileStatusEntry;
+  worktreePath: string;
+  onChanged: () => void;
+}) {
   return (
-    <li className="flex items-center gap-2 px-1 py-0.5 text-[11px]">
+    <li className="group flex items-center gap-2 px-1 py-0.5 text-[11px]">
       <span
         title={entry.status}
         className={`w-3 shrink-0 text-center font-mono text-[10px] ${statusColor(entry.status)}`}
       >
         {statusLetter(entry.status)}
       </span>
-      <span className="truncate text-maestro-text">
+      <span className="min-w-0 flex-1 truncate text-maestro-text">
         {entry.old_path ? `${entry.old_path} → ${entry.path}` : entry.path}
       </span>
+      <RowAction
+        label="Restore"
+        title="Discard changes — restore this file to its last commit"
+        icon={<Undo2 size={11} />}
+        run={() => discardFile(worktreePath, entry.path, entry.old_path)}
+        onDone={onChanged}
+      />
     </li>
+  );
+}
+
+function UntrackedRow({
+  path,
+  worktreePath,
+  onChanged,
+}: {
+  path: string;
+  worktreePath: string;
+  onChanged: () => void;
+}) {
+  return (
+    <li className="group flex items-center gap-2 px-1 py-0.5 text-[11px]">
+      <span className="min-w-0 flex-1 truncate text-maestro-text">{path}</span>
+      <RowAction
+        label="Remove"
+        title="Delete this untracked file from disk"
+        icon={<Trash2 size={11} />}
+        danger
+        run={() => removeFile(worktreePath, path)}
+        onDone={onChanged}
+      />
+    </li>
+  );
+}
+
+/**
+ * Hover-revealed action button for a file row. Clicking expands an inline
+ * confirm (Confirm / Cancel) since the underlying git operation is
+ * irreversible. Shows a spinner while running and surfaces any error.
+ */
+function RowAction({
+  label,
+  title,
+  icon,
+  run,
+  onDone,
+  danger = false,
+}: {
+  label: string;
+  title: string;
+  icon: React.ReactNode;
+  run: () => Promise<void>;
+  onDone: () => void;
+  danger?: boolean;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const execute = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+      setConfirming(false);
+      onDone();
+    } catch (e) {
+      setError(typeof e === "string" ? e : (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (confirming) {
+    return (
+      <span className="flex shrink-0 items-center gap-1">
+        {error && (
+          <span title={error} className="flex items-center text-maestro-red">
+            <AlertTriangle size={11} />
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={execute}
+          disabled={busy}
+          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium disabled:opacity-50 ${
+            danger
+              ? "bg-maestro-red/20 text-maestro-red hover:bg-maestro-red/30"
+              : "bg-maestro-accent/20 text-maestro-accent hover:bg-maestro-accent/30"
+          }`}
+          title={`${label} — this cannot be undone`}
+        >
+          {busy ? <Loader2 size={10} className="animate-spin" /> : "Confirm"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setConfirming(false);
+            setError(null);
+          }}
+          disabled={busy}
+          className="rounded px-1.5 py-0.5 text-[10px] text-maestro-muted hover:bg-maestro-card disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      title={title}
+      aria-label={label}
+      className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-maestro-muted opacity-0 transition-opacity hover:bg-maestro-card focus:opacity-100 group-hover:opacity-100 ${
+        danger ? "hover:text-maestro-red" : "hover:text-maestro-text"
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   );
 }
 

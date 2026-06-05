@@ -987,6 +987,58 @@ impl Git {
         })
     }
 
+    /// Discards a single tracked file's changes, returning it to its committed
+    /// (HEAD) state. Handles the three cases the status UI can surface:
+    ///
+    /// * **Modified / deleted** files present in HEAD — restored from HEAD in
+    ///   both the index and the worktree (`git restore --staged --worktree`).
+    /// * **Newly added** files that have no committed version — unstaged and
+    ///   removed from disk (`git reset` + `git clean`), since "the committed
+    ///   state" is non-existence.
+    /// * **Renamed** files — when `old_path` is given and exists in HEAD, the
+    ///   original path is restored too so the rename is fully undone.
+    ///
+    /// This is irreversible: uncommitted edits to the file are lost.
+    pub async fn discard_file(
+        &self,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> Result<(), GitError> {
+        // Restore the rename source (if any) so the original file comes back.
+        if let Some(old) = old_path {
+            if self.path_in_head(old).await {
+                self.run(&["restore", "--staged", "--worktree", "--", old])
+                    .await?;
+            }
+        }
+
+        if self.path_in_head(path).await {
+            self.run(&["restore", "--staged", "--worktree", "--", path])
+                .await?;
+        } else {
+            // No committed version: unstage (no-op if not staged) then delete
+            // the untracked remnant from the worktree.
+            let _ = self.run(&["reset", "-q", "--", path]).await;
+            self.run(&["clean", "-f", "-d", "--", path]).await?;
+        }
+        Ok(())
+    }
+
+    /// Deletes an untracked file or directory from the worktree via
+    /// `git clean -f -d`. Tracked files are left untouched by `git clean`, so
+    /// this only ever removes files git does not know about. Irreversible.
+    pub async fn remove_file(&self, path: &str) -> Result<(), GitError> {
+        self.run(&["clean", "-f", "-d", "--", path]).await?;
+        Ok(())
+    }
+
+    /// Returns `true` if `path` exists in the HEAD commit tree.
+    async fn path_in_head(&self, path: &str) -> bool {
+        self.run(&["cat-file", "-e", &format!("HEAD:{path}")])
+            .await
+            .is_ok()
+    }
+
     /// Aggregates [`worktree_status`] across every worktree returned by
     /// `git worktree list`. Worktrees that fail to inspect are skipped with a
     /// log warning so a single bad worktree does not poison the response.
@@ -1390,6 +1442,108 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.untracked, vec!["new.txt".to_string()]);
+    }
+
+    // ── discard_file / remove_file ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_discard_file_reverts_unstaged_modification() {
+        let (dir, git) = create_test_repo().await;
+        tokio::fs::write(dir.path().join("README.md"), "# Mutated")
+            .await
+            .unwrap();
+
+        git.discard_file("README.md", None).await.unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("README.md"))
+            .await
+            .unwrap();
+        assert_eq!(content, "# Test");
+        let (staged, unstaged, untracked) = git.working_tree_changes().await.unwrap();
+        assert!(staged.is_empty() && unstaged.is_empty() && untracked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discard_file_reverts_staged_modification() {
+        let (dir, git) = create_test_repo().await;
+        tokio::fs::write(dir.path().join("README.md"), "# Staged change")
+            .await
+            .unwrap();
+        git.run(&["add", "README.md"]).await.unwrap();
+
+        git.discard_file("README.md", None).await.unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("README.md"))
+            .await
+            .unwrap();
+        assert_eq!(content, "# Test");
+        let (staged, unstaged, _) = git.working_tree_changes().await.unwrap();
+        assert!(staged.is_empty() && unstaged.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discard_file_restores_deleted_file() {
+        let (dir, git) = create_test_repo().await;
+        tokio::fs::remove_file(dir.path().join("README.md"))
+            .await
+            .unwrap();
+
+        git.discard_file("README.md", None).await.unwrap();
+
+        assert!(dir.path().join("README.md").exists());
+    }
+
+    #[tokio::test]
+    async fn test_discard_file_removes_staged_new_file() {
+        let (dir, git) = create_test_repo().await;
+        tokio::fs::write(dir.path().join("brand-new.txt"), "data")
+            .await
+            .unwrap();
+        git.run(&["add", "brand-new.txt"]).await.unwrap();
+
+        // No committed version exists, so discarding deletes it entirely.
+        git.discard_file("brand-new.txt", None).await.unwrap();
+
+        assert!(!dir.path().join("brand-new.txt").exists());
+        let (staged, _, _) = git.working_tree_changes().await.unwrap();
+        assert!(staged.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discard_file_undoes_rename() {
+        let (dir, git) = create_test_repo().await;
+        git.run(&["mv", "README.md", "RENAMED.md"]).await.unwrap();
+
+        git.discard_file("RENAMED.md", Some("README.md"))
+            .await
+            .unwrap();
+
+        assert!(dir.path().join("README.md").exists());
+        assert!(!dir.path().join("RENAMED.md").exists());
+        let (staged, unstaged, untracked) = git.working_tree_changes().await.unwrap();
+        assert!(staged.is_empty() && unstaged.is_empty() && untracked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_file_deletes_untracked_file() {
+        let (dir, git) = create_test_repo().await;
+        tokio::fs::write(dir.path().join("junk.txt"), "trash")
+            .await
+            .unwrap();
+
+        git.remove_file("junk.txt").await.unwrap();
+
+        assert!(!dir.path().join("junk.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_remove_file_leaves_tracked_file_untouched() {
+        let (dir, git) = create_test_repo().await;
+
+        // git clean never removes tracked files.
+        git.remove_file("README.md").await.unwrap();
+
+        assert!(dir.path().join("README.md").exists());
     }
 
     #[tokio::test]

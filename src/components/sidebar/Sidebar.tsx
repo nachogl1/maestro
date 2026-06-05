@@ -1,16 +1,12 @@
 import {
-  Activity,
   AlertTriangle,
-  Bot,
   Check,
   ChevronDown,
   ChevronRight,
-  Cpu,
   Edit2,
   FileText,
   FolderGit2,
   GitBranch,
-  Globe,
   Home,
   Info,
   Keyboard,
@@ -22,26 +18,21 @@ import {
   RefreshCw,
   Server,
   Settings,
-  Skull,
-  Sparkles,
   Square,
   Store,
   Sun,
   Trash2,
   User,
   Wrench,
-  X,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { type AiMode, type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
 import { useGitStore } from "@/stores/useGitStore";
 import { useMcpStore } from "@/stores/useMcpStore";
 import { usePluginStore } from "@/stores/usePluginStore";
 import { useMarketplaceStore } from "@/stores/useMarketplaceStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { useProcessTreeStore, type ProcessInfo, type SessionProcessTree } from "@/stores/useProcessTreeStore";
 import { GitSettingsModal, RemoteStatusIndicator } from "@/components/git";
 import { MarketplaceBrowser } from "@/components/marketplace";
 import { McpServerEditorModal } from "@/components/mcp";
@@ -51,10 +42,6 @@ import { TerminalSettingsModal } from "@/components/terminal/TerminalSettingsMod
 import { MaestroSettingsModal, ShortcutsModal } from "@/components/settings";
 import type { McpCustomServer, McpServerConfig } from "@/lib/mcp";
 import { listContextDocs, readContextDoc, type ContextDoc } from "@/lib/claudemd";
-import { samePath } from "@/lib/path";
-import { OpenCodeIcon } from "@/components/icons/OpenCodeIcon";
-
-type SidebarTab = "config" | "processes";
 
 interface SidebarProps {
   collapsed?: boolean;
@@ -80,26 +67,6 @@ const SIDEBAR_MAX_WIDTH = 320;
 const SIDEBAR_COLLAPSE_THRESHOLD = 60;
 const SIDEBAR_WIDTH_STEP = 4;
 
-const STATUS_DOT_CLASS: Record<BackendSessionStatus, string> = {
-  Starting: "bg-maestro-orange",
-  Idle: "bg-maestro-muted",
-  Working: "bg-maestro-accent",
-  NeedsInput: "bg-maestro-yellow",
-  Done: "bg-maestro-green",
-  Error: "bg-maestro-red",
-  Timeout: "bg-maestro-red",
-};
-
-const STATUS_LABEL: Record<BackendSessionStatus, string> = {
-  Starting: "Starting",
-  Idle: "Idle",
-  Working: "Working",
-  NeedsInput: "Needs Input",
-  Done: "Done",
-  Error: "Error",
-  Timeout: "Startup Timeout",
-};
-
 /* ================================================================ */
 /*  SIDEBAR ROOT                                                     */
 /* ================================================================ */
@@ -113,7 +80,6 @@ export function Sidebar({
   isStoppingAll = false,
   onStopAll,
 }: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<SidebarTab>("config");
   const [width, setWidth] = useState(240);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ x: number; w: number } | null>(null);
@@ -204,47 +170,15 @@ export function Sidebar({
         isDragging ? "" : "transition-all duration-200 ease-out"
       } ${collapsed ? "overflow-hidden border-r-0 opacity-0" : "opacity-100"}`}
     >
-      {/* Tab switcher */}
-      <div className="flex shrink-0 border-b border-maestro-border">
-        <button
-          type="button"
-          onClick={() => setActiveTab("config")}
-          className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-[11px] font-semibold tracking-wide uppercase ${
-            activeTab === "config"
-              ? "border-b-2 border-maestro-accent text-maestro-accent"
-              : "text-maestro-muted hover:text-maestro-text"
-          }`}
-        >
-          <Settings size={12} />
-          Config
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("processes")}
-          className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-[11px] font-semibold tracking-wide uppercase ${
-            activeTab === "processes"
-              ? "border-b-2 border-maestro-accent text-maestro-accent"
-              : "text-maestro-muted hover:text-maestro-text"
-          }`}
-        >
-          <Activity size={12} />
-          Processes
-        </button>
-      </div>
-
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto px-2.5 py-3">
-        {activeTab === "config" ? (
-          <ConfigTab
-            theme={theme}
-            onToggleTheme={onToggleTheme}
-            launchedCount={launchedCount}
-            isStoppingAll={isStoppingAll}
-            onStopAll={onStopAll}
-          />
-        ) : (
-          <ProcessesTab />
-        )}
+        <ConfigTab
+          theme={theme}
+          onToggleTheme={onToggleTheme}
+          launchedCount={launchedCount}
+          isStoppingAll={isStoppingAll}
+          onStopAll={onStopAll}
+        />
       </div>
 
       {/* Drag handle */}
@@ -323,13 +257,7 @@ function ConfigTab({
       {divider}
       <ProjectContextSection />
       {divider}
-      <SessionsSection />
-      {divider}
-      <StatusSection />
-      {divider}
-      <MCPServersSection />
-      {divider}
-      <PluginsSection />
+      <ExtensionsSection />
       {divider}
       <AppearanceSection
         theme={theme}
@@ -630,205 +558,23 @@ function ProjectContextSection() {
   );
 }
 
-/* ── 3. Sessions ── */
+/* ── 3. Extensions (MCP, Plugins & Skills) ── */
 
-function SessionsSection() {
-  const [expanded, setExpanded] = useState(true);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const editRef = useRef<HTMLInputElement>(null);
-  const allSessions = useSessionStore((s) => s.sessions);
-  const renameSession = useSessionStore((s) => s.renameSession);
-  const tabs = useWorkspaceStore((s) => s.tabs);
-  const activeTab = tabs.find((t) => t.active);
-  const activeProjectPath = activeTab?.projectPath ?? "";
-
-  // Filter sessions to only show those belonging to the active project
-  const sessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
-
-  const startEditing = (s: { id: number; name?: string | null }) => {
-    setEditingId(s.id);
-    setEditValue(s.name || `#${s.id}`);
-    // Focus after render
-    setTimeout(() => editRef.current?.select(), 0);
-  };
-
-  const commitRename = (sessionId: number) => {
-    const trimmed = editValue.trim();
-    // If empty or same as default, reset to null
-    const newName = trimmed && trimmed !== `#${sessionId}` ? trimmed : null;
-    renameSession(sessionId, newName);
-    setEditingId(null);
-  };
-
-  const cancelEditing = () => {
-    setEditingId(null);
-  };
-
+/**
+ * Single sidebar panel that combines MCP servers, plugins and skills into one
+ * mini-pane. Each concern keeps its own collapsible sub-group + actions, but
+ * they share a single card container so the sidebar reads as one panel.
+ */
+function ExtensionsSection() {
   return (
     <div className={cardClass}>
-      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-1 hover:text-maestro-text"
-        >
-          {expanded ? (
-            <ChevronDown size={13} className="text-maestro-muted/80" />
-          ) : (
-            <ChevronRight size={13} className="text-maestro-muted/80" />
-          )}
-        </button>
-        <Bot size={13} className="text-maestro-accent animate-breathe" />
-        <span className="flex-1">Sessions</span>
-        <span className="bg-maestro-accent/20 text-maestro-accent text-[10px] px-1.5 rounded-full font-bold">
-          {sessions.length}
-        </span>
-      </div>
-
-      {expanded && (
-        <div className="space-y-0.5">
-          {sessions.length === 0 ? (
-            <div className="px-2 py-1 text-[11px] text-maestro-muted/60">No sessions yet</div>
-          ) : (
-            sessions.map((s) => (
-              <div
-                key={s.id}
-                title={s.statusMessage || s.needsInputPrompt || STATUS_LABEL[s.status]}
-                className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
-              >
-                <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_CLASS[s.status]}`} />
-                <Bot size={12} className="text-maestro-purple shrink-0" />
-                {editingId === s.id ? (
-                  <input
-                    ref={editRef}
-                    type="text"
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={() => commitRename(s.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitRename(s.id);
-                      if (e.key === "Escape") cancelEditing();
-                    }}
-                    className="flex-1 rounded border border-maestro-accent bg-maestro-card px-1 py-0 text-xs font-medium text-maestro-text outline-none"
-                    autoFocus
-                  />
-                ) : (
-                  <span
-                    className="flex-1 cursor-text truncate font-medium"
-                    onClick={() => startEditing(s)}
-                  >
-                    {s.name || `#${s.id}`}
-                  </span>
-                )}
-                <span className="text-[10px] text-maestro-muted">{STATUS_LABEL[s.status]}</span>
-              </div>
-            ))
-          )}
-        </div>
-      )}
+      <SectionHeader icon={Package} label="MCP, Plugins & Skills" iconColor="text-maestro-purple" />
+      <MCPServersSection />
+      <div className="my-1.5 h-px bg-maestro-border/30" />
+      <PluginsSection />
     </div>
   );
 }
-
-/* ── 4. Status ── */
-
-const AI_MODES: AiMode[] = ["Claude", "Gemini", "Codex", "OpenCode", "Plain"];
-const SESSION_STATUSES: BackendSessionStatus[] = [
-  "Starting",
-  "Idle",
-  "Working",
-  "NeedsInput",
-  "Done",
-  "Error",
-];
-
-/** Icon component type for AI mode icons - supports both Lucide and custom icons */
-const MODE_ICON: Record<AiMode, React.ElementType> = {
-  Claude: Bot,
-  Gemini: Sparkles,
-  Codex: Cpu,
-  OpenCode: OpenCodeIcon,
-  Plain: Globe,
-};
-
-function StatusSection() {
-  const allSessions = useSessionStore((s) => s.sessions);
-  const tabs = useWorkspaceStore((s) => s.tabs);
-  const activeTab = tabs.find((t) => t.active);
-  const activeProjectPath = activeTab?.projectPath ?? "";
-
-  // Filter sessions to only count those belonging to the active project
-  const sessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
-  const counts = sessions.reduce(
-    (acc, session) => {
-      acc.status[session.status] = (acc.status[session.status] ?? 0) + 1;
-      acc.mode[session.mode] = (acc.mode[session.mode] ?? 0) + 1;
-      return acc;
-    },
-    {
-      status: {
-        Starting: 0,
-        Idle: 0,
-        Working: 0,
-        NeedsInput: 0,
-        Done: 0,
-        Error: 0,
-      } as Record<BackendSessionStatus, number>,
-      mode: {
-        Claude: 0,
-        Gemini: 0,
-        Codex: 0,
-        Plain: 0,
-      } as Record<AiMode, number>,
-    },
-  );
-
-  return (
-    <div className={cardClass}>
-      <SectionHeader icon={Activity} label="Status" iconColor="text-maestro-accent" />
-      <div className="space-y-0.5">
-        {/* AI mode buckets - only show modes with count > 0 */}
-        {AI_MODES.filter((mode) => counts.mode[mode] > 0).map((mode) => {
-          const ModeIcon = MODE_ICON[mode];
-          return (
-            <div
-              key={mode}
-              className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text"
-            >
-              <ModeIcon size={12} className="text-maestro-purple shrink-0" />
-              <span className="flex-1">{mode}:</span>
-              <span className="font-semibold text-maestro-text">{counts.mode[mode]}</span>
-            </div>
-          );
-        })}
-        {/* Divider between types and states - only show if both sections have items */}
-        {AI_MODES.some((mode) => counts.mode[mode] > 0) &&
-          SESSION_STATUSES.some((st) => counts.status[st] > 0) && (
-            <div className="h-px bg-maestro-border/40 my-1.5" />
-          )}
-        {/* Session status buckets - only show statuses with count > 0 */}
-        {SESSION_STATUSES.filter((st) => counts.status[st] > 0).map((st) => (
-          <div
-            key={st}
-            className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text"
-          >
-            <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_CLASS[st]}`} />
-            <span className="flex-1">{STATUS_LABEL[st]}:</span>
-            <span className="font-semibold text-maestro-text">{counts.status[st]}</span>
-          </div>
-        ))}
-        {/* Empty state when no sessions */}
-        {!AI_MODES.some((mode) => counts.mode[mode] > 0) &&
-          !SESSION_STATUSES.some((st) => counts.status[st] > 0) && (
-            <div className="px-2 py-1 text-[11px] text-maestro-muted/60">No active sessions</div>
-          )}
-      </div>
-    </div>
-  );
-}
-
-/* ── 5. MCP Servers ── */
 
 /**
  * Renders a labelled group of MCP servers for one scope (project / local / user).
@@ -941,7 +687,7 @@ function MCPServersSection() {
 
   return (
     <>
-      <div className={cardClass}>
+      <div>
         <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
           <button
             type="button"
@@ -1245,7 +991,7 @@ function PluginsSection() {
   };
 
   return (
-    <div className={cardClass}>
+    <div>
       <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
         <button
           type="button"
@@ -1568,330 +1314,5 @@ function AppearanceSection({
         <ShortcutsModal onClose={() => setShowShortcuts(false)} />
       )}
     </>
-  );
-}
-
-/* ================================================================ */
-/*  PROCESSES TAB                                                    */
-/* ================================================================ */
-
-function ProcessesTab() {
-  return (
-    <>
-      <AgentSessionsSection />
-      {divider}
-      <ProcessTreeSection />
-      {divider}
-      <OrphanedProcessesSection />
-    </>
-  );
-}
-
-/* ── 1. Agent Sessions ── */
-
-function AgentSessionsSection() {
-  const allSessions = useSessionStore((s) => s.sessions);
-  const tabs = useWorkspaceStore((s) => s.tabs);
-  const activeTab = tabs.find((t) => t.active);
-  const activeProjectPath = activeTab?.projectPath ?? "";
-
-  // Filter sessions to only show those belonging to the active project
-  const sessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
-
-  return (
-    <div className={cardClass}>
-      <SectionHeader
-        icon={Cpu}
-        label="Agent Sessions"
-        iconColor="text-maestro-accent"
-        breathe
-        badge={
-          <span className="bg-maestro-accent/20 text-maestro-accent text-[10px] px-1.5 rounded-full font-bold">
-            {sessions.length}
-          </span>
-        }
-      />
-      <div className="space-y-0.5">
-        {sessions.length === 0 ? (
-          <div className="px-2 py-1 text-[11px] text-maestro-muted/60">No active agents</div>
-        ) : (
-          sessions.map((s) => (
-            <div
-              key={s.id}
-              className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
-            >
-              <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_CLASS[s.status]}`} />
-              <span className="flex-1 truncate">
-                <span className="font-medium">{s.name || `#${s.id}`}</span>{" "}
-                <span className="text-maestro-muted">{s.mode}</span>{" "}
-                <span className="text-maestro-muted">-</span>{" "}
-                <span className="text-maestro-muted">{STATUS_LABEL[s.status]}</span>
-              </span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ── 2. Process Tree ── */
-
-function ProcessTreeSection() {
-  const [expanded, setExpanded] = useState(true);
-  const [expandedSessions, setExpandedSessions] = useState<Set<number>>(new Set());
-
-  const { trees, isLoading, fetchAllTrees, killProcess } = useProcessTreeStore();
-  const allSessions = useSessionStore((s) => s.sessions);
-  const tabs = useWorkspaceStore((s) => s.tabs);
-  const activeTab = tabs.find((t) => t.active);
-  const activeProjectPath = activeTab?.projectPath ?? "";
-
-  // Filter sessions to only show those belonging to the active project
-  const projectSessions = allSessions.filter((s) => samePath(s.project_path, activeProjectPath));
-  const projectSessionIds = new Set(projectSessions.map((s) => s.id));
-
-  // Filter trees to only show those for the active project's sessions
-  const projectTrees = trees.filter((t) => projectSessionIds.has(t.sessionId));
-
-  // Total process count across all trees
-  const totalProcesses = projectTrees.reduce((sum, t) => sum + t.processes.length, 0);
-
-  // Fetch trees on mount and when sessions change
-  useEffect(() => {
-    if (projectSessions.length > 0) {
-      fetchAllTrees();
-    }
-  }, [projectSessions.length, fetchAllTrees]);
-
-  const handleRefresh = useCallback(() => {
-    fetchAllTrees();
-  }, [fetchAllTrees]);
-
-  const toggleSession = (sessionId: number) => {
-    setExpandedSessions((prev) => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) {
-        next.delete(sessionId);
-      } else {
-        next.add(sessionId);
-      }
-      return next;
-    });
-  };
-
-  // Build hierarchical tree for a session
-  const buildProcessHierarchy = (tree: SessionProcessTree) => {
-    const processMap = new Map<number, ProcessInfo>();
-    const childrenMap = new Map<number, ProcessInfo[]>();
-
-    for (const proc of tree.processes) {
-      processMap.set(proc.pid, proc);
-      if (proc.parentPid !== null) {
-        const children = childrenMap.get(proc.parentPid) ?? [];
-        children.push(proc);
-        childrenMap.set(proc.parentPid, children);
-      }
-    }
-
-    return { processMap, childrenMap, rootPid: tree.rootPid };
-  };
-
-  // Recursive process node renderer
-  const ProcessNode = ({
-    process,
-    childrenMap,
-    depth,
-    isRoot,
-  }: {
-    process: ProcessInfo;
-    childrenMap: Map<number, ProcessInfo[]>;
-    depth: number;
-    isRoot: boolean;
-  }) => {
-    const [nodeExpanded, setNodeExpanded] = useState(depth < 2);
-    const [isKilling, setIsKilling] = useState(false);
-    const children = childrenMap.get(process.pid) ?? [];
-    const hasChildren = children.length > 0;
-
-    // Format memory for display
-    const formatMemory = (bytes: number) => {
-      if (bytes < 1024) return `${bytes} B`;
-      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    };
-
-    const handleKill = async (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (isRoot || isKilling) return;
-
-      setIsKilling(true);
-      await killProcess(process.pid);
-      setIsKilling(false);
-    };
-
-    return (
-      <div className={depth > 0 ? "ml-3 border-l border-maestro-border/40 pl-2" : ""}>
-        <div className="group flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px] text-maestro-text hover:bg-maestro-border/40">
-          {hasChildren ? (
-            <button
-              type="button"
-              onClick={() => setNodeExpanded(!nodeExpanded)}
-              className="shrink-0 p-0.5 hover:bg-maestro-border/40 rounded"
-            >
-              {nodeExpanded ? (
-                <ChevronDown size={10} className="text-maestro-muted" />
-              ) : (
-                <ChevronRight size={10} className="text-maestro-muted" />
-              )}
-            </button>
-          ) : (
-            <span className="w-[18px]" />
-          )}
-          <Cpu size={10} className="shrink-0 text-maestro-accent" />
-          <span className="flex-1 truncate font-medium">{process.name}</span>
-          <span className="shrink-0 text-[9px] text-maestro-muted">{process.pid}</span>
-          <span className="shrink-0 text-[9px] text-maestro-muted/60">
-            {formatMemory(process.memoryBytes)}
-          </span>
-          {/* Kill button - only for non-root processes */}
-          {!isRoot && (
-            <button
-              type="button"
-              onClick={handleKill}
-              disabled={isKilling}
-              className="shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-maestro-red/20 transition-opacity"
-              title={`Kill process ${process.pid}`}
-            >
-              <X size={10} className={isKilling ? "text-maestro-muted animate-pulse" : "text-maestro-red"} />
-            </button>
-          )}
-        </div>
-        {nodeExpanded &&
-          children.map((child) => (
-            <ProcessNode
-              key={child.pid}
-              process={child}
-              childrenMap={childrenMap}
-              depth={depth + 1}
-              isRoot={false}
-            />
-          ))}
-      </div>
-    );
-  };
-
-  return (
-    <div className={cardClass}>
-      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-1 hover:text-maestro-text"
-        >
-          {expanded ? (
-            <ChevronDown size={13} className="text-maestro-muted/80" />
-          ) : (
-            <ChevronRight size={13} className="text-maestro-muted/80" />
-          )}
-        </button>
-        <Globe size={13} className={totalProcesses > 0 ? "text-maestro-green" : "text-maestro-muted/80"} />
-        <span className="flex-1">Process Tree</span>
-        {totalProcesses > 0 && (
-          <span className="bg-maestro-green/20 text-maestro-green text-[10px] px-1.5 rounded-full font-bold">
-            {totalProcesses}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={handleRefresh}
-          className="rounded p-0.5 hover:bg-maestro-border/40"
-          title="Refresh process tree"
-        >
-          <RefreshCw size={12} className={`text-maestro-muted ${isLoading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
-
-      {expanded && (
-        <div className="space-y-1">
-          {projectTrees.length === 0 ? (
-            <div className="px-2 py-1 text-[11px] text-maestro-muted/60">
-              {projectSessions.length === 0 ? "No active sessions" : "No running processes"}
-            </div>
-          ) : (
-            projectTrees.map((tree) => {
-              const session = projectSessions.find((s) => s.id === tree.sessionId);
-              const isSessionExpanded = expandedSessions.has(tree.sessionId);
-              const { childrenMap, rootPid } = buildProcessHierarchy(tree);
-              const rootProcess = tree.processes.find((p) => p.pid === rootPid);
-
-              return (
-                <div key={tree.sessionId}>
-                  {/* Session header */}
-                  <button
-                    type="button"
-                    onClick={() => toggleSession(tree.sessionId)}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text hover:bg-maestro-border/40"
-                  >
-                    {isSessionExpanded ? (
-                      <ChevronDown size={10} className="shrink-0 text-maestro-muted" />
-                    ) : (
-                      <ChevronRight size={10} className="shrink-0 text-maestro-muted" />
-                    )}
-                    <Bot size={12} className="shrink-0 text-maestro-purple" />
-                    <span className="flex-1 text-left font-medium">
-                      {session?.name || `Session #${tree.sessionId}`}
-                      {session && (
-                        <span className="ml-1 text-maestro-muted font-normal">
-                          ({session.mode})
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-[10px] text-maestro-muted">
-                      {tree.processes.length} proc{tree.processes.length !== 1 && "s"}
-                    </span>
-                  </button>
-
-                  {/* Expanded process tree */}
-                  {isSessionExpanded && rootProcess && (
-                    <div className="ml-4 mt-1">
-                      <ProcessNode
-                        process={rootProcess}
-                        childrenMap={childrenMap}
-                        depth={0}
-                        isRoot={true}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── 3. Orphaned Processes ── */
-
-function OrphanedProcessesSection() {
-  return (
-    <div className={cardClass}>
-      <SectionHeader
-        icon={Skull}
-        label="Orphaned Processes"
-        iconColor="text-maestro-red"
-        right={
-          <button type="button" className="rounded p-0.5 hover:bg-maestro-border/40">
-            <RefreshCw size={12} className="text-maestro-muted" />
-          </button>
-        }
-      />
-      <div className="flex items-center gap-2 px-2 py-1">
-        <span className="h-2 w-2 shrink-0 rounded-full bg-maestro-green" />
-        <span className="text-[11px] text-maestro-muted/60">No orphaned processes</span>
-      </div>
-    </div>
   );
 }
