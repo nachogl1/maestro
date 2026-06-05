@@ -6,7 +6,14 @@ import type { SessionSlot } from "@/components/terminal/PreLaunchCard";
 
 interface UseTerminalDragDropOptions {
   slots: SessionSlot[];
-  onDrop: (sessionId: number, paths: string[]) => void;
+  onDrop: (sessionId: number, paths: string[], slotId: string) => void;
+  /**
+   * Whether this grid is the active project tab. `MultiProjectView` keeps
+   * every project's grid mounted (ZStack pattern), so each grid registers
+   * its own window-level listener — only the active one may handle events,
+   * otherwise drops land in whichever project mounted first.
+   */
+  enabled: boolean;
 }
 
 interface UseTerminalDragDropResult {
@@ -27,6 +34,7 @@ interface UseTerminalDragDropResult {
 export function useTerminalDragDrop({
   slots,
   onDrop,
+  enabled,
 }: UseTerminalDragDropOptions): UseTerminalDragDropResult {
   const [dropTargetSlotId, setDropTargetSlotId] = useState<string | null>(null);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
@@ -41,11 +49,23 @@ export function useTerminalDragDrop({
   }, [slots]);
 
   useEffect(() => {
+    if (!enabled) {
+      // Clear any stale highlight if the tab is switched mid-drag.
+      setDropTargetSlotId(null);
+      setIsDraggingFiles(false);
+      return;
+    }
+
     const appWindow = getCurrentWindow();
 
     /**
      * Hit-test physical coordinates against `[data-slot-id]` elements.
      * Tauri provides PhysicalPosition — divide by devicePixelRatio to get CSS pixels.
+     *
+     * Skips invisible elements: inactive project grids stay mounted with
+     * `visibility: hidden` (see MultiProjectView) and their slots still
+     * report full-size client rects at the same coordinates, so without
+     * this check the first project's hidden slots would win the hit test.
      */
     function findSlotAtPosition(physX: number, physY: number): string | null {
       const scale = window.devicePixelRatio || 1;
@@ -54,6 +74,7 @@ export function useTerminalDragDrop({
 
       const slotElements = document.querySelectorAll<HTMLElement>("[data-slot-id]");
       for (const el of slotElements) {
+        if (getComputedStyle(el).visibility === "hidden") continue;
         const rect = el.getBoundingClientRect();
         if (
           cssX >= rect.left &&
@@ -84,7 +105,7 @@ export function useTerminalDragDrop({
         if (slotId) {
           const sessionId = slotSessionMap.get(slotId);
           if (sessionId !== null && sessionId !== undefined) {
-            onDrop(sessionId, event.payload.paths);
+            onDrop(sessionId, event.payload.paths, slotId);
           }
         }
         setDropTargetSlotId(null);
@@ -98,7 +119,7 @@ export function useTerminalDragDrop({
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [slotSessionMap, onDrop]);
+  }, [slotSessionMap, onDrop, enabled]);
 
   return { dropTargetSlotId, isDraggingFiles };
 }
