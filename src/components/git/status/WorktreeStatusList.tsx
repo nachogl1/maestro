@@ -470,7 +470,7 @@ function RowAction({
       onClick={() => setConfirming(true)}
       title={title}
       aria-label={label}
-      className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-maestro-muted opacity-0 transition-opacity hover:bg-maestro-card focus:opacity-100 group-hover:opacity-100 ${
+      className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-maestro-muted transition-colors hover:bg-maestro-card ${
         danger ? "hover:text-maestro-red" : "hover:text-maestro-text"
       }`}
     >

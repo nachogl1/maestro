@@ -2,8 +2,7 @@ import { useSystemMetrics } from "@/hooks/useSystemMetrics";
 
 function barColor(percent: number): string {
   if (percent < 50) return "bg-maestro-green";
-  if (percent < 80) return "bg-maestro-accent";
-  if (percent < 95) return "bg-maestro-orange";
+  if (percent <= 70) return "bg-maestro-yellow";
   return "bg-maestro-red";
 }
 
