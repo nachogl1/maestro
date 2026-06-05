@@ -134,6 +134,34 @@ pub async fn git_worktrees_status(
     git.all_worktrees_status().await
 }
 
+/// Exposes `Git::discard_file` to the frontend.
+///
+/// Discards a single tracked file's uncommitted changes, returning it to its
+/// HEAD state. `worktree_path` is the worktree the file lives in. Irreversible.
+#[tauri::command]
+pub async fn git_discard_file(
+    worktree_path: String,
+    path: String,
+    old_path: Option<String>,
+) -> Result<(), GitError> {
+    validate_repo_path(&worktree_path)?;
+    let git = Git::new(&worktree_path);
+    git.discard_file(&path, old_path.as_deref()).await
+}
+
+/// Exposes `Git::remove_file` to the frontend.
+///
+/// Deletes an untracked file or directory from `worktree_path`. Irreversible.
+#[tauri::command]
+pub async fn git_remove_file(
+    worktree_path: String,
+    path: String,
+) -> Result<(), GitError> {
+    validate_repo_path(&worktree_path)?;
+    let git = Git::new(&worktree_path);
+    git.remove_file(&path).await
+}
+
 /// Exposes `Git::commit_log` to the frontend.
 /// Returns up to `max_count` commits in topological order across all or current branch.
 #[tauri::command]

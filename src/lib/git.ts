@@ -153,6 +153,40 @@ export async function getWorktreesStatus(
 }
 
 /**
+ * Discards a single tracked file's uncommitted changes, restoring it to its
+ * committed (HEAD) state. For a newly added file with no committed version,
+ * the file is removed instead. This is irreversible.
+ *
+ * @param worktreePath - Absolute path to the worktree the file lives in
+ * @param path - Repo-relative path of the file to discard
+ * @param oldPath - Original path for a renamed file, so the rename is undone
+ */
+export async function discardFile(
+  worktreePath: string,
+  path: string,
+  oldPath?: string | null
+): Promise<void> {
+  return invoke<void>("git_discard_file", {
+    worktreePath,
+    path,
+    oldPath: oldPath ?? null,
+  });
+}
+
+/**
+ * Deletes an untracked file or directory from the worktree. Irreversible.
+ *
+ * @param worktreePath - Absolute path to the worktree the file lives in
+ * @param path - Repo-relative path of the untracked file to delete
+ */
+export async function removeFile(
+  worktreePath: string,
+  path: string
+): Promise<void> {
+  return invoke<void>("git_remove_file", { worktreePath, path });
+}
+
+/**
  * `true` when the worktree has anything that would be lost on delete:
  * unpushed commits, working-tree changes, or stashes.
  */

@@ -31,7 +31,11 @@ export function formatResetTime(isoDate: string | null): string {
   if (!isoDate) return "";
   try {
     const resetDate = new Date(isoDate);
-    const diffMs = resetDate.getTime() - Date.now();
+    const time = resetDate.getTime();
+    // Invalid dates yield NaN, which silently slips past the comparisons below
+    // and renders as "NaNm" — guard explicitly.
+    if (Number.isNaN(time)) return "";
+    const diffMs = time - Date.now();
     if (diffMs <= 0) return "now";
     const diffMins = Math.floor(diffMs / 60_000);
     const diffHours = Math.floor(diffMs / 3_600_000);
