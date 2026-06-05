@@ -1,10 +1,20 @@
 import { Plus, Trash2, X } from "lucide-react";
-import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNotesStore } from "@/stores/useNotesStore";
 
 /**
  * Right-pane Notepad view. Shows a horizontal strip of note tabs and a single
  * textarea for the active note's content.
+ *
+ * Notes are fully user-managed: created via the "New" button, deleted via the
+ * X — nothing is auto-created or auto-removed behind the user's back.
  *
  * Layout note: this lives inside the existing `GitGraphPanel`'s flex column,
  * so it fills the remaining height under the tab bar without needing fixed
@@ -18,6 +28,7 @@ export function NotepadPanel() {
   const renameNote = useNotesStore((s) => s.renameNote);
   const setContent = useNotesStore((s) => s.setContent);
   const deleteNote = useNotesStore((s) => s.deleteNote);
+  const moveNote = useNotesStore((s) => s.moveNote);
 
   const activeNote = useMemo(
     () => notes.find((n) => n.id === activeNoteId) ?? null,
@@ -42,6 +53,61 @@ export function NotepadPanel() {
       renameInputRef.current.select();
     }
   }, [renamingId]);
+
+  // --- Tab drag-reorder ---
+  // Pointer events instead of HTML5 DnD: Tauri's WebView2 shows a "no drop"
+  // cursor for custom drags (same reason TerminalGrid's DraggablePane uses
+  // pointer events). A small movement threshold keeps click (select) and
+  // double-click (rename) working on the same tab.
+  const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
+  const suppressClickRef = useRef(false);
+
+  const startTabDrag = (e: React.PointerEvent<HTMLDivElement>, noteId: string) => {
+    // Left button / touch only, and never while renaming this tab.
+    if ((e.button !== 0 && e.pointerType !== "touch") || renamingId === noteId) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < 5 && Math.abs(ev.clientY - startY) < 5) {
+          return; // below threshold — still a click
+        }
+        dragging = true;
+        setDraggingNoteId(noteId);
+      }
+      // Live-reorder: drop the dragged note into the slot under the pointer.
+      const el = document
+        .elementFromPoint(ev.clientX, ev.clientY)
+        ?.closest<HTMLElement>("[data-note-tab-id]");
+      const overId = el?.dataset.noteTabId;
+      if (!overId || overId === noteId) return;
+      const current = useNotesStore.getState().notes;
+      const toIndex = current.findIndex((n) => n.id === overId);
+      if (toIndex >= 0) moveNote(noteId, toIndex);
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      if (dragging) {
+        // Swallow the click that follows pointerup so the drag doesn't also
+        // change tab selection / trigger buttons under the pointer.
+        suppressClickRef.current = true;
+        setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+      }
+      setDraggingNoteId(null);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
 
   const startRename = (id: string, currentTitle: string) => {
     setRenamingId(id);
@@ -76,11 +142,17 @@ export function NotepadPanel() {
   };
 
   const handleDelete = (id: string) => {
+    if (suppressClickRef.current) return;
     // Notes can contain useful content — confirm before nuking.
     const note = notes.find((n) => n.id === id);
     const title = note?.title ?? "this note";
     if (!window.confirm(`Delete "${title}"? Its content will be lost.`)) return;
     deleteNote(id);
+  };
+
+  const handleSelect = (id: string) => {
+    if (suppressClickRef.current) return;
+    setActiveNote(id);
   };
 
   return (
@@ -90,19 +162,18 @@ export function NotepadPanel() {
         {notes.map((note) => {
           const isActive = note.id === activeNoteId;
           const isRenaming = note.id === renamingId;
+          const isDragging = note.id === draggingNoteId;
           return (
             <div
               key={note.id}
+              data-note-tab-id={note.id}
+              onPointerDown={(e) => startTabDrag(e, note.id)}
               className={`group flex shrink-0 items-center gap-1 border-r border-maestro-border px-2 py-1.5 text-xs transition-colors ${
                 isActive
                   ? "bg-maestro-surface text-maestro-text"
                   : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-              }`}
-              title={
-                note.boundSessionId !== undefined
-                  ? `Bound to session #${note.boundSessionId}`
-                  : "Manual note"
-              }
+              } ${isDragging ? "opacity-50" : ""}`}
+              title="Drag to reorder"
             >
               {isRenaming ? (
                 <input
@@ -117,7 +188,7 @@ export function NotepadPanel() {
               ) : (
                 <button
                   type="button"
-                  onClick={() => setActiveNote(note.id)}
+                  onClick={() => handleSelect(note.id)}
                   onDoubleClick={() => startRename(note.id, note.title)}
                   className="max-w-[140px] truncate"
                 >
@@ -159,9 +230,6 @@ export function NotepadPanel() {
               title="Click to rename"
             >
               {activeNote.title}
-              {activeNote.boundSessionId !== undefined && !activeNote.manuallyRenamed && (
-                <span className="ml-1 text-maestro-muted/60">(follows session)</span>
-              )}
             </button>
             <button
               type="button"

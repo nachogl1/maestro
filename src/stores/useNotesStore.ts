@@ -1,11 +1,6 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
-import {
-  defaultTitleForSession,
-  reconcileNotesWithSessions,
-  type NotesSessionInput,
-} from "@/lib/notesReconcile";
 import type { Note } from "@/types/note";
 
 // --- Tauri LazyStore-backed StateStorage adapter ---
@@ -52,24 +47,18 @@ interface NotesState {
 }
 
 interface NotesActions {
-  /** Create a manual (unbound) note and select it. Returns the new note's id. */
+  /** Create a note and select it. Returns the new note's id. */
   addManualNote: (title?: string) => string;
-  /**
-   * Rename a note. If `manual` is true (default for user-driven renames),
-   * locks the title so session updates no longer override it.
-   */
-  renameNote: (id: string, title: string, manual?: boolean) => void;
+  /** Rename a note. Empty titles are refused. */
+  renameNote: (id: string, title: string) => void;
   /** Update a note's body. */
   setContent: (id: string, content: string) => void;
   /** Delete a note (and clear active selection if it was active). */
   deleteNote: (id: string) => void;
   /** Switch the active tab. */
   setActiveNote: (id: string | null) => void;
-  /**
-   * Reconcile against the current session list. Called from App-level effect.
-   * No-op if nothing changed.
-   */
-  syncWithSessions: (sessions: NotesSessionInput[]) => void;
+  /** Move a note to a new position in the tab strip (drag-reorder). */
+  moveNote: (id: string, toIndex: number) => void;
 }
 
 export type NotesStore = NotesState & NotesActions;
@@ -92,7 +81,6 @@ export const useNotesStore = create<NotesStore>()(
           id,
           title: baseTitle,
           content: "",
-          manuallyRenamed: false,
           createdAt: now,
           updatedAt: now,
         };
@@ -100,19 +88,12 @@ export const useNotesStore = create<NotesStore>()(
         return id;
       },
 
-      renameNote: (id, title, manual = true) => {
+      renameNote: (id, title) => {
         const clean = title.trim();
         if (clean.length === 0) return; // refuse empty titles
         set((s) => ({
           notes: s.notes.map((n) =>
-            n.id === id
-              ? {
-                  ...n,
-                  title: clean,
-                  manuallyRenamed: manual ? true : n.manuallyRenamed,
-                  updatedAt: Date.now(),
-                }
-              : n,
+            n.id === id ? { ...n, title: clean, updatedAt: Date.now() } : n,
           ),
         }));
       },
@@ -136,22 +117,17 @@ export const useNotesStore = create<NotesStore>()(
 
       setActiveNote: (id) => set({ activeNoteId: id }),
 
-      syncWithSessions: (sessions) => {
-        const state = get();
-        const reconciled = reconcileNotesWithSessions(state.notes, sessions);
-        if (reconciled === null) return;
-
-        // If the active note disappeared somehow, fall back to first available.
-        let nextActive = state.activeNoteId;
-        if (nextActive && !reconciled.some((n) => n.id === nextActive)) {
-          nextActive = reconciled[0]?.id ?? null;
-        }
-        // Auto-select the first note if we just created the very first one.
-        if (!nextActive && reconciled.length > 0) {
-          nextActive = reconciled[0].id;
-        }
-
-        set({ notes: reconciled, activeNoteId: nextActive });
+      moveNote: (id, toIndex) => {
+        set((s) => {
+          const from = s.notes.findIndex((n) => n.id === id);
+          if (from < 0) return s;
+          const to = Math.max(0, Math.min(toIndex, s.notes.length - 1));
+          if (to === from) return s;
+          const next = [...s.notes];
+          const [moved] = next.splice(from, 1);
+          next.splice(to, 0, moved);
+          return { ...s, notes: next };
+        });
       },
     }),
     {
@@ -162,7 +138,22 @@ export const useNotesStore = create<NotesStore>()(
         notes: state.notes,
         activeNoteId: state.activeNoteId,
       }),
-      version: 1,
+      version: 2,
+      // v1 notes carried session-binding fields (boundSessionId,
+      // manuallyRenamed) from the era of auto-created per-session notes.
+      // Strip them — the notes themselves (title/content) are kept.
+      migrate: (persisted) => {
+        const state = persisted as {
+          notes?: Array<Note & { boundSessionId?: number; manuallyRenamed?: boolean }>;
+          activeNoteId?: string | null;
+        };
+        return {
+          notes: (state.notes ?? []).map(
+            ({ boundSessionId: _b, manuallyRenamed: _m, ...note }) => note,
+          ),
+          activeNoteId: state.activeNoteId ?? null,
+        };
+      },
     },
   ),
 );
@@ -189,6 +180,3 @@ function nextManualTitle(notes: Note[]): string {
   }
   return `Note ${Date.now()}`;
 }
-
-// Re-export for convenience.
-export { defaultTitleForSession };

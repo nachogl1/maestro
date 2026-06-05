@@ -340,12 +340,26 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     enabled: isActive,
   });
 
-  // Drag-and-drop files from Finder/Explorer onto terminal panes
+  // Drag-and-drop files from Finder/Explorer onto terminal panes.
+  // Only the active project's grid handles window drop events — inactive
+  // grids stay mounted (ZStack) and would otherwise swallow the drop.
   const { dropTargetSlotId, isDraggingFiles } = useTerminalDragDrop({
     slots,
-    onDrop: useCallback((sessionId: number, paths: string[]) => {
+    enabled: isActive,
+    onDrop: useCallback((sessionId: number, paths: string[], slotId: string) => {
       const escaped = shellEscapePaths(paths);
       writeStdin(sessionId, escaped).catch(console.error);
+      // Focus the pane that received the drop so the user can keep typing
+      // right after the path. setFocusedSlotId updates the grid's focus ring;
+      // the direct DOM focus covers the already-focused pane (no isFocused
+      // transition for TerminalView's focus effect to react to).
+      setFocusedSlotId(slotId);
+      requestAnimationFrame(() => {
+        const textarea = document.querySelector<HTMLElement>(
+          `[data-slot-id="${slotId}"] .xterm-helper-textarea`,
+        );
+        textarea?.focus();
+      });
     }, []),
   });
 
