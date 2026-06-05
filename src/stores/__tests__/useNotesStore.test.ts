@@ -28,7 +28,6 @@ describe("useNotesStore", () => {
     expect(state.notes[0].id).toBe(id);
     expect(state.notes[0].title).toBe("Note");
     expect(state.activeNoteId).toBe(id);
-    expect(state.notes[0].boundSessionId).toBeUndefined();
   });
 
   it("addManualNote picks a unique fallback title", () => {
@@ -44,20 +43,10 @@ describe("useNotesStore", () => {
     expect(useNotesStore.getState().notes.find((n) => n.id === id)?.title).toBe("Shopping list");
   });
 
-  it("renameNote sets manuallyRenamed by default", () => {
+  it("renameNote updates the title", () => {
     const id = useNotesStore.getState().addManualNote();
     useNotesStore.getState().renameNote(id, "Renamed");
-    const note = useNotesStore.getState().notes.find((n) => n.id === id)!;
-    expect(note.title).toBe("Renamed");
-    expect(note.manuallyRenamed).toBe(true);
-  });
-
-  it("renameNote with manual=false leaves manuallyRenamed alone (sync use)", () => {
-    const id = useNotesStore.getState().addManualNote();
-    useNotesStore.getState().renameNote(id, "Auto", false);
-    const note = useNotesStore.getState().notes.find((n) => n.id === id)!;
-    expect(note.title).toBe("Auto");
-    expect(note.manuallyRenamed).toBeFalsy();
+    expect(useNotesStore.getState().notes.find((n) => n.id === id)?.title).toBe("Renamed");
   });
 
   it("renameNote refuses empty titles", () => {
@@ -97,64 +86,59 @@ describe("useNotesStore", () => {
     expect(useNotesStore.getState().activeNoteId).toBeNull();
   });
 
-  it("syncWithSessions auto-creates notes for new sessions and selects the first", () => {
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "build" }]);
-    const state = useNotesStore.getState();
-    expect(state.notes).toHaveLength(1);
-    expect(state.notes[0].boundSessionId).toBe(1);
-    expect(state.notes[0].title).toBe("build");
-    expect(state.activeNoteId).toBe(state.notes[0].id);
+  it("deleted notes stay deleted (no auto-recreation)", () => {
+    const a = useNotesStore.getState().addManualNote("ephemeral");
+    useNotesStore.getState().deleteNote(a);
+    expect(useNotesStore.getState().notes).toHaveLength(0);
+    // The store exposes no session-sync API anymore — nothing can bring
+    // a deleted note back except the user creating a new one.
+    expect(
+      (useNotesStore.getState() as Record<string, unknown>).syncWithSessions,
+    ).toBeUndefined();
   });
 
-  it("syncWithSessions renames a bound note when the session is renamed", () => {
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "build" }]);
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "shipping" }]);
-    const note = useNotesStore.getState().notes[0];
-    expect(note.title).toBe("shipping");
-    expect(note.manuallyRenamed).toBe(false);
-  });
+  describe("moveNote", () => {
+    function makeThree(): [string, string, string] {
+      const a = useNotesStore.getState().addManualNote("A");
+      const b = useNotesStore.getState().addManualNote("B");
+      const c = useNotesStore.getState().addManualNote("C");
+      return [a, b, c];
+    }
 
-  it("syncWithSessions does not rename a note that was manually renamed", () => {
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "build" }]);
-    const id = useNotesStore.getState().notes[0].id;
-    useNotesStore.getState().renameNote(id, "My Custom Tab");
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "shipping" }]);
-    expect(useNotesStore.getState().notes[0].title).toBe("My Custom Tab");
-  });
+    it("moves a note forward", () => {
+      const [a] = makeThree();
+      useNotesStore.getState().moveNote(a, 2);
+      expect(useNotesStore.getState().notes.map((n) => n.title)).toEqual(["B", "C", "A"]);
+    });
 
-  it("syncWithSessions unbinds notes when their session disappears but keeps them", () => {
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "build" }]);
-    const id = useNotesStore.getState().notes[0].id;
-    useNotesStore.getState().setContent(id, "important");
-    useNotesStore.getState().syncWithSessions([]);
-    const state = useNotesStore.getState();
-    expect(state.notes).toHaveLength(1);
-    expect(state.notes[0].boundSessionId).toBeUndefined();
-    expect(state.notes[0].content).toBe("important");
-  });
+    it("moves a note backward", () => {
+      const [, , c] = makeThree();
+      useNotesStore.getState().moveNote(c, 0);
+      expect(useNotesStore.getState().notes.map((n) => n.title)).toEqual(["C", "A", "B"]);
+    });
 
-  it("syncWithSessions preserves the user's active selection", () => {
-    // Two sessions → two notes
-    useNotesStore.getState().syncWithSessions([
-      { id: 1, name: "a" },
-      { id: 2, name: "b" },
-    ]);
-    const ids = useNotesStore.getState().notes.map((n) => n.id);
-    useNotesStore.getState().setActiveNote(ids[1]);
-    // Rename session 1 — should not change active selection.
-    useNotesStore.getState().syncWithSessions([
-      { id: 1, name: "renamed" },
-      { id: 2, name: "b" },
-    ]);
-    expect(useNotesStore.getState().activeNoteId).toBe(ids[1]);
-  });
+    it("clamps out-of-range targets", () => {
+      const [a] = makeThree();
+      useNotesStore.getState().moveNote(a, 99);
+      expect(useNotesStore.getState().notes.map((n) => n.title)).toEqual(["B", "C", "A"]);
+      useNotesStore.getState().moveNote(a, -5);
+      expect(useNotesStore.getState().notes.map((n) => n.title)).toEqual(["A", "B", "C"]);
+    });
 
-  it("syncWithSessions is a no-op when nothing changes (does not bump state)", () => {
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "build" }]);
-    const before = useNotesStore.getState().notes;
-    useNotesStore.getState().syncWithSessions([{ id: 1, name: "build" }]);
-    const after = useNotesStore.getState().notes;
-    // Same array reference — store skipped the write.
-    expect(after).toBe(before);
+    it("is a no-op for unknown ids or same index", () => {
+      makeThree();
+      const before = useNotesStore.getState().notes;
+      useNotesStore.getState().moveNote("nope", 1);
+      expect(useNotesStore.getState().notes).toBe(before);
+      useNotesStore.getState().moveNote(before[1].id, 1);
+      expect(useNotesStore.getState().notes).toBe(before);
+    });
+
+    it("does not change which note is active", () => {
+      const [a, b] = makeThree();
+      useNotesStore.getState().setActiveNote(b);
+      useNotesStore.getState().moveNote(a, 2);
+      expect(useNotesStore.getState().activeNoteId).toBe(b);
+    });
   });
 });

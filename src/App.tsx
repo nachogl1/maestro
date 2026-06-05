@@ -14,7 +14,6 @@ import { useTerminalSettingsStore } from "./stores/useTerminalSettingsStore";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useUpdateStore } from "./stores/useUpdateStore";
-import { useNotesStore } from "./stores/useNotesStore";
 import { usePRTrackingStore } from "./stores/usePRTrackingStore";
 import { useAgentStatusToastStore } from "./stores/useAgentStatusToastStore";
 import { initActivityListener, stopActivityListener } from "./stores/useActivityStore";
@@ -158,16 +157,6 @@ function App() {
   useEffect(() => {
     return startAgentStatusToasts();
   }, [startAgentStatusToasts]);
-
-  // Reconcile notepad tabs against the live session list. The store subscribes
-  // to `sessions` so this fires whenever a session is added/renamed/removed.
-  // Reconciliation is cheap (no-op if nothing changed) and the result is
-  // persisted by the store's `persist` middleware.
-  const sessions = useSessionStore((s) => s.sessions);
-  const syncNotesWithSessions = useNotesStore((s) => s.syncWithSessions);
-  useEffect(() => {
-    syncNotesWithSessions(sessions.map((s) => ({ id: s.id, name: s.name ?? null })));
-  }, [sessions, syncNotesWithSessions]);
 
   // Listen for CLI-initiated project open events (from `maestro /path`).
   //
