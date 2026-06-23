@@ -1,10 +1,6 @@
 import { Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import {
-  type ContextDocKind,
-  type ContextDocTier,
-  writeContextDoc,
-} from "@/lib/claudemd";
+import { type ContextDocKind, type ContextDocTier, writeContextDoc } from "@/lib/claudemd";
 
 interface ContextDocEditorModalProps {
   /** Absolute path to the doc on disk. */
@@ -53,9 +49,29 @@ const README_TEMPLATE = `# Project
 
 `;
 
+const GITIGNORE_TEMPLATE = `# Ignore build artifacts, dependencies, and local files
+
+node_modules/
+dist/
+target/
+.env
+`;
+
+const SETTINGS_TEMPLATE = `{
+}
+`;
+
+const MCP_TEMPLATE = `{
+  "mcpServers": {}
+}
+`;
+
 function defaultTemplate(kind: ContextDocKind, tier: ContextDocTier): string {
   if (kind === "agents") return AGENTS_TEMPLATE;
   if (kind === "readme") return README_TEMPLATE;
+  if (kind === "gitignore") return GITIGNORE_TEMPLATE;
+  if (kind === "settings") return SETTINGS_TEMPLATE;
+  if (kind === "mcp") return MCP_TEMPLATE;
   if (tier === "user") return CLAUDE_USER_TEMPLATE;
   return CLAUDE_TEMPLATE;
 }
@@ -74,7 +90,7 @@ export function ContextDocEditorModal({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [content, setContent] = useState(
-    exists && initialContent !== undefined ? initialContent : defaultTemplate(kind, tier)
+    exists && initialContent !== undefined ? initialContent : defaultTemplate(kind, tier),
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

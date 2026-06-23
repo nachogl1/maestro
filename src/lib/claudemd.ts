@@ -7,9 +7,9 @@ export interface ClaudeMdStatus {
   content: string | null;
 }
 
-/** A context doc surfaced in the sidebar (CLAUDE.md / AGENTS.md / README.md). */
+/** A context doc/config file surfaced in the sidebar. */
 export type ContextDocTier = "user" | "project";
-export type ContextDocKind = "claude" | "agents" | "readme";
+export type ContextDocKind = "claude" | "agents" | "readme" | "gitignore" | "settings" | "mcp";
 
 export interface ContextDoc {
   tier: ContextDocTier;

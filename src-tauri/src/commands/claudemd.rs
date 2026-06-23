@@ -20,7 +20,7 @@ pub struct ClaudeMdStatus {
 pub struct ContextDoc {
     /// "user" | "project"
     pub tier: String,
-    /// "claude" | "agents" | "readme"
+    /// "claude" | "agents" | "readme" | "gitignore" | "settings" | "mcp"
     pub kind: String,
     /// Display label (the filename, e.g. "CLAUDE.md").
     pub label: String,
@@ -30,7 +30,14 @@ pub struct ContextDoc {
 
 /// Allowed basenames for read/write — basename validation is the single
 /// safeguard against the frontend asking us to touch arbitrary files.
-const ALLOWED_BASENAMES: &[&str] = &["CLAUDE.md", "AGENTS.md", "README.md"];
+const ALLOWED_BASENAMES: &[&str] = &[
+    "CLAUDE.md",
+    "AGENTS.md",
+    "README.md",
+    ".gitignore",
+    "settings.json",
+    ".mcp.json",
+];
 
 fn validate_basename(path: &Path) -> Result<(), String> {
     let basename = path
@@ -50,45 +57,95 @@ fn validate_basename(path: &Path) -> Result<(), String> {
 ///
 /// Always returns the user-tier entries (anchored at `~/.claude/`).
 /// If `project_path` is non-empty and resolvable, also returns project-tier
-/// entries (`<repo>/CLAUDE.md`, `AGENTS.md`, `README.md`).
+/// entries (`<repo>/CLAUDE.md`, `AGENTS.md`, `README.md`, `.gitignore`,
+/// `.claude/settings.json`, `.mcp.json`).
 #[tauri::command]
 pub async fn list_context_docs(project_path: String) -> Result<Vec<ContextDoc>, String> {
     let mut docs: Vec<ContextDoc> = Vec::new();
 
-    // User tier — ~/.claude/CLAUDE.md, ~/.claude/AGENTS.md
+    let push = |docs: &mut Vec<ContextDoc>, tier: &str, kind: &str, label: &str, p: PathBuf| {
+        docs.push(ContextDoc {
+            tier: tier.into(),
+            kind: kind.into(),
+            label: label.into(),
+            exists: p.exists(),
+            path: p.to_string_lossy().into_owned(),
+        });
+    };
+
+    // User tier — anchored at ~/.claude/
     if let Some(base_dirs) = BaseDirs::new() {
         let user_dir = base_dirs.home_dir().join(".claude");
-        for (kind, label) in [("claude", "CLAUDE.md"), ("agents", "AGENTS.md")] {
-            let p = user_dir.join(label);
-            docs.push(ContextDoc {
-                tier: "user".into(),
-                kind: kind.into(),
-                label: label.into(),
-                exists: p.exists(),
-                path: p.to_string_lossy().into_owned(),
-            });
-        }
+        push(
+            &mut docs,
+            "user",
+            "claude",
+            "CLAUDE.md",
+            user_dir.join("CLAUDE.md"),
+        );
+        push(
+            &mut docs,
+            "user",
+            "agents",
+            "AGENTS.md",
+            user_dir.join("AGENTS.md"),
+        );
+        push(
+            &mut docs,
+            "user",
+            "settings",
+            ".claude/settings.json",
+            user_dir.join("settings.json"),
+        );
     }
 
     if !project_path.is_empty() {
         let canonical = std::fs::canonicalize(&project_path)
             .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-        // Project tier — committed docs at the repo root
-        for (kind, label) in [
-            ("claude", "CLAUDE.md"),
-            ("agents", "AGENTS.md"),
-            ("readme", "README.md"),
-        ] {
-            let p = canonical.join(label);
-            docs.push(ContextDoc {
-                tier: "project".into(),
-                kind: kind.into(),
-                label: label.into(),
-                exists: p.exists(),
-                path: p.to_string_lossy().into_owned(),
-            });
-        }
+        // Project tier — committed docs / config at the repo root
+        push(
+            &mut docs,
+            "project",
+            "claude",
+            "CLAUDE.md",
+            canonical.join("CLAUDE.md"),
+        );
+        push(
+            &mut docs,
+            "project",
+            "agents",
+            "AGENTS.md",
+            canonical.join("AGENTS.md"),
+        );
+        push(
+            &mut docs,
+            "project",
+            "readme",
+            "README.md",
+            canonical.join("README.md"),
+        );
+        push(
+            &mut docs,
+            "project",
+            "gitignore",
+            ".gitignore",
+            canonical.join(".gitignore"),
+        );
+        push(
+            &mut docs,
+            "project",
+            "settings",
+            ".claude/settings.json",
+            canonical.join(".claude").join("settings.json"),
+        );
+        push(
+            &mut docs,
+            "project",
+            "mcp",
+            ".mcp.json",
+            canonical.join(".mcp.json"),
+        );
     }
 
     Ok(docs)
@@ -138,9 +195,7 @@ pub async fn check_claude_md(project_path: String) -> Result<ClaudeMdStatus, Str
 
     if claude_md_path.exists() {
         // Read content if file exists
-        let content = tokio::fs::read_to_string(&claude_md_path)
-            .await
-            .ok();
+        let content = tokio::fs::read_to_string(&claude_md_path).await.ok();
 
         Ok(ClaudeMdStatus {
             exists: true,
