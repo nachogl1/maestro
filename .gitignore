@@ -24,6 +24,9 @@ src-tauri/gen/
 *.swp
 *.swo
 
+# MSYS2/Git Bash crash dumps (fork() faults on Windows; harmless, see PR)
+*.stackdump
+
 # OS
 .DS_Store
 Thumbs.db
