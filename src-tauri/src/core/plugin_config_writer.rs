@@ -17,6 +17,8 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use super::config_recovery::read_json_or_recover;
+
 /// Merges `enabledPlugins` into an existing settings.local.json file.
 ///
 /// Preserves user-defined settings while replacing the `enabledPlugins` object.
@@ -25,15 +27,10 @@ fn merge_with_existing(
     settings_path: &Path,
     enabled_plugins: &HashMap<String, bool>,
 ) -> Result<Value, String> {
-    let mut config: Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(settings_path)
-            .map_err(|e| format!("Failed to read existing settings.local.json: {}", e))?;
-
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse existing settings.local.json: {}", e))?
-    } else {
-        json!({})
-    };
+    // A corrupt settings.local.json (e.g. from a crashed/interleaved write) is
+    // moved aside and treated as empty so the launch self-heals instead of
+    // erroring on every future session.
+    let mut config: Value = read_json_or_recover(settings_path)?;
 
     // Remove legacy plugins array if present
     if let Some(obj) = config.as_object_mut() {
@@ -214,6 +211,33 @@ mod tests {
         let enabled_plugins = config["enabledPlugins"].as_object().unwrap();
         assert_eq!(enabled_plugins.len(), 1);
         assert_eq!(enabled_plugins["new-plugin@official"], true);
+    }
+
+    #[tokio::test]
+    async fn test_write_recovers_from_corrupt_settings() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // Invalid JSON (the in-the-wild failure: short write left a stale tail).
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            "{\n  \"enabledPlugins\": {}\n}\": [ leftover hooks tail",
+        )
+        .unwrap();
+
+        let mut plugins = HashMap::new();
+        plugins.insert("recovered@official".to_string(), true);
+        // Must NOT error on corrupt input — it should self-heal.
+        write_session_plugin_config(dir.path(), &plugins)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(config["enabledPlugins"]["recovered@official"], true);
+        // Corrupt original is preserved alongside for debugging.
+        assert!(claude_dir.join("settings.local.corrupt").exists());
     }
 
     #[tokio::test]

@@ -8,6 +8,8 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use super::config_recovery::read_json_or_recover;
+
 /// Builds the hooks configuration JSON for a session.
 ///
 /// Generates hook entries for SessionStart, SessionEnd, PreToolUse, and Stop.
@@ -91,18 +93,11 @@ pub async fn write_session_hooks_config(
             .map_err(|e| format!("Failed to create .claude directory: {}", e))?;
     }
 
-    // Read existing settings or start fresh
+    // Read existing settings or start fresh. A corrupt settings.local.json is
+    // moved aside and treated as empty so launching self-heals instead of
+    // erroring on every future session.
     let settings_path = claude_dir.join("settings.local.json");
-    let mut config: Value = if settings_path.exists() {
-        let content = tokio::fs::read_to_string(&settings_path)
-            .await
-            .map_err(|e| format!("Failed to read settings.local.json: {}", e))?;
-
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse settings.local.json: {}", e))?
-    } else {
-        json!({})
-    };
+    let mut config: Value = read_json_or_recover(&settings_path)?;
 
     // Build and set hooks config
     let hooks = build_hooks_config(session_id, status_port, instance_id);
@@ -268,6 +263,29 @@ mod tests {
             config["hooks"].get("SessionStart").is_some(),
             "SessionStart hook should exist"
         );
+    }
+
+    #[tokio::test]
+    async fn test_write_recovers_from_corrupt_settings() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // Invalid JSON — must not brick the launch.
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            "{\n  \"enabledPlugins\": {}\n}\": [ leftover hooks tail",
+        )
+        .unwrap();
+
+        write_session_hooks_config(dir.path(), 1, 9900, "inst-recover")
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        assert!(config["hooks"].get("SessionStart").is_some());
+        assert!(claude_dir.join("settings.local.corrupt").exists());
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 pub mod claude_event;
 pub mod cli_path;
+pub mod config_recovery;
 pub mod error;
 pub mod event_bus;
 pub mod transcript_parser;

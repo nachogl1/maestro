@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use super::config_recovery::read_json_or_recover;
 use super::mcp_manager::{McpServerConfig, McpServerSource, McpServerType};
 use crate::commands::mcp::McpCustomServer;
 
@@ -238,37 +239,32 @@ fn merge_with_existing(
 ) -> Result<Value, String> {
     log::debug!("[MCP] merge_with_existing: {:?} for session {}", mcp_path, session_id);
 
-    let mut final_servers: HashMap<String, Value> = if mcp_path.exists() {
-        let content = std::fs::read_to_string(mcp_path)
-            .map_err(|e| format!("Failed to read existing .mcp.json: {}", e))?;
+    // A corrupt .mcp.json (e.g. from a crashed/interleaved write) is moved aside
+    // and treated as empty so launching self-heals — and the maestro-status
+    // server is always re-added below — instead of erroring on every session.
+    let existing = read_json_or_recover(mcp_path)?;
 
-        let existing: Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse existing .mcp.json: {}", e))?;
-
-        // Keep all servers EXCEPT this session's Maestro entry
-        existing
-            .get("mcpServers")
-            .and_then(|s| s.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter(|(name, v)| {
-                        let should_remove = should_remove_server(name, v, session_id);
-                        if should_remove {
-                            log::info!(
-                                "merge_with_existing: removing session {}'s server '{}'",
-                                session_id,
-                                name
-                            );
-                        }
-                        !should_remove
-                    })
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<HashMap<_, _>>()
-            })
-            .unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+    // Keep all servers EXCEPT this session's Maestro entry
+    let mut final_servers: HashMap<String, Value> = existing
+        .get("mcpServers")
+        .and_then(|s| s.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter(|(name, v)| {
+                    let should_remove = should_remove_server(name, v, session_id);
+                    if should_remove {
+                        log::info!(
+                            "merge_with_existing: removing session {}'s server '{}'",
+                            session_id,
+                            name
+                        );
+                    }
+                    !should_remove
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
 
     // Add new servers for this session
     for (name, config) in new_servers {
@@ -786,6 +782,27 @@ mod tests {
             "3",
             "maestro-status should have session ID 3 in env"
         );
+    }
+
+    #[test]
+    fn test_merge_recovers_from_corrupt_mcp_json() {
+        let dir = tempdir().unwrap();
+        let mcp_path = dir.path().join(".mcp.json");
+
+        // Invalid JSON — merge must not error; it should move it aside and
+        // still produce a config containing the maestro-status entry.
+        std::fs::write(&mcp_path, "{ \"mcpServers\": { } }\": [ leftover tail").unwrap();
+
+        let mut new_servers = HashMap::new();
+        new_servers.insert(
+            "maestro-status".to_string(),
+            json!({ "type": "stdio", "command": "/usr/bin/maestro-status", "args": [] }),
+        );
+
+        let result = merge_with_existing(&mcp_path, new_servers, 3).unwrap();
+        let servers = result["mcpServers"].as_object().unwrap();
+        assert!(servers.contains_key("maestro-status"));
+        assert!(dir.path().join(".mcp.corrupt").exists());
     }
 
     #[tokio::test]
