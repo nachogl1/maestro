@@ -35,9 +35,23 @@ const ALLOWED_BASENAMES: &[&str] = &[
     "AGENTS.md",
     "README.md",
     ".gitignore",
+    // Basename of the global git excludes file (`~/.config/git/ignore`).
+    "ignore",
     "settings.json",
     ".mcp.json",
 ];
+
+/// Resolve the path to the user's global git excludes file the way git does
+/// for the common case: `$XDG_CONFIG_HOME/git/ignore`, falling back to
+/// `~/.config/git/ignore`. (A custom `core.excludesfile` is not honored here —
+/// the default location covers the overwhelming majority of setups.)
+fn global_gitignore_path(home_dir: &Path) -> PathBuf {
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| home_dir.join(".config"));
+    config_dir.join("git").join("ignore")
+}
 
 fn validate_basename(path: &Path) -> Result<(), String> {
     let basename = path
@@ -55,7 +69,8 @@ fn validate_basename(path: &Path) -> Result<(), String> {
 
 /// List the context docs that may exist for the active project.
 ///
-/// Always returns the user-tier entries (anchored at `~/.claude/`).
+/// Always returns the user-tier entries (anchored at `~/.claude/`, plus the
+/// global git excludes file at `~/.config/git/ignore`).
 /// If `project_path` is non-empty and resolvable, also returns project-tier
 /// entries (`<repo>/CLAUDE.md`, `AGENTS.md`, `README.md`, `.gitignore`,
 /// `.claude/settings.json`, `.mcp.json`).
@@ -96,6 +111,13 @@ pub async fn list_context_docs(project_path: String) -> Result<Vec<ContextDoc>, 
             "settings",
             ".claude/settings.json",
             user_dir.join("settings.json"),
+        );
+        push(
+            &mut docs,
+            "user",
+            "gitignore",
+            "git/ignore (global)",
+            global_gitignore_path(base_dirs.home_dir()),
         );
     }
 
