@@ -370,8 +370,12 @@ mod tests {
 
     #[test]
     fn test_parse_empty_project() {
-        let manager = McpManager::new();
-        let servers = manager.get_project_servers("/nonexistent/path");
+        // A project with no `.mcp.json` yields no project-scope servers.
+        // Assert on the project-scope parser directly rather than
+        // `get_project_servers`, which also folds in the developer's global
+        // `~/.claude.json` (user/local-scope servers) and would make this
+        // depend on the machine it runs on.
+        let servers = McpManager::parse_project_mcp_config("/nonexistent/path");
         assert!(servers.is_empty());
     }
 

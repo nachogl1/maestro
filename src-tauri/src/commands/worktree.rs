@@ -727,7 +727,13 @@ mod tests {
         .await
         .unwrap();
         assert!(!result2.created);
-        assert_eq!(result2.worktree_path, result1.worktree_path);
+        // Compare canonicalized paths: the create path returns native separators
+        // while the reuse path returns git's forward-slash form — both point at the
+        // same directory. (Mirrors the canonicalize-before-compare in the auto-detect
+        // reuse test above.)
+        let reused = std::fs::canonicalize(result2.worktree_path.as_ref().unwrap()).unwrap();
+        let created = std::fs::canonicalize(result1.worktree_path.as_ref().unwrap()).unwrap();
+        assert_eq!(reused, created);
 
         // Cleanup
         let wt_path = PathBuf::from(result1.worktree_path.unwrap());
