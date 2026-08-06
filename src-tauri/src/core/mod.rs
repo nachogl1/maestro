@@ -1,3 +1,4 @@
+pub mod allowance_watcher;
 pub mod claude_event;
 pub mod cli_path;
 pub mod config_recovery;
@@ -17,6 +18,7 @@ pub mod plugin_config_writer;
 pub mod plugin_manager;
 pub mod process_manager;
 pub mod samurai_audit;
+pub mod samurai_config;
 pub mod session_manager;
 pub mod status_server;
 pub mod supervisor;

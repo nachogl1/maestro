@@ -340,8 +340,26 @@ pub fn run() {
                     let _ = supervisor_app_handle.emit("samurai-supervisor-event", snapshot);
                 })),
             ));
-            app.manage(audit_log);
-            app.manage(supervisor);
+            app.manage(audit_log.clone());
+            app.manage(supervisor.clone());
+
+            // Samurai (issue #45): thresholds config + backend allowance
+            // watcher. The config is seeded from the settings store and
+            // shared (Arc<RwLock<…>>) between the get/set commands and the
+            // allowance loop, which polls the usage API on its own ~60s
+            // timer — independent of the frontend — and emits edge-triggered
+            // ALERT audit rows + `samurai-allowance-event` on threshold
+            // crossings (events only; parking is Phase 3).
+            let samurai_config: core::samurai_config::SharedSamuraiConfig = Arc::new(
+                std::sync::RwLock::new(commands::samurai::load_config_from_store(app.handle())),
+            );
+            app.manage(samurai_config.clone());
+            core::allowance_watcher::spawn_allowance_loop(
+                app.handle().clone(),
+                samurai_config,
+                supervisor,
+                audit_log,
+            );
 
             // GitHub watchdog: background poller for review requests /
             // assigned issues across all configured projects. The frontend
@@ -561,6 +579,8 @@ pub fn run() {
             commands::samurai::samurai_list_sessions,
             commands::samurai::samurai_audit_read,
             commands::samurai::samurai_audit_clear,
+            commands::samurai::samurai_get_config,
+            commands::samurai::samurai_set_config,
             // CLI commands
             commands::cli::install_cli,
             commands::cli::uninstall_cli,
