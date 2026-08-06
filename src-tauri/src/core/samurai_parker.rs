@@ -649,7 +649,7 @@ mod tests {
             None,
         ));
         // The fire loop is irrelevant here — arm/list are synchronous.
-        let (schedule, _task) = SamuraiSchedule::new(dir.join("schedule"), Arc::new(|_| {}));
+        let (schedule, _task) = SamuraiSchedule::new(dir.join("schedule"), Arc::new(|_| {}), None);
         let torn_down: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let torn_down_rec = torn_down.clone();
         let teardown: SessionTeardown = Arc::new(move |id| {

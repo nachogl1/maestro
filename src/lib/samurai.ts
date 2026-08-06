@@ -72,6 +72,22 @@ export interface SamuraiAuditReadResult {
   file_size_bytes: number;
 }
 
+/**
+ * One pending resume timer — mirrors the Rust `ScheduleEntry`
+ * (`core/samurai_schedule.rs`). Also the element type of the
+ * `samurai-schedule-event` payload, which carries the FULL current list on
+ * every arm/cancel/fire (issue #61).
+ */
+export interface SamuraiScheduleEntry {
+  /** Canonical project path (Windows `\\?\` prefix already stripped). */
+  project_path: string;
+  epic: string;
+  /** RFC 3339 UTC fire time — when the epic resumes. */
+  fire_at: string;
+  /** Why the timer exists (currently always `"park"`). */
+  reason: string;
+}
+
 /** Snapshots of every supervised session, ordered by session id. */
 export function samuraiListSessions(): Promise<SamuraiSessionSnapshot[]> {
   return invoke("samurai_list_sessions");
@@ -108,4 +124,12 @@ export function samuraiAuditRead(
 /** Deletes a project's audit log. User-initiated only (PRD decision #15). */
 export function samuraiAuditClear(projectPath: string): Promise<void> {
   return invoke("samurai_audit_clear", { projectPath });
+}
+
+/**
+ * Every pending resume timer, all projects (issue #61). Seeds the schedule
+ * state on listener init; live updates ride `samurai-schedule-event`.
+ */
+export function samuraiScheduleList(): Promise<SamuraiScheduleEntry[]> {
+  return invoke("samurai_schedule_list");
 }

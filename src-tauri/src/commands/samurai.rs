@@ -15,6 +15,7 @@ use crate::commands::ai_runner::canonical_project_path;
 use crate::core::samurai_audit::{AuditLog, AuditReadResult};
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
 use crate::core::samurai_replicator::SamuraiReplicator;
+use crate::core::samurai_schedule::{SamuraiSchedule, ScheduleEntry};
 use crate::core::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 
 /// Store filename for the Samurai config (app-data settings pattern, same
@@ -130,6 +131,15 @@ pub fn samurai_transition(
 #[tauri::command]
 pub fn samurai_list_sessions(supervisor: State<'_, Arc<Supervisor>>) -> Vec<SessionSnapshot> {
     supervisor.list_sessions()
+}
+
+/// Every pending resume timer, all projects (issue #61; PRD §9 park
+/// countdown — Phase 4's Files section reads it too). Seeds the frontend's
+/// schedule state; live updates ride the `samurai-schedule-event` channel
+/// (full current list on every arm/cancel/fire — see `lib.rs`).
+#[tauri::command]
+pub fn samurai_schedule_list(schedule: State<'_, Arc<SamuraiSchedule>>) -> Vec<ScheduleEntry> {
+    schedule.list()
 }
 
 /// Reads a project's audit rows — optionally only those strictly after

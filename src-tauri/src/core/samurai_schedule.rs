@@ -5,8 +5,8 @@
 //! computes `fire_at = resets_at + 5 min + per-epic jitter` (PRD §7 — the
 //! jitter helper lives here, see [`jitter_secs`]) and [`arm`]s an entry.
 //! This module only stores and fires timers; what a firing *means* (a fresh
-//! spawn from the handoff file) is the callback's business — a logging stub
-//! until P3.3 (issue #61) wires the real resume.
+//! spawn from the handoff file) is the callback's business — since P3.3
+//! (issue #61) that is `samurai_resumer::SamuraiResumer::on_fire`.
 //!
 //! **Location:** one `schedule.json` for the whole app. The store is rooted
 //! at a caller-supplied base dir — the app passes
@@ -49,9 +49,15 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// herd spread over 0..=5 minutes).
 pub const MAX_JITTER_SECS: u64 = 300;
 
-/// Fired for each due entry. A stub (log-only) until P3.3 wires the real
-/// resume spawn — see the construction site in `lib.rs`.
+/// Fired for each due entry. Wired to the resume handler
+/// (`samurai_resumer`, issue #61) in `lib.rs`.
 pub type FireCallback = Arc<dyn Fn(ScheduleEntry) + Send + Sync>;
+
+/// Fired with the FULL pending-timer list after every mutation that reached
+/// disk — arm, cancel, and each fired entry's self-clean (issue #61, PRD §9:
+/// the park-countdown chip stays live without polling). `lib.rs` forwards it
+/// as the `samurai-schedule-event` Tauri event; tests collect it directly.
+pub type ScheduleChangedCallback = Arc<dyn Fn(&[ScheduleEntry]) + Send + Sync>;
 
 /// One persisted timer. Kept lean (PRD §8): identity + when + why — the run
 /// config (`samurai_run_config`) holds everything a resume spawn needs.
@@ -81,6 +87,9 @@ pub struct SamuraiSchedule {
     /// before releasing, so the file never lags a reader's view.
     entries: Mutex<Vec<ScheduleEntry>>,
     on_fire: FireCallback,
+    /// `None` only where nobody listens (some tests) — see
+    /// [`ScheduleChangedCallback`].
+    on_change: Option<ScheduleChangedCallback>,
 }
 
 impl SamuraiSchedule {
@@ -91,6 +100,7 @@ impl SamuraiSchedule {
     pub fn new(
         base_dir: PathBuf,
         on_fire: FireCallback,
+        on_change: Option<ScheduleChangedCallback>,
     ) -> (Arc<Self>, impl std::future::Future<Output = ()> + Send) {
         let path = base_dir.join("schedule.json");
         let entries = load_entries(&path);
@@ -98,6 +108,7 @@ impl SamuraiSchedule {
             path,
             entries: Mutex::new(entries),
             on_fire,
+            on_change,
         });
         let loop_schedule = schedule.clone();
         let task = async move {
@@ -118,23 +129,32 @@ impl SamuraiSchedule {
     pub fn arm(&self, entry: ScheduleEntry) -> Result<(), String> {
         let mut entry = entry;
         entry.project_path = normalize_project(&entry.project_path);
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        entries.retain(|e| !(e.project_path == entry.project_path && e.epic == entry.epic));
-        entries.push(entry);
-        persist(&self.path, &entries)
+        let snapshot = {
+            let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+            entries.retain(|e| !(e.project_path == entry.project_path && e.epic == entry.epic));
+            entries.push(entry);
+            persist(&self.path, &entries)?;
+            entries.clone()
+        };
+        self.notify_change(&snapshot);
+        Ok(())
     }
 
     /// Cancels the (project, epic) timer if one is pending. `Ok(false)` when
     /// nothing was armed — cancelling twice is not an error.
     pub fn cancel(&self, project: &str, epic: &str) -> Result<bool, String> {
         let project = normalize_project(project);
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = entries.len();
-        entries.retain(|e| !(e.project_path == project && e.epic == epic));
-        if entries.len() == before {
-            return Ok(false);
-        }
-        persist(&self.path, &entries)?;
+        let snapshot = {
+            let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+            let before = entries.len();
+            entries.retain(|e| !(e.project_path == project && e.epic == epic));
+            if entries.len() == before {
+                return Ok(false);
+            }
+            persist(&self.path, &entries)?;
+            entries.clone()
+        };
+        self.notify_change(&snapshot);
         Ok(true)
     }
 
@@ -168,15 +188,29 @@ impl SamuraiSchedule {
             (self.on_fire)(entry.clone());
             // Remove AFTER the callback returned (module doc: a crash
             // mid-callback re-fires on next launch — the safe direction).
-            let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-            entries.retain(|e| {
-                !(e.project_path == entry.project_path
-                    && e.epic == entry.epic
-                    && e.fire_at == entry.fire_at)
-            });
-            if let Err(e) = persist(&self.path, &entries) {
-                log::error!("samurai schedule: failed to persist after fire: {e}");
-            }
+            let snapshot = {
+                let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+                entries.retain(|e| {
+                    !(e.project_path == entry.project_path
+                        && e.epic == entry.epic
+                        && e.fire_at == entry.fire_at)
+                });
+                if let Err(e) = persist(&self.path, &entries) {
+                    log::error!("samurai schedule: failed to persist after fire: {e}");
+                }
+                entries.clone()
+            };
+            // The frontend countdown must drop (or move to the re-armed
+            // time) as soon as the timer fired — one event per fire.
+            self.notify_change(&snapshot);
+        }
+    }
+
+    /// Invokes the change callback (if any) outside the entries lock, so a
+    /// listener can call back into `arm`/`cancel`/`list` without deadlocking.
+    fn notify_change(&self, entries: &[ScheduleEntry]) {
+        if let Some(on_change) = &self.on_change {
+            on_change(entries);
         }
     }
 }
@@ -299,7 +333,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (cb, _) = collector();
         {
-            let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb.clone());
+            let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb.clone(), None);
             schedule
                 .arm(entry("C:/git/alpha", "#37", &in_one_hour()))
                 .unwrap();
@@ -308,7 +342,7 @@ mod tests {
                 .unwrap();
         }
         // A fresh instance (an app restart) must see both timers.
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         let mut epics: Vec<String> = schedule.list().into_iter().map(|e| e.epic).collect();
         epics.sort();
         assert_eq!(epics, vec!["#37".to_string(), "#9".to_string()]);
@@ -318,7 +352,7 @@ mod tests {
     fn test_arm_replaces_existing_timer_for_same_epic() {
         let dir = tempdir().unwrap();
         let (cb, _) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         schedule
             .arm(entry("C:/git/alpha", "#37", "2027-01-01T00:00:00+00:00"))
             .unwrap();
@@ -334,7 +368,7 @@ mod tests {
     fn test_cancel_removes_and_persists() {
         let dir = tempdir().unwrap();
         let (cb, _) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb.clone());
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb.clone(), None);
         schedule
             .arm(entry("C:/git/alpha", "#37", &in_one_hour()))
             .unwrap();
@@ -347,7 +381,7 @@ mod tests {
         assert_eq!(schedule.list().len(), 1);
 
         // The cancel reached the file, not just memory.
-        let (reloaded, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (reloaded, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         assert_eq!(reloaded.list().len(), 1);
         assert_eq!(reloaded.list()[0].epic, "#38");
     }
@@ -356,7 +390,7 @@ mod tests {
     fn test_verbatim_prefix_matches_plain_spelling() {
         let dir = tempdir().unwrap();
         let (cb, _) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         schedule
             .arm(entry(r"\\?\C:\git\maestro", "#37", &in_one_hour()))
             .unwrap();
@@ -367,7 +401,7 @@ mod tests {
     fn test_fire_due_fires_past_entries_and_self_cleans() {
         let dir = tempdir().unwrap();
         let (cb, fired) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         schedule
             .arm(entry("C:/git/alpha", "#37", "2020-01-01T00:00:00+00:00"))
             .unwrap();
@@ -393,7 +427,7 @@ mod tests {
     fn test_file_deleted_when_last_timer_fires() {
         let dir = tempdir().unwrap();
         let (cb, fired) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         schedule
             .arm(entry("C:/git/alpha", "#37", "2020-01-01T00:00:00+00:00"))
             .unwrap();
@@ -413,7 +447,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (cb, _) = collector();
         {
-            let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+            let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
             schedule
                 .arm(entry("C:/git/alpha", "#37", "2020-01-01T00:00:00+00:00"))
                 .unwrap();
@@ -423,7 +457,7 @@ mod tests {
         let notify: FireCallback = Arc::new(move |entry| {
             let _ = tx.send(entry);
         });
-        let (_schedule, task) = SamuraiSchedule::new(dir.path().to_path_buf(), notify);
+        let (_schedule, task) = SamuraiSchedule::new(dir.path().to_path_buf(), notify, None);
         tokio::spawn(task);
 
         let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -438,7 +472,7 @@ mod tests {
     fn test_unparseable_fire_at_fires_rather_than_strands() {
         let dir = tempdir().unwrap();
         let (cb, fired) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         schedule
             .arm(entry("C:/git/alpha", "#37", "not-a-timestamp"))
             .unwrap();
@@ -456,7 +490,7 @@ mod tests {
         std::fs::write(&path, "{ definitely not a schedule").unwrap();
 
         let (cb, _) = collector();
-        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb);
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
         assert!(schedule.list().is_empty());
 
         // The store must still be usable — the next arm overwrites the
@@ -465,6 +499,44 @@ mod tests {
             .arm(entry("C:/git/alpha", "#37", &in_one_hour()))
             .unwrap();
         assert_eq!(load_entries(&path).len(), 1);
+    }
+
+    #[test]
+    fn test_change_callback_fires_on_arm_cancel_and_fire_with_full_list() {
+        // Issue #61: the countdown chip rides `samurai-schedule-event`, which
+        // lib.rs feeds from this callback — every mutation must notify with
+        // the FULL current list.
+        let dir = tempdir().unwrap();
+        let (cb, _) = collector();
+        let changes: Arc<Mutex<Vec<Vec<ScheduleEntry>>>> = Arc::new(Mutex::new(Vec::new()));
+        let changes_rec = changes.clone();
+        let on_change: ScheduleChangedCallback = Arc::new(move |entries| {
+            changes_rec.lock().unwrap().push(entries.to_vec());
+        });
+        let (schedule, _task) =
+            SamuraiSchedule::new(dir.path().to_path_buf(), cb, Some(on_change));
+
+        schedule
+            .arm(entry("C:/git/alpha", "#37", "2020-01-01T00:00:00+00:00"))
+            .unwrap();
+        schedule
+            .arm(entry("C:/git/alpha", "#38", &in_one_hour()))
+            .unwrap();
+        assert_eq!(changes.lock().unwrap().len(), 2);
+        assert_eq!(changes.lock().unwrap()[1].len(), 2, "full list, not a delta");
+
+        assert!(schedule.cancel("C:/git/alpha", "#38").unwrap());
+        assert_eq!(changes.lock().unwrap().len(), 3);
+        assert_eq!(changes.lock().unwrap()[2].len(), 1);
+        // Cancelling nothing notifies nothing.
+        assert!(!schedule.cancel("C:/git/alpha", "#38").unwrap());
+        assert_eq!(changes.lock().unwrap().len(), 3);
+
+        // A fire self-cleans and notifies with the entry gone.
+        schedule.fire_due();
+        let changes = changes.lock().unwrap();
+        assert_eq!(changes.len(), 4);
+        assert!(changes[3].is_empty());
     }
 
     #[test]

@@ -589,7 +589,7 @@ pub fn run() {
                 samurai_config.clone(),
                 app.state::<ProcessManager>().inner().clone(),
                 audit_log.clone(),
-                session_dirs,
+                session_dirs.clone(),
                 Some(replicator.clone()),
             ));
             // Managed for the same teardown propagation as the progress
@@ -599,28 +599,42 @@ pub fn run() {
             core::samurai_injector::spawn_injector(injector.clone());
 
             // Samurai (issue #59): per-epic run-config store + persisted
-            // resume timers. Foundation only — the parker below arms timers;
-            // P3.3 (issue #61) replaces the logging stub with the real
-            // resume spawn. Both managed so the later command layers reach
+            // resume timers. Both managed so the later command layers reach
             // them via `app.state()`.
             let run_configs = Arc::new(core::samurai_run_config::RunConfigStore::new(
                 commands::ai_runner::artifact_base_dir("runs"),
             ));
-            app.manage(run_configs);
+            app.manage(run_configs.clone());
+            // Samurai (issue #61): the resume handler — a fired park timer
+            // becomes a FRESH generation spawn (guards → working dir →
+            // next generation → RESUME row → replicator.spawn_generation).
+            // Constructed before the schedule because it IS the fire
+            // callback; the schedule and parker are late-bound below (the
+            // construction order is circular: schedule → resumer → parker →
+            // schedule).
+            let samurai_resumer = core::samurai_resumer::SamuraiResumer::new(
+                supervisor.clone(),
+                replicator.clone(),
+                run_configs,
+                audit_log.clone(),
+                session_dirs,
+            );
+            let resumer_for_fire = samurai_resumer.clone();
+            // Issue #61: every schedule mutation (arm/cancel/fire) pushes
+            // the full timer list to the frontend — the park-countdown chip
+            // stays live without polling.
+            let schedule_event_handle = app.handle().clone();
             let (samurai_schedule, samurai_schedule_task) =
                 core::samurai_schedule::SamuraiSchedule::new(
                     commands::ai_runner::artifact_base_dir("samurai"),
-                    // TODO(#61): wire to the real resume spawn (fresh gen
-                    // from the handoff file). Log-only until then.
-                    Arc::new(|entry: core::samurai_schedule::ScheduleEntry| {
-                        log::info!(
-                            "samurai schedule: resume timer fired for epic {} in {} \
-                             (reason: {}) — resume spawning lands in P3.3",
-                            entry.epic,
-                            entry.project_path,
-                            entry.reason,
-                        );
+                    Arc::new(move |entry: core::samurai_schedule::ScheduleEntry| {
+                        resumer_for_fire.on_fire(entry);
                     }),
+                    Some(Arc::new(
+                        move |entries: &[core::samurai_schedule::ScheduleEntry]| {
+                            let _ = schedule_event_handle.emit("samurai-schedule-event", entries);
+                        },
+                    )),
                 );
             tauri::async_runtime::spawn(samurai_schedule_task);
             app.manage(samurai_schedule.clone());
@@ -637,7 +651,7 @@ pub fn run() {
                 supervisor.clone(),
                 samurai_context.clone(),
                 injector.clone(),
-                samurai_schedule,
+                samurai_schedule.clone(),
                 audit_log.clone(),
                 teardown_for_parker,
             );
@@ -647,6 +661,10 @@ pub fn run() {
             replicator.set_absorber(Arc::new(move |project: &str, epic: &str| {
                 parker_for_absorb.absorb_handoff(project, epic)
             }));
+            // Issue #61: closes the circular construction order — the
+            // resumer can now re-arm deferred timers and consult the
+            // parking-engaged guard.
+            samurai_resumer.bind(samurai_schedule, samurai_parker.clone());
 
             core::allowance_watcher::spawn_allowance_loop(
                 app.handle().clone(),
@@ -874,6 +892,7 @@ pub fn run() {
             commands::samurai::samurai_list_sessions,
             commands::samurai::samurai_audit_read,
             commands::samurai::samurai_audit_clear,
+            commands::samurai::samurai_schedule_list,
             commands::samurai::samurai_get_config,
             commands::samurai::samurai_set_config,
             // CLI commands

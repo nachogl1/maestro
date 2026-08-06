@@ -34,6 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
+import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useAgentStore, type SubagentInfo } from "@/stores/useAgentStore";
@@ -48,6 +49,7 @@ import { MarketplaceBrowser } from "@/components/marketplace";
 import { McpServerEditorModal } from "@/components/mcp";
 import { ContextDocEditorModal } from "@/components/claudemd";
 import { CliSettingsModal } from "@/components/terminal/CliSettingsModal";
+import { SamuraiScheduleChip } from "@/components/terminal/SamuraiScheduleChip";
 import { TerminalSettingsModal } from "@/components/terminal/TerminalSettingsModal";
 import { MaestroSettingsModal, ShortcutsModal } from "@/components/settings";
 import type {
@@ -417,6 +419,7 @@ function AgentsSection({
   const [expanded, setExpanded] = useState(true);
   const tabs = useWorkspaceStore((s) => s.tabs);
   const sessions = useSessionStore((s) => s.sessions);
+  const samuraiSchedule = useSessionStore((s) => s.samuraiSchedule);
   const agents = useAgentStore((s) => s.agents);
   const projectColors = useProjectColors();
 
@@ -424,8 +427,15 @@ function AgentsSection({
     () =>
       tabs
         .map((tab) => ({ tab, sessions: sessionsForTab(tab, sessions) }))
-        .filter((p) => p.sessions.length > 0),
-    [tabs, sessions],
+        // A fully-parked project has NO sessions (parked tiles auto-close;
+        // PRD decision #6) but must keep its row — that row carries the
+        // park-countdown chip (issue #61).
+        .filter(
+          (p) =>
+            p.sessions.length > 0 ||
+            samuraiSchedule.some((e) => samePath(e.project_path, p.tab.projectPath)),
+        ),
+    [tabs, sessions, samuraiSchedule],
   );
 
   // Group agents by session and count running ones in a single pass instead
@@ -510,6 +520,8 @@ function AgentsSection({
                   <span className="truncate" style={{ color }}>
                     {tab.name}
                   </span>
+                  {/* Park countdown (issue #61) — nothing without a pending timer. */}
+                  <SamuraiScheduleChip projectPath={tab.projectPath} />
                 </div>
 
                 {/* Terminal rows */}

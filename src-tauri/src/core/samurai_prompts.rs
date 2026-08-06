@@ -125,6 +125,23 @@ pub fn handoff_file_relpath(epic: &str, generation: u32) -> String {
     format!(".maestro/handoffs/{}-gen{generation}.md", epic_slug(epic))
 }
 
+/// Parses the generation number out of a handoff FILENAME shaped by
+/// [`handoff_file_relpath`] — `<slug>-gen<N>.md` → `Some(N)`. The resume path
+/// (issue #61) scans `.maestro/handoffs/` with this to find the latest
+/// generation on disk. Anything else returns `None` — including the
+/// `-recovery` digests ([`recovery_digest_relpath`]), whose tail after
+/// `-gen<N>` is not all digits. `rsplit_once` takes the LAST `-gen`, so an
+/// epic slug that itself contains `-gen` (e.g. `x-gen5-gen2.md`) still
+/// parses the real generation.
+pub fn parse_handoff_generation(filename: &str) -> Option<u32> {
+    let stem = filename.strip_suffix(".md")?;
+    let (_, tail) = stem.rsplit_once("-gen")?;
+    if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    tail.parse().ok()
+}
+
 /// Full idle-injected handoff instruction (PRD §5.4 + §6): immediate ACK,
 /// wind down subagents, gitignore `.maestro/`, commit WIP, write the §6
 /// handoff file, then reply with the written marker. Single line by
@@ -517,6 +534,36 @@ mod tests {
             handoff_file_relpath("Epic 12", 10),
             ".maestro/handoffs/epic-12-gen10.md"
         );
+    }
+
+    #[test]
+    fn test_parse_handoff_generation_roundtrips_the_relpath() {
+        // The parser must accept exactly what handoff_file_relpath produces.
+        for (epic, generation) in [("#37", 1), ("#37", 42), ("Epic 12: Auth", 10), ("", 3)] {
+            let relpath = handoff_file_relpath(epic, generation);
+            let filename = relpath.rsplit('/').next().unwrap();
+            assert_eq!(
+                parse_handoff_generation(filename),
+                Some(generation),
+                "roundtrip failed for {relpath}"
+            );
+        }
+        // A slug that itself contains `-gen<digits>`: the LAST -gen wins.
+        assert_eq!(parse_handoff_generation("x-gen5-gen2.md"), Some(2));
+    }
+
+    #[test]
+    fn test_parse_handoff_generation_rejects_non_handoffs() {
+        // Recovery digests are not handoffs.
+        assert_eq!(parse_handoff_generation("37-gen3-recovery.md"), None);
+        // Missing/garbled pieces.
+        assert_eq!(parse_handoff_generation("37-gen.md"), None);
+        assert_eq!(parse_handoff_generation("37-gen2"), None); // no .md
+        assert_eq!(parse_handoff_generation("37-gen2x.md"), None);
+        assert_eq!(parse_handoff_generation("37.md"), None);
+        assert_eq!(parse_handoff_generation(""), None);
+        // Overflow parses as None rather than panicking.
+        assert_eq!(parse_handoff_generation("37-gen99999999999999999999.md"), None);
     }
 
     #[test]

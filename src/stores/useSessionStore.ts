@@ -2,11 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { samePath } from "@/lib/path";
-import { samuraiListSessions, type SamuraiSupervisorState } from "@/lib/samurai";
+import {
+  samuraiListSessions,
+  samuraiScheduleList,
+  type SamuraiScheduleEntry,
+  type SamuraiSupervisorState,
+} from "@/lib/samurai";
 import { useAgentStore } from "@/stores/useAgentStore";
 import type { ClaudeEvent } from "@/types/claude-events";
 
-export type { SamuraiSupervisorState };
+export type { SamuraiScheduleEntry, SamuraiSupervisorState };
 
 /** AI provider variants supported by the backend orchestrator. */
 export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
@@ -136,6 +141,13 @@ interface SessionState {
    * render no Samurai chrome (issue #46: non-supervised sessions unchanged).
    */
   samuraiBySessionId: Record<number, SamuraiSessionInfo>;
+  /**
+   * Every pending Samurai resume timer, all projects (issue #61; PRD §9 park
+   * countdown) — fed by `samurai-schedule-event` (full list per event) and
+   * seeded from `samurai_schedule_list` on listener init. Drives the
+   * project-level "parked — resumes at HH:MM" chip.
+   */
+  samuraiSchedule: SamuraiScheduleEntry[];
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
@@ -226,6 +238,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   flaggedSessionIds: [],
   attentionSessionIds: [],
   samuraiBySessionId: {},
+  samuraiSchedule: [],
   isLoading: false,
   error: null,
 
@@ -717,7 +730,8 @@ export function stopContextUsageListener(): void {
 
 // ---------------------------------------------------------------------------
 // Samurai supervisor listener (samurai-supervisor-event + samurai-allowance-
-// event -> badge map, DEAD => error chrome, allowance => attention)
+// event -> badge map, DEAD => error chrome, allowance => attention;
+// samurai-schedule-event -> pending resume timers for the countdown chip)
 // ---------------------------------------------------------------------------
 
 /**
@@ -816,6 +830,32 @@ function applySamuraiAllowanceEvent(): void {
 }
 
 /**
+ * Replaces the pending-timer list (issue #61). The backend sends the FULL
+ * current list on every arm/cancel/fire, so this is a plain replace — no
+ * merging, no ordering assumptions.
+ */
+function applySamuraiScheduleEvent(payload: SamuraiScheduleEntry[]): void {
+  // Defensive: a mocked/failed IPC layer may hand back a non-array.
+  if (!Array.isArray(payload)) return;
+  useSessionStore.setState({ samuraiSchedule: payload });
+}
+
+/**
+ * Seeds `samuraiSchedule` from the backend's current timers, so timers armed
+ * before this frontend mounted (app restart with parked epics) still show
+ * their countdown chip. A live event replaces the list wholesale either way.
+ */
+async function seedSamuraiSchedule(): Promise<void> {
+  try {
+    const entries = await samuraiScheduleList();
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    useSessionStore.setState({ samuraiSchedule: entries });
+  } catch (err) {
+    console.error("Failed to seed samurai resume timers:", err);
+  }
+}
+
+/**
  * Seeds `samuraiBySessionId` from the supervisor's current snapshots, so
  * sessions registered before this frontend mounted (dev reload, late mount)
  * still get badges. Live events won the race for any id already present.
@@ -858,6 +898,9 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
     listen("samurai-allowance-event", () => {
       applySamuraiAllowanceEvent();
     }),
+    listen<SamuraiScheduleEntry[]>("samurai-schedule-event", (event) => {
+      applySamuraiScheduleEvent(event.payload);
+    }),
   ])
     .then((fns) => {
       const unlistenAll = () => fns.forEach((fn) => fn());
@@ -872,6 +915,7 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
     });
   await samuraiStarting;
   void seedSamuraiSessions();
+  void seedSamuraiSchedule();
 }
 
 export function stopSamuraiSupervisorListener(): void {
