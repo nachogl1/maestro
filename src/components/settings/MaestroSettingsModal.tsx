@@ -23,6 +23,7 @@ export interface SamuraiConfig {
   ack_timeout_secs: number;
   staleness_window_secs: number;
   handoff_retention_days: number;
+  breaker_events: number;
 }
 
 const SAMURAI_FIELDS: { key: keyof SamuraiConfig; label: string }[] = [
@@ -33,6 +34,7 @@ const SAMURAI_FIELDS: { key: keyof SamuraiConfig; label: string }[] = [
   { key: "ack_timeout_secs", label: "ACK timeout (seconds)" },
   { key: "staleness_window_secs", label: "Staleness window (seconds)" },
   { key: "handoff_retention_days", label: "Handoff retention (days)" },
+  { key: "breaker_events", label: "Circuit breaker events (zero-progress trip)" },
 ];
 
 interface MaestroSettingsModalProps {

@@ -355,10 +355,24 @@ pub fn run() {
             // read and clear serializes through one channel (no interleaved
             // writes; see core::samurai_audit). Audit rows and supervisor
             // state changes are mirrored to the frontend as events.
+            // Samurai (issue #57): the progress tracker (circuit breaker +
+            // handoff churn) tees off the two callbacks below — audit appends
+            // feed the per-epic breaker counter, supervisor changes feed the
+            // per-generation HEAD baselines — but it is constructed further
+            // down (it needs the config and the session-dir resolver). Same
+            // late-bound slot pattern as the injector; both tees only QUEUE
+            // work, so the synchronous callbacks are never blocked.
+            let samurai_progress_slot: Arc<
+                std::sync::OnceLock<Arc<core::samurai_progress::SamuraiProgress>>,
+            > = Arc::new(std::sync::OnceLock::new());
             let audit_app_handle = app.handle().clone();
+            let progress_for_append = samurai_progress_slot.clone();
             let (audit_log, audit_task) = AuditLog::new(
                 commands::ai_runner::artifact_base_dir("audit"),
                 Some(Arc::new(move |project: &str, event: &AuditEvent| {
+                    if let Some(progress) = progress_for_append.get() {
+                        progress.observe_audit(project, event);
+                    }
                     let _ = audit_app_handle.emit(
                         "samurai-audit-event",
                         serde_json::json!({ "project": project, "event": event }),
@@ -377,10 +391,16 @@ pub fn run() {
             > = Arc::new(std::sync::OnceLock::new());
             let supervisor_app_handle = app.handle().clone();
             let replicator_for_dead = samurai_replicator_slot.clone();
+            let progress_for_change = samurai_progress_slot.clone();
             let supervisor = Arc::new(Supervisor::new(
                 audit_log.clone(),
                 Some(Arc::new(move |snapshot: &SessionSnapshot| {
                     let _ = supervisor_app_handle.emit("samurai-supervisor-event", snapshot);
+                    // Issue #57: registrations record a HEAD baseline,
+                    // terminal states drop it (queue-only, non-blocking).
+                    if let Some(progress) = progress_for_change.get() {
+                        progress.on_state_change(snapshot);
+                    }
                     if snapshot.state == SupervisorState::Dead {
                         if let Some(replicator) = replicator_for_dead.get() {
                             replicator.on_dead(snapshot);
@@ -440,6 +460,26 @@ pub fn run() {
                         .get_session(session_id)
                         .map(|s| s.working_directory.unwrap_or(s.project_path))
                 });
+
+            // Samurai (issue #57): circuit breaker + handoff churn. Progress
+            // is measured in commits only for v1 (gh issue-update polling is
+            // explicitly out of scope): registrations record a per-generation
+            // HEAD baseline; each samurai audit event re-reads HEAD in the
+            // epic's working dir on a worker task, and `breaker_events`
+            // consecutive events with HEAD unchanged park the epic's WORKING
+            // session with a circuit_breaker ALERT. A handoff triggered with
+            // HEAD still at the generation's baseline fires a handoff_churn
+            // ALERT (signal only — the handoff proceeds).
+            let (samurai_progress, samurai_progress_task) =
+                core::samurai_progress::SamuraiProgress::new(
+                    supervisor.clone(),
+                    samurai_config.clone(),
+                    audit_log.clone(),
+                    session_dirs.clone(),
+                );
+            tauri::async_runtime::spawn(samurai_progress_task);
+            // Arms both tees (audit on_append + supervisor change callback).
+            let _ = samurai_progress_slot.set(samurai_progress);
 
             // Samurai (issue #55): replication controller. A validated
             // handoff chains here from the injector: full teardown of gen-N

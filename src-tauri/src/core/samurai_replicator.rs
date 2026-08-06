@@ -158,8 +158,10 @@ fn no_start_expired(
 }
 
 /// `git rev-parse HEAD` in `dir` — fixed argv, no shell, hidden console.
-/// Blocking: only ever called inside `spawn_blocking`.
-fn read_repo_head(dir: &Path) -> Result<String, String> {
+/// Blocking: only ever called inside `spawn_blocking`. `pub(crate)`: the
+/// progress tracker (issue #57) reads baseline/current HEADs through this
+/// same helper.
+pub(crate) fn read_repo_head(dir: &Path) -> Result<String, String> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(dir)

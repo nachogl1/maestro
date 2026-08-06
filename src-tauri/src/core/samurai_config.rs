@@ -50,6 +50,12 @@ pub struct SamuraiConfig {
     pub staleness_window_secs: u64,
     /// How long handoff files are kept after an epic completes (PRD §8).
     pub handoff_retention_days: u32,
+    /// Circuit breaker (issue #57, PRD §5.7): this many consecutive samurai
+    /// audit events for one epic with repo HEAD unchanged trip the breaker —
+    /// the epic's WORKING session is parked with an ALERT instead of burning
+    /// the allowance. Progress signal is commits only in v1 (no `gh`
+    /// issue-update polling); see `core/samurai_progress.rs`.
+    pub breaker_events: u32,
 }
 
 impl Default for SamuraiConfig {
@@ -62,6 +68,7 @@ impl Default for SamuraiConfig {
             ack_timeout_secs: 180,
             staleness_window_secs: 300,
             handoff_retention_days: 14,
+            breaker_events: 5,
         }
     }
 }
@@ -91,6 +98,9 @@ impl SamuraiConfig {
         if self.staleness_window_secs == 0 {
             return Err("staleness_window_secs must be at least 1".to_string());
         }
+        if self.breaker_events == 0 {
+            return Err("breaker_events must be at least 1".to_string());
+        }
         Ok(())
     }
 }
@@ -107,6 +117,7 @@ mod tests {
         assert_eq!(cfg.park_hard_5h_pct, 90.0);
         assert_eq!(cfg.park_hard_7d_pct, 95.0);
         assert_eq!(cfg.handoff_retention_days, 14);
+        assert_eq!(cfg.breaker_events, 5);
         // PRD gives "few minutes" / no number — but they must be non-zero.
         assert!(cfg.ack_timeout_secs > 0);
         assert!(cfg.staleness_window_secs > 0);
@@ -132,6 +143,9 @@ mod tests {
             cfg.staleness_window_secs,
             SamuraiConfig::default().staleness_window_secs
         );
+        // Issue #57: a store written before `breaker_events` existed must
+        // still load, with the PRD default filling the gap.
+        assert_eq!(cfg.breaker_events, 5);
     }
 
     #[test]
@@ -144,6 +158,7 @@ mod tests {
             ack_timeout_secs: 60,
             staleness_window_secs: 120,
             handoff_retention_days: 7,
+            breaker_events: 3,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: SamuraiConfig = serde_json::from_str(&json).unwrap();
@@ -158,6 +173,7 @@ mod tests {
             "ack_timeout_secs",
             "staleness_window_secs",
             "handoff_retention_days",
+            "breaker_events",
         ] {
             assert!(
                 json.contains(&format!("\"{key}\"")),
@@ -186,6 +202,10 @@ mod tests {
 
         let mut cfg = SamuraiConfig::default();
         cfg.staleness_window_secs = 0;
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = SamuraiConfig::default();
+        cfg.breaker_events = 0;
         assert!(cfg.validate().is_err());
     }
 
