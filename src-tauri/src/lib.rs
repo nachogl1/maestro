@@ -27,6 +27,8 @@ use core::marketplace_manager::MarketplaceManager;
 use core::mcp_manager::McpManager;
 use core::plugin_manager::PluginManager;
 use core::status_server::StatusServer;
+use core::samurai_audit::{AuditEvent, AuditLog};
+use core::supervisor::{SessionSnapshot, Supervisor};
 use core::{ClaudeEvent, EventBus, TranscriptWatcher};
 use core::ProcessManager;
 use core::session_manager::SessionManager;
@@ -315,6 +317,32 @@ pub fn run() {
             app.manage(event_bus);
             app.manage(transcript_watcher);
 
+            // Samurai (Phase 1): audit log + per-session supervisor state
+            // machine. The audit log is a single writer task — every append,
+            // read and clear serializes through one channel (no interleaved
+            // writes; see core::samurai_audit). Audit rows and supervisor
+            // state changes are mirrored to the frontend as events.
+            let audit_app_handle = app.handle().clone();
+            let (audit_log, audit_task) = AuditLog::new(
+                commands::ai_runner::artifact_base_dir("audit"),
+                Some(Arc::new(move |project: &str, event: &AuditEvent| {
+                    let _ = audit_app_handle.emit(
+                        "samurai-audit-event",
+                        serde_json::json!({ "project": project, "event": event }),
+                    );
+                })),
+            );
+            tauri::async_runtime::spawn(audit_task);
+            let supervisor_app_handle = app.handle().clone();
+            let supervisor = Arc::new(Supervisor::new(
+                audit_log.clone(),
+                Some(Arc::new(move |snapshot: &SessionSnapshot| {
+                    let _ = supervisor_app_handle.emit("samurai-supervisor-event", snapshot);
+                })),
+            ));
+            app.manage(audit_log);
+            app.manage(supervisor);
+
             // GitHub watchdog: background poller for review requests /
             // assigned issues across all configured projects. The frontend
             // syncs the project set via `github_watchdog_set_projects`.
@@ -527,6 +555,12 @@ pub fn run() {
             commands::catalog::scan_project_catalog,
             commands::catalog::cancel_project_catalog,
             commands::catalog::load_project_catalog,
+            // Samurai supervisor + audit log (Phase 1)
+            commands::samurai::samurai_register_session,
+            commands::samurai::samurai_transition,
+            commands::samurai::samurai_list_sessions,
+            commands::samurai::samurai_audit_read,
+            commands::samurai::samurai_audit_clear,
             // CLI commands
             commands::cli::install_cli,
             commands::cli::uninstall_cli,

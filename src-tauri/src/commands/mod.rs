@@ -14,6 +14,7 @@ pub mod memory;
 pub mod plan;
 pub mod plugin;
 pub mod processes;
+pub mod samurai;
 pub mod session;
 pub mod standup;
 pub mod system;
