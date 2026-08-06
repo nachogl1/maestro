@@ -28,6 +28,7 @@ use core::mcp_manager::McpManager;
 use core::plugin_manager::PluginManager;
 use core::status_server::StatusServer;
 use core::samurai_audit::{AuditEvent, AuditLog};
+use core::samurai_context::SamuraiContextStore;
 use core::supervisor::{SessionSnapshot, Supervisor};
 use core::{ClaudeEvent, EventBus, TranscriptWatcher};
 use core::ProcessManager;
@@ -221,10 +222,19 @@ pub fn run() {
             let data_ready = Arc::new(tokio::sync::Notify::new());
             let flush_now = Arc::new(tokio::sync::Notify::new());
 
+            // Samurai (issue #52): backend tee. The context store observes
+            // every deduped event before it enters the frontend batch buffer,
+            // retaining the latest context % per session for Phase 2's
+            // handoff trigger and ACK scanner. Observation only — the
+            // batching path below is unchanged.
+            let samurai_context = Arc::new(SamuraiContextStore::new());
+
             let pending_for_emit = pending_events.clone();
             let data_ready_for_emit = data_ready.clone();
             let flush_now_for_emit = flush_now.clone();
+            let samurai_context_for_emit = samurai_context.clone();
             let emit_fn: Arc<dyn Fn(ClaudeEvent) + Send + Sync> = Arc::new(move |event: ClaudeEvent| {
+                samurai_context_for_emit.observe(&event);
                 // Recover from a poisoned lock rather than dropping the event —
                 // losing one silently would corrupt the frontend's activity feed.
                 let len = {
@@ -342,6 +352,10 @@ pub fn run() {
             ));
             app.manage(audit_log.clone());
             app.manage(supervisor.clone());
+            // Samurai (issue #52): per-session context store, fed by the
+            // event tee above. Managed so later phases (and the session
+            // teardown commands) reach it via `app.state()`.
+            app.manage(samurai_context);
 
             // Samurai silent-death watchdog (issue #44): one periodic tick
             // that declares a supervised session DEAD when its transcript

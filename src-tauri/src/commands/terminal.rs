@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use crate::core::samurai_context::SamuraiContextStore;
 use crate::core::session_manager::SessionManager;
 use crate::core::status_server::StatusServer;
 use crate::core::transcript_watcher::TranscriptWatcher;
@@ -177,6 +178,7 @@ pub async fn kill_session(
     session_mgr: State<'_, SessionManager>,
     status_server: State<'_, Arc<StatusServer>>,
     transcript_watcher: State<'_, Arc<TranscriptWatcher>>,
+    samurai_context: State<'_, Arc<SamuraiContextStore>>,
     session_id: u32,
 ) -> Result<(), PtyError> {
     // Kill the PTY session
@@ -188,6 +190,10 @@ pub async fn kill_session(
 
     // Release the transcript watcher entry for this terminal
     transcript_watcher.stop_watching(session_id);
+
+    // Drop the samurai context entry — a stale percentage for a gone
+    // session must never arm a handoff (issue #52)
+    samurai_context.remove(session_id);
 
     // Log for debugging
     let _project_path = session_mgr
@@ -281,6 +287,7 @@ pub async fn kill_all_sessions(
     state: State<'_, ProcessManager>,
     session_state: State<'_, SessionManager>,
     transcript_watcher: State<'_, Arc<TranscriptWatcher>>,
+    samurai_context: State<'_, Arc<SamuraiContextStore>>,
 ) -> Result<u32, PtyError> {
     let pm = state.inner().clone();
     let killed = pm.kill_all_sessions().await?;
@@ -291,6 +298,9 @@ pub async fn kill_all_sessions(
     for session_id in transcript_watcher.watched_sessions() {
         transcript_watcher.stop_watching(session_id);
     }
+    // Every session is gone: clear the whole samurai context store, which
+    // may hold entries for sessions whose watcher already stopped (issue #52)
+    samurai_context.clear();
     log::info!(
         "Cleanup: killed {} PTY session(s), cleared {} session entries",
         killed,
