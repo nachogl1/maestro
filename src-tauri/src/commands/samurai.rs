@@ -408,8 +408,17 @@ pub(crate) async fn launch_run_inner(
     // Review F5: a stale resume timer from the epic's PREVIOUS run must not
     // survive the relaunch — left armed it would fire into the fresh run
     // and double-spawn a generation. After the refusal matrix on purpose: a
-    // refused launch must not touch the old run's state.
-    let stale_timer_cancelled = schedule.cancel(project, &epic)?;
+    // refused launch must not touch the old run's state. Cancelled by SLUG,
+    // not exact string — a relaunch typed as "38" must still cancel a timer
+    // armed under "#38": every other surface (config, worktree, handoffs)
+    // unifies spellings via epic_slug, and the timer must not be the one
+    // holdout that lets a second orchestrator spawn into the worktree.
+    let mut stale_timer_cancelled = false;
+    for entry in schedule.list() {
+        if entry.project_path == project && epic_slug(&entry.epic) == epic_slug(&epic) {
+            stale_timer_cancelled |= schedule.cancel(&entry.project_path, &entry.epic)?;
+        }
+    }
     if stale_timer_cancelled {
         log::info!(
             "samurai launch: cancelled a stale resume timer for epic {epic} in {project} before relaunch"
@@ -971,7 +980,9 @@ mod tests {
         ));
         replicator.set_run_configs(run_configs.clone());
 
-        // A stale timer from the epic's previous run.
+        // A stale timer from the epic's previous run — armed under the "#38"
+        // spelling while the relaunch below types "38": the cancel must match
+        // by slug (re-review F5), not exact string.
         schedule
             .arm(ScheduleEntry {
                 project_path: project.clone(),
@@ -991,7 +1002,7 @@ mod tests {
             &preflight(true, true),
             global.clone(),
             &project,
-            "#38",
+            "38",
             Some("opus".to_string()),
             true,
             Some(30.0),
@@ -1000,7 +1011,8 @@ mod tests {
         .await
         .unwrap();
 
-        // F5: the stale timer is gone and the result reports it.
+        // F5: the "#38"-spelled timer is gone despite the "38" launch
+        // spelling, and the result reports it.
         assert!(result.stale_timer_cancelled);
         assert!(schedule.list().is_empty(), "stale timer cancelled");
 
