@@ -54,6 +54,7 @@ use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_context::SamuraiContextStore;
 use super::samurai_prompts;
+use super::samurai_replicator::SamuraiReplicator;
 use super::supervisor::{Supervisor, SupervisorState};
 use super::windows_process::StdCommandExt;
 
@@ -282,8 +283,10 @@ fn written_value(text: &str) -> Option<String> {
 /// paths (the SessionManager stores them verbatim); `CreateProcess` rejects
 /// that form as a working directory. Strip it, same as
 /// `commands/terminal.rs` / `commands/ai_runner.rs`. On other platforms the
-/// prefix never occurs and this is a no-op.
-fn strip_extended_prefix(path: &str) -> &str {
+/// prefix never occurs and this is a no-op. `pub(crate)`: the replicator
+/// (issue #55) resolves session dirs through the same resolver and needs the
+/// identical stripping.
+pub(crate) fn strip_extended_prefix(path: &str) -> &str {
     path.strip_prefix(r"\\?\").unwrap_or(path)
 }
 
@@ -392,6 +395,7 @@ fn finish_validation(
     pending: &Mutex<HashMap<u32, PendingInstruction>>,
     supervisor: &Supervisor,
     audit: &AuditLog,
+    replicator: Option<&Arc<SamuraiReplicator>>,
     session_id: u32,
     outcome: Result<(), String>,
 ) {
@@ -439,11 +443,18 @@ fn finish_validation(
             log::info!(
                 "samurai injector: session {session_id} handoff validated (file present, WIP committed) — HANDOFF_WRITTEN"
             );
-            if let Err(e) = supervisor.transition(session_id, SupervisorState::HandoffWritten) {
+            match supervisor.transition(session_id, SupervisorState::HandoffWritten) {
+                // Issue #55: a validated handoff chains straight into the
+                // replicator (kill gen-N, stage gen-N+1) — no polling.
+                Ok(snapshot) => {
+                    if let Some(replicator) = replicator {
+                        replicator.on_handoff_written(&snapshot);
+                    }
+                }
                 // E.g. the watchdog declared the session DEAD mid-validation.
-                log::warn!(
+                Err(e) => log::warn!(
                     "samurai injector: HANDOFF_WRITTEN transition for session {session_id} rejected: {e}"
-                );
+                ),
             }
         }
         Next::Alert(project, event) => {
@@ -476,6 +487,11 @@ pub struct SamuraiInjector {
     /// #54 bonus fix; see [`idle_effect`]). Holds bare u32s, so an
     /// unsupervised session costs one integer until its SessionEnd.
     idle_now: Arc<Mutex<HashSet<u32>>>,
+    /// Issue #55: the replication controller a validated handoff chains
+    /// into. It also shares this controller's tick (its no-start timeout
+    /// pass) and hook tap (SessionStarted ritual delivery). `None` only in
+    /// tests that exercise the injector alone.
+    replicator: Option<Arc<SamuraiReplicator>>,
 }
 
 impl SamuraiInjector {
@@ -486,6 +502,7 @@ impl SamuraiInjector {
         processes: ProcessManager,
         audit: AuditLog,
         session_dirs: SessionDirResolver,
+        replicator: Option<Arc<SamuraiReplicator>>,
     ) -> Self {
         Self {
             supervisor,
@@ -496,6 +513,7 @@ impl SamuraiInjector {
             session_dirs,
             pending: Arc::new(Mutex::new(HashMap::new())),
             idle_now: Arc::new(Mutex::new(HashSet::new())),
+            replicator,
         }
     }
 
@@ -517,8 +535,13 @@ impl SamuraiInjector {
     }
 
     /// Hook-chain tee (`hook_emit_fn` in `lib.rs`, pre-dedup — see module
-    /// doc for why the idle signal cannot ride the EventBus tee).
+    /// doc for why the idle signal cannot ride the EventBus tee). Also feeds
+    /// the replicator (issue #55): a staged successor's ritual is delivered
+    /// on its first `SessionStarted`, which arrives on this same chain.
     pub fn observe_hook(&self, event: &ClaudeEvent) {
+        if let Some(replicator) = &self.replicator {
+            replicator.observe_hook(event);
+        }
         self.note_idle(event);
         if let Some(session_id) = idle_session_id(event) {
             self.on_idle(session_id);
@@ -718,6 +741,12 @@ impl SamuraiInjector {
         for id in idle_pending {
             self.on_idle(id);
         }
+
+        // Issue #55: the replicator's timeout pass (a staged successor that
+        // never produced its SessionStarted) rides this same tick.
+        if let Some(replicator) = &self.replicator {
+            replicator.tick();
+        }
     }
 
     /// Idle signal for one session: decide-and-record synchronously, then
@@ -872,6 +901,7 @@ impl SamuraiInjector {
                     &self.pending,
                     &self.supervisor,
                     &self.audit,
+                    self.replicator.as_ref(),
                     session_id,
                     Err("the session's working directory is unknown".to_string()),
                 );
@@ -886,6 +916,7 @@ impl SamuraiInjector {
         let pending = self.pending.clone();
         let supervisor = self.supervisor.clone();
         let audit = self.audit.clone();
+        let replicator = self.replicator.clone();
         tauri::async_runtime::spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || {
                 let dir = PathBuf::from(strip_extended_prefix(&working_dir));
@@ -893,7 +924,14 @@ impl SamuraiInjector {
             })
             .await
             .unwrap_or_else(|e| Err(format!("validation task failed: {e}")));
-            finish_validation(&pending, &supervisor, &audit, session_id, outcome);
+            finish_validation(
+                &pending,
+                &supervisor,
+                &audit,
+                replicator.as_ref(),
+                session_id,
+                outcome,
+            );
         });
     }
 
@@ -1402,6 +1440,9 @@ mod tests {
             ProcessManager::new(),
             audit.clone(),
             resolver,
+            // The injector alone: the P2.3 → P2.4 chain has its own
+            // integration test in `samurai_replicator`.
+            None,
         );
         (injector, audit, supervisor, context, dirs)
     }

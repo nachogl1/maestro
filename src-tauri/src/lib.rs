@@ -424,6 +424,76 @@ pub fn run() {
                         .get_session(session_id)
                         .map(|s| s.working_directory.unwrap_or(s.project_path))
                 });
+
+            // Samurai (issue #55): replication controller. A validated
+            // handoff chains here from the injector: full teardown of gen-N
+            // (the same four steps the manual kill command performs) →
+            // KILLED transition (audit row + the supervisor event the
+            // frontend clears the dead tile on) → `samurai-spawn-successor`
+            // to the frontend, which runs its normal spawn flow and
+            // registers gen-N+1. The verify-ritual prompt stays queued in
+            // the backend and is typed in on the successor's first
+            // SessionStarted hook signal (frontend write-timing would race
+            // claude's startup).
+            let teardown_pm = app.state::<ProcessManager>().inner().clone();
+            let teardown_status = app.state::<Arc<StatusServer>>().inner().clone();
+            let teardown_watcher = app.state::<Arc<TranscriptWatcher>>().inner().clone();
+            let teardown_context = samurai_context.clone();
+            let teardown: core::samurai_replicator::SessionTeardown =
+                Arc::new(move |session_id| {
+                    let pm = teardown_pm.clone();
+                    let status = teardown_status.clone();
+                    let watcher = teardown_watcher.clone();
+                    let context = teardown_context.clone();
+                    Box::pin(async move {
+                        // Mirrors commands::terminal::kill_session: PTY tree
+                        // kill, status-server unregister, transcript watcher
+                        // release, stale-context removal.
+                        if let Err(e) = pm.kill_session(session_id).await {
+                            log::warn!(
+                                "samurai replicator: kill_session({session_id}) failed: {e}"
+                            );
+                        }
+                        status.unregister_session(session_id).await;
+                        watcher.stop_watching(session_id);
+                        context.remove(session_id);
+                    })
+                });
+            let spawn_event_handle = app.handle().clone();
+            let emit_spawn: core::samurai_replicator::SuccessorEmitter = Arc::new(move |spawn| {
+                let _ = spawn_event_handle.emit("samurai-spawn-successor", spawn);
+            });
+            let ritual_pm = app.state::<ProcessManager>().inner().clone();
+            let ritual_writer: core::samurai_replicator::StdinWriter =
+                Arc::new(move |session_id, data| {
+                    // write_stdin is fully blocking (same policy as the
+                    // injector's spawn_write) — blocking pool, never inline.
+                    let pm = ritual_pm.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match tokio::task::spawn_blocking(move || pm.write_stdin(session_id, &data))
+                            .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => log::warn!(
+                                "samurai replicator: writing ritual to session {session_id} failed: {e}"
+                            ),
+                            Err(e) => log::warn!(
+                                "samurai replicator: ritual write task for session {session_id} failed: {e}"
+                            ),
+                        }
+                    });
+                });
+            let replicator = Arc::new(core::samurai_replicator::SamuraiReplicator::new(
+                supervisor.clone(),
+                audit_log.clone(),
+                samurai_config.clone(),
+                session_dirs.clone(),
+                teardown,
+                emit_spawn,
+                ritual_writer,
+            ));
+            app.manage(replicator.clone());
+
             let injector = Arc::new(SamuraiInjector::new(
                 supervisor.clone(),
                 samurai_context.clone(),
@@ -431,6 +501,7 @@ pub fn run() {
                 app.state::<ProcessManager>().inner().clone(),
                 audit_log.clone(),
                 session_dirs,
+                Some(replicator),
             ));
             let _ = samurai_injector.set(injector.clone());
             core::samurai_injector::spawn_injector(injector);

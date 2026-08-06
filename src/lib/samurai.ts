@@ -78,6 +78,22 @@ export function samuraiListSessions(): Promise<SamuraiSessionSnapshot[]> {
 }
 
 /**
+ * Places a session under supervision (SPAWN audit row + supervisor event).
+ * Used by the successor spawn flow (issue #55): registering with the exact
+ * (project, epic, generation) the `samurai-spawn-successor` event named arms
+ * the backend's verify-ritual delivery for this session's first
+ * SessionStarted hook signal.
+ */
+export function samuraiRegisterSession(
+  sessionId: number,
+  projectPath: string,
+  epic: string,
+  generation: number,
+): Promise<SamuraiSessionSnapshot> {
+  return invoke("samurai_register_session", { sessionId, projectPath, epic, generation });
+}
+
+/**
  * Reads a project's audit rows (optionally only the last `tail`, optionally
  * only rows strictly after `sinceTs`) plus the current file size in bytes.
  */

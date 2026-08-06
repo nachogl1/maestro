@@ -14,6 +14,7 @@ use tauri_plugin_store::StoreExt;
 use crate::commands::ai_runner::canonical_project_path;
 use crate::core::samurai_audit::{AuditLog, AuditReadResult};
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
+use crate::core::samurai_replicator::SamuraiReplicator;
 use crate::core::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 
 /// Store filename for the Samurai config (app-data settings pattern, same
@@ -82,16 +83,30 @@ pub fn samurai_set_config(
 
 /// Places a session under supervision, starting in `WORKING` at `generation`
 /// (default 1). Emits a `SPAWN` audit row and a `samurai-supervisor-event`.
+///
+/// Issue #55: a registration matching a successor the replicator staged
+/// (same project, epic and generation) gets its SPAWN row linked to the
+/// predecessor, and arms the verify-ritual delivery for the new session's
+/// first `SessionStarted` hook signal.
 #[tauri::command]
 pub fn samurai_register_session(
     supervisor: State<'_, Arc<Supervisor>>,
+    replicator: State<'_, Arc<SamuraiReplicator>>,
     session_id: u32,
     project_path: String,
     epic: String,
     generation: Option<u32>,
 ) -> Result<SessionSnapshot, String> {
     let project = canonical_project_path(&project_path);
-    supervisor.register_session(session_id, project, epic, generation.unwrap_or(1))
+    let generation = generation.unwrap_or(1);
+    let snapshot = match replicator.spawn_details(&project, &epic, generation) {
+        Some(details) => supervisor.register_session_with_details(
+            session_id, project, epic, generation, details,
+        )?,
+        None => supervisor.register_session(session_id, project, epic, generation)?,
+    };
+    replicator.on_registered(&snapshot);
+    Ok(snapshot)
 }
 
 /// Drives one state transition, e.g. `to_state = "HANDOFF_REQUESTED"`.

@@ -169,6 +169,27 @@ impl Supervisor {
         epic: String,
         generation: u32,
     ) -> Result<SessionSnapshot, String> {
+        self.register_session_with_details(
+            session_id,
+            project,
+            epic,
+            generation,
+            serde_json::Value::Null,
+        )
+    }
+
+    /// [`register_session`](Self::register_session) with extra key/values
+    /// merged into the SPAWN audit row's `details` (issue #55: a successor's
+    /// SPAWN row links it to its predecessor). Non-object `extra` values are
+    /// ignored, so the plain path passes `Null`.
+    pub fn register_session_with_details(
+        &self,
+        session_id: u32,
+        project: String,
+        epic: String,
+        generation: u32,
+        extra: serde_json::Value,
+    ) -> Result<SessionSnapshot, String> {
         let snapshot = {
             let mut sessions = self
                 .sessions
@@ -190,6 +211,11 @@ impl Supervisor {
             snapshot
         };
 
+        let mut details = json!({ "state": SupervisorState::Working.as_str() });
+        if let (Some(map), serde_json::Value::Object(extra_map)) = (details.as_object_mut(), extra)
+        {
+            map.extend(extra_map);
+        }
         self.audit.append(
             &snapshot.project,
             AuditEvent::now(
@@ -197,7 +223,7 @@ impl Supervisor {
                 AuditEventKind::Spawn,
                 snapshot.generation,
                 session_id,
-                json!({ "state": SupervisorState::Working.as_str() }),
+                details,
             ),
         );
         self.notify(&snapshot);
@@ -760,6 +786,34 @@ mod tests {
             err.contains("already under supervision"),
             "unexpected reason: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_register_with_details_merges_into_spawn_row() {
+        let dir = tempdir().unwrap();
+        let (supervisor, audit, _seen) = harness(dir.path());
+        let project = "C:/git/proj-details";
+        supervisor
+            .register_session_with_details(
+                9,
+                project.into(),
+                "epic-s".into(),
+                3,
+                json!({ "predecessor_session_id": 4, "predecessor_generation": 2 }),
+            )
+            .unwrap();
+
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        let spawn = rows
+            .iter()
+            .find(|r| r.event == AuditEventKind::Spawn)
+            .unwrap();
+        // The base detail survives and the extras ride along.
+        assert_eq!(spawn.details["state"], "WORKING");
+        assert_eq!(spawn.details["predecessor_session_id"], 4);
+        assert_eq!(spawn.details["predecessor_generation"], 2);
+        assert_eq!(spawn.generation, 3);
+        assert_eq!(spawn.session_id, 9);
     }
 
     #[tokio::test]

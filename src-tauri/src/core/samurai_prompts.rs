@@ -1,5 +1,5 @@
-//! Samurai instruction text builders (Phase 2, issues #53/#54; PRD §5.3,
-//! §5.4, §6).
+//! Samurai instruction text builders (Phase 2, issues #53/#54/#55; PRD §5.3,
+//! §5.4, §5.6, §6).
 //!
 //! Injected instructions travel through `ProcessManager::write_stdin`
 //! straight into a live terminal, so every builder returns ONE paste-able
@@ -13,6 +13,12 @@
 //! live here too, next to the text that dictates them, so the injector's
 //! validator and P2.4's successor reader resolve exactly the path the
 //! orchestrator was told to write.
+//!
+//! Issue #55 adds the successor's verify ritual (PRD §5.6): the one-line
+//! brief every gen-N+1 receives on its first `SessionStarted`, plus the
+//! tolerant HEAD-SHA parser for the handoff's "Repo state" section. The
+//! HEAD gate itself (does the repo HEAD equal that SHA?) is computed by
+//! Maestro in `samurai_replicator` — never trusted to the model.
 
 /// The exact acknowledgement value generation `generation` must echo inside
 /// `<samurai-ack>…</samurai-ack>`. The injector's ACK scanner expects this
@@ -117,6 +123,107 @@ pub fn handoff_corrective_instruction(epic: &str, generation: u32, failure: &str
         ack = handoff_ack_value(generation),
         written = handoff_written_value(generation),
     )
+}
+
+/// Display name for a successor terminal session (issue #55), e.g.
+/// `samurai gen-3 37`. Built here so the backend event payload and any
+/// future surface naming successors can never drift.
+pub fn successor_session_name(epic: &str, generation: u32) -> String {
+    format!("samurai gen-{generation} {}", epic_slug(epic))
+}
+
+/// Pulls the predecessor's HEAD SHA out of a §6 handoff file: the first
+/// 40-character hex token found in the "Repo state" section. Deliberately
+/// tolerant (PRD decision #5 forbids template validation, so the section is
+/// model-written prose): the section starts at the first line that mentions
+/// "repo state" (case-insensitive, heading or not) and ends at the next
+/// markdown heading; within it, any standalone 40-hex run counts. Runs
+/// embedded in a longer alphanumeric word are rejected — that is not a SHA,
+/// that is a substring. `None` when the section or the SHA is missing; the
+/// replicator treats that as a HEAD mismatch (verify required).
+pub fn handoff_head_sha(content: &str) -> Option<String> {
+    let mut section = String::new();
+    let mut in_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        let is_heading = trimmed.starts_with('#');
+        if in_section && is_heading {
+            break; // next section begins
+        }
+        if !in_section {
+            if trimmed.to_ascii_lowercase().contains("repo state") {
+                in_section = true;
+                // The SHA may sit on the marker line itself
+                // ("Repo state: main @ <sha>").
+                section.push_str(trimmed);
+                section.push('\n');
+            }
+            continue;
+        }
+        section.push_str(line);
+        section.push('\n');
+    }
+    find_forty_hex(&section)
+}
+
+/// First maximal run of exactly 40 ASCII hex digits with non-alphanumeric
+/// boundaries. Returned as found (git compares SHAs case-insensitively; so
+/// does the replicator's gate).
+fn find_forty_hex(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        let bounded_left = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let bounded_right = i == bytes.len() || !bytes[i].is_ascii_alphanumeric();
+        if i - start == 40 && bounded_left && bounded_right {
+            return Some(text[start..i].to_string());
+        }
+    }
+    None
+}
+
+/// The successor's first instruction (PRD §5.6 — one recovery path): read
+/// the predecessor's handoff in full, then either skip or run its Verify
+/// commands depending on the HEAD gate MAESTRO computed. Single line by
+/// construction (see module doc); the epic ref is whitespace-normalized so
+/// a pathological ref can never smuggle a newline into the paste.
+pub fn successor_ritual_instruction(
+    epic: &str,
+    predecessor_generation: u32,
+    head_matched: bool,
+) -> String {
+    let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
+    let generation = predecessor_generation + 1;
+    let relpath = handoff_file_relpath(epic, predecessor_generation);
+    let opening = format!(
+        "[Maestro Samurai] You are generation {generation} for epic {epic_text}, successor to \
+         generation {predecessor_generation}. Read the handoff file at {relpath} IN FULL before \
+         doing anything else — it and GitHub are your only sources of truth."
+    );
+    if head_matched {
+        format!(
+            "{opening} Maestro verified that this repository's current HEAD equals the SHA \
+             recorded in the handoff's \"Repo state\" section, so the verify step is already \
+             satisfied: SKIP the commands in the handoff's Verify section and continue directly \
+             with its Next steps."
+        )
+    } else {
+        format!(
+            "{opening} Maestro could NOT confirm that this repository's current HEAD matches the \
+             SHA recorded in the handoff's \"Repo state\" section. You MUST run every command in \
+             the handoff's Verify section FIRST, and trust NOTHING the handoff claims that those \
+             commands do not confirm — investigate and fix any failure before moving on. Only \
+             then continue with the handoff's Next steps."
+        )
+    }
 }
 
 #[cfg(test)]
@@ -225,5 +332,112 @@ mod tests {
         assert!(text.contains("<samurai-ack>handoff gen-4</samurai-ack>"));
         assert!(text.contains("<samurai-handoff-written>gen-4</samurai-handoff-written>"));
         assert!(text.contains(".maestro/handoffs/37-gen4.md"));
+    }
+
+    // --- issue #55: successor ritual + HEAD-SHA extraction ---
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn test_head_sha_from_template_shaped_handoff() {
+        let content = format!(
+            "# Handoff — epic #37 — gen 2\n\
+             ## Goal            #37 auth epic\n\
+             ## Done            closed #40, #41\n\
+             ## Repo state      branch feat/auth, HEAD SHA: {SHA}, no dirty files\n\
+             ## Verify          cargo test --workspace\n\
+             ## Next steps      1. issue #42\n"
+        );
+        assert_eq!(handoff_head_sha(&content), Some(SHA.to_string()));
+    }
+
+    #[test]
+    fn test_head_sha_from_sloppy_variants() {
+        // Bare SHA on its own line under a lowercase heading.
+        let content = format!("## repo state\nbranch: main\n{SHA}\n## Verify\nnpm test\n");
+        assert_eq!(handoff_head_sha(&content), Some(SHA.to_string()));
+
+        // No markdown heading at all — a prose "Repo state:" line.
+        let content = format!("Goal: ship it\nRepo state: main @ {SHA} (clean)\nVerify: npm test\n");
+        assert_eq!(handoff_head_sha(&content), Some(SHA.to_string()));
+
+        // Uppercase hex is a valid SHA spelling.
+        let upper = SHA.to_ascii_uppercase();
+        let content = format!("## Repo state\nHEAD {upper}\n");
+        assert_eq!(handoff_head_sha(&content), Some(upper));
+
+        // First 40-hex in the section wins when several appear.
+        let other = "f".repeat(40);
+        let content = format!("## Repo state\nHEAD {SHA} (previous {other})\n");
+        assert_eq!(handoff_head_sha(&content), Some(SHA.to_string()));
+    }
+
+    #[test]
+    fn test_head_sha_rejects_missing_or_malformed() {
+        // No Repo state section at all.
+        assert_eq!(handoff_head_sha(&format!("## Done\n{SHA}\n")), None);
+        // SHA only in ANOTHER section: the parser is section-scoped.
+        let content = format!("## Repo state\nbranch main, forgot the SHA\n## Verify\ngit reset --hard {SHA}\n");
+        assert_eq!(handoff_head_sha(&content), None);
+        // Too short / too long / embedded in a longer word.
+        assert_eq!(handoff_head_sha(&format!("## Repo state\n{}\n", &SHA[..39])), None);
+        assert_eq!(handoff_head_sha(&format!("## Repo state\n{SHA}0\n")), None);
+        assert_eq!(handoff_head_sha(&format!("## Repo state\nx{SHA}\n")), None);
+        assert_eq!(handoff_head_sha(&format!("## Repo state\n{SHA}g\n")), None);
+        // Empty input.
+        assert_eq!(handoff_head_sha(""), None);
+    }
+
+    #[test]
+    fn test_successor_session_name_shape() {
+        assert_eq!(successor_session_name("#37", 3), "samurai gen-3 37");
+        assert_eq!(successor_session_name("Epic 12: Auth", 2), "samurai gen-2 epic-12-auth");
+    }
+
+    #[test]
+    fn test_ritual_instruction_is_single_line_both_branches() {
+        for head_matched in [true, false] {
+            let text = successor_ritual_instruction("#37", 2, head_matched);
+            assert!(!text.contains('\n'), "ritual must not contain \\n");
+            assert!(!text.contains('\r'), "ritual must not contain \\r");
+        }
+        // A pathological epic ref cannot smuggle a newline into the paste.
+        let text = successor_ritual_instruction("epic\nwith newline", 2, true);
+        assert!(!text.contains('\n'));
+        assert!(text.contains("epic with newline"));
+    }
+
+    #[test]
+    fn test_ritual_instruction_head_match_branch_skips_verify() {
+        let text = successor_ritual_instruction("#37", 2, true);
+        // Identity: generation, epic, predecessor.
+        assert!(text.contains("generation 3"));
+        assert!(text.contains("epic #37"));
+        assert!(text.contains("successor to generation 2"));
+        // The predecessor's handoff file, via the same path function the
+        // validator used.
+        assert!(text.contains(".maestro/handoffs/37-gen2.md"));
+        assert!(text.contains("IN FULL"));
+        // The gate outcome: verify satisfied, skip it, continue.
+        assert!(text.contains("already satisfied"));
+        assert!(text.contains("SKIP"));
+        assert!(text.contains("Next steps"));
+        // And no verify-required language.
+        assert!(!text.contains("MUST run"));
+    }
+
+    #[test]
+    fn test_ritual_instruction_mismatch_branch_requires_verify() {
+        let text = successor_ritual_instruction("#37", 2, false);
+        assert!(text.contains("generation 3"));
+        assert!(text.contains("successor to generation 2"));
+        assert!(text.contains(".maestro/handoffs/37-gen2.md"));
+        // Verify is mandatory and nothing unverified is trusted.
+        assert!(text.contains("could NOT confirm"));
+        assert!(text.contains("MUST run every command"));
+        assert!(text.contains("trust NOTHING"));
+        assert!(text.contains("Next steps"));
+        // And no skip language.
+        assert!(!text.contains("SKIP"));
     }
 }

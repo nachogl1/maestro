@@ -22,6 +22,7 @@ pub mod samurai_config;
 pub mod samurai_context;
 pub mod samurai_injector;
 pub mod samurai_prompts;
+pub mod samurai_replicator;
 pub mod samurai_watchdog;
 pub mod session_manager;
 pub mod status_server;

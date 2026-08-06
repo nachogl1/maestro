@@ -50,6 +50,7 @@ import {
   writeStdin,
 } from "@/lib/terminal";
 import { checkFullDiskAccess, pathRequiresFDA } from "@/lib/permissions";
+import { registerSamuraiSuccessor, samuraiSuccessorCliFlags } from "@/lib/spawnSession";
 import { useFDAStore } from "@/stores/useFDAStore";
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
 import { cleanupSessionWorktree, prepareSessionWorktree } from "@/lib/worktreeManager";
@@ -989,9 +990,25 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             // Brief delay for shell to initialize
             await new Promise((resolve) => setTimeout(resolve, 100));
 
-            // Build CLI command with user-configured flags
+            // Build CLI command with user-configured flags. A samurai
+            // successor (issue #55) additionally forces skip-permissions —
+            // an autonomous generation cannot answer permission prompts.
             const cliFlags = useCliSettingsStore.getState().getFlags(slot.mode);
-            const cliCommand = buildCliCommand(slot.mode, cliFlags, slot.resumeSessionId ?? undefined);
+            const effectiveFlags = slot.samurai ? samuraiSuccessorCliFlags(cliFlags) : cliFlags;
+            const cliCommand = buildCliCommand(slot.mode, effectiveFlags, slot.resumeSessionId ?? undefined);
+
+            // Samurai successor: register under supervision BEFORE the CLI
+            // launches, so the backend's verify-ritual delivery is armed
+            // strictly ahead of claude's SessionStart hook. Registration
+            // failure is logged, not fatal — the session still launches and
+            // the backend's successor_no_start ALERT surfaces the gap.
+            if (slot.samurai) {
+              try {
+                await registerSamuraiSuccessor(sessionId, slot.samurai);
+              } catch (err) {
+                console.error("[Samurai] Failed to register successor session:", err);
+              }
+            }
 
             // Send CLI launch command
             await writeStdin(sessionId, `${cliCommand}\r`);
@@ -1082,8 +1099,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   /**
    * Handles killing/closing a session, updating the slot state.
    * Also cleans up any associated worktree and session-specific MCP config.
+   *
+   * `opts.keepDirArtifacts` (samurai kills, issue #55) skips every
+   * working-directory cleanup — MCP/plugin/hooks config removal and the
+   * worktree prompt/delete — because the successor launches into the SAME
+   * directory moments later (stable epic worktree, PRD §5.9) and a
+   * fire-and-forget remove racing its config writes would strip the hooks
+   * the successor depends on.
    */
-  const handleKill = useCallback((sessionId: number) => {
+  const handleKill = useCallback((sessionId: number, opts?: { keepDirArtifacts?: boolean }) => {
+    const keepDirArtifacts = opts?.keepDirArtifacts ?? false;
     // Find the slot to get worktree path before removing
     const slot = slotsRef.current.find((s) => s.sessionId === sessionId);
     const worktreePath = slot?.worktreePath;
@@ -1138,7 +1163,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     }
 
     // Clean up session-specific MCP config (fire-and-forget)
-    if (workingDir) {
+    if (workingDir && !keepDirArtifacts) {
       if (slot?.mode === "OpenCode") {
         removeOpenCodeMcpConfig(workingDir, sessionId).catch(console.error);
       } else {
@@ -1147,17 +1172,17 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     }
 
     // Clean up session-specific plugin config (fire-and-forget)
-    if (workingDir) {
+    if (workingDir && !keepDirArtifacts) {
       removeSessionPluginConfig(workingDir).catch(console.error);
     }
 
     // Clean up session-specific hooks config (fire-and-forget)
-    if (workingDir && slot?.mode === "Claude") {
+    if (workingDir && slot?.mode === "Claude" && !keepDirArtifacts) {
       removeSessionHooksConfig(workingDir).catch(console.error);
     }
 
     // Clean up worktree based on session close action setting
-    if (effectiveRepoPath && worktreePath) {
+    if (effectiveRepoPath && worktreePath && !keepDirArtifacts) {
       const closeAction = useWorktreeSettingsStore.getState().worktreeCloseAction;
       if (closeAction === "delete") {
         cleanupSessionWorktree(effectiveRepoPath, worktreePath, worktreeBasePath)
@@ -1178,6 +1203,26 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // "keep" (default): do nothing — worktree persists
     }
   }, [tabId, effectiveRepoPath, projectPath, removeSessionFromProject, refreshBranches, focusedSlotId, layoutTree, onSessionCountChange, worktreeBasePath, passZoomToNeighbor]);
+
+  // Samurai kills (issue #55): after a validated handoff the BACKEND tears
+  // the session down itself (PTY tree-kill, status server, transcript
+  // watcher, context store) and announces it by transitioning the session to
+  // KILLED on the samurai-supervisor-event channel. No PTY-exit event
+  // exists and terminal teardown is otherwise always frontend-initiated, so
+  // without this the dead tile would linger as a zombie. Reuse handleKill —
+  // the exact cleanup the manual close runs, minus the kill IPC (already
+  // done) and minus the working-dir artifacts the successor is about to
+  // reuse.
+  const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
+  useEffect(() => {
+    for (const slot of slotsRef.current) {
+      if (slot.sessionId !== null && samuraiBySessionId[slot.sessionId]?.state === "KILLED") {
+        // handleKill → removeSession drops the supervision entry, so this
+        // effect cannot re-fire for the same session.
+        handleKill(slot.sessionId, { keepDirArtifacts: true });
+      }
+    }
+  }, [samuraiBySessionId, handleKill]);
 
   /**
    * Removes a pre-launch slot (before it's launched).
@@ -1625,6 +1670,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       branch: launch.branch,
       resumeSessionId: launch.resumeSessionId,
       workingDirOverride: launch.workingDirOverride,
+      // Samurai successor launches (issue #55) name their session and carry
+      // the registration metadata; History launches leave both unset.
+      customName: launch.customName ?? base.customName,
+      samurai: launch.samurai ?? null,
       // The History tab always names the exact directory to run in. Reusing the
       // pristine slot would otherwise inherit its worktreeMode, and any mode but
       // "project" sends launchSlotInner into prepareSessionWorktree — moving the

@@ -8,6 +8,7 @@ import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTit
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
+import { initSamuraiSpawnListener, stopSamuraiSpawnListener } from "@/lib/spawnSession";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
@@ -251,6 +252,19 @@ function App() {
     });
     return () => {
       stopSamuraiSupervisorListener();
+    };
+  }, []);
+
+  // Samurai successor spawns (issue #55): after killing gen-N the backend
+  // emits samurai-spawn-successor; this listener queues the gen-N+1 launch
+  // through the existing pending-launch flow (same path as History-tab
+  // recoveries) and the grid registers it under supervision.
+  useEffect(() => {
+    initSamuraiSpawnListener().catch((err) => {
+      console.error("Failed to initialize samurai spawn listener:", err);
+    });
+    return () => {
+      stopSamuraiSpawnListener();
     };
   }, []);
 

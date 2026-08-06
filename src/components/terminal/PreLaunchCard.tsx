@@ -71,6 +71,12 @@ export interface SessionSlot {
    * History tab) instead of deriving one from branch/worktreeMode.
    */
   workingDirOverride?: string | null;
+  /**
+   * Samurai successor metadata (issue #55): forces skip-permissions on the
+   * CLI command and registers the session under supervision right before the
+   * CLI launches. Never set for manually created slots.
+   */
+  samurai?: import("@/stores/usePendingLaunchStore").SamuraiSuccessorInfo | null;
 }
 
 interface PreLaunchCardProps {
