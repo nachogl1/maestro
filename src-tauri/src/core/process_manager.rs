@@ -710,6 +710,16 @@ impl ProcessManager {
             .collect()
     }
 
+    /// PID of the shell backing `session_id`, if that session is still
+    /// tracked. Used by the Samurai watchdog to anchor its claude-descendant
+    /// liveness check.
+    pub fn session_pid(&self, session_id: u32) -> Option<i32> {
+        self.inner
+            .sessions
+            .get(&session_id)
+            .map(|s| s.value().child_pid)
+    }
+
     /// Number of live PTY sessions currently tracked, across all projects.
     pub fn session_count(&self) -> usize {
         self.inner.sessions.len()

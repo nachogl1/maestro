@@ -341,7 +341,17 @@ pub fn run() {
                 })),
             ));
             app.manage(audit_log);
-            app.manage(supervisor);
+            app.manage(supervisor.clone());
+
+            // Samurai silent-death watchdog (issue #44): one periodic tick
+            // that declares a supervised session DEAD when its transcript
+            // went stale AND no claude process survives under its shell.
+            // Detection + alert only; recovery spawning is Phase 2/3.
+            core::samurai_watchdog::spawn_watchdog(
+                supervisor,
+                app.state::<Arc<TranscriptWatcher>>().inner().clone(),
+                app.state::<ProcessManager>().inner().clone(),
+            );
 
             // GitHub watchdog: background poller for review requests /
             // assigned issues across all configured projects. The frontend

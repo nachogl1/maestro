@@ -677,3 +677,83 @@ export function stopContextUsageListener(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Samurai death listener (samurai-supervisor-event -> DEAD => attention)
+// ---------------------------------------------------------------------------
+
+/**
+ * Subset of the backend's `SessionSnapshot` payload (emitted on every Samurai
+ * supervisor state change) that the death listener uses.
+ */
+interface SamuraiSupervisorEvent {
+  session_id: number;
+  /** Canonical project path, `\\?\` prefix already stripped by the backend. */
+  project: string;
+  state: string;
+}
+
+/**
+ * Surfaces a watchdog-declared death (issue #44). A crashed claude fires no
+ * hook, so without this the session would sit on its last MCP status —
+ * usually "Working" — forever. On a DEAD supervisor event the session flips
+ * to Error chrome and gets the same unpark + attention treatment as an
+ * auto-unparked NeedsInput session. All other supervisor states are ignored
+ * here; the Phase-1 UI for them is the audit stream.
+ */
+function applySamuraiSupervisorEvent(payload: SamuraiSupervisorEvent): void {
+  if (payload.state !== "DEAD") return;
+  useSessionStore.setState((state) => {
+    const session = state.sessions.find(
+      (s) => s.id === payload.session_id && samePath(s.project_path, payload.project)
+    );
+    if (!session) return state;
+    return {
+      sessions: state.sessions.map((s) =>
+        s === session
+          ? {
+              ...s,
+              status: "Error" as BackendSessionStatus,
+              statusMessage: "claude process died (Samurai watchdog)",
+            }
+          : s
+      ),
+      parkedSessionIds: state.parkedSessionIds.filter((id) => id !== payload.session_id),
+      attentionSessionIds: state.attentionSessionIds.includes(payload.session_id)
+        ? state.attentionSessionIds
+        : [...state.attentionSessionIds, payload.session_id],
+    };
+  });
+}
+
+// Same StrictMode-safe init/stop shape as the context usage listener above.
+let samuraiUnlisten: UnlistenFn | null = null;
+let samuraiStarting: Promise<void> | null = null;
+let samuraiActive = false;
+
+export async function initSamuraiDeathListener(): Promise<void> {
+  samuraiActive = true;
+  if (samuraiUnlisten || samuraiStarting) return;
+  samuraiStarting = listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
+    applySamuraiSupervisorEvent(event.payload);
+  })
+    .then((fn) => {
+      if (!samuraiActive) {
+        fn();
+        return;
+      }
+      samuraiUnlisten = fn;
+    })
+    .finally(() => {
+      samuraiStarting = null;
+    });
+  await samuraiStarting;
+}
+
+export function stopSamuraiDeathListener(): void {
+  samuraiActive = false;
+  if (samuraiUnlisten) {
+    samuraiUnlisten();
+    samuraiUnlisten = null;
+  }
+}
+

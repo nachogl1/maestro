@@ -301,6 +301,14 @@ impl TranscriptWatcher {
         }
     }
 
+    /// The transcript file `session_id` is currently tailing, if any. Used by
+    /// the Samurai watchdog for its transcript-staleness (mtime) check.
+    pub fn transcript_path(&self, session_id: u32) -> Option<PathBuf> {
+        self.watchers
+            .get(&session_id)
+            .map(|state| state.transcript_path.clone())
+    }
+
     /// Return the list of session IDs currently being watched.
     pub fn watched_sessions(&self) -> Vec<u32> {
         self.watchers.iter().map(|entry| *entry.key()).collect()

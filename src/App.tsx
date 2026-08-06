@@ -14,7 +14,9 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
 import {
   initContextUsageListener,
+  initSamuraiDeathListener,
   stopContextUsageListener,
+  stopSamuraiDeathListener,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
@@ -236,6 +238,17 @@ function App() {
     });
     return () => {
       stopContextUsageListener();
+    };
+  }, []);
+
+  // Samurai death listener: a DEAD supervisor event (silent-death watchdog,
+  // issue #44) flips the session to Error chrome + attention highlight.
+  useEffect(() => {
+    initSamuraiDeathListener().catch((err) => {
+      console.error("Failed to initialize samurai death listener:", err);
+    });
+    return () => {
+      stopSamuraiDeathListener();
     };
   }, []);
 
