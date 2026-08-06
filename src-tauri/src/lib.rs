@@ -409,12 +409,28 @@ pub fn run() {
             // (`<samurai-ack>…</samurai-ack>`), with one timed retry and an
             // ack_timeout ALERT after that. Filling the OnceLock arms the
             // two event tees above.
+            //
+            // Issue #54: after the ACK the controller watches for the
+            // `<samurai-handoff-written>` marker and validates the handoff
+            // (file exists + WIP committed) with git run in the directory
+            // the session's shell actually works in — resolved late from
+            // the SessionManager (worktree/sub-repo aware, falling back to
+            // the project root when no explicit working dir was recorded).
+            let session_dirs_handle = app.handle().clone();
+            let session_dirs: core::samurai_injector::SessionDirResolver =
+                Arc::new(move |session_id| {
+                    session_dirs_handle
+                        .state::<SessionManager>()
+                        .get_session(session_id)
+                        .map(|s| s.working_directory.unwrap_or(s.project_path))
+                });
             let injector = Arc::new(SamuraiInjector::new(
                 supervisor.clone(),
                 samurai_context.clone(),
                 samurai_config.clone(),
                 app.state::<ProcessManager>().inner().clone(),
                 audit_log.clone(),
+                session_dirs,
             ));
             let _ = samurai_injector.set(injector.clone());
             core::samurai_injector::spawn_injector(injector);
