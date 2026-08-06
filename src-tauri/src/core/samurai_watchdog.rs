@@ -115,8 +115,9 @@ fn ancestors_of(pids: &[u32], parent_of: &HashMap<u32, u32>) -> HashSet<u32> {
 /// executable stem (`claude` / `claude.exe`) or `claude` anywhere in the
 /// command line, which also catches the `node … claude/cli.js` shim. Matching
 /// broadly is the safe direction: over-matching can only delay a DEAD verdict,
-/// never fabricate one.
-fn scan_claude_ancestor_pids() -> HashSet<u32> {
+/// never fabricate one. `pub(crate)`: cold-start reconciliation (issue #62)
+/// reuses the scan as its machine-wide claude-liveness probe.
+pub(crate) fn scan_claude_ancestor_pids() -> HashSet<u32> {
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -151,8 +152,9 @@ fn scan_claude_ancestor_pids() -> HashSet<u32> {
 
 /// Age of the transcript file's last write. `None` when the file is missing,
 /// unreadable, or its mtime is in the future — all "missing evidence" for
-/// [`decide`].
-fn transcript_age(path: &Path) -> Option<Duration> {
+/// [`decide`]. `pub(crate)`: reconciliation's transcript-age probe (issue
+/// #62) is this same reading over the project's newest transcript.
+pub(crate) fn transcript_age(path: &Path) -> Option<Duration> {
     std::fs::metadata(path)
         .ok()?
         .modified()

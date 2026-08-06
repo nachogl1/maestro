@@ -104,7 +104,9 @@ fn next_generation(registry_max: Option<u32>, files_max: Option<u32>) -> Option<
 /// A candidate must reconstruct EXACTLY as `<slug>-gen<N>.md`, which
 /// excludes recovery digests (`…-recovery.md`) and other epics whose slug
 /// merely shares a prefix. A missing/unreadable directory is `None`.
-fn latest_handoff_generation(handoffs_dir: &Path, epic: &str) -> Option<u32> {
+/// `pub(crate)`: cold-start reconciliation (issue #62) derives generations
+/// with the same scan.
+pub(crate) fn latest_handoff_generation(handoffs_dir: &Path, epic: &str) -> Option<u32> {
     let prefix = format!("{}-gen", epic_slug(epic));
     std::fs::read_dir(handoffs_dir)
         .ok()?

@@ -615,7 +615,7 @@ pub fn run() {
             let samurai_resumer = core::samurai_resumer::SamuraiResumer::new(
                 supervisor.clone(),
                 replicator.clone(),
-                run_configs,
+                run_configs.clone(),
                 audit_log.clone(),
                 session_dirs,
             );
@@ -636,6 +636,12 @@ pub fn run() {
                         },
                     )),
                 );
+            // Issue #62: snapshot the pending timers BEFORE the fire loop is
+            // spawned — a past-due entry fires on the loop's first tick and
+            // self-cleans, so reading `list()` from the reconciliation task
+            // later would race it and double-spawn the fired epic. A fire
+            // cannot precede its own task spawn, so this snapshot is complete.
+            let reconcile_timers = samurai_schedule.list();
             tauri::async_runtime::spawn(samurai_schedule_task);
             app.manage(samurai_schedule.clone());
 
@@ -669,10 +675,37 @@ pub fn run() {
             core::allowance_watcher::spawn_allowance_loop(
                 app.handle().clone(),
                 samurai_config,
-                supervisor,
-                audit_log,
+                supervisor.clone(),
+                audit_log.clone(),
                 samurai_parker,
             );
+
+            // Samurai (issue #62): cold-start reconciliation — PRD §5.6's
+            // first-class flow. Runs ONCE, after every samurai component
+            // above is constructed: for each ACTIVE run config, skip epics a
+            // pending timer or live session already owns, alert on probable
+            // pre-restart survivors, and fresh-spawn the next generation for
+            // the rest (the replicator's spawn-retry tolerates the frontend
+            // not being mounted yet). The probes are the watchdog's process
+            // scan and the project's newest transcript age — both real IO,
+            // injected so the module stays harness-testable.
+            let transcript_ages: core::samurai_reconciler::TranscriptAgeProbe =
+                Arc::new(|project| {
+                    commands::claude_sessions::newest_transcript_for_project(project)
+                        .and_then(|path| core::samurai_watchdog::transcript_age(&path))
+                });
+            let claude_alive: core::samurai_reconciler::ClaudeAliveProbe = Arc::new(|| {
+                !core::samurai_watchdog::scan_claude_ancestor_pids().is_empty()
+            });
+            tauri::async_runtime::spawn(core::samurai_reconciler::reconcile(
+                run_configs,
+                reconcile_timers,
+                supervisor,
+                replicator,
+                audit_log,
+                transcript_ages,
+                claude_alive,
+            ));
 
             // GitHub watchdog: background poller for review requests /
             // assigned issues across all configured projects. The frontend
