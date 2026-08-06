@@ -15,10 +15,12 @@
 //! process survives. Process alive + stale transcript = idle → do nothing,
 //! however long the idle lasts — false positives are worse than misses.
 //!
-//! Phase 1 boundary: detection + alert only. The DEAD transition itself
-//! produces the ALERT audit row (`details.kind = "dead"`) and the
-//! `samurai-supervisor-event` the frontend turns into an attention flag.
-//! Recovery spawning is Phase 2/3.
+//! The DEAD transition itself produces the ALERT audit row
+//! (`details.kind = "dead"`) and the `samurai-supervisor-event` the frontend
+//! turns into an attention flag. Since Phase 2 (issue #56) it also triggers
+//! recovery: the supervisor's change callback (lib.rs) chains every DEAD
+//! snapshot into `SamuraiReplicator::on_dead`, which stages a gen-N+1
+//! RECOVERY successor — this module stays detection-only on purpose.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

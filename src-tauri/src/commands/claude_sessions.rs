@@ -166,6 +166,27 @@ fn project_path_to_claude_dir(project_path: &str) -> Option<PathBuf> {
     )
 }
 
+/// Most recently modified `*.jsonl` in `dir` — the newest transcript.
+/// Entries whose metadata cannot be read are skipped, not fatal.
+pub(crate) fn newest_jsonl_in(dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(mtime, _)| *mtime)
+        .map(|(_, path)| path)
+}
+
+/// The newest transcript in the Claude session directory of `project_path`
+/// (raw path — canonicalized here, same as every listing). Samurai recovery's
+/// fallback (issue #56) when the transcript watcher no longer knows a dead
+/// session's file. `None` when the directory is missing or holds no `*.jsonl`.
+pub(crate) fn newest_transcript_for_project(project_path: &str) -> Option<PathBuf> {
+    let dir = project_path_to_claude_dir(&canonical_project_path(project_path))?;
+    newest_jsonl_in(&dir)
+}
+
 /// Truncates `s` to at most `max_chars` characters. If the input is longer it
 /// is cut on a character boundary and `"..."` is appended.
 ///
@@ -417,6 +438,33 @@ mod tests {
     fn accepts_uuid_shaped_session_ids() {
         assert!(is_safe_session_id("01234567-89ab-cdef-0123-456789abcdef"));
         assert!(is_safe_session_id("deadbeef"));
+    }
+
+    // ---- newest_jsonl_in (samurai recovery fallback, issue #56) ----------
+
+    #[test]
+    fn newest_jsonl_picks_latest_transcript_and_ignores_other_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old.jsonl");
+        let new = tmp.path().join("new.jsonl");
+        fs::write(&old, "{}\n").unwrap();
+        fs::write(&new, "{}\n").unwrap();
+        fs::write(tmp.path().join("notes.md"), "not a transcript").unwrap();
+        // Backdate the old one so mtime ordering is deterministic.
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+        assert_eq!(newest_jsonl_in(tmp.path()), Some(new));
+    }
+
+    #[test]
+    fn newest_jsonl_missing_or_empty_dir_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(newest_jsonl_in(tmp.path()), None);
+        assert_eq!(newest_jsonl_in(&tmp.path().join("nope")), None);
     }
 
     // ---- encode_project_path ---------------------------------------------

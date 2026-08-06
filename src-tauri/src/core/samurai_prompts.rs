@@ -19,6 +19,11 @@
 //! tolerant HEAD-SHA parser for the handoff's "Repo state" section. The
 //! HEAD gate itself (does the repo HEAD equal that SHA?) is computed by
 //! Maestro in `samurai_replicator` — never trusted to the model.
+//!
+//! Issue #56 adds recovery mode (PRD §5.6/§5.7): the ritual a successor gets
+//! when its predecessor died — or its handoff file vanished — without a valid
+//! handoff to read, plus the path of the pre-digested transcript summary that
+//! prompt references (written by `samurai_replicator`, never inlined).
 
 /// The exact acknowledgement value generation `generation` must echo inside
 /// `<samurai-ack>…</samurai-ack>`. The injector's ACK scanner expects this
@@ -224,6 +229,45 @@ pub fn successor_ritual_instruction(
              then continue with the handoff's Next steps."
         )
     }
+}
+
+/// Repo-relative path of the pre-digested transcript summary Maestro writes
+/// for a gen-`successor_generation` RECOVERY successor (issue #56). Lives
+/// next to the handoffs so the Second Brain panel's file listing picks it up;
+/// the `-recovery` suffix keeps it from ever colliding with a real handoff.
+pub fn recovery_digest_relpath(epic: &str, successor_generation: u32) -> String {
+    format!(
+        ".maestro/handoffs/{}-gen{successor_generation}-recovery.md",
+        epic_slug(epic)
+    )
+}
+
+/// The successor's first instruction when there is NO handoff to read
+/// (issue #56, PRD §5.6 recovery mode): the predecessor died — or its
+/// validated handoff file vanished before successor prep. Reconstruction
+/// sources in priority order: git history, the epic's GitHub issue, and the
+/// pre-digested transcript summary (hints, not truth) — then the project's
+/// standard verification BEFORE trusting anything. Single line by
+/// construction (see module doc); the epic ref is whitespace-normalized so a
+/// pathological ref can never smuggle a newline into the paste.
+pub fn recovery_ritual_instruction(epic: &str, predecessor_generation: u32) -> String {
+    let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
+    let generation = predecessor_generation + 1;
+    let digest_relpath = recovery_digest_relpath(epic, generation);
+    format!(
+        "[Maestro Samurai] RECOVERY MODE: you are generation {generation} for epic {epic_text}. \
+         Generation {predecessor_generation} died without a valid handoff file, so there is \
+         nothing to hand off to you. Reconstruct the state of the work from three sources: \
+         (1) run `git log --oneline -20` in this repository; \
+         (2) read the epic's GitHub issue and ALL of its comments with the `gh` CLI, run from \
+         this directory; \
+         (3) read the pre-digested transcript summary Maestro extracted to {digest_relpath} — \
+         treat it as hints, NOT as truth. \
+         Then run the project's standard verification (build + tests) BEFORE trusting or \
+         continuing anything — investigate and fix any failure first. Once verification passes, \
+         comment on the epic's GitHub issue that generation {generation} has taken over in \
+         recovery mode, then continue the epic's remaining work."
+    )
 }
 
 #[cfg(test)]
@@ -438,6 +482,55 @@ mod tests {
         assert!(text.contains("trust NOTHING"));
         assert!(text.contains("Next steps"));
         // And no skip language.
+        assert!(!text.contains("SKIP"));
+    }
+
+    // --- issue #56: recovery mode ---
+
+    #[test]
+    fn test_recovery_digest_relpath_shape() {
+        assert_eq!(
+            recovery_digest_relpath("#37", 3),
+            ".maestro/handoffs/37-gen3-recovery.md"
+        );
+        assert_eq!(
+            recovery_digest_relpath("Epic 12", 10),
+            ".maestro/handoffs/epic-12-gen10-recovery.md"
+        );
+    }
+
+    #[test]
+    fn test_recovery_instruction_is_single_line() {
+        let text = recovery_ritual_instruction("#37", 2);
+        assert!(!text.contains('\n'), "recovery must not contain \\n");
+        assert!(!text.contains('\r'), "recovery must not contain \\r");
+        // A pathological epic ref cannot smuggle a newline into the paste.
+        let text = recovery_ritual_instruction("epic\nwith newline", 2);
+        assert!(!text.contains('\n'));
+        assert!(text.contains("epic with newline"));
+    }
+
+    #[test]
+    fn test_recovery_instruction_content() {
+        let text = recovery_ritual_instruction("#37", 2);
+        // Identity: what happened and who the successor is.
+        assert!(text.contains("RECOVERY MODE"));
+        assert!(text.contains("generation 3"));
+        assert!(text.contains("epic #37"));
+        assert!(text.contains("Generation 2 died without a valid handoff file"));
+        // The three reconstruction sources.
+        assert!(text.contains("`git log --oneline -20`"));
+        assert!(text.contains("`gh` CLI"));
+        assert!(text.contains("ALL of its comments"));
+        assert!(text.contains(".maestro/handoffs/37-gen3-recovery.md"));
+        // The digest is hints, not truth.
+        assert!(text.contains("hints, NOT as truth"));
+        // Verify before trusting anything, then announce and continue.
+        assert!(text.contains("standard verification (build + tests) BEFORE trusting"));
+        assert!(text.contains("comment on the epic's GitHub issue"));
+        assert!(text.contains("continue the epic's remaining work"));
+        // No normal-ritual language: there is no handoff to read.
+        assert!(!text.contains("Read the handoff file"));
         assert!(!text.contains("SKIP"));
     }
 }

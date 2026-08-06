@@ -30,7 +30,7 @@ use core::status_server::StatusServer;
 use core::samurai_audit::{AuditEvent, AuditLog};
 use core::samurai_context::SamuraiContextStore;
 use core::samurai_injector::SamuraiInjector;
-use core::supervisor::{SessionSnapshot, Supervisor};
+use core::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 use core::{ClaudeEvent, EventBus, TranscriptWatcher};
 use core::ProcessManager;
 use core::session_manager::SessionManager;
@@ -366,11 +366,26 @@ pub fn run() {
                 })),
             );
             tauri::async_runtime::spawn(audit_task);
+            // Samurai (issue #56): the replicator is constructed further
+            // down (it needs the supervisor), but the supervisor's change
+            // callback must reach it to chain DEAD → recovery spawn — same
+            // late-bound slot pattern as the injector above. DEAD is a
+            // terminal state, so the transition (and this callback) fires at
+            // most once per session: the chain cannot double-spawn.
+            let samurai_replicator_slot: Arc<
+                std::sync::OnceLock<Arc<core::samurai_replicator::SamuraiReplicator>>,
+            > = Arc::new(std::sync::OnceLock::new());
             let supervisor_app_handle = app.handle().clone();
+            let replicator_for_dead = samurai_replicator_slot.clone();
             let supervisor = Arc::new(Supervisor::new(
                 audit_log.clone(),
                 Some(Arc::new(move |snapshot: &SessionSnapshot| {
                     let _ = supervisor_app_handle.emit("samurai-supervisor-event", snapshot);
+                    if snapshot.state == SupervisorState::Dead {
+                        if let Some(replicator) = replicator_for_dead.get() {
+                            replicator.on_dead(snapshot);
+                        }
+                    }
                 })),
             ));
             app.manage(audit_log.clone());
@@ -383,7 +398,8 @@ pub fn run() {
             // Samurai silent-death watchdog (issue #44): one periodic tick
             // that declares a supervised session DEAD when its transcript
             // went stale AND no claude process survives under its shell.
-            // Detection + alert only; recovery spawning is Phase 2/3.
+            // The DEAD transition chains through the supervisor callback
+            // above into the replicator's recovery spawn (issue #56).
             core::samurai_watchdog::spawn_watchdog(
                 supervisor.clone(),
                 app.state::<Arc<TranscriptWatcher>>().inner().clone(),
@@ -463,6 +479,24 @@ pub fn run() {
             let emit_spawn: core::samurai_replicator::SuccessorEmitter = Arc::new(move |spawn| {
                 let _ = spawn_event_handle.emit("samurai-spawn-successor", spawn);
             });
+            // Issue #56: transcript resolution for the recovery digest. The
+            // watcher usually still tails a DEAD session (the watchdog never
+            // stops it); when it does not, fall back to the newest transcript
+            // in the session's Claude project directory.
+            let transcript_watcher_for_recovery = app.state::<Arc<TranscriptWatcher>>().inner().clone();
+            let recovery_dirs_handle = app.handle().clone();
+            let transcript_paths: core::samurai_replicator::TranscriptPathResolver =
+                Arc::new(move |session_id| {
+                    transcript_watcher_for_recovery
+                        .transcript_path(session_id)
+                        .or_else(|| {
+                            let dir = recovery_dirs_handle
+                                .state::<SessionManager>()
+                                .get_session(session_id)
+                                .map(|s| s.working_directory.unwrap_or(s.project_path))?;
+                            commands::claude_sessions::newest_transcript_for_project(&dir)
+                        })
+                });
             let ritual_pm = app.state::<ProcessManager>().inner().clone();
             let ritual_writer: core::samurai_replicator::StdinWriter =
                 Arc::new(move |session_id, data| {
@@ -488,11 +522,14 @@ pub fn run() {
                 audit_log.clone(),
                 samurai_config.clone(),
                 session_dirs.clone(),
+                transcript_paths,
                 teardown,
                 emit_spawn,
                 ritual_writer,
             ));
             app.manage(replicator.clone());
+            // Arms the DEAD → recovery chain in the supervisor callback.
+            let _ = samurai_replicator_slot.set(replicator.clone());
 
             let injector = Arc::new(SamuraiInjector::new(
                 supervisor.clone(),

@@ -27,6 +27,30 @@
 //!    never starts within `ack_timeout_secs` raises an `ALERT`
 //!    (`details.kind = "successor_no_start"`).
 //!
+//! Issue #56 adds **recovery mode** (PRD §5.6/§5.7) — the one path that
+//! covers every death without a valid handoff:
+//!
+//! - **Trigger (a), DEAD:** the watchdog's `Dead` transition reaches
+//!   [`Self::on_dead`] through the supervisor's change callback (lib.rs).
+//!   The dead session's terminal is left alone (the tile already shows the
+//!   error; a human dismisses it) and a RECOVERY successor is staged for
+//!   gen-N+1 through the exact same queue/spawn/arm/deliver machinery.
+//!   DEAD is terminal — the transition, and therefore the callback, can
+//!   fire at most once per session — and staging is guarded by the
+//!   (project, epic, generation) key anyway, so one dead generation stages
+//!   exactly one recovery.
+//! - **Trigger (b), vanished handoff:** the handoff was validated moments
+//!   before [`Self::replicate`] re-reads it for the HEAD gate, but it can
+//!   be deleted in that window. A missing/unreadable file at prep time
+//!   selects the recovery prompt instead of the normal ritual; everything
+//!   downstream is unchanged.
+//!
+//! Both triggers write a **pre-digested transcript summary** (bounded tail
+//! of the predecessor's transcript, no model call) next to the handoffs;
+//! the recovery prompt references that file instead of inlining kilobytes
+//! through `write_stdin`. A missing transcript still produces the file,
+//! with a note — git + GitHub are the primary reconstruction sources.
+//!
 //! Same shape as the watchdog/injector: decisions as pure functions, I/O at
 //! the edges, one periodic timeout pass (driven by the injector's tick).
 
@@ -39,12 +63,15 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::commands::ai_runner::{strip_ansi, truncate_chars};
+
 use super::claude_event::ClaudeEvent;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_injector::{strip_extended_prefix, SessionDirResolver};
 use super::samurai_prompts;
 use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
+use super::transcript_parser;
 use super::windows_process::StdCommandExt;
 
 /// Full teardown of one terminal session, mirroring the manual kill command:
@@ -62,6 +89,14 @@ pub type SuccessorEmitter = Arc<dyn Fn(&SuccessorSpawn) + Send + Sync>;
 /// production closure routes through `spawn_blocking` + `write_stdin`, the
 /// same policy as the injector's writes.
 pub type StdinWriter = Arc<dyn Fn(u32, String) + Send + Sync>;
+
+/// Resolves a session's transcript file for the recovery digest (issue #56).
+/// The production closure (lib.rs) asks the transcript watcher first — it is
+/// usually still attached to a DEAD session — and falls back to the newest
+/// `*.jsonl` in the session's Claude project directory. `None` means no
+/// transcript could be found; the digest then records that instead of
+/// blocking the spawn.
+pub type TranscriptPathResolver = Arc<dyn Fn(u32) -> Option<PathBuf> + Send + Sync>;
 
 /// Payload of the `samurai-spawn-successor` event. Deliberately does NOT
 /// carry the ritual prompt: frontend write-timing is unreliable (claude may
@@ -91,6 +126,9 @@ struct PendingRitual {
     instruction: String,
     predecessor_session_id: u32,
     predecessor_generation: u32,
+    /// True for a RECOVERY successor (issue #56): the predecessor died or
+    /// its handoff vanished. Rides into the SPAWN audit row's details.
+    recovery: bool,
     queued_at: Instant,
     /// Set when the frontend registered the successor: (session id, when).
     /// The no-start clock runs from here; before registration it runs from
@@ -137,6 +175,172 @@ fn read_repo_head(dir: &Path) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Recovery digest (issue #56): bounded, model-free transcript extraction
+// ---------------------------------------------------------------------------
+
+/// How much of the transcript's END is read for the digest. Transcripts run
+/// to many MB; the last quarter-MB comfortably covers the final exchanges
+/// without ever loading the file whole.
+const DIGEST_TAIL_BYTES: u64 = 256 * 1024;
+/// How many of the most recent assistant text messages the digest keeps.
+const DIGEST_ASSISTANT_SNIPPETS: usize = 10;
+/// How many of the most recent subagent completions the digest keeps.
+const DIGEST_SUBAGENT_LINES: usize = 5;
+/// Per-snippet character cap (via `truncate_chars`).
+const DIGEST_SNIPPET_CHARS: usize = 500;
+/// Hard cap on the whole digest file's characters.
+const DIGEST_MAX_CHARS: usize = 4000;
+
+/// Reads at most [`DIGEST_TAIL_BYTES`] from the end of `path`. When the read
+/// started mid-file, the first (almost certainly partial) line is dropped so
+/// every remaining line parses on its own.
+fn read_transcript_tail(path: &Path) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(DIGEST_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut buf)?;
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if start > 0 {
+        match text.find('\n') {
+            Some(i) => {
+                text.drain(..=i);
+            }
+            None => text.clear(),
+        }
+    }
+    Ok(text)
+}
+
+/// What the digest extracts from a transcript tail. Assistant snippets and
+/// subagent lines are kept most-recent-first: the whole-digest cap truncates
+/// the end of the file, and the most recent activity is the most valuable.
+struct TranscriptDigest {
+    last_user_message: Option<String>,
+    assistant_snippets: Vec<String>,
+    subagent_lines: Vec<String>,
+}
+
+/// ANSI-strip + per-snippet truncation for any model/user text kept.
+fn digest_clean(text: &str) -> String {
+    truncate_chars(strip_ansi(text).trim(), DIGEST_SNIPPET_CHARS)
+}
+
+/// Walks the tail's lines through the existing transcript parser (no
+/// parallel JSONL machinery) and keeps: the last real user message, the last
+/// [`DIGEST_ASSISTANT_SNIPPETS`] assistant texts, and the last
+/// [`DIGEST_SUBAGENT_LINES`] subagent completions.
+fn extract_digest(tail: &str) -> TranscriptDigest {
+    let mut last_user: Option<String> = None;
+    let mut assistant: Vec<String> = Vec::new();
+    let mut agents: Vec<String> = Vec::new();
+    for line in tail.lines() {
+        // Session id 0 is a placeholder: the parser only threads it through.
+        for event in transcript_parser::parse_transcript_line(0, line) {
+            match event {
+                ClaudeEvent::UserMessage { text, .. } => {
+                    // tool_result-only entries parse to empty text, and
+                    // task notifications are system-injected, not the user.
+                    if !text.trim().is_empty() && !text.contains("<task-notification>") {
+                        last_user = Some(digest_clean(&text));
+                    }
+                }
+                ClaudeEvent::AssistantMessage { text, .. } => {
+                    if !text.trim().is_empty() {
+                        assistant.push(digest_clean(&text));
+                    }
+                }
+                ClaudeEvent::SubagentCompleted {
+                    agent_id,
+                    success,
+                    status,
+                    report,
+                    ..
+                } => {
+                    let status = status.unwrap_or_else(|| {
+                        if success { "completed" } else { "failed" }.to_string()
+                    });
+                    let brief: String = report
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .map(|l| strip_ansi(l).chars().take(120).collect())
+                        .unwrap_or_default();
+                    agents.push(format!("- agent {agent_id} ({status}): {brief}"));
+                }
+                _ => {}
+            }
+        }
+    }
+    // Keep the last N of each, most recent first (see struct doc).
+    assistant.reverse();
+    assistant.truncate(DIGEST_ASSISTANT_SNIPPETS);
+    agents.reverse();
+    agents.truncate(DIGEST_SUBAGENT_LINES);
+    TranscriptDigest {
+        last_user_message: last_user,
+        assistant_snippets: assistant,
+        subagent_lines: agents,
+    }
+}
+
+/// Renders the digest file: a small header naming the predecessor plus the
+/// extracted content (or a no-transcript note), hard-capped at
+/// [`DIGEST_MAX_CHARS`]. Pure so tests drive it with fixture tails.
+fn recovery_digest_content(
+    epic: &str,
+    predecessor_generation: u32,
+    predecessor_session_id: u32,
+    ended_at: &str,
+    transcript_path: Option<&Path>,
+    tail: Option<&str>,
+) -> String {
+    let successor = predecessor_generation + 1;
+    let source = transcript_path
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let mut out = format!(
+        "# Samurai recovery digest — epic {epic} — for gen {successor}\n\n\
+         - Predecessor: generation {predecessor_generation}, session {predecessor_session_id}\n\
+         - Ended at: {ended_at}\n\
+         - Source transcript: {source}\n\n"
+    );
+    match tail {
+        None => out.push_str(
+            "No transcript available — reconstruct from `git log` and the epic's \
+             GitHub issue instead.\n",
+        ),
+        Some(tail) => {
+            let digest = extract_digest(tail);
+            out.push_str("## Last user message\n\n");
+            match &digest.last_user_message {
+                Some(message) => {
+                    out.push_str(message);
+                    out.push('\n');
+                }
+                None => out.push_str("(none found in the transcript tail)\n"),
+            }
+            out.push_str("\n## Last assistant messages (most recent first)\n\n");
+            if digest.assistant_snippets.is_empty() {
+                out.push_str("(none found in the transcript tail)\n");
+            }
+            for (i, snippet) in digest.assistant_snippets.iter().enumerate() {
+                out.push_str(&format!("--- assistant [{}] ---\n{snippet}\n\n", i + 1));
+            }
+            if !digest.subagent_lines.is_empty() {
+                out.push_str("## Subagent completions (most recent first)\n\n");
+                for line in &digest.subagent_lines {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    truncate_chars(&out, DIGEST_MAX_CHARS)
+}
+
 /// The replication controller. Fed from three directions: the injector's
 /// validated-handoff chain ([`Self::on_handoff_written`]), the registration
 /// command ([`Self::spawn_details`] / [`Self::on_registered`]) and the hook
@@ -147,6 +351,7 @@ pub struct SamuraiReplicator {
     audit: AuditLog,
     config: SharedSamuraiConfig,
     session_dirs: SessionDirResolver,
+    transcript_paths: TranscriptPathResolver,
     teardown: SessionTeardown,
     emit_spawn: SuccessorEmitter,
     write_stdin: StdinWriter,
@@ -159,6 +364,7 @@ impl SamuraiReplicator {
         audit: AuditLog,
         config: SharedSamuraiConfig,
         session_dirs: SessionDirResolver,
+        transcript_paths: TranscriptPathResolver,
         teardown: SessionTeardown,
         emit_spawn: SuccessorEmitter,
         write_stdin: StdinWriter,
@@ -168,11 +374,34 @@ impl SamuraiReplicator {
             audit,
             config,
             session_dirs,
+            transcript_paths,
             teardown,
             emit_spawn,
             write_stdin,
             pending: Mutex::new(Vec::new()),
         }
+    }
+
+    /// One `successor_spawn_failed` ALERT (P2.4 pattern): the successor for
+    /// `snapshot` cannot be spawned, a human has to step in.
+    fn alert_spawn_failed(&self, snapshot: &SessionSnapshot, failure: &str) {
+        log::error!(
+            "samurai replicator: cannot spawn successor for session {} ({failure}) — ALERT",
+            snapshot.session_id
+        );
+        self.audit.append(
+            &snapshot.project,
+            AuditEvent::now(
+                snapshot.epic.clone(),
+                AuditEventKind::Alert,
+                snapshot.generation,
+                snapshot.session_id,
+                json!({
+                    "kind": "successor_spawn_failed",
+                    "failure": failure,
+                }),
+            ),
+        );
     }
 
     /// Entry point, called by the injector right after its two-check
@@ -186,23 +415,7 @@ impl SamuraiReplicator {
             // Cannot happen on the normal path (validation just ran git in
             // this very directory), but never kill a session we could not
             // replace: leave it in HANDOFF_WRITTEN for a human.
-            log::error!(
-                "samurai replicator: session {} has no recorded working directory — not killing, ALERT",
-                snapshot.session_id
-            );
-            self.audit.append(
-                &snapshot.project,
-                AuditEvent::now(
-                    snapshot.epic.clone(),
-                    AuditEventKind::Alert,
-                    snapshot.generation,
-                    snapshot.session_id,
-                    json!({
-                        "kind": "successor_spawn_failed",
-                        "failure": "the session's working directory is unknown",
-                    }),
-                ),
-            );
+            self.alert_spawn_failed(snapshot, "the session's working directory is unknown");
             return;
         };
         let this = self.clone();
@@ -218,26 +431,37 @@ impl SamuraiReplicator {
 
         // HEAD gate first (pure reads; the kill changes nothing git-side but
         // the session's metadata is guaranteed alive here). File I/O + git
-        // have no bounded completion time → blocking pool.
+        // have no bounded completion time → blocking pool. `None` means the
+        // just-validated handoff file is missing/unreadable — it vanished in
+        // the validation→prep window (issue #56 trigger b) — and selects
+        // recovery mode below.
         let relpath =
             samurai_prompts::handoff_file_relpath(&snapshot.epic, snapshot.generation);
         let gate_dir = PathBuf::from(working_dir.clone());
-        let head_matched = tokio::task::spawn_blocking(move || {
+        let head_gate: Option<bool> = tokio::task::spawn_blocking(move || {
             let handoff = std::fs::read_to_string(gate_dir.join(&relpath))
                 .map_err(|e| {
                     log::warn!("samurai replicator: could not re-read handoff {relpath}: {e}");
                 })
-                .ok();
-            let handoff_sha = handoff
-                .as_deref()
-                .and_then(samurai_prompts::handoff_head_sha);
+                .ok()?;
+            let handoff_sha = samurai_prompts::handoff_head_sha(&handoff);
             let head = read_repo_head(&gate_dir)
                 .map_err(|e| log::warn!("samurai replicator: {e}"))
                 .ok();
-            head_matches(handoff_sha.as_deref(), head.as_deref())
+            Some(head_matches(handoff_sha.as_deref(), head.as_deref()))
         })
         .await
-        .unwrap_or(false);
+        // An internal join failure is not evidence the handoff vanished:
+        // stay on the normal ritual, verify required.
+        .unwrap_or(Some(false));
+
+        // Recovery needs the predecessor's transcript, and the teardown
+        // below stops the transcript watcher — resolve the path NOW.
+        let transcript = if head_gate.is_none() {
+            (self.transcript_paths)(snapshot.session_id)
+        } else {
+            None
+        };
 
         // Full teardown, mirroring the manual kill command path, BEFORE the
         // Killed transition so the audit row records an accomplished fact.
@@ -248,23 +472,56 @@ impl SamuraiReplicator {
         // tile on. A rejection (e.g. the watchdog declared the session DEAD
         // mid-teardown) aborts the successor — DEAD has its own recovery
         // path and must not race a second spawn.
-        if let Err(e) = self
+        let killed = match self
             .supervisor
             .transition(snapshot.session_id, SupervisorState::Killed)
         {
-            log::warn!(
-                "samurai replicator: Killed transition for session {} rejected ({e}) — successor not staged",
-                snapshot.session_id
-            );
-            return;
-        }
+            Ok(killed) => killed,
+            Err(e) => {
+                log::warn!(
+                    "samurai replicator: Killed transition for session {} rejected ({e}) — successor not staged",
+                    snapshot.session_id
+                );
+                return;
+            }
+        };
 
         let generation = snapshot.generation + 1;
-        let instruction = samurai_prompts::successor_ritual_instruction(
-            &snapshot.epic,
-            snapshot.generation,
-            head_matched,
-        );
+        let (instruction, recovery) = match head_gate {
+            Some(head_matched) => {
+                log::info!(
+                    "samurai replicator: session {} (gen-{}) killed for epic {} — staging gen-{generation} (HEAD gate: {})",
+                    snapshot.session_id,
+                    snapshot.generation,
+                    snapshot.epic,
+                    if head_matched { "match, verify skipped" } else { "mismatch, verify required" },
+                );
+                (
+                    samurai_prompts::successor_ritual_instruction(
+                        &snapshot.epic,
+                        snapshot.generation,
+                        head_matched,
+                    ),
+                    false,
+                )
+            }
+            None => {
+                log::warn!(
+                    "samurai replicator: gen-{} handoff for epic {} vanished between validation and prep — staging gen-{generation} in RECOVERY mode",
+                    snapshot.generation,
+                    snapshot.epic,
+                );
+                self.write_recovery_digest(&snapshot, &working_dir, &killed.ts, transcript)
+                    .await;
+                (
+                    samurai_prompts::recovery_ritual_instruction(
+                        &snapshot.epic,
+                        snapshot.generation,
+                    ),
+                    true,
+                )
+            }
+        };
         let spawn = SuccessorSpawn {
             project: snapshot.project.clone(),
             epic: snapshot.epic.clone(),
@@ -272,13 +529,6 @@ impl SamuraiReplicator {
             working_dir,
             session_name: samurai_prompts::successor_session_name(&snapshot.epic, generation),
         };
-        log::info!(
-            "samurai replicator: session {} (gen-{}) killed for epic {} — staging gen-{generation} (HEAD gate: {})",
-            snapshot.session_id,
-            snapshot.generation,
-            snapshot.epic,
-            if head_matched { "match, verify skipped" } else { "mismatch, verify required" },
-        );
         self.lock_pending().push(PendingRitual {
             project: snapshot.project.clone(),
             epic: snapshot.epic.clone(),
@@ -286,10 +536,138 @@ impl SamuraiReplicator {
             instruction,
             predecessor_session_id: snapshot.session_id,
             predecessor_generation: snapshot.generation,
+            recovery,
             queued_at: Instant::now(),
             registered: None,
         });
         (self.emit_spawn)(&spawn);
+    }
+
+    /// Issue #56 trigger (a): a session the watchdog declared DEAD gets a
+    /// RECOVERY successor. Chained from the supervisor's change callback
+    /// (lib.rs) — DEAD is terminal, so that callback fires at most once per
+    /// session; the (project, epic, generation) guard below makes staging
+    /// idempotent even against a repeated notification. The dead session's
+    /// terminal is deliberately NOT torn down: the tile already shows the
+    /// error and demands attention, and the human dismisses it.
+    pub fn on_dead(self: &Arc<Self>, snapshot: &SessionSnapshot) {
+        if snapshot.state != SupervisorState::Dead {
+            return;
+        }
+        let Some(dir) = (self.session_dirs)(snapshot.session_id) else {
+            self.alert_spawn_failed(snapshot, "the session's working directory is unknown");
+            return;
+        };
+        let working_dir = strip_extended_prefix(&dir).to_string();
+        let generation = snapshot.generation + 1;
+        // Stage synchronously, under the one lock, so a second DEAD
+        // notification for the same generation can never double-stage.
+        {
+            let mut pending = self.lock_pending();
+            if pending.iter().any(|p| {
+                p.generation == generation
+                    && p.epic == snapshot.epic
+                    && p.project == snapshot.project
+            }) {
+                log::warn!(
+                    "samurai replicator: recovery successor gen-{generation} for epic {} is already staged — ignoring repeated DEAD notification",
+                    snapshot.epic
+                );
+                return;
+            }
+            log::info!(
+                "samurai replicator: session {} (gen-{}) is DEAD for epic {} — staging gen-{generation} in RECOVERY mode",
+                snapshot.session_id,
+                snapshot.generation,
+                snapshot.epic,
+            );
+            pending.push(PendingRitual {
+                project: snapshot.project.clone(),
+                epic: snapshot.epic.clone(),
+                generation,
+                instruction: samurai_prompts::recovery_ritual_instruction(
+                    &snapshot.epic,
+                    snapshot.generation,
+                ),
+                predecessor_session_id: snapshot.session_id,
+                predecessor_generation: snapshot.generation,
+                recovery: true,
+                queued_at: Instant::now(),
+                registered: None,
+            });
+        }
+        // The watchdog does not stop the transcript watcher, so it usually
+        // still knows the dead session's file; resolve before going async.
+        let transcript = (self.transcript_paths)(snapshot.session_id);
+        let spawn = SuccessorSpawn {
+            project: snapshot.project.clone(),
+            epic: snapshot.epic.clone(),
+            generation,
+            working_dir: working_dir.clone(),
+            session_name: samurai_prompts::successor_session_name(&snapshot.epic, generation),
+        };
+        let this = self.clone();
+        let snapshot = snapshot.clone();
+        tauri::async_runtime::spawn(async move {
+            // Digest first so the file exists before the successor can look;
+            // its failure never blocks the spawn (best effort, logged).
+            this.write_recovery_digest(&snapshot, &working_dir, &snapshot.ts, transcript)
+                .await;
+            (this.emit_spawn)(&spawn);
+        });
+    }
+
+    /// Builds and writes the recovery digest file for `snapshot`'s successor
+    /// (`<working_dir>/.maestro/handoffs/<slug>-gen<N+1>-recovery.md`). Best
+    /// effort: failures are logged, never propagated — git + GitHub are the
+    /// primary reconstruction sources, the digest is only hints.
+    async fn write_recovery_digest(
+        &self,
+        snapshot: &SessionSnapshot,
+        working_dir: &str,
+        ended_at: &str,
+        transcript: Option<PathBuf>,
+    ) {
+        let epic = snapshot.epic.clone();
+        let predecessor_generation = snapshot.generation;
+        let predecessor_session_id = snapshot.session_id;
+        let ended_at = ended_at.to_string();
+        let dir = PathBuf::from(working_dir);
+        let result = tokio::task::spawn_blocking(move || {
+            let tail = transcript.as_deref().and_then(|path| {
+                read_transcript_tail(path)
+                    .map_err(|e| {
+                        log::warn!(
+                            "samurai replicator: could not read transcript {}: {e}",
+                            path.display()
+                        );
+                    })
+                    .ok()
+            });
+            let content = recovery_digest_content(
+                &epic,
+                predecessor_generation,
+                predecessor_session_id,
+                &ended_at,
+                transcript.as_deref(),
+                tail.as_deref(),
+            );
+            let path = dir.join(samurai_prompts::recovery_digest_relpath(
+                &epic,
+                predecessor_generation + 1,
+            ));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("create {}: {e}", parent.display()))?;
+            }
+            std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log::warn!("samurai replicator: recovery digest not written ({e})"),
+            Err(e) => log::warn!("samurai replicator: recovery digest task failed ({e})"),
+        }
     }
 
     /// Audit-linking details for a registration that matches a staged
@@ -311,10 +689,16 @@ impl SamuraiReplicator {
                     && p.project == project
             })
             .map(|p| {
-                json!({
+                let mut details = json!({
                     "predecessor_session_id": p.predecessor_session_id,
                     "predecessor_generation": p.predecessor_generation,
-                })
+                });
+                // Issue #56: mark RECOVERY successors on their SPAWN row;
+                // normal successors keep the exact P2.4 shape.
+                if p.recovery {
+                    details["recovery"] = json!(true);
+                }
+                details
             })
     }
 
@@ -438,6 +822,16 @@ impl SamuraiReplicator {
             .map(|p| (p.registered.map(|(id, _)| id), p.instruction.clone()))
     }
 
+    /// Test-only: how many staged rituals exist for one successor
+    /// generation (idempotency checks).
+    #[cfg(test)]
+    fn pending_count(&self, generation: u32) -> usize {
+        self.lock_pending()
+            .iter()
+            .filter(|p| p.generation == generation)
+            .count()
+    }
+
     /// Test-only: age a staged ritual's clocks so timeout paths run without
     /// real waiting.
     #[cfg(test)]
@@ -474,6 +868,7 @@ mod tests {
         supervisor: Arc<Supervisor>,
         audit: AuditLog,
         dirs: Arc<Mutex<HashMap<u32, String>>>,
+        transcripts: Arc<Mutex<HashMap<u32, PathBuf>>>,
         torn_down: Arc<Mutex<Vec<u32>>>,
         spawns: Arc<Mutex<Vec<SuccessorSpawn>>>,
         writes: Arc<Mutex<Vec<(u32, String)>>>,
@@ -489,6 +884,10 @@ mod tests {
         let dirs_for_resolver = dirs.clone();
         let session_dirs: SessionDirResolver =
             Arc::new(move |id| dirs_for_resolver.lock().unwrap().get(&id).cloned());
+        let transcripts: Arc<Mutex<HashMap<u32, PathBuf>>> = Arc::new(Mutex::new(HashMap::new()));
+        let transcripts_for_resolver = transcripts.clone();
+        let transcript_paths: TranscriptPathResolver =
+            Arc::new(move |id| transcripts_for_resolver.lock().unwrap().get(&id).cloned());
 
         let torn_down: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let torn_down_rec = torn_down.clone();
@@ -516,6 +915,7 @@ mod tests {
             audit.clone(),
             config.clone(),
             session_dirs,
+            transcript_paths,
             teardown,
             emit_spawn,
             write_stdin,
@@ -525,6 +925,7 @@ mod tests {
             supervisor,
             audit,
             dirs,
+            transcripts,
             torn_down,
             spawns,
             writes,
@@ -741,11 +1142,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_missing_handoff_or_broken_repo_defaults_to_verify_required() {
+    async fn test_present_handoff_in_broken_repo_defaults_to_verify_required() {
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
-        // Working dir exists but holds neither a handoff file nor a repo.
+        // The handoff file is present but the working dir is not a git repo:
+        // the HEAD gate cannot confirm anything → normal ritual, verify
+        // required (NOT recovery — that is only for a missing handoff).
         let not_a_repo = tempdir().unwrap();
+        write_handoff(not_a_repo.path(), "epic-9", 2, &"f".repeat(40));
         h.dirs
             .lock()
             .unwrap()
@@ -757,6 +1161,7 @@ mod tests {
         wait_until(|| h.replicator.pending_view(3).is_some()).await;
         let (_, instruction) = h.replicator.pending_view(3).unwrap();
         assert!(instruction.contains("MUST run every command"));
+        assert!(!instruction.contains("RECOVERY"));
     }
 
     #[tokio::test]
@@ -1039,5 +1444,350 @@ mod tests {
         assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
         let (_, instruction) = h.replicator.pending_view(3).unwrap();
         assert!(instruction.contains("SKIP"), "HEAD matched → verify skipped");
+    }
+
+    // --- issue #56: recovery digest extraction ---
+
+    /// A transcript user-message line with one text block.
+    fn user_line(text: &str) -> String {
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":{}}}]}},"uuid":"u","timestamp":"t"}}"#,
+            serde_json::to_string(text).unwrap()
+        )
+    }
+
+    /// A transcript assistant-message line with one text block.
+    fn assistant_line(text: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"model":"m","content":[{{"type":"text","text":{}}}]}},"uuid":"a","timestamp":"t"}}"#,
+            serde_json::to_string(text).unwrap()
+        )
+    }
+
+    /// A transcript line carrying a completed sub-agent's tool result.
+    fn subagent_line() -> String {
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"agent-7","content":[{"type":"text","text":"review finished: all good"}]},"uuid":"u","timestamp":"t"}"#
+            .to_string()
+    }
+
+    #[test]
+    fn test_digest_missing_transcript_notes_and_header() {
+        let content =
+            recovery_digest_content("epic-9", 2, 1, "2026-08-06T12:00:00Z", None, None);
+        assert!(content.contains("# Samurai recovery digest — epic epic-9 — for gen 3"));
+        assert!(content.contains("generation 2, session 1"));
+        assert!(content.contains("Ended at: 2026-08-06T12:00:00Z"));
+        assert!(content.contains("Source transcript: none"));
+        assert!(content.contains("No transcript available"));
+    }
+
+    #[test]
+    fn test_digest_tail_is_bounded_and_keeps_the_most_recent_content() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let mut file = String::new();
+        // Early content that must fall outside the bounded tail …
+        file.push_str(&user_line("EARLY MARKER that must never appear"));
+        file.push('\n');
+        // … under >256KB of padding …
+        let padding = "pad ".repeat(150);
+        for _ in 0..500 {
+            file.push_str(&assistant_line(&padding));
+            file.push('\n');
+        }
+        // … then the exchanges the digest is for.
+        file.push_str(&user_line("last real user question"));
+        file.push('\n');
+        for i in 1..=12 {
+            file.push_str(&assistant_line(&format!("assistant reply {i}")));
+            file.push('\n');
+        }
+        file.push_str(&subagent_line());
+        file.push('\n');
+        std::fs::write(&path, &file).unwrap();
+        assert!(
+            file.len() as u64 > DIGEST_TAIL_BYTES,
+            "fixture must exceed the tail window"
+        );
+
+        let tail = read_transcript_tail(&path).unwrap();
+        assert!(tail.len() as u64 <= DIGEST_TAIL_BYTES);
+        let content = recovery_digest_content("epic-9", 2, 1, "ts", Some(&path), Some(&tail));
+
+        // The most recent exchanges are kept, the assistant window holds
+        // only the last 10 (replies 1-2 and all padding fall out) …
+        assert!(content.contains("last real user question"));
+        assert!(content.contains("assistant reply 12"));
+        assert!(content.contains("assistant reply 3"));
+        assert!(!content.contains("assistant reply 2"));
+        assert!(!content.contains("pad pad"));
+        // … everything before the tail window is gone …
+        assert!(!content.contains("EARLY MARKER"));
+        // … and the sub-agent completion made it in.
+        assert!(content.contains("- agent toolu_x (completed): review finished: all good"));
+    }
+
+    #[test]
+    fn test_digest_truncates_snippets_and_strips_ansi() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let long = "x".repeat(600);
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                assistant_line(&format!("\u{1b}[31mred\u{1b}[0m alert {long}")),
+                user_line("final \u{1b}[1mbold\u{1b}[0m question"),
+            ),
+        )
+        .unwrap();
+        let tail = read_transcript_tail(&path).unwrap();
+        let content = recovery_digest_content("epic-9", 2, 1, "ts", Some(&path), Some(&tail));
+        // Per-snippet cap with the truncation marker; ANSI stripped.
+        assert!(content.contains("[... truncated ...]"));
+        assert!(!content.contains(&long));
+        assert!(content.contains("red alert"));
+        assert!(content.contains("final bold question"));
+        assert!(!content.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn test_digest_whole_file_is_hard_capped() {
+        let mut file = String::new();
+        for i in 0..10 {
+            file.push_str(&assistant_line(&format!("{i} {}", "y".repeat(600))));
+            file.push('\n');
+        }
+        let content = recovery_digest_content("epic-9", 2, 1, "ts", None, Some(&file));
+        // 10 snippets × 500 chars would blow past the cap; the whole digest
+        // is clamped (+ small allowance for the truncation marker itself).
+        assert!(
+            content.chars().count() <= DIGEST_MAX_CHARS + 20,
+            "digest is {} chars",
+            content.chars().count()
+        );
+    }
+
+    // --- issue #56 trigger (b): handoff vanished at successor-prep time ---
+
+    #[tokio::test]
+    async fn test_vanished_handoff_stages_recovery_successor() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-vanish";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        // NO handoff file: it vanished between validation and prep.
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        // The predecessor's transcript is resolvable (pre-teardown).
+        let transcript = repo.path().join("transcript.jsonl");
+        std::fs::write(
+            &transcript,
+            format!("{}\n", assistant_line("the final words of gen-2")),
+        )
+        .unwrap();
+        h.transcripts.lock().unwrap().insert(1, transcript.clone());
+        let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
+
+        h.replicator.on_handoff_written(&snapshot);
+        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
+        wait_until(|| h.replicator.pending_view(3).is_some()).await;
+
+        // The kill still happened (this is the killed path, not DEAD) …
+        assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
+        // … but the staged instruction is the RECOVERY ritual.
+        let (_, instruction) = h.replicator.pending_view(3).unwrap();
+        assert!(instruction.contains("RECOVERY MODE"));
+        assert!(instruction.contains(".maestro/handoffs/epic-9-gen3-recovery.md"));
+        assert!(!instruction.contains("MUST run every command"));
+        assert!(!instruction.contains('\n'));
+        // The digest file was written before staging, from the transcript.
+        let digest = std::fs::read_to_string(
+            repo.path().join(".maestro/handoffs/epic-9-gen3-recovery.md"),
+        )
+        .unwrap();
+        assert!(digest.contains("the final words of gen-2"));
+        assert!(digest.contains("for gen 3"));
+        // The SPAWN linkage marks recovery.
+        let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
+        assert_eq!(details["recovery"], true);
+        assert_eq!(details["predecessor_session_id"], 1);
+        // The spawn event is the exact shape the frontend already handles.
+        let spawns = h.spawns.lock().unwrap();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].generation, 3);
+        assert_eq!(spawns[0].session_name, "samurai gen-3 epic-9");
+    }
+
+    // --- issue #56 trigger (a): DEAD → recovery spawn ---
+
+    /// Registers session 1 and declares it DEAD, returning that snapshot
+    /// (the exact value the supervisor's change callback hands to on_dead).
+    fn to_dead(
+        supervisor: &Supervisor,
+        project: &str,
+        epic: &str,
+        generation: u32,
+    ) -> SessionSnapshot {
+        supervisor
+            .register_session(1, project.into(), epic.into(), generation)
+            .unwrap();
+        supervisor.transition(1, SupervisorState::Dead).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_dead_stages_exactly_one_recovery_successor() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-dead";
+        let repo = tempdir().unwrap();
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snapshot = to_dead(&h.supervisor, project, "epic-9", 2);
+
+        h.replicator.on_dead(&snapshot);
+
+        // Staging is synchronous, and the dead session's terminal is NOT
+        // torn down — the tile stays for the human to dismiss.
+        assert_eq!(h.replicator.pending_count(3), 1);
+        assert!(h.torn_down.lock().unwrap().is_empty());
+        let (_, instruction) = h.replicator.pending_view(3).unwrap();
+        assert!(instruction.contains("RECOVERY MODE"));
+
+        // One spawn event, emitted after the digest file is written.
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        {
+            let spawns = h.spawns.lock().unwrap();
+            assert_eq!(spawns.len(), 1);
+            assert_eq!(spawns[0].project, project);
+            assert_eq!(spawns[0].epic, "epic-9");
+            assert_eq!(spawns[0].generation, 3);
+            assert_eq!(spawns[0].session_name, "samurai gen-3 epic-9");
+        }
+        // No transcript was resolvable → the digest still exists, noted.
+        let digest = std::fs::read_to_string(
+            repo.path().join(".maestro/handoffs/epic-9-gen3-recovery.md"),
+        )
+        .unwrap();
+        assert!(digest.contains("No transcript available"));
+        assert!(digest.contains("Source transcript: none"));
+
+        // Idempotency: a repeated DEAD notification changes nothing.
+        h.replicator.on_dead(&snapshot);
+        assert_eq!(h.replicator.pending_count(3), 1);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(h.spawns.lock().unwrap().len(), 1);
+
+        // Registration links + marks the SPAWN row; delivery is unchanged.
+        let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
+        assert_eq!(details["recovery"], true);
+        assert_eq!(details["predecessor_session_id"], 1);
+        assert_eq!(details["predecessor_generation"], 2);
+        let registered = h
+            .supervisor
+            .register_session_with_details(2, project.into(), "epic-9".into(), 3, details)
+            .unwrap();
+        h.replicator.on_registered(&registered);
+        h.replicator.observe_hook(&session_started(2));
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, 2);
+        assert!(writes[0].1.contains("RECOVERY MODE"));
+        assert!(writes[0].1.ends_with('\r'));
+        assert_eq!(writes[0].1.matches('\r').count(), 1, "exactly the final CR");
+
+        // The successor's SPAWN audit row carries the recovery mark.
+        let mut spawn_rows = Vec::new();
+        for _ in 0..200 {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
+            spawn_rows = rows
+                .into_iter()
+                .filter(|r| r.event == AuditEventKind::Spawn && r.session_id == 2)
+                .collect();
+            if !spawn_rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(spawn_rows.len(), 1);
+        assert_eq!(spawn_rows[0].details["recovery"], true);
+        assert_eq!(spawn_rows[0].details["predecessor_session_id"], 1);
+        assert_eq!(spawn_rows[0].generation, 3);
+    }
+
+    #[tokio::test]
+    async fn test_dead_recovery_digest_uses_predecessor_transcript() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let repo = tempdir().unwrap();
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        // The watchdog never stops the watcher, so the transcript resolves.
+        let transcript = repo.path().join("dead.jsonl");
+        std::fs::write(
+            &transcript,
+            format!(
+                "{}\n{}\n",
+                user_line("please finish issue 42"),
+                assistant_line("starting on issue 42 now"),
+            ),
+        )
+        .unwrap();
+        h.transcripts.lock().unwrap().insert(1, transcript.clone());
+        let snapshot = to_dead(&h.supervisor, "C:/git/proj-rep-dead-t", "epic-9", 2);
+
+        h.replicator.on_dead(&snapshot);
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+
+        let digest = std::fs::read_to_string(
+            repo.path().join(".maestro/handoffs/epic-9-gen3-recovery.md"),
+        )
+        .unwrap();
+        assert!(digest.contains("please finish issue 42"));
+        assert!(digest.contains("starting on issue 42 now"));
+        assert!(digest.contains(&transcript.display().to_string()));
+        // The DEAD snapshot's timestamp is the recorded end.
+        assert!(digest.contains(&format!("Ended at: {}", snapshot.ts)));
+    }
+
+    #[tokio::test]
+    async fn test_dead_trigger_guards_state_and_unknown_dir() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-dead-guard";
+        // A non-DEAD snapshot is a no-op (the lib.rs callback filters on
+        // DEAD, but the API must be safe against misuse).
+        let working = h
+            .supervisor
+            .register_session(1, project.into(), "epic-9".into(), 2)
+            .unwrap();
+        h.replicator.on_dead(&working);
+        assert_eq!(h.replicator.pending_count(3), 0);
+
+        // DEAD with no resolvable working dir: ALERT, nothing staged.
+        let dead = h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+        h.replicator.on_dead(&dead);
+        assert_eq!(h.replicator.pending_count(3), 0);
+        assert!(h.spawns.lock().unwrap().is_empty());
+        let mut alerts = 0;
+        for _ in 0..200 {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
+            alerts = rows
+                .iter()
+                .filter(|r| r.details["kind"] == "successor_spawn_failed")
+                .count();
+            if alerts > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(alerts, 1);
     }
 }
