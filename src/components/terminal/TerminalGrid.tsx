@@ -1694,7 +1694,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     if (reusable) {
       setSlots((prev) => prev.map((s) => (s.id === reusable.id ? slot : s)));
     } else {
-      setSlots((prev) => (prev.length >= MAX_SESSIONS ? prev : [...prev, slot]));
+      // Dedupe by id instead of re-checking MAX_SESSIONS: the cap was already
+      // enforced against current state above, and a refusal here would strand
+      // the claim registered in autoLaunchSlotIdsRef forever (nothing clears a
+      // claim whose slot never appears), permanently latching
+      // successorLaunchImminent. A pathological same-batch double-claim now
+      // overshoots the cap by one instead — transient and recoverable.
+      setSlots((prev) => (prev.some((s) => s.id === slot.id) ? prev : [...prev, slot]));
       setLayoutTree(() => buildGridTree([...orderedSlotIds, slot.id]));
     }
     setFocusedSlotId(slot.id);

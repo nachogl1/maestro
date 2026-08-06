@@ -60,6 +60,30 @@ describe("usePendingLaunchStore", () => {
     expect(usePendingLaunchStore.getState().consume("tab-1")).toBeNull();
   });
 
+  // The old single-slot store accidentally deduped a rapid double-request
+  // (History-tab double-click → the same session resumed twice); the queue
+  // restores that on purpose while keeping distinct launches.
+  it("drops an exact duplicate of an unconsumed request", () => {
+    const launch = launchFor("tab-1");
+    usePendingLaunchStore.getState().request(launch);
+    usePendingLaunchStore.getState().request(launchFor("tab-1"));
+
+    expect(usePendingLaunchStore.getState().pending).toEqual([launch]);
+
+    usePendingLaunchStore.getState().consume("tab-1");
+    expect(usePendingLaunchStore.getState().consume("tab-1")).toBeNull();
+  });
+
+  it("still queues near-duplicates that differ in samurai generation", () => {
+    const gen2: PendingLaunch = { ...launchFor("tab-1"), resumeSessionId: null,
+      samurai: { project: "C:/p", epic: "#37", generation: 2 } };
+    const gen3 = { ...gen2, samurai: { ...gen2.samurai!, generation: 3 } };
+    usePendingLaunchStore.getState().request(gen2);
+    usePendingLaunchStore.getState().request(gen3);
+
+    expect(usePendingLaunchStore.getState().pending).toHaveLength(2);
+  });
+
   it("consuming one tab's entry leaves other tabs' entries untouched", () => {
     const other = launchFor("tab-2");
     usePendingLaunchStore.getState().request(launchFor("tab-1"));

@@ -94,10 +94,18 @@ export function samuraiSuccessorCliFlags(base: CliFlags): CliFlags {
  * predecessor was the project's ONLY session, unmounting the grid at that
  * moment would destroy a successor launch that is either still queued in the
  * pending-launch store or already claimed by the grid's consume effect (and
- * not yet handed to launchSlot) — the successor would then never spawn. True
- * in either case, for BOTH event orderings (KILLED before the spawn event
- * reaches the store, and vice versa). `claimedLaunchCount` is grid-local, so
- * it counts regardless of `tabId`.
+ * not yet handed to launchSlot) — the successor would then never spawn.
+ *
+ * Scope, precisely: the backend emits KILLED before the spawn event, so when
+ * the frontend processes them in separate flushes this guard sees an empty
+ * queue, the grid drops to the landing view, and the successor survives via
+ * the remount `queueSamuraiSuccessorLaunch` forces with setSessionsLaunched
+ * (cost: a brief landing-view flash). The guard is what makes the SAME-flush
+ * interleaving safe — when both events land before React flushes, the queued
+ * or claimed launch is visible here and the grid must NOT unmount, because a
+ * claim consumed by an unmounting grid is destroyed with it. It also covers
+ * any ordering that delivers the spawn event first. `claimedLaunchCount` is
+ * grid-local, so it counts regardless of `tabId`.
  */
 export function successorLaunchImminent(
   queued: readonly Pick<PendingLaunch, "tabId">[],

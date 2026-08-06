@@ -52,9 +52,33 @@ interface PendingLaunchState {
   consume: (tabId: string) => PendingLaunch | null;
 }
 
+/**
+ * Two requests are the same launch when every identifying field matches. The
+ * old single-slot store accidentally deduped rapid duplicate requests (e.g. a
+ * History-tab double-click, which would otherwise resume the same Claude
+ * session twice); the FIFO queue restores that on purpose, while distinct
+ * launches still all queue.
+ */
+function sameLaunch(a: PendingLaunch, b: PendingLaunch): boolean {
+  return (
+    a.tabId === b.tabId &&
+    a.mode === b.mode &&
+    a.resumeSessionId === b.resumeSessionId &&
+    a.workingDirOverride === b.workingDirOverride &&
+    a.branch === b.branch &&
+    (a.customName ?? null) === (b.customName ?? null) &&
+    (a.samurai?.project ?? null) === (b.samurai?.project ?? null) &&
+    (a.samurai?.epic ?? null) === (b.samurai?.epic ?? null) &&
+    (a.samurai?.generation ?? null) === (b.samurai?.generation ?? null)
+  );
+}
+
 export const usePendingLaunchStore = create<PendingLaunchState>((set, get) => ({
   pending: [],
-  request: (launch) => set((s) => ({ pending: [...s.pending, launch] })),
+  request: (launch) =>
+    set((s) =>
+      s.pending.some((p) => sameLaunch(p, launch)) ? s : { pending: [...s.pending, launch] }
+    ),
   consume: (tabId) => {
     const queue = get().pending;
     const index = queue.findIndex((p) => p.tabId === tabId);
