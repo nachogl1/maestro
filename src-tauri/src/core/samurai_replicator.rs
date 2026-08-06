@@ -98,6 +98,14 @@ pub type StdinWriter = Arc<dyn Fn(u32, String) + Send + Sync>;
 /// blocking the spawn.
 pub type TranscriptPathResolver = Arc<dyn Fn(u32) -> Option<PathBuf> + Send + Sync>;
 
+/// Issue #60: consulted with (project, epic) just before a successor is
+/// staged for a completed handoff. `true` = a hard park sweep is engaged;
+/// the handoff is absorbed as park state (the parker records the epic for a
+/// resume timer) and NO successor spawns. The production closure wraps
+/// `SamuraiParker::absorb_handoff`; late-bound because the parker is
+/// constructed after this controller.
+pub type HandoffAbsorber = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 /// Payload of the `samurai-spawn-successor` event. Deliberately does NOT
 /// carry the ritual prompt: frontend write-timing is unreliable (claude may
 /// not be up yet), so the prompt stays queued here and is delivered on the
@@ -450,6 +458,10 @@ pub struct SamuraiReplicator {
     emit_spawn: SuccessorEmitter,
     write_stdin: StdinWriter,
     pending: Mutex<Vec<PendingRitual>>,
+    /// Issue #60: the parking-engaged check (see [`HandoffAbsorber`]).
+    /// Unset (tests without a parker, or before setup finishes) = never
+    /// absorb — successors spawn as in Phase 2.
+    absorber: std::sync::OnceLock<HandoffAbsorber>,
 }
 
 impl SamuraiReplicator {
@@ -473,7 +485,15 @@ impl SamuraiReplicator {
             emit_spawn,
             write_stdin,
             pending: Mutex::new(Vec::new()),
+            absorber: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Issue #60: late-binds the parking-engaged check (the parker is
+    /// constructed after this controller). Second calls are ignored, like
+    /// every OnceLock slot in setup.
+    pub fn set_absorber(&self, absorber: HandoffAbsorber) {
+        let _ = self.absorber.set(absorber);
     }
 
     /// One `successor_spawn_failed` ALERT (P2.4 pattern): the successor for
@@ -586,6 +606,34 @@ impl SamuraiReplicator {
                 return;
             }
         };
+
+        // Issue #60: while a hard park sweep is engaged, a completed handoff
+        // is ABSORBED instead of replicated — the handoff file already IS the
+        // park state (PRD §5.2) and a successor would burn the exhausted
+        // allowance. Teardown and the Killed transition above already
+        // happened; ONLY the successor staging + spawn emit are suppressed.
+        // The PARK row explains why no successor appears; the parker records
+        // the epic and arms its resume timer when the sweep completes.
+        if let Some(absorber) = self.absorber.get() {
+            if absorber(&snapshot.project, &snapshot.epic) {
+                log::info!(
+                    "samurai replicator: parking engaged — gen-{} handoff for epic {} absorbed as park state, no successor staged",
+                    snapshot.generation,
+                    snapshot.epic,
+                );
+                self.audit.append(
+                    &snapshot.project,
+                    AuditEvent::now(
+                        snapshot.epic.clone(),
+                        AuditEventKind::Park,
+                        snapshot.generation,
+                        snapshot.session_id,
+                        json!({ "phase": "handoff_absorbed" }),
+                    ),
+                );
+                return;
+            }
+        }
 
         let generation = snapshot.generation + 1;
         let (instruction, recovery) = match head_gate {
@@ -2177,5 +2225,89 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(alerts, 1);
+    }
+
+    // --- issue #60: parking-engaged handoff absorption ---
+
+    #[tokio::test]
+    async fn test_engaged_absorber_suppresses_successor_and_writes_park_row() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-absorb";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let head = read_repo_head(repo.path()).unwrap();
+        write_handoff(repo.path(), "epic-9", 2, &head);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+
+        // A hard park sweep is engaged: the absorber says so and records
+        // what it was asked about.
+        let asked: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let asked_rec = asked.clone();
+        h.replicator.set_absorber(Arc::new(move |project, epic| {
+            asked_rec
+                .lock()
+                .unwrap()
+                .push((project.to_string(), epic.to_string()));
+            true
+        }));
+
+        let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
+        h.replicator.on_handoff_written(&snapshot);
+
+        // The kill still happens in full (teardown + Killed transition) …
+        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
+        assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
+        // … and the trail explains the missing successor with a PARK row.
+        let mut absorbed = false;
+        for _ in 0..200 {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
+            absorbed = rows.iter().any(|r| {
+                r.event == AuditEventKind::Park && r.details["phase"] == "handoff_absorbed"
+            });
+            if absorbed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(absorbed, "PARK handoff_absorbed row must land");
+
+        // ONLY the staging + spawn emit were suppressed.
+        assert!(h.spawns.lock().unwrap().is_empty(), "no spawn event");
+        assert_eq!(h.replicator.pending_count(3), 0, "no staged ritual");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![(project.to_string(), "epic-9".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disengaged_absorber_spawns_normally() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-noabsorb";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let head = read_repo_head(repo.path()).unwrap();
+        write_handoff(repo.path(), "epic-9", 2, &head);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        h.replicator.set_absorber(Arc::new(|_, _| false));
+
+        let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
+        h.replicator.on_handoff_written(&snapshot);
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+
+        // Not engaged: the Phase-2 behavior is untouched.
+        assert_eq!(h.replicator.pending_count(3), 1);
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert!(!rows
+            .iter()
+            .any(|r| r.details["phase"] == "handoff_absorbed"));
     }
 }

@@ -15,8 +15,10 @@
 //! windows as null): a distinct event fires once — Phase 3's preflight will
 //! block on it. Never silence.
 //!
-//! **Events only.** Parking actions are Phase 3; this module appends ALERT
-//! audit rows and emits `samurai-allowance-event` — nothing else.
+//! **Detection only.** This module appends ALERT audit rows, emits
+//! `samurai-allowance-event`, and hands each event to the parker
+//! (`samurai_parker`, issue #60) — the backend consumer that decides the
+//! wind-down / sequential park. No decisions live here.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +29,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
+use super::samurai_parker::SamuraiParker;
 use super::supervisor::Supervisor;
 
 /// Frontend channel for allowance events (same payload as the audit row's
@@ -198,8 +201,9 @@ fn edge(
 }
 
 /// Spawns the evaluation loop (same shape as `github::watchdog`): every
-/// ~60s fetch usage, evaluate, and on events append ALERT audit rows +
-/// emit the frontend event.
+/// ~60s fetch usage, evaluate, and on events append ALERT audit rows,
+/// emit the frontend event, and hand the event to the parker (issue #60) —
+/// backend-direct, never through a Tauri event listener.
 ///
 /// ALERT rows land in the audit log of every project with a supervised
 /// session (those are the runs a crossing is about); with none supervised
@@ -210,6 +214,7 @@ pub fn spawn_allowance_loop(
     config: SharedSamuraiConfig,
     supervisor: Arc<Supervisor>,
     audit: AuditLog,
+    parker: Arc<SamuraiParker>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut watcher = AllowanceWatcher::default();
@@ -280,6 +285,10 @@ pub fn spawn_allowance_loop(
                     );
                 }
                 let _ = app.emit(ALLOWANCE_EVENT_CHANNEL, event);
+                // Issue #60: the parker consumes the event after its ALERT
+                // rows are durable, so the trail always shows the crossing
+                // before the PARK rows it causes.
+                parker.on_allowance_event(event);
             }
         }
     });

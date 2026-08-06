@@ -61,7 +61,7 @@ import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
 import { usePluginStore } from "@/stores/usePluginStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useActivityStore } from "@/stores/useActivityStore";
-import { useSessionStore } from "@/stores/useSessionStore";
+import { SAMURAI_TILE_CLOSE_STATES, useSessionStore } from "@/stores/useSessionStore";
 import type { AiMode } from "@/stores/useSessionStore";
 import { useWorkspaceStore, type RepositoryInfo, type WorkspaceType } from "@/stores/useWorkspaceStore";
 import { shellEscapePaths } from "@/lib/shellEscape";
@@ -1717,15 +1717,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     for (const id of ready) void launchSlot(id);
   }, [slots, launchSlot]);
 
-  // Samurai kills (issue #55): after a validated handoff the BACKEND tears
-  // the session down itself (PTY tree-kill, status server, transcript
-  // watcher, context store) and announces it by transitioning the session to
-  // KILLED on the samurai-supervisor-event channel. No PTY-exit event
-  // exists and terminal teardown is otherwise always frontend-initiated, so
-  // without this the dead tile would linger as a zombie. Reuse handleKill —
-  // the exact cleanup the manual close runs, minus the kill IPC (already
-  // done) and minus the working-dir artifacts the successor is about to
-  // reuse.
+  // Samurai kills (issue #55) and parks (issue #60): after a validated
+  // handoff — or a validated allowance park — the BACKEND tears the session
+  // down itself (PTY tree-kill, status server, transcript watcher, context
+  // store) and announces it by transitioning the session to KILLED/PARKED on
+  // the samurai-supervisor-event channel. No PTY-exit event exists and
+  // terminal teardown is otherwise always frontend-initiated, so without
+  // this the dead tile would linger as a zombie. Reuse handleKill — the
+  // exact cleanup the manual close runs, minus the kill IPC (already done)
+  // and minus the working-dir artifacts the successor (or the resume's
+  // fresh spawn) is about to reuse.
   //
   // Deliberately placed AFTER the pending-launch consume/launch effects
   // (fresh-eyes finding A): effects run in definition order, so when the
@@ -1738,7 +1739,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
   useEffect(() => {
     for (const slot of slotsRef.current) {
-      if (slot.sessionId !== null && samuraiBySessionId[slot.sessionId]?.state === "KILLED") {
+      if (slot.sessionId === null) continue;
+      const info = samuraiBySessionId[slot.sessionId];
+      if (info && SAMURAI_TILE_CLOSE_STATES.has(info.state)) {
         // handleKill → removeSession drops the supervision entry, so this
         // effect cannot re-fire for the same session.
         handleKill(slot.sessionId, { keepDirArtifacts: true });

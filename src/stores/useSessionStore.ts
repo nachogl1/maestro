@@ -737,6 +737,15 @@ interface SamuraiSupervisorEvent {
 const SAMURAI_TERMINAL_STATES = new Set(["KILLED", "PARKED", "DEAD"]);
 
 /**
+ * Supervisor states whose backend teardown already ran, so the frontend must
+ * close the tile (TerminalGrid's samurai-close effect): KILLED (replication,
+ * issue #55) and PARKED (allowance park, issue #60 — resume is always a fresh
+ * spawn, a parked terminal serves no purpose). DEAD deliberately stays open:
+ * that tile shows the error until a human dismisses it.
+ */
+export const SAMURAI_TILE_CLOSE_STATES: ReadonlySet<string> = new Set(["KILLED", "PARKED"]);
+
+/**
  * Tracks every supervisor state change into `samuraiBySessionId` (the badge
  * data for issue #46), and surfaces a watchdog-declared death (issue #44):
  * a crashed claude fires no hook, so without this the session would sit on

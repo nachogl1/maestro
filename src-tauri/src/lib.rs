@@ -565,6 +565,10 @@ pub fn run() {
                         }
                     });
                 });
+            // The parker (issue #60) tears parked sessions down with this
+            // same closure — a PARKED terminal serves no purpose, every
+            // wake-up is a fresh spawn (PRD decision #6).
+            let teardown_for_parker = teardown.clone();
             let replicator = Arc::new(core::samurai_replicator::SamuraiReplicator::new(
                 supervisor.clone(),
                 audit_log.clone(),
@@ -586,26 +590,19 @@ pub fn run() {
                 app.state::<ProcessManager>().inner().clone(),
                 audit_log.clone(),
                 session_dirs,
-                Some(replicator),
+                Some(replicator.clone()),
             ));
             // Managed for the same teardown propagation as the progress
             // tracker above (finding H): pending instruction + idle flag.
             app.manage(injector.clone());
             let _ = samurai_injector.set(injector.clone());
-            core::samurai_injector::spawn_injector(injector);
-
-            core::allowance_watcher::spawn_allowance_loop(
-                app.handle().clone(),
-                samurai_config,
-                supervisor,
-                audit_log,
-            );
+            core::samurai_injector::spawn_injector(injector.clone());
 
             // Samurai (issue #59): per-epic run-config store + persisted
-            // resume timers. Foundation only — P3.2 (park) arms timers and
-            // saves configs; P3.3 (issue #61) replaces the logging stub
-            // below with the real resume spawn. Both managed so the later
-            // command layers reach them via `app.state()`.
+            // resume timers. Foundation only — the parker below arms timers;
+            // P3.3 (issue #61) replaces the logging stub with the real
+            // resume spawn. Both managed so the later command layers reach
+            // them via `app.state()`.
             let run_configs = Arc::new(core::samurai_run_config::RunConfigStore::new(
                 commands::ai_runner::artifact_base_dir("runs"),
             ));
@@ -626,7 +623,38 @@ pub fn run() {
                     }),
                 );
             tauri::async_runtime::spawn(samurai_schedule_task);
-            app.manage(samurai_schedule);
+            app.manage(samurai_schedule.clone());
+
+            // Samurai (issue #60): the allowance parker — the backend
+            // consumer of the watcher's threshold events. Soft crossing →
+            // wind-down instructions through the injector's ladder; hard
+            // crossing → sequential park sweep (highest context first),
+            // teardown per parked session, one persisted resume timer per
+            // parked/absorbed epic. The injector chains park outcomes back
+            // in (set_parker) and the replicator consults the parking-
+            // engaged check before staging a successor (set_absorber).
+            let samurai_parker = core::samurai_parker::SamuraiParker::new(
+                supervisor.clone(),
+                samurai_context.clone(),
+                injector.clone(),
+                samurai_schedule,
+                audit_log.clone(),
+                teardown_for_parker,
+            );
+            app.manage(samurai_parker.clone());
+            injector.set_parker(samurai_parker.clone());
+            let parker_for_absorb = samurai_parker.clone();
+            replicator.set_absorber(Arc::new(move |project: &str, epic: &str| {
+                parker_for_absorb.absorb_handoff(project, epic)
+            }));
+
+            core::allowance_watcher::spawn_allowance_loop(
+                app.handle().clone(),
+                samurai_config,
+                supervisor,
+                audit_log,
+                samurai_parker,
+            );
 
             // GitHub watchdog: background poller for review requests /
             // assigned issues across all configured projects. The frontend

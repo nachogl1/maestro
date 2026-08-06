@@ -56,6 +56,38 @@ pub fn handoff_written_retry_value(generation: u32) -> String {
     format!("gen-{generation} retry")
 }
 
+/// The park instruction's ACK value (issue #60). Kind-scoped (`park …`, never
+/// the handoff spelling): a transcript replay of an earlier handoff ACK for
+/// the same generation must not acknowledge a park instruction.
+pub fn park_ack_value(generation: u32) -> String {
+    format!("park gen-{generation}")
+}
+
+/// The park CORRECTIVE round's ACK value — round-scoped for the same replay
+/// reason as [`handoff_ack_retry_value`].
+pub fn park_ack_retry_value(generation: u32) -> String {
+    format!("park gen-{generation} retry")
+}
+
+/// The park instruction's written-marker value. Kind-scoped (`… park`): the
+/// park reuses the handoff written TAG and file, so only the value keeps a
+/// replayed handoff marker (`gen-N`) from validating a park.
+pub fn park_written_value(generation: u32) -> String {
+    format!("gen-{generation} park")
+}
+
+/// The park CORRECTIVE round's written-marker value.
+pub fn park_written_retry_value(generation: u32) -> String {
+    format!("gen-{generation} park retry")
+}
+
+/// The soft wind-down instruction's ACK value (issue #60). Generation-scoped
+/// like every other marker value; there is no written stage — the ACK alone
+/// completes the instruction.
+pub fn soft_winddown_ack_value(generation: u32) -> String {
+    format!("winddown gen-{generation}")
+}
+
 /// Filesystem-safe slug of an epic ref for the handoff filename: `#37` →
 /// `37`, `https://github.com/o/r/issues/9` → `https-github-com-o-r-issues-9`.
 /// ASCII alphanumerics are kept (lowercased); every other run of characters
@@ -155,6 +187,92 @@ pub fn handoff_corrective_instruction(epic: &str, generation: u32, failure: &str
         relpath = handoff_file_relpath(epic, generation),
         ack = handoff_ack_retry_value(generation),
         written = handoff_written_retry_value(generation),
+    )
+}
+
+/// The soft wind-down instruction (issue #60; PRD §5.5): the 5h window
+/// crossed the soft threshold — stop spawning new subagents, wrap up
+/// in-flight steps, prepare for a possible park instruction. ACK required;
+/// no state transition, no file, no written marker. Single line by
+/// construction (see module doc).
+pub fn soft_winddown_instruction(generation: u32) -> String {
+    format!(
+        "[Maestro Samurai] Allowance wind-down: the token allowance for this account is \
+         approaching its limit. Do the following: \
+         (1) Acknowledge IMMEDIATELY, before anything else, by replying with a message that \
+         contains exactly <samurai-ack>{ack}</samurai-ack>. \
+         (2) From now on spawn NO new subagents; let in-flight subagents finish their CURRENT \
+         step only, then wrap up. \
+         (3) Prefer finishing and committing small complete units of work — a park instruction \
+         may follow shortly, and anything uncommitted at that point is at risk. \
+         No file needs to be written for this instruction. Never quote, restate, or echo the \
+         marker string anywhere else in any reply — emit it exactly once, only as the actual \
+         signal.",
+        ack = soft_winddown_ack_value(generation),
+    )
+}
+
+/// The park instruction (issue #60; PRD §5.5): a hard allowance threshold
+/// crossed, so this session is being parked. Finish the current atomic step
+/// ONLY, write/update the standard handoff file (it doubles as park state —
+/// PRD §5.2), commit ALL WIP, then emit the written tag. Mirrors
+/// [`handoff_instruction`] step for step: the injector validates with the
+/// same two checks against the same [`handoff_file_relpath`]. Single line by
+/// construction (see module doc).
+pub fn park_instruction(epic: &str, generation: u32) -> String {
+    format!(
+        "[Maestro Samurai] PARK requested: the token allowance is nearly spent, so this \
+         session is being parked; work resumes automatically after the allowance window \
+         resets. Do ALL of the following, in order: \
+         (1) Acknowledge IMMEDIATELY, before anything else, by replying with a message that \
+         contains exactly <samurai-ack>{ack}</samurai-ack>. \
+         (2) Finish the CURRENT atomic step ONLY — let in-flight subagents finish their \
+         current step, start NOTHING new. \
+         (3) Ensure `.maestro/` is listed in this repo's .gitignore; add it if missing. \
+         (4) Commit ALL WIP to the epic branch: stage named paths only (never `git add .` or \
+         `git add -A`), one Conventional Commit message (`type(scope): summary`). \
+         (5) Write or update the handoff file at {relpath} following the PRD section 6 \
+         template EXACTLY, with these headings in this order: Goal / Done / In progress / \
+         Decisions + why / Failed attempts / Repo state / Verify / Next steps. It doubles as \
+         the park state your successor resumes from, so keep every section to pointers \
+         (issue numbers, commit SHAs, file paths), never content dumps. \"Repo state\" MUST \
+         record the current branch and the HEAD SHA as they stand AFTER the WIP commit of \
+         step 4. \
+         (6) Only when steps 2-5 are ALL done, reply with a message that contains exactly \
+         <samurai-handoff-written>{written}</samurai-handoff-written>. \
+         Never quote, restate, or echo these marker strings anywhere else in any reply — \
+         emit each one exactly once, only as the actual signal at its required moment; a \
+         quoted marker is read as the real signal.",
+        ack = park_ack_value(generation),
+        relpath = handoff_file_relpath(epic, generation),
+        written = park_written_value(generation),
+    )
+}
+
+/// The single corrective re-instruction after park validation failed —
+/// mirrors [`handoff_corrective_instruction`] with the park's round-scoped
+/// marker values. `failure` is whitespace-normalized for the same
+/// paste-safety reason.
+pub fn park_corrective_instruction(epic: &str, generation: u32, failure: &str) -> String {
+    let failure = failure.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "[Maestro Samurai] Park INVALID: {failure}. The gen-{generation} park is only \
+         complete when BOTH checks pass: the handoff file exists at {relpath} (PRD section 6 \
+         template), AND `git status --porcelain` reports no modified or staged tracked files \
+         (untracked files are fine). \
+         (1) Acknowledge IMMEDIATELY by replying with a message that contains exactly \
+         <samurai-ack>{ack}</samurai-ack> — note the value differs from the first \
+         instruction's; use exactly this one. \
+         (2) Fix the failure above: write/update the handoff file and/or commit ALL WIP to \
+         the epic branch (stage named paths only, Conventional Commit message). \
+         (3) Then reply with a message that contains exactly \
+         <samurai-handoff-written>{written}</samurai-handoff-written>. \
+         Never quote, restate, or echo these marker strings anywhere else in any reply — \
+         emit each one exactly once, only as the actual signal at its required moment. \
+         This is the final attempt before a human is alerted.",
+        relpath = handoff_file_relpath(epic, generation),
+        ack = park_ack_retry_value(generation),
+        written = park_written_retry_value(generation),
     )
 }
 
@@ -452,6 +570,90 @@ mod tests {
         assert!(!text.contains("<samurai-handoff-written>gen-4</samurai-handoff-written>"));
         assert!(text.contains(".maestro/handoffs/37-gen4.md"));
         // Marker hygiene rides on the corrective too (finding J).
+        assert!(text.contains("Never quote, restate, or echo"));
+    }
+
+    // --- issue #60: park + soft wind-down ---
+
+    #[test]
+    fn test_park_marker_values_are_kind_and_round_scoped() {
+        // Kind-scoped: a replayed handoff marker for the same generation must
+        // never satisfy a park (same tag, distinct value), and vice versa.
+        assert_eq!(park_ack_value(3), "park gen-3");
+        assert_eq!(park_written_value(3), "gen-3 park");
+        assert_ne!(park_ack_value(3), handoff_ack_value(3));
+        assert_ne!(park_written_value(3), handoff_written_value(3));
+        // Round-scoped, same replay reasoning as the handoff retry values.
+        assert_eq!(park_ack_retry_value(3), "park gen-3 retry");
+        assert_eq!(park_written_retry_value(3), "gen-3 park retry");
+        assert_ne!(park_ack_retry_value(3), park_ack_value(3));
+        assert_ne!(park_written_retry_value(3), park_written_value(3));
+        // And the park retry values never collide with the handoff ones.
+        assert_ne!(park_written_retry_value(3), handoff_written_retry_value(3));
+        assert_eq!(soft_winddown_ack_value(4), "winddown gen-4");
+        assert_ne!(soft_winddown_ack_value(4), handoff_ack_value(4));
+        assert_ne!(soft_winddown_ack_value(4), park_ack_value(4));
+    }
+
+    #[test]
+    fn test_park_instruction_is_single_line_with_full_brief() {
+        let text = park_instruction("#37", 2);
+        assert!(!text.contains('\n'), "park must not contain \\n");
+        assert!(!text.contains('\r'), "park must not contain \\r");
+        // The exact markers the injector's scanners expect.
+        assert!(text.contains("<samurai-ack>park gen-2</samurai-ack>"));
+        assert!(text.contains("<samurai-handoff-written>gen-2 park</samurai-handoff-written>"));
+        // The standard handoff relpath — the file doubles as park state.
+        assert!(text.contains(".maestro/handoffs/37-gen2.md"));
+        // Finish the atomic step only, commit ALL WIP, template headings.
+        assert!(text.contains("atomic step ONLY"));
+        assert!(text.contains("start NOTHING new"));
+        assert!(text.contains("Commit ALL WIP"));
+        assert!(text.contains("stage named paths only"));
+        for heading in [
+            "Goal",
+            "Done",
+            "In progress",
+            "Decisions + why",
+            "Failed attempts",
+            "Repo state",
+            "Verify",
+            "Next steps",
+        ] {
+            assert!(text.contains(heading), "missing heading {heading}");
+        }
+        assert!(text.contains("HEAD SHA"));
+        // Marker hygiene (finding J) rides on the park too.
+        assert!(text.contains("Never quote, restate, or echo"));
+    }
+
+    #[test]
+    fn test_park_corrective_is_single_line_with_retry_markers() {
+        let text = park_corrective_instruction("#37", 4, "WIP is not\ncommitted");
+        assert!(!text.contains('\n'));
+        assert!(!text.contains('\r'));
+        assert!(text.contains("Park INVALID"));
+        assert!(text.contains("WIP is not committed"));
+        assert!(text.contains("<samurai-ack>park gen-4 retry</samurai-ack>"));
+        assert!(text.contains("<samurai-handoff-written>gen-4 park retry</samurai-handoff-written>"));
+        assert!(!text.contains("<samurai-ack>park gen-4</samurai-ack>"));
+        assert!(text.contains(".maestro/handoffs/37-gen4.md"));
+        assert!(text.contains("final attempt"));
+    }
+
+    #[test]
+    fn test_soft_winddown_instruction_shape() {
+        let text = soft_winddown_instruction(3);
+        assert!(!text.contains('\n'));
+        assert!(!text.contains('\r'));
+        assert!(text.contains("<samurai-ack>winddown gen-3</samurai-ack>"));
+        // Wind down: no new subagents, wrap up, park may follow.
+        assert!(text.contains("NO new subagents"));
+        assert!(text.contains("CURRENT step only"));
+        assert!(text.contains("park instruction"));
+        // No file and no written marker are involved.
+        assert!(text.contains("No file needs to be written"));
+        assert!(!text.contains("<samurai-handoff-written>"));
         assert!(text.contains("Never quote, restate, or echo"));
     }
 

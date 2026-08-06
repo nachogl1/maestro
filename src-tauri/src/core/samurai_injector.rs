@@ -38,6 +38,15 @@
 //! round fails too, an `ALERT` audit row (`details.kind = "handoff_invalid"`)
 //! fires and the session stays in HANDOFF_REQUESTED.
 //!
+//! Issue #60 parameterizes the ladder by instruction kind ([`PendingKind`]):
+//! the same trigger→idle→ACK→retry→written→validate→corrective machinery now
+//! also carries the allowance **park** instruction (lives in PARK_REQUESTED,
+//! validates the same file+WIP checks, completes into PARKED and notifies the
+//! parker) and the **soft wind-down** (no supervisor state at all — the ACK
+//! alone completes it). The parker starts those ladders via
+//! [`begin_park`](SamuraiInjector::begin_park) /
+//! [`begin_soft_winddown`](SamuraiInjector::begin_soft_winddown).
+//!
 //! Loop shape mirrors `samurai_watchdog`: one periodic tick, decisions as
 //! pure functions with table tests, I/O at the edges.
 
@@ -53,9 +62,10 @@ use super::process_manager::ProcessManager;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_context::SamuraiContextStore;
+use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts;
 use super::samurai_replicator::SamuraiReplicator;
-use super::supervisor::{Supervisor, SupervisorState};
+use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 use super::windows_process::StdCommandExt;
 
 /// How often the trigger/timeout pass runs (same cadence as the watchdog).
@@ -89,11 +99,106 @@ const STUCK_WAIT_MULTIPLIER: u32 = 3;
 /// managed state.
 pub type SessionDirResolver = Arc<dyn Fn(u32) -> Option<String> + Send + Sync>;
 
+/// Which ladder a pending entry runs (issue #60). The mechanics (idle-gate,
+/// ACK, retry-once, written window, corrective round, timeouts) are shared;
+/// the kind selects the supervisor state the entry lives in, the marker
+/// values, the corrective text and the completion action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingKind {
+    /// Context-threshold handoff (Phase 2): lives in HANDOFF_REQUESTED and
+    /// completes into HANDOFF_WRITTEN + replication.
+    Handoff,
+    /// Allowance park (issue #60): lives in PARK_REQUESTED, runs the same
+    /// two-check validation against the same handoff file (it doubles as
+    /// park state), completes into PARKED and notifies the parker.
+    Park,
+    /// Soft wind-down (issue #60): no supervisor transition — the session
+    /// stays WORKING and the ACK alone completes the entry.
+    SoftWinddown,
+}
+
+impl PendingKind {
+    /// The supervisor state a live entry of this kind belongs to; the tick's
+    /// prune pass drops the entry when its session leaves this state.
+    fn expected_state(self) -> SupervisorState {
+        match self {
+            Self::Handoff => SupervisorState::HandoffRequested,
+            Self::Park => SupervisorState::ParkRequested,
+            Self::SoftWinddown => SupervisorState::Working,
+        }
+    }
+
+    /// Audit/log spelling of the instruction (`details.instruction`).
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Handoff => "handoff",
+            Self::Park => "park",
+            Self::SoftWinddown => "soft_winddown",
+        }
+    }
+
+    /// The ALERT `details.kind` for an exhausted validation ladder.
+    /// SoftWinddown never reaches validation; the value is defensive only.
+    fn invalid_kind(self) -> &'static str {
+        match self {
+            Self::Handoff => "handoff_invalid",
+            Self::Park => "park_invalid",
+            Self::SoftWinddown => "soft_winddown_invalid",
+        }
+    }
+}
+
+/// The round-scoped ACK value one entry expects (finding C discipline,
+/// per kind).
+fn expected_ack_value(kind: PendingKind, generation: u32, corrective: bool) -> String {
+    match (kind, corrective) {
+        (PendingKind::Handoff, false) => samurai_prompts::handoff_ack_value(generation),
+        (PendingKind::Handoff, true) => samurai_prompts::handoff_ack_retry_value(generation),
+        (PendingKind::Park, false) => samurai_prompts::park_ack_value(generation),
+        (PendingKind::Park, true) => samurai_prompts::park_ack_retry_value(generation),
+        (PendingKind::SoftWinddown, _) => samurai_prompts::soft_winddown_ack_value(generation),
+    }
+}
+
+/// The round-scoped written-marker value one entry expects; `None` for the
+/// soft wind-down, which has no written stage.
+fn expected_written_value(kind: PendingKind, generation: u32, corrective: bool) -> Option<String> {
+    match (kind, corrective) {
+        (PendingKind::Handoff, false) => Some(samurai_prompts::handoff_written_value(generation)),
+        (PendingKind::Handoff, true) => {
+            Some(samurai_prompts::handoff_written_retry_value(generation))
+        }
+        (PendingKind::Park, false) => Some(samurai_prompts::park_written_value(generation)),
+        (PendingKind::Park, true) => Some(samurai_prompts::park_written_retry_value(generation)),
+        (PendingKind::SoftWinddown, _) => None,
+    }
+}
+
+/// The kind's corrective re-instruction text. SoftWinddown cannot reach a
+/// corrective (no validation stage); re-issuing the wind-down is the safe
+/// defensive fallback.
+fn corrective_instruction_for(
+    kind: PendingKind,
+    epic: &str,
+    generation: u32,
+    failure: &str,
+) -> String {
+    match kind {
+        PendingKind::Handoff => {
+            samurai_prompts::handoff_corrective_instruction(epic, generation, failure)
+        }
+        PendingKind::Park => samurai_prompts::park_corrective_instruction(epic, generation, failure),
+        PendingKind::SoftWinddown => samurai_prompts::soft_winddown_instruction(generation),
+    }
+}
+
 /// One instruction the controller is shepherding from trigger to ACK to the
 /// validated handoff. Created when the trigger transitions a session into
 /// HANDOFF_REQUESTED; dropped when the session leaves that state, validation
 /// succeeds, or the final timeout/validation failure ALERTs.
 struct PendingInstruction {
+    /// Which ladder this entry runs (issue #60).
+    kind: PendingKind,
     /// Audit context, captured from the transition snapshot.
     project: String,
     epic: String,
@@ -123,6 +228,28 @@ struct PendingInstruction {
     /// What the first round's validation/timeout found wrong (rides into the
     /// final `handoff_invalid` ALERT details).
     failure: Option<String>,
+}
+
+impl PendingInstruction {
+    /// A fresh round-1 entry: waiting for the first idle signal.
+    fn new(kind: PendingKind, snapshot: &SessionSnapshot, instruction: String) -> Self {
+        Self {
+            kind,
+            project: snapshot.project.clone(),
+            epic: snapshot.epic.clone(),
+            generation: snapshot.generation,
+            instruction,
+            attempts: 0,
+            injected_at: None,
+            waiting_since: Instant::now(),
+            acked: false,
+            awaiting_retry: false,
+            acked_at: None,
+            validating: false,
+            corrective: false,
+            failure: None,
+        }
+    }
 }
 
 /// Trigger predicate (PRD §5.4): only a WORKING session with a known context
@@ -181,14 +308,17 @@ fn idle_effect(event: &ClaudeEvent) -> Option<(u32, bool)> {
 /// attempt 1; after attempt 1 times out (never on an idle alone — a reply
 /// without the marker must not burn the retry), the next idle → attempt 2;
 /// beyond that, or once ACKed, never. The corrective round re-enters this
-/// exact table as (attempts=1, awaiting_retry=true).
+/// exact table as (attempts=1, awaiting_retry=true). `expected` is the
+/// entry's [`PendingKind::expected_state`] — a session that left it is no
+/// longer instructable (the tick's prune pass drops the entry).
 fn should_inject_on_idle(
     state: SupervisorState,
+    expected: SupervisorState,
     acked: bool,
     attempts: u8,
     awaiting_retry: bool,
 ) -> bool {
-    if state != SupervisorState::HandoffRequested || acked {
+    if state != expected || acked {
         return false;
     }
     match attempts {
@@ -395,11 +525,11 @@ fn validate_handoff(working_dir: &Path, relpath: &str) -> Result<(), String> {
 /// (with the `handoff_invalid` kind instead of `ack_timeout`).
 fn arm_corrective(p: &mut PendingInstruction, failure: String) {
     log::warn!(
-        "samurai injector: handoff for gen-{} invalid ({failure}) — arming one corrective re-instruction",
+        "samurai injector: {} for gen-{} invalid ({failure}) — arming one corrective re-instruction",
+        p.kind.as_str(),
         p.generation
     );
-    p.instruction =
-        samurai_prompts::handoff_corrective_instruction(&p.epic, p.generation, &failure);
+    p.instruction = corrective_instruction_for(p.kind, &p.epic, p.generation, &failure);
     p.attempts = 1;
     p.awaiting_retry = true;
     // The wait for the corrective's idle starts now (finding E age cap).
@@ -411,35 +541,39 @@ fn arm_corrective(p: &mut PendingInstruction, failure: String) {
     p.failure = Some(failure);
 }
 
-/// The `handoff_invalid` ALERT row (corrective round exhausted). `failure`
-/// names the check that failed, per the issue's audit contract.
-fn handoff_invalid_alert(p: &PendingInstruction, session_id: u32, failure: String) -> AuditEvent {
+/// The kind's `*_invalid` ALERT row (corrective round exhausted) — e.g.
+/// `handoff_invalid` / `park_invalid`. `failure` names the check that
+/// failed, per the issue's audit contract.
+fn invalid_alert(p: &PendingInstruction, session_id: u32, failure: String) -> AuditEvent {
     AuditEvent::now(
         p.epic.clone(),
         AuditEventKind::Alert,
         p.generation,
         session_id,
-        json!({ "kind": "handoff_invalid", "failure": failure }),
+        json!({ "kind": p.kind.invalid_kind(), "failure": failure }),
     )
 }
 
 /// Completes one validation run. Module-level (not `&self`) because the
 /// spawned validation task outlives any borrow of the controller — it
 /// captures clones of exactly the pieces this needs. Both checks passed →
-/// HANDOFF_WRITTEN (the transition writes the `HANDOFF phase=written` audit
-/// row itself) and the entry completes. Failed → corrective on the first
-/// round, `handoff_invalid` ALERT on the corrective round.
+/// the kind's completion state (HANDOFF_WRITTEN + replication, or PARKED +
+/// parker notification — the transition writes its audit row itself) and the
+/// entry completes. Failed → corrective on the first round, the kind's
+/// `*_invalid` ALERT on the corrective round (a failed park additionally
+/// tells the parker so its sweep can skip the session and continue).
 fn finish_validation(
     pending: &Mutex<HashMap<u32, PendingInstruction>>,
     supervisor: &Supervisor,
     audit: &AuditLog,
     replicator: Option<&Arc<SamuraiReplicator>>,
+    parker: Option<&Arc<SamuraiParker>>,
     session_id: u32,
     outcome: Result<(), String>,
 ) {
     enum Next {
-        Transition,
-        Alert(String, AuditEvent),
+        Transition(PendingKind),
+        Alert(PendingKind, String, AuditEvent),
         Nothing,
     }
     let next = {
@@ -460,15 +594,17 @@ fn finish_validation(
         }
         match outcome {
             Ok(()) => {
+                let kind = p.kind;
                 map.remove(&session_id);
-                Next::Transition
+                Next::Transition(kind)
             }
             Err(failure) => {
                 if p.corrective {
+                    let kind = p.kind;
                     let project = p.project.clone();
-                    let event = handoff_invalid_alert(p, session_id, failure);
+                    let event = invalid_alert(p, session_id, failure);
                     map.remove(&session_id);
-                    Next::Alert(project, event)
+                    Next::Alert(kind, project, event)
                 } else {
                     arm_corrective(p, failure);
                     Next::Nothing
@@ -477,7 +613,7 @@ fn finish_validation(
         }
     };
     match next {
-        Next::Transition => {
+        Next::Transition(PendingKind::Handoff) => {
             log::info!(
                 "samurai injector: session {session_id} handoff validated (file present, WIP committed) — HANDOFF_WRITTEN"
             );
@@ -495,13 +631,44 @@ fn finish_validation(
                 ),
             }
         }
-        Next::Alert(project, event) => {
+        Next::Transition(PendingKind::Park) => {
+            log::info!(
+                "samurai injector: session {session_id} park validated (file present, WIP committed) — PARKED"
+            );
+            match supervisor.transition(session_id, SupervisorState::Parked) {
+                // Issue #60: a validated park chains straight into the
+                // parker (teardown + sweep advance) — no polling.
+                Ok(snapshot) => {
+                    if let Some(parker) = parker {
+                        parker.on_parked(&snapshot);
+                    }
+                }
+                // E.g. the watchdog declared the session DEAD mid-validation;
+                // the parker's tick re-evaluates the sweep on its own.
+                Err(e) => log::warn!(
+                    "samurai injector: PARKED transition for session {session_id} rejected: {e}"
+                ),
+            }
+        }
+        // The soft wind-down has no written stage, so no validation ever
+        // runs for it — defensive arm, never expected.
+        Next::Transition(PendingKind::SoftWinddown) => log::warn!(
+            "samurai injector: unexpected validation completion for a soft wind-down (session {session_id}) — ignored"
+        ),
+        Next::Alert(kind, project, event) => {
             log::error!(
-                "samurai injector: session {} handoff still invalid after the corrective round — ALERT (handoff_invalid): {}",
+                "samurai injector: session {} {} still invalid after the corrective round — ALERT ({}): {}",
                 session_id,
+                kind.as_str(),
+                kind.invalid_kind(),
                 event.details["failure"]
             );
             audit.append(&project, event);
+            if kind == PendingKind::Park {
+                if let Some(parker) = parker {
+                    parker.on_park_failed(session_id);
+                }
+            }
         }
         Next::Nothing => {}
     }
@@ -530,6 +697,11 @@ pub struct SamuraiInjector {
     /// pass) and hook tap (SessionStarted ritual delivery). `None` only in
     /// tests that exercise the injector alone.
     replicator: Option<Arc<SamuraiReplicator>>,
+    /// Issue #60: the parker a validated/failed park chains into; it also
+    /// rides this controller's tick (sweep re-evaluation). Late-bound (the
+    /// parker is constructed after the injector, holding an `Arc` of it);
+    /// unset only in tests that exercise the injector alone.
+    parker: std::sync::OnceLock<Arc<SamuraiParker>>,
 }
 
 impl SamuraiInjector {
@@ -552,7 +724,15 @@ impl SamuraiInjector {
             pending: Arc::new(Mutex::new(HashMap::new())),
             idle_now: Arc::new(Mutex::new(HashSet::new())),
             replicator,
+            parker: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Issue #60: late-binds the parker (constructed after the injector; it
+    /// holds an `Arc` of this controller, so the reverse edge is a OnceLock).
+    /// Second calls are ignored, like every OnceLock slot in setup.
+    pub fn set_parker(&self, parker: Arc<SamuraiParker>) {
+        let _ = self.parker.set(parker);
     }
 
     /// EventBus tee (same spot as `SamuraiContextStore::observe`): scan
@@ -620,26 +800,13 @@ impl SamuraiInjector {
                         snapshot.session_id,
                         percent.unwrap_or_default(),
                     );
+                    let instruction = samurai_prompts::handoff_instruction(
+                        &snapshot.epic,
+                        snapshot.generation,
+                    );
                     self.lock_pending().insert(
                         snapshot.session_id,
-                        PendingInstruction {
-                            project: snapshot.project.clone(),
-                            epic: snapshot.epic.clone(),
-                            generation: snapshot.generation,
-                            instruction: samurai_prompts::handoff_instruction(
-                                &snapshot.epic,
-                                snapshot.generation,
-                            ),
-                            attempts: 0,
-                            injected_at: None,
-                            waiting_since: Instant::now(),
-                            acked: false,
-                            awaiting_retry: false,
-                            acked_at: None,
-                            validating: false,
-                            corrective: false,
-                            failure: None,
-                        },
+                        PendingInstruction::new(PendingKind::Handoff, &snapshot, instruction),
                     );
                 }
                 Err(e) => log::warn!(
@@ -658,24 +825,28 @@ impl SamuraiInjector {
             .map(|s| (s.session_id, s.state))
             .collect();
 
-        let alerts: Vec<(String, AuditEvent)> = {
+        let alerts: Vec<(u32, PendingKind, String, AuditEvent)> = {
             let mut pending = self.lock_pending();
 
-            // An entry is only meaningful while its session sits in
-            // HANDOFF_REQUESTED: validation advancing it, the watchdog
-            // declaring it DEAD, or teardown unregistering it all end the
-            // tracking.
-            pending.retain(|id, _| {
-                let keep = state_of.get(id) == Some(&SupervisorState::HandoffRequested);
+            // An entry is only meaningful while its session sits in its
+            // kind's expected state (HANDOFF_REQUESTED / PARK_REQUESTED /
+            // WORKING for the soft wind-down): validation advancing it, the
+            // watchdog declaring it DEAD, a superseding instruction, or
+            // teardown unregistering it all end the tracking.
+            pending.retain(|id, p| {
+                let expected = p.kind.expected_state();
+                let keep = state_of.get(id) == Some(&expected);
                 if !keep {
                     log::info!(
-                        "samurai injector: session {id} left HANDOFF_REQUESTED — dropping pending instruction"
+                        "samurai injector: session {id} left {} — dropping pending {} instruction",
+                        expected.as_str(),
+                        p.kind.as_str(),
                     );
                 }
                 keep
             });
 
-            let mut alerts: Vec<(u32, String, AuditEvent)> = Vec::new();
+            let mut alerts: Vec<(u32, PendingKind, String, AuditEvent)> = Vec::new();
             for (id, p) in pending.iter_mut() {
                 if !p.acked {
                     // ACK phase — P2.2 plumbing, shared by the corrective
@@ -708,8 +879,11 @@ impl SamuraiInjector {
                             } else {
                                 "never_idled"
                             };
-                            let mut details =
-                                json!({ "kind": "ack_timeout", "attempts": p.attempts });
+                            let mut details = json!({
+                                "kind": "ack_timeout",
+                                "attempts": p.attempts,
+                                "instruction": p.kind.as_str(),
+                            });
                             details[flag] = json!(true);
                             let event = AuditEvent::now(
                                 p.epic.clone(),
@@ -718,27 +892,31 @@ impl SamuraiInjector {
                                 *id,
                                 details,
                             );
-                            alerts.push((*id, p.project.clone(), event));
+                            alerts.push((*id, p.kind, p.project.clone(), event));
                         }
                         TimeoutVerdict::Alert => {
                             let event = if p.corrective {
                                 // The corrective round dying unACKed is a
-                                // handoff failure, not a fresh ack_timeout.
+                                // validation failure, not a fresh ack_timeout.
                                 let failure = format!(
                                     "{}; the corrective instruction was never acknowledged",
-                                    p.failure.as_deref().unwrap_or("handoff validation failed")
+                                    p.failure.as_deref().unwrap_or("validation failed")
                                 );
-                                handoff_invalid_alert(p, *id, failure)
+                                invalid_alert(p, *id, failure)
                             } else {
                                 AuditEvent::now(
                                     p.epic.clone(),
                                     AuditEventKind::Alert,
                                     p.generation,
                                     *id,
-                                    json!({ "kind": "ack_timeout", "attempts": p.attempts }),
+                                    json!({
+                                        "kind": "ack_timeout",
+                                        "attempts": p.attempts,
+                                        "instruction": p.kind.as_str(),
+                                    }),
                                 )
                             };
-                            alerts.push((*id, p.project.clone(), event));
+                            alerts.push((*id, p.kind, p.project.clone(), event));
                         }
                     }
                     continue;
@@ -760,31 +938,38 @@ impl SamuraiInjector {
                     WrittenVerdict::Alert => {
                         let failure = format!(
                             "{}; the <{WRITTEN_TAG}> marker did not arrive after the corrective instruction",
-                            p.failure.as_deref().unwrap_or("handoff validation failed")
+                            p.failure.as_deref().unwrap_or("validation failed")
                         );
-                        alerts.push((*id, p.project.clone(), handoff_invalid_alert(p, *id, failure)));
+                        let event = invalid_alert(p, *id, failure);
+                        alerts.push((*id, p.kind, p.project.clone(), event));
                     }
                 }
             }
             // Alerted sessions stop being tracked (the removal is what makes
-            // the ALERT fire exactly once); they stay in HANDOFF_REQUESTED
-            // for human attention.
-            for (id, _, _) in &alerts {
+            // the ALERT fire exactly once); they stay in their `*_REQUESTED`
+            // state for human attention.
+            for (id, _, _, _) in &alerts {
                 pending.remove(id);
             }
             alerts
-                .into_iter()
-                .map(|(_, project, event)| (project, event))
-                .collect()
         };
 
-        for (project, event) in alerts {
+        for (id, kind, project, event) in alerts {
             log::error!(
-                "samurai injector: session {} handoff protocol failed — ALERT ({}), leaving in HANDOFF_REQUESTED",
+                "samurai injector: session {} {} protocol failed — ALERT ({}), leaving in {}",
                 event.session_id,
+                kind.as_str(),
                 event.details["kind"],
+                kind.expected_state().as_str(),
             );
             self.audit.append(&project, event);
+            // Issue #60: a failed park is skipped — the parker's sweep must
+            // move on to the next session instead of waiting forever.
+            if kind == PendingKind::Park {
+                if let Some(parker) = self.parker.get() {
+                    parker.on_park_failed(id);
+                }
+            }
         }
 
         // Bonus fix (issue #54): a session whose most recent signal was a
@@ -812,6 +997,78 @@ impl SamuraiInjector {
         if let Some(replicator) = &self.replicator {
             replicator.tick();
         }
+
+        // Issue #60: the parker's sweep re-evaluation rides it too — the
+        // edge-tolerance that keeps a sweep moving after races/failures.
+        if let Some(parker) = self.parker.get() {
+            parker.tick();
+        }
+    }
+
+    /// Issue #60: the parker moved `snapshot`'s session into PARK_REQUESTED —
+    /// start shepherding the park instruction through the ladder. Replaces a
+    /// pending soft wind-down for the same session (the park supersedes it);
+    /// a handoff entry can never be live here because the supervisor's
+    /// mutual-exclusion guard rejects the PARK_REQUESTED transition first.
+    pub fn begin_park(&self, snapshot: &SessionSnapshot) {
+        let instruction =
+            samurai_prompts::park_instruction(&snapshot.epic, snapshot.generation);
+        self.lock_pending().insert(
+            snapshot.session_id,
+            PendingInstruction::new(PendingKind::Park, snapshot, instruction),
+        );
+        log::info!(
+            "samurai injector: session {} (gen-{}) park instruction armed — awaiting idle",
+            snapshot.session_id,
+            snapshot.generation,
+        );
+        self.inject_if_idle(snapshot.session_id);
+    }
+
+    /// Issue #60: soft wind-down for a WORKING session. Returns `false`
+    /// (nothing armed) when the session already has a pending instruction of
+    /// any kind — it is already heading somewhere; the caller logs the skip.
+    pub fn begin_soft_winddown(&self, snapshot: &SessionSnapshot) -> bool {
+        {
+            let mut pending = self.lock_pending();
+            if pending.contains_key(&snapshot.session_id) {
+                return false;
+            }
+            let instruction =
+                samurai_prompts::soft_winddown_instruction(snapshot.generation);
+            pending.insert(
+                snapshot.session_id,
+                PendingInstruction::new(PendingKind::SoftWinddown, snapshot, instruction),
+            );
+        }
+        log::info!(
+            "samurai injector: session {} (gen-{}) soft wind-down armed — awaiting idle",
+            snapshot.session_id,
+            snapshot.generation,
+        );
+        self.inject_if_idle(snapshot.session_id);
+        true
+    }
+
+    /// Whether a pending instruction (any kind) is being shepherded for the
+    /// session. The parker's eligibility/blocking decisions read this.
+    pub fn has_pending(&self, session_id: u32) -> bool {
+        self.lock_pending().contains_key(&session_id)
+    }
+
+    /// A session that is idle RIGHT NOW (its last signal was a Stop) never
+    /// fires another idle signal on its own — entries armed outside the tick
+    /// (issue #60's park/wind-down) inject immediately instead of waiting up
+    /// to a full tick, same reasoning as the tick's idle_pending pass.
+    fn inject_if_idle(&self, session_id: u32) {
+        let idle = self
+            .idle_now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&session_id);
+        if idle {
+            self.on_idle(session_id);
+        }
     }
 
     /// Idle signal for one session: decide-and-record synchronously, then
@@ -833,19 +1090,22 @@ impl SamuraiInjector {
         let state = self.session_state(session_id)?;
         let mut pending = self.lock_pending();
         let p = pending.get_mut(&session_id)?;
-        if !should_inject_on_idle(state, p.acked, p.attempts, p.awaiting_retry) {
+        if !should_inject_on_idle(
+            state,
+            p.kind.expected_state(),
+            p.acked,
+            p.attempts,
+            p.awaiting_retry,
+        ) {
             return None;
         }
         p.attempts += 1;
         p.injected_at = Some(Instant::now());
         p.awaiting_retry = false;
         log::info!(
-            "samurai injector: session {session_id} idle — injecting {} instruction (attempt {})",
-            if p.corrective {
-                "corrective handoff"
-            } else {
-                "handoff"
-            },
+            "samurai injector: session {session_id} idle — injecting {}{} instruction (attempt {})",
+            if p.corrective { "corrective " } else { "" },
+            p.kind.as_str(),
             p.attempts
         );
         Some(format!("{}\r", p.instruction))
@@ -891,20 +1151,24 @@ impl SamuraiInjector {
         if p.acked {
             return;
         }
-        // Round-scoped (finding C): the corrective round expects a DISTINCT
-        // value, so a transcript replay of round 1's ACK (claude --resume
-        // rewrites history into a new transcript, read from byte 0) can never
-        // consume the corrective round.
-        let expected = if p.corrective {
-            samurai_prompts::handoff_ack_retry_value(p.generation)
-        } else {
-            samurai_prompts::handoff_ack_value(p.generation)
-        };
+        // Round-scoped (finding C) AND kind-scoped (issue #60): the
+        // corrective round expects a DISTINCT value, so a transcript replay
+        // of round 1's ACK (claude --resume rewrites history into a new
+        // transcript, read from byte 0) can never consume the corrective
+        // round — and a replayed handoff ACK can never consume a park.
+        let expected = expected_ack_value(p.kind, p.generation, p.corrective);
         if value == expected {
             log::info!(
-                "samurai injector: session {session_id} ACKed handoff (gen-{})",
+                "samurai injector: session {session_id} ACKed {} (gen-{})",
+                p.kind.as_str(),
                 p.generation
             );
+            // The soft wind-down has no written stage: the ACK IS the
+            // completion — stop tracking, the session keeps WORKING.
+            if p.kind == PendingKind::SoftWinddown {
+                pending.remove(&session_id);
+                return;
+            }
             p.acked = true;
             p.acked_at = Some(Instant::now());
             p.awaiting_retry = false;
@@ -928,7 +1192,7 @@ impl SamuraiInjector {
             return;
         };
         // Phase 1, under the lock: match the marker and claim the validation.
-        let (epic, generation) = {
+        let (kind, epic, generation) = {
             let mut pending = self.lock_pending();
             let Some(p) = pending.get_mut(&session_id) else {
                 log::warn!(
@@ -939,6 +1203,8 @@ impl SamuraiInjector {
             if !p.acked {
                 // Completion detection starts after the ACK (issue #54); a
                 // marker without one is a replay or a protocol violation.
+                // This also covers the soft wind-down, whose entry can never
+                // be ACKed (the ACK removes it) and has no written stage.
                 log::warn!(
                     "samurai injector: written marker from session {session_id} before its ACK — ignored"
                 );
@@ -947,11 +1213,14 @@ impl SamuraiInjector {
             if p.validating {
                 return; // a validation for this marker is already in flight
             }
-            // Same per-round discipline as the ACK (finding C).
-            let expected = if p.corrective {
-                samurai_prompts::handoff_written_retry_value(p.generation)
-            } else {
-                samurai_prompts::handoff_written_value(p.generation)
+            // Same per-round, per-kind discipline as the ACK (finding C).
+            let Some(expected) = expected_written_value(p.kind, p.generation, p.corrective)
+            else {
+                log::warn!(
+                    "samurai injector: written marker from session {session_id} for a {} instruction — ignored",
+                    p.kind.as_str()
+                );
+                return;
             };
             if value != expected {
                 log::warn!(
@@ -960,26 +1229,30 @@ impl SamuraiInjector {
                 return;
             }
             p.validating = true;
-            (p.epic.clone(), p.generation)
+            (p.kind, p.epic.clone(), p.generation)
         };
         // Phase 2, no lock: resolve the working dir, then validate off-thread.
+        // The park validates the SAME file — it doubles as park state.
         let relpath = samurai_prompts::handoff_file_relpath(&epic, generation);
         match (self.session_dirs)(session_id) {
             Some(dir) => {
                 log::info!(
-                    "samurai injector: session {session_id} reported handoff written — validating {relpath} in {dir}"
+                    "samurai injector: session {session_id} reported {} written — validating {relpath} in {dir}",
+                    kind.as_str()
                 );
                 self.spawn_validation(session_id, dir, relpath);
             }
             None => {
                 log::warn!(
-                    "samurai injector: session {session_id} has no recorded working directory — handoff cannot be validated"
+                    "samurai injector: session {session_id} has no recorded working directory — {} cannot be validated",
+                    kind.as_str()
                 );
                 finish_validation(
                     &self.pending,
                     &self.supervisor,
                     &self.audit,
                     self.replicator.as_ref(),
+                    self.parker.get(),
                     session_id,
                     Err("the session's working directory is unknown".to_string()),
                 );
@@ -995,6 +1268,7 @@ impl SamuraiInjector {
         let supervisor = self.supervisor.clone();
         let audit = self.audit.clone();
         let replicator = self.replicator.clone();
+        let parker = self.parker.get().cloned();
         tauri::async_runtime::spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || {
                 let dir = PathBuf::from(strip_extended_prefix(&working_dir));
@@ -1007,6 +1281,7 @@ impl SamuraiInjector {
                 &supervisor,
                 &audit,
                 replicator.as_ref(),
+                parker.as_ref(),
                 session_id,
                 outcome,
             );
@@ -1062,8 +1337,10 @@ impl SamuraiInjector {
     }
 
     /// Test-only view of one pending entry: (attempts, acked, awaiting_retry).
+    /// `pub(crate)`: the parker's sweep tests (issue #60) drive this ladder
+    /// end-to-end from their own module.
     #[cfg(test)]
-    fn pending_view(&self, session_id: u32) -> Option<(u8, bool, bool)> {
+    pub(crate) fn pending_view(&self, session_id: u32) -> Option<(u8, bool, bool)> {
         self.lock_pending()
             .get(&session_id)
             .map(|p| (p.attempts, p.acked, p.awaiting_retry))
@@ -1086,9 +1363,9 @@ impl SamuraiInjector {
     }
 
     /// Test-only: age the latest injection so timeout paths run without
-    /// real waiting.
+    /// real waiting. `pub(crate)` for the parker's sweep tests (issue #60).
     #[cfg(test)]
-    fn backdate_injection(&self, session_id: u32, by: Duration) {
+    pub(crate) fn backdate_injection(&self, session_id: u32, by: Duration) {
         let mut pending = self.lock_pending();
         let p = pending.get_mut(&session_id).expect("no pending entry");
         p.injected_at = p.injected_at.expect("nothing injected").checked_sub(by);
@@ -1280,24 +1557,33 @@ mod tests {
 
     #[test]
     fn test_inject_on_idle_sequencing() {
-        // (state, acked, attempts, awaiting_retry, expected)
+        // (state, expected_state, acked, attempts, awaiting_retry, expected)
         let table = [
-            (HandoffRequested, false, 0, false, true), // first idle → attempt 1
-            (HandoffRequested, false, 1, true, true),  // timed out → retry at idle
-            (HandoffRequested, false, 1, false, false), // reply w/o marker: hold for timeout
-            (HandoffRequested, false, 2, false, false), // both attempts spent
-            (HandoffRequested, false, 2, true, false), // never a third attempt
-            (HandoffRequested, true, 0, false, false), // ACKed before injection
-            (HandoffRequested, true, 1, false, false), // ACKed: done here
-            (Working, false, 0, false, false),         // not in handoff
-            (HandoffWritten, false, 0, false, false),
-            (Dead, false, 1, true, false),
+            (HandoffRequested, HandoffRequested, false, 0, false, true), // first idle → attempt 1
+            (HandoffRequested, HandoffRequested, false, 1, true, true), // timed out → retry at idle
+            (HandoffRequested, HandoffRequested, false, 1, false, false), // reply w/o marker: hold for timeout
+            (HandoffRequested, HandoffRequested, false, 2, false, false), // both attempts spent
+            (HandoffRequested, HandoffRequested, false, 2, true, false), // never a third attempt
+            (HandoffRequested, HandoffRequested, true, 0, false, false), // ACKed before injection
+            (HandoffRequested, HandoffRequested, true, 1, false, false), // ACKed: done here
+            (Working, HandoffRequested, false, 0, false, false),         // not in handoff
+            (HandoffWritten, HandoffRequested, false, 0, false, false),
+            (Dead, HandoffRequested, false, 1, true, false),
+            // Issue #60: the park ladder lives in PARK_REQUESTED …
+            (ParkRequested, ParkRequested, false, 0, false, true),
+            (ParkRequested, ParkRequested, false, 1, true, true),
+            (ParkRequested, ParkRequested, true, 1, false, false),
+            (Working, ParkRequested, false, 0, false, false), // left the state
+            // … and the soft wind-down in WORKING.
+            (Working, Working, false, 0, false, true),
+            (Working, Working, false, 1, true, true),
+            (ParkRequested, Working, false, 0, false, false), // superseded
         ];
-        for (state, acked, attempts, awaiting_retry, expected) in table {
+        for (state, expected_state, acked, attempts, awaiting_retry, expected) in table {
             assert_eq!(
-                should_inject_on_idle(state, acked, attempts, awaiting_retry),
+                should_inject_on_idle(state, expected_state, acked, attempts, awaiting_retry),
                 expected,
-                "{state:?} acked={acked} attempts={attempts} awaiting_retry={awaiting_retry}"
+                "{state:?}/{expected_state:?} acked={acked} attempts={attempts} awaiting_retry={awaiting_retry}"
             );
         }
     }
@@ -2371,5 +2657,255 @@ mod tests {
         injector.tick();
         assert!(injector.pending_view(1).is_none());
         assert!(supervisor.list_sessions().is_empty());
+    }
+
+    // --- issue #60: the park ladder ---
+
+    /// Registers session 1, transitions it into PARK_REQUESTED (the parker's
+    /// move) and arms the park ladder, returning the snapshot.
+    fn drive_to_park_requested(
+        injector: &SamuraiInjector,
+        supervisor: &Supervisor,
+        project: &str,
+        generation: u32,
+    ) -> crate::core::supervisor::SessionSnapshot {
+        supervisor
+            .register_session(1, project.into(), "epic-9".into(), generation)
+            .unwrap();
+        let snapshot = supervisor.transition(1, ParkRequested).unwrap();
+        injector.begin_park(&snapshot);
+        snapshot
+    }
+
+    #[tokio::test]
+    async fn test_park_ladder_validates_and_reaches_parked() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-park";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff_file(repo.path(), "epic-9", 2);
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        drive_to_park_requested(&injector, &supervisor, project, 2);
+
+        // The park instruction rides the same ladder with its own markers
+        // and the STANDARD handoff relpath (the file doubles as park state).
+        let data = injector.arm_injection_on_idle(1).expect("park attempt 1");
+        assert!(data.contains("<samurai-ack>park gen-2</samurai-ack>"));
+        assert!(data.contains(".maestro/handoffs/epic-9-gen2.md"));
+        assert!(data.contains("<samurai-handoff-written>gen-2 park</samurai-handoff-written>"));
+        assert!(!data[..data.len() - 1].contains('\r') && !data.contains('\n'));
+
+        // A replayed HANDOFF ACK for the same generation must not ACK the
+        // park (kind-scoped values), and a replayed handoff written marker
+        // must not start its validation.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>handoff gen-2</samurai-ack>",
+        ));
+        assert_eq!(injector.pending_view(1), Some((1, false, false)));
+        injector.observe(&assistant_message(
+            1,
+            "Parking. <samurai-ack>park gen-2</samurai-ack>",
+        ));
+        assert_eq!(injector.pending_view(1), Some((1, true, false)));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2</samurai-handoff-written>",
+        ));
+        assert_eq!(
+            injector.pending_detail(1).map(|(_, validating, _)| validating),
+            Some(false),
+            "a handoff written value must not validate a park"
+        );
+
+        // The real park marker → validation → PARKED, entry completed. The
+        // parker slot is unset in this harness — the transition still runs.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2 park</samurai-handoff-written>",
+        ));
+        wait_until(|| injector.session_state(1) == Some(Parked)).await;
+        wait_until(|| injector.pending_view(1).is_none()).await;
+
+        // The transitions wrote both PARK phases; no ALERT anywhere.
+        let mut rows = Vec::new();
+        for _ in 0..200 {
+            rows = audit.read(project, None, None).await.unwrap().events;
+            if rows
+                .iter()
+                .any(|r| r.event == AuditEventKind::Park && r.details["phase"] == "parked")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(rows
+            .iter()
+            .any(|r| r.event == AuditEventKind::Park && r.details["phase"] == "requested"));
+        assert!(rows
+            .iter()
+            .any(|r| r.event == AuditEventKind::Park && r.details["phase"] == "parked"));
+        assert!(!rows.iter().any(|r| r.event == AuditEventKind::Alert));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_park_arms_corrective_then_alerts_park_invalid() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-park-bad";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        // File present but WIP left uncommitted → check 2 fails.
+        write_handoff_file(repo.path(), "epic-9", 2);
+        std::fs::write(repo.path().join("tracked.txt"), "dirty\n").unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        drive_to_park_requested(&injector, &supervisor, project, 2);
+
+        injector.arm_injection_on_idle(1).expect("park attempt 1");
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>park gen-2</samurai-ack>",
+        ));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2 park</samurai-handoff-written>",
+        ));
+
+        // Validation fails → the ONE corrective, with the park's wording and
+        // round-scoped retry markers.
+        wait_until(|| matches!(injector.pending_detail(1), Some((true, false, Some(_))))).await;
+        let data = injector.arm_injection_on_idle(1).expect("corrective");
+        assert!(data.contains("Park INVALID"));
+        assert!(data.contains("WIP is not committed"));
+        assert!(data.contains("<samurai-ack>park gen-2 retry</samurai-ack>"));
+        assert!(data.contains("<samurai-handoff-written>gen-2 park retry</samurai-handoff-written>"));
+
+        // The corrective cycle fails too (repo still dirty) → a single
+        // park_invalid ALERT; the session stays in PARK_REQUESTED.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>park gen-2 retry</samurai-ack>",
+        ));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2 park retry</samurai-handoff-written>",
+        ));
+        wait_until(|| injector.pending_view(1).is_none()).await;
+        assert_eq!(injector.session_state(1), Some(ParkRequested));
+
+        let mut alerts: Vec<AuditEvent> = Vec::new();
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            alerts = rows
+                .into_iter()
+                .filter(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "park_invalid")
+                .collect();
+            if !alerts.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(alerts.len(), 1, "the ALERT fires exactly once");
+        assert!(alerts[0].details["failure"]
+            .as_str()
+            .unwrap()
+            .contains("WIP is not committed"));
+    }
+
+    // --- issue #60: the soft wind-down ladder ---
+
+    #[tokio::test]
+    async fn test_soft_winddown_ack_completes_without_any_transition() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-soft";
+        let snapshot = supervisor
+            .register_session(1, project.into(), "epic-9".into(), 3)
+            .unwrap();
+
+        assert!(injector.begin_soft_winddown(&snapshot));
+        // A second wind-down while one is pending is refused (edge storms).
+        assert!(!injector.begin_soft_winddown(&snapshot));
+
+        // Injected on idle while the session stays WORKING; the text carries
+        // the wind-down ACK and no written marker.
+        let data = injector.arm_injection_on_idle(1).expect("attempt 1");
+        assert!(data.contains("<samurai-ack>winddown gen-3</samurai-ack>"));
+        assert!(!data.contains("<samurai-handoff-written>"));
+        assert_eq!(injector.session_state(1), Some(Working));
+
+        // The ACK alone completes the entry — no state change, no audit row
+        // beyond the SPAWN, and a later idle injects nothing.
+        injector.observe(&assistant_message(
+            1,
+            "Winding down. <samurai-ack>winddown gen-3</samurai-ack>",
+        ));
+        assert!(injector.pending_view(1).is_none());
+        assert_eq!(injector.session_state(1), Some(Working));
+        assert!(injector.arm_injection_on_idle(1).is_none());
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(rows.len(), 1, "SPAWN only — the wind-down is stateless");
+    }
+
+    #[tokio::test]
+    async fn test_soft_winddown_timeout_alerts_ack_timeout_and_stops() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-soft-to";
+        let snapshot = supervisor
+            .register_session(1, project.into(), "epic-9".into(), 3)
+            .unwrap();
+        assert!(injector.begin_soft_winddown(&snapshot));
+
+        // Attempt 1 times out → retry; attempt 2 times out → ALERT, done.
+        injector.arm_injection_on_idle(1).expect("attempt 1");
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, true)));
+        injector.arm_injection_on_idle(1).expect("attempt 2");
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+
+        assert!(injector.pending_view(1).is_none(), "tracking stopped");
+        assert_eq!(injector.session_state(1), Some(Working));
+
+        let mut alerts: Vec<AuditEvent> = Vec::new();
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            alerts = rows
+                .into_iter()
+                .filter(|r| r.details["kind"] == "ack_timeout")
+                .collect();
+            if !alerts.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].details["instruction"], "soft_winddown");
+    }
+
+    #[tokio::test]
+    async fn test_begin_park_supersedes_a_pending_soft_winddown() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-super".into(), "epic-9".into(), 2)
+            .unwrap();
+        assert!(injector.begin_soft_winddown(&snapshot));
+        assert!(injector.has_pending(1));
+
+        // The park replaces the wind-down entry; the next idle injects the
+        // PARK instruction, not the stale wind-down.
+        let parked = supervisor.transition(1, ParkRequested).unwrap();
+        injector.begin_park(&parked);
+        let data = injector.arm_injection_on_idle(1).expect("park attempt 1");
+        assert!(data.contains("<samurai-ack>park gen-2</samurai-ack>"));
+        assert!(!data.contains("winddown"));
     }
 }
