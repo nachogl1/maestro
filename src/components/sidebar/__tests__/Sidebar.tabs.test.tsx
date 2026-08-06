@@ -192,7 +192,7 @@ describe("Sidebar tab bar", () => {
   });
 
   it("History tab lists worktree conversations and resumes in their own directory", async () => {
-    usePendingLaunchStore.setState({ pending: null });
+    usePendingLaunchStore.setState({ pending: [] });
     const onHistoryLaunch = vi.fn();
     render(<ControlledSidebar onHistoryLaunch={onHistoryLaunch} />);
 
@@ -205,7 +205,7 @@ describe("Sidebar tab bar", () => {
 
     // `claude --resume` only finds the session from the directory it ran in,
     // so the launch must target the recorded cwd — never a derived worktree.
-    expect(usePendingLaunchStore.getState().pending).toMatchObject({
+    expect(usePendingLaunchStore.getState().pending[0]).toMatchObject({
       tabId: "tab-1",
       mode: "Claude",
       resumeSessionId: "11111111-2222-3333-4444-555555555555",
@@ -231,7 +231,7 @@ describe("Sidebar tab bar", () => {
   });
 
   it("History tab falls back to the project path when the directory is gone", async () => {
-    usePendingLaunchStore.setState({ pending: null });
+    usePendingLaunchStore.setState({ pending: [] });
     // A deleted worktree: the backend nulls out cwd so the shell can still spawn.
     // Override only the History reads — other sections feed shared stores that
     // outlive the test, so they must keep their well-formed shapes.
@@ -259,14 +259,14 @@ describe("Sidebar tab bar", () => {
 
     fireEvent.click(await screen.findByText("Work in a deleted worktree"));
 
-    expect(usePendingLaunchStore.getState().pending).toMatchObject({
+    expect(usePendingLaunchStore.getState().pending[0]).toMatchObject({
       resumeSessionId: "99999999-8888-7777-6666-555555555555",
       workingDirOverride: null,
     });
   });
 
   it("History tab launches an agent into a surviving worktree", async () => {
-    usePendingLaunchStore.setState({ pending: null });
+    usePendingLaunchStore.setState({ pending: [] });
     render(<ControlledSidebar />);
 
     fireEvent.click(screen.getByRole("button", { name: "History" }));
@@ -276,7 +276,7 @@ describe("Sidebar tab bar", () => {
     const worktreeRow = await screen.findByTitle("Launch an agent in C:\\worktrees\\feat-login");
     fireEvent.click(worktreeRow);
 
-    expect(usePendingLaunchStore.getState().pending).toMatchObject({
+    expect(usePendingLaunchStore.getState().pending[0]).toMatchObject({
       tabId: "tab-1",
       resumeSessionId: null,
       workingDirOverride: "C:\\worktrees\\feat-login",

@@ -39,19 +39,27 @@ export interface PendingLaunch {
 }
 
 interface PendingLaunchState {
-  pending: PendingLaunch | null;
+  /**
+   * FIFO queue of unconsumed requests (fresh-eyes finding B). A single slot
+   * silently dropped launches when two arrived before either was consumed —
+   * e.g. two epics' successor spawns in one tick, or a samurai spawn racing
+   * a History-tab launch. A queue with one entry behaves exactly like the
+   * old single slot, so History-tab callers are unchanged.
+   */
+  pending: PendingLaunch[];
   request: (launch: PendingLaunch) => void;
-  /** Atomically claim the pending launch for a tab; null when none is queued for it. */
+  /** Atomically claim the OLDEST pending launch for a tab; null when none is queued for it. */
   consume: (tabId: string) => PendingLaunch | null;
 }
 
 export const usePendingLaunchStore = create<PendingLaunchState>((set, get) => ({
-  pending: null,
-  request: (launch) => set({ pending: launch }),
+  pending: [],
+  request: (launch) => set((s) => ({ pending: [...s.pending, launch] })),
   consume: (tabId) => {
-    const pending = get().pending;
-    if (!pending || pending.tabId !== tabId) return null;
-    set({ pending: null });
-    return pending;
+    const queue = get().pending;
+    const index = queue.findIndex((p) => p.tabId === tabId);
+    if (index === -1) return null;
+    set({ pending: queue.filter((_, i) => i !== index) });
+    return queue[index];
   },
 }));

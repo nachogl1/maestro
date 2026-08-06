@@ -134,6 +134,12 @@ struct PendingRitual {
     /// The no-start clock runs from here; before registration it runs from
     /// `queued_at` so a spawn flow that never happens still ALERTs.
     registered: Option<(u32, Instant)>,
+    /// The no-start timeout fired for this entry (fresh-eyes finding G).
+    /// Latched instead of deleted: a successor registered LATE (frontend
+    /// stall past the timeout) must still get its ritual armed and
+    /// delivered. Never re-alerts; pruned when the ritual is claimed or when
+    /// no supervised session remains for the (project, epic).
+    alerted: bool,
 }
 
 /// HEAD gate (PRD §5.4/§5.6): verify is skippable only when both the
@@ -175,6 +181,92 @@ pub(crate) fn read_repo_head(dir: &Path) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// `git remote get-url origin` in `dir` — fixed argv, no shell, hidden
+/// console (same pattern as [`read_repo_head`]). Blocking: only ever called
+/// inside `spawn_blocking`.
+fn read_repo_origin(dir: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(dir)
+        .hide_console_window()
+        .output()
+        .map_err(|e| format!("could not run git remote get-url: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git remote get-url origin failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Parses a git remote URL to the `owner/repo` form `gh --repo` accepts.
+/// Tolerant of the common spellings — HTTPS (`https://github.com/o/r.git`,
+/// credentials included), SSH scp-like (`git@github.com:o/r.git`) and
+/// `ssh://` — and returns `None` for anything else (local paths, deeper
+/// forge paths like GitLab subgroups): an unparseable remote must fall back
+/// to the unpinned wording, never to a wrong pin.
+fn parse_owner_repo(url: &str) -> Option<String> {
+    let url = url.trim();
+    let path = if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ssh://"))
+    {
+        // Drop `user:pass@host` / `host` — everything up to the first slash.
+        rest.split_once('/')?.1
+    } else if let Some((head, tail)) = url.split_once(':') {
+        // scp-like `git@host:owner/repo`. A single-letter head is a Windows
+        // drive (`C:\…`), not a host — reject it.
+        if head.len() < 2 {
+            return None;
+        }
+        tail
+    } else {
+        return None;
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/').filter(|s| !s.is_empty());
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next().is_some() {
+        return None; // deeper than owner/repo — not a pin gh would accept
+    }
+    if [owner, repo]
+        .iter()
+        .any(|s| s.chars().any(char::is_whitespace))
+    {
+        return None; // never let a pathological remote smuggle whitespace
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+/// The `--repo owner/repo` pin for recovery prompts (fresh-eyes finding D;
+/// PRD §10: successors run with `--dangerously-skip-permissions`, so every
+/// orchestrator prompt pins `--repo`). `None` (logged) when the remote is
+/// missing or unparseable — recovery is never blocked on it; the prompt then
+/// carries an explicit caution instead.
+fn derive_repo_pin(dir: &Path) -> Option<String> {
+    match read_repo_origin(dir) {
+        Ok(url) => match parse_owner_repo(&url) {
+            Some(pin) => Some(pin),
+            None => {
+                log::warn!(
+                    "samurai replicator: origin remote {url:?} does not parse to owner/repo — recovery prompt stays unpinned"
+                );
+                None
+            }
+        },
+        Err(e) => {
+            log::warn!(
+                "samurai replicator: could not read the origin remote ({e}) — recovery prompt stays unpinned"
+            );
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,9 +550,16 @@ impl SamuraiReplicator {
         .unwrap_or(Some(false));
 
         // Recovery needs the predecessor's transcript, and the teardown
-        // below stops the transcript watcher — resolve the path NOW.
+        // below stops the transcript watcher — resolve the path NOW. The
+        // resolver's fallback does blocking FS work (canonicalize + read_dir
+        // + metadata), so it runs on the blocking pool, never inline on the
+        // runtime (fresh-eyes finding K).
         let transcript = if head_gate.is_none() {
-            (self.transcript_paths)(snapshot.session_id)
+            let resolver = self.transcript_paths.clone();
+            let session_id = snapshot.session_id;
+            tokio::task::spawn_blocking(move || resolver(session_id))
+                .await
+                .unwrap_or(None)
         } else {
             None
         };
@@ -515,10 +614,17 @@ impl SamuraiReplicator {
                 );
                 self.write_recovery_digest(&snapshot, &working_dir, &killed.ts, transcript)
                     .await;
+                // Finding D: pin `--repo` in the recovery prompt (PRD §10).
+                // Blocking git → blocking pool; failure never blocks recovery.
+                let pin_dir = PathBuf::from(working_dir.clone());
+                let repo_pin = tokio::task::spawn_blocking(move || derive_repo_pin(&pin_dir))
+                    .await
+                    .unwrap_or(None);
                 (
                     samurai_prompts::recovery_ritual_instruction(
                         &snapshot.epic,
                         snapshot.generation,
+                        repo_pin.as_deref(),
                     ),
                     true,
                 )
@@ -541,6 +647,7 @@ impl SamuraiReplicator {
             recovery,
             queued_at: Instant::now(),
             registered: None,
+            alerted: false,
         });
         (self.emit_spawn)(&spawn);
     }
@@ -587,20 +694,23 @@ impl SamuraiReplicator {
                 project: snapshot.project.clone(),
                 epic: snapshot.epic.clone(),
                 generation,
+                // Staged UNPINNED (this synchronous path must not run git);
+                // the async task below swaps in the `--repo`-pinned wording
+                // before the spawn event fires. If that task ever dies, the
+                // unpinned prompt already carries its caution (finding D).
                 instruction: samurai_prompts::recovery_ritual_instruction(
                     &snapshot.epic,
                     snapshot.generation,
+                    None,
                 ),
                 predecessor_session_id: snapshot.session_id,
                 predecessor_generation: snapshot.generation,
                 recovery: true,
                 queued_at: Instant::now(),
                 registered: None,
+                alerted: false,
             });
         }
-        // The watchdog does not stop the transcript watcher, so it usually
-        // still knows the dead session's file; resolve before going async.
-        let transcript = (self.transcript_paths)(snapshot.session_id);
         let spawn = SuccessorSpawn {
             project: snapshot.project.clone(),
             epic: snapshot.epic.clone(),
@@ -611,8 +721,41 @@ impl SamuraiReplicator {
         let this = self.clone();
         let snapshot = snapshot.clone();
         tauri::async_runtime::spawn(async move {
-            // Digest first so the file exists before the successor can look;
-            // its failure never blocks the spawn (best effort, logged).
+            // Finding D: derive the `--repo` pin (blocking git → blocking
+            // pool) and swap the staged instruction to the pinned wording.
+            // Safe ordering: the ritual is only ever delivered on the
+            // successor's SessionStarted, which cannot precede the spawn
+            // event emitted at the end of this task.
+            let pin_dir = PathBuf::from(working_dir.clone());
+            let repo_pin = tokio::task::spawn_blocking(move || derive_repo_pin(&pin_dir))
+                .await
+                .unwrap_or(None);
+            if let Some(pin) = repo_pin {
+                let mut pending = this.lock_pending();
+                if let Some(p) = pending.iter_mut().find(|p| {
+                    p.generation == generation
+                        && p.epic == snapshot.epic
+                        && p.project == snapshot.project
+                }) {
+                    p.instruction = samurai_prompts::recovery_ritual_instruction(
+                        &snapshot.epic,
+                        snapshot.generation,
+                        Some(&pin),
+                    );
+                }
+            }
+            // The watchdog does not stop the transcript watcher, so the dead
+            // session's file usually still resolves. The resolver's fallback
+            // does blocking FS work, so it runs on the blocking pool — and
+            // off the supervisor's synchronous change callback entirely
+            // (fresh-eyes finding K).
+            let resolver = this.transcript_paths.clone();
+            let session_id = snapshot.session_id;
+            let transcript = tokio::task::spawn_blocking(move || resolver(session_id))
+                .await
+                .unwrap_or(None);
+            // Digest before the spawn event so the file exists before the
+            // successor can look; failure never blocks the spawn.
             this.write_recovery_digest(&snapshot, &working_dir, &snapshot.ts, transcript)
                 .await;
             (this.emit_spawn)(&spawn);
@@ -717,6 +860,17 @@ impl SamuraiReplicator {
                 && p.project == snapshot.project
         }) {
             p.registered = Some((snapshot.session_id, Instant::now()));
+            if p.alerted {
+                // Finding G: the successor_no_start ALERT already fired, but
+                // the entry was latched — a late registration still gets the
+                // ritual. The alert stands as history; this recovers it.
+                log::warn!(
+                    "samurai replicator: LATE successor registration for epic {} gen-{} (session {}) after its successor_no_start ALERT — ritual re-armed, the stall recovered",
+                    snapshot.epic,
+                    snapshot.generation,
+                    snapshot.session_id,
+                );
+            }
             log::info!(
                 "samurai replicator: successor session {} registered for epic {} gen-{} — ritual armed for its first SessionStarted",
                 snapshot.session_id,
@@ -754,8 +908,15 @@ impl SamuraiReplicator {
     /// Timeout pass, driven by the injector's 30s tick: a staged successor
     /// that has not produced its `SessionStarted` within `ack_timeout_secs`
     /// (of registration — or of staging, when the frontend never registered
-    /// one at all) raises a single `successor_no_start` ALERT and stops
-    /// being tracked.
+    /// one at all) raises a single `successor_no_start` ALERT. The entry is
+    /// then KEPT, latched as alerted (fresh-eyes finding G): a successor
+    /// registered late — a frontend stall past the timeout — must still get
+    /// its ritual armed and delivered. Latched entries are pruned when the
+    /// ritual is claimed (delivery) or when NO supervised session remains
+    /// for the (project, epic) — i.e. the user tore the epic's sessions
+    /// down; merely-terminal states are NOT pruned on, because
+    /// killed-predecessor-and-no-successor-yet is exactly the state a late
+    /// registration arrives in.
     pub fn tick(&self) {
         let timeout = Duration::from_secs(
             self.config
@@ -763,43 +924,75 @@ impl SamuraiReplicator {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .ack_timeout_secs,
         );
-        let expired: Vec<PendingRitual> = {
+        // Snapshot supervised sessions BEFORE taking the pending lock — the
+        // supervisor has its own lock and never calls back in here.
+        let sessions = self.supervisor.list_sessions();
+        struct NoStartAlert {
+            project: String,
+            epic: String,
+            generation: u32,
+            session_id: u32,
+            registered: bool,
+            predecessor_session_id: u32,
+            predecessor_generation: u32,
+        }
+        let alerts: Vec<NoStartAlert> = {
             let mut pending = self.lock_pending();
-            let mut expired = Vec::new();
-            let mut i = 0;
-            while i < pending.len() {
-                let p = &pending[i];
-                if no_start_expired(p.queued_at, p.registered.map(|(_, t)| t), timeout) {
-                    expired.push(pending.remove(i));
-                } else {
-                    i += 1;
+            let mut alerts = Vec::new();
+            pending.retain_mut(|p| {
+                if p.alerted {
+                    let epic_gone = !sessions
+                        .iter()
+                        .any(|s| s.project == p.project && s.epic == p.epic);
+                    if epic_gone {
+                        log::info!(
+                            "samurai replicator: pruning latched successor gen-{} for epic {} — no supervised session remains for the epic",
+                            p.generation,
+                            p.epic,
+                        );
+                    }
+                    return !epic_gone;
                 }
-            }
-            expired
+                if no_start_expired(p.queued_at, p.registered.map(|(_, t)| t), timeout) {
+                    p.alerted = true;
+                    alerts.push(NoStartAlert {
+                        project: p.project.clone(),
+                        epic: p.epic.clone(),
+                        generation: p.generation,
+                        // Finding F: an unregistered successor has no session
+                        // id of its own — 0 is a sentinel that can never
+                        // collide (ProcessManager ids start at 1: its counter
+                        // is initialized to 1 and hands out the pre-increment
+                        // value). The predecessor's identity stays in details.
+                        session_id: p.registered.map(|(id, _)| id).unwrap_or(0),
+                        registered: p.registered.is_some(),
+                        predecessor_session_id: p.predecessor_session_id,
+                        predecessor_generation: p.predecessor_generation,
+                    });
+                }
+                true
+            });
+            alerts
         };
-        for p in expired {
-            let session_id = p
-                .registered
-                .map(|(id, _)| id)
-                .unwrap_or(p.predecessor_session_id);
+        for a in alerts {
             log::error!(
-                "samurai replicator: successor gen-{} for epic {} never started (registered: {}) — ALERT",
-                p.generation,
-                p.epic,
-                p.registered.is_some(),
+                "samurai replicator: successor gen-{} for epic {} never started (registered: {}) — ALERT (latched; a late registration still delivers)",
+                a.generation,
+                a.epic,
+                a.registered,
             );
             self.audit.append(
-                &p.project,
+                &a.project,
                 AuditEvent::now(
-                    p.epic.clone(),
+                    a.epic,
                     AuditEventKind::Alert,
-                    p.generation,
-                    session_id,
+                    a.generation,
+                    a.session_id,
                     json!({
                         "kind": "successor_no_start",
-                        "registered": p.registered.is_some(),
-                        "predecessor_session_id": p.predecessor_session_id,
-                        "predecessor_generation": p.predecessor_generation,
+                        "registered": a.registered,
+                        "predecessor_session_id": a.predecessor_session_id,
+                        "predecessor_generation": a.predecessor_generation,
                     }),
                 ),
             );
@@ -1047,6 +1240,35 @@ mod tests {
         // Registration resets the clock even when the queue clock expired.
         assert!(!no_start_expired(old, Some(now), timeout));
         assert!(no_start_expired(now, Some(old), timeout));
+    }
+
+    #[test]
+    fn test_parse_owner_repo_https_and_ssh_forms() {
+        // (url, expected) — tolerant of the common spellings, None otherwise.
+        let table: [(&str, Option<&str>); 14] = [
+            ("https://github.com/nachogl1/maestro.git", Some("nachogl1/maestro")),
+            ("https://github.com/nachogl1/maestro", Some("nachogl1/maestro")),
+            ("https://github.com/nachogl1/maestro/", Some("nachogl1/maestro")),
+            ("http://github.com/o/r.git", Some("o/r")),
+            ("https://user:token@github.com/o/r.git", Some("o/r")),
+            ("git@github.com:o/r.git", Some("o/r")),
+            ("git@github.com:o/r", Some("o/r")),
+            ("ssh://git@github.com/o/r.git", Some("o/r")),
+            ("  https://github.com/o/r.git \n", Some("o/r")),
+            // Not owner/repo shapes: local paths, drives, deeper paths.
+            (r"C:\git\maestro", None),
+            ("/home/x/repo", None),
+            ("https://gitlab.com/group/sub/repo.git", None),
+            ("https://github.com/only-owner", None),
+            ("", None),
+        ];
+        for (url, expected) in table {
+            assert_eq!(
+                parse_owner_repo(url).as_deref(),
+                expected,
+                "url {url:?}"
+            );
+        }
     }
 
     #[test]
@@ -1315,10 +1537,15 @@ mod tests {
         h.replicator.tick();
         assert!(h.replicator.pending_view(3).is_some());
 
-        // Past ack_timeout_secs of registration: single ALERT, untracked.
+        // Past ack_timeout_secs of registration: single ALERT — and the
+        // entry stays, latched (finding G), because the successor might
+        // still start late.
         h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
-        assert!(h.replicator.pending_view(3).is_none());
+        assert!(
+            h.replicator.pending_view(3).is_some(),
+            "the latched entry survives its ALERT (finding G)"
+        );
         let mut alerts = Vec::new();
         for _ in 0..200 {
             let rows = h.audit.read(project, None, None).await.unwrap().events;
@@ -1337,10 +1564,22 @@ mod tests {
         assert_eq!(alerts[0].details["registered"], true);
         assert_eq!(alerts[0].details["predecessor_session_id"], 1);
 
-        // Further ticks stay quiet, and a late SessionStarted writes nothing.
+        // Further ticks stay quiet (never re-alerts) …
         h.replicator.tick();
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "successor_no_start")
+                .count(),
+            1
+        );
+        // … and a LATE SessionStarted still delivers the ritual — the whole
+        // point of latching (finding G) — completing the entry.
         h.replicator.observe_hook(&session_started(2));
-        assert!(h.writes.lock().unwrap().is_empty());
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 1, "late start still gets the ritual");
+        assert_eq!(writes[0].0, 2);
+        assert!(h.replicator.pending_view(3).is_none(), "claimed = pruned");
     }
 
     #[tokio::test]
@@ -1352,7 +1591,8 @@ mod tests {
 
         h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
-        assert!(h.replicator.pending_view(3).is_none());
+        // Latched, not deleted (finding G).
+        assert!(h.replicator.pending_view(3).is_some());
         let mut alerts = Vec::new();
         for _ in 0..200 {
             let rows = h.audit.read(project, None, None).await.unwrap().events;
@@ -1367,8 +1607,91 @@ mod tests {
         }
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["registered"], false);
-        // No successor id exists — the row points at the predecessor.
-        assert_eq!(alerts[0].session_id, 1);
+        // Finding F: no successor session id exists — the row carries the
+        // 0 sentinel (never a real id; ProcessManager ids start at 1), and
+        // the predecessor identity rides in details, not the id column.
+        assert_eq!(alerts[0].session_id, 0);
+        assert_eq!(alerts[0].details["predecessor_session_id"], 1);
+        assert_eq!(alerts[0].details["predecessor_generation"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_late_registration_after_alert_still_delivers_ritual() {
+        // Finding G end-to-end: timeout → ALERT → late registration → the
+        // ritual is still armed and delivered, with exactly one ALERT total.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-late";
+        stage_successor(&h, project).await;
+
+        h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        assert!(h.replicator.pending_view(3).is_some(), "latched");
+
+        // The frontend recovers from its stall and registers gen-3 late.
+        let details = h
+            .replicator
+            .spawn_details(project, "epic-9", 3)
+            .expect("a latched entry still links its registration");
+        assert_eq!(details["predecessor_session_id"], 1);
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(2, project.into(), "epic-9".into(), 3, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        assert_eq!(h.replicator.pending_view(3).unwrap().0, Some(2));
+
+        // First SessionStarted delivers as if nothing had happened.
+        h.replicator.observe_hook(&session_started(2));
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, 2);
+        assert!(writes[0].1.ends_with('\r'));
+        assert!(h.replicator.pending_view(3).is_none());
+
+        // Exactly one successor_no_start ALERT in the whole flow.
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "successor_no_start")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_latched_entry_prunes_when_epic_sessions_are_gone() {
+        // Finding G's GC: a latched entry is dropped once NO supervised
+        // session remains for its (project, epic) — the user tore the epic
+        // down (finding H's removal paths) — but never merely because the
+        // predecessor is in a terminal state (that is the normal
+        // between-generations window a late registration arrives in).
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-prune";
+        stage_successor(&h, project).await;
+        h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        assert!(h.replicator.pending_view(3).is_some(), "latched");
+
+        // The predecessor's KILLED entry still exists → kept.
+        h.replicator.tick();
+        assert!(h.replicator.pending_view(3).is_some());
+
+        // The user closes the epic's tile: supervisor entry removed → the
+        // next tick prunes the latched ritual.
+        assert!(h.supervisor.remove_session(1));
+        h.replicator.tick();
+        assert!(h.replicator.pending_view(3).is_none());
+
+        // Still exactly one ALERT.
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "successor_no_start")
+                .count(),
+            1
+        );
     }
 
     // --- full P2.3 → P2.4 chain through the injector's public surface ---
@@ -1757,6 +2080,69 @@ mod tests {
         assert!(digest.contains(&transcript.display().to_string()));
         // The DEAD snapshot's timestamp is the recorded end.
         assert!(digest.contains(&format!("Ended at: {}", snapshot.ts)));
+    }
+
+    #[tokio::test]
+    async fn test_dead_recovery_prompt_is_repo_pinned_when_origin_parses() {
+        // Finding D: the recovery ritual must pin `gh --repo` (PRD §10).
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .hide_console_window()
+                .output()
+                .expect("git must be runnable in tests");
+            assert!(out.status.success());
+        };
+        run(&["remote", "add", "origin", "https://github.com/nachogl1/maestro.git"]);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snapshot = to_dead(&h.supervisor, "C:/git/proj-rep-pin", "epic-9", 2);
+
+        h.replicator.on_dead(&snapshot);
+        // The pin swap happens in the async task strictly before the spawn
+        // event, so once the spawn is out the instruction is final.
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+
+        let (_, instruction) = h.replicator.pending_view(3).unwrap();
+        assert!(instruction.contains("RECOVERY MODE"));
+        assert_eq!(
+            instruction.matches("--repo nachogl1/maestro").count(),
+            2,
+            "issue read AND takeover comment must be pinned: {instruction}"
+        );
+        assert!(!instruction.contains("CAUTION"));
+        assert!(!instruction.contains('\n'), "still a single pasteable line");
+    }
+
+    #[tokio::test]
+    async fn test_dead_recovery_prompt_without_origin_keeps_caution() {
+        // Finding D fallback: unparseable/missing remote → unpinned wording
+        // plus the explicit caution; recovery is never blocked.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let repo = tempdir().unwrap(); // not even a git repo
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snapshot = to_dead(&h.supervisor, "C:/git/proj-rep-nopin", "epic-9", 2);
+
+        h.replicator.on_dead(&snapshot);
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+
+        let (_, instruction) = h.replicator.pending_view(3).unwrap();
+        assert!(instruction.contains("RECOVERY MODE"));
+        // No pinned `gh` usage (the caution itself mentions the missing pin).
+        assert!(!instruction.contains("passing `--repo"));
+        assert!(instruction.contains("CAUTION"));
+        assert!(!instruction.contains('\n'));
     }
 
     #[tokio::test]

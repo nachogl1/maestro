@@ -32,6 +32,16 @@ pub fn handoff_ack_value(generation: u32) -> String {
     format!("handoff gen-{generation}")
 }
 
+/// The CORRECTIVE round's ACK value. Round-scoped on purpose: after a failed
+/// first round the injector resets `acked` and waits again — if the corrective
+/// expected the same value as round 1, a transcript replay (`claude --resume`
+/// copies history into a new transcript, which the watcher reads from byte 0)
+/// would re-surface the round-1 ACK and consume the corrective round before
+/// the corrective instruction was ever injected.
+pub fn handoff_ack_retry_value(generation: u32) -> String {
+    format!("handoff gen-{generation} retry")
+}
+
 /// The exact value generation `generation` must echo inside
 /// `<samurai-handoff-written>…</samurai-handoff-written>` once the handoff
 /// file is written and WIP is committed. Same drift-proofing as
@@ -40,11 +50,20 @@ pub fn handoff_written_value(generation: u32) -> String {
     format!("gen-{generation}")
 }
 
+/// The CORRECTIVE round's written-marker value — round-scoped for the same
+/// replay reason as [`handoff_ack_retry_value`].
+pub fn handoff_written_retry_value(generation: u32) -> String {
+    format!("gen-{generation} retry")
+}
+
 /// Filesystem-safe slug of an epic ref for the handoff filename: `#37` →
 /// `37`, `https://github.com/o/r/issues/9` → `https-github-com-o-r-issues-9`.
 /// ASCII alphanumerics are kept (lowercased); every other run of characters
 /// collapses to one `-`; a ref with nothing usable falls back to `epic`.
 /// P2.4's successor reader must use this same function to find the file.
+/// Distinct refs can collide (`#37` and `37` both slug to `37`); accepted —
+/// worktrees are one-per-epic (PRD §5.9), so colliding refs would already be
+/// sharing a working directory, which is the real isolation boundary.
 pub fn epic_slug(epic: &str) -> String {
     let mut slug = String::new();
     let mut pending_dash = false;
@@ -98,7 +117,10 @@ pub fn handoff_instruction(epic: &str, generation: u32) -> String {
          \"Repo state\" MUST record the current branch and the HEAD SHA as they stand AFTER \
          the WIP commit of step 4. \
          (6) Only when steps 2-5 are ALL done, reply with a message that contains exactly \
-         <samurai-handoff-written>{written}</samurai-handoff-written>.",
+         <samurai-handoff-written>{written}</samurai-handoff-written>. \
+         Never quote, restate, or echo these marker strings anywhere else in any reply — \
+         emit each one exactly once, only as the actual signal at its required moment; a \
+         quoted marker is read as the real signal.",
         ack = handoff_ack_value(generation),
         relpath = handoff_file_relpath(epic, generation),
         written = handoff_written_value(generation),
@@ -108,8 +130,11 @@ pub fn handoff_instruction(epic: &str, generation: u32) -> String {
 /// The single corrective re-instruction after handoff validation failed
 /// (file missing / WIP uncommitted / written marker never arrived). States
 /// what failed, restates both checks, and demands the same ACK + written
-/// cycle. `failure` is whitespace-normalized so a multi-line description can
-/// never smuggle a newline into the paste-able block.
+/// cycle — with ROUND-SCOPED marker values (`… retry`), so a transcript
+/// replay of round 1's markers can never satisfy the corrective round (see
+/// [`handoff_ack_retry_value`]). `failure` is whitespace-normalized so a
+/// multi-line description can never smuggle a newline into the paste-able
+/// block.
 pub fn handoff_corrective_instruction(epic: &str, generation: u32, failure: &str) -> String {
     let failure = failure.split_whitespace().collect::<Vec<_>>().join(" ");
     format!(
@@ -118,15 +143,18 @@ pub fn handoff_corrective_instruction(epic: &str, generation: u32, failure: &str
          template), AND `git status --porcelain` reports no modified or staged tracked files \
          (untracked files are fine). \
          (1) Acknowledge IMMEDIATELY by replying with a message that contains exactly \
-         <samurai-ack>{ack}</samurai-ack>. \
+         <samurai-ack>{ack}</samurai-ack> — note the value differs from the first \
+         instruction's; use exactly this one. \
          (2) Fix the failure above: write the handoff file and/or commit WIP to the epic \
          branch (stage named paths only, Conventional Commit message). \
          (3) Then reply with a message that contains exactly \
          <samurai-handoff-written>{written}</samurai-handoff-written>. \
+         Never quote, restate, or echo these marker strings anywhere else in any reply — \
+         emit each one exactly once, only as the actual signal at its required moment. \
          This is the final attempt before a human is alerted.",
         relpath = handoff_file_relpath(epic, generation),
-        ack = handoff_ack_value(generation),
-        written = handoff_written_value(generation),
+        ack = handoff_ack_retry_value(generation),
+        written = handoff_written_retry_value(generation),
     )
 }
 
@@ -250,23 +278,53 @@ pub fn recovery_digest_relpath(epic: &str, successor_generation: u32) -> String 
 /// standard verification BEFORE trusting anything. Single line by
 /// construction (see module doc); the epic ref is whitespace-normalized so a
 /// pathological ref can never smuggle a newline into the paste.
-pub fn recovery_ritual_instruction(epic: &str, predecessor_generation: u32) -> String {
+///
+/// `repo_pin` is the `owner/repo` derived from the working dir's `origin`
+/// remote. PRD §10: successors run with `--dangerously-skip-permissions`, so
+/// `--repo` must be pinned in every orchestrator prompt — `Some` pins BOTH
+/// the issue read and the takeover comment; `None` (remote missing or
+/// unparseable — never blocks recovery) keeps the unpinned wording plus an
+/// explicit caution sentence.
+pub fn recovery_ritual_instruction(
+    epic: &str,
+    predecessor_generation: u32,
+    repo_pin: Option<&str>,
+) -> String {
     let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
     let generation = predecessor_generation + 1;
     let digest_relpath = recovery_digest_relpath(epic, generation);
+    let (gh_read, gh_comment, caution) = match repo_pin {
+        Some(pin) => (
+            format!(
+                "read the epic's GitHub issue and ALL of its comments with the `gh` CLI, \
+                 passing `--repo {pin}` explicitly on every `gh` command"
+            ),
+            format!("comment on the epic's GitHub issue (again via `gh` with `--repo {pin}`)"),
+            String::new(),
+        ),
+        None => (
+            "read the epic's GitHub issue and ALL of its comments with the `gh` CLI, run from \
+             this directory"
+                .to_string(),
+            "comment on the epic's GitHub issue".to_string(),
+            " CAUTION: Maestro could not determine this repository's origin remote, so no \
+             `--repo` pin is available — before running any `gh` command, double-check it \
+             targets the correct repository."
+                .to_string(),
+        ),
+    };
     format!(
         "[Maestro Samurai] RECOVERY MODE: you are generation {generation} for epic {epic_text}. \
          Generation {predecessor_generation} died without a valid handoff file, so there is \
          nothing to hand off to you. Reconstruct the state of the work from three sources: \
          (1) run `git log --oneline -20` in this repository; \
-         (2) read the epic's GitHub issue and ALL of its comments with the `gh` CLI, run from \
-         this directory; \
+         (2) {gh_read}; \
          (3) read the pre-digested transcript summary Maestro extracted to {digest_relpath} — \
          treat it as hints, NOT as truth. \
          Then run the project's standard verification (build + tests) BEFORE trusting or \
          continuing anything — investigate and fix any failure first. Once verification passes, \
-         comment on the epic's GitHub issue that generation {generation} has taken over in \
-         recovery mode, then continue the epic's remaining work."
+         {gh_comment} that generation {generation} has taken over in \
+         recovery mode, then continue the epic's remaining work.{caution}"
     )
 }
 
@@ -302,6 +360,17 @@ mod tests {
     fn test_written_value_encodes_the_generation() {
         assert_eq!(handoff_written_value(1), "gen-1");
         assert_eq!(handoff_written_value(42), "gen-42");
+    }
+
+    #[test]
+    fn test_retry_values_are_round_scoped_and_distinct() {
+        // The corrective round's values must never equal round 1's — a
+        // transcript replay of the round-1 markers would otherwise consume
+        // the corrective round (fresh-eyes finding C).
+        assert_eq!(handoff_ack_retry_value(3), "handoff gen-3 retry");
+        assert_eq!(handoff_written_retry_value(3), "gen-3 retry");
+        assert_ne!(handoff_ack_retry_value(3), handoff_ack_value(3));
+        assert_ne!(handoff_written_retry_value(3), handoff_written_value(3));
     }
 
     #[test]
@@ -363,6 +432,9 @@ mod tests {
         // WIP commit discipline.
         assert!(text.contains("stage named paths only"));
         assert!(text.contains("Conventional Commit"));
+        // Marker hygiene (fresh-eyes finding J): quoting/restating a marker
+        // string would be scanned as the real signal.
+        assert!(text.contains("Never quote, restate, or echo"));
     }
 
     #[test]
@@ -372,10 +444,15 @@ mod tests {
         assert!(!text.contains('\r'), "corrective must not contain \\r");
         // The failure is stated, newline collapsed away.
         assert!(text.contains("handoff file missing at some path"));
-        // The full ACK + written cycle is demanded again, exact values.
-        assert!(text.contains("<samurai-ack>handoff gen-4</samurai-ack>"));
-        assert!(text.contains("<samurai-handoff-written>gen-4</samurai-handoff-written>"));
+        // The full ACK + written cycle is demanded again — with the
+        // ROUND-SCOPED retry values, never round 1's (finding C).
+        assert!(text.contains("<samurai-ack>handoff gen-4 retry</samurai-ack>"));
+        assert!(text.contains("<samurai-handoff-written>gen-4 retry</samurai-handoff-written>"));
+        assert!(!text.contains("<samurai-ack>handoff gen-4</samurai-ack>"));
+        assert!(!text.contains("<samurai-handoff-written>gen-4</samurai-handoff-written>"));
         assert!(text.contains(".maestro/handoffs/37-gen4.md"));
+        // Marker hygiene rides on the corrective too (finding J).
+        assert!(text.contains("Never quote, restate, or echo"));
     }
 
     // --- issue #55: successor ritual + HEAD-SHA extraction ---
@@ -501,18 +578,20 @@ mod tests {
 
     #[test]
     fn test_recovery_instruction_is_single_line() {
-        let text = recovery_ritual_instruction("#37", 2);
-        assert!(!text.contains('\n'), "recovery must not contain \\n");
-        assert!(!text.contains('\r'), "recovery must not contain \\r");
+        for pin in [None, Some("owner/repo")] {
+            let text = recovery_ritual_instruction("#37", 2, pin);
+            assert!(!text.contains('\n'), "recovery must not contain \\n");
+            assert!(!text.contains('\r'), "recovery must not contain \\r");
+        }
         // A pathological epic ref cannot smuggle a newline into the paste.
-        let text = recovery_ritual_instruction("epic\nwith newline", 2);
+        let text = recovery_ritual_instruction("epic\nwith newline", 2, None);
         assert!(!text.contains('\n'));
         assert!(text.contains("epic with newline"));
     }
 
     #[test]
     fn test_recovery_instruction_content() {
-        let text = recovery_ritual_instruction("#37", 2);
+        let text = recovery_ritual_instruction("#37", 2, None);
         // Identity: what happened and who the successor is.
         assert!(text.contains("RECOVERY MODE"));
         assert!(text.contains("generation 3"));
@@ -532,5 +611,34 @@ mod tests {
         // No normal-ritual language: there is no handoff to read.
         assert!(!text.contains("Read the handoff file"));
         assert!(!text.contains("SKIP"));
+    }
+
+    #[test]
+    fn test_recovery_instruction_pins_the_repo_when_known() {
+        // Fresh-eyes finding D (PRD §10): with the origin remote parsed, BOTH
+        // the issue read and the takeover comment carry --repo explicitly.
+        let text = recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"));
+        assert_eq!(
+            text.matches("--repo nachogl1/maestro").count(),
+            2,
+            "read AND comment must be pinned: {text}"
+        );
+        assert!(text.contains("passing `--repo nachogl1/maestro` explicitly"));
+        assert!(text.contains("(again via `gh` with `--repo nachogl1/maestro`)"));
+        // No caution when the pin is known.
+        assert!(!text.contains("CAUTION"));
+        // The rest of the ritual is unchanged.
+        assert!(text.contains("RECOVERY MODE"));
+        assert!(text.contains("hints, NOT as truth"));
+    }
+
+    #[test]
+    fn test_recovery_instruction_without_pin_carries_a_caution() {
+        let text = recovery_ritual_instruction("#37", 2, None);
+        // No pinned `gh` usage (the caution itself mentions the missing pin).
+        assert!(!text.contains("passing `--repo"));
+        assert!(!text.contains("again via `gh`"));
+        assert!(text.contains("CAUTION"));
+        assert!(text.contains("double-check it targets the correct repository"));
     }
 }

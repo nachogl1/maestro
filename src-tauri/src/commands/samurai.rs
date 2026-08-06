@@ -112,6 +112,10 @@ pub fn samurai_register_session(
 /// Drives one state transition, e.g. `to_state = "HANDOFF_REQUESTED"`.
 /// Illegal transitions return an error (and land on the audit log as ALERT
 /// rows); they never panic.
+///
+/// Testing affordance: this drives supervisor STATE only, never processes —
+/// manually transitioning a live session to `KILLED` does not kill its PTY,
+/// so the terminal keeps running, orphaned from the state machine.
 #[tauri::command]
 pub fn samurai_transition(
     supervisor: State<'_, Arc<Supervisor>>,

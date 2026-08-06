@@ -61,8 +61,11 @@ use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 
 /// Per-generation baseline, recorded when the session registers. `None`
 /// baseline = HEAD was unknowable at registration → churn never alarms for
-/// this generation.
+/// this generation. Carries its epic key so a removal (fresh-eyes finding H)
+/// can tell whether it was the epic's LAST baseline (finding I's prune).
 struct SessionBaseline {
+    project: String,
+    epic: String,
     generation: u32,
     baseline_head: Option<String>,
 }
@@ -99,7 +102,16 @@ enum Job {
         working_dir: Option<String>,
     },
     /// A session reached a terminal state — its baseline is gone with it.
+    /// The epic's breaker entry deliberately SURVIVES this: the killed→
+    /// successor window has zero baselines, and the counter/latch must
+    /// persist across it (zero progress across a handoff stays visible).
     Terminal { session_id: u32 },
+    /// A session was torn down outside the samurai pipeline (fresh-eyes
+    /// finding H — manual kill / project close / frontend reload). Drops the
+    /// baseline, and when it was the epic's LAST baseline the (project,
+    /// epic) breaker entry is pruned too (finding I): no successor is coming
+    /// through the supervisor for a torn-down epic.
+    Removed { session_id: u32 },
     /// One appended audit row (already durable) to count/evaluate.
     Audit { project: String, event: AuditEvent },
     /// Test-only barrier: replied to once every prior job is processed.
@@ -245,6 +257,14 @@ impl SamuraiProgress {
         });
     }
 
+    /// Teardown propagation (fresh-eyes finding H): the session was closed
+    /// outside the samurai pipeline, so its baseline must go — and, when it
+    /// was the epic's last one, the breaker entry with it (finding I).
+    /// Queue-only, same non-blocking discipline as the tees.
+    pub fn remove_session(&self, session_id: u32) {
+        self.send(Job::Removed { session_id });
+    }
+
     fn send(&self, job: Job) {
         if self.tx.send(job).is_err() {
             log::error!("samurai progress: worker task is gone; dropping job");
@@ -276,6 +296,8 @@ impl SamuraiProgress {
             state.baselines.insert(
                 session_id,
                 SessionBaseline {
+                    project: project.clone(),
+                    epic: epic.clone(),
                     generation,
                     baseline_head,
                 },
@@ -301,6 +323,28 @@ impl SamuraiProgress {
 
     fn handle_terminal(&self, session_id: u32) {
         self.lock_state().baselines.remove(&session_id);
+    }
+
+    /// Finding H/I: baseline gone; when it was the epic's LAST baseline, the
+    /// (project, epic) breaker entry is pruned with it. Only the REMOVAL
+    /// path prunes — a terminal *transition* (see [`Job::Terminal`]) leaves
+    /// the entry so the counter/latch survive the killed→successor window.
+    fn handle_removed(&self, session_id: u32) {
+        let mut state = self.lock_state();
+        let Some(baseline) = state.baselines.remove(&session_id) else {
+            return;
+        };
+        let key: EpicKey = (baseline.project, baseline.epic);
+        let epic_has_baselines = state
+            .baselines
+            .values()
+            .any(|b| b.project == key.0 && b.epic == key.1);
+        if !epic_has_baselines && state.epics.remove(&key).is_some() {
+            log::info!(
+                "samurai progress: last baseline for epic {} removed — pruning its breaker entry",
+                key.1
+            );
+        }
     }
 
     /// One appended audit row: filter self-produced events, then (for a
@@ -532,6 +576,7 @@ async fn worker_task(this: Arc<SamuraiProgress>, mut rx: mpsc::UnboundedReceiver
                     .await
             }
             Job::Terminal { session_id } => this.handle_terminal(session_id),
+            Job::Removed { session_id } => this.handle_removed(session_id),
             Job::Audit { project, event } => this.handle_audit(project, event).await,
             #[cfg(test)]
             Job::Flush(reply) => {
@@ -1035,6 +1080,46 @@ mod tests {
         assert!(alerts_of_kind(&all2, "circuit_breaker").is_empty());
         assert_eq!(h.progress.baseline_view(2).unwrap(), (1, None));
         assert!(h.progress.breaker_view(&project2, "epic-n").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_removal_prunes_breaker_only_when_last_baseline_drops() {
+        // Fresh-eyes finding I (+ H propagation): tearing sessions down
+        // outside the samurai pipeline prunes the epic's breaker entry once
+        // the LAST baseline for that (project, epic) is gone — and not a
+        // moment earlier.
+        let base = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let project = repo.path().to_string_lossy().into_owned();
+        let h = harness(base.path(), 100);
+
+        h.dirs.lock().unwrap().insert(1, project.clone());
+        h.dirs.lock().unwrap().insert(2, project.clone());
+        h.supervisor
+            .register_session(1, project.clone(), "epic-x".into(), 1)
+            .unwrap();
+        h.supervisor
+            .register_session(2, project.clone(), "epic-x".into(), 2)
+            .unwrap();
+        settle(&h, &project).await;
+        assert!(h.progress.breaker_view(&project, "epic-x").is_some());
+
+        // First removal: a baseline for the epic remains → entry kept.
+        h.progress.remove_session(1);
+        h.progress.flush().await;
+        assert!(h.progress.baseline_view(1).is_none());
+        assert!(h.progress.breaker_view(&project, "epic-x").is_some());
+
+        // Second removal: the epic's last baseline drops → entry pruned.
+        h.progress.remove_session(2);
+        h.progress.flush().await;
+        assert!(h.progress.baseline_view(2).is_none());
+        assert!(h.progress.breaker_view(&project, "epic-x").is_none());
+
+        // Idempotent for unknown sessions.
+        h.progress.remove_session(99);
+        h.progress.flush().await;
     }
 
     #[tokio::test]

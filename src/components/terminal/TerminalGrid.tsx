@@ -50,7 +50,7 @@ import {
   writeStdin,
 } from "@/lib/terminal";
 import { checkFullDiskAccess, pathRequiresFDA } from "@/lib/permissions";
-import { registerSamuraiSuccessor, samuraiSuccessorCliFlags } from "@/lib/spawnSession";
+import { registerSamuraiSuccessor, samuraiSuccessorCliFlags, successorLaunchImminent } from "@/lib/spawnSession";
 import { useFDAStore } from "@/stores/useFDAStore";
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
 import { cleanupSessionWorktree, prepareSessionWorktree } from "@/lib/worktreeManager";
@@ -344,6 +344,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // Ref to access latest onAllSessionsClosed without adding it to callback deps
   const onAllSessionsClosedRef = useRef(onAllSessionsClosed);
   onAllSessionsClosedRef.current = onAllSessionsClosed;
+  // Slots configured from consumed pending launches (History tab / samurai
+  // successor) whose deferred launch has not fired yet. An array, not a
+  // single id: the FIFO pending-launch store can deliver several claims
+  // before the first launch fires (fresh-eyes finding B). Also feeds the
+  // landing-view guard in handleKill (finding A) — a claimed-but-unlaunched
+  // successor must keep this grid mounted.
+  const autoLaunchSlotIdsRef = useRef<string[]>([]);
 
   // Clear a pane's yellow attention highlight (set when it was auto-unparked
   // because its agent asked for input). Called only from USER-driven selection
@@ -1114,8 +1121,20 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     const worktreePath = slot?.worktreePath;
     const workingDir = worktreePath || projectPath;
 
-    // If this is the last slot, return to idle landing view immediately
-    if (slotsRef.current.length <= 1 && onAllSessionsClosedRef.current) {
+    // If this is the last slot, return to idle landing view immediately —
+    // UNLESS a queued/claimed launch is about to land in this grid (samurai
+    // successor spawn, issue #55 — fresh-eyes finding A; History-tab resume
+    // shares the mechanism). Dropping to the landing view unmounts the grid,
+    // which would destroy that launch: a successor whose predecessor was the
+    // project's only session would never spawn. In that case fall through to
+    // the normal in-place removal and let the pending-launch effects (below)
+    // spawn the successor into the surviving grid.
+    const launchImminent = successorLaunchImminent(
+      usePendingLaunchStore.getState().pending,
+      autoLaunchSlotIdsRef.current.length,
+      tabId,
+    );
+    if (slotsRef.current.length <= 1 && !launchImminent && onAllSessionsClosedRef.current) {
       // Clean up focus callback
       if (slot) {
         focusCallbacksRef.current.delete(slot.id);
@@ -1203,26 +1222,6 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // "keep" (default): do nothing — worktree persists
     }
   }, [tabId, effectiveRepoPath, projectPath, removeSessionFromProject, refreshBranches, focusedSlotId, layoutTree, onSessionCountChange, worktreeBasePath, passZoomToNeighbor]);
-
-  // Samurai kills (issue #55): after a validated handoff the BACKEND tears
-  // the session down itself (PTY tree-kill, status server, transcript
-  // watcher, context store) and announces it by transitioning the session to
-  // KILLED on the samurai-supervisor-event channel. No PTY-exit event
-  // exists and terminal teardown is otherwise always frontend-initiated, so
-  // without this the dead tile would linger as a zombie. Reuse handleKill —
-  // the exact cleanup the manual close runs, minus the kill IPC (already
-  // done) and minus the working-dir artifacts the successor is about to
-  // reuse.
-  const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
-  useEffect(() => {
-    for (const slot of slotsRef.current) {
-      if (slot.sessionId !== null && samuraiBySessionId[slot.sessionId]?.state === "KILLED") {
-        // handleKill → removeSession drops the supervision entry, so this
-        // effect cannot re-fire for the same session.
-        handleKill(slot.sessionId, { keepDirArtifacts: true });
-      }
-    }
-  }, [samuraiBySessionId, handleKill]);
 
   /**
    * Removes a pre-launch slot (before it's launched).
@@ -1641,24 +1640,35 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     [addSession, launchAll, refreshBranches, focusSession, zoomSession, killSessionById, zoomedSlotId],
   );
 
-  // ── History-tab launches ─────────────────────────────────────────
-  // The sidebar History tab queues a pre-configured launch (resume id and/or
-  // worktree dir) in usePendingLaunchStore because this grid may not even be
-  // mounted when the user clicks. Consume it here: configure a slot, then let
-  // the effect below launch it once the slot has committed to state.
+  // ── History-tab / samurai-successor launches ─────────────────────
+  // The sidebar History tab (and the samurai successor spawn listener)
+  // queues a pre-configured launch (resume id and/or worktree dir) in
+  // usePendingLaunchStore because this grid may not even be mounted when
+  // the request lands. Consume it here: configure a slot, then let the
+  // effect below launch it once the slot has committed to state. One claim
+  // per run — a FIFO store (finding B) with several entries for this tab
+  // re-triggers this effect (the selector returns the next head entry) and
+  // each claim gets its own slot.
   const pendingLaunch = usePendingLaunchStore((s) =>
-    tabId && s.pending?.tabId === tabId ? s.pending : null
+    tabId ? s.pending.find((p) => p.tabId === tabId) ?? null : null
   );
-  const autoLaunchSlotIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!pendingLaunch || !tabId) return;
     const launch = usePendingLaunchStore.getState().consume(tabId);
     if (!launch) return;
 
-    // Reuse the pristine initial slot when it's the only one; otherwise append.
+    // Reuse the pristine initial slot when it's the only one — unless an
+    // earlier claim already configured it and is merely waiting for its
+    // deferred launch (finding B: two claims must never share one slot);
+    // otherwise append.
     const current = slotsRef.current;
-    const reusable = current.length === 1 && current[0].sessionId === null ? current[0] : null;
+    const reusable =
+      current.length === 1 &&
+      current[0].sessionId === null &&
+      !autoLaunchSlotIdsRef.current.includes(current[0].id)
+        ? current[0]
+        : null;
     if (!reusable && current.length >= MAX_SESSIONS) {
       setError(`Cannot resume: maximum of ${MAX_SESSIONS} sessions per project`);
       return;
@@ -1680,7 +1690,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // session into a worktree where `claude --resume` cannot find the session.
       worktreeMode: "project",
     };
-    autoLaunchSlotIdRef.current = slot.id;
+    autoLaunchSlotIdsRef.current = [...autoLaunchSlotIdsRef.current, slot.id];
     if (reusable) {
       setSlots((prev) => prev.map((s) => (s.id === reusable.id ? slot : s)));
     } else {
@@ -1690,15 +1700,45 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     setFocusedSlotId(slot.id);
   }, [pendingLaunch, tabId, mcpServers, skills, plugins, orderedSlotIds]);
 
-  // Launch the queued slot only after it exists in committed state — calling
+  // Launch queued slots only after they exist in committed state — calling
   // launchSlot in the effect above would race slotsRef against the setSlots.
   useEffect(() => {
-    const slotId = autoLaunchSlotIdRef.current;
-    if (!slotId) return;
-    if (!slots.some((s) => s.id === slotId)) return;
-    autoLaunchSlotIdRef.current = null;
-    void launchSlot(slotId);
+    const ids = autoLaunchSlotIdsRef.current;
+    if (ids.length === 0) return;
+    const ready = ids.filter((id) => slots.some((s) => s.id === id));
+    if (ready.length === 0) return;
+    autoLaunchSlotIdsRef.current = ids.filter((id) => !ready.includes(id));
+    for (const id of ready) void launchSlot(id);
   }, [slots, launchSlot]);
+
+  // Samurai kills (issue #55): after a validated handoff the BACKEND tears
+  // the session down itself (PTY tree-kill, status server, transcript
+  // watcher, context store) and announces it by transitioning the session to
+  // KILLED on the samurai-supervisor-event channel. No PTY-exit event
+  // exists and terminal teardown is otherwise always frontend-initiated, so
+  // without this the dead tile would linger as a zombie. Reuse handleKill —
+  // the exact cleanup the manual close runs, minus the kill IPC (already
+  // done) and minus the working-dir artifacts the successor is about to
+  // reuse.
+  //
+  // Deliberately placed AFTER the pending-launch consume/launch effects
+  // (fresh-eyes finding A): effects run in definition order, so when the
+  // KILLED update and the successor's queued launch land in the same commit,
+  // the consume effect claims and appends the successor slot FIRST, and this
+  // effect's handleKill then removes the predecessor leaf from the layout
+  // tree the consume effect just rebuilt — the reverse order would leave a
+  // stale leaf behind (and, before the handleKill guard, unmounted the grid
+  // under the claimed launch).
+  const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
+  useEffect(() => {
+    for (const slot of slotsRef.current) {
+      if (slot.sessionId !== null && samuraiBySessionId[slot.sessionId]?.state === "KILLED") {
+        // handleKill → removeSession drops the supervision entry, so this
+        // effect cannot re-fire for the same session.
+        handleKill(slot.sessionId, { keepDirArtifacts: true });
+      }
+    }
+  }, [samuraiBySessionId, handleKill]);
 
   // Handle zoom toggle for a slot
   const handleToggleZoom = useCallback((slotId: string) => {

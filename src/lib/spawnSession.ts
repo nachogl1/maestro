@@ -22,6 +22,7 @@ import { samuraiRegisterSession } from "@/lib/samurai";
 import type { CliFlags } from "@/lib/terminal";
 import {
   usePendingLaunchStore,
+  type PendingLaunch,
   type SamuraiSuccessorInfo,
 } from "@/stores/usePendingLaunchStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
@@ -84,6 +85,28 @@ export function queueSamuraiSuccessorLaunch(event: SamuraiSpawnSuccessorEvent): 
  */
 export function samuraiSuccessorCliFlags(base: CliFlags): CliFlags {
   return { ...base, skipPermissions: true };
+}
+
+/**
+ * Whether a queued/claimed launch is about to land in the grid for `tabId`
+ * (fresh-eyes finding A). TerminalGrid's last-slot kill path checks this
+ * before returning the project to the idle landing view: when the killed
+ * predecessor was the project's ONLY session, unmounting the grid at that
+ * moment would destroy a successor launch that is either still queued in the
+ * pending-launch store or already claimed by the grid's consume effect (and
+ * not yet handed to launchSlot) — the successor would then never spawn. True
+ * in either case, for BOTH event orderings (KILLED before the spawn event
+ * reaches the store, and vice versa). `claimedLaunchCount` is grid-local, so
+ * it counts regardless of `tabId`.
+ */
+export function successorLaunchImminent(
+  queued: readonly Pick<PendingLaunch, "tabId">[],
+  claimedLaunchCount: number,
+  tabId: string | null | undefined,
+): boolean {
+  if (claimedLaunchCount > 0) return true;
+  if (!tabId) return false;
+  return queued.some((p) => p.tabId === tabId);
 }
 
 /**

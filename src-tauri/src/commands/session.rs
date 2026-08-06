@@ -8,8 +8,11 @@ use crate::core::mcp_manager::McpManager;
 use crate::core::plugin_manager::PluginManager;
 use crate::core::process_manager::ProcessManager;
 use crate::core::samurai_context::SamuraiContextStore;
+use crate::core::samurai_injector::SamuraiInjector;
+use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::session_manager::{AiMode, SessionConfig, SessionManager, SessionStatus};
 use crate::core::status_server::StatusServer;
+use crate::core::supervisor::Supervisor;
 use crate::core::transcript_watcher::TranscriptWatcher;
 
 /// Exposes `SessionManager::all_sessions` to the frontend.
@@ -131,6 +134,9 @@ pub async fn remove_sessions_for_project(
     plugin_manager: State<'_, PluginManager>,
     transcript_watcher: State<'_, Arc<TranscriptWatcher>>,
     samurai_context: State<'_, Arc<SamuraiContextStore>>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    samurai_injector: State<'_, Arc<SamuraiInjector>>,
+    samurai_progress: State<'_, Arc<SamuraiProgress>>,
     project_path: String,
 ) -> Result<Vec<SessionConfig>, String> {
     let canonical = std::fs::canonicalize(&project_path)
@@ -156,6 +162,13 @@ pub async fn remove_sessions_for_project(
         // Drop the samurai context entry — a stale percentage for a gone
         // session must never arm a handoff (issue #52)
         samurai_context.remove(session.id);
+
+        // A supervised session closed by the project-close path leaves the
+        // supervisor too (fresh-eyes finding H) — teardown, not a
+        // transition: no event, no audit row (user-driven, UI-visible).
+        supervisor.remove_session(session.id);
+        samurai_injector.remove_session(session.id);
+        samurai_progress.remove_session(session.id);
 
         // Clean up .mcp.json entry (use worktree_path if set, otherwise project_path)
         let working_dir = session

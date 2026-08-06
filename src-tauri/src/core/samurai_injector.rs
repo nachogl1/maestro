@@ -74,6 +74,15 @@ pub const WRITTEN_TAG: &str = "samurai-handoff-written";
 /// WIP — real work that takes real time.
 const WRITTEN_WINDOW_MULTIPLIER: u32 = 3;
 
+/// Age cap on the two "waiting for idle" states (fresh-eyes finding E): a
+/// trigger whose Stop never comes (wedged turn) or an armed retry whose idle
+/// never comes would otherwise wait forever and the promised `ack_timeout`
+/// ALERT could never fire. ×3 the ACK timeout because turns are legitimately
+/// long (a busy orchestrator can run many minutes between Stops) and the PRD
+/// only promises an EVENTUAL alert — a tight cap would false-alarm on every
+/// long turn.
+const STUCK_WAIT_MULTIPLIER: u32 = 3;
+
 /// Resolves a Maestro session id to the directory its shell works in (the
 /// worktree/sub-repo-aware cwd the SessionManager recorded). Injected as a
 /// closure so the controller stays constructible in tests without tauri
@@ -95,6 +104,11 @@ struct PendingInstruction {
     attempts: u8,
     /// When the latest injection was written; `None` before the first.
     injected_at: Option<Instant>,
+    /// When the entry started (or resumed) WAITING for an idle signal:
+    /// stamped at creation, and re-stamped whenever a retry/corrective is
+    /// armed. Caps the wait (finding E): no injection possible within
+    /// `ack_timeout_secs * STUCK_WAIT_MULTIPLIER` of this → ALERT.
+    waiting_since: Instant,
     /// The orchestrator replied with the expected ACK marker.
     acked: bool,
     /// Attempt 1 timed out; re-inject at the next idle signal.
@@ -194,23 +208,45 @@ enum TimeoutVerdict {
     ArmRetry,
     /// The retry ran out of time too: ALERT once and stop tracking.
     Alert,
+    /// Finding E: a waiting state aged out — the trigger fired but the Stop
+    /// hook never came (wedged turn), or the retry was armed and idle never
+    /// came. ALERT once (`never_idled` / `retry_never_injected`) and stop
+    /// tracking: the session cannot be instructed.
+    AlertStuck,
 }
 
 /// Pure ACK-timeout decision. `elapsed` is time since the latest injection
-/// (`None` = not injected yet, still waiting for the first idle). The
-/// timeout is strict (`> timeout`), matching "no ACK within N seconds".
+/// (`None` = not injected yet, still waiting for the first idle);
+/// `waiting_elapsed` is time since the entry started waiting for an idle
+/// signal (creation / retry armed). Both boundaries are strict (`>`),
+/// matching "no ACK within N seconds".
 fn timeout_verdict(
     acked: bool,
     attempts: u8,
     awaiting_retry: bool,
     elapsed: Option<Duration>,
+    waiting_elapsed: Duration,
     timeout: Duration,
 ) -> TimeoutVerdict {
-    if acked || awaiting_retry {
-        return TimeoutVerdict::Keep; // resolved, or already waiting for idle
+    if acked {
+        return TimeoutVerdict::Keep; // resolved — the written phase owns it
+    }
+    let wait_cap = timeout * STUCK_WAIT_MULTIPLIER;
+    if awaiting_retry {
+        // Retry armed; idle never came (finding E: age-capped, not forever).
+        return if waiting_elapsed > wait_cap {
+            TimeoutVerdict::AlertStuck
+        } else {
+            TimeoutVerdict::Keep
+        };
     }
     let Some(elapsed) = elapsed else {
-        return TimeoutVerdict::Keep; // nothing injected yet — no clock running
+        // Trigger fired, Stop never came — same age cap (finding E).
+        return if waiting_elapsed > wait_cap {
+            TimeoutVerdict::AlertStuck
+        } else {
+            TimeoutVerdict::Keep
+        };
     };
     if elapsed <= timeout {
         return TimeoutVerdict::Keep;
@@ -366,6 +402,8 @@ fn arm_corrective(p: &mut PendingInstruction, failure: String) {
         samurai_prompts::handoff_corrective_instruction(&p.epic, p.generation, &failure);
     p.attempts = 1;
     p.awaiting_retry = true;
+    // The wait for the corrective's idle starts now (finding E age cap).
+    p.waiting_since = Instant::now();
     p.acked = false;
     p.acked_at = None;
     p.validating = false;
@@ -594,6 +632,7 @@ impl SamuraiInjector {
                             ),
                             attempts: 0,
                             injected_at: None,
+                            waiting_since: Instant::now(),
                             acked: false,
                             awaiting_retry: false,
                             acked_at: None,
@@ -646,6 +685,7 @@ impl SamuraiInjector {
                         p.attempts,
                         p.awaiting_retry,
                         p.injected_at.map(|t| t.elapsed()),
+                        p.waiting_since.elapsed(),
                         timeout,
                     ) {
                         TimeoutVerdict::Keep => {}
@@ -654,6 +694,31 @@ impl SamuraiInjector {
                                 "samurai injector: session {id} did not ACK within {timeout:?} — retrying at next idle"
                             );
                             p.awaiting_retry = true;
+                            // The wait for the retry's idle starts now
+                            // (finding E age cap).
+                            p.waiting_since = Instant::now();
+                        }
+                        TimeoutVerdict::AlertStuck => {
+                            // Finding E: no injection was ever possible —
+                            // either the trigger's Stop never came (wedged
+                            // turn) or the armed retry's idle never came.
+                            // One ack_timeout ALERT with the exact flavor.
+                            let flag = if p.awaiting_retry {
+                                "retry_never_injected"
+                            } else {
+                                "never_idled"
+                            };
+                            let mut details =
+                                json!({ "kind": "ack_timeout", "attempts": p.attempts });
+                            details[flag] = json!(true);
+                            let event = AuditEvent::now(
+                                p.epic.clone(),
+                                AuditEventKind::Alert,
+                                p.generation,
+                                *id,
+                                details,
+                            );
+                            alerts.push((*id, p.project.clone(), event));
                         }
                         TimeoutVerdict::Alert => {
                             let event = if p.corrective {
@@ -826,7 +891,15 @@ impl SamuraiInjector {
         if p.acked {
             return;
         }
-        let expected = samurai_prompts::handoff_ack_value(p.generation);
+        // Round-scoped (finding C): the corrective round expects a DISTINCT
+        // value, so a transcript replay of round 1's ACK (claude --resume
+        // rewrites history into a new transcript, read from byte 0) can never
+        // consume the corrective round.
+        let expected = if p.corrective {
+            samurai_prompts::handoff_ack_retry_value(p.generation)
+        } else {
+            samurai_prompts::handoff_ack_value(p.generation)
+        };
         if value == expected {
             log::info!(
                 "samurai injector: session {session_id} ACKed handoff (gen-{})",
@@ -874,7 +947,12 @@ impl SamuraiInjector {
             if p.validating {
                 return; // a validation for this marker is already in flight
             }
-            let expected = samurai_prompts::handoff_written_value(p.generation);
+            // Same per-round discipline as the ACK (finding C).
+            let expected = if p.corrective {
+                samurai_prompts::handoff_written_retry_value(p.generation)
+            } else {
+                samurai_prompts::handoff_written_value(p.generation)
+            };
             if value != expected {
                 log::warn!(
                     "samurai injector: session {session_id} written value {value:?} does not match expected {expected:?} — ignored"
@@ -952,6 +1030,20 @@ impl SamuraiInjector {
         }
     }
 
+    /// Teardown propagation (fresh-eyes finding H): the session's terminal
+    /// was closed outside the samurai pipeline, so any pending instruction
+    /// and the idle flag are stale — drop them. Teardown, not a state
+    /// change: no event, no audit row (the tick's retain would prune the
+    /// pending entry on its own within 30s once the supervisor entry is
+    /// gone; this makes the removal immediate and covers the idle flag too).
+    pub fn remove_session(&self, session_id: u32) {
+        self.lock_pending().remove(&session_id);
+        self.idle_now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
+    }
+
     /// Current supervisor state of one session, `None` when unsupervised.
     fn session_state(&self, session_id: u32) -> Option<SupervisorState> {
         self.supervisor
@@ -1011,6 +1103,18 @@ impl SamuraiInjector {
         p.acked_at = p.acked_at.expect("not acked").checked_sub(by);
         assert!(p.acked_at.is_some(), "backdate underflowed Instant");
     }
+
+    /// Test-only: age the waiting clock so the stuck-wait cap (finding E)
+    /// runs without real waiting.
+    #[cfg(test)]
+    fn backdate_waiting(&self, session_id: u32, by: Duration) {
+        let mut pending = self.lock_pending();
+        let p = pending.get_mut(&session_id).expect("no pending entry");
+        p.waiting_since = p
+            .waiting_since
+            .checked_sub(by)
+            .expect("backdate underflowed Instant");
+    }
 }
 
 /// Spawns the injection controller loop. Called once from app setup; runs
@@ -1043,6 +1147,10 @@ mod tests {
     const WINDOW: Duration = Duration::from_secs(540);
     const OVER_WINDOW: Option<Duration> = Some(Duration::from_secs(541));
     const UNDER_WINDOW: Option<Duration> = Some(Duration::from_secs(300));
+    /// A waiting age safely inside the stuck cap (180s * 3 = 540s).
+    const WAIT_OK: Duration = Duration::from_secs(60);
+    /// A waiting age past the stuck cap (finding E).
+    const WAIT_OVER: Duration = Duration::from_secs(541);
 
     // --- pure decision tables ---
 
@@ -1197,22 +1305,32 @@ mod tests {
     #[test]
     fn test_timeout_verdict_sequencing() {
         use TimeoutVerdict::*;
-        // (acked, attempts, awaiting_retry, elapsed, expected)
+        // (acked, attempts, awaiting_retry, elapsed, waiting, expected)
         let table = [
-            (false, 0, false, None, Keep),     // not injected: no clock running
-            (false, 1, false, UNDER, Keep),    // inside the window
-            (false, 1, false, OVER, ArmRetry), // attempt 1 expired → arm retry
-            (false, 1, true, OVER, Keep),      // retry already armed: wait for idle
-            (false, 2, false, UNDER, Keep),    // attempt 2 still inside the window
-            (false, 2, false, OVER, Alert),    // attempt 2 expired → ALERT once
-            (true, 1, false, OVER, Keep),      // ACKed: the ACK clock stops
-            (true, 2, false, OVER, Keep),
+            (false, 0, false, None, WAIT_OK, Keep), // not injected: waiting, inside the cap
+            (false, 1, false, UNDER, WAIT_OK, Keep), // inside the window
+            (false, 1, false, OVER, WAIT_OK, ArmRetry), // attempt 1 expired → arm retry
+            (false, 1, true, OVER, WAIT_OK, Keep),  // retry armed: wait for idle
+            (false, 2, false, UNDER, WAIT_OK, Keep), // attempt 2 still inside the window
+            (false, 2, false, OVER, WAIT_OK, Alert), // attempt 2 expired → ALERT once
+            (true, 1, false, OVER, WAIT_OK, Keep),  // ACKed: the ACK clock stops
+            (true, 2, false, OVER, WAIT_OK, Keep),
+            // Finding E: the waiting states are age-capped, never forever.
+            (false, 0, false, None, WAIT_OVER, AlertStuck), // Stop never came
+            (false, 1, true, OVER, WAIT_OVER, AlertStuck),  // idle never came
+            (false, 1, true, UNDER, WAIT_OVER, AlertStuck), // cap ignores the injection clock
+            // The cap only governs waiting states — an injected, non-retry
+            // entry keeps the normal ACK clock even when it is old.
+            (false, 1, false, UNDER, WAIT_OVER, Keep),
+            (false, 2, false, OVER, WAIT_OVER, Alert),
+            // And an ACKed entry is out of scope regardless of age.
+            (true, 1, true, OVER, WAIT_OVER, Keep),
         ];
-        for (acked, attempts, awaiting_retry, elapsed, expected) in table {
+        for (acked, attempts, awaiting_retry, elapsed, waiting, expected) in table {
             assert_eq!(
-                timeout_verdict(acked, attempts, awaiting_retry, elapsed, TIMEOUT),
+                timeout_verdict(acked, attempts, awaiting_retry, elapsed, waiting, TIMEOUT),
                 expected,
-                "acked={acked} attempts={attempts} awaiting_retry={awaiting_retry} elapsed={elapsed:?}"
+                "acked={acked} attempts={attempts} awaiting_retry={awaiting_retry} elapsed={elapsed:?} waiting={waiting:?}"
             );
         }
     }
@@ -1221,7 +1339,7 @@ mod tests {
     fn test_timeout_boundary_is_strict() {
         // "no ACK within N seconds": exactly N is still within.
         assert_eq!(
-            timeout_verdict(false, 1, false, Some(TIMEOUT), TIMEOUT),
+            timeout_verdict(false, 1, false, Some(TIMEOUT), WAIT_OK, TIMEOUT),
             TimeoutVerdict::Keep
         );
         assert_eq!(
@@ -1230,9 +1348,26 @@ mod tests {
                 1,
                 false,
                 Some(TIMEOUT + Duration::from_millis(1)),
+                WAIT_OK,
                 TIMEOUT
             ),
             TimeoutVerdict::ArmRetry
+        );
+        // The stuck cap is equally strict: exactly timeout*3 is still within.
+        assert_eq!(
+            timeout_verdict(false, 0, false, None, TIMEOUT * 3, TIMEOUT),
+            TimeoutVerdict::Keep
+        );
+        assert_eq!(
+            timeout_verdict(
+                false,
+                0,
+                false,
+                None,
+                TIMEOUT * 3 + Duration::from_millis(1),
+                TIMEOUT
+            ),
+            TimeoutVerdict::AlertStuck
         );
     }
 
@@ -1829,24 +1964,42 @@ mod tests {
         assert!(failure.unwrap().contains("WIP is not committed"));
 
         // Next idle injects the corrective: names the failure, demands the
-        // same ACK + written cycle.
+        // ACK + written cycle with ROUND-SCOPED retry values (finding C).
         let data = injector.arm_injection_on_idle(1).expect("corrective");
         assert!(data.contains("Handoff INVALID"));
         assert!(data.contains("WIP is not committed"));
-        assert!(data.contains("<samurai-ack>handoff gen-2</samurai-ack>"));
-        assert!(data.contains("<samurai-handoff-written>gen-2</samurai-handoff-written>"));
+        assert!(data.contains("<samurai-ack>handoff gen-2 retry</samurai-ack>"));
+        assert!(data.contains("<samurai-handoff-written>gen-2 retry</samurai-handoff-written>"));
         assert!(!data[..data.len() - 1].contains('\r') && !data.contains('\n'));
+
+        // A replay of ROUND 1's markers (claude --resume rewrites history
+        // into a new transcript, read from byte 0) must not touch the
+        // corrective round (finding C).
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>handoff gen-2</samurai-ack>",
+        ));
+        assert_eq!(injector.pending_view(1), Some((2, false, false)));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2</samurai-handoff-written>",
+        ));
+        assert_eq!(
+            injector.pending_detail(1).map(|(_, validating, _)| validating),
+            Some(false),
+            "a replayed round-1 written marker must not start validation"
+        );
 
         // The corrective round's ACK + written cycle still fails (repo is
         // still dirty) → single handoff_invalid ALERT, tracking stops, the
         // session stays in HANDOFF_REQUESTED for a human.
         injector.observe(&assistant_message(
             1,
-            "<samurai-ack>handoff gen-2</samurai-ack>",
+            "<samurai-ack>handoff gen-2 retry</samurai-ack>",
         ));
         injector.observe(&assistant_message(
             1,
-            "<samurai-handoff-written>gen-2</samurai-handoff-written>",
+            "<samurai-handoff-written>gen-2 retry</samurai-handoff-written>",
         ));
         wait_until(|| injector.pending_view(1).is_none()).await;
         assert_eq!(injector.session_state(1), Some(HandoffRequested));
@@ -1894,15 +2047,16 @@ mod tests {
         wait_until(|| matches!(injector.pending_detail(1), Some((true, _, _)))).await;
         injector.arm_injection_on_idle(1).expect("corrective");
 
-        // The orchestrator fixes it: writes the file, re-ACKs, re-reports.
+        // The orchestrator fixes it: writes the file, re-ACKs with the
+        // round-scoped retry values (finding C), re-reports.
         write_handoff_file(repo.path(), "epic-9", 2);
         injector.observe(&assistant_message(
             1,
-            "<samurai-ack>handoff gen-2</samurai-ack>",
+            "<samurai-ack>handoff gen-2 retry</samurai-ack>",
         ));
         injector.observe(&assistant_message(
             1,
-            "<samurai-handoff-written>gen-2</samurai-handoff-written>",
+            "<samurai-handoff-written>gen-2 retry</samurai-handoff-written>",
         ));
         wait_until(|| injector.session_state(1) == Some(HandoffWritten)).await;
         wait_until(|| injector.pending_view(1).is_none()).await;
@@ -1924,12 +2078,12 @@ mod tests {
         assert!(corrective);
         assert!(failure.unwrap().contains("did not arrive"));
 
-        // Corrective injected, re-ACKed — and the marker never comes again:
-        // now it is the final failure → handoff_invalid ALERT.
+        // Corrective injected, re-ACKed (retry value — finding C) — and the
+        // marker never comes again: final failure → handoff_invalid ALERT.
         injector.arm_injection_on_idle(1).expect("corrective");
         injector.observe(&assistant_message(
             1,
-            "<samurai-ack>handoff gen-5</samurai-ack>",
+            "<samurai-ack>handoff gen-5 retry</samurai-ack>",
         ));
         injector.backdate_ack(1, WINDOW + Duration::from_secs(1));
         injector.tick();
@@ -2100,5 +2254,122 @@ mod tests {
         );
         let text = injector.pending_instruction(1).unwrap();
         assert!(text.contains("Handoff INVALID"));
+    }
+
+    // --- fresh-eyes finding E: the waiting states are age-capped ---
+
+    #[tokio::test]
+    async fn test_never_idled_session_alerts_after_wait_cap() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-wedged";
+        supervisor
+            .register_session(1, project.into(), "epic-w".into(), 4)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick(); // trigger; the session never goes idle (wedged turn)
+        assert_eq!(injector.pending_view(1), Some((0, false, false)));
+
+        // Inside the cap: kept, still waiting.
+        injector.tick();
+        assert!(injector.pending_view(1).is_some());
+
+        // Past ack_timeout*3 with no injection possible: single ALERT with
+        // the never_idled flavor, tracking stops.
+        injector.backdate_waiting(1, WAIT_OVER);
+        injector.tick();
+        assert!(injector.pending_view(1).is_none(), "tracking stopped");
+        assert_eq!(injector.session_state(1), Some(HandoffRequested));
+
+        let mut alerts: Vec<AuditEvent> = Vec::new();
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            alerts = rows
+                .into_iter()
+                .filter(|r| r.details["kind"] == "ack_timeout")
+                .collect();
+            if !alerts.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(alerts.len(), 1, "the ALERT fires exactly once");
+        assert_eq!(alerts[0].details["never_idled"], true);
+        assert_eq!(alerts[0].details["attempts"], 0);
+
+        // Further ticks stay quiet.
+        injector.tick();
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "ack_timeout")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_armed_retry_that_never_injects_alerts_after_wait_cap() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-noidle";
+        supervisor
+            .register_session(1, project.into(), "epic-n".into(), 2)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+
+        // Attempt 1 times out → retry armed; idle then NEVER comes.
+        injector.arm_injection_on_idle(1).expect("attempt 1");
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, true)));
+
+        injector.backdate_waiting(1, WAIT_OVER);
+        injector.tick();
+        assert!(injector.pending_view(1).is_none(), "tracking stopped");
+
+        let mut alerts: Vec<AuditEvent> = Vec::new();
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            alerts = rows
+                .into_iter()
+                .filter(|r| r.details["kind"] == "ack_timeout")
+                .collect();
+            if !alerts.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].details["retry_never_injected"], true);
+        assert_eq!(alerts[0].details["attempts"], 1);
+    }
+
+    // --- fresh-eyes finding H: teardown propagation ---
+
+    #[tokio::test]
+    async fn test_remove_session_drops_pending_and_idle_state() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        supervisor
+            .register_session(1, "C:/git/proj-inj-teardown".into(), "epic".into(), 1)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.observe_hook(&stop_event(1)); // idle flag set
+        injector.tick(); // trigger + immediate injection (attempt 1)
+        assert!(injector.pending_view(1).is_some());
+
+        // The terminal is closed outside the samurai pipeline: supervisor
+        // entry and injector state both go.
+        assert!(supervisor.remove_session(1));
+        injector.remove_session(1);
+
+        assert!(injector.pending_view(1).is_none());
+        assert!(injector.arm_injection_on_idle(1).is_none());
+        // The tick no longer sees the session: nothing is recreated.
+        injector.tick();
+        assert!(injector.pending_view(1).is_none());
+        assert!(supervisor.list_sessions().is_empty());
     }
 }

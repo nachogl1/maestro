@@ -478,6 +478,11 @@ pub fn run() {
                     session_dirs.clone(),
                 );
             tauri::async_runtime::spawn(samurai_progress_task);
+            // Managed so the session-teardown commands can propagate removals
+            // (fresh-eyes finding H): a session closed outside the samurai
+            // pipeline must drop its baseline (and, when last, its epic's
+            // breaker entry).
+            app.manage(samurai_progress.clone());
             // Arms both tees (audit on_append + supervisor change callback).
             let _ = samurai_progress_slot.set(samurai_progress);
 
@@ -522,7 +527,10 @@ pub fn run() {
             // Issue #56: transcript resolution for the recovery digest. The
             // watcher usually still tails a DEAD session (the watchdog never
             // stops it); when it does not, fall back to the newest transcript
-            // in the session's Claude project directory.
+            // in the session's Claude project directory. The fallback does
+            // blocking FS work (canonicalize + read_dir + metadata), so the
+            // replicator invokes this resolver via spawn_blocking only —
+            // never inline on the runtime or a notify callback.
             let transcript_watcher_for_recovery = app.state::<Arc<TranscriptWatcher>>().inner().clone();
             let recovery_dirs_handle = app.handle().clone();
             let transcript_paths: core::samurai_replicator::TranscriptPathResolver =
@@ -580,6 +588,9 @@ pub fn run() {
                 session_dirs,
                 Some(replicator),
             ));
+            // Managed for the same teardown propagation as the progress
+            // tracker above (finding H): pending instruction + idle flag.
+            app.manage(injector.clone());
             let _ = samurai_injector.set(injector.clone());
             core::samurai_injector::spawn_injector(injector);
 
