@@ -178,6 +178,34 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers: context window
+// ---------------------------------------------------------------------------
+
+/// Default context window when the model string names no larger one.
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+
+/// Resolve a model string to its context window in tokens.
+///
+/// Claude Code marks 1M-context variants with a literal `[1m]` suffix on the
+/// model id (e.g. `claude-opus-4-8[1m]`), and some model families run a 1M
+/// window by default with no suffix — transcripts on this machine show bare
+/// `claude-fable-5` / `claude-opus-5` sessions with ~400k context tokens, so
+/// a flat 200k default would report >100%. Unknown models fall back to 200k,
+/// which errs toward OVER-stating usage — the safe direction for anything
+/// that acts on high context % (e.g. the Samurai handoff trigger).
+fn context_window_for_model(model: &str) -> u64 {
+    if model.contains("[1m]") {
+        return 1_000_000;
+    }
+    // Families whose context window is 1M by default (no [1m] marker).
+    const MILLION_TOKEN_MODELS: &[&str] = &["claude-fable-5", "claude-mythos-5", "claude-opus-5"];
+    if MILLION_TOKEN_MODELS.iter().any(|m| model.starts_with(m)) {
+        return 1_000_000;
+    }
+    DEFAULT_CONTEXT_WINDOW
+}
+
+// ---------------------------------------------------------------------------
 // Helpers: input summary
 // ---------------------------------------------------------------------------
 
@@ -503,7 +531,7 @@ fn parse_assistant_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
         session_id,
         uuid: uuid.clone(),
         text,
-        model,
+        model: model.clone(),
         token_usage: token_usage.clone(),
         timestamp: timestamp.clone(),
     });
@@ -614,6 +642,22 @@ fn parse_assistant_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
             output_tokens: tu.output_tokens,
             cache_read_tokens: tu.cache_read_input_tokens,
             cache_creation_tokens: tu.cache_creation_input_tokens,
+            timestamp: timestamp.clone(),
+        });
+
+        // Derived context-window usage: this API call's prompt size is the
+        // session's current context, so each assistant message recomputes the
+        // percentage and the latest one wins downstream (issue #41).
+        let context_tokens =
+            tu.input_tokens + tu.cache_read_input_tokens + tu.cache_creation_input_tokens;
+        let context_window = context_window_for_model(&model);
+        let percent = (context_tokens as f64 / context_window as f64 * 1000.0).round() / 10.0;
+        events.push(ClaudeEvent::ContextUsageUpdate {
+            session_id,
+            model,
+            context_tokens,
+            context_window,
+            percent,
             timestamp: timestamp.clone(),
         });
     }
@@ -1036,6 +1080,95 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, ClaudeEvent::ToolUseCompleted { .. })));
+    }
+
+    // -----------------------------------------------------------------------
+    // Context-window usage derivation (issue #41)
+    // -----------------------------------------------------------------------
+
+    /// Fixture modeled on a real assistant entry from a transcript on this
+    /// machine (`~/.claude/projects/.../*.jsonl`, content redacted): same field
+    /// set, same usage shape. Context = 2 + 613 + 100016 = 100631 tokens.
+    const REAL_ASSISTANT_USAGE: &str = r#"{"parentUuid":"6d6b29ba-8a39-4082-b9a3-fc6422106b44","isSidechain":false,"message":{"model":"claude-fable-5","id":"msg_011CdkdFLsWwr9VRntznX2TJ","type":"message","role":"assistant","content":[{"type":"text","text":"Working on it."}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":613,"cache_read_input_tokens":100016,"output_tokens":2528,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":613,"ephemeral_5m_input_tokens":0},"speed":"standard"}},"requestId":"req_011CdkdFCCsNAMS84bPS37ff","type":"assistant","uuid":"565c9e58-3d2e-41fa-980f-709cb4687e13","timestamp":"2026-08-06T01:27:52.399Z","effort":"xhigh","userType":"external","entrypoint":"cli","cwd":"C:\\git\\maestro","sessionId":"01665762-7015-403c-826d-4dbfefa02070","version":"2.1.222","gitBranch":"main"}"#;
+
+    /// The headline derivation: latest assistant message's input + cache_read
+    /// + cache_creation over the model's window, as a percentage.
+    #[test]
+    fn test_context_usage_derived_from_real_transcript_shape() {
+        let events = parse_transcript_line(9, REAL_ASSISTANT_USAGE);
+
+        let ctx = events
+            .iter()
+            .find(|e| matches!(e, ClaudeEvent::ContextUsageUpdate { .. }))
+            .expect("ContextUsageUpdate");
+        if let ClaudeEvent::ContextUsageUpdate {
+            session_id,
+            model,
+            context_tokens,
+            context_window,
+            percent,
+            timestamp,
+        } = ctx
+        {
+            assert_eq!(*session_id, 9);
+            assert_eq!(model, "claude-fable-5");
+            assert_eq!(*context_tokens, 100_631, "input + cache_read + cache_creation");
+            assert_eq!(*context_window, 1_000_000, "fable-5 runs a 1M window");
+            assert_eq!(*percent, 10.1, "100631 / 1M, rounded to one decimal");
+            assert_eq!(timestamp, "2026-08-06T01:27:52.399Z");
+        }
+    }
+
+    /// Window resolution: the `[1m]` marker and the 1M-default families map to
+    /// 1M; everything else (including unknown models) defaults to 200k.
+    #[test]
+    fn test_context_window_resolution() {
+        assert_eq!(context_window_for_model("claude-opus-4-8[1m]"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-5[1m]"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-fable-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-mythos-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-8"), 200_000);
+        assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-5"), 200_000);
+        assert_eq!(context_window_for_model(""), 200_000);
+        assert_eq!(context_window_for_model("<synthetic>"), 200_000);
+    }
+
+    /// A 200k-window model uses the default divisor.
+    #[test]
+    fn test_context_usage_default_window() {
+        // ASSISTANT_MSG_WITH_TOOL: claude-opus-4-6, usage 500 + 50 + 10 = 560.
+        let events = parse_transcript_line(2, ASSISTANT_MSG_WITH_TOOL);
+
+        let ctx = events
+            .iter()
+            .find(|e| matches!(e, ClaudeEvent::ContextUsageUpdate { .. }))
+            .expect("ContextUsageUpdate");
+        if let ClaudeEvent::ContextUsageUpdate {
+            context_tokens,
+            context_window,
+            percent,
+            ..
+        } = ctx
+        {
+            assert_eq!(*context_tokens, 560);
+            assert_eq!(*context_window, 200_000);
+            assert_eq!(*percent, 0.3, "560 / 200k = 0.28%, rounded to 0.3");
+        }
+    }
+
+    /// No usage data means no context event — nothing to derive from.
+    #[test]
+    fn test_no_context_usage_without_usage_data() {
+        let line = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"hi"}]},"uuid":"a-nousage","timestamp":"2026-08-06T10:00:00Z"}"#;
+        let events = parse_transcript_line(1, line);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ClaudeEvent::ContextUsageUpdate { .. })),
+            "no usage means no ContextUsageUpdate: {events:?}"
+        );
     }
 
     /// A result with no metadata at all keeps working the old way: the watcher

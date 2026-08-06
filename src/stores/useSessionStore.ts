@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { samePath } from "@/lib/path";
 import { useAgentStore } from "@/stores/useAgentStore";
+import type { ClaudeEvent } from "@/types/claude-events";
 
 /** AI provider variants supported by the backend orchestrator. */
 export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
@@ -48,6 +49,18 @@ export interface SessionConfig {
   needsInputPrompt?: string;
   /** Timestamp of the last MCP-driven status update (used by activity heuristic). */
   lastMcpUpdateTime?: number;
+  /**
+   * Derived context-window usage % (0-100, one decimal) of the session's
+   * Claude conversation, from the transcript watcher's ContextUsageUpdate
+   * events. Frontend-only — not part of the Rust SessionConfig. Undefined
+   * until the first assistant message with usage data arrives; idle sessions
+   * keep their last-known value (no decay).
+   */
+  contextPercent?: number;
+  /** Tokens in the latest API call's context (input + cache read + cache creation). */
+  contextTokens?: number;
+  /** The model's context window in tokens (e.g. 200000 or 1000000). */
+  contextWindow?: number;
 }
 
 /** Shape of the Tauri `session-status-changed` event payload. */
@@ -138,6 +151,35 @@ const pendingStatusUpdates: Map<string, SessionStatusPayload> = new Map();
  */
 const startupTimeouts: Map<number, ReturnType<typeof setTimeout>> = new Map();
 
+/** Last-known context-window usage of one session (see lastContextUsage). */
+interface ContextUsage {
+  percent: number;
+  tokens: number;
+  window: number;
+}
+
+/**
+ * Last-known context usage per session id, fed by the claude-events listener
+ * (initContextUsageListener). Kept outside the store — same rationale as
+ * pendingStatusUpdates — so a fetchSessions() replacing the session list, or
+ * an event arriving before its session is added, cannot lose the value: it is
+ * re-applied on fetch and on addSession. In-memory only; session IDs are
+ * ephemeral (reassigned each app launch).
+ */
+const lastContextUsage: Map<number, ContextUsage> = new Map();
+
+/** Merge the remembered context usage into a (freshly fetched) session. */
+function withContextUsage(session: SessionConfig): SessionConfig {
+  const usage = lastContextUsage.get(session.id);
+  if (!usage) return session;
+  return {
+    ...session,
+    contextPercent: usage.percent,
+    contextTokens: usage.tokens,
+    contextWindow: usage.window,
+  };
+}
+
 /** Generate a unique key for buffering status updates */
 function statusBufferKey(sessionId: number, projectPath: string): string {
   return `${sessionId}:${projectPath}`;
@@ -212,7 +254,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   fetchSessions: async () => {
     set({ isLoading: true, error: null });
     try {
-      const sessions = await invoke<SessionConfig[]>("get_sessions");
+      const fetched = await invoke<SessionConfig[]>("get_sessions");
+      // Re-apply last-known context usage — the backend doesn't carry it.
+      const sessions = fetched.map(withContextUsage);
       set((state) => ({
         sessions,
         isLoading: false,
@@ -236,9 +280,11 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   fetchSessionsForProject: async (projectPath: string) => {
     set({ isLoading: true, error: null });
     try {
-      const sessions = await invoke<SessionConfig[]>("get_sessions_for_project", {
+      const fetched = await invoke<SessionConfig[]>("get_sessions_for_project", {
         projectPath,
       });
+      // Re-apply last-known context usage — the backend doesn't carry it.
+      const sessions = fetched.map(withContextUsage);
       set((state) => ({
         sessions,
         isLoading: false,
@@ -326,7 +372,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       if (state.sessions.some((s) => s.id === session.id)) {
         return state;
       }
-      return { sessions: [...state.sessions, session] };
+      // Apply context usage that arrived before the session was added
+      // (transcript catch-up can beat addSession).
+      return { sessions: [...state.sessions, withContextUsage(session)] };
     });
   },
 
@@ -358,6 +406,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     // Clear any startup timeout for this session
     clearStartupTimeout(sessionId);
 
+    // Forget the context usage so a future session reusing this id doesn't
+    // inherit a stale percentage.
+    lastContextUsage.delete(sessionId);
+
     // Clear any buffered status for this session to prevent pollution on restart
     const sessionsToRemove = get().sessions.filter((s) => s.id === sessionId);
     for (const session of sessionsToRemove) {
@@ -378,6 +430,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       const removed = await invoke<SessionConfig[]>("remove_sessions_for_project", {
         projectPath,
       });
+      // Same stale-id hygiene as removeSession.
+      for (const session of removed) {
+        lastContextUsage.delete(session.id);
+      }
       // Remove the sessions from local state
       set((state) => ({
         sessions: state.sessions.filter(
@@ -532,4 +588,92 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     };
   },
 }));
+
+// ---------------------------------------------------------------------------
+// Context usage listener (claude-events -> per-session context %)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fold a claude-events batch into per-session context usage.
+ *
+ * Events arrive in transcript order, so within a batch the last
+ * ContextUsageUpdate per session wins — that is the latest assistant
+ * message's context. Sessions without new events are left untouched, which
+ * is what keeps idle sessions at their last-known percentage.
+ */
+function applyContextUsageEvents(events: ClaudeEvent[]): void {
+  const updates = new Map<number, ContextUsage>();
+  for (const event of events) {
+    if (event.event_type === "ContextUsageUpdate") {
+      updates.set(event.session_id, {
+        percent: event.percent,
+        tokens: event.context_tokens,
+        window: event.context_window,
+      });
+    }
+  }
+  if (updates.size === 0) return;
+
+  for (const [sessionId, usage] of updates) {
+    lastContextUsage.set(sessionId, usage);
+  }
+
+  useSessionStore.setState((state) => {
+    let changed = false;
+    const sessions = state.sessions.map((s) => {
+      const usage = updates.get(s.id);
+      if (
+        !usage ||
+        (s.contextPercent === usage.percent && s.contextTokens === usage.tokens)
+      ) {
+        return s;
+      }
+      changed = true;
+      return {
+        ...s,
+        contextPercent: usage.percent,
+        contextTokens: usage.tokens,
+        contextWindow: usage.window,
+      };
+    });
+    // No-op guard: don't replace the array (and re-render subscribers) when
+    // nothing changed — e.g. the session isn't in the store yet (the map
+    // buffers the value for addSession/fetchSessions to apply).
+    return changed ? { sessions } : state;
+  });
+}
+
+// Global claude-events listener. `active` tracks the *desired* state so an
+// init/stop pair that races the pending listen() promise (React StrictMode's
+// dev double-mount) can't leak a second listener. Mirrors useActivityStore.
+let contextUnlisten: UnlistenFn | null = null;
+let contextStarting: Promise<void> | null = null;
+let contextActive = false;
+
+export async function initContextUsageListener(): Promise<void> {
+  contextActive = true;
+  if (contextUnlisten || contextStarting) return;
+  contextStarting = listen<ClaudeEvent[]>("claude-events", (event) => {
+    applyContextUsageEvents(event.payload);
+  })
+    .then((fn) => {
+      if (!contextActive) {
+        fn();
+        return;
+      }
+      contextUnlisten = fn;
+    })
+    .finally(() => {
+      contextStarting = null;
+    });
+  await contextStarting;
+}
+
+export function stopContextUsageListener(): void {
+  contextActive = false;
+  if (contextUnlisten) {
+    contextUnlisten();
+    contextUnlisten = null;
+  }
+}
 

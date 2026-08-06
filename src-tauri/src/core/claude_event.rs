@@ -184,6 +184,26 @@ pub enum ClaudeEvent {
         cache_creation_tokens: u64,
         timestamp: String,
     },
+
+    /// Derived context-window usage for a session (Transcript-sourced).
+    ///
+    /// Recomputed from every assistant message that carries usage data: the
+    /// current context size is that message's `input_tokens +
+    /// cache_read_input_tokens + cache_creation_input_tokens`, and the window
+    /// is resolved from the message's model string. The latest event for a
+    /// session is authoritative; idle sessions simply keep their last value.
+    ContextUsageUpdate {
+        session_id: u32,
+        /// Model string of the assistant message the usage came from.
+        model: String,
+        /// input + cache_read + cache_creation tokens of the latest call.
+        context_tokens: u64,
+        /// The model's context window in tokens.
+        context_window: u64,
+        /// `context_tokens / context_window * 100`, rounded to one decimal.
+        percent: f64,
+        timestamp: String,
+    },
 }
 
 impl ClaudeEvent {
@@ -202,7 +222,8 @@ impl ClaudeEvent {
             | ClaudeEvent::SubagentLaunched { session_id, .. }
             | ClaudeEvent::SubagentCompleted { session_id, .. }
             | ClaudeEvent::StatusUpdate { session_id, .. }
-            | ClaudeEvent::TokenUsageUpdate { session_id, .. } => *session_id,
+            | ClaudeEvent::TokenUsageUpdate { session_id, .. }
+            | ClaudeEvent::ContextUsageUpdate { session_id, .. } => *session_id,
         }
     }
 
@@ -257,6 +278,12 @@ impl ClaudeEvent {
             }
             ClaudeEvent::TokenUsageUpdate { session_id, input_tokens, output_tokens, .. } => {
                 format!("TokenUsageUpdate:{session_id}:{input_tokens}:{output_tokens}")
+            }
+            // Timestamped so that identical context sizes from distinct
+            // assistant messages (same-size context, different call) are not
+            // conflated; a re-read of the same line still dedups.
+            ClaudeEvent::ContextUsageUpdate { session_id, context_tokens, timestamp, .. } => {
+                format!("ContextUsageUpdate:{session_id}:{context_tokens}:{timestamp}")
             }
         }
     }
@@ -318,6 +345,7 @@ mod tests {
             ClaudeEvent::StatusUpdate { session_id: 11, state: "working".into(), message: "m".into(), needs_input_prompt: None, timestamp: "t".into() },
             ClaudeEvent::TokenUsageUpdate { session_id: 12, input_tokens: 100, output_tokens: 50, cache_read_tokens: 10, cache_creation_tokens: 5, timestamp: "t".into() },
             ClaudeEvent::SubagentLaunched { session_id: 13, agent_id: "s".into(), agent_run_id: "run".into(), model: "claude-fable-5".into(), timestamp: "t".into() },
+            ClaudeEvent::ContextUsageUpdate { session_id: 14, model: "claude-fable-5".into(), context_tokens: 400_000, context_window: 1_000_000, percent: 40.0, timestamp: "t".into() },
         ];
         for (i, event) in events.iter().enumerate() {
             assert_eq!(event.session_id(), (i as u32) + 1);

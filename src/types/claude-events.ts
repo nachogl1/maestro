@@ -29,4 +29,5 @@ export type ClaudeEvent =
   | { event_type: "SubagentLaunched"; session_id: number; agent_id: string; agent_run_id: string; model: string; timestamp: string }
   | { event_type: "SubagentCompleted"; session_id: number; agent_id: string; success: boolean; report: string; status: string | null; agent_type: string | null; model: string | null; duration_ms: number | null; total_tokens: number | null; tool_use_count: number | null; tool_stats: SubagentToolStats | null; agent_run_id: string | null; timestamp: string }
   | { event_type: "StatusUpdate"; session_id: number; state: string; message: string; needs_input_prompt: string | null; timestamp: string }
-  | { event_type: "TokenUsageUpdate"; session_id: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; timestamp: string };
+  | { event_type: "TokenUsageUpdate"; session_id: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; timestamp: string }
+  | { event_type: "ContextUsageUpdate"; session_id: number; model: string; context_tokens: number; context_window: number; percent: number; timestamp: string };

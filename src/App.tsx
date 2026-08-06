@@ -12,7 +12,11 @@ import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
-import { useSessionStore } from "@/stores/useSessionStore";
+import {
+  initContextUsageListener,
+  stopContextUsageListener,
+  useSessionStore,
+} from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitGraphPanel } from "./components/git/GitGraphPanel";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
@@ -221,6 +225,17 @@ function App() {
     });
     return () => {
       stopActivityListener();
+    };
+  }, []);
+
+  // Initialize context usage listener (per-session context-window % from
+  // ContextUsageUpdate events, surfaced on the session store)
+  useEffect(() => {
+    initContextUsageListener().catch((err) => {
+      console.error("Failed to initialize context usage listener:", err);
+    });
+    return () => {
+      stopContextUsageListener();
     };
   }, []);
 
