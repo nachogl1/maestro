@@ -29,6 +29,7 @@ use core::plugin_manager::PluginManager;
 use core::status_server::StatusServer;
 use core::samurai_audit::{AuditEvent, AuditLog};
 use core::samurai_context::SamuraiContextStore;
+use core::samurai_injector::SamuraiInjector;
 use core::supervisor::{SessionSnapshot, Supervisor};
 use core::{ClaudeEvent, EventBus, TranscriptWatcher};
 use core::ProcessManager;
@@ -229,12 +230,25 @@ pub fn run() {
             // batching path below is unchanged.
             let samurai_context = Arc::new(SamuraiContextStore::new());
 
+            // Samurai (issue #53): the injection controller is constructed
+            // further down (it needs the supervisor/config/audit created
+            // there), but both event tees are built here — a late-bound slot
+            // bridges the gap. Events arriving before it is filled concern no
+            // supervised session and are safely ignored.
+            let samurai_injector: Arc<std::sync::OnceLock<Arc<SamuraiInjector>>> =
+                Arc::new(std::sync::OnceLock::new());
+
             let pending_for_emit = pending_events.clone();
             let data_ready_for_emit = data_ready.clone();
             let flush_now_for_emit = flush_now.clone();
             let samurai_context_for_emit = samurai_context.clone();
+            let samurai_injector_for_emit = samurai_injector.clone();
             let emit_fn: Arc<dyn Fn(ClaudeEvent) + Send + Sync> = Arc::new(move |event: ClaudeEvent| {
                 samurai_context_for_emit.observe(&event);
+                // Samurai (issue #53): ACK scanning over AssistantMessage.
+                if let Some(injector) = samurai_injector_for_emit.get() {
+                    injector.observe(&event);
+                }
                 // Recover from a poisoned lock rather than dropping the event —
                 // losing one silently would corrupt the frontend's activity feed.
                 let len = {
@@ -290,12 +304,21 @@ pub fn run() {
             // When SessionStarted events arrive via hooks, start watching the transcript
             let event_bus_for_hooks = event_bus.clone();
             let transcript_watcher_for_hooks = transcript_watcher.clone();
+            let samurai_injector_for_hooks = samurai_injector.clone();
             let hook_emit_fn: Arc<dyn Fn(ClaudeEvent) + Send + Sync> = Arc::new(move |event: ClaudeEvent| {
                 if let ClaudeEvent::SessionStarted { session_id, ref transcript_path, .. } = event {
                     transcript_watcher_for_hooks.start_watching(
                         session_id,
                         std::path::PathBuf::from(transcript_path),
                     );
+                }
+                // Samurai (issue #53): idle-gate signal (Stop hook →
+                // SessionEnded reason "stop"). Tapped here, pre-dedup: the
+                // EventBus dedup key for SessionEnded ignores the reason, so
+                // a Stop landing within the 5s window of another SessionEnded
+                // would never reach a bus-side tee.
+                if let Some(injector) = samurai_injector_for_hooks.get() {
+                    injector.observe_hook(&event);
                 }
                 event_bus_for_hooks.emit(event);
             });
@@ -355,7 +378,7 @@ pub fn run() {
             // Samurai (issue #52): per-session context store, fed by the
             // event tee above. Managed so later phases (and the session
             // teardown commands) reach it via `app.state()`.
-            app.manage(samurai_context);
+            app.manage(samurai_context.clone());
 
             // Samurai silent-death watchdog (issue #44): one periodic tick
             // that declares a supervised session DEAD when its transcript
@@ -378,6 +401,24 @@ pub fn run() {
                 std::sync::RwLock::new(commands::samurai::load_config_from_store(app.handle())),
             );
             app.manage(samurai_config.clone());
+
+            // Samurai (issue #53): injection controller. Its 30s tick moves
+            // WORKING sessions past `handoff_context_pct` into
+            // HANDOFF_REQUESTED; the instruction itself is only typed into
+            // the terminal on the Stop-hook idle signal and must be ACKed
+            // (`<samurai-ack>…</samurai-ack>`), with one timed retry and an
+            // ack_timeout ALERT after that. Filling the OnceLock arms the
+            // two event tees above.
+            let injector = Arc::new(SamuraiInjector::new(
+                supervisor.clone(),
+                samurai_context.clone(),
+                samurai_config.clone(),
+                app.state::<ProcessManager>().inner().clone(),
+                audit_log.clone(),
+            ));
+            let _ = samurai_injector.set(injector.clone());
+            core::samurai_injector::spawn_injector(injector);
+
             core::allowance_watcher::spawn_allowance_loop(
                 app.handle().clone(),
                 samurai_config,
