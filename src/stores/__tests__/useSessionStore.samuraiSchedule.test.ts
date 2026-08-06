@@ -94,4 +94,31 @@ describe("useSessionStore samurai schedule tracking (issue #61)", () => {
     expect(timers).toHaveLength(1);
     expect(timers[0]).toMatchObject({ epic: "#40", reason: "park" });
   });
+
+  it("a stale seed never overwrites a live event that raced it (review F8)", async () => {
+    stopSamuraiSupervisorListener();
+    let resolveSeed!: (value: unknown) => void;
+    invokeMock.mockImplementation(((cmd: string) => {
+      if (cmd === "samurai_schedule_list") {
+        // The seed's IPC round-trip stays in flight until the test says so.
+        return new Promise((resolve) => {
+          resolveSeed = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    }) as typeof invoke);
+    await initSamuraiSupervisorListener();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // A live event lands while the seed is still in flight: the #37 timer
+    // fired, the full-list event now says "#38 only".
+    emitScheduleEvent([entry({ epic: "#38" })]);
+    // The seed's snapshot (still listing the fired #37) resolves AFTER.
+    resolveSeed([entry({ epic: "#37" })]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const timers = useSessionStore.getState().samuraiSchedule;
+    expect(timers).toHaveLength(1);
+    expect(timers[0].epic).toBe("#38");
+  });
 });

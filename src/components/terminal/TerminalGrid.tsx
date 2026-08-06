@@ -999,9 +999,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 
             // Build CLI command with user-configured flags. A samurai
             // successor (issue #55) additionally forces skip-permissions —
-            // an autonomous generation cannot answer permission prompts.
+            // an autonomous generation cannot answer permission prompts —
+            // and carries the run config's model preference (review F4).
             const cliFlags = useCliSettingsStore.getState().getFlags(slot.mode);
-            const effectiveFlags = slot.samurai ? samuraiSuccessorCliFlags(cliFlags) : cliFlags;
+            const effectiveFlags = slot.samurai
+              ? samuraiSuccessorCliFlags(cliFlags, slot.samurai.model)
+              : cliFlags;
             const cliCommand = buildCliCommand(slot.mode, effectiveFlags, slot.resumeSessionId ?? undefined);
 
             // Samurai successor: register under supervision BEFORE the CLI

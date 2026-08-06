@@ -38,6 +38,11 @@ export interface SamuraiSpawnSuccessorEvent {
   working_dir: string;
   /** Display name for the new terminal, e.g. `samurai gen-3 37`. */
   session_name: string;
+  /**
+   * Model preference from the epic's run config (review F4) — appended as
+   * `--model <value>` to the successor's CLI launch. Absent/null = default.
+   */
+  model?: string | null;
 }
 
 /**
@@ -59,6 +64,29 @@ export function queueSamuraiSuccessorLaunch(event: SamuraiSpawnSuccessorEvent): 
     );
     return false;
   }
+  // Review F6: the backend re-emits the spawn event once per timeout window
+  // while no registration arrives; a slow frontend must not open a second
+  // terminal for the same successor. Dedupe on the samurai identity — a
+  // re-emit may differ in other fields (e.g. a reopened tab's new id).
+  // Claimed launches leave the queue (TerminalGrid's consume) and are not
+  // observable here, so this covers the PENDING window only; the residual
+  // claimed-but-not-yet-registered window is accepted — registration is
+  // what stops the backend re-emitting.
+  const alreadyQueued = usePendingLaunchStore
+    .getState()
+    .pending.some(
+      (p) =>
+        p.samurai != null &&
+        samePath(p.samurai.project, event.project) &&
+        p.samurai.epic === event.epic &&
+        p.samurai.generation === event.generation,
+    );
+  if (alreadyQueued) {
+    console.warn(
+      `[Samurai] Successor gen-${event.generation} for epic ${event.epic} is already queued — duplicate spawn event ignored`,
+    );
+    return true;
+  }
   usePendingLaunchStore.getState().request({
     tabId: tab.id,
     mode: "Claude",
@@ -70,6 +98,7 @@ export function queueSamuraiSuccessorLaunch(event: SamuraiSpawnSuccessorEvent): 
       project: event.project,
       epic: event.epic,
       generation: event.generation,
+      model: event.model ?? null,
     },
   });
   // Same as the History tab: make sure the grid is mounted to consume the
@@ -82,9 +111,18 @@ export function queueSamuraiSuccessorLaunch(event: SamuraiSpawnSuccessorEvent): 
 /**
  * CLI flags for a successor: autonomy requires skip-permissions regardless
  * of the user's manual-session preference; their custom flags still apply.
+ * Review F4: the run config's model preference travels through
+ * `customFlags` — the exact channel user flags already take into
+ * `buildCliCommand`. Token-restricted (same defense-in-depth policy as the
+ * resume-id check there): the value reaches a shell PTY, so anything that
+ * is not a plain model id is dropped, not quoted.
  */
-export function samuraiSuccessorCliFlags(base: CliFlags): CliFlags {
-  return { ...base, skipPermissions: true };
+export function samuraiSuccessorCliFlags(base: CliFlags, model?: string | null): CliFlags {
+  const flags = { ...base, skipPermissions: true };
+  if (model && /^[A-Za-z0-9._-]+$/.test(model)) {
+    flags.customFlags = `${flags.customFlags.trim()} --model ${model}`.trim();
+  }
+  return flags;
 }
 
 /**

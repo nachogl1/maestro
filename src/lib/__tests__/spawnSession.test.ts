@@ -95,9 +95,44 @@ describe("samurai successor spawn listener (issue #55)", () => {
         workingDirOverride: "C:\\git\\proj-worktrees\\epic-37",
         branch: null,
         customName: "samurai gen-3 37",
-        samurai: { project: "C:\\git\\proj", epic: "#37", generation: 3 },
+        samurai: { project: "C:\\git\\proj", epic: "#37", generation: 3, model: null },
       },
     ]);
+  });
+
+  it("carries the run config's model into the queued samurai info (review F4)", () => {
+    useWorkspaceStore.setState({ tabs: [tab("tab-proj", "C:\\git\\proj")] });
+
+    emitSpawnEvent(spawnEvent({ model: "opus" }));
+
+    expect(usePendingLaunchStore.getState().pending[0]?.samurai).toEqual({
+      project: "C:\\git\\proj",
+      epic: "#37",
+      generation: 3,
+      model: "opus",
+    });
+  });
+
+  it("drops a re-emitted spawn event for an already-queued successor (review F6)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    useWorkspaceStore.setState({ tabs: [tab("tab-proj", "C:\\git\\proj")] });
+    emitSpawnEvent(spawnEvent());
+
+    // The backend re-emits per timeout window while nothing registered. A
+    // tab close/reopen in between changes the tab id, so the store's exact
+    // sameLaunch dedupe would NOT catch it — the samurai identity must.
+    useWorkspaceStore.setState({ tabs: [tab("tab-proj-2", "C:\\git\\proj")] });
+    emitSpawnEvent(spawnEvent());
+
+    const pending = usePendingLaunchStore.getState().pending;
+    expect(pending).toHaveLength(1);
+    expect(pending[0].tabId).toBe("tab-proj");
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+
+    // A DIFFERENT generation for the same epic still queues (not a dupe).
+    emitSpawnEvent(spawnEvent({ generation: 4, session_name: "samurai gen-4 37" }));
+    expect(usePendingLaunchStore.getState().pending).toHaveLength(2);
   });
 
   it("two successor spawn events in one tick both stay queued (finding B)", () => {
@@ -160,6 +195,35 @@ describe("samurai successor spawn listener (issue #55)", () => {
       customFlags: "--verbose",
     });
     expect(samuraiSuccessorCliFlags({ skipPermissions: true, customFlags: "" })).toEqual({
+      skipPermissions: true,
+      customFlags: "",
+    });
+  });
+
+  it("samuraiSuccessorCliFlags appends the model flag through customFlags (review F4)", () => {
+    // The model rides the existing customFlags channel into buildCliCommand.
+    expect(
+      samuraiSuccessorCliFlags({ skipPermissions: false, customFlags: "--verbose" }, "opus"),
+    ).toEqual({
+      skipPermissions: true,
+      customFlags: "--verbose --model opus",
+    });
+    expect(
+      samuraiSuccessorCliFlags({ skipPermissions: true, customFlags: "" }, "claude-opus-4-5"),
+    ).toEqual({
+      skipPermissions: true,
+      customFlags: "--model claude-opus-4-5",
+    });
+    // No model / null model: unchanged.
+    expect(samuraiSuccessorCliFlags({ skipPermissions: true, customFlags: "" }, null)).toEqual({
+      skipPermissions: true,
+      customFlags: "",
+    });
+    // A value that is not a plain model token reaches a shell PTY — dropped,
+    // never quoted (same defense-in-depth as the resume-id check).
+    expect(
+      samuraiSuccessorCliFlags({ skipPermissions: true, customFlags: "" }, "opus; rm -rf ~"),
+    ).toEqual({
       skipPermissions: true,
       customFlags: "",
     });

@@ -554,6 +554,32 @@ fn invalid_alert(p: &PendingInstruction, session_id: u32, failure: String) -> Au
     )
 }
 
+/// Review F3a test seam: an optional hook [`finish_validation`] runs between
+/// its completion decision (pending lock released, entry KEPT) and the
+/// transition chain — the exact window a concurrent sweep advance used to
+/// disengage in. Test-only; production never sets it. The first argument is
+/// the address of the pending map the call belongs to, so the one test that
+/// sets the hook can ignore calls from other tests' injectors (tests run in
+/// parallel in one process).
+#[cfg(test)]
+static VALIDATION_GAP_HOOK: Mutex<Option<Arc<dyn Fn(usize, u32) + Send + Sync>>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+fn validation_gap_hook() -> Option<Arc<dyn Fn(usize, u32) + Send + Sync>> {
+    VALIDATION_GAP_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+#[cfg(test)]
+fn set_validation_gap_hook(hook: Option<Arc<dyn Fn(usize, u32) + Send + Sync>>) {
+    *VALIDATION_GAP_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
+}
+
 /// Completes one validation run. Module-level (not `&self`) because the
 /// spawned validation task outlives any borrow of the controller — it
 /// captures clones of exactly the pieces this needs. Both checks passed →
@@ -594,9 +620,18 @@ fn finish_validation(
         }
         match outcome {
             Ok(()) => {
-                let kind = p.kind;
-                map.remove(&session_id);
-                Next::Transition(kind)
+                // Review F3a: the entry is deliberately KEPT in the map until
+                // the transition + completion chain below has RETURNED, and
+                // only removed then. Removing it here opened a gap where a
+                // concurrent `complete_sweep` (parker tick / teardown
+                // completion) saw a ParkRequested session with nothing
+                // pending — `blocks_completion` said "not blocking" — and
+                // disengaged the sweep before `on_parked` recorded the epic:
+                // parked epic, NO resume timer. `has_pending` now holds the
+                // sweep open through the handover; the entry stays claimed
+                // via `validating`, so a replayed marker cannot restart a
+                // second validation meanwhile.
+                Next::Transition(p.kind)
             }
             Err(failure) => {
                 if p.corrective {
@@ -612,49 +647,75 @@ fn finish_validation(
             }
         }
     };
+    // Test-only interleaving seam (review F3a): lets the pinning test drive
+    // a concurrent sweep advance into the exact window between the
+    // completion decision and the transition chain.
+    #[cfg(test)]
+    if let Some(hook) = validation_gap_hook() {
+        hook(pending as *const _ as usize, session_id);
+    }
     match next {
-        Next::Transition(PendingKind::Handoff) => {
-            log::info!(
-                "samurai injector: session {session_id} handoff validated (file present, WIP committed) — HANDOFF_WRITTEN"
-            );
-            match supervisor.transition(session_id, SupervisorState::HandoffWritten) {
-                // Issue #55: a validated handoff chains straight into the
-                // replicator (kill gen-N, stage gen-N+1) — no polling.
-                Ok(snapshot) => {
-                    if let Some(replicator) = replicator {
-                        replicator.on_handoff_written(&snapshot);
+        Next::Transition(kind) => {
+            match kind {
+                PendingKind::Handoff => {
+                    log::info!(
+                        "samurai injector: session {session_id} handoff validated (file present, WIP committed) — HANDOFF_WRITTEN"
+                    );
+                    match supervisor.transition(session_id, SupervisorState::HandoffWritten) {
+                        // Issue #55: a validated handoff chains straight into the
+                        // replicator (kill gen-N, stage gen-N+1) — no polling.
+                        Ok(snapshot) => {
+                            if let Some(replicator) = replicator {
+                                replicator.on_handoff_written(&snapshot);
+                            }
+                        }
+                        // E.g. the watchdog declared the session DEAD mid-validation.
+                        Err(e) => log::warn!(
+                            "samurai injector: HANDOFF_WRITTEN transition for session {session_id} rejected: {e}"
+                        ),
                     }
                 }
-                // E.g. the watchdog declared the session DEAD mid-validation.
-                Err(e) => log::warn!(
-                    "samurai injector: HANDOFF_WRITTEN transition for session {session_id} rejected: {e}"
-                ),
-            }
-        }
-        Next::Transition(PendingKind::Park) => {
-            log::info!(
-                "samurai injector: session {session_id} park validated (file present, WIP committed) — PARKED"
-            );
-            match supervisor.transition(session_id, SupervisorState::Parked) {
-                // Issue #60: a validated park chains straight into the
-                // parker (teardown + sweep advance) — no polling.
-                Ok(snapshot) => {
-                    if let Some(parker) = parker {
-                        parker.on_parked(&snapshot);
+                PendingKind::Park => {
+                    log::info!(
+                        "samurai injector: session {session_id} park validated (file present, WIP committed) — PARKED"
+                    );
+                    match supervisor.transition(session_id, SupervisorState::Parked) {
+                        // Issue #60: a validated park chains straight into the
+                        // parker (teardown + sweep advance) — no polling.
+                        // `on_parked` records the epic for its resume timer
+                        // synchronously, so by the time the entry is removed
+                        // below the sweep can only complete WITH the epic.
+                        // (Residual instruction-level window: a tick landing
+                        // exactly between the transition and `on_parked`'s
+                        // insert — two adjacent calls on this thread —
+                        // still sees a terminal state first; accepted.)
+                        Ok(snapshot) => {
+                            if let Some(parker) = parker {
+                                parker.on_parked(&snapshot);
+                            }
+                        }
+                        // E.g. the watchdog declared the session DEAD mid-validation;
+                        // the parker's tick re-evaluates the sweep on its own.
+                        Err(e) => log::warn!(
+                            "samurai injector: PARKED transition for session {session_id} rejected: {e}"
+                        ),
                     }
                 }
-                // E.g. the watchdog declared the session DEAD mid-validation;
-                // the parker's tick re-evaluates the sweep on its own.
-                Err(e) => log::warn!(
-                    "samurai injector: PARKED transition for session {session_id} rejected: {e}"
+                // The soft wind-down has no written stage, so no validation ever
+                // runs for it — defensive arm, never expected.
+                PendingKind::SoftWinddown => log::warn!(
+                    "samurai injector: unexpected validation completion for a soft wind-down (session {session_id}) — ignored"
                 ),
             }
+            // Review F3a: removal AFTER the chain returned (see the Ok arm
+            // above). On a rejected transition the entry is removed too —
+            // the session left the expected state, the tick's prune would
+            // only do the same a little later.
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&session_id);
         }
-        // The soft wind-down has no written stage, so no validation ever
-        // runs for it — defensive arm, never expected.
-        Next::Transition(PendingKind::SoftWinddown) => log::warn!(
-            "samurai injector: unexpected validation completion for a soft wind-down (session {session_id}) — ignored"
-        ),
         Next::Alert(kind, project, event) => {
             log::error!(
                 "samurai injector: session {} {} still invalid after the corrective round — ALERT ({}): {}",
@@ -702,6 +763,10 @@ pub struct SamuraiInjector {
     /// parker is constructed after the injector, holding an `Arc` of it);
     /// unset only in tests that exercise the injector alone.
     parker: std::sync::OnceLock<Arc<SamuraiParker>>,
+    /// Review F4: the run-config store, consulted by the trigger pass for a
+    /// per-run `handoff_context_pct` override (`thresholds` on the epic's
+    /// run config). Late-bound like the parker; unset = global config only.
+    run_configs: std::sync::OnceLock<Arc<super::samurai_run_config::RunConfigStore>>,
 }
 
 impl SamuraiInjector {
@@ -725,6 +790,7 @@ impl SamuraiInjector {
             idle_now: Arc::new(Mutex::new(HashSet::new())),
             replicator,
             parker: std::sync::OnceLock::new(),
+            run_configs: std::sync::OnceLock::new(),
         }
     }
 
@@ -733,6 +799,26 @@ impl SamuraiInjector {
     /// Second calls are ignored, like every OnceLock slot in setup.
     pub fn set_parker(&self, parker: Arc<SamuraiParker>) {
         let _ = self.parker.set(parker);
+    }
+
+    /// Review F4: late-binds the run-config store (constructed after the
+    /// injector in lib.rs), same pattern as `set_parker`. Second calls are
+    /// ignored.
+    pub fn set_run_configs(&self, store: Arc<super::samurai_run_config::RunConfigStore>) {
+        let _ = self.run_configs.set(store);
+    }
+
+    /// The epic's per-run handoff threshold override, when its run config
+    /// carries a `thresholds` block (review F4). Only the handoff trigger is
+    /// per-run-meaningful — park thresholds stay GLOBAL (allowance windows
+    /// are account-wide; see `allowance_watcher`). One small JSON read per
+    /// supervised session per 30s tick; `None` on every miss.
+    fn handoff_threshold_for(&self, project: &str, epic: &str) -> Option<f64> {
+        self.run_configs
+            .get()?
+            .get(project, epic)?
+            .thresholds
+            .map(|t| t.handoff_context_pct)
     }
 
     /// EventBus tee (same spot as `SamuraiContextStore::observe`): scan
@@ -787,7 +873,12 @@ impl SamuraiInjector {
         // rejected transition already produced its illegal_transition ALERT.
         for session in self.supervisor.list_sessions() {
             let percent = self.context.percent(session.session_id);
-            if !should_request_handoff(session.state, percent, threshold_pct) {
+            // Review F4: a per-run threshold override on the epic's run
+            // config replaces the global handoff trigger for this session.
+            let threshold = self
+                .handoff_threshold_for(&session.project, &session.epic)
+                .unwrap_or(threshold_pct);
+            if !should_request_handoff(session.state, percent, threshold) {
                 continue;
             }
             match self
@@ -796,7 +887,7 @@ impl SamuraiInjector {
             {
                 Ok(snapshot) => {
                     log::info!(
-                        "samurai injector: session {} at {:.1}% (threshold {threshold_pct}%) — handoff requested, awaiting idle",
+                        "samurai injector: session {} at {:.1}% (threshold {threshold}%) — handoff requested, awaiting idle",
                         snapshot.session_id,
                         percent.unwrap_or_default(),
                     );
@@ -1966,6 +2057,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handoff_trigger_uses_run_config_threshold_override() {
+        // Review F4: an epic whose run config carries a `thresholds` block
+        // triggers at ITS handoff_context_pct; epics without one keep the
+        // global value. Park thresholds are untouched (they stay global).
+        use crate::core::samurai_config::SamuraiConfig as Cfg;
+        use crate::core::samurai_run_config::{RunConfigStore, SamuraiRunConfig};
+
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-override";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        // epic-hi: override RAISES the trigger to 80% (global default 45%).
+        let mut hi = SamuraiRunConfig::new(project, "epic-hi", "wt-hi");
+        hi.thresholds = Some(Cfg {
+            handoff_context_pct: 80.0,
+            ..Cfg::default()
+        });
+        store.save(&hi).unwrap();
+        // epic-none: config WITHOUT thresholds → global applies.
+        store
+            .save(&SamuraiRunConfig::new(project, "epic-none", "wt-none"))
+            .unwrap();
+        injector.set_run_configs(store);
+
+        supervisor
+            .register_session(1, project.into(), "epic-hi".into(), 1)
+            .unwrap();
+        supervisor
+            .register_session(2, project.into(), "epic-none".into(), 1)
+            .unwrap();
+        supervisor
+            .register_session(3, project.into(), "epic-noconfig".into(), 1)
+            .unwrap();
+        for id in [1, 2, 3] {
+            context.observe(&context_event(id, 50.0));
+        }
+
+        injector.tick();
+
+        // 50% is under the overridden 80% but over the global 45%.
+        assert_eq!(injector.session_state(1), Some(Working), "override holds");
+        assert_eq!(injector.session_state(2), Some(HandoffRequested));
+        assert_eq!(injector.session_state(3), Some(HandoffRequested));
+
+        // And an override can LOWER the trigger below the global too.
+        hi.thresholds = Some(Cfg {
+            handoff_context_pct: 40.0,
+            ..Cfg::default()
+        });
+        injector.run_configs.get().unwrap().save(&hi).unwrap();
+        injector.tick();
+        assert_eq!(injector.session_state(1), Some(HandoffRequested));
+    }
+
+    #[tokio::test]
     async fn test_idle_injects_once_and_holds_until_timeout() {
         let dir = tempdir().unwrap();
         let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
@@ -2749,6 +2895,97 @@ mod tests {
             .iter()
             .any(|r| r.event == AuditEventKind::Park && r.details["phase"] == "parked"));
         assert!(!rows.iter().any(|r| r.event == AuditEventKind::Alert));
+    }
+
+    #[tokio::test]
+    async fn test_park_validation_gap_holds_sweep_open_until_on_parked() {
+        // Review F3a. Every sweep's LAST park exercises this window: the
+        // completion decision used to REMOVE the pending entry before the
+        // PARKED transition + parker.on_parked ran, so a complete_sweep
+        // racing into that gap (30s tick / teardown completion) saw nothing
+        // blocking, disengaged, and on_parked landed in a dead sweep —
+        // parked epic, NO resume timer. The gap hook drives a parker tick
+        // into that exact window deterministically.
+        use crate::core::allowance_watcher::{AllowanceEvent, AllowanceWindow, ThresholdKind};
+        use crate::core::samurai_parker::SamuraiParker;
+        use crate::core::samurai_replicator::SessionTeardown;
+        use crate::core::samurai_schedule::SamuraiSchedule;
+
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, dirs) = harness(dir.path());
+        let injector = Arc::new(injector);
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff_file(repo.path(), "epic-9", 2);
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let (schedule, _fire_task) =
+            SamuraiSchedule::new(dir.path().join("schedule"), Arc::new(|_| {}), None);
+        let teardown: SessionTeardown = Arc::new(|_| Box::pin(async {}));
+        let parker = SamuraiParker::new(
+            supervisor.clone(),
+            context.clone(),
+            injector.clone(),
+            schedule.clone(),
+            audit.clone(),
+            teardown,
+        );
+        injector.set_parker(parker.clone());
+
+        supervisor
+            .register_session(1, "C:/git/proj-inj-gap".into(), "epic-9".into(), 2)
+            .unwrap();
+        // The hard crossing engages the sweep and PARK_REQUESTs the session.
+        parker.on_allowance_event(&AllowanceEvent::ThresholdCrossed {
+            window: AllowanceWindow::FiveHour,
+            threshold_kind: ThresholdKind::Hard,
+            value: 91.0,
+            threshold: 90.0,
+            resets_at: Some("2030-01-01T00:00:00Z".to_string()),
+        });
+        assert_eq!(injector.session_state(1), Some(ParkRequested));
+
+        // Ladder to the marker: idle → inject → ACK, then arm the gap hook
+        // BEFORE the written marker starts the real validation. The map
+        // address filters out calls from other tests' injectors.
+        injector.observe_hook(&stop_event(1));
+        injector.observe(&assistant_message(1, "<samurai-ack>park gen-2</samurai-ack>"));
+        let map_addr = Arc::as_ptr(&injector.pending) as usize;
+        let observed: Arc<Mutex<Vec<(bool, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed_rec = observed.clone();
+        let hook_injector = injector.clone();
+        let hook_parker = parker.clone();
+        set_validation_gap_hook(Some(Arc::new(move |addr: usize, session_id: u32| {
+            if addr != map_addr {
+                return;
+            }
+            // The racing edge, landed deterministically in the gap.
+            hook_parker.tick();
+            observed_rec.lock().unwrap().push((
+                hook_injector.has_pending(session_id),
+                hook_parker.parking_engaged(),
+            ));
+        })));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2 park</samurai-handoff-written>",
+        ));
+
+        wait_until(|| injector.session_state(1) == Some(Parked)).await;
+        wait_until(|| !parker.parking_engaged()).await;
+        set_validation_gap_hook(None);
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![(true, true)],
+            "in the validation gap the entry must still be pending and the racing tick must NOT disengage the sweep"
+        );
+        // The essence of the bug: the parked epic still gets its resume timer.
+        let timers = schedule.list();
+        assert_eq!(timers.len(), 1, "the sweep's LAST park must arm its resume timer");
+        assert_eq!(timers[0].epic, "epic-9");
+        assert_eq!(timers[0].reason, "park");
     }
 
     #[tokio::test]

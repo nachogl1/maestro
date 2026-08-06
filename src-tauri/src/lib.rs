@@ -605,6 +605,14 @@ pub fn run() {
                 commands::ai_runner::artifact_base_dir("runs"),
             ));
             app.manage(run_configs.clone());
+            // Review F4: the replicator resolves the per-run `model` at
+            // spawn-emit time, and the injector's trigger pass consults the
+            // per-run `thresholds` override (handoff trigger only — park
+            // thresholds stay global, see allowance_watcher). Late-bound
+            // like set_absorber/set_parker: the store is constructed after
+            // both controllers.
+            replicator.set_run_configs(run_configs.clone());
+            injector.set_run_configs(run_configs.clone());
             // Samurai (issue #61): the resume handler — a fired park timer
             // becomes a FRESH generation spawn (guards → working dir →
             // next generation → RESUME row → replicator.spawn_generation).
@@ -641,8 +649,13 @@ pub fn run() {
             // self-cleans, so reading `list()` from the reconciliation task
             // later would race it and double-spawn the fired epic. A fire
             // cannot precede its own task spawn, so this snapshot is complete.
+            // The fire loop itself is spawned BELOW, after `samurai_resumer
+            // .bind(...)` — fires must never precede the bind (review F2):
+            // a past-due timer firing in that gap would be dropped by the
+            // resumer's unset OnceLocks yet still self-clean from
+            // schedule.json, stranding the epic (the reconciler snapshot
+            // lists it as timer-owned, so nothing respawns it either).
             let reconcile_timers = samurai_schedule.list();
-            tauri::async_runtime::spawn(samurai_schedule_task);
             app.manage(samurai_schedule.clone());
 
             // Samurai (issue #60): the allowance parker — the backend
@@ -671,6 +684,12 @@ pub fn run() {
             // resumer can now re-arm deferred timers and consult the
             // parking-engaged guard.
             samurai_resumer.bind(samurai_schedule, samurai_parker.clone());
+            // Ordering invariant (review F2): the schedule's fire loop is
+            // spawned only AFTER the bind above — its first tick fires every
+            // past-due timer immediately, and a fire before the bind would
+            // hit unset OnceLocks (dropped resume) while still self-cleaning
+            // the entry from schedule.json.
+            tauri::async_runtime::spawn(samurai_schedule_task);
 
             // Samurai (issue #63): periodic gh auth re-check while any run
             // config is ACTIVE — corporate SSO tokens expire mid-run (PRD

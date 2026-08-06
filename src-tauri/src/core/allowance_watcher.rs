@@ -138,6 +138,11 @@ impl AllowanceWatcher {
         // A window came back → re-arm the no-window condition.
         self.no_window_reported = false;
 
+        // The park thresholds below are read from the GLOBAL config only —
+        // deliberately: allowance windows are account-wide, so a per-run
+        // `thresholds` override (run config, review F4) never applies here.
+        // Only the handoff trigger consults per-run overrides
+        // (`samurai_injector::handoff_threshold_for`).
         if let Some(pct) = reading.session_percent {
             edge(
                 &mut self.above_soft_5h,

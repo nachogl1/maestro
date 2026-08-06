@@ -354,25 +354,31 @@ pub struct SamuraiLaunchResult {
     pub branch: String,
     pub worktree_path: String,
     pub repo_pin: Option<String>,
+    /// Review F5: a stale resume timer from the epic's previous run was
+    /// found and cancelled before this launch.
+    pub stale_timer_cancelled: bool,
 }
 
-/// Launches an epic run (PRD §5.8, §12 T+0): server-side preflight →
-/// create/reuse the epic worktree → derive the `--repo` pin → write the
-/// ACTIVE run config → spawn gen-1 with its opening brief. The SPAWN audit
-/// row lands via the existing registration path with
-/// `details.trigger: "launch"`.
-#[tauri::command]
-pub async fn samurai_launch_run(
-    supervisor: State<'_, Arc<Supervisor>>,
-    worktrees: State<'_, WorktreeManager>,
-    run_configs: State<'_, Arc<RunConfigStore>>,
-    replicator: State<'_, Arc<SamuraiReplicator>>,
-    project_path: String,
-    epic: String,
+/// The launch sequence after preflight, extracted from the Tauri command for
+/// testability (the `cleanup_epic_inner` precedent; `preflight` is passed in
+/// so tests never hit gh or the usage API, `worktree_base` exists only so
+/// tests never touch the real app-data worktree base).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn launch_run_inner(
+    supervisor: &Supervisor,
+    schedule: &SamuraiSchedule,
+    worktrees: &WorktreeManager,
+    run_configs: &RunConfigStore,
+    replicator: &Arc<SamuraiReplicator>,
+    preflight: &SamuraiPreflight,
+    global_config: SamuraiConfig,
+    project: &str,
+    epic: &str,
     model: Option<String>,
     issues_triaged: bool,
+    handoff_context_pct: Option<f64>,
+    worktree_base: Option<&Path>,
 ) -> Result<SamuraiLaunchResult, String> {
-    let project = canonical_project_path(&project_path);
     let epic = epic.trim().to_string();
     if epic.is_empty() {
         return Err("an epic reference is required".to_string());
@@ -380,16 +386,38 @@ pub async fn samurai_launch_run(
     let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
 
     // The refusal matrix runs server-side regardless of what the UI showed.
-    let preflight = run_preflight(&project).await;
     let live_session = supervisor.list_sessions().iter().any(|s| {
         s.project == project && epic_slug(&s.epic) == epic_slug(&epic) && !s.state.is_terminal()
     });
-    if let Some(refusal) = launch_refusal(&preflight, issues_triaged, live_session) {
+    if let Some(refusal) = launch_refusal(preflight, issues_triaged, live_session) {
         return Err(refusal);
     }
 
+    // Review F4: the one per-run threshold the UI exposes — a launch-time
+    // `handoff_context_pct` override stores the GLOBAL config with that one
+    // field replaced; empty = None = global applies. Validated before any
+    // side effect below.
+    let thresholds = handoff_context_pct.map(|pct| SamuraiConfig {
+        handoff_context_pct: pct,
+        ..global_config
+    });
+    if let Some(t) = &thresholds {
+        t.validate()?;
+    }
+
+    // Review F5: a stale resume timer from the epic's PREVIOUS run must not
+    // survive the relaunch — left armed it would fire into the fresh run
+    // and double-spawn a generation. After the refusal matrix on purpose: a
+    // refused launch must not touch the old run's state.
+    let stale_timer_cancelled = schedule.cancel(project, &epic)?;
+    if stale_timer_cancelled {
+        log::info!(
+            "samurai launch: cancelled a stale resume timer for epic {epic} in {project} before relaunch"
+        );
+    }
+
     let branch = epic_branch(&epic);
-    let worktree = ensure_epic_worktree(&worktrees, &project, &branch, None).await?;
+    let worktree = ensure_epic_worktree(worktrees, project, &branch, worktree_base).await?;
     let worktree_path = strip_extended_prefix(&worktree.to_string_lossy()).to_string();
 
     // The `--repo` pin from the worktree's origin remote (PRD §10: gen-1
@@ -405,13 +433,14 @@ pub async fn samurai_launch_run(
     // crash between the write and the spawn leaves a config cold-start
     // reconciliation flags as reconcile_unstartable — the human relaunches
     // (accepted).
-    let mut config = SamuraiRunConfig::new(project.clone(), epic.clone(), worktree_path.clone());
+    let mut config = SamuraiRunConfig::new(project.to_string(), epic.clone(), worktree_path.clone());
     config.repo_pin = repo_pin.clone();
     config.model = model;
+    config.thresholds = thresholds;
     run_configs.save(&config)?;
 
     let instruction = samurai_prompts::launch_instruction(&epic, repo_pin.as_deref());
-    replicator.spawn_first_generation(&project, &epic, &worktree_path, instruction);
+    replicator.spawn_first_generation(project, &epic, &worktree_path, instruction);
 
     log::info!(
         "samurai launch: epic {epic} launched in {project} — worktree {worktree_path}, branch {branch}, pin {repo_pin:?}"
@@ -421,7 +450,51 @@ pub async fn samurai_launch_run(
         branch,
         worktree_path,
         repo_pin,
+        stale_timer_cancelled,
     })
+}
+
+/// Launches an epic run (PRD §5.8, §12 T+0): server-side preflight →
+/// create/reuse the epic worktree → derive the `--repo` pin → write the
+/// ACTIVE run config → spawn gen-1 with its opening brief. The SPAWN audit
+/// row lands via the existing registration path with
+/// `details.trigger: "launch"`.
+#[tauri::command]
+pub async fn samurai_launch_run(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    worktrees: State<'_, WorktreeManager>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    replicator: State<'_, Arc<SamuraiReplicator>>,
+    config: State<'_, SharedSamuraiConfig>,
+    project_path: String,
+    epic: String,
+    model: Option<String>,
+    issues_triaged: bool,
+    handoff_context_pct: Option<f64>,
+) -> Result<SamuraiLaunchResult, String> {
+    let project = canonical_project_path(&project_path);
+    let preflight = run_preflight(&project).await;
+    let global_config = config
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    launch_run_inner(
+        &supervisor,
+        &schedule,
+        &worktrees,
+        &run_configs,
+        &replicator,
+        &preflight,
+        global_config,
+        &project,
+        &epic,
+        model,
+        issues_triaged,
+        handoff_context_pct,
+        None,
+    )
+    .await
 }
 
 /// Every ACTIVE run config across all projects — the launcher panel's
@@ -846,6 +919,130 @@ mod tests {
         assert!(!again.worktree_removed);
         assert_eq!(again.worktree_path, None);
         assert!(!again.branch_deleted);
+    }
+
+    #[tokio::test]
+    async fn test_launch_cancels_stale_timer_and_stores_overrides() {
+        // Review F5: a relaunch must cancel the previous run's resume timer
+        // (left armed it would double-spawn into the fresh run). Review F4:
+        // the launch-time model + handoff-% override reach the run config,
+        // and the gen-1 spawn event already carries the model.
+        use crate::core::samurai_injector::SessionDirResolver;
+        use crate::core::samurai_replicator::{
+            SessionTeardown, StdinWriter, SuccessorEmitter, SuccessorSpawn,
+            TranscriptPathResolver,
+        };
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let audit_dir = tempdir().unwrap();
+        let schedule_dir = tempdir().unwrap();
+        let runs_dir = tempdir().unwrap();
+        let base = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let (audit, task) = AuditLog::new(audit_dir.path().to_path_buf(), None);
+        tokio::spawn(task);
+        let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
+        let (schedule, _task) =
+            SamuraiSchedule::new(schedule_dir.path().to_path_buf(), Arc::new(|_| {}), None);
+        let run_configs = RunConfigStore::new(runs_dir.path().to_path_buf());
+        let run_configs = Arc::new(run_configs);
+        let worktrees = WorktreeManager::new();
+        let project = repo.path().to_string_lossy().into_owned();
+
+        let spawns: Arc<Mutex<Vec<SuccessorSpawn>>> = Arc::new(Mutex::new(Vec::new()));
+        let spawns_rec = spawns.clone();
+        let emit_spawn: SuccessorEmitter =
+            Arc::new(move |s| spawns_rec.lock().unwrap().push(s.clone()));
+        let session_dirs: SessionDirResolver = Arc::new(|_| None);
+        let transcript_paths: TranscriptPathResolver = Arc::new(|_| None);
+        let teardown: SessionTeardown = Arc::new(|_| Box::pin(async {}));
+        let write_stdin: StdinWriter = Arc::new(|_, _| {});
+        let shared: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
+        let replicator = Arc::new(SamuraiReplicator::new(
+            supervisor.clone(),
+            audit.clone(),
+            shared,
+            session_dirs,
+            transcript_paths,
+            teardown,
+            emit_spawn,
+            write_stdin,
+        ));
+        replicator.set_run_configs(run_configs.clone());
+
+        // A stale timer from the epic's previous run.
+        schedule
+            .arm(ScheduleEntry {
+                project_path: project.clone(),
+                epic: "#38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+            })
+            .unwrap();
+
+        let global = SamuraiConfig::default();
+        let result = launch_run_inner(
+            &supervisor,
+            &schedule,
+            &worktrees,
+            &run_configs,
+            &replicator,
+            &preflight(true, true),
+            global.clone(),
+            &project,
+            "#38",
+            Some("opus".to_string()),
+            true,
+            Some(30.0),
+            Some(base.path()),
+        )
+        .await
+        .unwrap();
+
+        // F5: the stale timer is gone and the result reports it.
+        assert!(result.stale_timer_cancelled);
+        assert!(schedule.list().is_empty(), "stale timer cancelled");
+
+        // F4: model + the one-field thresholds override are persisted.
+        let config = run_configs.get(&project, "#38").unwrap();
+        assert_eq!(config.model.as_deref(), Some("opus"));
+        let thresholds = config.thresholds.expect("override stored");
+        assert_eq!(thresholds.handoff_context_pct, 30.0);
+        assert_eq!(
+            thresholds.park_hard_5h_pct, global.park_hard_5h_pct,
+            "only handoff_context_pct is replaced — the rest stays global"
+        );
+
+        // …and the gen-1 spawn event already carries the model.
+        {
+            let spawns = spawns.lock().unwrap();
+            assert_eq!(spawns.len(), 1);
+            assert_eq!(spawns[0].generation, 1);
+            assert_eq!(spawns[0].model.as_deref(), Some("opus"));
+        }
+
+        // Relaunch without a timer or overrides: nothing cancelled, no
+        // thresholds stored (empty = the global config applies).
+        let again = launch_run_inner(
+            &supervisor,
+            &schedule,
+            &worktrees,
+            &run_configs,
+            &replicator,
+            &preflight(true, true),
+            global,
+            &project,
+            "#38",
+            None,
+            true,
+            None,
+            Some(base.path()),
+        )
+        .await
+        .unwrap();
+        assert!(!again.stale_timer_cancelled);
+        assert_eq!(run_configs.get(&project, "#38").unwrap().thresholds, None);
     }
 
     #[tokio::test]

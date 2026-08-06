@@ -830,6 +830,15 @@ function applySamuraiAllowanceEvent(): void {
 }
 
 /**
+ * Review F8: whether a live `samurai-schedule-event` has been applied since
+ * this listener lifetime started. The seed's IPC round-trip can resolve
+ * AFTER a live event already delivered a newer list — applying the stale
+ * snapshot then would resurrect a fired timer's countdown chip. Reset on
+ * listener init so the restart-seed case still works.
+ */
+let samuraiScheduleEventApplied = false;
+
+/**
  * Replaces the pending-timer list (issue #61). The backend sends the FULL
  * current list on every arm/cancel/fire, so this is a plain replace — no
  * merging, no ordering assumptions.
@@ -837,17 +846,21 @@ function applySamuraiAllowanceEvent(): void {
 function applySamuraiScheduleEvent(payload: SamuraiScheduleEntry[]): void {
   // Defensive: a mocked/failed IPC layer may hand back a non-array.
   if (!Array.isArray(payload)) return;
+  samuraiScheduleEventApplied = true;
   useSessionStore.setState({ samuraiSchedule: payload });
 }
 
 /**
  * Seeds `samuraiSchedule` from the backend's current timers, so timers armed
  * before this frontend mounted (app restart with parked epics) still show
- * their countdown chip. A live event replaces the list wholesale either way.
+ * their countdown chip. Live events always carry the full current list, so
+ * once one has been applied the seed's snapshot is stale by definition and
+ * is dropped (review F8).
  */
 async function seedSamuraiSchedule(): Promise<void> {
   try {
     const entries = await samuraiScheduleList();
+    if (samuraiScheduleEventApplied) return;
     if (!Array.isArray(entries) || entries.length === 0) return;
     useSessionStore.setState({ samuraiSchedule: entries });
   } catch (err) {
@@ -891,6 +904,9 @@ let samuraiActive = false;
 export async function initSamuraiSupervisorListener(): Promise<void> {
   samuraiActive = true;
   if (samuraiUnlisten || samuraiStarting) return;
+  // Review F8: fresh listener lifetime — the seed may apply until the first
+  // live schedule event of THIS lifetime lands.
+  samuraiScheduleEventApplied = false;
   samuraiStarting = Promise.all([
     listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
       applySamuraiSupervisorEvent(event.payload);

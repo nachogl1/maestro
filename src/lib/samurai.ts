@@ -185,6 +185,8 @@ export interface SamuraiLaunchResult {
   branch: string;
   worktree_path: string;
   repo_pin: string | null;
+  /** Review F5: a stale resume timer from a previous run was cancelled. */
+  stale_timer_cancelled: boolean;
 }
 
 /** What one cleanup pass removed (all-false = already clean, PRD §5.9). */
@@ -214,8 +216,15 @@ export function samuraiLaunchRun(
   epic: string,
   model: string | null,
   issuesTriaged: boolean,
+  handoffContextPct: number | null,
 ): Promise<SamuraiLaunchResult> {
-  return invoke("samurai_launch_run", { projectPath, epic, model, issuesTriaged });
+  return invoke("samurai_launch_run", {
+    projectPath,
+    epic,
+    model,
+    issuesTriaged,
+    handoffContextPct,
+  });
 }
 
 /** Every ACTIVE run config across all projects — the active-runs list. */

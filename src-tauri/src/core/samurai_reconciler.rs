@@ -70,8 +70,11 @@ use super::samurai_schedule::ScheduleEntry;
 use super::samurai_watchdog::TRANSCRIPT_STALE_AFTER;
 use super::supervisor::Supervisor;
 
-/// Age of the project's newest transcript (`None` = no transcript / not
-/// readable). Wired in lib.rs; injected so tests control it.
+/// Age of the newest transcript under the given directory's encoded Claude
+/// project dir (`None` = no transcript / not readable). Called with the
+/// epic's `\\?\`-stripped WORKTREE path — the orchestrator's cwd, where its
+/// transcripts actually live (fresh-eyes review F1). Wired in lib.rs;
+/// injected so tests control it.
 pub type TranscriptAgeProbe = Arc<dyn Fn(&str) -> Option<Duration> + Send + Sync>;
 
 /// Whether any claude process is alive machine-wide (the watchdog's process
@@ -141,10 +144,10 @@ fn decide(facts: &EpicFacts) -> ReconcileAction {
 }
 
 /// `Some(age_secs)` when a claude that predates this launch is PROBABLY
-/// still working the project: the project's newest transcript was written
+/// still working the epic: the WORKTREE's newest transcript was written
 /// inside `fresh_within` (the watchdog's staleness window) AND some claude
 /// process is alive. Honestly imprecise by construction: the process scan is
-/// machine-wide, the transcript is project-scoped — neither alone proves a
+/// machine-wide, the transcript is worktree-scoped — neither alone proves a
 /// survivor, and combined they only say "probably alive". That is exactly
 /// when NOT to spawn: a false skip costs one launch of delay (the watchdog
 /// or the human sorts it out), a false spawn puts two orchestrators in one
@@ -229,7 +232,13 @@ pub async fn reconcile(
                 prior_generation: None,
             }
         } else {
-            let age = (transcript_ages)(&config.project_path);
+            // The orphan probe reads the WORKTREE's transcripts, not the
+            // project's: the orchestrator runs with cwd = the epic worktree,
+            // so its transcripts live under the worktree's encoded Claude
+            // project dir. Probing the project path would miss a surviving
+            // orchestrator entirely (fresh-eyes review F1). `\\?\`-stripped,
+            // same as every other consumer of the stored path.
+            let age = (transcript_ages)(strip_extended_prefix(&config.worktree_path));
             EpicFacts {
                 timer_pending,
                 live_session,
@@ -834,6 +843,48 @@ mod tests {
             "never double-spawn over a probable survivor"
         );
         assert!(!rows.iter().any(|r| r.event == AuditEventKind::Resume));
+    }
+
+    #[tokio::test]
+    async fn test_orphan_probe_reads_the_worktree_not_the_project() {
+        // Fresh-eyes review F1: the orchestrator's cwd is the epic WORKTREE,
+        // so its transcripts live under the worktree's encoded dir — probing
+        // the project path would never see a surviving orchestrator.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-probe";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff(repo.path(), "#37", 2);
+        // Stored with the Windows `\\?\` verbatim prefix (fs::canonicalize
+        // spelling) — the probe must receive the STRIPPED worktree path.
+        let verbatim = format!(r"\\?\{}", repo.path().display());
+        h.run_configs
+            .save(&SamuraiRunConfig::new(project, "#37", verbatim))
+            .unwrap();
+
+        let probed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let probed_rec = probed.clone();
+        let probe: TranscriptAgeProbe = Arc::new(move |path: &str| {
+            probed_rec.lock().unwrap().push(path.to_string());
+            None
+        });
+        reconcile(
+            h.run_configs.clone(),
+            Vec::new(),
+            h.supervisor.clone(),
+            h.replicator.clone(),
+            h.audit.clone(),
+            probe,
+            alive(true),
+        )
+        .await;
+
+        assert_eq!(
+            *probed.lock().unwrap(),
+            vec![repo.path().display().to_string()],
+            "the probe must get the \\\\?\\-stripped WORKTREE path, not the project path"
+        );
     }
 
     #[tokio::test]

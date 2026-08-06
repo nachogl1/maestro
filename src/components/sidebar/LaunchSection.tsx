@@ -87,6 +87,9 @@ export function LaunchSection() {
 
   const [epic, setEpic] = useState("");
   const [model, setModel] = useState("");
+  // Review F4: optional per-run handoff trigger override. Empty = the
+  // global config applies (backend stores thresholds: None).
+  const [handoffPct, setHandoffPct] = useState("");
   const [triaged, setTriaged] = useState(false);
   const [preflight, setPreflight] = useState<SamuraiPreflight | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
@@ -137,6 +140,13 @@ export function LaunchSection() {
     Boolean(projectPath) && epic.trim().length > 0 && triaged && preflightPassed && !launching;
 
   const handleLaunch = async () => {
+    // Review F4: an unparseable override is a form error, not a null.
+    const pctText = handoffPct.trim();
+    const pct = pctText === "" ? null : Number(pctText);
+    if (pct !== null && !Number.isFinite(pct)) {
+      setError("Handoff context % must be a number (or empty for the global default)");
+      return;
+    }
     setLaunching(true);
     setError(null);
     setNotice(null);
@@ -146,11 +156,13 @@ export function LaunchSection() {
         epic.trim(),
         model.trim() ? model.trim() : null,
         triaged,
+        pct,
       );
       setNotice(
-        `Run launched: epic ${result.epic} on ${result.branch} (worktree ${result.worktree_path})`,
+        `Run launched: epic ${result.epic} on ${result.branch} (worktree ${result.worktree_path})${result.stale_timer_cancelled ? " — stale resume timer cancelled" : ""}`,
       );
       setEpic("");
+      setHandoffPct("");
       setTriaged(false);
       setPreflight(null);
       await refreshRuns();
@@ -239,6 +251,24 @@ export function LaunchSection() {
               value={model}
               onChange={(e) => setModel(e.target.value)}
               placeholder="default"
+              className="w-full rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="samurai-launch-handoff-pct"
+              className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-maestro-muted"
+            >
+              Handoff context % (this run)
+            </label>
+            <input
+              id="samurai-launch-handoff-pct"
+              type="number"
+              min={0}
+              max={100}
+              value={handoffPct}
+              onChange={(e) => setHandoffPct(e.target.value)}
+              placeholder="global default"
               className="w-full rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
             />
           </div>

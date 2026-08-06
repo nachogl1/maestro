@@ -14,6 +14,11 @@ export interface SamuraiSuccessorInfo {
   epic: string;
   /** The successor's generation (predecessor + 1). */
   generation: number;
+  /**
+   * Model preference from the epic's run config (review F4) — the grid
+   * appends `--model <value>` to the CLI launch. Absent/null = default.
+   */
+  model?: string | null;
 }
 
 /**

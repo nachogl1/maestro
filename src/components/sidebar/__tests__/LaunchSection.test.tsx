@@ -81,6 +81,7 @@ function mockInvoke({
           branch: "samurai/38",
           worktree_path: "C:\\data\\worktrees\\maestro-abc\\samurai-38",
           repo_pin: "nachogl1/maestro",
+          stale_timer_cancelled: false,
         };
       case "samurai_cleanup_epic":
         return {
@@ -145,8 +146,33 @@ describe("LaunchSection (issue #63)", () => {
       epic: "#38",
       model: null,
       issuesTriaged: true,
+      handoffContextPct: null,
     });
     expect(await screen.findByText(/Run launched: epic #38 on samurai\/38/)).toBeInTheDocument();
+  });
+
+  it("passes the per-run handoff % override to the launch (review F4)", async () => {
+    render(<LaunchSection />);
+    fireEvent.change(screen.getByLabelText("Epic ref"), { target: { value: "#38" } });
+    fireEvent.change(screen.getByLabelText("Handoff context % (this run)"), {
+      target: { value: "30" },
+    });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Run preflight" }));
+    expect(await screen.findByText("gh authenticated as nachogl1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+
+    await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
+    expect(callsOf("samurai_launch_run")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      epic: "#38",
+      model: null,
+      issuesTriaged: true,
+      handoffContextPct: 30,
+    });
+    // The field clears with the rest of the form after a launch.
+    await screen.findByText(/Run launched: epic #38/);
+    expect(screen.getByLabelText("Handoff context % (this run)")).toHaveValue(null);
   });
 
   it("renders failing preflight rows and keeps Launch disabled", async () => {
