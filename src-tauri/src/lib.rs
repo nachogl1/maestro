@@ -601,6 +601,33 @@ pub fn run() {
                 audit_log,
             );
 
+            // Samurai (issue #59): per-epic run-config store + persisted
+            // resume timers. Foundation only — P3.2 (park) arms timers and
+            // saves configs; P3.3 (issue #61) replaces the logging stub
+            // below with the real resume spawn. Both managed so the later
+            // command layers reach them via `app.state()`.
+            let run_configs = Arc::new(core::samurai_run_config::RunConfigStore::new(
+                commands::ai_runner::artifact_base_dir("runs"),
+            ));
+            app.manage(run_configs);
+            let (samurai_schedule, samurai_schedule_task) =
+                core::samurai_schedule::SamuraiSchedule::new(
+                    commands::ai_runner::artifact_base_dir("samurai"),
+                    // TODO(#61): wire to the real resume spawn (fresh gen
+                    // from the handoff file). Log-only until then.
+                    Arc::new(|entry: core::samurai_schedule::ScheduleEntry| {
+                        log::info!(
+                            "samurai schedule: resume timer fired for epic {} in {} \
+                             (reason: {}) — resume spawning lands in P3.3",
+                            entry.epic,
+                            entry.project_path,
+                            entry.reason,
+                        );
+                    }),
+                );
+            tauri::async_runtime::spawn(samurai_schedule_task);
+            app.manage(samurai_schedule);
+
             // GitHub watchdog: background poller for review requests /
             // assigned issues across all configured projects. The frontend
             // syncs the project set via `github_watchdog_set_projects`.
