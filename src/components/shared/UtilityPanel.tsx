@@ -1,11 +1,12 @@
 import { Suspense, lazy } from "react";
-import { Activity, Brain, Sparkles, StickyNote, X } from "lucide-react";
+import { Activity, Brain, ScrollText, Sparkles, StickyNote, X } from "lucide-react";
 import {
   PanelResizeHandle,
   RIGHT_PANEL_MAX_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
 } from "@/components/shared/PanelResizeHandle";
 import { AiPanel } from "@/components/ai/AiPanel";
+import { AuditSection } from "@/components/sidebar/AuditSection";
 import { MemorySection } from "@/components/sidebar/MemorySection";
 import { ProcessesSection } from "@/components/sidebar/ProcessesSection";
 
@@ -17,13 +18,16 @@ const NotepadPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai";
+export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai" | "audit";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
   memory: { title: "Memory", icon: Brain },
   processes: { title: "Processes", icon: Activity },
   notes: { title: "Notes", icon: StickyNote },
   ai: { title: "AI", icon: Sparkles },
+  // Minimal Samurai audit stream (issue #46) — absorbed into the Second
+  // Brain panel in Phase 4 (PRD §5.11).
+  audit: { title: "Audit", icon: ScrollText },
 };
 
 /**
@@ -81,6 +85,8 @@ export function UtilityPanel({
             <MemorySection />
           ) : panel === "processes" ? (
             <ProcessesSection />
+          ) : panel === "audit" ? (
+            <AuditSection />
           ) : (
             <AiPanel />
           )}

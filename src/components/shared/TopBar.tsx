@@ -8,6 +8,7 @@ import {
   Network,
   PanelLeft,
   Plus,
+  ScrollText,
   Sparkles,
   Square,
   StickyNote,
@@ -67,6 +68,9 @@ interface TopBarProps {
   /** Right-side AI panel (Report / Plan / Catalog tabs) */
   aiPanelOpen?: boolean;
   onToggleAiPanel?: () => void;
+  /** Right-side Samurai audit panel (issue #46) */
+  auditPanelOpen?: boolean;
+  onToggleAuditPanel?: () => void;
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
@@ -97,6 +101,8 @@ export function TopBar({
   onToggleNotesPanel,
   aiPanelOpen = false,
   onToggleAiPanel,
+  auditPanelOpen = false,
+  onToggleAuditPanel,
   onWatchdogNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
@@ -311,6 +317,21 @@ export function TopBar({
             title={titleWithShortcut("AI — daily report and plan", modLabel(), "6")}
           >
             <Sparkles size={14} />
+          </button>
+        )}
+        {onToggleAuditPanel && (
+          <button
+            type="button"
+            onClick={onToggleAuditPanel}
+            className={`rounded p-1.5 transition-colors ${
+              auditPanelOpen
+                ? "text-maestro-accent hover:bg-maestro-accent/10"
+                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+            }`}
+            aria-label="Audit"
+            title="Samurai audit — supervisor events for this project"
+          >
+            <ScrollText size={14} />
           </button>
         )}
         {/* Git panel — in eagle view it becomes a per-project carousel

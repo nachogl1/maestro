@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Download, Network, Trash2, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
 import {
   AgentExchangeDrawer,
@@ -111,6 +112,8 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
         <span className="min-w-0 flex-1 truncate text-xs font-semibold">{rootTitle}</span>
         <ThinkingIndicator sessionId={sessionId} />
         <span className={`${badgeBaseClass} ${rootBadge.cls}`}>{rootBadge.label}</span>
+        {/* Samurai supervision (issue #46) — nothing for non-supervised sessions. */}
+        <SamuraiBadge sessionId={sessionId} />
       </div>
       <p className="mt-1 truncate text-[11px] text-maestro-muted">{rootDescription}</p>
     </div>

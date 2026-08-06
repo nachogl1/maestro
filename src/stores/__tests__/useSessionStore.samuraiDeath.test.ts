@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { listen } from "@tauri-apps/api/event";
 
 import {
-  initSamuraiDeathListener,
+  initSamuraiSupervisorListener,
   useSessionStore,
   type BackendSessionStatus,
   type SessionConfig,
@@ -46,7 +46,7 @@ beforeAll(async () => {
     }
     return Promise.resolve(() => {});
   }) as typeof listen);
-  await initSamuraiDeathListener();
+  await initSamuraiSupervisorListener();
 });
 
 describe("useSessionStore samurai death listener (issue #44)", () => {
@@ -55,6 +55,7 @@ describe("useSessionStore samurai death listener (issue #44)", () => {
       sessions: [],
       parkedSessionIds: [],
       attentionSessionIds: [],
+      samuraiBySessionId: {},
     });
   });
 

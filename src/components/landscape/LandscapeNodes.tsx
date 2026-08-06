@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { ArrowUpRight, Folder, TerminalSquare, X } from "lucide-react";
+import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
 import {
   agentBadge,
@@ -179,6 +180,8 @@ export function TerminalNode({ data, selected }: NodeProps) {
         </span>
         <ThinkingIndicator sessionId={d.sessionId} />
         <span className={`${badgeBaseClass} ${badge.cls}`}>{badge.label}</span>
+        {/* Samurai supervision (issue #46) — nothing for non-supervised sessions. */}
+        <SamuraiBadge sessionId={d.sessionId} />
         <button
           type="button"
           onClick={(e) => {

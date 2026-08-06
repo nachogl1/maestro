@@ -14,9 +14,9 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
 import {
   initContextUsageListener,
-  initSamuraiDeathListener,
+  initSamuraiSupervisorListener,
   stopContextUsageListener,
-  stopSamuraiDeathListener,
+  stopSamuraiSupervisorListener,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
@@ -241,14 +241,16 @@ function App() {
     };
   }, []);
 
-  // Samurai death listener: a DEAD supervisor event (silent-death watchdog,
-  // issue #44) flips the session to Error chrome + attention highlight.
+  // Samurai supervisor listener: tracks generation/state for the badges
+  // (issue #46), flips DEAD sessions (silent-death watchdog, issue #44) to
+  // Error chrome + attention, and flags supervised sessions on allowance
+  // threshold crossings (issue #45).
   useEffect(() => {
-    initSamuraiDeathListener().catch((err) => {
-      console.error("Failed to initialize samurai death listener:", err);
+    initSamuraiSupervisorListener().catch((err) => {
+      console.error("Failed to initialize samurai supervisor listener:", err);
     });
     return () => {
-      stopSamuraiDeathListener();
+      stopSamuraiSupervisorListener();
     };
   }, []);
 
@@ -842,6 +844,8 @@ function App() {
               onToggleNotesPanel={() => handleToggleUtilityPanel("notes")}
               aiPanelOpen={utilityPanel === "ai"}
               onToggleAiPanel={() => handleToggleUtilityPanel("ai")}
+              auditPanelOpen={utilityPanel === "audit"}
+              onToggleAuditPanel={() => handleToggleUtilityPanel("audit")}
               onWatchdogNavigate={handleWatchdogNavigate}
             />
 

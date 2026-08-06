@@ -13,6 +13,7 @@ import {
   ZoomIn,
 } from "lucide-react";
 import { OpenCodeIcon, type IconComponent } from "@/components/icons";
+import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 
@@ -330,6 +331,10 @@ export const TerminalHeader = memo(function TerminalHeader({
             {sessionName || defaultLabel}
           </span>
         )}
+
+        {/* Samurai supervision (issue #46): gen-N · state · context %.
+            Renders nothing for non-supervised sessions. */}
+        <SamuraiBadge sessionId={sessionId} />
       </div>
 
       {/* Right cluster */}

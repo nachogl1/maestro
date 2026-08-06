@@ -2,8 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { samePath } from "@/lib/path";
+import { samuraiListSessions, type SamuraiSupervisorState } from "@/lib/samurai";
 import { useAgentStore } from "@/stores/useAgentStore";
 import type { ClaudeEvent } from "@/types/claude-events";
+
+export type { SamuraiSupervisorState };
 
 /** AI provider variants supported by the backend orchestrator. */
 export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
@@ -82,6 +85,19 @@ type RawSessionStatusPayload = Omit<SessionStatusPayload, "status"> & {
 };
 
 /**
+ * What the badge UI (issue #46) needs to know about one Samurai-supervised
+ * session: which project it belongs to (ids alone are not trusted to be
+ * unique across projects), its epic, and the latest generation + state.
+ */
+export interface SamuraiSessionInfo {
+  /** Canonical project path, `\\?\` prefix already stripped by the backend. */
+  project: string;
+  epic: string;
+  generation: number;
+  state: SamuraiSupervisorState;
+}
+
+/**
  * Zustand store slice for session metadata (not PTY I/O -- that lives in terminal.ts).
  *
  * @property sessions - Authoritative list of sessions fetched from the backend.
@@ -113,6 +129,13 @@ interface SessionState {
    * parkedSessionIds.
    */
   attentionSessionIds: number[];
+  /**
+   * Samurai-supervised sessions, keyed by session id — fed by
+   * `samurai-supervisor-event` and seeded from `samurai_list_sessions` on
+   * listener init. Sessions absent from this map are not supervised and
+   * render no Samurai chrome (issue #46: non-supervised sessions unchanged).
+   */
+  samuraiBySessionId: Record<number, SamuraiSessionInfo>;
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
@@ -202,6 +225,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   parkedSessionIds: [],
   flaggedSessionIds: [],
   attentionSessionIds: [],
+  samuraiBySessionId: {},
   isLoading: false,
   error: null,
 
@@ -417,12 +441,19 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       pendingStatusUpdates.delete(bufferKey);
     }
 
-    set((state) => ({
-      sessions: state.sessions.filter((s) => s.id !== sessionId),
-      parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
-      flaggedSessionIds: state.flaggedSessionIds.filter((id) => id !== sessionId),
-      attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
-    }));
+    set((state) => {
+      // Same stale-id hygiene for the supervision map: a future session
+      // reusing this id must not inherit a Samurai badge.
+      const samuraiBySessionId = { ...state.samuraiBySessionId };
+      delete samuraiBySessionId[sessionId];
+      return {
+        sessions: state.sessions.filter((s) => s.id !== sessionId),
+        parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
+        flaggedSessionIds: state.flaggedSessionIds.filter((id) => id !== sessionId),
+        attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
+        samuraiBySessionId,
+      };
+    });
   },
 
   removeSessionsForProject: async (projectPath: string) => {
@@ -435,20 +466,27 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         lastContextUsage.delete(session.id);
       }
       // Remove the sessions from local state
-      set((state) => ({
-        sessions: state.sessions.filter(
-          (s) => !removed.some((r) => r.id === s.id)
-        ),
-        parkedSessionIds: state.parkedSessionIds.filter(
-          (id) => !removed.some((r) => r.id === id)
-        ),
-        flaggedSessionIds: state.flaggedSessionIds.filter(
-          (id) => !removed.some((r) => r.id === id)
-        ),
-        attentionSessionIds: state.attentionSessionIds.filter(
-          (id) => !removed.some((r) => r.id === id)
-        ),
-      }));
+      set((state) => {
+        const samuraiBySessionId = { ...state.samuraiBySessionId };
+        for (const session of removed) {
+          delete samuraiBySessionId[session.id];
+        }
+        return {
+          sessions: state.sessions.filter(
+            (s) => !removed.some((r) => r.id === s.id)
+          ),
+          parkedSessionIds: state.parkedSessionIds.filter(
+            (id) => !removed.some((r) => r.id === id)
+          ),
+          flaggedSessionIds: state.flaggedSessionIds.filter(
+            (id) => !removed.some((r) => r.id === id)
+          ),
+          attentionSessionIds: state.attentionSessionIds.filter(
+            (id) => !removed.some((r) => r.id === id)
+          ),
+          samuraiBySessionId,
+        };
+      });
       return removed;
     } catch (err) {
       console.error("Failed to remove sessions for project:", err);
@@ -678,36 +716,52 @@ export function stopContextUsageListener(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Samurai death listener (samurai-supervisor-event -> DEAD => attention)
+// Samurai supervisor listener (samurai-supervisor-event + samurai-allowance-
+// event -> badge map, DEAD => error chrome, allowance => attention)
 // ---------------------------------------------------------------------------
 
 /**
  * Subset of the backend's `SessionSnapshot` payload (emitted on every Samurai
- * supervisor state change) that the death listener uses.
+ * supervisor state change) that the listener uses.
  */
 interface SamuraiSupervisorEvent {
   session_id: number;
   /** Canonical project path, `\\?\` prefix already stripped by the backend. */
   project: string;
+  epic: string;
+  generation: number;
   state: string;
 }
 
+/** Terminal supervisor states — sessions past saving, no allowance attention. */
+const SAMURAI_TERMINAL_STATES = new Set(["KILLED", "PARKED", "DEAD"]);
+
 /**
- * Surfaces a watchdog-declared death (issue #44). A crashed claude fires no
- * hook, so without this the session would sit on its last MCP status —
- * usually "Working" — forever. On a DEAD supervisor event the session flips
- * to Error chrome and gets the same unpark + attention treatment as an
- * auto-unparked NeedsInput session. All other supervisor states are ignored
- * here; the Phase-1 UI for them is the audit stream.
+ * Tracks every supervisor state change into `samuraiBySessionId` (the badge
+ * data for issue #46), and surfaces a watchdog-declared death (issue #44):
+ * a crashed claude fires no hook, so without this the session would sit on
+ * its last MCP status — usually "Working" — forever. On a DEAD supervisor
+ * event the session flips to Error chrome and gets the same unpark +
+ * attention treatment as an auto-unparked NeedsInput session.
  */
 function applySamuraiSupervisorEvent(payload: SamuraiSupervisorEvent): void {
-  if (payload.state !== "DEAD") return;
   useSessionStore.setState((state) => {
+    const samuraiBySessionId: Record<number, SamuraiSessionInfo> = {
+      ...state.samuraiBySessionId,
+      [payload.session_id]: {
+        project: payload.project,
+        epic: payload.epic,
+        generation: payload.generation,
+        state: payload.state as SamuraiSupervisorState,
+      },
+    };
+    if (payload.state !== "DEAD") return { samuraiBySessionId };
     const session = state.sessions.find(
       (s) => s.id === payload.session_id && samePath(s.project_path, payload.project)
     );
-    if (!session) return state;
+    if (!session) return { samuraiBySessionId };
     return {
+      samuraiBySessionId,
       sessions: state.sessions.map((s) =>
         s === session
           ? {
@@ -725,31 +779,93 @@ function applySamuraiSupervisorEvent(payload: SamuraiSupervisorEvent): void {
   });
 }
 
+/**
+ * Allowance threshold crossed (issue #45, edge-triggered ~once per window):
+ * flag every live supervised session with the existing attention highlight —
+ * those are the runs the crossing is about (issue #46: existing attention
+ * mechanism, no new alert UI). Details land as ALERT rows in the audit
+ * stream; non-supervised sessions stay untouched.
+ */
+function applySamuraiAllowanceEvent(): void {
+  useSessionStore.setState((state) => {
+    const flagged = state.sessions
+      .filter((s) => {
+        const info = state.samuraiBySessionId[s.id];
+        return (
+          info !== undefined &&
+          !SAMURAI_TERMINAL_STATES.has(info.state) &&
+          samePath(s.project_path, info.project)
+        );
+      })
+      .map((s) => s.id)
+      .filter((id) => !state.attentionSessionIds.includes(id));
+    // No-op guard: nothing supervised (or all already flagged) — don't
+    // replace the array and re-render subscribers.
+    if (flagged.length === 0) return state;
+    return { attentionSessionIds: [...state.attentionSessionIds, ...flagged] };
+  });
+}
+
+/**
+ * Seeds `samuraiBySessionId` from the supervisor's current snapshots, so
+ * sessions registered before this frontend mounted (dev reload, late mount)
+ * still get badges. Live events won the race for any id already present.
+ */
+async function seedSamuraiSessions(): Promise<void> {
+  try {
+    const snapshots = await samuraiListSessions();
+    // Defensive: a mocked/failed IPC layer may hand back a non-array.
+    if (!Array.isArray(snapshots) || snapshots.length === 0) return;
+    useSessionStore.setState((state) => {
+      const samuraiBySessionId = { ...state.samuraiBySessionId };
+      for (const snapshot of snapshots) {
+        if (samuraiBySessionId[snapshot.session_id]) continue;
+        samuraiBySessionId[snapshot.session_id] = {
+          project: snapshot.project,
+          epic: snapshot.epic,
+          generation: snapshot.generation,
+          state: snapshot.state,
+        };
+      }
+      return { samuraiBySessionId };
+    });
+  } catch (err) {
+    console.error("Failed to seed samurai supervised sessions:", err);
+  }
+}
+
 // Same StrictMode-safe init/stop shape as the context usage listener above.
 let samuraiUnlisten: UnlistenFn | null = null;
 let samuraiStarting: Promise<void> | null = null;
 let samuraiActive = false;
 
-export async function initSamuraiDeathListener(): Promise<void> {
+export async function initSamuraiSupervisorListener(): Promise<void> {
   samuraiActive = true;
   if (samuraiUnlisten || samuraiStarting) return;
-  samuraiStarting = listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
-    applySamuraiSupervisorEvent(event.payload);
-  })
-    .then((fn) => {
+  samuraiStarting = Promise.all([
+    listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
+      applySamuraiSupervisorEvent(event.payload);
+    }),
+    listen("samurai-allowance-event", () => {
+      applySamuraiAllowanceEvent();
+    }),
+  ])
+    .then((fns) => {
+      const unlistenAll = () => fns.forEach((fn) => fn());
       if (!samuraiActive) {
-        fn();
+        unlistenAll();
         return;
       }
-      samuraiUnlisten = fn;
+      samuraiUnlisten = unlistenAll;
     })
     .finally(() => {
       samuraiStarting = null;
     });
   await samuraiStarting;
+  void seedSamuraiSessions();
 }
 
-export function stopSamuraiDeathListener(): void {
+export function stopSamuraiSupervisorListener(): void {
   samuraiActive = false;
   if (samuraiUnlisten) {
     samuraiUnlisten();

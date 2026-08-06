@@ -18,6 +18,11 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   ask: vi.fn(),
 }));
 
+// AuditSection subscribes to the samurai-audit-event stream on mount.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
 import { UtilityPanel } from "../UtilityPanel";
 import { useNotesStore } from "@/stores/useNotesStore";
 import { usePlanStore } from "@/stores/usePlanStore";
@@ -90,6 +95,20 @@ function mockInvoke() {
         return [];
       case "list_docker_containers":
         return { available: false, containers: [] };
+      case "samurai_audit_read":
+        return {
+          events: [
+            {
+              ts: "2026-08-06T12:00:00Z",
+              epic: "#36",
+              event: "SPAWN",
+              generation: 2,
+              session_id: 1,
+              details: { kind: "registered" },
+            },
+          ],
+          file_size_bytes: 128,
+        };
       default:
         return undefined;
     }
@@ -188,6 +207,17 @@ describe("UtilityPanel", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it("renders the Audit panel with the samurai audit stream", async () => {
+    render(<UtilityPanel panel="audit" width={320} onResize={() => {}} onClose={() => {}} />);
+    expect(screen.getByText("Samurai Audit")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Supervisor events for this project, newest first\./),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("SPAWN")).toBeInTheDocument();
+    expect(screen.getByText("gen-2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear audit log" })).toBeInTheDocument();
   });
 
   it("calls onClose from the header close button", () => {
