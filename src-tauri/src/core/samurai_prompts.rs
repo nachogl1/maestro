@@ -394,6 +394,64 @@ pub fn successor_ritual_instruction(
     }
 }
 
+/// The gen-1 opening brief (issue #63, PRD §5.8 + §12): what the FIRST
+/// generation of a freshly launched epic run receives on its first
+/// `SessionStarted` — there is no handoff and no predecessor, so neither
+/// ritual applies. The orchestrator reads the epic and its child issues from
+/// GitHub, plans, works the issues via small idempotent subagent tasks with
+/// per-step commits (PRD §10: tree-kill containment), comments progress on
+/// the epic, and opens PRs. Single line by construction (see module doc);
+/// the epic ref is whitespace-normalized so a pathological ref can never
+/// smuggle a newline into the paste.
+///
+/// `repo_pin` is the `owner/repo` derived from the epic worktree's `origin`
+/// remote — PRD §10: gen-1 runs with `--dangerously-skip-permissions`, so
+/// every `gh` command must carry `--repo` explicitly. `None` (remote missing
+/// or unparseable — never blocks the launch) keeps the unpinned wording plus
+/// the same explicit caution sentence as [`recovery_ritual_instruction`].
+pub fn launch_instruction(epic: &str, repo_pin: Option<&str>) -> String {
+    let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (gh_read, gh_progress, caution) = match repo_pin {
+        Some(pin) => (
+            format!(
+                "read the epic's GitHub issue, ALL of its comments, and EVERY child issue it \
+                 references with the `gh` CLI, passing `--repo {pin}` explicitly on every `gh` \
+                 command"
+            ),
+            format!(
+                "comment progress on the epic's GitHub issue as issues complete, and open pull \
+                 requests for finished work (again via `gh` with `--repo {pin}` on every command)"
+            ),
+            String::new(),
+        ),
+        None => (
+            "read the epic's GitHub issue, ALL of its comments, and EVERY child issue it \
+             references with the `gh` CLI, run from this directory"
+                .to_string(),
+            "comment progress on the epic's GitHub issue as issues complete, and open pull \
+             requests for finished work"
+                .to_string(),
+            " CAUTION: Maestro could not determine this repository's origin remote, so no \
+             `--repo` pin is available — before running any `gh` command, double-check it \
+             targets the correct repository."
+                .to_string(),
+        ),
+    };
+    format!(
+        "[Maestro Samurai] You are generation 1, the FIRST orchestrator, for GitHub epic \
+         {epic_text}. This directory is the epic's dedicated worktree on its own branch. \
+         Do the following: \
+         (1) {gh_read}. \
+         (2) Plan the work across the epic's issues before touching code. \
+         (3) Work the issues via SMALL idempotent subagent tasks, each committing its \
+         completed step to THIS branch (stage named paths only, never `git add .` or \
+         `git add -A`; Conventional Commit messages `type(scope): summary`). \
+         (4) {gh_progress}. \
+         (5) NEVER switch to, commit to, or push any other branch, and NEVER touch any \
+         repository other than this one.{caution}"
+    )
+}
+
 /// Repo-relative path of the pre-digested transcript summary Maestro writes
 /// for a gen-`successor_generation` RECOVERY successor (issue #56). Lives
 /// next to the handoffs so the Second Brain panel's file listing picks it up;
@@ -887,6 +945,70 @@ mod tests {
         // No pinned `gh` usage (the caution itself mentions the missing pin).
         assert!(!text.contains("passing `--repo"));
         assert!(!text.contains("again via `gh`"));
+        assert!(text.contains("CAUTION"));
+        assert!(text.contains("double-check it targets the correct repository"));
+    }
+
+    // --- issue #63: gen-1 launch brief ---
+
+    #[test]
+    fn test_launch_instruction_is_single_line() {
+        for pin in [None, Some("owner/repo")] {
+            let text = launch_instruction("#38", pin);
+            assert!(!text.contains('\n'), "launch brief must not contain \\n");
+            assert!(!text.contains('\r'), "launch brief must not contain \\r");
+        }
+        // A pathological epic ref cannot smuggle a newline into the paste.
+        let text = launch_instruction("epic\nwith newline", None);
+        assert!(!text.contains('\n'));
+        assert!(text.contains("epic with newline"));
+    }
+
+    #[test]
+    fn test_launch_instruction_content() {
+        let text = launch_instruction("#38", None);
+        // Identity: gen-1, the epic, its dedicated worktree.
+        assert!(text.contains("generation 1"));
+        assert!(text.contains("epic #38"));
+        assert!(text.contains("worktree"));
+        // Read the epic AND its child issues, plan first.
+        assert!(text.contains("`gh` CLI"));
+        assert!(text.contains("ALL of its comments"));
+        assert!(text.contains("EVERY child issue"));
+        assert!(text.contains("Plan the work"));
+        // Small idempotent subagent tasks with per-step commits (PRD §10).
+        assert!(text.contains("SMALL idempotent subagent tasks"));
+        assert!(text.contains("stage named paths only"));
+        assert!(text.contains("Conventional Commit"));
+        // Progress comments + PRs, and the hard containment rule.
+        assert!(text.contains("comment progress"));
+        assert!(text.contains("open pull requests"));
+        assert!(text.contains("NEVER switch to, commit to, or push any other branch"));
+        assert!(text.contains("NEVER touch any repository other than this one"));
+        // No successor/recovery language: there is nothing to hand off from.
+        assert!(!text.contains("handoff"));
+        assert!(!text.contains("RECOVERY"));
+    }
+
+    #[test]
+    fn test_launch_instruction_pins_the_repo_when_known() {
+        // PRD §10: gen-1 runs with --dangerously-skip-permissions, so BOTH
+        // the issue reads and the progress/PR clause carry --repo explicitly
+        // (mirrors recovery_ritual_instruction's pinning language).
+        let text = launch_instruction("#38", Some("nachogl1/maestro"));
+        assert_eq!(
+            text.matches("--repo nachogl1/maestro").count(),
+            2,
+            "read AND progress clauses must be pinned: {text}"
+        );
+        assert!(text.contains("passing `--repo nachogl1/maestro` explicitly"));
+        assert!(!text.contains("CAUTION"));
+    }
+
+    #[test]
+    fn test_launch_instruction_without_pin_carries_a_caution() {
+        let text = launch_instruction("#38", None);
+        assert!(!text.contains("passing `--repo"));
         assert!(text.contains("CAUTION"));
         assert!(text.contains("double-check it targets the correct repository"));
     }

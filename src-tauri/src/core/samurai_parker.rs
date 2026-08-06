@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::json;
 
-use super::allowance_watcher::{AllowanceEvent, ThresholdKind};
+use super::allowance_watcher::{AllowanceEvent, ThresholdKind, ACCOUNT_PROJECT};
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_context::SamuraiContextStore;
 use super::samurai_injector::SamuraiInjector;
@@ -156,6 +156,13 @@ struct SweepState {
     parked_epics: BTreeSet<(String, String)>,
     /// The latest known reset among the sweep's triggering hard events.
     resets_at: Option<DateTime<Utc>>,
+    /// Issue #63: this sweep was engaged EXTERNALLY (e.g. gh auth loss) — a
+    /// condition with no reset time by design, so completion arms NO resume
+    /// timers and emits NO per-epic `park_no_reset_time` noise (a human
+    /// fixes the cause and resumes manually). Cleared when a real hard
+    /// allowance crossing joins the sweep: that brings a reset story, and
+    /// its timers must arm normally.
+    suppress_timers: bool,
 }
 
 /// The allowance parker. Fed by the allowance loop (events), the injector
@@ -225,6 +232,56 @@ impl SamuraiParker {
     /// other spawner can consult this before starting new work.
     pub fn parking_engaged(&self) -> bool {
         self.engaged.load(Ordering::SeqCst)
+    }
+
+    /// Issue #63: engages a hard park sweep for an EXTERNAL, non-allowance
+    /// condition — currently gh auth loss (`reason = "gh_auth_lost"`, PRD
+    /// §5.8: corporate SSO tokens expire mid-run → park + ALERT, not a crash
+    /// loop). Reuses the whole sequential sweep; the differences from an
+    /// allowance crossing:
+    ///
+    /// - **No resume timers.** The condition has no reset time — the human
+    ///   fixes auth and resumes manually — so this sweep's completion arms
+    ///   nothing and stays silent about it (no `park_no_reset_time` ALERT
+    ///   per epic; see [`SweepState::suppress_timers`]).
+    /// - **One `ALERT {kind: reason}`** is appended per project with a
+    ///   supervised session ([`ACCOUNT_PROJECT`] fallback — the
+    ///   `allowance_watcher` row-placement policy), BEFORE the sweep's PARK
+    ///   rows so the trail explains them. Once per call — the caller latches
+    ///   (the auth watcher only calls on the lost EDGE, never per tick).
+    ///
+    /// While a sweep is already engaged the ALERT still lands but the sweep
+    /// keeps its own timer behavior: an allowance sweep's timers are not
+    /// suppressed retroactively.
+    pub fn engage_external_park(&self, reason: &str) {
+        log::error!("samurai parker: external park engaged ({reason}) — parking every supervised session, no resume timers");
+        let was_engaged = self.engaged.swap(true, Ordering::SeqCst);
+        {
+            let mut state = self.lock_state();
+            if !was_engaged {
+                state.suppress_timers = true;
+            }
+        }
+        let mut projects: Vec<String> = self
+            .supervisor
+            .list_sessions()
+            .into_iter()
+            .map(|s| s.project)
+            .collect();
+        projects.sort();
+        projects.dedup();
+        if projects.is_empty() {
+            projects.push(ACCOUNT_PROJECT.to_string());
+        }
+        for project in &projects {
+            // Epic-less account-wide row (generation/session 0), same shape
+            // as the allowance ALERTs.
+            self.audit.append(
+                project,
+                AuditEvent::now("", AuditEventKind::Alert, 0, 0, json!({ "kind": reason })),
+            );
+        }
+        self.advance();
     }
 
     /// Consulted by the replicator just before staging a successor for a
@@ -314,6 +371,10 @@ impl SamuraiParker {
         {
             let mut state = self.lock_state();
             state.resets_at = merge_resets_at(state.resets_at, resets_at);
+            // A real allowance crossing brings a reset story — even when it
+            // joins an externally engaged sweep (issue #63), its timers must
+            // arm normally.
+            state.suppress_timers = false;
         }
         if was_engaged {
             log::info!(
@@ -396,7 +457,21 @@ impl SamuraiParker {
     fn complete_sweep(&self, state: &mut SweepState) {
         let parked_epics = std::mem::take(&mut state.parked_epics);
         let resets_at = state.resets_at.take();
+        let suppress_timers = std::mem::take(&mut state.suppress_timers);
         state.failed.clear();
+
+        // Issue #63: an externally engaged sweep (gh auth loss) arms nothing
+        // — the condition has no reset time BY DESIGN, so the per-epic
+        // park_no_reset_time ALERT would be noise on top of the one
+        // `gh_auth_lost` ALERT already appended at engagement.
+        if suppress_timers {
+            log::info!(
+                "samurai parker: external park sweep complete — {} epic(s) parked, no resume timers by design (human resumes after fixing the cause)",
+                parked_epics.len()
+            );
+            self.engaged.store(false, Ordering::SeqCst);
+            return;
+        }
 
         log::info!(
             "samurai parker: park sweep complete — {} epic(s) to arm resume timers for",
@@ -1130,6 +1205,105 @@ mod tests {
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1);
         assert_eq!(timers[0].fire_at, later, "the later timer survives");
+    }
+
+    // --- issue #63: external park (gh auth loss) ---
+
+    #[tokio::test]
+    async fn test_external_park_sweeps_without_timers_or_noise() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-ext";
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#1", 1);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        h.supervisor
+            .register_session(1, project.into(), "#1".into(), 1)
+            .unwrap();
+
+        h.parker.engage_external_park("gh_auth_lost");
+
+        // The sweep engages exactly like a hard allowance crossing.
+        assert!(h.parker.parking_engaged());
+        assert_eq!(
+            state_of(&h.supervisor, 1),
+            Some(SupervisorState::ParkRequested)
+        );
+
+        complete_park(&h, 1, 1);
+        wait_until(|| !h.parker.parking_engaged()).await;
+        assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
+
+        // No reset time BY DESIGN: no resume timer, and no per-epic
+        // park_no_reset_time noise — only the one gh_auth_lost ALERT on the
+        // supervised project.
+        assert!(h.schedule.list().is_empty(), "no guessed timer");
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| {
+                    r.event == AuditEventKind::Alert && r.details["kind"] == "gh_auth_lost"
+                })
+                .count(),
+            1
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.details["kind"] == "park_no_reset_time"),
+            "external park must not emit park_no_reset_time per epic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_external_park_alerts_account_project_when_nothing_supervised() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+
+        h.parker.engage_external_park("gh_auth_lost");
+
+        // Nothing supervised: the ALERT still lands (ACCOUNT_PROJECT
+        // fallback, the allowance watcher's placement policy) and the empty
+        // sweep completes without arming anything.
+        wait_until(|| !h.parker.parking_engaged()).await;
+        assert!(h.schedule.list().is_empty());
+        let rows = h.audit.read(ACCOUNT_PROJECT, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "gh_auth_lost")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hard_crossing_joining_an_external_sweep_arms_timers_again() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-ext-merge";
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#1", 1);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        h.supervisor
+            .register_session(1, project.into(), "#1".into(), 1)
+            .unwrap();
+
+        h.parker.engage_external_park("gh_auth_lost");
+        // A real allowance crossing joins mid-sweep: it brings a reset
+        // story, so timer suppression lifts and its timer arms normally.
+        h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
+
+        complete_park(&h, 1, 1);
+        wait_until(|| !h.parker.parking_engaged()).await;
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "the allowance crossing's timer arms");
+        assert_eq!(timers[0].epic, "#1");
     }
 
     #[tokio::test]

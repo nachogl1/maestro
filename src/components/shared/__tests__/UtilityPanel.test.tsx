@@ -109,6 +109,8 @@ function mockInvoke() {
           ],
           file_size_bytes: 128,
         };
+      case "samurai_list_runs":
+        return [];
       default:
         return undefined;
     }
@@ -218,6 +220,15 @@ describe("UtilityPanel", () => {
     expect(await screen.findByText("SPAWN")).toBeInTheDocument();
     expect(screen.getByText("gen-2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear audit log" })).toBeInTheDocument();
+  });
+
+  it("renders the Launch panel with the run form and active runs", async () => {
+    render(<UtilityPanel panel="launch" width={320} onResize={() => {}} onClose={() => {}} />);
+    expect(screen.getByText("Launch Run")).toBeInTheDocument();
+    expect(screen.getByLabelText("Epic ref")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+    expect(await screen.findByText("No active runs. Launch one above.")).toBeInTheDocument();
   });
 
   it("calls onClose from the header close button", () => {

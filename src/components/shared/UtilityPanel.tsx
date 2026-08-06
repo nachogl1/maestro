@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { Activity, Brain, ScrollText, Sparkles, StickyNote, X } from "lucide-react";
+import { Activity, Brain, Rocket, ScrollText, Sparkles, StickyNote, X } from "lucide-react";
 import {
   PanelResizeHandle,
   RIGHT_PANEL_MAX_WIDTH,
@@ -7,6 +7,7 @@ import {
 } from "@/components/shared/PanelResizeHandle";
 import { AiPanel } from "@/components/ai/AiPanel";
 import { AuditSection } from "@/components/sidebar/AuditSection";
+import { LaunchSection } from "@/components/sidebar/LaunchSection";
 import { MemorySection } from "@/components/sidebar/MemorySection";
 import { ProcessesSection } from "@/components/sidebar/ProcessesSection";
 
@@ -18,7 +19,7 @@ const NotepadPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai" | "audit";
+export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai" | "audit" | "launch";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
   memory: { title: "Memory", icon: Brain },
@@ -28,6 +29,8 @@ const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementT
   // Minimal Samurai audit stream (issue #46) — absorbed into the Second
   // Brain panel in Phase 4 (PRD §5.11).
   audit: { title: "Audit", icon: ScrollText },
+  // Samurai run launcher + active runs (issue #63, PRD §5.8/§9).
+  launch: { title: "Launch", icon: Rocket },
 };
 
 /**
@@ -87,6 +90,8 @@ export function UtilityPanel({
             <ProcessesSection />
           ) : panel === "audit" ? (
             <AuditSection />
+          ) : panel === "launch" ? (
+            <LaunchSection />
           ) : (
             <AiPanel />
           )}

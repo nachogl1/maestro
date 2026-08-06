@@ -672,6 +672,27 @@ pub fn run() {
             // parking-engaged guard.
             samurai_resumer.bind(samurai_schedule, samurai_parker.clone());
 
+            // Samurai (issue #63): periodic gh auth re-check while any run
+            // config is ACTIVE — corporate SSO tokens expire mid-run (PRD
+            // §5.8: park + ALERT, not a crash loop). The probe is injected
+            // (the reconciler's closure pattern); gh runs in the active
+            // config's project directory — auth is account-global, the cwd
+            // only anchors it to a repo.
+            let auth_probe: core::samurai_auth_watch::AuthProbe = Arc::new(|project: String| {
+                Box::pin(async move {
+                    github::GitHub::new(project)
+                        .auth_status()
+                        .await
+                        .map(|status| status.logged_in)
+                        .map_err(|e| e.to_string())
+                })
+            });
+            core::samurai_auth_watch::spawn_auth_watch(
+                run_configs.clone(),
+                samurai_parker.clone(),
+                auth_probe,
+            );
+
             core::allowance_watcher::spawn_allowance_loop(
                 app.handle().clone(),
                 samurai_config,
@@ -928,6 +949,11 @@ pub fn run() {
             commands::samurai::samurai_schedule_list,
             commands::samurai::samurai_get_config,
             commands::samurai::samurai_set_config,
+            // Samurai run launcher (issue #63)
+            commands::samurai::samurai_preflight,
+            commands::samurai::samurai_launch_run,
+            commands::samurai::samurai_list_runs,
+            commands::samurai::samurai_cleanup_epic,
             // CLI commands
             commands::cli::install_cli,
             commands::cli::uninstall_cli,

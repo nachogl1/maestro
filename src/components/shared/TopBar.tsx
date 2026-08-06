@@ -8,6 +8,7 @@ import {
   Network,
   PanelLeft,
   Plus,
+  Rocket,
   ScrollText,
   Sparkles,
   Square,
@@ -71,6 +72,9 @@ interface TopBarProps {
   /** Right-side Samurai audit panel (issue #46) */
   auditPanelOpen?: boolean;
   onToggleAuditPanel?: () => void;
+  /** Right-side Samurai run launcher panel (issue #63) */
+  launchPanelOpen?: boolean;
+  onToggleLaunchPanel?: () => void;
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
@@ -103,6 +107,8 @@ export function TopBar({
   onToggleAiPanel,
   auditPanelOpen = false,
   onToggleAuditPanel,
+  launchPanelOpen = false,
+  onToggleLaunchPanel,
   onWatchdogNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
@@ -332,6 +338,21 @@ export function TopBar({
             title="Samurai audit — supervisor events for this project"
           >
             <ScrollText size={14} />
+          </button>
+        )}
+        {onToggleLaunchPanel && (
+          <button
+            type="button"
+            onClick={onToggleLaunchPanel}
+            className={`rounded p-1.5 transition-colors ${
+              launchPanelOpen
+                ? "text-maestro-accent hover:bg-maestro-accent/10"
+                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+            }`}
+            aria-label="Launch"
+            title="Samurai launch — start and clean up autonomous epic runs"
+          >
+            <Rocket size={14} />
           </button>
         )}
         {/* Git panel — in eagle view it becomes a per-project carousel

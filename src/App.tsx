@@ -860,6 +860,8 @@ function App() {
               onToggleAiPanel={() => handleToggleUtilityPanel("ai")}
               auditPanelOpen={utilityPanel === "audit"}
               onToggleAuditPanel={() => handleToggleUtilityPanel("audit")}
+              launchPanelOpen={utilityPanel === "launch"}
+              onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
               onWatchdogNavigate={handleWatchdogNavigate}
             />
 

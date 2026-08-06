@@ -133,3 +133,105 @@ export function samuraiAuditClear(projectPath: string): Promise<void> {
 export function samuraiScheduleList(): Promise<SamuraiScheduleEntry[]> {
   return invoke("samurai_schedule_list");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #63: run launcher — preflight, launch, cleanup, run listing
+// ---------------------------------------------------------------------------
+
+/** The `gh auth status` probe's structured result (a failed check is data). */
+export interface SamuraiGhAuthCheck {
+  ok: boolean;
+  /** The authenticated gh user, when the check passed. */
+  username: string | null;
+  /** Why the check failed (gh missing, not logged in, runner error). */
+  error: string | null;
+}
+
+/**
+ * Preflight results (PRD §5.8). The third launch gate — issues declared
+ * triaged/agent-ready — is a user declaration (checkbox in the form), so it
+ * never appears here.
+ */
+export interface SamuraiPreflight {
+  gh_auth: SamuraiGhAuthCheck;
+  /**
+   * Whether the usage API reports a governing allowance window. `false`
+   * (session AND weekly both unreported, or the poll failed) is a
+   * launch-blocking error — parking cannot govern the run.
+   */
+  windows_reported: boolean;
+}
+
+/** One epic's run config — mirrors the Rust `SamuraiRunConfig` (P3.1). */
+export interface SamuraiRunConfig {
+  /** Canonical project path (Windows `\\?\` prefix already stripped). */
+  project_path: string;
+  epic: string;
+  /** `--repo owner/repo` pin for orchestrator prompts; null when unknown. */
+  repo_pin: string | null;
+  /** The epic's stable worktree path (PRD §5.9). */
+  worktree_path: string;
+  model: string | null;
+  /** Per-run threshold overrides; null = the global config applies. */
+  thresholds: unknown;
+  status: "ACTIVE" | "ARCHIVED";
+  /** RFC 3339 UTC creation timestamp. */
+  created_at: string;
+}
+
+/** What a successful launch set up. */
+export interface SamuraiLaunchResult {
+  epic: string;
+  branch: string;
+  worktree_path: string;
+  repo_pin: string | null;
+}
+
+/** What one cleanup pass removed (all-false = already clean, PRD §5.9). */
+export interface SamuraiCleanupReport {
+  epic: string;
+  branch: string;
+  timer_cancelled: boolean;
+  config_archived: boolean;
+  worktree_removed: boolean;
+  worktree_path: string | null;
+  branch_deleted: boolean;
+}
+
+/** Runs the launch preflight: gh auth + allowance windows reported. */
+export function samuraiPreflight(projectPath: string): Promise<SamuraiPreflight> {
+  return invoke("samurai_preflight", { projectPath });
+}
+
+/**
+ * Launches an epic run: server-side preflight re-check, epic worktree at the
+ * stable path, ACTIVE run config, gen-1 spawn with the opening brief.
+ * Refusals (untriaged, gh auth, no governing window, live session) arrive as
+ * rejected promises with the reason.
+ */
+export function samuraiLaunchRun(
+  projectPath: string,
+  epic: string,
+  model: string | null,
+  issuesTriaged: boolean,
+): Promise<SamuraiLaunchResult> {
+  return invoke("samurai_launch_run", { projectPath, epic, model, issuesTriaged });
+}
+
+/** Every ACTIVE run config across all projects — the active-runs list. */
+export function samuraiListRuns(): Promise<SamuraiRunConfig[]> {
+  return invoke("samurai_list_runs");
+}
+
+/**
+ * One-click epic cleanup (destructive — confirm before calling): cancels the
+ * resume timer, archives the run config, removes the epic worktree, deletes
+ * the `samurai/<slug>` branch. Idempotent; refuses while a live supervised
+ * session exists.
+ */
+export function samuraiCleanupEpic(
+  projectPath: string,
+  epic: string,
+): Promise<SamuraiCleanupReport> {
+  return invoke("samurai_cleanup_epic", { projectPath, epic });
+}
