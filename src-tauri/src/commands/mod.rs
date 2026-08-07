@@ -7,6 +7,7 @@ pub mod cli;
 pub mod fonts;
 pub mod git;
 pub mod github;
+pub mod harvest;
 pub mod hooks;
 pub mod marketplace;
 pub mod mcp;

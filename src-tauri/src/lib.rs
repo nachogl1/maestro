@@ -988,6 +988,9 @@ pub fn run() {
             // Samurai journal (Phase 5, issue #69)
             commands::samurai::samurai_journal_add,
             commands::samurai::samurai_journal_list,
+            // Samurai harvest (Phase 5, issue #70)
+            commands::harvest::samurai_harvest_run,
+            commands::harvest::samurai_harvest_read,
             // CLI commands
             commands::cli::install_cli,
             commands::cli::uninstall_cli,
