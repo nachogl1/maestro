@@ -394,6 +394,19 @@ fn normalize_project(project: &str) -> String {
     project.strip_prefix(r"\\?\").unwrap_or(project).to_string()
 }
 
+/// Absolute path of the ACTIVE journal file as orchestrator prompts embed it
+/// (issue #72): `artifact_base_dir("journal")` + [`JOURNAL_FILE`],
+/// `\\?\`-stripped per fork convention. Resolved HERE — lib.rs roots the
+/// production [`JournalStore`] at the same `artifact_base_dir("journal")` —
+/// so the briefs and the store can never point at different files.
+pub fn default_journal_file() -> String {
+    normalize_project(
+        &crate::commands::ai_runner::artifact_base_dir("journal")
+            .join(JOURNAL_FILE)
+            .to_string_lossy(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,5 +638,14 @@ mod tests {
         assert!(s.commit_harvest("not-a-date").is_err());
         // Nothing written by a rejected harvest.
         assert!(!dir.path().join(JOURNAL_FILE).exists());
+    }
+
+    #[test]
+    fn test_default_journal_file_names_the_active_file_without_prefix() {
+        // Issue #72: the path orchestrator prompts embed — the active file
+        // inside the journal artifact dir, never a `\\?\`-prefixed spelling.
+        let path = default_journal_file();
+        assert!(path.ends_with(JOURNAL_FILE), "{path}");
+        assert!(!path.starts_with(r"\\?\"), "{path}");
     }
 }

@@ -84,6 +84,7 @@ use super::claude_event::ClaudeEvent;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_injector::{strip_extended_prefix, SessionDirResolver};
+use super::samurai_journal::default_journal_file;
 use super::samurai_prompts;
 use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 use super::transcript_parser;
@@ -218,11 +219,7 @@ fn head_matches(handoff_sha: Option<&str>, current_head: Option<&str>) -> bool {
 
 /// Whether one pending ritual has waited too long for its successor to
 /// start. Strict boundary, same discipline as the injector's timeouts.
-fn no_start_expired(
-    queued_at: Instant,
-    registered_at: Option<Instant>,
-    timeout: Duration,
-) -> bool {
+fn no_start_expired(queued_at: Instant, registered_at: Option<Instant>, timeout: Duration) -> bool {
     registered_at.unwrap_or(queued_at).elapsed() > timeout
 }
 
@@ -571,10 +568,7 @@ impl SamuraiReplicator {
     /// model applies to the next spawn without a restart. One small JSON
     /// read; `None` on every miss (no store bound, no config, no model).
     fn model_for(&self, project: &str, epic: &str) -> Option<String> {
-        self.run_configs
-            .get()?
-            .get(project, epic)?
-            .model
+        self.run_configs.get()?.get(project, epic)?.model
     }
 
     /// One `successor_spawn_failed` ALERT (P2.4 pattern): the successor for
@@ -630,8 +624,7 @@ impl SamuraiReplicator {
         // just-validated handoff file is missing/unreadable — it vanished in
         // the validation→prep window (issue #56 trigger b) — and selects
         // recovery mode below.
-        let relpath =
-            samurai_prompts::handoff_file_relpath(&snapshot.epic, snapshot.generation);
+        let relpath = samurai_prompts::handoff_file_relpath(&snapshot.epic, snapshot.generation);
         let gate_dir = PathBuf::from(working_dir.clone());
         let head_gate: Option<bool> = tokio::task::spawn_blocking(move || {
             let handoff = std::fs::read_to_string(gate_dir.join(&relpath))
@@ -741,10 +734,16 @@ impl SamuraiReplicator {
                     if head_matched { "match, verify skipped" } else { "mismatch, verify required" },
                 );
                 (
-                    samurai_prompts::successor_ritual_instruction(
-                        &snapshot.epic,
-                        snapshot.generation,
-                        head_matched,
+                    // Issue #72: the journaling rider rides every successor
+                    // brief so agents record their own friction (PRD §5.12).
+                    format!(
+                        "{} {}",
+                        samurai_prompts::successor_ritual_instruction(
+                            &snapshot.epic,
+                            snapshot.generation,
+                            head_matched,
+                        ),
+                        samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
                     false,
                 )
@@ -1090,7 +1089,16 @@ impl SamuraiReplicator {
                         if head_matched { "match, verify skipped" } else { "mismatch, verify required" },
                     );
                     (
-                        samurai_prompts::successor_ritual_instruction(&epic, prior, head_matched),
+                        // Issue #72: journaling rider, same as replicate.
+                        format!(
+                            "{} {}",
+                            samurai_prompts::successor_ritual_instruction(
+                                &epic,
+                                prior,
+                                head_matched,
+                            ),
+                            samurai_prompts::journal_instruction(&default_journal_file()),
+                        ),
                         false,
                     )
                 }
@@ -1124,9 +1132,10 @@ impl SamuraiReplicator {
             };
             {
                 let mut pending = this.lock_pending();
-                if let Some(p) = pending.iter_mut().find(|p| {
-                    p.generation == generation && p.epic == epic && p.project == project
-                }) {
+                if let Some(p) = pending
+                    .iter_mut()
+                    .find(|p| p.generation == generation && p.epic == epic && p.project == project)
+                {
                     p.instruction = instruction;
                     p.recovery = recovery;
                 }
@@ -1138,7 +1147,8 @@ impl SamuraiReplicator {
     /// Issue #63: the gen-1 LAUNCH entry point — the P3.5 launcher's seam.
     /// A brand-new epic has no handoff and no predecessor, so no ritual can
     /// be derived; the caller passes the opening brief
-    /// (`samurai_prompts::launch_instruction`, `--repo`-pinned) directly.
+    /// (`samurai_prompts::launch_instruction`, `--repo`-pinned, plus the
+    /// issue-#72 journaling rider) directly.
     /// Everything downstream is the shared fresh-spawn machinery: staged
     /// under the (project, epic, generation 1) idempotence guard, the spawn
     /// event re-emitted per timeout window while unregistered (bounded by
@@ -1740,14 +1750,26 @@ mod tests {
         let table = [
             (Some(a), Some(a), true),
             // Models re-type SHAs; case must not defeat the gate.
-            (Some("ABCDEF0000000000000000000000000000000000"), Some("abcdef0000000000000000000000000000000000"), true),
-            (Some(a), Some("f000000000000000000000000000000000000000"), false),
+            (
+                Some("ABCDEF0000000000000000000000000000000000"),
+                Some("abcdef0000000000000000000000000000000000"),
+                true,
+            ),
+            (
+                Some(a),
+                Some("f000000000000000000000000000000000000000"),
+                false,
+            ),
             (None, Some(a), false), // unparseable handoff → verify required
             (Some(a), None, false), // unreadable HEAD → verify required
             (None, None, false),
         ];
         for (handoff, head, expected) in table {
-            assert_eq!(head_matches(handoff, head), expected, "{handoff:?} vs {head:?}");
+            assert_eq!(
+                head_matches(handoff, head),
+                expected,
+                "{handoff:?} vs {head:?}"
+            );
         }
     }
 
@@ -1768,9 +1790,18 @@ mod tests {
     fn test_parse_owner_repo_https_and_ssh_forms() {
         // (url, expected) — tolerant of the common spellings, None otherwise.
         let table: [(&str, Option<&str>); 14] = [
-            ("https://github.com/nachogl1/maestro.git", Some("nachogl1/maestro")),
-            ("https://github.com/nachogl1/maestro", Some("nachogl1/maestro")),
-            ("https://github.com/nachogl1/maestro/", Some("nachogl1/maestro")),
+            (
+                "https://github.com/nachogl1/maestro.git",
+                Some("nachogl1/maestro"),
+            ),
+            (
+                "https://github.com/nachogl1/maestro",
+                Some("nachogl1/maestro"),
+            ),
+            (
+                "https://github.com/nachogl1/maestro/",
+                Some("nachogl1/maestro"),
+            ),
             ("http://github.com/o/r.git", Some("o/r")),
             ("https://user:token@github.com/o/r.git", Some("o/r")),
             ("git@github.com:o/r.git", Some("o/r")),
@@ -1785,11 +1816,7 @@ mod tests {
             ("", None),
         ];
         for (url, expected) in table {
-            assert_eq!(
-                parse_owner_repo(url).as_deref(),
-                expected,
-                "url {url:?}"
-            );
+            assert_eq!(parse_owner_repo(url).as_deref(), expected, "url {url:?}");
         }
     }
 
@@ -1863,6 +1890,10 @@ mod tests {
         assert!(instruction.contains("SKIP"));
         assert!(instruction.contains("generation 3"));
         assert!(!instruction.contains('\n'));
+        // Issue #72: the journaling rider rides the composed brief.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
+        assert!(instruction.contains("NEVER rewrite or delete existing lines"));
     }
 
     #[tokio::test]
@@ -1923,7 +1954,10 @@ mod tests {
         // Synchronous refusal: no teardown, no spawn, state untouched.
         assert!(h.torn_down.lock().unwrap().is_empty());
         assert!(h.spawns.lock().unwrap().is_empty());
-        assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::HandoffWritten));
+        assert_eq!(
+            state_of(&h.supervisor, 1),
+            Some(SupervisorState::HandoffWritten)
+        );
         let mut alerts = 0;
         for _ in 0..200 {
             let rows = h.audit.read(project, None, None).await.unwrap().events;
@@ -2062,7 +2096,8 @@ mod tests {
         // Past ack_timeout_secs of registration: single ALERT — and the
         // entry stays, latched (finding G), because the successor might
         // still start late.
-        h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         assert!(
             h.replicator.pending_view(3).is_some(),
@@ -2111,7 +2146,8 @@ mod tests {
         let project = "C:/git/proj-rep-noreg";
         stage_successor(&h, project).await;
 
-        h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         // Latched, not deleted (finding G).
         assert!(h.replicator.pending_view(3).is_some());
@@ -2146,7 +2182,8 @@ mod tests {
         let project = "C:/git/proj-rep-late";
         stage_successor(&h, project).await;
 
-        h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         assert!(h.replicator.pending_view(3).is_some(), "latched");
 
@@ -2192,7 +2229,8 @@ mod tests {
         let h = harness(dir.path());
         let project = "C:/git/proj-rep-prune";
         stage_successor(&h, project).await;
-        h.replicator.backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(3, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         assert!(h.replicator.pending_view(3).is_some(), "latched");
 
@@ -2290,7 +2328,10 @@ mod tests {
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
         assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
         let (_, instruction) = h.replicator.pending_view(3).unwrap();
-        assert!(instruction.contains("SKIP"), "HEAD matched → verify skipped");
+        assert!(
+            instruction.contains("SKIP"),
+            "HEAD matched → verify skipped"
+        );
     }
 
     // --- issue #56: recovery digest extraction ---
@@ -2319,8 +2360,7 @@ mod tests {
 
     #[test]
     fn test_digest_missing_transcript_notes_and_header() {
-        let content =
-            recovery_digest_content("epic-9", 2, 1, "2026-08-06T12:00:00Z", None, None);
+        let content = recovery_digest_content("epic-9", 2, 1, "2026-08-06T12:00:00Z", None, None);
         assert!(content.contains("# Samurai recovery digest — epic epic-9 — for gen 3"));
         assert!(content.contains("generation 2, session 1"));
         assert!(content.contains("Ended at: 2026-08-06T12:00:00Z"));
@@ -2453,7 +2493,8 @@ mod tests {
         assert!(!instruction.contains('\n'));
         // The digest file was written before staging, from the transcript.
         let digest = std::fs::read_to_string(
-            repo.path().join(".maestro/handoffs/epic-9-gen3-recovery.md"),
+            repo.path()
+                .join(".maestro/handoffs/epic-9-gen3-recovery.md"),
         )
         .unwrap();
         assert!(digest.contains("the final words of gen-2"));
@@ -2518,7 +2559,8 @@ mod tests {
         }
         // No transcript was resolvable → the digest still exists, noted.
         let digest = std::fs::read_to_string(
-            repo.path().join(".maestro/handoffs/epic-9-gen3-recovery.md"),
+            repo.path()
+                .join(".maestro/handoffs/epic-9-gen3-recovery.md"),
         )
         .unwrap();
         assert!(digest.contains("No transcript available"));
@@ -2594,7 +2636,8 @@ mod tests {
         wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
 
         let digest = std::fs::read_to_string(
-            repo.path().join(".maestro/handoffs/epic-9-gen3-recovery.md"),
+            repo.path()
+                .join(".maestro/handoffs/epic-9-gen3-recovery.md"),
         )
         .unwrap();
         assert!(digest.contains("please finish issue 42"));
@@ -2620,7 +2663,12 @@ mod tests {
                 .expect("git must be runnable in tests");
             assert!(out.status.success());
         };
-        run(&["remote", "add", "origin", "https://github.com/nachogl1/maestro.git"]);
+        run(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/nachogl1/maestro.git",
+        ]);
         h.dirs
             .lock()
             .unwrap()
@@ -2916,6 +2964,11 @@ mod tests {
         assert!(instruction.contains("generation 4"));
         assert!(instruction.contains(".maestro/handoffs/epic-9-gen3.md"));
         assert!(!instruction.contains("RECOVERY"));
+        // Issue #72: the journaling rider rides the composed brief — and
+        // the whole thing stays one paste-able line.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
+        assert!(!instruction.contains('\n'));
     }
 
     #[tokio::test]
@@ -3034,7 +3087,8 @@ mod tests {
 
         // Unregistered launches ride the same re-emit machinery as resumes
         // (issue #61): one re-emit per expired window.
-        h.replicator.backdate(1, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(1, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         assert_eq!(h.spawns.lock().unwrap().len(), 2, "dropped launch re-emits");
     }
@@ -3061,14 +3115,16 @@ mod tests {
 
         // Each expired window re-emits once, up to MAX_SPAWN_EMITS total.
         for expected in 2..=MAX_SPAWN_EMITS as usize {
-            h.replicator.backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
+            h.replicator
+                .backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
             h.replicator.tick();
             assert_eq!(h.spawns.lock().unwrap().len(), expected);
         }
 
         // The next expiry gives up: ONE spawn_dropped ALERT, no further
         // emits — and NO generic successor_no_start for this path.
-        h.replicator.backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         assert_eq!(h.spawns.lock().unwrap().len(), MAX_SPAWN_EMITS as usize);
         let mut alerts = Vec::new();
@@ -3092,7 +3148,10 @@ mod tests {
         // has no supervised session at all (the resume situation).
         h.replicator.tick();
         h.replicator.tick();
-        assert!(h.replicator.pending_view(4).is_some(), "kept for a late registration");
+        assert!(
+            h.replicator.pending_view(4).is_some(),
+            "kept for a late registration"
+        );
         let rows = h.audit.read(project, None, None).await.unwrap().events;
         assert_eq!(
             rows.iter()
@@ -3101,7 +3160,9 @@ mod tests {
             1
         );
         assert!(
-            !rows.iter().any(|r| r.details["kind"] == "successor_no_start"),
+            !rows
+                .iter()
+                .any(|r| r.details["kind"] == "successor_no_start"),
             "the retry path suppresses the generic no-start ALERT"
         );
 
@@ -3145,9 +3206,14 @@ mod tests {
 
         // Registered: an expired window re-emits nothing; the generic
         // no-start machinery owns the entry from here (it has a session id).
-        h.replicator.backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator
+            .backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
-        assert_eq!(h.spawns.lock().unwrap().len(), 1, "no re-emit after registration");
+        assert_eq!(
+            h.spawns.lock().unwrap().len(),
+            1,
+            "no re-emit after registration"
+        );
         let mut alerts = Vec::new();
         for _ in 0..200 {
             let rows = h.audit.read(project, None, None).await.unwrap().events;

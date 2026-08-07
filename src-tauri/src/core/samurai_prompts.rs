@@ -521,6 +521,31 @@ pub fn recovery_ritual_instruction(
     )
 }
 
+/// The journaling rider (issue #72; PRD §5.12 — friction "recorded by
+/// agents (instructed in orchestrator prompts)"): appended by callers to
+/// every Samurai agent brief (gen-1 launch, successor ritual) so agents
+/// record bottlenecks/errors/improvement ideas in the ops journal.
+/// `journal_file` is the ACTIVE journal's absolute path, resolved by the
+/// caller (`samurai_journal::default_journal_file` — this module stays pure
+/// text). The five SCREAMING category spellings are the
+/// `samurai_journal::JournalCategory` wire contract. Single line by
+/// construction (see module doc); the path is whitespace-normalized so a
+/// pathological value can never smuggle a newline into the paste.
+pub fn journal_instruction(journal_file: &str) -> String {
+    let journal_file = journal_file
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "[Maestro Samurai] Journaling: when you hit friction — a bottleneck, an error, a \
+         tooling gap, a process improvement idea, or a concern — append ONE line to \
+         {journal_file} in the form {{\"ts\":\"<ISO 8601>\",\"category\":\"BOTTLENECK\"|\"ERROR\"|\"IMPROVEMENT\"|\"SKILL\"|\"CONCERN\",\"text\":\"<short description>\",\"project\":\"<repo path>\",\"agent\":\"<your epic/generation id>\"}}, \
+         e.g. via `echo '<json>' >> \"{journal_file}\"`. Malformed lines are skipped by the \
+         reader, so a bad line cannot break the journal — but NEVER rewrite or delete \
+         existing lines: the journal is append-only."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,7 +646,10 @@ mod tests {
         assert_eq!(parse_handoff_generation("37.md"), None);
         assert_eq!(parse_handoff_generation(""), None);
         // Overflow parses as None rather than panicking.
-        assert_eq!(parse_handoff_generation("37-gen99999999999999999999.md"), None);
+        assert_eq!(
+            parse_handoff_generation("37-gen99999999999999999999.md"),
+            None
+        );
     }
 
     #[test]
@@ -740,7 +768,9 @@ mod tests {
         assert!(text.contains("Park INVALID"));
         assert!(text.contains("WIP is not committed"));
         assert!(text.contains("<samurai-ack>park gen-4 retry</samurai-ack>"));
-        assert!(text.contains("<samurai-handoff-written>gen-4 park retry</samurai-handoff-written>"));
+        assert!(
+            text.contains("<samurai-handoff-written>gen-4 park retry</samurai-handoff-written>")
+        );
         assert!(!text.contains("<samurai-ack>park gen-4</samurai-ack>"));
         assert!(text.contains(".maestro/handoffs/37-gen4.md"));
         assert!(text.contains("final attempt"));
@@ -786,7 +816,8 @@ mod tests {
         assert_eq!(handoff_head_sha(&content), Some(SHA.to_string()));
 
         // No markdown heading at all — a prose "Repo state:" line.
-        let content = format!("Goal: ship it\nRepo state: main @ {SHA} (clean)\nVerify: npm test\n");
+        let content =
+            format!("Goal: ship it\nRepo state: main @ {SHA} (clean)\nVerify: npm test\n");
         assert_eq!(handoff_head_sha(&content), Some(SHA.to_string()));
 
         // Uppercase hex is a valid SHA spelling.
@@ -805,10 +836,15 @@ mod tests {
         // No Repo state section at all.
         assert_eq!(handoff_head_sha(&format!("## Done\n{SHA}\n")), None);
         // SHA only in ANOTHER section: the parser is section-scoped.
-        let content = format!("## Repo state\nbranch main, forgot the SHA\n## Verify\ngit reset --hard {SHA}\n");
+        let content = format!(
+            "## Repo state\nbranch main, forgot the SHA\n## Verify\ngit reset --hard {SHA}\n"
+        );
         assert_eq!(handoff_head_sha(&content), None);
         // Too short / too long / embedded in a longer word.
-        assert_eq!(handoff_head_sha(&format!("## Repo state\n{}\n", &SHA[..39])), None);
+        assert_eq!(
+            handoff_head_sha(&format!("## Repo state\n{}\n", &SHA[..39])),
+            None
+        );
         assert_eq!(handoff_head_sha(&format!("## Repo state\n{SHA}0\n")), None);
         assert_eq!(handoff_head_sha(&format!("## Repo state\nx{SHA}\n")), None);
         assert_eq!(handoff_head_sha(&format!("## Repo state\n{SHA}g\n")), None);
@@ -819,7 +855,10 @@ mod tests {
     #[test]
     fn test_successor_session_name_shape() {
         assert_eq!(successor_session_name("#37", 3), "samurai gen-3 37");
-        assert_eq!(successor_session_name("Epic 12: Auth", 2), "samurai gen-2 epic-12-auth");
+        assert_eq!(
+            successor_session_name("Epic 12: Auth", 2),
+            "samurai gen-2 epic-12-auth"
+        );
     }
 
     #[test]
@@ -1011,5 +1050,52 @@ mod tests {
         assert!(!text.contains("passing `--repo"));
         assert!(text.contains("CAUTION"));
         assert!(text.contains("double-check it targets the correct repository"));
+    }
+
+    // --- issue #72: journaling rider ---
+
+    #[test]
+    fn test_journal_instruction_is_single_line() {
+        let text = journal_instruction(r"C:\data\maestro\journal\journal.jsonl");
+        assert!(!text.contains('\n'), "rider must not contain \\n");
+        assert!(!text.contains('\r'), "rider must not contain \\r");
+        // A pathological path cannot smuggle a newline into the paste.
+        let text = journal_instruction("path\nwith newline");
+        assert!(!text.contains('\n'));
+        assert!(text.contains("path with newline"));
+    }
+
+    #[test]
+    fn test_journal_instruction_content() {
+        let path = r"C:\data\maestro\journal\journal.jsonl";
+        let text = journal_instruction(path);
+        // The exact file agents append to — in the rule AND the echo example.
+        assert_eq!(text.matches(path).count(), 2, "path missing: {text}");
+        assert!(text.contains(&format!("echo '<json>' >> \"{path}\"")));
+        // All five SCREAMING category spellings — the JournalCategory wire
+        // contract agents hand-write from shell prompts.
+        for category in ["BOTTLENECK", "ERROR", "IMPROVEMENT", "SKILL", "CONCERN"] {
+            assert!(
+                text.contains(&format!("\"{category}\"")),
+                "missing category {category}"
+            );
+        }
+        // The full entry shape, timestamp format included.
+        for field in [
+            "\"ts\"",
+            "\"category\"",
+            "\"text\"",
+            "\"project\"",
+            "\"agent\"",
+        ] {
+            assert!(text.contains(field), "missing field {field}");
+        }
+        assert!(text.contains("ISO 8601"));
+        assert!(text.contains("append ONE line"));
+        // The reader is lenient — but the file is append-only: never
+        // rewrite or delete what is already there.
+        assert!(text.contains("Malformed lines are skipped"));
+        assert!(text.contains("NEVER rewrite or delete existing lines"));
+        assert!(text.contains("append-only"));
     }
 }
