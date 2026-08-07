@@ -613,6 +613,14 @@ pub fn run() {
             // both controllers.
             replicator.set_run_configs(run_configs.clone());
             injector.set_run_configs(run_configs.clone());
+            // Samurai journal (Phase 5, issue #69): the ops-journal store —
+            // an app-data JSONL where agents and the user record
+            // bottlenecks/errors/improvements/skill gaps/concerns; the
+            // harvest runner (next issue) consumes and archives entries via
+            // markers. Mutex-serialized like the run-config store above.
+            app.manage(Arc::new(core::samurai_journal::JournalStore::new(
+                commands::ai_runner::artifact_base_dir("journal"),
+            )));
             // Samurai (issue #61): the resume handler — a fired park timer
             // becomes a FRESH generation spawn (guards → working dir →
             // next generation → RESUME row → replicator.spawn_generation).
@@ -977,6 +985,9 @@ pub fn run() {
             commands::samurai::samurai_files_list,
             commands::samurai::samurai_file_delete,
             commands::samurai::samurai_timer_cancel,
+            // Samurai journal (Phase 5, issue #69)
+            commands::samurai::samurai_journal_add,
+            commands::samurai::samurai_journal_list,
             // CLI commands
             commands::cli::install_cli,
             commands::cli::uninstall_cli,

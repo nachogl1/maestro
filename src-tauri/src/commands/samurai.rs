@@ -19,6 +19,9 @@ use crate::core::samurai_audit::{AuditLog, AuditReadResult};
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
 use crate::core::samurai_files::{self, SamuraiFileEntry, SamuraiFilesRoots};
 use crate::core::samurai_injector::strip_extended_prefix;
+use crate::core::samurai_journal::{
+    JournalCategory, JournalEntry, JournalListResult, JournalStore,
+};
 use crate::core::samurai_prompts::{self, epic_slug};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
 use crate::core::samurai_run_config::{RunConfigStatus, RunConfigStore, SamuraiRunConfig};
@@ -764,6 +767,40 @@ pub fn samurai_timer_cancel(
 ) -> Result<bool, String> {
     let project = canonical_project_path(&project_path);
     timer_cancel_inner(&schedule, &project, &epic)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #69 (P5.1): ops journal — add + list
+// ---------------------------------------------------------------------------
+
+/// Adds one user-authored ops-journal entry (PRD §5.12). The optional
+/// project is canonicalized at this boundary like every samurai command.
+/// There is deliberately no agent parameter — agents append their entries
+/// to the JSONL directly from shell prompts; this command is the user/UI
+/// path, so `agent` stays unset.
+#[tauri::command]
+pub fn samurai_journal_add(
+    journal: State<'_, Arc<JournalStore>>,
+    category: JournalCategory,
+    text: String,
+    project: Option<String>,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("journal entry text must not be empty".to_string());
+    }
+    let project = project.map(|p| canonical_project_path(&p));
+    journal.append_entry(&JournalEntry::now(category, text, project, None))
+}
+
+/// The active journal (`journal.jsonl`) — every entry with its consumption
+/// status derived from the harvest markers, newest last, plus the file size
+/// (the `samurai_audit_read` reporting convention). All logic lives in
+/// `core::samurai_journal` (unit-tested there); this command only reads.
+#[tauri::command]
+pub fn samurai_journal_list(
+    journal: State<'_, Arc<JournalStore>>,
+) -> Result<JournalListResult, String> {
+    journal.list()
 }
 
 #[cfg(test)]
