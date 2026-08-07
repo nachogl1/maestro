@@ -1,6 +1,7 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Eraser, Files, Loader2, RefreshCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { HealthFlag } from "@/lib/healthRules";
 import {
   isSamuraiInUseError,
   samuraiCleanupEpic,
@@ -9,6 +10,8 @@ import {
   type SamuraiFileEntry,
   type SamuraiFileKind,
 } from "@/lib/samurai";
+import { HealthReasonLines } from "@/components/shared/HealthReasonLines";
+import { flagsByRow, useHealthStore } from "@/stores/useHealthStore";
 import { AuditSection } from "./AuditSection";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
@@ -76,12 +79,15 @@ function FileRow({
   onDelete,
   onCleanEpic,
   busy,
+  healthFlags,
 }: {
   entry: SamuraiFileEntry;
   onDelete: (entry: SamuraiFileEntry) => void;
   /** Present only on rows offering the one-click epic cleanup. */
   onCleanEpic: ((entry: SamuraiFileEntry) => void) | null;
   busy: boolean;
+  /** Size warnings the health checker raised against this file (issue #67). */
+  healthFlags?: HealthFlag[];
 }) {
   const label = rowLabel(entry);
   const meta =
@@ -89,44 +95,51 @@ function FileRow({
       ? formatFireAt(entry.fire_at)
       : [formatSize(entry.size_bytes), formatAge(entry.modified_at)].filter(Boolean).join(" · ");
   return (
-    <div
-      className="flex items-center gap-1.5 rounded px-1 py-0.5 text-[11px] hover:bg-maestro-surface"
-      title={`${entry.path}${entry.project_path ? `\nproject: ${entry.project_path}` : ""}${entry.epic ? `\nepic: ${entry.epic}` : ""}`}
-    >
-      {entry.in_use && (
-        <span className="shrink-0 whitespace-nowrap rounded bg-amber-500/15 px-1 py-px text-[9px] font-bold tracking-wide text-amber-500">
-          IN USE
+    <div>
+      <div
+        className="flex items-center gap-1.5 rounded px-1 py-0.5 text-[11px] hover:bg-maestro-surface"
+        title={`${entry.path}${entry.project_path ? `\nproject: ${entry.project_path}` : ""}${entry.epic ? `\nepic: ${entry.epic}` : ""}`}
+      >
+        {entry.in_use && (
+          <span className="shrink-0 whitespace-nowrap rounded bg-amber-500/15 px-1 py-px text-[9px] font-bold tracking-wide text-amber-500">
+            IN USE
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-maestro-text">
+          {label}
+          {entry.project_path ? (
+            <span className="text-maestro-muted"> · {baseName(entry.project_path)}</span>
+          ) : null}
         </span>
-      )}
-      <span className="min-w-0 flex-1 truncate text-maestro-text">
-        {label}
-        {entry.project_path ? (
-          <span className="text-maestro-muted"> · {baseName(entry.project_path)}</span>
-        ) : null}
-      </span>
-      <span className="shrink-0 text-[10px] text-maestro-muted/70">{meta}</span>
-      {onCleanEpic && (
+        <span className="shrink-0 text-[10px] text-maestro-muted/70">{meta}</span>
+        {onCleanEpic && (
+          <button
+            type="button"
+            onClick={() => onCleanEpic(entry)}
+            disabled={busy}
+            className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
+            aria-label={`Clean up epic ${entry.epic}`}
+            title="Delete this epic's worktree and branch, cancel its timer, archive its run config (asks first)"
+          >
+            <Eraser size={12} />
+          </button>
+        )}
         <button
           type="button"
-          onClick={() => onCleanEpic(entry)}
+          onClick={() => onDelete(entry)}
           disabled={busy}
           className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
-          aria-label={`Clean up epic ${entry.epic}`}
-          title="Delete this epic's worktree and branch, cancel its timer, archive its run config (asks first)"
+          aria-label={`Delete ${label}`}
+          title="Delete this file (asks first)"
         >
-          <Eraser size={12} />
+          <Trash2 size={12} />
         </button>
+      </div>
+      {healthFlags && (
+        <div className="pb-0.5 pl-5 pr-1">
+          <HealthReasonLines flags={healthFlags} />
+        </div>
       )}
-      <button
-        type="button"
-        onClick={() => onDelete(entry)}
-        disabled={busy}
-        className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
-        aria-label={`Delete ${label}`}
-        title="Delete this file (asks first)"
-      >
-        <Trash2 size={12} />
-      </button>
     </div>
   );
 }
@@ -146,6 +159,10 @@ export function SecondBrainSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /* ── Health checker flags (rule-based, read-only) — issue #67 ── */
+  const allHealthFlags = useHealthStore((s) => s.flags);
+  const healthRows = useMemo(() => flagsByRow(allHealthFlags, "secondbrain"), [allHealthFlags]);
 
   const refresh = useCallback(async () => {
     try {
@@ -289,6 +306,7 @@ export function SecondBrainSection() {
                         <FileRow
                           key={`${entry.path}-${entry.epic ?? ""}-${i}`}
                           entry={entry}
+                          healthFlags={healthRows.get(`${entry.path}|${baseName(entry.path)}`)}
                           onDelete={handleDelete}
                           onCleanEpic={
                             // One-click epic cleanup, only where the run

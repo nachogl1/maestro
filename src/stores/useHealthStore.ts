@@ -3,19 +3,22 @@ import {
   diffNewFlags,
   evaluateMemory,
   evaluateProcesses,
+  evaluateSamuraiFiles,
   type HealthArea,
   type HealthFlag,
   type ProcessStreaks,
 } from "@/lib/healthRules";
 import { listMemoryFiles, listMemoryProjects } from "@/lib/memory";
 import { listDevProcesses } from "@/lib/processes";
+import { samuraiFilesList, samuraiGetConfig } from "@/lib/samurai";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useProcessWatchlistStore } from "@/stores/useProcessWatchlistStore";
 
 /**
  * Background health checker: pure rules over data Maestro already fetches,
  * run every few minutes. It raises attention badges and one-line reasons; it
- * never deletes a memory file and never kills a process.
+ * never deletes a memory file, never kills a process, and never touches a
+ * Samurai-managed file.
  *
  * Follows the GitHub watchdog's shape — a reducer over samples, transition-only
  * toasts, first-run suppression — but polls from the frontend rather than a
@@ -57,9 +60,10 @@ type HealthState = {
 
 type HealthActions = {
   /**
-   * Runs one full check across every project with saved memory and every
-   * watched process. Takes no arguments: the rules read only the memory
-   * directories and the process table, never the open workspace.
+   * Runs one full check across every project with saved memory, every
+   * watched process and every Samurai-managed file. Takes no arguments: the
+   * rules read only the memory directories, the process table and the
+   * Samurai inventory, never the open workspace.
    */
   runCheck: () => Promise<void>;
   /** Hides one flag until it clears and comes back. Never touches a file. */
@@ -92,10 +96,20 @@ async function checkMemory(now: number): Promise<HealthFlag[]> {
   return perProject.flat();
 }
 
+/**
+ * Samurai-managed file scan (issue #67): two IPC calls — the file inventory
+ * plus the configured `size_warn_bytes` threshold — and no file bodies are
+ * read. Throws so the caller can keep the area's last-known flags.
+ */
+async function checkSecondBrain(): Promise<HealthFlag[]> {
+  const [files, config] = await Promise.all([samuraiFilesList(), samuraiGetConfig()]);
+  return evaluateSamuraiFiles(files, config.size_warn_bytes);
+}
+
 export const useHealthStore = create<HealthState & HealthActions>()((set, get) => ({
   flags: [],
   streaks: {},
-  baselineKeys: { memory: null, processes: null },
+  baselineKeys: { memory: null, processes: null, secondbrain: null },
   dismissedKeys: [],
   toasts: [],
   lastCheckedAt: null,
@@ -139,11 +153,17 @@ export const useHealthStore = create<HealthState & HealthActions>()((set, get) =
           return null;
         });
 
+      const secondBrainFlags = await checkSecondBrain().catch((err) => {
+        console.error("Health check (second brain) failed:", err);
+        return null;
+      });
+
       const nextBaseline = { ...baselineKeys };
       const newFlags: HealthFlag[] = [];
       const areas: Array<[HealthArea, HealthFlag[] | null]> = [
         ["memory", memoryFlags],
         ["processes", processResult?.flags ?? null],
+        ["secondbrain", secondBrainFlags],
       ];
       for (const [area, areaFlags] of areas) {
         if (areaFlags === null) continue;
@@ -155,6 +175,7 @@ export const useHealthStore = create<HealthState & HealthActions>()((set, get) =
       const raised = [
         ...(memoryFlags ?? keep("memory")),
         ...(processResult?.flags ?? keep("processes")),
+        ...(secondBrainFlags ?? keep("secondbrain")),
       ];
 
       // Dismissals only hide what is currently raised; pruning them here is
@@ -206,8 +227,9 @@ export const useHealthStore = create<HealthState & HealthActions>()((set, get) =
 
 /**
  * Flags for one area, keyed `scope|target` — the identity a section row can
- * reconstruct (memory: `dirName|relPath`; processes: `pid:name|matched`).
- * Whole flags rather than bare reasons, so a row can also offer to dismiss one.
+ * reconstruct (memory: `dirName|relPath`; processes: `pid:name|matched`;
+ * secondbrain: `path|basename`). Whole flags rather than bare reasons, so a
+ * row can also offer to dismiss one.
  */
 export function flagsByRow(flags: HealthFlag[], area: HealthArea): Map<string, HealthFlag[]> {
   const map = new Map<string, HealthFlag[]>();

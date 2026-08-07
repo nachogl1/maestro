@@ -20,8 +20,8 @@ function formatTimeAgo(timestamp: number | null): string {
  * (follows the UpdateSettingsSection pattern).
  *
  * One toggle covers both notifying watchers — the GitHub watchdog and the
- * memory/process health checker. It mutes toasts only: both keep polling, and
- * their badges (top-bar totals, Memory/Processes attention counts) stay on
+ * memory/process/Samurai-file health checker. It mutes toasts only: both keep
+ * polling, and their badges (top-bar totals, panel attention counts) stay on
  * either way, so nothing is ever silently missed.
  */
 export function NotificationsSettingsSection() {
@@ -62,8 +62,8 @@ export function NotificationsSettingsSection() {
       </div>
 
       <p className="px-2 pt-0.5 text-[10px] text-maestro-muted/70">
-        Toasts for new review requests, assigned issues, and memory/process
-        health flags. Badges stay on either way.
+        Toasts for new review requests, assigned issues, and health flags
+        (memory, processes, Samurai files). Badges stay on either way.
       </p>
 
       <p className="px-2 pt-1 text-[10px] text-maestro-muted">

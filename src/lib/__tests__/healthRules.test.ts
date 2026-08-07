@@ -3,12 +3,14 @@ import {
   diffNewFlags,
   evaluateMemory,
   evaluateProcesses,
+  evaluateSamuraiFiles,
   HEALTH_THRESHOLDS,
   processKey,
   type ProcessStreaks,
 } from "../healthRules";
 import type { MemoryFile } from "../memory";
 import type { DevProcess } from "../processes";
+import type { SamuraiFileEntry } from "../samurai";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.parse("2026-08-04T12:00:00Z");
@@ -149,6 +151,75 @@ describe("evaluateProcesses", () => {
   it("drops streaks for processes that have exited", () => {
     const { streaks } = evaluateProcesses([hot], { "999:ghost": { cpu: 5, mem: 5 } });
     expect(streaks["999:ghost"]).toBeUndefined();
+  });
+});
+
+describe("evaluateSamuraiFiles", () => {
+  const WARN = 5 * 1024 * 1024;
+
+  function samuraiFile(path: string, overrides: Partial<SamuraiFileEntry> = {}): SamuraiFileEntry {
+    return {
+      kind: "AUDIT_LOG",
+      path,
+      size_bytes: 1024,
+      modified_at: new Date(NOW).toISOString(),
+      project_path: "C:\\git\\app",
+      epic: null,
+      in_use: false,
+      fire_at: null,
+      ...overrides,
+    };
+  }
+
+  it("stays silent when every file is at or under the threshold", () => {
+    const files = [
+      samuraiFile("C:\\data\\audit\\a.jsonl", { size_bytes: WARN }),
+      samuraiFile("C:\\data\\handoffs\\h.md", { kind: "HANDOFF", size_bytes: 12 }),
+    ];
+    expect(evaluateSamuraiFiles(files, WARN)).toEqual([]);
+  });
+
+  it("flags only files strictly over the threshold, with kind and sizes in the reason", () => {
+    const files = [
+      samuraiFile("C:\\data\\audit\\big.jsonl", { size_bytes: 6.5 * 1024 * 1024 }),
+      samuraiFile("C:\\data\\audit\\small.jsonl", { size_bytes: 100 }),
+    ];
+    const flags = evaluateSamuraiFiles(files, WARN);
+    expect(flags).toHaveLength(1);
+    expect(flags[0].area).toBe("secondbrain");
+    expect(flags[0].scope).toBe("C:\\data\\audit\\big.jsonl");
+    expect(flags[0].target).toBe("big.jsonl");
+    expect(flags[0].reason).toBe("audit log 6.5 MB (warn at 5.0 MB)");
+  });
+
+  it("keys flags by path only — the key survives the file growing", () => {
+    const path = "C:\\data\\audit\\log.jsonl";
+    const before = evaluateSamuraiFiles([samuraiFile(path, { size_bytes: WARN + 1 })], WARN);
+    const after = evaluateSamuraiFiles([samuraiFile(path, { size_bytes: WARN * 3 })], WARN);
+    expect(before[0].key).toBe(`samurai:${path}:size`);
+    expect(after[0].key).toBe(before[0].key);
+  });
+
+  it("dedupes TIMER rows sharing schedule.json into one flag", () => {
+    const timer = (epic: string) =>
+      samuraiFile("C:\\data\\schedule.json", {
+        kind: "TIMER" as const,
+        size_bytes: WARN + 1,
+        epic,
+        fire_at: new Date(NOW).toISOString(),
+      });
+    const flags = evaluateSamuraiFiles([timer("epic-a"), timer("epic-b")], WARN);
+    expect(flags).toHaveLength(1);
+    expect(flags[0].key).toBe("samurai:C:\\data\\schedule.json:size");
+  });
+
+  it("fires at test-low thresholds (PRD §7 test mode)", () => {
+    const flags = evaluateSamuraiFiles(
+      [samuraiFile("C:\\data\\audit\\log.jsonl", { size_bytes: 2048 })],
+      1024,
+    );
+    expect(flags).toHaveLength(1);
+    expect(flags[0].reason).toBe("audit log 2 KB (warn at 1 KB)");
   });
 });
 

@@ -329,7 +329,7 @@ export function TopBar({
           <button
             type="button"
             onClick={onToggleSecondBrainPanel}
-            className={`rounded p-1.5 transition-colors ${
+            className={`relative rounded p-1.5 transition-colors ${
               secondBrainPanelOpen
                 ? "text-maestro-accent hover:bg-maestro-accent/10"
                 : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
@@ -338,6 +338,7 @@ export function TopBar({
             title="Samurai Second Brain — audit stream and managed files"
           >
             <BrainCircuit size={14} />
+            <HealthAttentionBadge area="secondbrain" />
           </button>
         )}
         {onToggleLaunchPanel && (

@@ -43,13 +43,15 @@ function proc(overrides: Partial<DevProcess> = {}): DevProcess {
 }
 
 /**
- * Wires the three commands one check makes. `memoryFiles` is keyed by memory
+ * Wires the five commands one check makes. `memoryFiles` is keyed by memory
  * dir; `fail` names a command that should throw.
  */
 function mockBackend({
   memoryProjects = [] as Array<{ dirName: string }>,
   memoryFiles = {} as Record<string, unknown[]>,
   processes = [] as DevProcess[],
+  samuraiFiles = [] as unknown[],
+  sizeWarnBytes = 5 * 1024 * 1024,
   fail = null as null | string,
 } = {}) {
   invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
@@ -66,6 +68,10 @@ function mockBackend({
         return memoryFiles[args?.dirName as string] ?? [];
       case "list_dev_processes":
         return processes;
+      case "samurai_files_list":
+        return samuraiFiles;
+      case "samurai_get_config":
+        return { size_warn_bytes: sizeWarnBytes };
       default:
         return undefined;
     }
@@ -82,6 +88,20 @@ function memFile(relPath: string, overrides: Record<string, unknown> = {}) {
     sizeBytes: 100,
     modified: new Date().toISOString(),
     ...overrides,
+  };
+}
+
+/** One Samurai-managed inventory row, shaped like `SamuraiFileEntry`. */
+function samuraiFile(path: string, sizeBytes: number) {
+  return {
+    kind: "AUDIT_LOG",
+    path,
+    size_bytes: sizeBytes,
+    modified_at: new Date().toISOString(),
+    project_path: APP_PATH,
+    epic: null,
+    in_use: false,
+    fire_at: null,
   };
 }
 
@@ -103,7 +123,7 @@ describe("useHealthStore", () => {
     useHealthStore.setState({
       flags: [],
       streaks: {},
-      baselineKeys: { memory: null, processes: null },
+      baselineKeys: { memory: null, processes: null, secondbrain: null },
       dismissedKeys: [],
       toasts: [],
       lastCheckedAt: null,
@@ -226,6 +246,46 @@ describe("useHealthStore", () => {
         .get("100:node|vite")
         ?.map((f) => f.reason),
     ).toEqual(["running 24h"]);
+  });
+
+  it("surfaces Samurai size warnings in the secondbrain area, keyed for row highlighting", async () => {
+    const auditPath = "C:\\data\\samurai\\audit\\app.jsonl";
+    mockBackend({ samuraiFiles: [samuraiFile(auditPath, 6 * 1024 * 1024)] });
+    await useHealthStore.getState().runCheck();
+
+    const { flags, toasts } = useHealthStore.getState();
+    expect(countForArea(flags, "secondbrain")).toBe(1);
+    // First check ever: badge yes, toast no (first-run suppression).
+    expect(toasts).toEqual([]);
+    expect(
+      flagsByRow(flags, "secondbrain")
+        .get(`${auditPath}|app.jsonl`)
+        ?.map((f) => f.reason),
+    ).toEqual(["audit log 6.0 MB (warn at 5.0 MB)"]);
+  });
+
+  it("toasts a new Samurai size flag once and never again while it persists", async () => {
+    const auditPath = "C:\\data\\samurai\\audit\\app.jsonl";
+    mockBackend({ samuraiFiles: [samuraiFile(auditPath, 6 * 1024 * 1024)] });
+    await useHealthStore.getState().runCheck();
+    expect(useHealthStore.getState().toasts).toEqual([]);
+
+    // A second file crosses the threshold: exactly one toast, for it alone.
+    mockBackend({
+      samuraiFiles: [
+        samuraiFile(auditPath, 6 * 1024 * 1024),
+        samuraiFile("C:\\data\\samurai\\audit\\other.jsonl", 7 * 1024 * 1024),
+      ],
+    });
+    await useHealthStore.getState().runCheck();
+    const { toasts } = useHealthStore.getState();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].area).toBe("secondbrain");
+    expect(toasts[0].target).toBe("other.jsonl");
+
+    // Unchanged data on the next check: no repeat toast.
+    await useHealthStore.getState().runCheck();
+    expect(useHealthStore.getState().toasts).toHaveLength(1);
   });
 
   it("ignores a re-entrant check while one is in flight", async () => {

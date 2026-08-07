@@ -1,4 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { HealthArea } from "@/lib/healthRules";
 import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
@@ -7,6 +8,13 @@ import { Toast, ToastStack } from "./Toast";
 
 /** Attention tint for health toasts — the same orange the badges use. */
 const HEALTH_ACCENT = "rgb(var(--maestro-orange))";
+
+/** Toast title per health area — names the panel whose badge has the detail. */
+const HEALTH_AREA_TITLES: Record<HealthArea, string> = {
+  memory: "Memory",
+  processes: "Processes",
+  secondbrain: "Second Brain",
+};
 
 /**
  * Hard cap on cards on screen at once, across both queues.
@@ -24,9 +32,9 @@ const MAX_VISIBLE_TOASTS = 5;
  * - GitHub watchdog: one card per newly-appeared review request / assigned
  *   issue, tinted with the project's color. Clicking opens it in the browser
  *   (simpler than driving the git panel to the right project + tab).
- * - Health checker: one card per newly-raised memory/process flag. These have
- *   no destination — the badge and the section highlight carry the detail —
- *   so they are dismiss-only.
+ * - Health checker: one card per newly-raised memory/process/Second Brain
+ *   flag. These have no destination — the badge and the section highlight
+ *   carry the detail — so they are dismiss-only.
  *
  * Both queues only ever hold transitions, and only while notifications are
  * enabled; see the stores for the diffing rules.
@@ -64,7 +72,7 @@ export function NotificationToasts() {
         <Toast
           key={toast.id}
           accentColor={HEALTH_ACCENT}
-          title={toast.area === "memory" ? "Memory" : "Processes"}
+          title={HEALTH_AREA_TITLES[toast.area]}
           subtitle={`${toast.target} — ${toast.reason}`}
           onDismiss={() => dismissHealthToast(toast.id)}
         />

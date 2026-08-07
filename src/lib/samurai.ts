@@ -313,3 +313,26 @@ export function samuraiFilesList(): Promise<SamuraiFileEntry[]> {
 export function samuraiFileDelete(path: string, force: boolean): Promise<void> {
   return invoke("samurai_file_delete", { path, force });
 }
+
+// ---------------------------------------------------------------------------
+// Issue #67: config read for the health checker's size-warning rule
+// ---------------------------------------------------------------------------
+
+/** Samurai thresholds (PRD §7). Keys are the backend's snake_case wire
+ *  names — must match `SamuraiConfig` in `src-tauri/src/core/samurai_config.rs`. */
+export interface SamuraiConfig {
+  handoff_context_pct: number;
+  park_soft_5h_pct: number;
+  park_hard_5h_pct: number;
+  park_hard_7d_pct: number;
+  ack_timeout_secs: number;
+  staleness_window_secs: number;
+  handoff_retention_days: number;
+  breaker_events: number;
+  size_warn_bytes: number;
+}
+
+/** The saved Samurai config. The health checker reads `size_warn_bytes`. */
+export function samuraiGetConfig(): Promise<SamuraiConfig> {
+  return invoke("samurai_get_config");
+}
