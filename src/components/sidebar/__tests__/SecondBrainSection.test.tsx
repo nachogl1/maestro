@@ -75,6 +75,10 @@ function mockInvoke(files: SamuraiFileEntry[], deleteRejections: Record<string, 
         return files;
       case "samurai_audit_read":
         return { events: [], file_size_bytes: 0 };
+      case "samurai_journal_list":
+        return { entries: [], file_size_bytes: 0 };
+      case "samurai_harvest_read":
+        return "## Harvest 2026-08-06\n\nYesterday's bottleneck was CI.";
       case "samurai_file_delete": {
         const { path, force } = args as { path: string; force: boolean };
         if (!force && deleteRejections[path]) throw deleteRejections[path];
@@ -135,12 +139,13 @@ describe("SecondBrainSection (issue #66)", () => {
     render(<SecondBrainSection />);
 
     // Group headers, in kind order; JOURNAL/HARVEST stay hidden (no files),
-    // AUDIT_LOG shows its empty hint instead.
+    // AUDIT_LOG shows its empty hint instead. The one "Journal" text is the
+    // JournalSection card header (issue #71), not a files group.
     expect(await screen.findByText("Handoffs")).toBeInTheDocument();
     expect(screen.getByText("Run configs")).toBeInTheDocument();
     expect(screen.getByText("Timers")).toBeInTheDocument();
     expect(screen.getByText("Audit logs")).toBeInTheDocument();
-    expect(screen.queryByText("Journal")).toBeNull();
+    expect(screen.getAllByText("Journal")).toHaveLength(1);
     expect(screen.queryByText("Harvest reports")).toBeNull();
     expect(screen.getByText("None.")).toBeInTheDocument();
 
@@ -163,8 +168,9 @@ describe("SecondBrainSection (issue #66)", () => {
     ]);
     render(<SecondBrainSection />);
 
-    expect(await screen.findByText("Journal")).toBeInTheDocument();
-    expect(screen.getByText("Harvest reports")).toBeInTheDocument();
+    expect(await screen.findByText("Harvest reports")).toBeInTheDocument();
+    // Files group header + JournalSection card header (issue #71).
+    expect(screen.getAllByText("Journal")).toHaveLength(2);
   });
 
   it("deletes a file only after the user confirms", async () => {
@@ -369,5 +375,37 @@ describe("SecondBrainSection (issue #66)", () => {
 
     // Review F4: both rows share schedule.json — the one flag renders once.
     expect(screen.getAllByText("schedule 6.0 MB (warn at 5.0 MB)")).toHaveLength(1);
+  });
+
+  it("offers the open action on HARVEST_REPORT rows only", async () => {
+    mockInvoke([
+      fileEntry(), // HANDOFF — no open action
+      fileEntry({
+        kind: "HARVEST_REPORT",
+        path: "C:\\appdata\\samurai\\harvest\\2026-08-06.md",
+        epic: null,
+      }),
+    ]);
+    render(<SecondBrainSection />);
+    expect(await screen.findByText("2026-08-06.md")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "Open 2026-08-06.md" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open 38-gen2.md" })).toBeNull();
+  });
+
+  it("opens a harvest report in the markdown overlay and closes it again", async () => {
+    const reportPath = "C:\\appdata\\samurai\\harvest\\2026-08-06.md";
+    mockInvoke([fileEntry({ kind: "HARVEST_REPORT", path: reportPath, epic: null })]);
+    render(<SecondBrainSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 2026-08-06.md" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("samurai_harvest_read", { path: reportPath }),
+    );
+    // The fetched markdown renders through MarkdownBody (lazy-loaded).
+    expect(await screen.findByText("Yesterday's bottleneck was CI.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close report" }));
+    expect(screen.queryByText("Yesterday's bottleneck was CI.")).toBeNull();
   });
 });

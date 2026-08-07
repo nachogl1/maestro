@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Eraser, Files, Loader2, RefreshCw, TimerOff, Trash2 } from "lucide-react";
+import { Eraser, Eye, Files, Loader2, RefreshCw, Sparkles, TimerOff, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { HealthFlag } from "@/lib/healthRules";
 import {
@@ -7,13 +7,16 @@ import {
   samuraiCleanupEpic,
   samuraiFileDelete,
   samuraiFilesList,
+  samuraiHarvestRead,
   samuraiTimerCancel,
   type SamuraiFileEntry,
   type SamuraiFileKind,
 } from "@/lib/samurai";
+import { MarkdownBody } from "@/components/git/shared/MarkdownBody";
 import { HealthReasonLines } from "@/components/shared/HealthReasonLines";
 import { flagsByRow, useHealthStore } from "@/stores/useHealthStore";
 import { AuditSection } from "./AuditSection";
+import { JournalSection } from "./JournalSection";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 /**
@@ -77,6 +80,7 @@ function formatFireAt(fireAt: string): string {
 
 function FileRow({
   entry,
+  onOpen,
   onDelete,
   onCancelTimer,
   onCleanEpic,
@@ -84,6 +88,8 @@ function FileRow({
   healthFlags,
 }: {
   entry: SamuraiFileEntry;
+  /** HARVEST_REPORT rows only: view the report markdown (issue #71). */
+  onOpen: ((entry: SamuraiFileEntry) => void) | null;
   /** Absent on TIMER rows — a timer is cancelled, never file-deleted. */
   onDelete: ((entry: SamuraiFileEntry) => void) | null;
   /** TIMER rows only: cancel this epic's pending resume. */
@@ -117,6 +123,18 @@ function FileRow({
           ) : null}
         </span>
         <span className="shrink-0 text-[10px] text-maestro-muted/70">{meta}</span>
+        {onOpen && (
+          <button
+            type="button"
+            onClick={() => onOpen(entry)}
+            disabled={busy}
+            className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-text disabled:opacity-40"
+            aria-label={`Open ${label}`}
+            title="View this harvest report"
+          >
+            <Eye size={12} />
+          </button>
+        )}
         {onCleanEpic && (
           <button
             type="button"
@@ -164,8 +182,83 @@ function FileRow({
 }
 
 /**
+ * Fixed overlay showing one harvest report's markdown (issue #71). Same
+ * overlay chrome as FileDiffModal, minus the outside-click machinery — close
+ * button and Escape only.
+ */
+function HarvestReportModal({
+  entry,
+  onClose,
+}: {
+  entry: SamuraiFileEntry;
+  onClose: () => void;
+}) {
+  // null = loading.
+  const [markdown, setMarkdown] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    samuraiHarvestRead(entry.path)
+      .then((md) => {
+        if (!cancelled) setMarkdown(md);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.path]);
+
+  // Close on Escape — same listener shape as FileDiffModal.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="flex max-h-[85vh] w-[36rem] max-w-[90vw] flex-col overflow-hidden rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl">
+        <div className="flex items-center justify-between gap-2 border-b border-maestro-border px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Sparkles size={14} className="shrink-0 text-maestro-muted" />
+            <span className="truncate text-sm font-medium text-maestro-text">
+              {baseName(entry.path)}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            className="shrink-0 rounded p-1 text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="min-h-0 overflow-y-auto p-4">
+          {error ? (
+            <p className="text-[11px] text-maestro-red">{error}</p>
+          ) : markdown === null ? (
+            <div className="flex items-center gap-2 text-[11px] text-maestro-muted">
+              <Loader2 size={12} className="animate-spin" /> Loading…
+            </div>
+          ) : (
+            <MarkdownBody content={markdown} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Second Brain panel body (issue #66, PRD §5.11): the Samurai audit stream on
- * top (the Phase 1 AuditSection absorbed as-is) and below it the Files
+ * top (the Phase 1 AuditSection absorbed as-is), the ops journal card
+ * (issue #71, PRD §5.12) and below them the Files
  * section — every managed resource from `samurai_files_list` grouped by kind
  * with size + age, delete-with-confirm per row (in-use files get a second,
  * harder confirm before force-deleting; TIMER rows get a cancel-timer action
@@ -179,6 +272,8 @@ export function SecondBrainSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The harvest report shown in the overlay; null = closed (issue #71).
+  const [openReport, setOpenReport] = useState<SamuraiFileEntry | null>(null);
 
   /* ── Health checker flags (rule-based, read-only) — issue #67 ── */
   const allHealthFlags = useHealthStore((s) => s.flags);
@@ -308,6 +403,8 @@ export function SecondBrainSection() {
     <div className="space-y-3">
       <AuditSection />
 
+      <JournalSection onHarvested={refresh} />
+
       <div className={cardClass}>
         <SectionHeader
           icon={Files}
@@ -367,6 +464,9 @@ export function SecondBrainSection() {
                                 ? healthRows.get(`${entry.path}|${baseName(entry.path)}`)
                                 : undefined
                             }
+                            // Harvest reports are the one readable kind —
+                            // everything else is machine state (issue #71).
+                            onOpen={kind === "HARVEST_REPORT" ? setOpenReport : null}
                             // TIMER rows are cancelled, never file-deleted —
                             // schedule.json self-cleans and the backend
                             // refuses deleting it (review F1).
@@ -403,6 +503,10 @@ export function SecondBrainSection() {
           </div>
         )}
       </div>
+
+      {openReport && (
+        <HarvestReportModal entry={openReport} onClose={() => setOpenReport(null)} />
+      )}
     </div>
   );
 }
