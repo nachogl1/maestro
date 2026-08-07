@@ -165,6 +165,14 @@ pub struct JournalStore {
 
 impl JournalStore {
     pub fn new(journal_dir: PathBuf) -> Self {
+        // The agent rider appends via `echo '<json>' >> ...journal.jsonl`,
+        // and shell redirection creates files, not directories — so the dir
+        // must exist from construction or every agent append fails on a
+        // fresh install. Log-only: an in-process write surfaces the same
+        // failure with context.
+        if let Err(e) = std::fs::create_dir_all(&journal_dir) {
+            log::warn!("failed to create journal dir {journal_dir:?}: {e}");
+        }
         Self {
             journal_dir,
             lock: Mutex::new(()),
@@ -227,36 +235,71 @@ impl JournalStore {
             .collect())
     }
 
-    /// Marks everything currently in the active file as consumed by the
-    /// `report_date` (`YYYY-MM-DD`) harvest: entries older than the current
-    /// last marker — `ARCHIVED` once the new marker lands — move to
-    /// `archive.jsonl`, then the new marker is appended. The active-file
-    /// rewrite is atomic (`.tmp` + rename); when nothing moves, a plain
-    /// append is used instead, which — unlike a rewrite — cannot race an
-    /// agent appending from a shell prompt. A crash between the archive
-    /// append and the rename can duplicate entries into the archive on the
-    /// next harvest; that is the accepted cost of two-file atomicity not
-    /// existing (harvest reports are advisory).
-    pub fn commit_harvest(&self, report_date: &str) -> Result<(), String> {
+    /// Marks the first `snapshot_len` unconsumed entries as consumed by the
+    /// `report_date` (`YYYY-MM-DD`) harvest by inserting the new marker
+    /// immediately after them. `snapshot_len` is the number of entries the
+    /// harvest actually rendered into its prompt — entries appended while
+    /// the (up to minutes-long) claude run was in flight, and entries the
+    /// prompt cap withheld, sit AFTER that boundary, stay `UNCONSUMED`, and
+    /// roll into the next harvest instead of being archived undigested.
+    ///
+    /// The same rewrite archives history: entries older than the previous
+    /// (pre-existing last) marker — `ARCHIVED` once the new marker lands —
+    /// move to `archive.jsonl`, and markers older than that last
+    /// pre-existing marker move with them, so the active file keeps at most
+    /// two markers (the last pre-existing one plus the new one). The
+    /// active-file rewrite is atomic (`.tmp` + rename); when nothing moves
+    /// and the boundary is the end of the file, a plain append is used
+    /// instead, which — unlike a rewrite — cannot race an agent appending
+    /// from a shell prompt. A crash between the archive append and the
+    /// rename can duplicate entries into the archive on the next harvest;
+    /// that is the accepted cost of two-file atomicity not existing (harvest
+    /// reports are advisory).
+    pub fn commit_harvest(&self, report_date: &str, snapshot_len: usize) -> Result<(), String> {
         chrono::NaiveDate::parse_from_str(report_date, "%Y-%m-%d")
             .map_err(|e| format!("invalid report date {report_date:?} (want YYYY-MM-DD): {e}"))?;
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let journal_path = self.journal_path();
         let (lines, _) = read_lines(&journal_path)?;
-        // Entries before the CURRENT last marker are older than what will be
-        // the previous marker once the new one is appended — those move out.
+        // Lines before the CURRENT last marker are older than what will be
+        // the previous marker once the new one lands — entries AND markers
+        // there move out (the active file never holds more than two markers).
         let archive_before = lines
             .iter()
             .rposition(|l| matches!(l, RawLine::Marker(_)))
             .unwrap_or(0);
+        let marker_line = serde_json::to_string(&HarvestMarker::now(report_date))
+            .map_err(|e| format!("failed to serialize harvest marker: {e}"))?;
 
         let mut archived = String::new();
         let mut kept = String::new();
+        // Entries seen past the last pre-existing marker: the new marker is
+        // inserted right after the `snapshot_len`-th one (the snapshot
+        // boundary the harvest actually digested).
+        let mut consumed = 0usize;
+        let mut marker_inserted = false;
         for (i, line) in lines.iter().enumerate() {
             match line {
                 RawLine::Entry(entry) => {
                     let raw = serde_json::to_string(entry)
                         .map_err(|e| format!("failed to serialize journal entry: {e}"))?;
+                    if i < archive_before {
+                        archived.push_str(&raw);
+                        archived.push('\n');
+                    } else {
+                        if !marker_inserted && consumed == snapshot_len {
+                            kept.push_str(&marker_line);
+                            kept.push('\n');
+                            marker_inserted = true;
+                        }
+                        kept.push_str(&raw);
+                        kept.push('\n');
+                        consumed += 1;
+                    }
+                }
+                RawLine::Marker(marker) => {
+                    let raw = serde_json::to_string(marker)
+                        .map_err(|e| format!("failed to serialize harvest marker: {e}"))?;
                     let target = if i < archive_before {
                         &mut archived
                     } else {
@@ -264,12 +307,6 @@ impl JournalStore {
                     };
                     target.push_str(&raw);
                     target.push('\n');
-                }
-                RawLine::Marker(marker) => {
-                    let raw = serde_json::to_string(marker)
-                        .map_err(|e| format!("failed to serialize harvest marker: {e}"))?;
-                    kept.push_str(&raw);
-                    kept.push('\n');
                 }
                 // Never archived, never dropped — carried through verbatim.
                 RawLine::Opaque(raw) => {
@@ -279,14 +316,19 @@ impl JournalStore {
             }
         }
 
-        let marker_line = serde_json::to_string(&HarvestMarker::now(report_date))
-            .map_err(|e| format!("failed to serialize harvest marker: {e}"))?;
-        if archived.is_empty() {
-            return append_raw(&journal_path, &format!("{marker_line}\n"));
+        if !marker_inserted {
+            // Boundary at (or past) the end of the file. With nothing
+            // archived the whole rewrite degenerates to appending the
+            // marker — the race-free path.
+            if archived.is_empty() {
+                return append_raw(&journal_path, &format!("{marker_line}\n"));
+            }
+            kept.push_str(&marker_line);
+            kept.push('\n');
         }
-        append_raw(&self.archive_path(), &archived)?;
-        kept.push_str(&marker_line);
-        kept.push('\n');
+        if !archived.is_empty() {
+            append_raw(&self.archive_path(), &archived)?;
+        }
         atomic_write(&journal_path, &kept)
     }
 }
@@ -376,6 +418,13 @@ fn append_raw(path: &Path, data: &str) -> Result<(), String> {
 /// `samurai_run_config::atomic_write_json` pattern): a crash leaves either
 /// the old file or the new one, never a torn journal. The fixed `.tmp` name
 /// cannot race itself — [`JournalStore::lock`] serializes writers.
+///
+/// On Windows the rename fails while another process holds the target open
+/// (e.g. an agent's shell `>>` append mid-rewrite), so it is retried a few
+/// times before propagating. Known loss window: an out-of-process append
+/// that lands between the caller reading the file and the rename winning is
+/// overwritten by the rewrite — accepted; the journal is advisory ops data
+/// and the rewrite path only runs during a harvest commit.
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -383,8 +432,24 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     }
     let tmp = path.with_extension("jsonl.tmp");
     std::fs::write(&tmp, content).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
+    let mut attempt = 0;
+    loop {
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 4 => {
+                attempt += 1;
+                log::warn!(
+                    "rename of {tmp:?} over {path:?} failed (attempt {attempt}/5): {e} — retrying"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to move {tmp:?} into place at {path:?}: {e}"
+                ));
+            }
+        }
+    }
 }
 
 /// Strips the Windows `\\?\` extended-length prefix `fs::canonicalize`
@@ -508,7 +573,7 @@ mod tests {
             .unwrap();
         s.append_entry(&entry(JournalCategory::Error, "second"))
             .unwrap();
-        s.commit_harvest("2026-08-07").unwrap();
+        s.commit_harvest("2026-08-07", 2).unwrap();
 
         // First harvest: both consumed, nothing archived yet.
         let after_first = s.list().unwrap();
@@ -523,7 +588,7 @@ mod tests {
         s.append_entry(&entry(JournalCategory::Improvement, "third"))
             .unwrap();
         assert_eq!(s.unconsumed().unwrap().len(), 1);
-        s.commit_harvest("2026-08-08").unwrap();
+        s.commit_harvest("2026-08-08", 1).unwrap();
 
         // Second harvest: the first two land in archive.jsonl…
         let archive = std::fs::read_to_string(dir.path().join(ARCHIVE_FILE)).unwrap();
@@ -617,10 +682,10 @@ mod tests {
         content.push_str("{ garbage not json\n");
         std::fs::write(&path, content).unwrap();
 
-        s.commit_harvest("2026-08-07").unwrap();
+        s.commit_harvest("2026-08-07", 1).unwrap();
         s.append_entry(&entry(JournalCategory::Error, "second"))
             .unwrap();
-        s.commit_harvest("2026-08-08").unwrap();
+        s.commit_harvest("2026-08-08", 1).unwrap();
 
         let journal = std::fs::read_to_string(&path).unwrap();
         assert!(journal.contains("{ garbage not json"));
@@ -634,10 +699,95 @@ mod tests {
     fn test_commit_harvest_rejects_bad_report_date() {
         let dir = tempdir().unwrap();
         let s = store(dir.path());
-        assert!(s.commit_harvest("08/07/2026").is_err());
-        assert!(s.commit_harvest("not-a-date").is_err());
+        assert!(s.commit_harvest("08/07/2026", 1).is_err());
+        assert!(s.commit_harvest("not-a-date", 1).is_err());
         // Nothing written by a rejected harvest.
         assert!(!dir.path().join(JOURNAL_FILE).exists());
+    }
+
+    #[test]
+    fn test_new_creates_the_journal_dir() {
+        // Fix M3: the agent rider appends via shell `>>`, which creates
+        // files but not directories — the dir must exist from construction
+        // on a fresh install.
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("app-data").join("journal");
+        let _store = JournalStore::new(nested.clone());
+        assert!(nested.is_dir(), "journal dir must exist after new()");
+    }
+
+    #[test]
+    fn test_commit_harvest_snapshot_boundary_keeps_midrun_entries_unconsumed() {
+        // Fix M1/M2: only the first `snapshot_len` unconsumed entries — the
+        // ones the harvest actually rendered — land before the new marker.
+        // Entries appended mid-run (or withheld by the prompt cap) stay
+        // UNCONSUMED for the next harvest.
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        s.append_entry(&entry(JournalCategory::Bottleneck, "snapshotted one"))
+            .unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "snapshotted two"))
+            .unwrap();
+        // Appended while the harvest's claude run was in flight.
+        s.append_entry(&entry(JournalCategory::Concern, "mid-run"))
+            .unwrap();
+
+        s.commit_harvest("2026-08-07", 2).unwrap();
+
+        let statuses: Vec<(String, JournalEntryStatus)> = s
+            .list()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| (e.entry.text, e.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("snapshotted one".to_string(), JournalEntryStatus::Consumed),
+                ("snapshotted two".to_string(), JournalEntryStatus::Consumed),
+                ("mid-run".to_string(), JournalEntryStatus::Unconsumed),
+            ]
+        );
+        assert_eq!(s.unconsumed().unwrap().len(), 1);
+        // Nothing archived on a first harvest, and no torn-write leftovers.
+        assert!(!dir.path().join(ARCHIVE_FILE).exists());
+        assert!(!dir.path().join("journal.jsonl.tmp").exists());
+    }
+
+    #[test]
+    fn test_commit_harvest_archives_markers_older_than_the_previous() {
+        // Fix m5: the active file keeps at most two markers — the last
+        // pre-existing one plus the new one; older markers move into
+        // archive.jsonl with their entries, in file order.
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        s.append_entry(&entry(JournalCategory::Error, "one"))
+            .unwrap();
+        s.commit_harvest("2026-08-06", 1).unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "two"))
+            .unwrap();
+        s.commit_harvest("2026-08-07", 1).unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "three"))
+            .unwrap();
+        s.commit_harvest("2026-08-08", 1).unwrap();
+
+        let journal = std::fs::read_to_string(dir.path().join(JOURNAL_FILE)).unwrap();
+        let active_markers: Vec<HarvestMarker> = journal
+            .lines()
+            .filter_map(|l| serde_json::from_str::<HarvestMarker>(l).ok())
+            .filter(|m| m.kind == MarkerKind::Harvest)
+            .collect();
+        assert_eq!(active_markers.len(), 2, "at most two markers: {journal}");
+        assert_eq!(active_markers[0].report, "2026-08-07");
+        assert_eq!(active_markers[1].report, "2026-08-08");
+        assert!(journal.contains("three"), "consumed entry stays active");
+        // The archive holds the older entries AND the displaced marker.
+        let archive = std::fs::read_to_string(dir.path().join(ARCHIVE_FILE)).unwrap();
+        assert!(archive.contains("one"));
+        assert!(archive.contains("two"));
+        assert!(archive.contains("\"report\":\"2026-08-06\""), "{archive}");
+        assert!(!archive.contains("\"report\":\"2026-08-07\""));
     }
 
     #[test]

@@ -160,6 +160,41 @@ describe("JournalSection (issue #71)", () => {
     await waitFor(() => expect(onHarvested).toHaveBeenCalledTimes(1));
   });
 
+  it("keeps the last good rows when a refresh fails", async () => {
+    // Fix m6a: a failed samurai_journal_list must not wipe rendered rows —
+    // only the error line appears.
+    let fail = false;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "samurai_journal_list") {
+        if (fail) throw "journal file unreadable";
+        return { entries: [journalRow()], file_size_bytes: 1024 };
+      }
+      return undefined;
+    });
+    render(<JournalSection />);
+    expect(await screen.findByText("CI queue blocked for an hour")).toBeInTheDocument();
+
+    fail = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh journal" }));
+    expect(await screen.findByText("journal file unreadable")).toBeInTheDocument();
+    // The previously rendered rows survived the failed refresh.
+    expect(screen.getByText("CI queue blocked for an hour")).toBeInTheDocument();
+  });
+
+  it("badges the full journal entry count, not the rendered tail", async () => {
+    // Fix m6c: 60 entries, only the newest 50 render — the badge says 60.
+    const rows = Array.from({ length: 60 }, (_, i) =>
+      journalRow({ text: `entry ${i}` }),
+    );
+    mockInvoke(rows);
+    render(<JournalSection />);
+
+    // Newest (last in backend order) renders; the oldest 10 fall off the tail.
+    expect(await screen.findByText("entry 59")).toBeInTheDocument();
+    expect(screen.queryByText("entry 0")).toBeNull();
+    expect(screen.getByText("60")).toBeInTheDocument();
+  });
+
   it("surfaces the harvest error string inline, matter-of-fact", async () => {
     const onHarvested = vi.fn();
     mockInvoke([], {

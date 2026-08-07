@@ -247,7 +247,10 @@ function HarvestReportModal({
               <Loader2 size={12} className="animate-spin" /> Loading…
             </div>
           ) : (
-            <MarkdownBody content={markdown} />
+            // allowRawHtml={false}: the report is model output derived from
+            // journal text ANY local process can write — raw HTML in it must
+            // never become live elements in this invoke-capable webview.
+            <MarkdownBody content={markdown} allowRawHtml={false} />
           )}
         </div>
       </div>

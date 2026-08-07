@@ -103,6 +103,9 @@ export function JournalSection({ onHarvested }: { onHarvested?: () => void }) {
   const [rows, setRows] = useState<
     { entry: SamuraiJournalEntry; status: SamuraiJournalEntryStatus }[] | null
   >(null);
+  // Full entry count from the last good list — the rows above are capped at
+  // JOURNAL_TAIL, and the header badge must not lie about the journal's size.
+  const [totalEntries, setTotalEntries] = useState(0);
   const [fileSizeBytes, setFileSizeBytes] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -111,20 +114,32 @@ export function JournalSection({ onHarvested }: { onHarvested?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [harvestBusy, setHarvestBusy] = useState(false);
 
-  const refresh = useCallback(async () => {
+  // `isCancelled` lets the mount effect drop a result that resolves after
+  // unmount (the HarvestReportModal's cancelled-flag pattern); button
+  // handlers use the default never-cancelled predicate.
+  const refresh = useCallback(async (isCancelled: () => boolean = () => false) => {
     try {
       const result = await samuraiJournalList();
+      if (isCancelled()) return;
       setRows(result.entries.slice().reverse().slice(0, JOURNAL_TAIL));
+      setTotalEntries(result.entries.length);
       setFileSizeBytes(result.file_size_bytes);
       setError(null);
     } catch (err) {
-      setRows([]);
+      if (isCancelled()) return;
+      // A failed refresh keeps the last good rows — only the error line
+      // changes; a never-loaded list falls through to empty.
+      setRows((prev) => prev ?? []);
       setError(String(err));
     }
   }, []);
 
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+    refresh(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [refresh]);
 
   const handleAdd = async (e: FormEvent<HTMLFormElement>) => {
@@ -171,9 +186,9 @@ export function JournalSection({ onHarvested }: { onHarvested?: () => void }) {
         label="Journal"
         iconColor="text-maestro-accent"
         badge={
-          rows && rows.length > 0 ? (
+          rows && totalEntries > 0 ? (
             <span className="rounded-full bg-maestro-accent/20 px-1.5 text-[10px] font-bold text-maestro-accent">
-              {rows.length}
+              {totalEntries}
             </span>
           ) : undefined
         }
@@ -181,7 +196,7 @@ export function JournalSection({ onHarvested }: { onHarvested?: () => void }) {
           <span className="flex items-center gap-1">
             <button
               type="button"
-              onClick={refresh}
+              onClick={() => refresh()}
               className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-text"
               aria-label="Refresh journal"
               title="Reload the journal"

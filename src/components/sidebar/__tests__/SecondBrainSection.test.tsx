@@ -66,9 +66,14 @@ function fileEntry(overrides: Partial<SamuraiFileEntry> = {}): SamuraiFileEntry 
 /**
  * Routes the global invoke mock. `deleteRejections` maps a path to the error
  * its non-forced `samurai_file_delete` calls reject with (the in-use
- * refusal); forced calls always succeed.
+ * refusal); forced calls always succeed. `harvestMarkdown` overrides what
+ * `samurai_harvest_read` returns.
  */
-function mockInvoke(files: SamuraiFileEntry[], deleteRejections: Record<string, string> = {}) {
+function mockInvoke(
+  files: SamuraiFileEntry[],
+  deleteRejections: Record<string, string> = {},
+  harvestMarkdown = "## Harvest 2026-08-06\n\nYesterday's bottleneck was CI.",
+) {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
     switch (cmd) {
       case "samurai_files_list":
@@ -78,7 +83,7 @@ function mockInvoke(files: SamuraiFileEntry[], deleteRejections: Record<string, 
       case "samurai_journal_list":
         return { entries: [], file_size_bytes: 0 };
       case "samurai_harvest_read":
-        return "## Harvest 2026-08-06\n\nYesterday's bottleneck was CI.";
+        return harvestMarkdown;
       case "samurai_file_delete": {
         const { path, force } = args as { path: string; force: boolean };
         if (!force && deleteRejections[path]) throw deleteRejections[path];
@@ -407,5 +412,28 @@ describe("SecondBrainSection (issue #66)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close report" }));
     expect(screen.queryByText("Yesterday's bottleneck was CI.")).toBeNull();
+  });
+
+  it("renders harvest report markdown without turning raw HTML into elements", async () => {
+    // Fix M5: the report is model output derived from journal text any local
+    // process can write — script-capable HTML must never become live
+    // elements in the invoke-capable webview.
+    const reportPath = "C:\\appdata\\samurai\\harvest\\2026-08-06.md";
+    mockInvoke(
+      [fileEntry({ kind: "HARVEST_REPORT", path: reportPath, epic: null })],
+      {},
+      '## Report heading\n\n<img src="x" onerror="window.__pwned = true">\n\n' +
+        "<script>window.__pwned = true;</script>\n\nSafe closing line.",
+    );
+    const { container } = render(<SecondBrainSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 2026-08-06.md" }));
+    // The markdown itself renders …
+    expect(await screen.findByText("Report heading")).toBeInTheDocument();
+    expect(screen.getByText("Safe closing line.")).toBeInTheDocument();
+    // … but the embedded raw HTML never becomes elements or runs.
+    expect(container.querySelector(".markdown-body img")).toBeNull();
+    expect(container.querySelector(".markdown-body script")).toBeNull();
+    expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
   });
 });

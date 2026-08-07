@@ -14,6 +14,7 @@
 //! material (the journal) and its prompt.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -33,6 +34,34 @@ const NOUN: &str = "harvest report";
 const MAX_ENTRIES_CHARS: usize = 12_000;
 /// The empty-journal refusal — pinned by test, surfaced verbatim in the UI.
 const NOTHING_TO_HARVEST: &str = "Nothing to harvest — no unconsumed journal entries.";
+/// The concurrent-run refusal — pinned by test, surfaced verbatim in the UI.
+const HARVEST_ALREADY_RUNNING: &str = "A harvest is already running.";
+
+/// Process-wide single-flight latch for [`samurai_harvest_run`] (fix m2):
+/// the UI's disabled button was the only gate, and two overlapping runs
+/// would double-append markers and clobber today's report file.
+static HARVEST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// RAII claim on [`HARVEST_IN_FLIGHT`]: `acquire` refuses while a harvest is
+/// running; dropping the guard releases the latch on EVERY exit path (early
+/// `?` returns included).
+#[derive(Debug)]
+struct HarvestFlight;
+
+impl HarvestFlight {
+    fn acquire() -> Result<Self, String> {
+        HARVEST_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| Self)
+            .map_err(|_| HARVEST_ALREADY_RUNNING.to_string())
+    }
+}
+
+impl Drop for HarvestFlight {
+    fn drop(&mut self) {
+        HARVEST_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
 
 /// A generated harvest report. One per date, account-wide (the
 /// `DailyPlan`/`StandupReport` shape, minus the project path).
@@ -81,42 +110,74 @@ JOURNAL ENTRIES (unconsumed since the last harvest):
 {entries}
 "#;
 
-/// One prompt line per entry: ts, category, project/agent when set, text.
-/// The category's SCREAMING wire spelling comes from serde so it can never
-/// drift from the journal's on-disk contract; multi-line text is flattened
-/// so "one entry per line" stays true for the model.
-fn render_entries(entries: &[JournalEntry]) -> String {
-    entries
-        .iter()
-        .map(|e| {
-            let category = serde_json::to_string(&e.category).unwrap_or_default();
-            let mut line = format!("- {} {}", e.ts, category.trim_matches('"'));
-            if let Some(project) = &e.project {
-                line.push_str(&format!(" project={}", project));
-            }
-            if let Some(agent) = &e.agent {
-                line.push_str(&format!(" agent={}", agent));
-            }
-            // CRLF collapses to ONE space (replace the pair first).
-            let text = e.text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-            line.push_str(&format!(" — {}", text));
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Newline-flattens one prompt-line field. EVERY field comes from
+/// agent-written JSONL and can carry `\r`/`\n` — not just the text — and the
+/// prompt's data contract is one entry per line, so ts/project/agent/text
+/// all flatten through here (fix m3). CRLF collapses to ONE space (replace
+/// the pair first).
+fn flatten(field: &str) -> String {
+    field.replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
-/// Assemble the harvest prompt. The entries block is capped here.
-fn build_prompt(date: &str, entries: &[JournalEntry]) -> String {
+/// One prompt line for one entry: ts, category, project/agent when set,
+/// text. The category's SCREAMING wire spelling comes from serde so it can
+/// never drift from the journal's on-disk contract.
+fn render_entry(e: &JournalEntry) -> String {
+    let category = serde_json::to_string(&e.category).unwrap_or_default();
+    let mut line = format!("- {} {}", flatten(&e.ts), category.trim_matches('"'));
+    if let Some(project) = &e.project {
+        line.push_str(&format!(" project={}", flatten(project)));
+    }
+    if let Some(agent) = &e.agent {
+        line.push_str(&format!(" agent={}", flatten(agent)));
+    }
+    line.push_str(&format!(" — {}", flatten(&e.text)));
+    line
+}
+
+/// Renders entries oldest-first, ONE WHOLE ENTRY at a time, stopping before
+/// the block would exceed [`MAX_ENTRIES_CHARS`] — never mid-entry, so what
+/// the model digests is exactly what [`JournalStore::commit_harvest`]
+/// consumes (fix M2: the old char-level truncation digested a prefix but
+/// consumed everything). Always renders at least one entry — a single
+/// oversized entry is char-capped as a backstop so the prompt stays bounded.
+/// Withheld entries are counted in a final data line and stay unconsumed for
+/// the next harvest. Returns the block plus the number of entries rendered —
+/// the harvest's `snapshot_len` consumption boundary.
+fn render_entries_capped(entries: &[JournalEntry]) -> (String, usize) {
+    let mut block = String::new();
+    let mut rendered = 0usize;
+    for entry in entries {
+        let line = render_entry(entry);
+        if rendered == 0 {
+            block = ai_runner::truncate_chars(&line, MAX_ENTRIES_CHARS);
+            rendered = 1;
+            continue;
+        }
+        if block.chars().count() + 1 + line.chars().count() > MAX_ENTRIES_CHARS {
+            break;
+        }
+        block.push('\n');
+        block.push_str(&line);
+        rendered += 1;
+    }
+    let withheld = entries.len().saturating_sub(rendered);
+    if withheld > 0 {
+        log::warn!(
+            "samurai harvest: prompt cap reached — {withheld} unconsumed journal entries withheld to the next harvest"
+        );
+        block.push_str(&format!(
+            "\n(+{withheld} older entries withheld to the next harvest)"
+        ));
+    }
+    (block, rendered)
+}
+
+/// Assemble the harvest prompt from the pre-rendered (capped) entries block.
+fn build_prompt(date: &str, entries_block: &str) -> String {
     ai_runner::interpolate(
         DEFAULT_HARVEST_PROMPT_TEMPLATE,
-        &[
-            ("{date}", date),
-            (
-                "{entries}",
-                &ai_runner::truncate_chars(&render_entries(entries), MAX_ENTRIES_CHARS),
-            ),
-        ],
+        &[("{date}", date), ("{entries}", entries_block)],
     )
 }
 
@@ -138,9 +199,13 @@ fn unconsumed_or_refuse(journal: &JournalStore) -> Result<Vec<JournalEntry>, Str
 pub async fn samurai_harvest_run(
     journal: State<'_, Arc<JournalStore>>,
 ) -> Result<HarvestReport, String> {
+    // Fix m2: refuse a second concurrent run; the guard's Drop releases the
+    // latch on every path out of this function.
+    let _flight = HarvestFlight::acquire()?;
     let entries = unconsumed_or_refuse(&journal)?;
     let today = ai_runner::today_local();
-    let prompt = build_prompt(&today, &entries);
+    let (entries_block, snapshot_len) = render_entries_capped(&entries);
+    let prompt = build_prompt(&today, &entries_block);
 
     // cwd = the harvest dir itself (the plan.rs convention): whichever
     // directory `claude -p` runs in shapes the run (its CLAUDE.md, settings
@@ -154,7 +219,9 @@ pub async fn samurai_harvest_run(
     let markdown =
         ai_runner::run_and_save(&dir.to_string_lossy(), prompt, &dir, &today, NOUN).await?;
 
-    journal.commit_harvest(&today)?;
+    // Fix M1: consume exactly the snapshot the model digested — entries
+    // appended during the run (or withheld by the cap) stay unconsumed.
+    journal.commit_harvest(&today, snapshot_len)?;
 
     Ok(HarvestReport {
         date: today,
@@ -237,6 +304,7 @@ mod tests {
             NOTHING_TO_HARVEST,
             "Nothing to harvest — no unconsumed journal entries."
         );
+        assert_eq!(HARVEST_ALREADY_RUNNING, "A harvest is already running.");
     }
 
     #[test]
@@ -258,7 +326,8 @@ mod tests {
                 None,
             ),
         ];
-        let rendered = render_entries(&entries);
+        let (rendered, snapshot_len) = render_entries_capped(&entries);
+        assert_eq!(snapshot_len, 2, "both entries fit under the cap");
         let lines: Vec<&str> = rendered.lines().collect();
         assert_eq!(lines.len(), 2, "one line per entry: {rendered}");
         assert_eq!(
@@ -268,6 +337,26 @@ mod tests {
         // Optional fields absent, newlines flattened, serde SCREAMING wire
         // spelling for the category.
         assert_eq!(lines[1], "- 2026-08-07T11:00:00+00:00 SKILL — learn rebase");
+    }
+
+    #[test]
+    fn test_render_entry_flattens_every_field() {
+        // Fix m3: agents hand-write the JSONL, so ts/project/agent can carry
+        // newlines just like the text — all four flatten to one line.
+        let e = entry(
+            "2026-08-07\n10:00:00",
+            JournalCategory::Error,
+            "line one\r\nline two",
+            Some("C:\\git\\mae\nstro"),
+            Some("orchestrator\rgen1"),
+        );
+        let line = render_entry(&e);
+        assert!(!line.contains('\n'), "one line: {line}");
+        assert!(!line.contains('\r'), "one line: {line}");
+        assert_eq!(
+            line,
+            "- 2026-08-07 10:00:00 ERROR project=C:\\git\\mae stro agent=orchestrator gen1 — line one line two"
+        );
     }
 
     #[test]
@@ -288,7 +377,8 @@ mod tests {
                 Some("orchestrator-gen2"),
             ),
         ];
-        let p = build_prompt("2026-08-07", &entries);
+        let (block, _) = render_entries_capped(&entries);
+        let p = build_prompt("2026-08-07", &block);
         assert!(p.contains("2026-08-07"));
         // Every entry line made it in.
         assert!(p.contains(
@@ -324,12 +414,41 @@ mod tests {
             None,
             None,
         )];
-        let p = build_prompt("2026-08-07", &entries);
+        let (block, _) = render_entries_capped(&entries);
+        let p = build_prompt("2026-08-07", &block);
         assert!(p.contains("render {date} and {entries} literally"));
     }
 
     #[test]
-    fn test_entries_block_is_truncated() {
+    fn test_entries_block_caps_at_entry_granularity() {
+        // Fix M2: the cap withholds WHOLE entries, and the rendered count is
+        // the consumption boundary — nothing past it may be marked consumed.
+        let big = |i: u32| {
+            entry(
+                "2026-08-07T10:00:00+00:00",
+                JournalCategory::Bottleneck,
+                &format!("entry-{i} {}", "x".repeat(4_000)),
+                None,
+                None,
+            )
+        };
+        let entries: Vec<JournalEntry> = (0..5).map(big).collect();
+        let (block, snapshot_len) = render_entries_capped(&entries);
+        // ~4KB per line under a 12,000-char cap → the oldest 2 fit, 3 are
+        // withheld — announced in the final data line and warned about.
+        assert_eq!(snapshot_len, 2, "{}", block.chars().count());
+        assert!(block.contains("entry-0"));
+        assert!(block.contains("entry-1"));
+        assert!(!block.contains("entry-2"));
+        assert!(block.ends_with("(+3 older entries withheld to the next harvest)"));
+        assert!(block.chars().count() <= MAX_ENTRIES_CHARS + 100);
+    }
+
+    #[test]
+    fn test_single_oversized_entry_still_renders_char_capped() {
+        // "Always render at least one": a single entry bigger than the whole
+        // cap is char-truncated as a backstop (the prompt must stay bounded)
+        // and counts as consumed — it WAS digested, albeit truncated.
         let entries = vec![entry(
             "2026-08-07T10:00:00+00:00",
             JournalCategory::Bottleneck,
@@ -337,10 +456,28 @@ mod tests {
             None,
             None,
         )];
-        let p = build_prompt("2026-08-07", &entries);
-        assert!(p.contains("[... truncated ...]"));
+        let (block, snapshot_len) = render_entries_capped(&entries);
+        assert_eq!(snapshot_len, 1);
+        assert!(block.contains("[... truncated ...]"));
         // The oversized run itself must not survive the cap.
-        assert!(!p.contains(&"x".repeat(MAX_ENTRIES_CHARS + 1)));
+        assert!(!block.contains(&"x".repeat(MAX_ENTRIES_CHARS + 1)));
+        assert!(!block.contains("withheld"), "nothing was withheld");
+    }
+
+    #[test]
+    fn test_harvest_single_flight_refusal_pinned() {
+        // Fix m2: while one harvest holds the latch a second is refused with
+        // the exact message the UI surfaces; dropping the guard releases it.
+        let first = HarvestFlight::acquire().expect("latch must start free");
+        assert_eq!(
+            HarvestFlight::acquire().unwrap_err(),
+            "A harvest is already running."
+        );
+        drop(first);
+        assert!(
+            HarvestFlight::acquire().is_ok(),
+            "drop must release the latch"
+        );
     }
 
     #[test]
@@ -365,7 +502,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text, "boom");
         // Consumed-only journal refuses again.
-        journal.commit_harvest("2026-08-07").unwrap();
+        journal.commit_harvest("2026-08-07", 1).unwrap();
         assert_eq!(
             unconsumed_or_refuse(&journal).unwrap_err(),
             NOTHING_TO_HARVEST

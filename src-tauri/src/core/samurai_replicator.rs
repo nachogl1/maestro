@@ -770,10 +770,17 @@ impl SamuraiReplicator {
                     .await
                     .unwrap_or(None);
                 (
-                    samurai_prompts::recovery_ritual_instruction(
-                        &snapshot.epic,
-                        snapshot.generation,
-                        repo_pin.as_deref(),
+                    // Issue #72 / fix M4: the journaling rider rides recovery
+                    // briefs too — recovered generations hit the most
+                    // friction and must record it.
+                    format!(
+                        "{} {}",
+                        samurai_prompts::recovery_ritual_instruction(
+                            &snapshot.epic,
+                            snapshot.generation,
+                            repo_pin.as_deref(),
+                        ),
+                        samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
                     true,
                 )
@@ -881,10 +888,16 @@ impl SamuraiReplicator {
                 // the async task below swaps in the `--repo`-pinned wording
                 // before the spawn event fires. If that task ever dies, the
                 // unpinned prompt already carries its caution (finding D).
-                instruction: samurai_prompts::recovery_ritual_instruction(
-                    &snapshot.epic,
-                    snapshot.generation,
-                    None,
+                // Issue #72 / fix M4: the journaling rider rides both
+                // versions of the brief.
+                instruction: format!(
+                    "{} {}",
+                    samurai_prompts::recovery_ritual_instruction(
+                        &snapshot.epic,
+                        snapshot.generation,
+                        None,
+                    ),
+                    samurai_prompts::journal_instruction(&default_journal_file()),
                 ),
                 predecessor_session_id: snapshot.session_id,
                 predecessor_generation: snapshot.generation,
@@ -923,10 +936,16 @@ impl SamuraiReplicator {
                         && p.epic == snapshot.epic
                         && p.project == snapshot.project
                 }) {
-                    p.instruction = samurai_prompts::recovery_ritual_instruction(
-                        &snapshot.epic,
-                        snapshot.generation,
-                        Some(&pin),
+                    // Issue #72 / fix M4: the pin swap must not drop the
+                    // journaling rider the staged brief already carried.
+                    p.instruction = format!(
+                        "{} {}",
+                        samurai_prompts::recovery_ritual_instruction(
+                            &snapshot.epic,
+                            snapshot.generation,
+                            Some(&pin),
+                        ),
+                        samurai_prompts::journal_instruction(&default_journal_file()),
                     );
                 }
             }
@@ -1038,8 +1057,13 @@ impl SamuraiReplicator {
                 // path must not touch files or git); the async task below
                 // swaps in the real ritual before the spawn event fires —
                 // and delivery only happens on the successor's
-                // SessionStarted, which cannot precede that event.
-                instruction: samurai_prompts::recovery_ritual_instruction(epic, prior, None),
+                // SessionStarted, which cannot precede that event. Issue #72
+                // / fix M4: the journaling rider rides every version.
+                instruction: format!(
+                    "{} {}",
+                    samurai_prompts::recovery_ritual_instruction(epic, prior, None),
+                    samurai_prompts::journal_instruction(&default_journal_file()),
+                ),
                 predecessor_session_id: 0,
                 predecessor_generation: prior,
                 recovery: true,
@@ -1121,10 +1145,16 @@ impl SamuraiReplicator {
                     )
                     .await;
                     (
-                        samurai_prompts::recovery_ritual_instruction(
-                            &epic,
-                            prior,
-                            repo_pin.as_deref(),
+                        // Issue #72 / fix M4: journaling rider, same as the
+                        // successor arm above.
+                        format!(
+                            "{} {}",
+                            samurai_prompts::recovery_ritual_instruction(
+                                &epic,
+                                prior,
+                                repo_pin.as_deref(),
+                            ),
+                            samurai_prompts::journal_instruction(&default_journal_file()),
                         ),
                         true,
                     )
@@ -2490,6 +2520,10 @@ mod tests {
         assert!(instruction.contains("RECOVERY MODE"));
         assert!(instruction.contains(".maestro/handoffs/epic-9-gen3-recovery.md"));
         assert!(!instruction.contains("MUST run every command"));
+        // Fix M4: the journaling rider rides recovery briefs too — and the
+        // composed brief stays one paste-able line.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
         assert!(!instruction.contains('\n'));
         // The digest file was written before staging, from the transcript.
         let digest = std::fs::read_to_string(
@@ -2546,6 +2580,10 @@ mod tests {
         assert!(h.torn_down.lock().unwrap().is_empty());
         let (_, instruction) = h.replicator.pending_view(3).unwrap();
         assert!(instruction.contains("RECOVERY MODE"));
+        // Fix M4: the journaling rider rides the DEAD-recovery brief.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
+        assert!(!instruction.contains('\n'));
 
         // One spawn event, emitted after the digest file is written.
         wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
@@ -2688,6 +2726,9 @@ mod tests {
             "issue read AND takeover comment must be pinned: {instruction}"
         );
         assert!(!instruction.contains("CAUTION"));
+        // Fix M4: the pin swap must keep the journaling rider aboard.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
         assert!(!instruction.contains('\n'), "still a single pasteable line");
     }
 
@@ -2712,6 +2753,9 @@ mod tests {
         // No pinned `gh` usage (the caution itself mentions the missing pin).
         assert!(!instruction.contains("passing `--repo"));
         assert!(instruction.contains("CAUTION"));
+        // Fix M4: the unpinned staged brief carries the rider too.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
         assert!(!instruction.contains('\n'));
     }
 
@@ -2986,6 +3030,11 @@ mod tests {
         let (_, instruction) = h.replicator.pending_view(4).unwrap();
         assert!(instruction.contains("RECOVERY"));
         assert!(instruction.contains("generation 4"));
+        // Fix M4: the fresh-spawn recovery brief carries the journaling
+        // rider, and stays one paste-able line.
+        assert!(instruction.contains("journal.jsonl"));
+        assert!(instruction.contains("\"BOTTLENECK\""));
+        assert!(!instruction.contains('\n'));
         // The digest file exists before the spawn event fired, carrying the
         // no-transcript note (there is no predecessor transcript to digest).
         let digest_path = repo

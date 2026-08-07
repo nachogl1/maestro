@@ -4,6 +4,14 @@ import type { Components } from "react-markdown";
 interface MarkdownBodyProps {
   content: string;
   className?: string;
+  /**
+   * Whether raw HTML embedded in the markdown is rendered (rehype-raw).
+   * Defaults to true, preserving every pre-existing call site. Pass false
+   * for content derived from untrusted input — e.g. harvest reports built
+   * from journal text any local process can write — so script-capable HTML
+   * can never become live elements in this invoke-capable webview.
+   */
+  allowRawHtml?: boolean;
 }
 
 /** Hoisted so it is not rebuilt per render and can be shared with the lazy chunk. */
@@ -128,11 +136,17 @@ const MarkdownRenderer = lazy(async () => {
   ]);
 
   return {
-    default: function MarkdownRenderer({ content }: { content: string }) {
+    default: function MarkdownRenderer({
+      content,
+      allowRawHtml,
+    }: {
+      content: string;
+      allowRawHtml: boolean;
+    }) {
       return (
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkGemoji]}
-          rehypePlugins={[rehypeRaw]}
+          rehypePlugins={allowRawHtml ? [rehypeRaw] : []}
           components={COMPONENTS}
         >
           {content}
@@ -146,7 +160,7 @@ const MarkdownRenderer = lazy(async () => {
  * Renders markdown content with GitHub Flavored Markdown support.
  * Handles images, links, code blocks, tables, and other GFM features.
  */
-export function MarkdownBody({ content, className = "" }: MarkdownBodyProps) {
+export function MarkdownBody({ content, className = "", allowRawHtml = true }: MarkdownBodyProps) {
   if (!content) {
     return (
       <p className="text-xs italic text-maestro-muted">No description provided.</p>
@@ -159,7 +173,7 @@ export function MarkdownBody({ content, className = "" }: MarkdownBodyProps) {
   return (
     <div className={`markdown-body ${className}`}>
       <Suspense fallback={null}>
-        <MarkdownRenderer content={processedContent} />
+        <MarkdownRenderer content={processedContent} allowRawHtml={allowRawHtml} />
       </Suspense>
     </div>
   );
