@@ -26,6 +26,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 import { SecondBrainSection } from "../SecondBrainSection";
 import { SAMURAI_IN_USE_ERROR_PREFIX, type SamuraiFileEntry } from "@/lib/samurai";
+import { useHealthStore } from "@/stores/useHealthStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 
 const invokeMock = vi.mocked(invoke);
@@ -56,6 +57,7 @@ function fileEntry(overrides: Partial<SamuraiFileEntry> = {}): SamuraiFileEntry 
     project_path: "C:\\git\\maestro",
     epic: "#38",
     in_use: false,
+    has_live_session: false,
     fire_at: null,
     ...overrides,
   };
@@ -78,6 +80,8 @@ function mockInvoke(files: SamuraiFileEntry[], deleteRejections: Record<string, 
         if (!force && deleteRejections[path]) throw deleteRejections[path];
         return undefined;
       }
+      case "samurai_timer_cancel":
+        return true;
       case "samurai_cleanup_epic":
         return {
           epic: "#38",
@@ -99,6 +103,8 @@ describe("SecondBrainSection (issue #66)", () => {
     invokeMock.mockReset();
     askMock.mockReset();
     useWorkspaceStore.setState({ tabs: [buildTab()] });
+    // Health flags live in a module-level zustand store — reset between tests.
+    useHealthStore.setState({ flags: [] });
   });
 
   it("renders both sections: the audit stream on top and the files below", async () => {
@@ -227,21 +233,26 @@ describe("SecondBrainSection (issue #66)", () => {
     });
   });
 
-  it("offers clean-this-epic only on inactive run configs and confirms first", async () => {
+  it("offers clean-this-epic on run configs without a live session and confirms first", async () => {
     mockInvoke([
-      // Archived config → cleanable.
+      // Completed-but-still-ACTIVE config (review F2): in_use (ACTIVE
+      // status) but no live session → cleanable — nothing archives a config
+      // at completion yet, so this is exactly when the button must show.
       fileEntry({
         kind: "RUN_CONFIG",
         path: "C:\\appdata\\samurai\\runs\\maestro-38.json",
         epic: "#38",
-        in_use: false,
+        in_use: true,
+        has_live_session: false,
       }),
-      // Active config → no cleanup button.
+      // Config with a live supervised session → no cleanup button (the
+      // backend would refuse anyway).
       fileEntry({
         kind: "RUN_CONFIG",
         path: "C:\\appdata\\samurai\\runs\\maestro-40.json",
         epic: "#40",
         in_use: true,
+        has_live_session: true,
       }),
     ]);
     askMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
@@ -269,5 +280,94 @@ describe("SecondBrainSection (issue #66)", () => {
         "Cleaned up epic #38: removed worktree, branch samurai/38, run config.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("offers cancel-timer instead of delete on TIMER rows", async () => {
+    mockInvoke([
+      fileEntry({
+        kind: "TIMER",
+        path: "C:\\appdata\\samurai\\schedule.json",
+        fire_at: new Date(Date.now() + 3600_000).toISOString(),
+        in_use: true,
+      }),
+    ]);
+    render(<SecondBrainSection />);
+    expect(await screen.findByText(/^resumes at /)).toBeInTheDocument();
+
+    // Review F1: no file-delete affordance on timer rows — deleting
+    // schedule.json would neither stop the timer nor scope to one epic.
+    expect(screen.getByRole("button", { name: "Cancel resume timer for #38" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Delete / })).toBeNull();
+  });
+
+  it("cancels a timer only after the no-self-resume consequence is confirmed", async () => {
+    mockInvoke([
+      fileEntry({
+        kind: "TIMER",
+        path: "C:\\appdata\\samurai\\schedule.json",
+        fire_at: new Date(Date.now() + 3600_000).toISOString(),
+        in_use: true,
+      }),
+    ]);
+    askMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    render(<SecondBrainSection />);
+    const button = await screen.findByRole("button", { name: "Cancel resume timer for #38" });
+
+    // Declined — nothing cancelled.
+    fireEvent.click(button);
+    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_timer_cancel", expect.anything());
+    // The confirm names the real consequence: no self-resume afterwards.
+    expect(askMock.mock.calls[0][0]).toMatch(/NOT resume on its own/);
+    expect(askMock.mock.calls[0][1]).toMatchObject({
+      title: "Cancel Resume Timer",
+      kind: "warning",
+    });
+
+    // Confirmed — the wrapper is called with the row's project + epic.
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("samurai_timer_cancel", {
+        projectPath: "C:\\git\\maestro",
+        epic: "#38",
+      }),
+    );
+    expect(await screen.findByText("Cancelled the resume timer for #38.")).toBeInTheDocument();
+  });
+
+  it("renders a shared schedule.json health reason only under the first timer row", async () => {
+    const schedulePath = "C:\\appdata\\samurai\\schedule.json";
+    mockInvoke([
+      fileEntry({
+        kind: "TIMER",
+        path: schedulePath,
+        epic: "#38",
+        fire_at: new Date(Date.now() + 3600_000).toISOString(),
+        in_use: true,
+      }),
+      fileEntry({
+        kind: "TIMER",
+        path: schedulePath,
+        epic: "#40",
+        fire_at: new Date(Date.now() + 7200_000).toISOString(),
+        in_use: true,
+      }),
+    ]);
+    useHealthStore.setState({
+      flags: [
+        {
+          key: `samurai:${schedulePath}:size`,
+          area: "secondbrain",
+          scope: schedulePath,
+          target: "schedule.json",
+          reason: "schedule 6.0 MB (warn at 5.0 MB)",
+        },
+      ],
+    });
+    render(<SecondBrainSection />);
+    expect(await screen.findByText("#40")).toBeInTheDocument();
+
+    // Review F4: both rows share schedule.json — the one flag renders once.
+    expect(screen.getAllByText("schedule 6.0 MB (warn at 5.0 MB)")).toHaveLength(1);
   });
 });

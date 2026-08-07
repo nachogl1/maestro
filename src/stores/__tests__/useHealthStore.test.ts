@@ -101,6 +101,7 @@ function samuraiFile(path: string, sizeBytes: number) {
     project_path: APP_PATH,
     epic: null,
     in_use: false,
+    has_live_session: false,
     fire_at: null,
   };
 }

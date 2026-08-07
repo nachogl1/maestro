@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Eraser, Files, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { Eraser, Files, Loader2, RefreshCw, TimerOff, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { HealthFlag } from "@/lib/healthRules";
 import {
@@ -7,6 +7,7 @@ import {
   samuraiCleanupEpic,
   samuraiFileDelete,
   samuraiFilesList,
+  samuraiTimerCancel,
   type SamuraiFileEntry,
   type SamuraiFileKind,
 } from "@/lib/samurai";
@@ -77,12 +78,16 @@ function formatFireAt(fireAt: string): string {
 function FileRow({
   entry,
   onDelete,
+  onCancelTimer,
   onCleanEpic,
   busy,
   healthFlags,
 }: {
   entry: SamuraiFileEntry;
-  onDelete: (entry: SamuraiFileEntry) => void;
+  /** Absent on TIMER rows — a timer is cancelled, never file-deleted. */
+  onDelete: ((entry: SamuraiFileEntry) => void) | null;
+  /** TIMER rows only: cancel this epic's pending resume. */
+  onCancelTimer: ((entry: SamuraiFileEntry) => void) | null;
   /** Present only on rows offering the one-click epic cleanup. */
   onCleanEpic: ((entry: SamuraiFileEntry) => void) | null;
   busy: boolean;
@@ -124,16 +129,30 @@ function FileRow({
             <Eraser size={12} />
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => onDelete(entry)}
-          disabled={busy}
-          className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
-          aria-label={`Delete ${label}`}
-          title="Delete this file (asks first)"
-        >
-          <Trash2 size={12} />
-        </button>
+        {onCancelTimer && (
+          <button
+            type="button"
+            onClick={() => onCancelTimer(entry)}
+            disabled={busy}
+            className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
+            aria-label={`Cancel resume timer for ${entry.epic}`}
+            title="Cancel this pending resume — the parked run will not resume on its own (asks first)"
+          >
+            <TimerOff size={12} />
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            onClick={() => onDelete(entry)}
+            disabled={busy}
+            className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
+            aria-label={`Delete ${label}`}
+            title="Delete this file (asks first)"
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
       </div>
       {healthFlags && (
         <div className="pb-0.5 pl-5 pr-1">
@@ -149,9 +168,10 @@ function FileRow({
  * top (the Phase 1 AuditSection absorbed as-is) and below it the Files
  * section — every managed resource from `samurai_files_list` grouped by kind
  * with size + age, delete-with-confirm per row (in-use files get a second,
- * harder confirm before force-deleting), and one-click "clean this epic" on
- * run configs that are no longer active. Deliberately minimal per the PRD:
- * list, delete, warn — no file-manager ambitions.
+ * harder confirm before force-deleting; TIMER rows get a cancel-timer action
+ * instead of delete), and one-click "clean this epic" on run configs without
+ * a live supervised session. Deliberately minimal per the PRD: list, delete,
+ * warn — no file-manager ambitions.
  */
 export function SecondBrainSection() {
   // null = loading.
@@ -219,6 +239,34 @@ export function SecondBrainSection() {
     }
   };
 
+  const handleCancelTimer = async (entry: SamuraiFileEntry) => {
+    if (!entry.epic || !entry.project_path) return;
+    // Not a file delete: deleting schedule.json would neither stop the
+    // in-memory timer nor scope to one epic (the backend refuses it). The
+    // confirm names the real consequence — no self-resume afterwards.
+    const confirmed = await ask(
+      `Cancel the pending resume for ${entry.epic}? The parked run will NOT resume on its own — you would have to relaunch it.`,
+      { title: "Cancel Resume Timer", kind: "warning" },
+    ).catch(() => false);
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const cancelled = await samuraiTimerCancel(entry.project_path, entry.epic);
+      setNotice(
+        cancelled
+          ? `Cancelled the resume timer for ${entry.epic}.`
+          : `No pending resume timer for ${entry.epic}.`,
+      );
+      await refresh();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleCleanEpic = async (entry: SamuraiFileEntry) => {
     if (!entry.epic || !entry.project_path) return;
     // Same confirm + report wording as LaunchSection's active-run cleanup.
@@ -250,6 +298,11 @@ export function SecondBrainSection() {
       setBusy(false);
     }
   };
+
+  // TIMER rows all share schedule.json as their path — a file's health
+  // reasons render only under the FIRST row bearing that path (the badge
+  // already counts each flag exactly once). Rebuilt every render.
+  const seenFlagPaths = new Set<string>();
 
   return (
     <div className="space-y-3">
@@ -302,23 +355,46 @@ export function SecondBrainSection() {
                     <p className="px-1 text-[11px] italic text-maestro-muted">None.</p>
                   ) : (
                     <div className="space-y-0.5">
-                      {entries.map((entry, i) => (
-                        <FileRow
-                          key={`${entry.path}-${entry.epic ?? ""}-${i}`}
-                          entry={entry}
-                          healthFlags={healthRows.get(`${entry.path}|${baseName(entry.path)}`)}
-                          onDelete={handleDelete}
-                          onCleanEpic={
-                            // One-click epic cleanup, only where the run
-                            // config is no longer active (in_use covers
-                            // ACTIVE status, live sessions and timers).
-                            kind === "RUN_CONFIG" && !entry.in_use && entry.epic && entry.project_path
-                              ? handleCleanEpic
-                              : null
-                          }
-                          busy={busy}
-                        />
-                      ))}
+                      {entries.map((entry, i) => {
+                        const firstForPath = !seenFlagPaths.has(entry.path);
+                        seenFlagPaths.add(entry.path);
+                        return (
+                          <FileRow
+                            key={`${entry.path}-${entry.epic ?? ""}-${i}`}
+                            entry={entry}
+                            healthFlags={
+                              firstForPath
+                                ? healthRows.get(`${entry.path}|${baseName(entry.path)}`)
+                                : undefined
+                            }
+                            // TIMER rows are cancelled, never file-deleted —
+                            // schedule.json self-cleans and the backend
+                            // refuses deleting it (review F1).
+                            onDelete={kind === "TIMER" ? null : handleDelete}
+                            onCancelTimer={
+                              kind === "TIMER" && entry.epic && entry.project_path
+                                ? handleCancelTimer
+                                : null
+                            }
+                            onCleanEpic={
+                              // One-click epic cleanup wherever it can work:
+                              // the backend refuses cleanup only while a live
+                              // session exists, so gate on that alone — a
+                              // completed run's config stays ACTIVE (in_use)
+                              // until archive-at-completion lands with the
+                              // COMPLETE event emission, and must still be
+                              // cleanable (review F2).
+                              kind === "RUN_CONFIG" &&
+                              entry.epic &&
+                              entry.project_path &&
+                              !entry.has_live_session
+                                ? handleCleanEpic
+                                : null
+                            }
+                            busy={busy}
+                          />
+                        );
+                      })}
                     </div>
                   )}
                 </div>

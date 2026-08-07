@@ -280,6 +280,13 @@ export interface SamuraiFileEntry {
    * pending timer — deleting requires `force` (harder confirm, PRD §5.11).
    */
   in_use: boolean;
+  /**
+   * A live (non-terminal) supervised session exists for this entry's
+   * project + epic — the session slice of `in_use` on its own; false for
+   * kinds without an epic association. Gates "clean this epic": the backend
+   * refuses cleanup only while a live session exists.
+   */
+  has_live_session: boolean;
   /** TIMER rows only: RFC 3339 fire time. */
   fire_at: string | null;
 }
@@ -309,9 +316,21 @@ export function samuraiFilesList(): Promise<SamuraiFileEntry[]> {
  * Rejects paths outside the backend-computed managed roots; an in-use file
  * rejects with a `SAMURAI_IN_USE_ERROR_PREFIX`-prefixed message unless
  * `force` is true (use `isSamuraiInUseError` to route to a harder confirm).
+ * `schedule.json` always rejects, force or not — cancel its timers instead
+ * (`samuraiTimerCancel`, or the epic cleanup).
  */
 export function samuraiFileDelete(path: string, force: boolean): Promise<void> {
   return invoke("samurai_file_delete", { path, force });
+}
+
+/**
+ * Cancels one epic's pending resume timer (confirm before calling — the
+ * parked run will NOT resume on its own afterwards; relaunching is the only
+ * way back). Resolves `false` when no timer was pending — cancelling twice
+ * is not an error.
+ */
+export function samuraiTimerCancel(projectPath: string, epic: string): Promise<boolean> {
+  return invoke("samurai_timer_cancel", { projectPath, epic });
 }
 
 // ---------------------------------------------------------------------------

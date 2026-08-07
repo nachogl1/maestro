@@ -121,6 +121,7 @@ function mockInvoke() {
             project_path: "C:\\git\\maestro",
             epic: "#38",
             in_use: false,
+            has_live_session: false,
             fire_at: null,
           },
         ];

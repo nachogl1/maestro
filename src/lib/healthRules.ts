@@ -341,8 +341,10 @@ function samuraiBaseName(path: string): string {
 }
 
 /**
- * Flags every Samurai-managed file larger than the user-configured warning
- * threshold (`SamuraiConfig.size_warn_bytes`). The audit log is the file
+ * Flags every Samurai-managed file AT OR ABOVE the user-configured warning
+ * threshold (`SamuraiConfig.size_warn_bytes` — its Rust doc reads "at or
+ * above this many bytes warns", and a threshold of 1 must warn on every
+ * non-empty file, the documented test mode). The audit log is the file
  * this exists for (PRD §5.10 — the user deletes audit records manually, so
  * growth must be surfaced, never acted on), but a size is a size and every
  * managed file gets the same bar (PRD §5.11).
@@ -365,7 +367,7 @@ export function evaluateSamuraiFiles(
   for (const file of files) {
     if (seenPaths.has(file.path)) continue;
     seenPaths.add(file.path);
-    if (file.size_bytes <= sizeWarnBytes) continue;
+    if (file.size_bytes < sizeWarnBytes) continue;
     flags.push({
       key: `samurai:${file.path}:size`,
       area: "secondbrain",

@@ -166,30 +166,35 @@ describe("evaluateSamuraiFiles", () => {
       project_path: "C:\\git\\app",
       epic: null,
       in_use: false,
+      has_live_session: false,
       fire_at: null,
       ...overrides,
     };
   }
 
-  it("stays silent when every file is at or under the threshold", () => {
+  it("stays silent when every file is strictly under the threshold", () => {
     const files = [
-      samuraiFile("C:\\data\\audit\\a.jsonl", { size_bytes: WARN }),
+      samuraiFile("C:\\data\\audit\\a.jsonl", { size_bytes: WARN - 1 }),
       samuraiFile("C:\\data\\handoffs\\h.md", { kind: "HANDOFF", size_bytes: 12 }),
     ];
     expect(evaluateSamuraiFiles(files, WARN)).toEqual([]);
   });
 
-  it("flags only files strictly over the threshold, with kind and sizes in the reason", () => {
+  it("flags files at or above the threshold, with kind and sizes in the reason", () => {
     const files = [
       samuraiFile("C:\\data\\audit\\big.jsonl", { size_bytes: 6.5 * 1024 * 1024 }),
+      // Exactly at the threshold flags — "at or above", matching the Rust
+      // config doc for size_warn_bytes (review F3).
+      samuraiFile("C:\\data\\audit\\exact.jsonl", { size_bytes: WARN }),
       samuraiFile("C:\\data\\audit\\small.jsonl", { size_bytes: 100 }),
     ];
     const flags = evaluateSamuraiFiles(files, WARN);
-    expect(flags).toHaveLength(1);
+    expect(flags).toHaveLength(2);
     expect(flags[0].area).toBe("secondbrain");
     expect(flags[0].scope).toBe("C:\\data\\audit\\big.jsonl");
     expect(flags[0].target).toBe("big.jsonl");
     expect(flags[0].reason).toBe("audit log 6.5 MB (warn at 5.0 MB)");
+    expect(flags[1].target).toBe("exact.jsonl");
   });
 
   it("keys flags by path only — the key survives the file growing", () => {
@@ -220,6 +225,12 @@ describe("evaluateSamuraiFiles", () => {
     );
     expect(flags).toHaveLength(1);
     expect(flags[0].reason).toBe("audit log 2 KB (warn at 1 KB)");
+    // Threshold 1 is the legitimate floor (size_warn_bytes validate
+    // rationale): it warns on every non-empty file, never on empty ones.
+    const one = samuraiFile("C:\\data\\audit\\one.jsonl", { size_bytes: 1 });
+    expect(evaluateSamuraiFiles([one], 1)).toHaveLength(1);
+    const empty = samuraiFile("C:\\data\\audit\\empty.jsonl", { size_bytes: 0 });
+    expect(evaluateSamuraiFiles([empty], 1)).toEqual([]);
   });
 });
 

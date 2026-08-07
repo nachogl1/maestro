@@ -93,6 +93,14 @@ pub struct SamuraiFileEntry {
     /// Referenced by an ACTIVE run config, a live supervised session, or a
     /// pending timer — deleting requires `force`.
     pub in_use: bool,
+    /// A live (non-terminal) supervised session exists for this entry's
+    /// (project, epic) — the session slice of the [`Liveness`] pairs behind
+    /// `in_use`, on its own. `false` for kinds without an epic association
+    /// (audit logs, journal, harvest). The Second Brain gates its
+    /// "clean this epic" affordance on this alone: `samurai_cleanup_epic`
+    /// refuses only while a live session exists, so a completed epic whose
+    /// config is still ACTIVE (and therefore `in_use`) must stay cleanable.
+    pub has_live_session: bool,
     /// [`SamuraiFileKind::Timer`] rows only: the RFC 3339 fire time, so the
     /// UI can render "resumes at 14:32" (PRD §5.11).
     pub fire_at: Option<String>,
@@ -167,6 +175,7 @@ pub fn list_files(
                 project_path: Some(config.project_path.clone()),
                 epic: Some(config.epic.clone()),
                 in_use: live.pair(&config.project_path, &config.epic),
+                has_live_session: live.session_pair(&config.project_path, &config.epic),
                 fire_at: None,
             });
         }
@@ -188,6 +197,7 @@ pub fn list_files(
             epic: Some(config.epic.clone()),
             in_use: config.status == RunConfigStatus::Active
                 || live.pair(&config.project_path, &config.epic),
+            has_live_session: live.session_pair(&config.project_path, &config.epic),
             fire_at: None,
         });
     }
@@ -206,6 +216,7 @@ pub fn list_files(
             project_path: Some(timer.project_path.clone()),
             epic: Some(timer.epic.clone()),
             in_use: true,
+            has_live_session: live.session_pair(&timer.project_path, &timer.epic),
             fire_at: Some(timer.fire_at.clone()),
         });
     }
@@ -240,6 +251,8 @@ pub fn list_files(
                 project_path: project,
                 epic: None,
                 in_use,
+                // No epic association — the live-pair logic does not apply.
+                has_live_session: false,
                 fire_at: None,
             });
         }
@@ -274,6 +287,10 @@ pub fn list_files(
 /// 2. **In use:** a target matching an `in_use` inventory row is refused
 ///    without `force`, with an [`IN_USE_ERROR_PREFIX`]-prefixed error the UI
 ///    can distinguish for its harder confirm.
+///
+/// `schedule.json` is refused outright, `force` or not — it self-cleans and
+/// its in-memory timers would re-persist it anyway; cancelling the timers is
+/// the real operation (see the guard below).
 ///
 /// Never silent: a missing/unresolvable target, a directory, or a failed
 /// remove all return the error (PRD §5.11 — delete is explicit and visible).
@@ -315,6 +332,19 @@ pub fn delete_file(
         ));
     }
 
+    // `schedule.json` is never raw-deleted, even with `force` (PRD §8 row 3:
+    // it self-cleans — each cancelled/fired timer rewrites it and the last
+    // one removes it). Deleting the file would neither stop the in-memory
+    // timers (the next fire re-persists it, resurrecting the file) nor scope
+    // to one epic. Cancelling the timers is the real operation.
+    if canonical_stripped(&roots.samurai_dir.join("schedule.json")).is_some_and(|p| p == target) {
+        return Err(format!(
+            "refusing to delete {}: schedule.json self-cleans as its timers fire — cancel the \
+             pending timers instead (each timer row's cancel action, or the epic cleanup)",
+            target.display()
+        ));
+    }
+
     if !force {
         let in_use = entries
             .iter()
@@ -339,6 +369,9 @@ pub fn delete_file(
 /// config lookups), so they must be here too.
 struct Liveness {
     pairs: HashSet<(String, String)>,
+    /// The session slice of `pairs` alone — (project, epic-slug) pairs with a
+    /// live (non-terminal) supervised session, behind `has_live_session`.
+    session_pairs: HashSet<(String, String)>,
     projects: HashSet<String>,
 }
 
@@ -350,6 +383,7 @@ impl Liveness {
     ) -> Self {
         let mut live = Self {
             pairs: HashSet::new(),
+            session_pairs: HashSet::new(),
             projects: HashSet::new(),
         };
         for (_, config) in configs {
@@ -363,6 +397,8 @@ impl Liveness {
         for session in sessions {
             if !session.state.is_terminal() {
                 live.insert(&session.project, &session.epic);
+                live.session_pairs
+                    .insert((session.project.clone(), epic_slug(&session.epic)));
             }
         }
         live
@@ -375,6 +411,11 @@ impl Liveness {
 
     fn pair(&self, project: &str, epic: &str) -> bool {
         self.pairs.contains(&(project.to_string(), epic_slug(epic)))
+    }
+
+    fn session_pair(&self, project: &str, epic: &str) -> bool {
+        self.session_pairs
+            .contains(&(project.to_string(), epic_slug(epic)))
     }
 
     fn project(&self, project: &str) -> bool {
@@ -419,6 +460,7 @@ fn push_dir_files(entries: &mut Vec<SamuraiFileEntry>, dir: &Path, kind: Samurai
             project_path: None,
             epic: None,
             in_use: false,
+            has_live_session: false,
             fire_at: None,
         });
     }
@@ -658,6 +700,7 @@ mod tests {
             "project_path",
             "epic",
             "in_use",
+            "has_live_session",
             "fire_at",
         ] {
             assert!(raw.get(key).is_some(), "missing key {key} in {raw}");
@@ -671,7 +714,9 @@ mod tests {
         let entries = list(&f, &[]);
 
         // ACTIVE epic #9: its config, its handoffs, its timer row and the
-        // project's audit log are all in use.
+        // project's audit log are all in use. With NO session, none of it
+        // has a live session — the completed-but-still-ACTIVE shape the
+        // Second Brain's clean-this-epic gate keys off (review F2).
         for e in &entries {
             let epic9 = e.epic.as_deref() == Some("#9");
             let associated_audit = e.kind == SamuraiFileKind::AuditLog && e.project_path.is_some();
@@ -679,6 +724,8 @@ mod tests {
                 assert!(e.in_use, "expected in_use: {e:?}");
             }
         }
+        assert!(entries.iter().all(|e| !e.has_live_session));
+
         // ARCHIVED epic #7 (no session, no timer): config + handoff free.
         for e in &entries {
             if e.epic.as_deref() == Some("#7") {
@@ -694,12 +741,18 @@ mod tests {
 
         // A live session on the archived epic flips it in-use — matched by
         // slug ("7" vs the config's "#7"), like every other samurai surface.
+        // Its rows also carry has_live_session; epic #9's (session-free) and
+        // the epic-less audit rows never do.
         let live = [session(&f.project, "7", SupervisorState::Working)];
         let entries = list(&f, &live);
         assert!(entries
             .iter()
             .filter(|e| e.epic.as_deref() == Some("#7"))
-            .all(|e| e.in_use));
+            .all(|e| e.in_use && e.has_live_session));
+        assert!(entries
+            .iter()
+            .filter(|e| e.epic.as_deref() != Some("#7"))
+            .all(|e| !e.has_live_session));
 
         // A terminal session does NOT.
         let parked = [session(&f.project, "7", SupervisorState::Parked)];
@@ -707,7 +760,7 @@ mod tests {
         assert!(entries
             .iter()
             .filter(|e| e.epic.as_deref() == Some("#7"))
-            .all(|e| !e.in_use));
+            .all(|e| !e.in_use && !e.has_live_session));
     }
 
     #[test]
@@ -812,19 +865,32 @@ mod tests {
         // force=true deletes it.
         delete_file(&f.roots, &configs, &entries, &handoff.path, true).unwrap();
         assert!(!Path::new(&handoff.path).exists());
+    }
 
-        // schedule.json holds a pending timer → in use → same guard.
+    #[test]
+    fn test_delete_refuses_schedule_json_even_with_force() {
+        // Review F1: raw-deleting schedule.json neither cancels the
+        // in-memory timers (the next fire would re-persist it) nor scopes to
+        // one epic — the refusal points at cancelling timers instead, and
+        // `force` does not override it.
+        let f = fixture();
+        let entries = list(&f, &[]);
+        let configs = f.store.list_with_paths();
         let schedule = f.roots.samurai_dir.join("schedule.json");
-        let err = delete_file(
-            &f.roots,
-            &configs,
-            &entries,
-            &schedule.to_string_lossy(),
-            false,
-        )
-        .unwrap_err();
-        assert!(err.starts_with(IN_USE_ERROR_PREFIX), "{err}");
-        assert!(schedule.exists());
+
+        for force in [false, true] {
+            let err = delete_file(
+                &f.roots,
+                &configs,
+                &entries,
+                &schedule.to_string_lossy(),
+                force,
+            )
+            .unwrap_err();
+            assert!(err.contains("cancel the"), "{err}");
+            assert!(!err.starts_with(IN_USE_ERROR_PREFIX), "{err}");
+            assert!(schedule.exists());
+        }
     }
 
     #[test]

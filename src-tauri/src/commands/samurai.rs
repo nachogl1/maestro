@@ -714,9 +714,10 @@ pub fn samurai_files_list(
 /// computed itself (canonicalized, `\\?\`-stripped comparison), and refuses
 /// `in_use` files unless `force` is true — that refusal starts with
 /// `core::samurai_files::IN_USE_ERROR_PREFIX` (`"IN_USE:"`) so the UI can
-/// route it to a harder confirm. Note: deleting `schedule.json` removes the
-/// FILE; timers already loaded in memory keep running until the app restarts
-/// (cancelling individual timers is the cleanup command's job).
+/// route it to a harder confirm. `schedule.json` is refused outright, force
+/// or not (PRD §8 row 3: it self-cleans, and the in-memory timers would
+/// re-persist a raw delete anyway) — cancel timers via
+/// [`samurai_timer_cancel`] or the epic cleanup instead.
 #[tauri::command]
 pub fn samurai_file_delete(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -734,6 +735,35 @@ pub fn samurai_file_delete(
         &supervisor.list_sessions(),
     );
     samurai_files::delete_file(&roots, &configs, &entries, &path, force)
+}
+
+/// The cancel itself, extracted from the Tauri command for testability (the
+/// `cleanup_epic_inner` precedent): the same `SamuraiSchedule::cancel` path
+/// cleanup step 1 uses, on its own. Like cleanup, the outcome is logged, not
+/// audited — nothing resumed or spawned, so there is no audit row to write.
+pub(crate) fn timer_cancel_inner(
+    schedule: &SamuraiSchedule,
+    project: &str,
+    epic: &str,
+) -> Result<bool, String> {
+    let cancelled = schedule.cancel(project, epic)?;
+    log::info!("samurai timer cancel: epic {epic} in {project} — cancelled={cancelled}");
+    Ok(cancelled)
+}
+
+/// Cancels one epic's pending resume timer (issue #66 review F1 — the Second
+/// Brain's per-timer action; the UI confirms first, naming the consequence:
+/// the parked run will NOT resume on its own afterwards). `Ok(false)` when
+/// nothing was armed — cancelling twice is not an error (P3.1), matching
+/// `SamuraiSchedule::cancel`.
+#[tauri::command]
+pub fn samurai_timer_cancel(
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    project_path: String,
+    epic: String,
+) -> Result<bool, String> {
+    let project = canonical_project_path(&project_path);
+    timer_cancel_inner(&schedule, &project, &epic)
 }
 
 #[cfg(test)]
@@ -1126,6 +1156,49 @@ mod tests {
         .unwrap();
         assert!(!again.stale_timer_cancelled);
         assert_eq!(run_configs.get(&project, "#38").unwrap().thresholds, None);
+    }
+
+    #[test]
+    fn test_timer_cancel_cancels_only_the_named_epic() {
+        // Review F1: the per-timer cancel must remove exactly the one
+        // (project, epic) timer — every other project's and epic's timer
+        // stays armed and persisted.
+        let dir = tempdir().unwrap();
+        let (schedule, _task) =
+            SamuraiSchedule::new(dir.path().to_path_buf(), Arc::new(|_| {}), None);
+        for (project, epic) in [
+            ("C:/git/alpha", "#38"),
+            ("C:/git/alpha", "#40"),
+            ("C:/git/beta", "#38"),
+        ] {
+            schedule
+                .arm(ScheduleEntry {
+                    project_path: project.to_string(),
+                    epic: epic.to_string(),
+                    fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                    reason: "park".to_string(),
+                })
+                .unwrap();
+        }
+
+        assert!(timer_cancel_inner(&schedule, "C:/git/alpha", "#38").unwrap());
+
+        let mut left: Vec<(String, String)> = schedule
+            .list()
+            .into_iter()
+            .map(|e| (e.project_path, e.epic))
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                ("C:/git/alpha".to_string(), "#40".to_string()),
+                ("C:/git/beta".to_string(), "#38".to_string()),
+            ]
+        );
+
+        // Cancelling twice is not an error — it just reports nothing armed.
+        assert!(!timer_cancel_inner(&schedule, "C:/git/alpha", "#38").unwrap());
     }
 
     #[tokio::test]
