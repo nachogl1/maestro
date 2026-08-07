@@ -56,6 +56,11 @@ pub struct SamuraiConfig {
     /// the allowance. Progress signal is commits only in v1 (no `gh`
     /// issue-update polling); see `core/samurai_progress.rs`.
     pub breaker_events: u32,
+    /// Second Brain size warning (issue #65; PRD §5.10/§5.11/§8): a Files
+    /// inventory entry at or above this many bytes gets a size warning in
+    /// the panel (the audit log is the canonical case — it only shrinks when
+    /// the user clears it). A low value doubles as the test mode (PRD §7).
+    pub size_warn_bytes: u64,
 }
 
 impl Default for SamuraiConfig {
@@ -69,6 +74,7 @@ impl Default for SamuraiConfig {
             staleness_window_secs: 300,
             handoff_retention_days: 14,
             breaker_events: 5,
+            size_warn_bytes: 5 * 1024 * 1024,
         }
     }
 }
@@ -101,6 +107,12 @@ impl SamuraiConfig {
         if self.breaker_events == 0 {
             return Err("breaker_events must be at least 1".to_string());
         }
+        // 1 byte is the legitimate floor: it warns on every non-empty file,
+        // which is exactly the live test mode (PRD decision #7). 0 would
+        // warn on files that cannot shrink further — meaningless.
+        if self.size_warn_bytes == 0 {
+            return Err("size_warn_bytes must be at least 1".to_string());
+        }
         Ok(())
     }
 }
@@ -118,6 +130,7 @@ mod tests {
         assert_eq!(cfg.park_hard_7d_pct, 95.0);
         assert_eq!(cfg.handoff_retention_days, 14);
         assert_eq!(cfg.breaker_events, 5);
+        assert_eq!(cfg.size_warn_bytes, 5 * 1024 * 1024);
         // PRD gives "few minutes" / no number — but they must be non-zero.
         assert!(cfg.ack_timeout_secs > 0);
         assert!(cfg.staleness_window_secs > 0);
@@ -146,6 +159,8 @@ mod tests {
         // Issue #57: a store written before `breaker_events` existed must
         // still load, with the PRD default filling the gap.
         assert_eq!(cfg.breaker_events, 5);
+        // Issue #65: same for a store written before `size_warn_bytes`.
+        assert_eq!(cfg.size_warn_bytes, 5 * 1024 * 1024);
     }
 
     #[test]
@@ -159,6 +174,7 @@ mod tests {
             staleness_window_secs: 120,
             handoff_retention_days: 7,
             breaker_events: 3,
+            size_warn_bytes: 1024,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: SamuraiConfig = serde_json::from_str(&json).unwrap();
@@ -174,6 +190,7 @@ mod tests {
             "staleness_window_secs",
             "handoff_retention_days",
             "breaker_events",
+            "size_warn_bytes",
         ] {
             assert!(
                 json.contains(&format!("\"{key}\"")),
@@ -206,6 +223,10 @@ mod tests {
 
         let mut cfg = SamuraiConfig::default();
         cfg.breaker_events = 0;
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = SamuraiConfig::default();
+        cfg.size_warn_bytes = 0;
         assert!(cfg.validate().is_err());
     }
 

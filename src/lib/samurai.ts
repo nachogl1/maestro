@@ -244,3 +244,72 @@ export function samuraiCleanupEpic(
 ): Promise<SamuraiCleanupReport> {
   return invoke("samurai_cleanup_epic", { projectPath, epic });
 }
+
+// ---------------------------------------------------------------------------
+// Issue #65: Second Brain file inventory + guarded delete
+// ---------------------------------------------------------------------------
+
+/** What a listed file is (PRD §8 rows 1–5) — mirrors `SamuraiFileKind`. */
+export type SamuraiFileKind =
+  | "HANDOFF"
+  | "RUN_CONFIG"
+  | "TIMER"
+  | "AUDIT_LOG"
+  | "JOURNAL"
+  | "HARVEST_REPORT";
+
+/**
+ * One inventory row — mirrors the Rust `SamuraiFileEntry`
+ * (`core/samurai_files.rs`). `TIMER` rows share `schedule.json` as their
+ * `path` (one row per pending timer) and carry `fire_at` so the UI can
+ * render "resumes at 14:32".
+ */
+export interface SamuraiFileEntry {
+  kind: SamuraiFileKind;
+  /** Absolute path, Windows `\\?\` prefix already stripped. */
+  path: string;
+  size_bytes: number;
+  /** RFC 3339 UTC modified time; null when the filesystem reports none. */
+  modified_at: string | null;
+  /** Owning project, when the association is known. */
+  project_path: string | null;
+  /** Owning epic, when the association is known. */
+  epic: string | null;
+  /**
+   * Referenced by an ACTIVE run config, a live supervised session, or a
+   * pending timer — deleting requires `force` (harder confirm, PRD §5.11).
+   */
+  in_use: boolean;
+  /** TIMER rows only: RFC 3339 fire time. */
+  fire_at: string | null;
+}
+
+/**
+ * Fixed prefix of the "file is in use, pass force" delete refusal — must
+ * match `IN_USE_ERROR_PREFIX` in `src-tauri/src/core/samurai_files.rs`.
+ */
+export const SAMURAI_IN_USE_ERROR_PREFIX = "IN_USE:";
+
+/** True when a `samuraiFileDelete` rejection means "in use — force needed". */
+export function isSamuraiInUseError(error: unknown): boolean {
+  return typeof error === "string" && error.startsWith(SAMURAI_IN_USE_ERROR_PREFIX);
+}
+
+/**
+ * Every Samurai-managed file (PRD §8) as one flat list: handoffs, run
+ * configs (active + archived), pending timers, per-project audit logs, and
+ * Phase 5 journal/harvest reports once they exist.
+ */
+export function samuraiFilesList(): Promise<SamuraiFileEntry[]> {
+  return invoke("samurai_files_list");
+}
+
+/**
+ * Deletes one Samurai-managed file (destructive — confirm before calling).
+ * Rejects paths outside the backend-computed managed roots; an in-use file
+ * rejects with a `SAMURAI_IN_USE_ERROR_PREFIX`-prefixed message unless
+ * `force` is true (use `isSamuraiInUseError` to route to a harder confirm).
+ */
+export function samuraiFileDelete(path: string, force: boolean): Promise<void> {
+  return invoke("samurai_file_delete", { path, force });
+}

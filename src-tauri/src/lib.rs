@@ -973,6 +973,9 @@ pub fn run() {
             commands::samurai::samurai_launch_run,
             commands::samurai::samurai_list_runs,
             commands::samurai::samurai_cleanup_epic,
+            // Samurai Second Brain file inventory (issue #65)
+            commands::samurai::samurai_files_list,
+            commands::samurai::samurai_file_delete,
             // CLI commands
             commands::cli::install_cli,
             commands::cli::uninstall_cli,

@@ -13,10 +13,11 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
-use crate::commands::ai_runner::canonical_project_path;
+use crate::commands::ai_runner::{artifact_base_dir, canonical_project_path};
 use crate::commands::usage::{get_claude_usage, UsageData};
 use crate::core::samurai_audit::{AuditLog, AuditReadResult};
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
+use crate::core::samurai_files::{self, SamuraiFileEntry, SamuraiFilesRoots};
 use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_prompts::{self, epic_slug};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
@@ -110,9 +111,8 @@ pub fn samurai_register_session(
     let project = canonical_project_path(&project_path);
     let generation = generation.unwrap_or(1);
     let snapshot = match replicator.spawn_details(&project, &epic, generation) {
-        Some(details) => supervisor.register_session_with_details(
-            session_id, project, epic, generation, details,
-        )?,
+        Some(details) => supervisor
+            .register_session_with_details(session_id, project, epic, generation, details)?,
         None => supervisor.register_session(session_id, project, epic, generation)?,
     };
     replicator.on_registered(&snapshot);
@@ -383,7 +383,9 @@ pub(crate) async fn launch_run_inner(
     if epic.is_empty() {
         return Err("an epic reference is required".to_string());
     }
-    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    let model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
 
     // The refusal matrix runs server-side regardless of what the UI showed.
     let live_session = supervisor.list_sessions().iter().any(|s| {
@@ -442,7 +444,8 @@ pub(crate) async fn launch_run_inner(
     // crash between the write and the spawn leaves a config cold-start
     // reconciliation flags as reconcile_unstartable — the human relaunches
     // (accepted).
-    let mut config = SamuraiRunConfig::new(project.to_string(), epic.clone(), worktree_path.clone());
+    let mut config =
+        SamuraiRunConfig::new(project.to_string(), epic.clone(), worktree_path.clone());
     config.repo_pin = repo_pin.clone();
     config.model = model;
     config.thresholds = thresholds;
@@ -665,6 +668,72 @@ pub async fn samurai_cleanup_epic(
         None,
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Issue #65 (P4.1): Second Brain file inventory + guarded delete
+// ---------------------------------------------------------------------------
+
+/// The app-data roots the inventory scans — the SAME `artifact_base_dir`
+/// kinds the stores are constructed with in `lib.rs` (`audit`, `runs`,
+/// `samurai`) plus the Phase 5 journal/harvest dirs (PRD §5.12), which stay
+/// empty until that phase writes them.
+fn samurai_files_roots() -> SamuraiFilesRoots {
+    SamuraiFilesRoots {
+        audit_dir: artifact_base_dir("audit"),
+        runs_dir: artifact_base_dir("runs"),
+        samurai_dir: artifact_base_dir("samurai"),
+        journal_dir: artifact_base_dir("journal"),
+        harvest_dir: artifact_base_dir("harvest"),
+    }
+}
+
+/// Every Samurai-managed file (PRD §8) as one flat list: handoffs, run
+/// configs (active + archived), pending timers (with their fire time, for
+/// the "resumes at 14:32" rendering), per-project audit logs, and Phase 5
+/// journal/harvest reports once they exist. `in_use` marks entries
+/// referenced by an active run config, a live supervised session, or a
+/// pending timer. All logic lives in `core::samurai_files` (unit-tested
+/// there); this command only snapshots the managed stores.
+#[tauri::command]
+pub fn samurai_files_list(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+) -> Vec<SamuraiFileEntry> {
+    samurai_files::list_files(
+        &samurai_files_roots(),
+        &run_configs.list_with_paths(),
+        &schedule.list(),
+        &supervisor.list_sessions(),
+    )
+}
+
+/// Deletes one Samurai-managed file (user-initiated, UI confirms first —
+/// PRD §5.11). Refuses any path outside the managed roots this command
+/// computed itself (canonicalized, `\\?\`-stripped comparison), and refuses
+/// `in_use` files unless `force` is true — that refusal starts with
+/// `core::samurai_files::IN_USE_ERROR_PREFIX` (`"IN_USE:"`) so the UI can
+/// route it to a harder confirm. Note: deleting `schedule.json` removes the
+/// FILE; timers already loaded in memory keep running until the app restarts
+/// (cancelling individual timers is the cleanup command's job).
+#[tauri::command]
+pub fn samurai_file_delete(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    path: String,
+    force: bool,
+) -> Result<(), String> {
+    let roots = samurai_files_roots();
+    let configs = run_configs.list_with_paths();
+    let entries = samurai_files::list_files(
+        &roots,
+        &configs,
+        &schedule.list(),
+        &supervisor.list_sessions(),
+    );
+    samurai_files::delete_file(&roots, &configs, &entries, &path, force)
 }
 
 #[cfg(test)]
@@ -904,7 +973,10 @@ mod tests {
         assert!(report.timer_cancelled);
         assert!(report.config_archived);
         assert!(report.worktree_removed);
-        assert_eq!(report.worktree_path.as_deref(), Some(&*worktree.to_string_lossy()));
+        assert_eq!(
+            report.worktree_path.as_deref(),
+            Some(&*worktree.to_string_lossy())
+        );
         assert!(report.branch_deleted);
 
         // The pieces are really gone.
@@ -938,8 +1010,7 @@ mod tests {
         // and the gen-1 spawn event already carries the model.
         use crate::core::samurai_injector::SessionDirResolver;
         use crate::core::samurai_replicator::{
-            SessionTeardown, StdinWriter, SuccessorEmitter, SuccessorSpawn,
-            TranscriptPathResolver,
+            SessionTeardown, StdinWriter, SuccessorEmitter, SuccessorSpawn, TranscriptPathResolver,
         };
         use std::sync::{Arc, Mutex, RwLock};
 

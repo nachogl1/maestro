@@ -24,6 +24,7 @@ export interface SamuraiConfig {
   staleness_window_secs: number;
   handoff_retention_days: number;
   breaker_events: number;
+  size_warn_bytes: number;
 }
 
 const SAMURAI_FIELDS: { key: keyof SamuraiConfig; label: string }[] = [
@@ -35,6 +36,7 @@ const SAMURAI_FIELDS: { key: keyof SamuraiConfig; label: string }[] = [
   { key: "staleness_window_secs", label: "Staleness window (seconds)" },
   { key: "handoff_retention_days", label: "Handoff retention (days)" },
   { key: "breaker_events", label: "Circuit breaker events (zero-progress trip)" },
+  { key: "size_warn_bytes", label: "File size warning (bytes)" },
 ];
 
 interface MaestroSettingsModalProps {

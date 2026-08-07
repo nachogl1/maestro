@@ -146,8 +146,17 @@ impl RunConfigStore {
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         self.load_all()
             .into_iter()
-            .filter(|c| c.status == RunConfigStatus::Active)
+            .filter(|(_, c)| c.status == RunConfigStatus::Active)
+            .map(|(_, c)| c)
             .collect()
+    }
+
+    /// Every readable config — ACTIVE and ARCHIVED — with its on-disk path.
+    /// The Second Brain file inventory (`samurai_files`, issue #65) lists
+    /// these; corrupt files are skipped like everywhere else.
+    pub fn list_with_paths(&self) -> Vec<(PathBuf, SamuraiRunConfig)> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.load_all()
     }
 
     /// The config for `(project, epic)`, if a readable one exists. Corrupt
@@ -188,8 +197,9 @@ impl RunConfigStore {
             .join(format!("{}.json", epic_slug(epic)))
     }
 
-    /// Reads every parseable config under `base_dir` (all project subdirs).
-    fn load_all(&self) -> Vec<SamuraiRunConfig> {
+    /// Reads every parseable config under `base_dir` (all project subdirs),
+    /// paired with the file it was read from.
+    fn load_all(&self) -> Vec<(PathBuf, SamuraiRunConfig)> {
         let mut configs = Vec::new();
         let projects = match std::fs::read_dir(&self.base_dir) {
             Ok(entries) => entries,
@@ -216,7 +226,7 @@ impl RunConfigStore {
                     continue;
                 }
                 match read_config(&path) {
-                    Ok(config) => configs.push(config),
+                    Ok(config) => configs.push((path, config)),
                     Err(ReadError::Missing) => {}
                     Err(ReadError::Other(e)) => {
                         log::warn!("samurai run-config: skipping corrupt config {path:?}: {e}");

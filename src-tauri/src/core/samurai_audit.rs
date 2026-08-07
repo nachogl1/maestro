@@ -190,7 +190,9 @@ fn normalize_project(project: &str) -> String {
 /// File name for a project's audit log: `<sanitized-basename>-<hash12>.jsonl`.
 /// Same naming convention as `commands/ai_runner.rs::project_artifact_dir` —
 /// the hash disambiguates same-named projects in different locations.
-fn audit_file_name(project: &str) -> String {
+/// `pub(crate)` so the file inventory (`samurai_files`, issue #65) can
+/// associate audit files back to their projects.
+pub(crate) fn audit_file_name(project: &str) -> String {
     let name = Path::new(project)
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
