@@ -111,6 +111,19 @@ function mockInvoke() {
         };
       case "samurai_list_runs":
         return [];
+      case "samurai_files_list":
+        return [
+          {
+            kind: "HANDOFF",
+            path: "C:\\data\\worktrees\\maestro\\samurai-38\\.maestro\\handoffs\\38-gen2.md",
+            size_bytes: 4096,
+            modified_at: "2026-08-06T12:00:00Z",
+            project_path: "C:\\git\\maestro",
+            epic: "#38",
+            in_use: false,
+            fire_at: null,
+          },
+        ];
       default:
         return undefined;
     }
@@ -211,15 +224,18 @@ describe("UtilityPanel", () => {
     }
   });
 
-  it("renders the Audit panel with the samurai audit stream", async () => {
-    render(<UtilityPanel panel="audit" width={320} onResize={() => {}} onClose={() => {}} />);
+  it("renders the Second Brain panel with the audit stream and the files section", async () => {
+    render(<UtilityPanel panel="secondbrain" width={320} onResize={() => {}} onClose={() => {}} />);
+    expect(screen.getByText("Second Brain")).toBeInTheDocument();
+    // Audit on top: the absorbed AuditSection, behavior unchanged.
     expect(screen.getByText("Samurai Audit")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Supervisor events for this project, newest first\./),
-    ).toBeInTheDocument();
     expect(await screen.findByText("SPAWN")).toBeInTheDocument();
     expect(screen.getByText("gen-2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear audit log" })).toBeInTheDocument();
+    // Files below: the grouped inventory from samurai_files_list.
+    expect(screen.getByText("Files")).toBeInTheDocument();
+    expect(await screen.findByText("38-gen2.md")).toBeInTheDocument();
+    expect(screen.getByText("Handoffs")).toBeInTheDocument();
   });
 
   it("renders the Launch panel with the run form and active runs", async () => {

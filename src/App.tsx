@@ -858,8 +858,8 @@ function App() {
               onToggleNotesPanel={() => handleToggleUtilityPanel("notes")}
               aiPanelOpen={utilityPanel === "ai"}
               onToggleAiPanel={() => handleToggleUtilityPanel("ai")}
-              auditPanelOpen={utilityPanel === "audit"}
-              onToggleAuditPanel={() => handleToggleUtilityPanel("audit")}
+              secondBrainPanelOpen={utilityPanel === "secondbrain"}
+              onToggleSecondBrainPanel={() => handleToggleUtilityPanel("secondbrain")}
               launchPanelOpen={utilityPanel === "launch"}
               onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
               onWatchdogNavigate={handleWatchdogNavigate}

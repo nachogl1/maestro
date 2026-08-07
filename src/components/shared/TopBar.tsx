@@ -3,13 +3,13 @@ import {
   Activity,
   Bird,
   Brain,
+  BrainCircuit,
   GitMerge,
   Minus,
   Network,
   PanelLeft,
   Plus,
   Rocket,
-  ScrollText,
   Sparkles,
   Square,
   StickyNote,
@@ -69,9 +69,9 @@ interface TopBarProps {
   /** Right-side AI panel (Report / Plan / Catalog tabs) */
   aiPanelOpen?: boolean;
   onToggleAiPanel?: () => void;
-  /** Right-side Samurai audit panel (issue #46) */
-  auditPanelOpen?: boolean;
-  onToggleAuditPanel?: () => void;
+  /** Right-side Samurai Second Brain panel — audit stream + files (issue #66) */
+  secondBrainPanelOpen?: boolean;
+  onToggleSecondBrainPanel?: () => void;
   /** Right-side Samurai run launcher panel (issue #63) */
   launchPanelOpen?: boolean;
   onToggleLaunchPanel?: () => void;
@@ -105,8 +105,8 @@ export function TopBar({
   onToggleNotesPanel,
   aiPanelOpen = false,
   onToggleAiPanel,
-  auditPanelOpen = false,
-  onToggleAuditPanel,
+  secondBrainPanelOpen = false,
+  onToggleSecondBrainPanel,
   launchPanelOpen = false,
   onToggleLaunchPanel,
   onWatchdogNavigate,
@@ -325,19 +325,19 @@ export function TopBar({
             <Sparkles size={14} />
           </button>
         )}
-        {onToggleAuditPanel && (
+        {onToggleSecondBrainPanel && (
           <button
             type="button"
-            onClick={onToggleAuditPanel}
+            onClick={onToggleSecondBrainPanel}
             className={`rounded p-1.5 transition-colors ${
-              auditPanelOpen
+              secondBrainPanelOpen
                 ? "text-maestro-accent hover:bg-maestro-accent/10"
                 : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
             }`}
-            aria-label="Audit"
-            title="Samurai audit — supervisor events for this project"
+            aria-label="Second Brain"
+            title="Samurai Second Brain — audit stream and managed files"
           >
-            <ScrollText size={14} />
+            <BrainCircuit size={14} />
           </button>
         )}
         {onToggleLaunchPanel && (

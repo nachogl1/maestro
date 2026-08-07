@@ -1,15 +1,15 @@
 import { Suspense, lazy } from "react";
-import { Activity, Brain, Rocket, ScrollText, Sparkles, StickyNote, X } from "lucide-react";
+import { Activity, Brain, BrainCircuit, Rocket, Sparkles, StickyNote, X } from "lucide-react";
 import {
   PanelResizeHandle,
   RIGHT_PANEL_MAX_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
 } from "@/components/shared/PanelResizeHandle";
 import { AiPanel } from "@/components/ai/AiPanel";
-import { AuditSection } from "@/components/sidebar/AuditSection";
 import { LaunchSection } from "@/components/sidebar/LaunchSection";
 import { MemorySection } from "@/components/sidebar/MemorySection";
 import { ProcessesSection } from "@/components/sidebar/ProcessesSection";
+import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
 
 // NotepadPanel drags in TipTap + ProseMirror, which are only needed once the
 // user opens the Notes panel; a static import parses them all at startup.
@@ -19,16 +19,16 @@ const NotepadPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai" | "audit" | "launch";
+export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai" | "secondbrain" | "launch";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
   memory: { title: "Memory", icon: Brain },
   processes: { title: "Processes", icon: Activity },
   notes: { title: "Notes", icon: StickyNote },
   ai: { title: "AI", icon: Sparkles },
-  // Minimal Samurai audit stream (issue #46) — absorbed into the Second
-  // Brain panel in Phase 4 (PRD §5.11).
-  audit: { title: "Audit", icon: ScrollText },
+  // Samurai Second Brain (issue #66, PRD §5.11): the Phase 1 audit stream
+  // plus the managed-file inventory, absorbed from the old audit panel.
+  secondbrain: { title: "Second Brain", icon: BrainCircuit },
   // Samurai run launcher + active runs (issue #63, PRD §5.8/§9).
   launch: { title: "Launch", icon: Rocket },
 };
@@ -88,8 +88,8 @@ export function UtilityPanel({
             <MemorySection />
           ) : panel === "processes" ? (
             <ProcessesSection />
-          ) : panel === "audit" ? (
-            <AuditSection />
+          ) : panel === "secondbrain" ? (
+            <SecondBrainSection />
           ) : panel === "launch" ? (
             <LaunchSection />
           ) : (
