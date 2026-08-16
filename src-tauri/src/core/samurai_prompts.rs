@@ -140,6 +140,21 @@ fn completion_declaration_clause() -> String {
     )
 }
 
+/// The local-only scheduling prohibition (issue #121) every orchestrator
+/// brief and every wait-inducing instruction (park, soft wind-down)
+/// carries: all waiting and rescheduling is Maestro's job, handled by its
+/// own LOCAL timers (`schedule.json`) — a cloud-scheduled agent or routine
+/// (e.g. Claude Code's `/schedule`) would escape Maestro's supervision,
+/// audit, and allowance accounting entirely. Single line by construction
+/// (see module doc).
+fn local_scheduling_clause() -> &'static str {
+    " SCHEDULING: all waiting and rescheduling is MAESTRO'S job, handled by its own LOCAL \
+     timers. NEVER create cloud-scheduled agents, routines, or jobs (e.g. Claude Code's \
+     /schedule) to resume, retry, or \"come back later\" — a cloud reschedule escapes \
+     Maestro's supervision, audit, and allowance accounting. When you must wait, stop and \
+     wait in this terminal; Maestro resumes the work itself."
+}
+
 /// The delimited WORKFLOW section rider (issue #91): wraps the numbered
 /// step list `samurai_workflow::compile` produced in explicit WORKFLOW /
 /// END-OF-WORKFLOW markers so the process steps read as one block inside
@@ -546,7 +561,8 @@ pub fn soft_winddown_instruction(generation: u32) -> String {
          may follow shortly, and anything uncommitted at that point is at risk. \
          No file needs to be written for this instruction. Never quote, restate, or echo the \
          marker string anywhere else in any reply — emit it exactly once, only as the actual \
-         signal.",
+         signal.{scheduling}",
+        scheduling = local_scheduling_clause(),
         ack = soft_winddown_ack_value(generation),
     )
 }
@@ -583,7 +599,8 @@ pub fn park_instruction(epic: &str, generation: u32) -> String {
          <samurai-handoff-written>{written}</samurai-handoff-written>. \
          Never quote, restate, or echo these marker strings anywhere else in any reply — \
          emit each one exactly once, only as the actual signal at its required moment; a \
-         quoted marker is read as the real signal.",
+         quoted marker is read as the real signal.{scheduling}",
+        scheduling = local_scheduling_clause(),
         ack = park_ack_value(generation),
         relpath = handoff_file_relpath(epic, generation),
         written = park_written_value(generation),
@@ -731,13 +748,14 @@ pub fn successor_ritual_instruction(
     let order = order_contract_reminder();
     let workflow = workflow_section(compiled_workflow);
     let clause = completion_declaration_clause();
+    let scheduling = local_scheduling_clause();
     let pr_reminder = pr_discipline_reminder(is_list);
     if head_matched {
         format!(
             "{opening} Maestro verified that this repository's current HEAD equals the SHA \
              recorded in the handoff's \"Repo state\" section, so the verify step is already \
              satisfied: SKIP the commands in the handoff's Verify section and continue directly \
-             with its Next steps.{order}{workflow}{clause} {pr_reminder}"
+             with its Next steps.{order}{workflow}{clause}{scheduling} {pr_reminder}"
         )
     } else {
         format!(
@@ -745,7 +763,8 @@ pub fn successor_ritual_instruction(
              SHA recorded in the handoff's \"Repo state\" section. You MUST run every command in \
              the handoff's Verify section FIRST, and trust NOTHING the handoff claims that those \
              commands do not confirm — investigate and fix any failure before moving on. Only \
-             then continue with the handoff's Next steps.{order}{workflow}{clause} {pr_reminder}"
+             then continue with the handoff's Next steps.{order}{workflow}{clause}{scheduling} \
+             {pr_reminder}"
         )
     }
 }
@@ -903,8 +922,9 @@ pub fn launch_instruction(refs: &RunRefs, repo_pin: Option<&str>, compiled_workf
          `git add -A`; Conventional Commit messages `type(scope): summary`). \
          (5) {gh_progress}. \
          (6) NEVER switch to, commit to, or push any other branch, and NEVER touch any \
-         repository other than this one.{caution}{order}{workflow}{clause}",
+         repository other than this one.{caution}{order}{workflow}{clause}{scheduling}",
         subject = refs.prose(),
+        scheduling = local_scheduling_clause(),
     )
 }
 
@@ -976,6 +996,7 @@ pub fn recovery_ritual_instruction(
     let order = order_contract_reminder();
     let workflow = workflow_section(compiled_workflow);
     let clause = completion_declaration_clause();
+    let scheduling = local_scheduling_clause();
     let pr_reminder = pr_discipline_reminder(is_list);
     format!(
         "[Maestro Samurai] RECOVERY MODE: you are generation {generation} for {epic_text}. \
@@ -988,7 +1009,8 @@ pub fn recovery_ritual_instruction(
          Then run the project's standard verification (build + tests) BEFORE trusting or \
          continuing anything — investigate and fix any failure first. Once verification passes, \
          {gh_comment} that generation {generation} has taken over in \
-         recovery mode, then continue this run's remaining work.{caution}{order}{workflow}{clause} \
+         recovery mode, then continue this run's remaining \
+         work.{caution}{order}{workflow}{clause}{scheduling} \
          {pr_reminder}"
     )
 }
@@ -1129,6 +1151,39 @@ mod tests {
             parse_handoff_generation("37-gen99999999999999999999.md"),
             None
         );
+    }
+
+    // --- issue #121: local-only scheduling prohibition (drift guard) ---
+
+    #[test]
+    fn test_every_orchestrator_brief_forbids_cloud_scheduling() {
+        // All rescheduling is LOCAL — Maestro's own timers. A cloud-scheduled
+        // agent/routine (e.g. Claude Code's /schedule) escapes supervision,
+        // audit, and allowance accounting entirely, so every brief that could
+        // tempt an agent to "come back later" carries the prohibition.
+        let texts = [
+            launch_instruction(&RunRefs::epics_only("#37"), Some("o/r"), &wf()),
+            successor_ritual_instruction("#37", 2, true, &wf()),
+            successor_ritual_instruction("#37", 2, false, &wf()),
+            recovery_ritual_instruction("#37", 2, Some("o/r"), &wf()),
+            park_instruction("#37", 2),
+            soft_winddown_instruction(2),
+        ];
+        for text in texts {
+            assert!(
+                text.contains("NEVER create cloud-scheduled agents"),
+                "missing cloud-scheduling prohibition: {text}"
+            );
+            assert!(
+                text.contains("/schedule"),
+                "prohibition must name the /schedule escape hatch: {text}"
+            );
+            assert!(
+                text.contains("waiting and rescheduling is MAESTRO'S job"),
+                "prohibition must say waiting is Maestro's job: {text}"
+            );
+            assert!(!text.contains('\n'), "brief must stay single-line");
+        }
     }
 
     // --- issue #119: exactly ONE canonical handoff path ---
