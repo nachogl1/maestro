@@ -1243,6 +1243,7 @@ pub fn run() {
             commands::samurai::samurai_audit_clear,
             commands::samurai::samurai_schedule_list,
             commands::samurai::samurai_schedule_launch,
+            commands::samurai::samurai_recover_run,
             commands::samurai::samurai_get_config,
             commands::samurai::samurai_set_config,
             // Samurai run launcher (issue #63) + workflow graph (issue #91)

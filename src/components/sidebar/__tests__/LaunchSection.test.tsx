@@ -193,6 +193,17 @@ function mockInvoke({
         });
       case "samurai_timer_cancel":
         return true;
+      // Issue #124: recovery answers with what it started.
+      case "samurai_recover_run":
+        return {
+          epic: "#38",
+          generation: 3,
+          prior_generation: 2,
+          from_handoff: true,
+          branch: "maestro-38",
+          head: "abc1234",
+          timer_cancelled: false,
+        };
       default:
         return undefined;
     }
@@ -465,6 +476,40 @@ describe("LaunchSection (issue #63)", () => {
       projectPath: "C:\\git\\maestro",
       epic: "issue #38",
     });
+  });
+
+  it("recovers a crashed run from its row (issue #124)", async () => {
+    // An ACTIVE run with no live agent — exactly the crashed shape.
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+    await screen.findByText("#38");
+
+    fireEvent.click(screen.getByRole("button", { name: "Recover run #38" }));
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+    expect(callsOf("samurai_recover_run")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      epic: "#38",
+    });
+    expect(
+      await screen.findByText(/Recovery started: gen-3 for #38 on maestro-38 @ abc1234/),
+    ).toBeInTheDocument();
+  });
+
+  it("offers no recovery on a completed or live run (issue #124)", async () => {
+    // COMPLETED: finished, cleanup is its next step — nothing to recover.
+    mockInvoke({ runs: [run({ status: "COMPLETED" })] });
+    const view = render(<LaunchSection />);
+    await screen.findByText("#38");
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+    view.unmount();
+
+    // A live agent in an open tab: recovery would duplicate it.
+    useSessionStore.setState({ samuraiBySessionId: { 7: supervised() } });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection onNavigate={vi.fn()} />);
+    const open = await screen.findByRole("button", { name: OPEN_LABEL("#38") });
+    expect(open).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
   });
 
   it("shows a pending scheduled launch with its fire time (issue #129)", async () => {

@@ -165,6 +165,39 @@ export function samuraiScheduleList(): Promise<SamuraiScheduleEntry[]> {
   return invoke("samurai_schedule_list");
 }
 
+/** Mirrors the Rust `SamuraiRecoverResult` (issue #124). */
+export interface SamuraiRecoverResult {
+  epic: string;
+  /** The generation now spawning. */
+  generation: number;
+  /** The true resume point: the highest generation the registry or the
+   *  handoff files know. */
+  prior_generation: number;
+  /** Resume from the prior handoff, vs full reconstruction (git + gh). */
+  from_handoff: boolean;
+  /** The worktree's current branch, verified via git. */
+  branch: string;
+  /** The worktree's current short HEAD sha, verified via git. */
+  head: string;
+  /** A pending resume timer was superseded by this manual recovery. */
+  timer_cancelled: boolean;
+}
+
+/**
+ * Recovers a crashed, non-completed run (issue #124): an explicit,
+ * human-only action. The backend verifies the real state first (ACTIVE run,
+ * no live agent, worktree branch + HEAD via git), determines the true resume
+ * point from the registry and the handoff files, then spawns the next
+ * generation — from the handoff when one exists, else via the full recovery
+ * ritual (reconstruct from git + gh, verify before trusting).
+ */
+export function samuraiRecoverRun(
+  projectPath: string,
+  epic: string,
+): Promise<SamuraiRecoverResult> {
+  return invoke("samurai_recover_run", { projectPath, epic });
+}
+
 /**
  * Schedules a one-shot run launch for a day+time (issue #129). `fireAt` is
  * RFC 3339 and must be in the future; the free-text request (issue #128) and

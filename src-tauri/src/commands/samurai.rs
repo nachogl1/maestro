@@ -26,6 +26,7 @@ use crate::core::samurai_journal::{
 };
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
+use crate::core::samurai_resumer::latest_handoff_generation;
 use crate::core::samurai_run_config::{RunConfigStatus, RunConfigStore, SamuraiRunConfig};
 use crate::core::samurai_schedule::{
     SamuraiSchedule, ScheduleEntry, ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH,
@@ -697,6 +698,208 @@ pub async fn samurai_launch_run(
 #[tauri::command]
 pub fn samurai_default_workflow() -> WorkflowGraph {
     WorkflowGraph::default()
+}
+
+// ---------------------------------------------------------------------------
+// Issue #124: crash-recovery relaunch — explicit "recover run" action
+// ---------------------------------------------------------------------------
+
+/// What the recovery started (issue #124) — the UI's confirmation line.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SamuraiRecoverResult {
+    pub epic: String,
+    /// The generation now spawning.
+    pub generation: u32,
+    /// The true resume point: the highest generation the supervisor
+    /// registry or the handoff files on disk know.
+    pub prior_generation: u32,
+    /// Whether the prior generation's handoff file exists — resume from the
+    /// handoff, vs the full recovery ritual (reconstruct from git + gh +
+    /// transcript digest, then verify, before continuing).
+    pub from_handoff: bool,
+    /// The worktree's CURRENT branch, verified via git — not read from any
+    /// stored record.
+    pub branch: String,
+    /// The worktree's current short HEAD sha, verified via git.
+    pub head: String,
+    /// A pending resume timer was superseded by this manual recovery.
+    pub timer_cancelled: bool,
+}
+
+/// The worktree's current `(branch, short HEAD)`, straight from git (issue
+/// #124: disk is the map, git is the territory — a recovery trusts the
+/// repository itself, never a stored record of it). A worktree git cannot
+/// answer for is broken, and that is a refusal, not a spawn.
+fn verify_worktree_git(worktree: &Path) -> Result<(String, String), String> {
+    let git_out = |args: &[&str]| -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(worktree)
+            .output()
+            .map_err(|e| format!("git did not run in {}: {e}", worktree.display()))?;
+        if !output.status.success() {
+            return Err(format!(
+                "`git {}` failed in {}: {}",
+                args.join(" "),
+                worktree.display(),
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let branch = git_out(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let head = git_out(&["rev-parse", "--short", "HEAD"])?;
+    Ok((branch, head))
+}
+
+/// The explicit "recover run" action (issue #124), extracted from the Tauri
+/// command for testability. NEVER automatic — only a human clicks it, on a
+/// non-completed run whose agent died. Verifies the real state first (ACTIVE
+/// config, no live orchestrator, worktree present, branch + HEAD via git),
+/// determines the true resume point (highest generation across the
+/// supervisor registry and the handoff files), then spawns the next
+/// generation through the replicator — which resumes from the prior handoff
+/// when it exists, or runs the full recovery ritual (reconstruct from git +
+/// gh + transcript digest, verify before trusting) when it does not.
+pub(crate) async fn recover_run_inner(
+    supervisor: &Supervisor,
+    schedule: &SamuraiSchedule,
+    run_configs: &RunConfigStore,
+    replicator: &Arc<SamuraiReplicator>,
+    audit: &AuditLog,
+    project: &str,
+    epic: &str,
+) -> Result<SamuraiRecoverResult, String> {
+    // Only a non-completed run recovers: COMPLETED is finished (cleanup is
+    // its next step), ARCHIVED/missing has nothing to restart.
+    let config = run_configs
+        .get(project, epic)
+        .ok_or_else(|| format!("no run config found for {epic} — nothing to recover"))?;
+    if config.status != RunConfigStatus::Active {
+        return Err(format!(
+            "run {epic} is {:?}, not ACTIVE — only a non-completed run can be recovered",
+            config.status,
+        ));
+    }
+    // A live orchestrator must never be duplicated — recovery is for a
+    // crashed run.
+    let live = supervisor.list_sessions().iter().any(|s| {
+        s.project == project && epic_slug(&s.epic) == epic_slug(epic) && !s.state.is_terminal()
+    });
+    if live {
+        return Err(format!(
+            "run {epic} still has a live supervised session — recovery is for a crashed run; \
+             let the live agent finish (or kill it) first",
+        ));
+    }
+    let working_dir = strip_extended_prefix(&config.worktree_path).to_string();
+    let worktree = PathBuf::from(&working_dir);
+    if !worktree.exists() {
+        return Err(format!(
+            "the run's worktree is gone ({working_dir}) — clean the run up and relaunch instead",
+        ));
+    }
+    // Disk is the map, git the territory: the worktree must answer for its
+    // own branch and HEAD before anything spawns into it.
+    let verify_dir = worktree.clone();
+    let (branch, head) = tokio::task::spawn_blocking(move || verify_worktree_git(&verify_dir))
+        .await
+        .map_err(|e| format!("git verification did not finish: {e}"))??;
+
+    // The true resume point — the resumer's exact derivation: the highest
+    // generation either the registry or the handoff files on disk know.
+    let registry_max = supervisor
+        .list_sessions()
+        .iter()
+        .filter(|s| s.project == project && epic_slug(&s.epic) == epic_slug(epic))
+        .map(|s| s.generation)
+        .max();
+    let files_max = latest_handoff_generation(&worktree.join(".maestro").join("handoffs"), epic);
+    let Some(prior) = registry_max.max(files_max) else {
+        return Err(format!(
+            "run {epic} has no handoff files and no known generations — nothing to resume \
+             from; relaunch the run instead",
+        ));
+    };
+    let generation = prior + 1;
+    let from_handoff = worktree
+        .join(samurai_prompts::handoff_file_relpath(epic, prior))
+        .exists();
+
+    // A pending resume timer is superseded by this manual recovery — left
+    // armed it would fire into the recovered run and double-spawn.
+    let mut timer_cancelled = false;
+    for entry in schedule.list() {
+        if entry.project_path == project && epic_slug(&entry.epic) == epic_slug(epic) {
+            timer_cancelled |= schedule.cancel(&entry.project_path, &entry.epic)?;
+        }
+    }
+
+    log::info!(
+        "samurai recover: run {epic} in {project} — spawning gen-{generation} (prior gen-{prior}, from_handoff={from_handoff}, branch {branch} @ {head})"
+    );
+    // The RESUME row BEFORE the spawn (the resumer's convention), with the
+    // verified repository state on the record.
+    audit.append(
+        project,
+        AuditEvent::now(
+            epic,
+            AuditEventKind::Resume,
+            generation,
+            // 0 sentinel: the successor session does not exist yet.
+            0,
+            json!({
+                "trigger": "manual_recovery",
+                "predecessor_generation": prior,
+                "from_handoff": from_handoff,
+                "branch": branch,
+                "head": head,
+            }),
+        ),
+    );
+    replicator.spawn_generation(
+        project,
+        epic,
+        &working_dir,
+        generation,
+        Some(prior),
+        "manual_recovery",
+    );
+    Ok(SamuraiRecoverResult {
+        epic: epic.to_string(),
+        generation,
+        prior_generation: prior,
+        from_handoff,
+        branch,
+        head,
+        timer_cancelled,
+    })
+}
+
+/// Recovers a crashed, non-completed run (issue #124): an explicit,
+/// human-only action that verifies the real state via git before spawning
+/// the next generation from the true resume point. See [`recover_run_inner`].
+#[tauri::command]
+pub async fn samurai_recover_run(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    replicator: State<'_, Arc<SamuraiReplicator>>,
+    audit: State<'_, AuditLog>,
+    project_path: String,
+    epic: String,
+) -> Result<SamuraiRecoverResult, String> {
+    let project = canonical_project_path(&project_path);
+    recover_run_inner(
+        &supervisor,
+        &schedule,
+        &run_configs,
+        &replicator,
+        &audit,
+        &project,
+        &epic,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -2787,6 +2990,155 @@ mod tests {
         let again = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(!again.contains("already in progress"), "{again}");
         assert!(again.contains("timed out"), "{again}");
+    }
+
+    // --- issue #124: crash-recovery relaunch ---
+
+    async fn recover(h: &CleanupHarness, epic: &str) -> Result<SamuraiRecoverResult, String> {
+        recover_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.project,
+            epic,
+        )
+        .await
+    }
+
+    /// Writes gen-`generation`'s handoff file into the run's worktree.
+    fn write_handoff(worktree: &str, epic: &str, generation: u32) {
+        let path =
+            Path::new(worktree).join(samurai_prompts::handoff_file_relpath(epic, generation));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# Handoff\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_recover_refuses_missing_completed_and_live_runs() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+
+        // Missing config: nothing to recover.
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("no run config"), "{err}");
+
+        // A live orchestrator: recovery is for a CRASHED run.
+        let result = run_launch(&h, &gate, true, "#38").await.unwrap();
+        h.supervisor
+            .register_session(1, h.project.clone(), result.epic.clone(), 1)
+            .unwrap();
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("live supervised session"), "{err}");
+
+        // A COMPLETED run: finished, not crashed — cleanup is its next step.
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+        let mut config = h.run_configs.get(&h.project, "issue #38").unwrap();
+        config.status = RunConfigStatus::Completed;
+        h.run_configs.save(&config).unwrap();
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("not ACTIVE"), "{err}");
+
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    #[tokio::test]
+    async fn test_recover_spawns_the_next_generation_from_the_handoff_resume_point() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        // Gen-1 registered (which consumes the staged launch spawn) and then
+        // DIED — the crashed run this action exists for. Without the
+        // registration the replicator would refuse to stage another
+        // generation behind the still-pending gen-1; production wires the
+        // registration into `on_registered`, the harness calls it directly.
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+
+        // The crashed run's disk state: handoffs up to gen-2 — the true
+        // resume point — plus a pending resume timer from an earlier park.
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        write_handoff(&launched.worktree_path, "issue #38", 2);
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "issue #38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+
+        let result = recover(&h, "issue #38").await.unwrap();
+
+        assert_eq!(result.prior_generation, 2, "highest handoff wins");
+        assert_eq!(result.generation, 3);
+        assert!(
+            result.from_handoff,
+            "gen-2's handoff exists — resume from it"
+        );
+        // Verified via git in the real worktree, not read from any record.
+        assert_eq!(result.branch, launched.branch);
+        assert!(!result.head.is_empty());
+        // The stale timer is superseded by the manual recovery.
+        assert!(result.timer_cancelled);
+        assert!(h.schedule.list().is_empty());
+        // Gen-3 staged through the replicator (the spawn event is emitted
+        // from a spawned task — poll briefly rather than racing it).
+        for _ in 0..100 {
+            if h.spawns.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(h.spawns.lock().unwrap().len(), 2);
+        assert_eq!(h.spawns.lock().unwrap()[1].generation, 3);
+        // The RESUME row records the recovery and the verified repo state.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row lands before the spawn");
+        assert_eq!(resume.details["trigger"], "manual_recovery");
+        assert_eq!(resume.details["predecessor_generation"], 2);
+        assert_eq!(resume.details["branch"], launched.branch);
+    }
+
+    #[tokio::test]
+    async fn test_recover_without_a_prior_handoff_reconstructs_or_refuses() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#39").await.unwrap();
+
+        // No handoffs, no registry generations: nothing to resume from —
+        // a relaunch, not a recovery.
+        let err = recover(&h, "issue #39").await.unwrap_err();
+        assert!(err.contains("nothing to resume"), "{err}");
+
+        // The registry knows a DEAD gen-2 but its handoff never landed:
+        // recovery still spawns gen-3, via the full reconstruction ritual.
+        h.supervisor
+            .register_session(7, h.project.clone(), "issue #39".to_string(), 2)
+            .unwrap();
+        h.supervisor.transition(7, SupervisorState::Dead).unwrap();
+        write_handoff(&launched.worktree_path, "issue #39", 1);
+        let result = recover(&h, "issue #39").await.unwrap();
+        assert_eq!(
+            result.prior_generation, 2,
+            "registry beats the older handoff"
+        );
+        assert_eq!(result.generation, 3);
+        assert!(
+            !result.from_handoff,
+            "gen-2 left no handoff — reconstruction, not resume"
+        );
     }
 
     // --- issue #129: scheduled launches ---

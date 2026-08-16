@@ -25,6 +25,7 @@ import {
   samuraiLaunchRun,
   samuraiListRuns,
   samuraiPreflight,
+  samuraiRecoverRun,
   samuraiScheduleLaunch,
   samuraiTimerCancel,
 } from "@/lib/samurai";
@@ -392,6 +393,7 @@ function RunRow({
   now,
   onOpen,
   onCleanup,
+  onRecover,
   pending,
   otherBusy,
   error,
@@ -404,6 +406,8 @@ function RunRow({
   now: number;
   onOpen: (tabId: string, sessionId: number) => void;
   onCleanup: (run: SamuraiRunListEntry) => void;
+  /** Issue #124: explicit crash-recovery relaunch of a non-completed run. */
+  onRecover: (run: SamuraiRunListEntry) => void;
   /** Issue #99: this exact row's cleanup is in flight — spinner + dimmed row
    *  until the backend answers, so the click reads as "working" immediately
    *  instead of doing nothing for several seconds. */
@@ -465,6 +469,21 @@ function RunRow({
             <TerminalSquare size={12} />
           </button>
         </span>
+        {/* Issue #124: recover a crashed run — only offered while the run is
+            not finished and has no live agent to duplicate. The backend
+            re-verifies both before spawning anything. */}
+        {!isCompleted && target.kind !== "open" && (
+          <button
+            type="button"
+            onClick={() => onRecover(run)}
+            disabled={pending || otherBusy}
+            className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
+            aria-label={`Recover run ${run.epic}`}
+            title="The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+          >
+            <RefreshCw size={12} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onCleanup(run)}
@@ -844,6 +863,32 @@ export function LaunchSection({
     }
   };
 
+  /**
+   * Issue #124: explicit crash-recovery relaunch. The backend verifies the
+   * real state (ACTIVE run, no live agent, worktree branch + HEAD via git)
+   * and spawns the next generation from the true resume point; a refusal
+   * surfaces on the row.
+   */
+  const handleRecover = async (run: SamuraiRunListEntry) => {
+    const key = runKey(run);
+    setRowError(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await samuraiRecoverRun(run.project_path, run.epic);
+      setNotice(
+        `Recovery started: gen-${result.generation} for ${result.epic} on ${result.branch} @ ${result.head} (${
+          result.from_handoff
+            ? `resuming from gen-${result.prior_generation}'s handoff`
+            : "reconstructing from git and GitHub"
+        })`,
+      );
+      await refreshRuns();
+    } catch (err) {
+      setRowError({ key, message: String(err) });
+    }
+  };
+
   const handleCleanup = async (run: SamuraiRunListEntry) => {
     // Destructive, never silent (PRD §5.9) — same ask() confirm pattern as
     // the audit clear.
@@ -1189,6 +1234,7 @@ export function LaunchSection({
                   now={now}
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}
+                  onRecover={handleRecover}
                   pending={deletingKey === key}
                   otherBusy={deletingKey !== null && deletingKey !== key}
                   error={rowError?.key === key ? rowError.message : null}
