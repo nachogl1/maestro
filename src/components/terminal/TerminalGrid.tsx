@@ -109,6 +109,35 @@ import { TerminalView } from "./TerminalView";
 import { SessionStatusDot, ThinkingIndicator } from "./ThinkingIndicator";
 
 /**
+ * How many parked samurai transcripts one grid keeps mounted (issue #122).
+ *
+ * A parked tile stays MOUNTED — it renders `display: none`, so its
+ * TerminalView and xterm scrollback live on — and since the cap no longer
+ * bounds them (see `occupiedSlotCount`) nothing else reaps them: an overnight
+ * run at 30-minute handoffs would accrue ~48 of them plus a shelf chip each.
+ * The newest few are what anyone actually reads back, so the rest are
+ * disposed (PR #131 review M5).
+ */
+export const MAX_RETAINED_PARKED_SAMURAI_TILES = 3;
+
+/** The parked samurai terminal-state session ids among these slots, oldest
+ *  first — session ids are assigned in launch order and never reused. */
+function parkedSamuraiSessionIds(slots: SessionSlot[]): number[] {
+  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
+  return slots
+    .flatMap((slot) => (slot.sessionId === null ? [] : [slot.sessionId]))
+    .filter((sessionId) => {
+      const info = samuraiBySessionId[sessionId];
+      return (
+        info !== undefined &&
+        SAMURAI_TERMINAL_STATES.has(info.state) &&
+        parkedSessionIds.includes(sessionId)
+      );
+    })
+    .sort((a, b) => a - b);
+}
+
+/**
  * How many of these slots count against `MAX_SESSIONS`.
  *
  * Parked samurai terminal-state tiles (issue #122) are dead weight: the PTY
@@ -1998,7 +2027,17 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         }
       }
     }
-  }, [samuraiBySessionId, parkedSet, handlePark]);
+    // Dispose everything past the retention cap, oldest first: a parked tile
+    // is still mounted, so an unbounded run would hoard a TerminalView + xterm
+    // buffer per generation. `keepDirArtifacts` is essential — the worktree,
+    // MCP and hooks config belong to the RUN, which the next generation is
+    // still working in.
+    const retired = parkedSamuraiSessionIds(slotsRef.current);
+    const excess = retired.length - MAX_RETAINED_PARKED_SAMURAI_TILES;
+    for (const sessionId of retired.slice(0, Math.max(0, excess))) {
+      handleKill(sessionId, { keepDirArtifacts: true });
+    }
+  }, [samuraiBySessionId, parkedSet, handlePark, handleKill]);
 
   // Handle zoom toggle for a slot
   const handleToggleZoom = useCallback(

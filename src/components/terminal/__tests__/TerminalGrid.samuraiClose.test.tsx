@@ -101,12 +101,17 @@ vi.mock("@/lib/worktreeManager", async (importOriginal) => {
 });
 
 import { invoke } from "@tauri-apps/api/core";
-import { killSession } from "@/lib/terminal";
+import { killSession, spawnShell } from "@/lib/terminal";
 import { useSessionStore } from "@/stores/useSessionStore";
-import { TerminalGrid, type TerminalGridHandle } from "../TerminalGrid";
+import {
+  MAX_RETAINED_PARKED_SAMURAI_TILES,
+  TerminalGrid,
+  type TerminalGridHandle,
+} from "../TerminalGrid";
 
 const invokeMock = vi.mocked(invoke);
 const killSessionMock = vi.mocked(killSession);
+const spawnShellMock = vi.mocked(spawnShell);
 
 /** Puts a supervision entry on the session, as the supervisor listener would. */
 function superviseSession(sessionId: number, state: string) {
@@ -131,6 +136,22 @@ async function renderLaunchedGrid() {
   return useSessionStore.getState().sessions[0].id;
 }
 
+/** Renders the grid with `count` launched slots, returning their session ids. */
+async function renderLaunchedGridWith(count: number) {
+  const ref = createRef<TerminalGridHandle>();
+  render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+  const handle = ref.current;
+  if (!handle) throw new Error("expected TerminalGrid ref to be attached");
+  await act(async () => {
+    for (let i = 1; i < count; i++) handle.addSession();
+  });
+  await act(async () => {
+    await handle.launchAll();
+  });
+  await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(count));
+  return useSessionStore.getState().sessions.map((s) => s.id);
+}
+
 describe("TerminalGrid samurai park (issue #122)", () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -146,6 +167,8 @@ describe("TerminalGrid samurai park (issue #122)", () => {
       return [];
     });
     killSessionMock.mockClear();
+    spawnShellMock.mockReset();
+    spawnShellMock.mockImplementation(async () => 1);
     useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
   });
 
@@ -228,6 +251,35 @@ describe("TerminalGrid samurai park (issue #122)", () => {
 
     await waitFor(() => expect(killSessionMock).toHaveBeenCalledWith(sessionId));
     expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]);
+  });
+
+  // Nothing reaps auto-parked samurai tiles and the session cap no longer
+  // bounds them, so an overnight run accrues one permanently-mounted
+  // TerminalView + xterm buffer (and one shelf chip) per generation — ~48 for
+  // a 24h run at 30-minute handoffs. Only the newest few transcripts are kept.
+  it("disposes the oldest parked samurai tiles beyond the retention cap", async () => {
+    let nextId = 100;
+    spawnShellMock.mockImplementation(async () => nextId++);
+    const ids = await renderLaunchedGridWith(MAX_RETAINED_PARKED_SAMURAI_TILES + 1);
+
+    // Every generation ends, oldest first — exactly the shape a long run
+    // leaves behind.
+    for (const id of ids) {
+      await act(async () => {
+        superviseSession(id, "KILLED");
+      });
+    }
+
+    // The newest N transcripts stay reachable in the tray; the oldest is gone
+    // — session, activity feed, tile and all.
+    await waitFor(() =>
+      expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(
+        ids.slice(-MAX_RETAINED_PARKED_SAMURAI_TILES),
+      ),
+    );
+    expect(useSessionStore.getState().parkedSessionIds).toEqual(
+      ids.slice(-MAX_RETAINED_PARKED_SAMURAI_TILES),
+    );
   });
 
   it("keeps a user unpark unparked after an auto-park (PR #131 review H2)", async () => {
