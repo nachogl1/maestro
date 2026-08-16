@@ -184,6 +184,15 @@ function mockInvoke({
       // The embedded workflow editor's display fallback (issue #91).
       case "samurai_default_workflow":
         return workflowGraph();
+      // Issue #129: scheduling answers with the armed entry.
+      case "samurai_schedule_launch":
+        return timer({
+          epic: "issue #38",
+          reason: "scheduled_launch",
+          fire_at: "2030-01-01T09:30:00.000Z",
+        });
+      case "samurai_timer_cancel":
+        return true;
       default:
         return undefined;
     }
@@ -374,6 +383,112 @@ describe("LaunchSection (issue #63)", () => {
       text: "refactor the audit panel styling",
     });
     expect(screen.queryByText(/is not an issue number/)).not.toBeInTheDocument();
+  });
+
+  it("schedules the launch instead when a day+time is picked (issue #129)", async () => {
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2030-01-01T09:30" },
+    });
+
+    // With a time set, the one button arms the schedule, not a launch.
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+    await waitFor(() => expect(callsOf("samurai_schedule_launch")).toHaveLength(1));
+    expect(callsOf("samurai_schedule_launch")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      text: "work #38",
+      fireAt: new Date("2030-01-01T09:30").toISOString(),
+      model: null,
+      handoffContextPct: null,
+      skipTestGate: false,
+    });
+    // Nothing launched now, and the form cleared for the next request.
+    expect(callsOf("samurai_launch_run")).toHaveLength(0);
+    expect(await screen.findByText(/Launch scheduled: issue #38/)).toBeInTheDocument();
+    expect(textBox()).toHaveValue("");
+    expect(screen.getByLabelText("Schedule for later")).toHaveValue("");
+  });
+
+  it("rejects a past schedule time inline and never calls the backend (issue #129)", async () => {
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2020-01-01T09:30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+
+    expect(await screen.findByText(/Pick a future day and time/)).toBeInTheDocument();
+    expect(callsOf("samurai_schedule_launch")).toHaveLength(0);
+    expect(callsOf("samurai_launch_run")).toHaveLength(0);
+  });
+
+  it("offers launch-or-discard on a held scheduled launch (issue #129)", async () => {
+    // A scheduled launch whose time passed while Maestro was closed: the
+    // backend held it at startup instead of auto-firing.
+    useSessionStore.setState({
+      samuraiSchedule: [
+        timer({
+          epic: "issue #38",
+          reason: "scheduled_launch",
+          held: true,
+          launch: {
+            text: "work #38",
+            model: "claude-opus-5",
+            handoff_context_pct: 30,
+            skip_test_gate: true,
+            attempts: 0,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+    expect(screen.getByText("issue #38")).toBeInTheDocument();
+    expect(screen.getByText(/Overdue — did not launch/)).toBeInTheDocument();
+
+    // Launch now: the stored request launches through the normal path, with
+    // the options it was scheduled with.
+    fireEvent.click(screen.getByRole("button", { name: "Launch now" }));
+    await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
+    expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({
+      projectPath: "C:\\git\\maestro",
+      text: "work #38",
+      model: "claude-opus-5",
+      handoffContextPct: 30,
+      skipTestGate: true,
+    });
+
+    // Discard: cancel the timer, launch nothing further.
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(callsOf("samurai_timer_cancel")).toHaveLength(1));
+    expect(callsOf("samurai_timer_cancel")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      epic: "issue #38",
+    });
+  });
+
+  it("shows a pending scheduled launch with its fire time (issue #129)", async () => {
+    useSessionStore.setState({
+      samuraiSchedule: [
+        timer({
+          epic: "issue #41",
+          reason: "scheduled_launch",
+          fire_at: "2030-01-01T09:30:00.000Z",
+          launch: {
+            text: "work #41",
+            model: null,
+            handoff_context_pct: null,
+            skip_test_gate: false,
+            attempts: 0,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+    expect(screen.getByText("issue #41")).toBeInTheDocument();
+    expect(screen.getByText(/Launches at /)).toBeInTheDocument();
+    // A plain park resume timer never renders in this block.
+    expect(screen.queryByText("#38")).not.toBeInTheDocument();
   });
 
   it("shows remaining allowance per model and pins the chosen one", async () => {

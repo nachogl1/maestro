@@ -532,6 +532,8 @@ impl SamuraiParker {
                         epic: epic.clone(),
                         fire_at: fire_at.clone(),
                         reason: "park".to_string(),
+                        launch: None,
+                        held: false,
                     };
                     match self.schedule.arm(entry) {
                         Ok(()) => {
@@ -1212,6 +1214,8 @@ mod tests {
                 epic: "#1".to_string(),
                 fire_at: later.to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
 

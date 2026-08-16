@@ -93,8 +93,30 @@ export interface SamuraiScheduleEntry {
   epic: string;
   /** RFC 3339 UTC fire time — when the epic resumes. */
   fire_at: string;
-  /** Why the timer exists (currently always `"park"`). */
+  /** Why the timer exists: `"park"`, or `"scheduled_launch"` (issue #129). */
   reason: string;
+  /**
+   * The launch a `"scheduled_launch"` entry performs when it fires (issue
+   * #129). Absent on resume timers — the backend omits it when unset.
+   */
+  launch?: SamuraiScheduledLaunchSpec | null;
+  /**
+   * A held entry never fires on its own — it waits for the user's
+   * launch-or-discard (issue #129: overdue at app start, or unattended
+   * retries exhausted). The backend omits it when false.
+   */
+  held?: boolean;
+}
+
+/** Mirrors the Rust `ScheduledLaunchSpec` (issue #129). */
+export interface SamuraiScheduledLaunchSpec {
+  /** The verbatim free-text launch request (issue #128). */
+  text: string;
+  model: string | null;
+  handoff_context_pct: number | null;
+  skip_test_gate: boolean;
+  /** Unattended fire attempts already failed and re-armed. */
+  attempts: number;
 }
 
 /** Snapshots of every supervised session, ordered by session id. */
@@ -141,6 +163,31 @@ export function samuraiAuditClear(projectPath: string): Promise<void> {
  */
 export function samuraiScheduleList(): Promise<SamuraiScheduleEntry[]> {
   return invoke("samurai_schedule_list");
+}
+
+/**
+ * Schedules a one-shot run launch for a day+time (issue #129). `fireAt` is
+ * RFC 3339 and must be in the future; the free-text request (issue #128) and
+ * the launch options are stored on the timer and launched — full server-side
+ * preflight and refusal matrix included — when it fires. Discard a scheduled
+ * launch with `samuraiTimerCancel`.
+ */
+export function samuraiScheduleLaunch(
+  projectPath: string,
+  text: string,
+  fireAt: string,
+  model: string | null,
+  handoffContextPct: number | null,
+  skipTestGate: boolean,
+): Promise<SamuraiScheduleEntry> {
+  return invoke("samurai_schedule_launch", {
+    projectPath,
+    text,
+    fireAt,
+    model,
+    handoffContextPct,
+    skipTestGate,
+  });
 }
 
 // ---------------------------------------------------------------------------

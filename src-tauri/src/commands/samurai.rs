@@ -27,7 +27,9 @@ use crate::core::samurai_journal::{
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
 use crate::core::samurai_run_config::{RunConfigStatus, RunConfigStore, SamuraiRunConfig};
-use crate::core::samurai_schedule::{SamuraiSchedule, ScheduleEntry};
+use crate::core::samurai_schedule::{
+    SamuraiSchedule, ScheduleEntry, ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH,
+};
 use crate::core::samurai_test_gate::{self, SamuraiTestGate, TestGateProgress};
 use crate::core::samurai_workflow::{self, WorkflowGraph};
 use crate::core::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
@@ -695,6 +697,266 @@ pub async fn samurai_launch_run(
 #[tauri::command]
 pub fn samurai_default_workflow() -> WorkflowGraph {
     WorkflowGraph::default()
+}
+
+// ---------------------------------------------------------------------------
+// Issue #129: scheduled launches — arm by day+time, fire → launch with retry
+// ---------------------------------------------------------------------------
+
+/// How far an unattended fire whose preflight/refusal failed is pushed out
+/// before retrying (issue #129: ~every 15 minutes).
+const SCHEDULED_LAUNCH_RETRY_SECS: i64 = 900;
+
+/// Total attempts before a scheduled launch gives up (issue #129: a bounded
+/// ~2h window — 8 tries, 15 minutes apart). It then stays HELD in the
+/// schedule, unlaunched, for an explicit launch-or-discard.
+const SCHEDULED_LAUNCH_MAX_ATTEMPTS: u32 = 8;
+
+/// What one scheduled-launch fire did — the fire handler's testable outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ScheduledLaunchOutcome {
+    /// The run launched.
+    Launched,
+    /// Preflight/refusal failed; the entry was re-armed
+    /// [`SCHEDULED_LAUNCH_RETRY_SECS`] out with the attempt counted.
+    Retried { attempts: u32 },
+    /// The retry window is exhausted; the entry is HELD (unlaunched, waiting
+    /// for launch-or-discard) and an ALERT records why.
+    GaveUp,
+    /// Not a well-formed scheduled launch (no spec) — logged and dropped.
+    Ignored,
+}
+
+/// Arms a one-shot scheduled launch (issue #129), extracted from the Tauri
+/// command for testability. The entry's identity is the request's derived
+/// label (issue #128) — the same identity the launch itself will use — so
+/// re-scheduling the same request replaces the earlier pick (one pending
+/// timer per (project, run)), and the eventual launch's stale-timer cancel
+/// matches it by slug.
+pub(crate) fn schedule_launch_inner(
+    schedule: &SamuraiSchedule,
+    project: &str,
+    text: &str,
+    fire_at: &str,
+    model: Option<String>,
+    handoff_context_pct: Option<f64>,
+    skip_test_gate: bool,
+) -> Result<ScheduleEntry, String> {
+    let input = LaunchInput::parse(text);
+    if input.is_empty() {
+        return Err("describe what to work on — the scheduled request is empty".to_string());
+    }
+    let fire = chrono::DateTime::parse_from_rfc3339(fire_at)
+        .map_err(|e| format!("unusable schedule time {fire_at:?}: {e}"))?;
+    if fire <= chrono::Utc::now() {
+        return Err("the scheduled time is in the past — pick a future day and time".to_string());
+    }
+    let entry = ScheduleEntry {
+        project_path: project.to_string(),
+        epic: input.label(),
+        fire_at: fire.to_rfc3339(),
+        reason: REASON_SCHEDULED_LAUNCH.to_string(),
+        launch: Some(ScheduledLaunchSpec {
+            text: input.text().to_string(),
+            model,
+            handoff_context_pct,
+            skip_test_gate,
+            attempts: 0,
+        }),
+        held: false,
+    };
+    schedule.arm(entry.clone())?;
+    log::info!(
+        "samurai schedule launch: run {} in {project} armed for {}",
+        entry.epic,
+        entry.fire_at,
+    );
+    Ok(entry)
+}
+
+/// Schedules a run launch for a day+time (issue #129, one-shot v1): the
+/// free-text request (issue #128) is stored on the timer and launched — with
+/// full server-side preflight and the refusal matrix — when it fires.
+/// Discarding is the existing `samurai_timer_cancel`.
+#[tauri::command]
+pub fn samurai_schedule_launch(
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    project_path: String,
+    text: String,
+    fire_at: String,
+    model: Option<String>,
+    handoff_context_pct: Option<f64>,
+    skip_test_gate: Option<bool>,
+) -> Result<ScheduleEntry, String> {
+    let project = canonical_project_path(&project_path);
+    schedule_launch_inner(
+        &schedule,
+        &project,
+        &text,
+        &fire_at,
+        model,
+        handoff_context_pct,
+        skip_test_gate.unwrap_or(false),
+    )
+}
+
+/// One scheduled-launch fire (issue #129), extracted for testability: run
+/// the launch sequence (preflight-checked, refusal-matrixed, test-gated —
+/// the exact path a manual launch takes); an unattended failure re-arms the
+/// entry [`SCHEDULED_LAUNCH_RETRY_SECS`] out until
+/// [`SCHEDULED_LAUNCH_MAX_ATTEMPTS`] is spent, after which the entry is HELD
+/// — kept unlaunched in the schedule for launch-or-discard — with an ALERT
+/// row surfacing the give-up.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn scheduled_launch_fire_inner(
+    supervisor: &Supervisor,
+    schedule: &SamuraiSchedule,
+    worktrees: &WorktreeManager,
+    run_configs: &RunConfigStore,
+    replicator: &Arc<SamuraiReplicator>,
+    audit: &AuditLog,
+    in_flight: &Arc<LaunchInFlight>,
+    test_gate: &SamuraiTestGate,
+    preflight: &SamuraiPreflight,
+    global_config: SamuraiConfig,
+    entry: ScheduleEntry,
+    worktree_base: Option<&Path>,
+) -> ScheduledLaunchOutcome {
+    let Some(spec) = entry.launch.clone() else {
+        log::warn!(
+            "samurai scheduled launch: entry for {} in {} fired without a launch spec — dropped",
+            entry.epic,
+            entry.project_path,
+        );
+        return ScheduledLaunchOutcome::Ignored;
+    };
+    let input = LaunchInput::parse(&spec.text);
+    let launched = launch_run_inner(
+        supervisor,
+        schedule,
+        worktrees,
+        run_configs,
+        replicator,
+        audit,
+        in_flight,
+        test_gate,
+        spec.skip_test_gate,
+        preflight,
+        global_config,
+        &entry.project_path,
+        &input,
+        spec.model.clone(),
+        spec.handoff_context_pct,
+        None,
+        worktree_base,
+    )
+    .await;
+    let reason = match launched {
+        Ok(result) => {
+            log::info!(
+                "samurai scheduled launch: run {} launched on schedule in {} (branch {})",
+                result.epic,
+                entry.project_path,
+                result.branch,
+            );
+            return ScheduledLaunchOutcome::Launched;
+        }
+        Err(reason) => reason,
+    };
+
+    // Unattended failure: nobody is watching to fix gh auth or the red
+    // suite, so retry on a bounded backoff instead of dropping the launch.
+    let attempts = spec.attempts + 1;
+    if attempts >= SCHEDULED_LAUNCH_MAX_ATTEMPTS {
+        log::warn!(
+            "samurai scheduled launch: run {} in {} gave up after {attempts} attempts ({reason}) — held for launch-or-discard",
+            entry.epic,
+            entry.project_path,
+        );
+        // Durable surface for the give-up (the reconciler's account-wide
+        // ALERT convention: generation 0, session 0).
+        audit.append(
+            &entry.project_path,
+            AuditEvent::now(
+                &entry.epic,
+                AuditEventKind::Alert,
+                0,
+                0,
+                json!({
+                    "kind": "scheduled_launch_gave_up",
+                    "attempts": attempts,
+                    "error": reason,
+                }),
+            ),
+        );
+        // Held, with a fresh fire_at so the fired entry's self-clean (which
+        // matches on fire_at) does not remove it: the run stays visible,
+        // unlaunched, until the human launches or discards it.
+        let held = ScheduleEntry {
+            fire_at: chrono::Utc::now().to_rfc3339(),
+            held: true,
+            launch: Some(ScheduledLaunchSpec { attempts, ..spec }),
+            ..entry
+        };
+        if let Err(e) = schedule.arm(held) {
+            log::error!("samurai scheduled launch: failed to persist the held entry: {e}");
+        }
+        return ScheduledLaunchOutcome::GaveUp;
+    }
+
+    let fire_at =
+        (chrono::Utc::now() + chrono::Duration::seconds(SCHEDULED_LAUNCH_RETRY_SECS)).to_rfc3339();
+    log::warn!(
+        "samurai scheduled launch: run {} in {} failed attempt {attempts} ({reason}) — retrying at {fire_at}",
+        entry.epic,
+        entry.project_path,
+    );
+    let retry = ScheduleEntry {
+        fire_at,
+        launch: Some(ScheduledLaunchSpec { attempts, ..spec }),
+        ..entry
+    };
+    if let Err(e) = schedule.arm(retry) {
+        log::error!("samurai scheduled launch: failed to re-arm the retry: {e}");
+    }
+    ScheduledLaunchOutcome::Retried { attempts }
+}
+
+/// The fire-callback entry point for a [`REASON_SCHEDULED_LAUNCH`] timer
+/// (`lib.rs` routes here; `"park"` timers keep going to the resumer). Pulls
+/// the managed state the launch needs, runs the real preflight, and hands
+/// off to [`scheduled_launch_fire_inner`]. Async — the schedule's fire
+/// callback spawns it onto the runtime.
+pub async fn handle_scheduled_launch_fire(app: AppHandle, entry: ScheduleEntry) {
+    use tauri::Manager;
+    let preflight = run_preflight(&entry.project_path).await;
+    let global_config = app
+        .state::<SharedSamuraiConfig>()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let gate_app = app.clone();
+    let test_gate = SamuraiTestGate::new(
+        samurai_test_gate::system_runner(),
+        Arc::new(move |p: &TestGateProgress| {
+            let _ = gate_app.emit("samurai-test-gate-event", p);
+        }),
+    );
+    scheduled_launch_fire_inner(
+        &app.state::<Arc<Supervisor>>(),
+        &app.state::<Arc<SamuraiSchedule>>(),
+        &app.state::<WorktreeManager>(),
+        &app.state::<Arc<RunConfigStore>>(),
+        &app.state::<Arc<SamuraiReplicator>>(),
+        &app.state::<AuditLog>(),
+        &app.state::<Arc<LaunchInFlight>>(),
+        &test_gate,
+        &preflight,
+        global_config,
+        entry,
+        None,
+    )
+    .await;
 }
 
 /// The live orchestrator facts behind one run row (issue #102). `generation`
@@ -1816,6 +2078,8 @@ mod tests {
                 epic: "#38".to_string(),
                 fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
         // A terminal leftover session must NOT block cleanup.
@@ -1946,6 +2210,8 @@ mod tests {
                 epic: "issue 38".to_string(),
                 fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
 
@@ -2335,6 +2601,8 @@ mod tests {
                 epic: "issue #38".to_string(),
                 fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
 
@@ -2521,6 +2789,187 @@ mod tests {
         assert!(again.contains("timed out"), "{again}");
     }
 
+    // --- issue #129: scheduled launches ---
+
+    /// The harness's future-dated scheduled launch, armed through the real
+    /// arm path.
+    fn arm_scheduled_launch(h: &CleanupHarness, text: &str) -> ScheduleEntry {
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        schedule_launch_inner(&h.schedule, &h.project, text, &fire_at, None, None, true).unwrap()
+    }
+
+    /// Drives one scheduled-launch fire through the harness with the given
+    /// preflight.
+    async fn fire_scheduled(
+        h: &CleanupHarness,
+        gate: &SamuraiTestGate,
+        pf: &SamuraiPreflight,
+        entry: ScheduleEntry,
+    ) -> ScheduledLaunchOutcome {
+        scheduled_launch_fire_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            gate,
+            pf,
+            SamuraiConfig::default(),
+            entry,
+            Some(h.base.path()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_schedule_launch_arms_a_one_shot_entry_keyed_by_the_run_identity() {
+        let h = cleanup_harness();
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let entry = schedule_launch_inner(
+            &h.schedule,
+            &h.project,
+            "work   #7 and #9",
+            &fire_at,
+            Some("opus".to_string()),
+            Some(30.0),
+            false,
+        )
+        .unwrap();
+
+        // The entry's identity IS the request's derived label (issue #128),
+        // so the eventual launch and its stale-timer cancel key the same run.
+        assert_eq!(entry.epic, "issues #7, #9");
+        assert_eq!(entry.reason, REASON_SCHEDULED_LAUNCH);
+        assert!(!entry.held);
+        let spec = entry.launch.clone().expect("the spec rides on the entry");
+        assert_eq!(spec.text, "work #7 and #9", "normalized, carried verbatim");
+        assert_eq!(spec.model.as_deref(), Some("opus"));
+        assert_eq!(spec.handoff_context_pct, Some(30.0));
+        assert!(!spec.skip_test_gate);
+        assert_eq!(spec.attempts, 0);
+
+        // One-shot, one timer per run: re-scheduling the same request
+        // replaces the earlier pick.
+        let later = (chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
+        schedule_launch_inner(
+            &h.schedule,
+            &h.project,
+            "work #7 and #9",
+            &later,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].fire_at, later);
+
+        // Refusals: empty request, past time, junk time — nothing armed.
+        let err = schedule_launch_inner(&h.schedule, &h.project, "  ", &fire_at, None, None, true)
+            .unwrap_err();
+        assert!(err.contains("scheduled request is empty"), "{err}");
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.project,
+            "#5",
+            "2020-01-01T00:00:00+00:00",
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("in the past"), "{err}");
+        let err =
+            schedule_launch_inner(&h.schedule, &h.project, "#5", "tomorrow", None, None, true)
+                .unwrap_err();
+        assert!(err.contains("unusable schedule time"), "{err}");
+        assert_eq!(h.schedule.list().len(), 1, "refusals armed nothing");
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_launches_the_run() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        let outcome = fire_scheduled(&h, &gate, &preflight(true, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Launched);
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "gen-1 spawned");
+        let config = h
+            .run_configs
+            .get(&h.project, "issue #38")
+            .expect("ACTIVE config saved under the run identity");
+        assert_eq!(config.launch_text.as_deref(), Some("work #38"));
+        // The launch's stale-timer cancel consumed the armed entry: nothing
+        // pending, nothing to re-fire.
+        assert!(h.schedule.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_retries_with_backoff_on_unattended_refusal() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        // gh auth failed at fire time and nobody is at the keyboard.
+        let outcome = fire_scheduled(&h, &gate, &preflight(false, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Retried { attempts: 1 });
+        assert!(h.spawns.lock().unwrap().is_empty(), "nothing launched");
+        assert!(h.run_configs.load_active().is_empty());
+        // Re-armed ~15 minutes out with the attempt counted, still un-held.
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1);
+        let re = &entries[0];
+        assert_eq!(re.reason, REASON_SCHEDULED_LAUNCH);
+        assert!(!re.held);
+        assert_eq!(re.launch.as_ref().unwrap().attempts, 1);
+        assert_eq!(re.launch.as_ref().unwrap().text, "work #38");
+        let fire_at = chrono::DateTime::parse_from_rfc3339(&re.fire_at).unwrap();
+        let secs_out = (fire_at.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+        assert!(
+            (800..=SCHEDULED_LAUNCH_RETRY_SECS).contains(&secs_out),
+            "retry ~15 min out, got {secs_out}s"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_gives_up_after_the_window_and_holds_the_entry() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let mut entry = arm_scheduled_launch(&h, "work #38");
+        // The bounded ~2h window is spent: this fire is the last attempt.
+        entry.launch.as_mut().unwrap().attempts = SCHEDULED_LAUNCH_MAX_ATTEMPTS - 1;
+
+        let outcome = fire_scheduled(&h, &gate, &preflight(false, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::GaveUp);
+        assert!(h.spawns.lock().unwrap().is_empty(), "kept unlaunched");
+        // HELD — it never fires again on its own, but stays visible for the
+        // human's launch-or-discard.
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].held);
+        assert_eq!(
+            entries[0].launch.as_ref().unwrap().attempts,
+            SCHEDULED_LAUNCH_MAX_ATTEMPTS
+        );
+        // The give-up is a durable ALERT, not just a log line.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let alert = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Alert)
+            .expect("an ALERT surfaces the give-up");
+        assert_eq!(alert.epic, "issue #38");
+        assert_eq!(alert.details["kind"], "scheduled_launch_gave_up");
+        assert_eq!(alert.details["attempts"], 8);
+    }
+
     #[test]
     fn test_timer_cancel_cancels_only_the_named_epic() {
         // Review F1: the per-timer cancel must remove exactly the one
@@ -2540,6 +2989,8 @@ mod tests {
                     epic: epic.to_string(),
                     fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                     reason: "park".to_string(),
+                    launch: None,
+                    held: false,
                 })
                 .unwrap();
         }
