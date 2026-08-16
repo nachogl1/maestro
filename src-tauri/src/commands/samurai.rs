@@ -762,6 +762,7 @@ fn verify_worktree_git(worktree: &Path) -> Result<(String, String), String> {
 /// generation through the replicator — which resumes from the prior handoff
 /// when it exists, or runs the full recovery ritual (reconstruct from git +
 /// gh + transcript digest, verify before trusting) when it does not.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn recover_run_inner(
     supervisor: &Supervisor,
     schedule: &SamuraiSchedule,
@@ -902,6 +903,7 @@ pub(crate) async fn recover_run_inner(
 /// Recovers a crashed, non-completed run (issue #124): an explicit,
 /// human-only action that verifies the real state via git before spawning
 /// the next generation from the true resume point. See [`recover_run_inner`].
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn samurai_recover_run(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -997,6 +999,7 @@ fn scheduled_launch_collision(
 /// re-scheduling the same request replaces the earlier pick (one pending
 /// timer per (project, run)), and the eventual launch's stale-timer cancel
 /// matches it by slug.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn schedule_launch_inner(
     schedule: &SamuraiSchedule,
     run_configs: &RunConfigStore,
@@ -1047,6 +1050,7 @@ pub(crate) fn schedule_launch_inner(
 /// free-text request (issue #128) is stored on the timer and launched — with
 /// full server-side preflight and the refusal matrix — when it fires.
 /// Discarding is the existing `samurai_timer_cancel`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn samurai_schedule_launch(
     schedule: State<'_, Arc<SamuraiSchedule>>,
@@ -1107,31 +1111,32 @@ pub(crate) async fn scheduled_launch_fire_inner(
     // appeared in the meantime (a manual launch, a park sweep since this
     // entry was armed). Firing over either is exactly the unattended clobber
     // the arm-time refusal exists to prevent.
-    let launched = match scheduled_launch_collision(run_configs, schedule, &entry.project_path, &entry.epic) {
-        Some(reason) => Err(reason),
-        None => {
-            launch_run_inner(
-                supervisor,
-                schedule,
-                worktrees,
-                run_configs,
-                replicator,
-                audit,
-                in_flight,
-                test_gate,
-                spec.skip_test_gate,
-                preflight,
-                global_config,
-                &entry.project_path,
-                &input,
-                spec.model.clone(),
-                spec.handoff_context_pct,
-                None,
-                worktree_base,
-            )
-            .await
-        }
-    };
+    let launched =
+        match scheduled_launch_collision(run_configs, schedule, &entry.project_path, &entry.epic) {
+            Some(reason) => Err(reason),
+            None => {
+                launch_run_inner(
+                    supervisor,
+                    schedule,
+                    worktrees,
+                    run_configs,
+                    replicator,
+                    audit,
+                    in_flight,
+                    test_gate,
+                    spec.skip_test_gate,
+                    preflight,
+                    global_config,
+                    &entry.project_path,
+                    &input,
+                    spec.model.clone(),
+                    spec.handoff_context_pct,
+                    None,
+                    worktree_base,
+                )
+                .await
+            }
+        };
     let reason = match launched {
         Ok(result) => {
             log::info!(
@@ -2248,7 +2253,14 @@ mod tests {
         ));
         let teardown: crate::core::samurai_replicator::SessionTeardown =
             Arc::new(|_| Box::pin(async {}));
-        let parker = SamuraiParker::new(supervisor, context, injector.clone(), schedule, audit, teardown);
+        let parker = SamuraiParker::new(
+            supervisor,
+            context,
+            injector.clone(),
+            schedule,
+            audit,
+            teardown,
+        );
         injector.set_parker(parker.clone());
         parker
     }
@@ -3183,13 +3195,14 @@ mod tests {
             .register_session(99, h.project.clone(), "#other".to_string(), 1)
             .unwrap();
 
-        h.parker.on_allowance_event(&AllowanceEvent::ThresholdCrossed {
-            window: AllowanceWindow::FiveHour,
-            threshold_kind: ThresholdKind::Hard,
-            value: 99.0,
-            threshold: 90.0,
-            resets_at: Some("2030-01-01T00:00:00Z".to_string()),
-        });
+        h.parker
+            .on_allowance_event(&AllowanceEvent::ThresholdCrossed {
+                window: AllowanceWindow::FiveHour,
+                threshold_kind: ThresholdKind::Hard,
+                value: 99.0,
+                threshold: 90.0,
+                resets_at: Some("2030-01-01T00:00:00Z".to_string()),
+            });
         assert!(h.parker.parking_engaged(), "sweep must be engaged");
 
         let err = recover(&h, "issue #38").await.unwrap_err();
@@ -3531,7 +3544,11 @@ mod tests {
         let outcome = fire_scheduled(&h, &gate, &preflight(true, true), entry).await;
 
         assert_eq!(outcome, ScheduledLaunchOutcome::Retried { attempts: 1 });
-        assert_eq!(h.spawns.lock().unwrap().len(), 1, "no second, clobbering spawn");
+        assert_eq!(
+            h.spawns.lock().unwrap().len(),
+            1,
+            "no second, clobbering spawn"
+        );
         let after = h.run_configs.get(&h.project, "issue #38").unwrap();
         assert_eq!(before, after, "the existing ACTIVE config is untouched");
     }

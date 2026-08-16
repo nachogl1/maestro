@@ -91,15 +91,26 @@ pub fn park_written_retry_value(generation: u32) -> String {
 /// The soft wind-down instruction's ACK value (issue #60). Generation-scoped
 /// like every other marker value; there is no written stage — the ACK alone
 /// completes the instruction.
-pub fn soft_winddown_ack_value(generation: u32) -> String {
-    format!("winddown gen-{generation}")
+///
+/// `episode` (issue #131 fix M7) additionally scopes the value to ONE
+/// wind-down episode within the generation: unlike Handoff/Park (once per
+/// generation), a soft wind-down can legitimately recur several times in one
+/// generation as the 5h allowance rises and falls, so generation+kind alone
+/// is not unique. Without the episode, a transcript replay of an EARLIER
+/// episode's ACK line (issue #118's `restart_watching` re-reads from byte 0)
+/// would textually match a LATER episode's still-pending entry and
+/// spuriously complete it.
+pub fn soft_winddown_ack_value(generation: u32, episode: u32) -> String {
+    format!("winddown gen-{generation}-{episode}")
 }
 
 /// The wind-down all-clear instruction's ACK value (issue #120).
 /// Kind-scoped (`allclear …`) so a transcript replay of the wind-down's own
 /// ACK can never acknowledge its all-clear; ack-only like the wind-down.
-pub fn winddown_allclear_ack_value(generation: u32) -> String {
-    format!("allclear gen-{generation}")
+/// `episode` — see [`soft_winddown_ack_value`] (fix M7); an all-clear
+/// carries the SAME episode number as the wind-down it closes.
+pub fn winddown_allclear_ack_value(generation: u32, episode: u32) -> String {
+    format!("allclear gen-{generation}-{episode}")
 }
 
 /// The run-completion declaration tag (issue #96). The orchestrator replies
@@ -569,7 +580,7 @@ pub fn handoff_corrective_instruction(epic: &str, generation: u32, failure: &str
 /// in-flight steps, prepare for a possible park instruction. ACK required;
 /// no state transition, no file, no written marker. Single line by
 /// construction (see module doc).
-pub fn soft_winddown_instruction(generation: u32) -> String {
+pub fn soft_winddown_instruction(generation: u32, episode: u32) -> String {
     format!(
         "[Maestro Samurai] Allowance wind-down: the token allowance for this account is \
          approaching its limit. Do the following: \
@@ -583,7 +594,7 @@ pub fn soft_winddown_instruction(generation: u32) -> String {
          marker string anywhere else in any reply — emit it exactly once, only as the actual \
          signal.{scheduling}",
         scheduling = local_scheduling_clause(),
-        ack = soft_winddown_ack_value(generation),
+        ack = soft_winddown_ack_value(generation, episode),
     )
 }
 
@@ -593,7 +604,7 @@ pub fn soft_winddown_instruction(generation: u32) -> String {
 /// parked may resume full-throughput work. Ack-only, like the wind-down: no
 /// state transition, no file, no written marker. Single line by
 /// construction (see module doc).
-pub fn winddown_allclear_instruction(generation: u32) -> String {
+pub fn winddown_allclear_instruction(generation: u32, episode: u32) -> String {
     format!(
         "[Maestro Samurai] Allowance all-clear: the token allowance has recovered, so the \
          earlier wind-down no longer applies. Do the following: \
@@ -604,7 +615,7 @@ pub fn winddown_allclear_instruction(generation: u32) -> String {
          No file needs to be written for this instruction. Never quote, restate, or echo the \
          marker string anywhere else in any reply — emit it exactly once, only as the actual \
          signal.",
-        ack = winddown_allclear_ack_value(generation),
+        ack = winddown_allclear_ack_value(generation, episode),
     )
 }
 
@@ -1439,14 +1450,23 @@ mod tests {
     fn test_winddown_allclear_is_ack_only_with_kind_scoped_marker() {
         // Kind-scoped: no other instruction's ACK (nor a replay of the
         // wind-down's own) may satisfy the all-clear.
-        assert_eq!(winddown_allclear_ack_value(4), "allclear gen-4");
-        assert_ne!(winddown_allclear_ack_value(4), soft_winddown_ack_value(4));
-        assert_ne!(winddown_allclear_ack_value(4), handoff_ack_value(4));
-        assert_ne!(winddown_allclear_ack_value(4), park_ack_value(4));
+        assert_eq!(winddown_allclear_ack_value(4, 1), "allclear gen-4-1");
+        assert_ne!(
+            winddown_allclear_ack_value(4, 1),
+            soft_winddown_ack_value(4, 1)
+        );
+        assert_ne!(winddown_allclear_ack_value(4, 1), handoff_ack_value(4));
+        assert_ne!(winddown_allclear_ack_value(4, 1), park_ack_value(4));
+        // Fix M7: episode-scoped too — the SAME generation's second episode
+        // gets a distinct value from the first.
+        assert_ne!(
+            winddown_allclear_ack_value(4, 1),
+            winddown_allclear_ack_value(4, 2)
+        );
 
-        let text = winddown_allclear_instruction(4);
+        let text = winddown_allclear_instruction(4, 1);
         assert!(!text.contains('\n'), "all-clear must be single-line");
-        assert!(text.contains("<samurai-ack>allclear gen-4</samurai-ack>"));
+        assert!(text.contains("<samurai-ack>allclear gen-4-1</samurai-ack>"));
         // Ack-only: it lifts the wind-down (subagents allowed again) and
         // demands no file and no written marker.
         assert!(text.contains("spawn subagents again"));
@@ -1469,7 +1489,7 @@ mod tests {
             successor_ritual_instruction("#37", 2, false, &wf(), true),
             recovery_ritual_instruction("#37", 2, Some("o/r"), &wf(), true),
             park_instruction("#37", 2),
-            soft_winddown_instruction(2),
+            soft_winddown_instruction(2, 1),
             launch_text_instruction(&LaunchInput::parse("do things"), Some("o/r"), &wf()),
         ];
         for text in texts {
@@ -1612,9 +1632,12 @@ mod tests {
         assert_ne!(park_written_retry_value(3), park_written_value(3));
         // And the park retry values never collide with the handoff ones.
         assert_ne!(park_written_retry_value(3), handoff_written_retry_value(3));
-        assert_eq!(soft_winddown_ack_value(4), "winddown gen-4");
-        assert_ne!(soft_winddown_ack_value(4), handoff_ack_value(4));
-        assert_ne!(soft_winddown_ack_value(4), park_ack_value(4));
+        assert_eq!(soft_winddown_ack_value(4, 1), "winddown gen-4-1");
+        assert_ne!(soft_winddown_ack_value(4, 1), handoff_ack_value(4));
+        assert_ne!(soft_winddown_ack_value(4, 1), park_ack_value(4));
+        // Fix M7: episode-scoped — the same generation's second episode
+        // gets a distinct value from the first.
+        assert_ne!(soft_winddown_ack_value(4, 1), soft_winddown_ack_value(4, 2));
     }
 
     #[test]
@@ -1667,10 +1690,10 @@ mod tests {
 
     #[test]
     fn test_soft_winddown_instruction_shape() {
-        let text = soft_winddown_instruction(3);
+        let text = soft_winddown_instruction(3, 1);
         assert!(!text.contains('\n'));
         assert!(!text.contains('\r'));
-        assert!(text.contains("<samurai-ack>winddown gen-3</samurai-ack>"));
+        assert!(text.contains("<samurai-ack>winddown gen-3-1</samurai-ack>"));
         // Wind down: no new subagents, wrap up, park may follow.
         assert!(text.contains("NO new subagents"));
         assert!(text.contains("CURRENT step only"));
@@ -2144,7 +2167,8 @@ mod tests {
         let label = RunRefs::new(NO_REFS, ["7", "9"]).label();
         let successor = successor_ritual_instruction(&label, 2, true, &wf(), true);
         assert!(successor.contains("generation 3 for issues #7, #9"));
-        let recovery = recovery_ritual_instruction(&label, 2, Some("nachogl1/maestro"), &wf(), true);
+        let recovery =
+            recovery_ritual_instruction(&label, 2, Some("nachogl1/maestro"), &wf(), true);
         assert!(recovery.contains("generation 3 for issues #7, #9"));
         for text in [
             successor,
@@ -2725,7 +2749,10 @@ mod tests {
         assert!(text.contains(RUN_COMPLETE_TAG), "{text}");
         // M1: pure-prose launches must forbid cloud scheduling too, same as
         // every other orchestrator brief.
-        assert!(text.contains("NEVER create cloud-scheduled agents"), "{text}");
+        assert!(
+            text.contains("NEVER create cloud-scheduled agents"),
+            "{text}"
+        );
         assert!(!text.contains('\n'), "single paste-able line");
 
         // Unpinned: the explicit caution replaces the pin note.
@@ -2744,7 +2771,13 @@ mod tests {
         // A pure-prose run's `epic` identity is a prose_label, not a GitHub
         // ref — recovery must not send the agent hunting for an issue that
         // was never referenced.
-        let text = recovery_ritual_instruction("refactor-audit-panel-1a2b3c4d", 2, Some("o/r"), &wf(), false);
+        let text = recovery_ritual_instruction(
+            "refactor-audit-panel-1a2b3c4d",
+            2,
+            Some("o/r"),
+            &wf(),
+            false,
+        );
         assert!(text.contains("RECOVERY MODE"), "{text}");
         assert!(text.contains("references no GitHub issue"), "{text}");
         assert!(!text.contains("GitHub issue(s)"), "{text}");
@@ -2754,7 +2787,10 @@ mod tests {
         // The reconstruction sources shrink to git log + digest only.
         assert!(text.contains("`git log --oneline -20`"), "{text}");
         assert!(text.contains("pre-digested transcript summary"), "{text}");
-        assert!(text.contains("continue this run's remaining work"), "{text}");
+        assert!(
+            text.contains("continue this run's remaining work"),
+            "{text}"
+        );
         assert!(!text.contains('\n'), "single paste-able line");
     }
 

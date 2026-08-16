@@ -401,9 +401,7 @@ impl SamuraiParker {
         // all-clear whatever sessions the sweep never touched (e.g. ones
         // that ALERTed and were skipped, staying WORKING).
         if self.parking_engaged() {
-            log::info!(
-                "samurai parker: soft all-clear deferred — a hard park sweep is engaged"
-            );
+            log::info!("samurai parker: soft all-clear deferred — a hard park sweep is engaged");
             return;
         }
         let wound: HashSet<u32> = std::mem::take(&mut *self.lock_wound_down());
@@ -1019,7 +1017,7 @@ mod tests {
         h.injector.observe_hook(&stop_event(1));
         h.injector.observe(&assistant_message(
             1,
-            "<samurai-ack>winddown gen-1</samurai-ack>",
+            "<samurai-ack>winddown gen-1-1</samurai-ack>",
         ));
         assert!(!h.injector.has_pending(1));
 
@@ -1038,7 +1036,7 @@ mod tests {
         h.injector.observe_hook(&stop_event(1));
         h.injector.observe(&assistant_message(
             1,
-            "<samurai-ack>allclear gen-1</samurai-ack>",
+            "<samurai-ack>allclear gen-1-1</samurai-ack>",
         ));
         assert!(!h.injector.has_pending(1));
         assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::Working));
@@ -1099,7 +1097,7 @@ mod tests {
         h.injector.observe_hook(&stop_event(2));
         h.injector.observe(&assistant_message(
             2,
-            "<samurai-ack>winddown gen-1</samurai-ack>",
+            "<samurai-ack>winddown gen-1-1</samurai-ack>",
         ));
         assert!(
             !h.injector.has_pending(2),
