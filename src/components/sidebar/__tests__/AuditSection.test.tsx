@@ -92,6 +92,8 @@ describe("AuditSection (issue #46)", () => {
 
   it("lists the active project's audit rows newest-first", async () => {
     // Backend returns oldest-first; the view must flip to newest-first.
+    // The HANDOFF row's shape (`kind`, no `phase`) isn't one describeAuditEvent
+    // recognizes, so it falls back to the raw key=value summary.
     mockInvoke([
       auditEvent({ event: "SPAWN", generation: 1 }),
       auditEvent({ event: "HANDOFF", generation: 2, details: { kind: "context_threshold" } }),
@@ -103,6 +105,89 @@ describe("AuditSection (issue #46)", () => {
     expect(badges).toEqual(["HANDOFF", "SPAWN"]);
     expect(screen.getByText("gen-2")).toBeInTheDocument();
     expect(screen.getByText("kind=context_threshold")).toBeInTheDocument();
+  });
+
+  it("renders a plain-language sentence for a known event shape (issue #123)", async () => {
+    // The exact example from issue #123: a soft 5h allowance threshold.
+    mockInvoke([
+      auditEvent({
+        event: "ALERT",
+        generation: 0,
+        details: {
+          kind: "allowance_threshold",
+          window: "5h",
+          threshold_kind: "soft",
+          value: 78,
+          threshold: 75,
+          resets_at: "2026-08-06T01:20:00Z",
+        },
+      }),
+    ]);
+    render(<AuditSection />);
+
+    expect(
+      await screen.findByText("5h usage hit 78% — soft wind-down threshold; resets 01:20 UTC"),
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to the raw summary for an unrecognized ALERT sub-kind", async () => {
+    mockInvoke([
+      auditEvent({
+        event: "ALERT",
+        generation: 0,
+        details: { kind: "some_future_alert_kind", extra: "value" },
+      }),
+    ]);
+    render(<AuditSection />);
+
+    expect(await screen.findByText("kind=some_future_alert_kind extra=value")).toBeInTheDocument();
+  });
+
+  it("clusters events by run, newest run first (issue #123)", async () => {
+    mockInvoke([
+      // Oldest-first from the backend, interleaved across two runs plus one
+      // account-wide (no-epic) row.
+      auditEvent({ event: "SPAWN", epic: "#36", generation: 1, ts: "2026-08-06T10:00:00Z" }),
+      auditEvent({
+        event: "ALERT",
+        epic: "",
+        generation: 0,
+        session_id: 0,
+        ts: "2026-08-06T10:05:00Z",
+        details: { kind: "allowance_serialize_error" },
+      }),
+      auditEvent({ event: "SPAWN", epic: "#40", generation: 1, ts: "2026-08-06T11:00:00Z" }),
+      auditEvent({
+        event: "HANDOFF",
+        epic: "#36",
+        generation: 1,
+        ts: "2026-08-06T12:00:00Z",
+        details: { phase: "requested", from: "WORKING" },
+      }),
+    ]);
+    render(<AuditSection />);
+    // Two SPAWN rows in this fixture, so wait on a row that renders once.
+    await screen.findByText(/Handoff requested/);
+
+    // Newest run first: #36's newest row (12:00) beats #40's (11:00), which
+    // beats the account-wide row (10:05).
+    const headers = screen.getAllByText(/^(#36|#40|Account-wide)$/).map((el) => el.textContent);
+    expect(headers).toEqual(["#36", "#40", "Account-wide"]);
+
+    // #36's two rows land under its own header, newest first.
+    expect(screen.getByText(/Handoff requested/)).toBeInTheDocument();
+    expect(screen.getAllByText("SPAWN")).toHaveLength(2);
+  });
+
+  it("scrolls the event list in a bounded box instead of growing forever", async () => {
+    mockInvoke([auditEvent()]);
+    const { container } = render(<AuditSection />);
+    await screen.findByText("SPAWN");
+
+    const list = container.querySelector('[data-testid="audit-events"]');
+    expect(list).not.toBeNull();
+    expect(list?.className).toMatch(/overflow-y-auto/);
+    expect(list?.className).toMatch(/max-h-/);
   });
 
   it("shows the empty state when the log has no rows", async () => {
@@ -159,9 +244,9 @@ describe("AuditSection (issue #46)", () => {
     ]);
     render(<AuditSection />);
     expect(await screen.findByText("INJECT")).toBeInTheDocument();
-    // Collapsed: the one-line summary carries the scalars but never the
+    // Collapsed: a plain-language sentence, never the raw scalars or the
     // excerpt block.
-    expect(screen.getByText(/phase=delivered .*gate=stop_hook/)).toBeInTheDocument();
+    expect(screen.getByText("Instruction delivered — handoff")).toBeInTheDocument();
     expect(screen.queryByText(excerpt)).toBeNull();
 
     // Expand: the replay details appear — gate, attempt, and the excerpt
@@ -190,7 +275,7 @@ describe("AuditSection (issue #46)", () => {
     ]);
     render(<AuditSection />);
     expect(await screen.findByText("HANDOFF")).toBeInTheDocument();
-    expect(screen.getByText("phase=requested")).toBeInTheDocument();
+    expect(screen.getByText("Handoff requested")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("HANDOFF"));
     expect(screen.getByText("phase")).toBeInTheDocument();
