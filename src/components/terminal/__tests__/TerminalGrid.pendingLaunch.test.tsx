@@ -1,4 +1,5 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The persisted zustand stores hydrate through the Tauri store plugin at
@@ -123,7 +124,8 @@ import { spawnShell, writeStdin } from "@/lib/terminal";
 import { terminalArmInitialPrompt } from "@/lib/terminalPrompt";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
-import { TerminalGrid } from "../TerminalGrid";
+import { MAX_SESSIONS } from "../splitTree";
+import { TerminalGrid, type TerminalGridHandle } from "../TerminalGrid";
 
 const invokeMock = vi.mocked(invoke);
 const spawnShellMock = vi.mocked(spawnShell);
@@ -278,6 +280,59 @@ describe("TerminalGrid pending samurai launch", () => {
     expect(registerMock).not.toHaveBeenCalled();
     expect(spawnShellMock).toHaveBeenCalledTimes(1);
   });
+
+  // A run's every past generation leaves a permanently-parked terminal-state
+  // tile (issue #122), so a long autonomous run fills the session cap with
+  // dead weight — and its successor's pending launch used to be dropped
+  // AFTER `consume` had already claimed it, silently stalling the run.
+  it("exempts parked samurai terminal-state slots from the session cap (PR #131 review M4)", async () => {
+    let nextId = 100;
+    spawnShellMock.mockImplementation(async () => nextId++);
+    const ref = createRef<TerminalGridHandle>();
+    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+    const handle = ref.current;
+    if (!handle) throw new Error("expected TerminalGrid ref to be attached");
+
+    // Fill the grid to the cap with launched sessions.
+    await act(async () => {
+      for (let i = 1; i < MAX_SESSIONS; i++) handle.addSession();
+    });
+    await act(async () => {
+      await handle.launchAll();
+    });
+    await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(MAX_SESSIONS));
+    expect(spawnShellMock).toHaveBeenCalledTimes(MAX_SESSIONS);
+
+    // One earlier samurai generation ended: the auto-park effect moves its
+    // tile to the tray, where it stays a KILLED transcript forever.
+    const deadId = useSessionStore.getState().sessions[0].id;
+    await act(async () => {
+      useSessionStore.setState((s) => ({
+        samuraiBySessionId: {
+          ...s.samuraiBySessionId,
+          [deadId]: { project: "C:/proj", epic: "77, 78", generation: 1, state: "KILLED" },
+        },
+      }));
+    });
+    await waitFor(() => expect(useSessionStore.getState().parkedSessionIds).toEqual([deadId]));
+
+    // The successor's queued launch must still get a slot.
+    await act(async () => {
+      usePendingLaunchStore.getState().request({
+        tabId: "tab-1",
+        mode: "Claude",
+        resumeSessionId: null,
+        workingDirOverride: WORKTREE,
+        branch: null,
+        customName: "samurai gen-2 77-78",
+        samurai: { project: "C:/proj", epic: "77, 78", generation: 2, model: null },
+      });
+    });
+
+    await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(MAX_SESSIONS + 1));
+    expect(screen.queryByText(/maximum of/)).not.toBeInTheDocument();
+    // Launching 12 mocked sessions first makes this test legitimately slow.
+  }, 15_000);
 
   // The injection rides claude's SessionStart hook, which no other CLI posts:
   // a non-Claude launch must NOT arm (it would strand a stale entry backend-

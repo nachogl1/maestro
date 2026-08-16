@@ -1841,7 +1841,22 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       !launchingSlotIdsRef.current.has(current[0].id)
         ? current[0]
         : null;
-    if (!reusable && current.length >= MAX_SESSIONS) {
+    // Parked samurai terminal-state tiles (issue #122) are dead weight: the
+    // PTY is gone and only the transcript remains. A long autonomous run
+    // leaves one per generation, so counting them against the cap would
+    // drop a successor's launch AFTER `consume` claimed it — silently
+    // stalling the run (PR #131 review M4). Exempt them from the count.
+    const sessionState = useSessionStore.getState();
+    const occupiedCount = current.filter((s) => {
+      if (s.sessionId === null) return true;
+      const samuraiInfo = sessionState.samuraiBySessionId[s.sessionId];
+      return !(
+        samuraiInfo !== undefined &&
+        SAMURAI_TERMINAL_STATES.has(samuraiInfo.state) &&
+        sessionState.parkedSessionIds.includes(s.sessionId)
+      );
+    }).length;
+    if (!reusable && occupiedCount >= MAX_SESSIONS) {
       setError(`Cannot resume: maximum of ${MAX_SESSIONS} sessions per project`);
       return;
     }
@@ -1937,11 +1952,19 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // KILLED update and the successor's queued launch land in the same commit,
   // the consume effect claims and appends the successor slot first.
   const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
+  // One-shot guard (PR #131 review H2): the effect re-runs whenever
+  // `parkedSet` changes, and the samurai entry keeps its terminal state
+  // forever — so a user unpark from the tray would immediately re-trigger
+  // the park (and a redundant re-kill) without this. Session ids are never
+  // reused (resume is always a fresh spawn), so once handled is handled.
+  const samuraiAutoParkedSessionIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     for (const slot of slotsRef.current) {
       if (slot.sessionId === null || parkedSet.has(slot.sessionId)) continue;
+      if (samuraiAutoParkedSessionIdsRef.current.has(slot.sessionId)) continue;
       const info = samuraiBySessionId[slot.sessionId];
       if (info && SAMURAI_TERMINAL_STATES.has(info.state)) {
+        samuraiAutoParkedSessionIdsRef.current.add(slot.sessionId);
         // The replicator/parker paths already tore the PTY down, and a DEAD
         // session's process is already gone by definition — but the Phase-2
         // circuit breaker (samurai_progress.rs) only transitions to PARKED,

@@ -207,4 +207,24 @@ describe("TerminalGrid samurai park (issue #122)", () => {
 
     expect(killSessionMock).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps a user unpark unparked after an auto-park (PR #131 review H2)", async () => {
+    const sessionId = await renderLaunchedGrid();
+
+    await act(async () => {
+      superviseSession(sessionId, "PARKED");
+    });
+    await waitFor(() => expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]));
+
+    // The user brings the tile back from the tray. The samurai entry keeps
+    // its terminal state forever, so the auto-park must be one-shot — not
+    // re-fire on the parked-set change and bounce the tile straight back.
+    await act(async () => {
+      useSessionStore.getState().unparkSession(sessionId);
+    });
+
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([]);
+    // And no redundant second kill for the already-dead PTY.
+    expect(killSessionMock).toHaveBeenCalledTimes(1);
+  });
 });
