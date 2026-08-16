@@ -755,11 +755,19 @@ fn is_issue_list(epic_text: &str) -> bool {
 /// `epic` is the run's IDENTITY string — [`RunRefs::label`] from issue #83
 /// onward, so it already spells what the run is (`epic #5`, `issues #7, #9`)
 /// and is never prefixed with the word "epic" here.
+///
+/// `has_refs` (issue #128 fix L2) is `false` for a pure-prose run — one
+/// launched via [`LaunchInput`] with no `#N` refs, whose `epic` identity is
+/// a [`prose_label`], not a GitHub ref. Such a run has no issue/epic number
+/// to enumerate a PR title with, so [`pr_discipline_reminder`] is skipped
+/// entirely rather than emitting "issue/epic number" framing for a run that
+/// references no issue.
 pub fn successor_ritual_instruction(
     epic: &str,
     predecessor_generation: u32,
     head_matched: bool,
     compiled_workflow: &str,
+    has_refs: bool,
 ) -> String {
     let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
     let generation = predecessor_generation + 1;
@@ -777,13 +785,17 @@ pub fn successor_ritual_instruction(
     let workflow = workflow_section(compiled_workflow);
     let clause = completion_declaration_clause();
     let scheduling = local_scheduling_clause();
-    let pr_reminder = pr_discipline_reminder(is_list);
+    let pr_reminder = if has_refs {
+        format!(" {}", pr_discipline_reminder(is_list))
+    } else {
+        String::new()
+    };
     if head_matched {
         format!(
             "{opening} Maestro verified that this repository's current HEAD equals the SHA \
              recorded in the handoff's \"Repo state\" section, so the verify step is already \
              satisfied: SKIP the commands in the handoff's Verify section and continue directly \
-             with its Next steps.{order}{workflow}{clause}{scheduling} {pr_reminder}"
+             with its Next steps.{order}{workflow}{clause}{scheduling}{pr_reminder}"
         )
     } else {
         format!(
@@ -791,7 +803,7 @@ pub fn successor_ritual_instruction(
              SHA recorded in the handoff's \"Repo state\" section. You MUST run every command in \
              the handoff's Verify section FIRST, and trust NOTHING the handoff claims that those \
              commands do not confirm — investigate and fix any failure before moving on. Only \
-             then continue with the handoff's Next steps.{order}{workflow}{clause}{scheduling} \
+             then continue with the handoff's Next steps.{order}{workflow}{clause}{scheduling}\
              {pr_reminder}"
         )
     }
@@ -1120,6 +1132,7 @@ pub fn launch_text_instruction(
     };
     let workflow = workflow_section(compiled_workflow);
     let clause = completion_declaration_clause();
+    let scheduling = local_scheduling_clause();
     format!(
         "[Maestro Samurai] You are generation 1, the FIRST orchestrator, for this run. This \
          directory is this run's dedicated worktree on its own branch. The user's request, \
@@ -1133,7 +1146,7 @@ pub fn launch_text_instruction(
          body must contain `Closes #N` (or `Fixes #N`) for each issue it resolves, and the \
          title must summarise this run's scope from the moment it is created.{gh_note} \
          (4) NEVER switch to, commit to, or push any other branch, and NEVER touch any \
-         repository other than this one.{caution}{workflow}{clause}"
+         repository other than this one.{caution}{workflow}{clause}{scheduling}"
     )
 }
 
@@ -1169,19 +1182,47 @@ pub fn recovery_digest_relpath(epic: &str, successor_generation: u32) -> String 
 ///
 /// `compiled_workflow` (issue #91) is the run's numbered workflow — see
 /// [`successor_ritual_instruction`].
+///
+/// `has_refs` (issue #128 fix L2) is `false` for a pure-prose run — one
+/// launched via [`LaunchInput`] with no `#N` refs, whose `epic` identity is
+/// a [`prose_label`], not a GitHub ref. Such a run has no GitHub issue to
+/// read or comment on and no issue/epic number for a PR title, so those
+/// steps are dropped entirely rather than sending the recovering successor
+/// hunting for an issue that does not exist — reconstruction falls back to
+/// git history and the pre-digested transcript summary alone.
 pub fn recovery_ritual_instruction(
     epic: &str,
     predecessor_generation: u32,
     repo_pin: Option<&str>,
     compiled_workflow: &str,
+    has_refs: bool,
 ) -> String {
     let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
+    let generation = predecessor_generation + 1;
+    let digest_relpath = recovery_digest_relpath(epic, generation);
+    if !has_refs {
+        let order = order_contract_reminder();
+        let workflow = workflow_section(compiled_workflow);
+        let clause = completion_declaration_clause();
+        let scheduling = local_scheduling_clause();
+        return format!(
+            "[Maestro Samurai] RECOVERY MODE: you are generation {generation} for {epic_text}. \
+             Generation {predecessor_generation} died without a valid handoff file, so there is \
+             nothing to hand off to you. This run references no GitHub issue — do not go \
+             hunting for one. Reconstruct the state of the work from two sources: \
+             (1) run `git log --oneline -20` in this repository; \
+             (2) read the pre-digested transcript summary Maestro extracted to {digest_relpath} \
+             — treat it as hints, NOT as truth. \
+             Then run the project's standard verification (build + tests) BEFORE trusting or \
+             continuing anything — investigate and fix any failure first. Once verification \
+             passes, continue this run's remaining \
+             work.{order}{workflow}{clause}{scheduling}"
+        );
+    }
     // Issue #87: a comma-separated issue list must not get epic framing in
     // the PR-discipline reminder (the run wording itself is neutral —
     // "this run's GitHub issue(s)" — from issue #83 onward).
     let is_list = is_issue_list(&epic_text);
-    let generation = predecessor_generation + 1;
-    let digest_relpath = recovery_digest_relpath(epic, generation);
     let (gh_read, gh_comment, caution) = match repo_pin {
         Some(pin) => (
             format!(
@@ -1394,11 +1435,12 @@ mod tests {
         // tempt an agent to "come back later" carries the prohibition.
         let texts = [
             launch_instruction(&RunRefs::epics_only("#37"), Some("o/r"), &wf()),
-            successor_ritual_instruction("#37", 2, true, &wf()),
-            successor_ritual_instruction("#37", 2, false, &wf()),
-            recovery_ritual_instruction("#37", 2, Some("o/r"), &wf()),
+            successor_ritual_instruction("#37", 2, true, &wf(), true),
+            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            recovery_ritual_instruction("#37", 2, Some("o/r"), &wf(), true),
             park_instruction("#37", 2),
             soft_winddown_instruction(2),
+            launch_text_instruction(&LaunchInput::parse("do things"), Some("o/r"), &wf()),
         ];
         for text in texts {
             assert!(
@@ -1681,19 +1723,19 @@ mod tests {
     #[test]
     fn test_ritual_instruction_is_single_line_both_branches() {
         for head_matched in [true, false] {
-            let text = successor_ritual_instruction("#37", 2, head_matched, &wf());
+            let text = successor_ritual_instruction("#37", 2, head_matched, &wf(), true);
             assert!(!text.contains('\n'), "ritual must not contain \\n");
             assert!(!text.contains('\r'), "ritual must not contain \\r");
         }
         // A pathological epic ref cannot smuggle a newline into the paste.
-        let text = successor_ritual_instruction("epic\nwith newline", 2, true, &wf());
+        let text = successor_ritual_instruction("epic\nwith newline", 2, true, &wf(), true);
         assert!(!text.contains('\n'));
         assert!(text.contains("epic with newline"));
     }
 
     #[test]
     fn test_ritual_instruction_head_match_branch_skips_verify() {
-        let text = successor_ritual_instruction("#37", 2, true, &wf());
+        let text = successor_ritual_instruction("#37", 2, true, &wf(), true);
         // Identity: generation, the run's own ref, predecessor. Issue #83:
         // the ref is NOT prefixed with "epic" here — the identity string
         // (RunRefs::label) already says what the run is.
@@ -1714,7 +1756,7 @@ mod tests {
 
     #[test]
     fn test_ritual_instruction_mismatch_branch_requires_verify() {
-        let text = successor_ritual_instruction("#37", 2, false, &wf());
+        let text = successor_ritual_instruction("#37", 2, false, &wf(), true);
         assert!(text.contains("generation 3"));
         assert!(text.contains("successor to generation 2"));
         assert!(text.contains(".maestro/handoffs/37-gen2.md"));
@@ -1744,19 +1786,19 @@ mod tests {
     #[test]
     fn test_recovery_instruction_is_single_line() {
         for pin in [None, Some("owner/repo")] {
-            let text = recovery_ritual_instruction("#37", 2, pin, &wf());
+            let text = recovery_ritual_instruction("#37", 2, pin, &wf(), true);
             assert!(!text.contains('\n'), "recovery must not contain \\n");
             assert!(!text.contains('\r'), "recovery must not contain \\r");
         }
         // A pathological epic ref cannot smuggle a newline into the paste.
-        let text = recovery_ritual_instruction("epic\nwith newline", 2, None, &wf());
+        let text = recovery_ritual_instruction("epic\nwith newline", 2, None, &wf(), true);
         assert!(!text.contains('\n'));
         assert!(text.contains("epic with newline"));
     }
 
     #[test]
     fn test_recovery_instruction_content() {
-        let text = recovery_ritual_instruction("#37", 2, None, &wf());
+        let text = recovery_ritual_instruction("#37", 2, None, &wf(), true);
         // Identity: what happened and who the successor is.
         assert!(text.contains("RECOVERY MODE"));
         assert!(text.contains("generation 3"));
@@ -1782,7 +1824,7 @@ mod tests {
     fn test_recovery_instruction_pins_the_repo_when_known() {
         // Fresh-eyes finding D (PRD §10): with the origin remote parsed, BOTH
         // the issue read and the takeover comment carry --repo explicitly.
-        let text = recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf());
+        let text = recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true);
         assert_eq!(
             text.matches("--repo nachogl1/maestro").count(),
             2,
@@ -1799,7 +1841,7 @@ mod tests {
 
     #[test]
     fn test_recovery_instruction_without_pin_carries_a_caution() {
-        let text = recovery_ritual_instruction("#37", 2, None, &wf());
+        let text = recovery_ritual_instruction("#37", 2, None, &wf(), true);
         // No pinned `gh` usage (the caution itself mentions the missing pin).
         assert!(!text.contains("passing `--repo"));
         assert!(!text.contains("again via `gh`"));
@@ -2070,14 +2112,14 @@ mod tests {
         // From step 1b onward these receive RunRefs::label() — an
         // issues-only run must never be described as an epic anywhere.
         let label = RunRefs::new(NO_REFS, ["7", "9"]).label();
-        let successor = successor_ritual_instruction(&label, 2, true, &wf());
+        let successor = successor_ritual_instruction(&label, 2, true, &wf(), true);
         assert!(successor.contains("generation 3 for issues #7, #9"));
-        let recovery = recovery_ritual_instruction(&label, 2, Some("nachogl1/maestro"), &wf());
+        let recovery = recovery_ritual_instruction(&label, 2, Some("nachogl1/maestro"), &wf(), true);
         assert!(recovery.contains("generation 3 for issues #7, #9"));
         for text in [
             successor,
             recovery,
-            recovery_ritual_instruction(&label, 2, None, &wf()),
+            recovery_ritual_instruction(&label, 2, None, &wf(), true),
             handoff_instruction(&label, 2),
             handoff_corrective_instruction(&label, 2, "handoff file missing"),
             park_instruction(&label, 2),
@@ -2091,9 +2133,9 @@ mod tests {
         // And an epic-only run still reads exactly as it did: the label
         // itself supplies the word.
         let label = RunRefs::epics_only("#5").label();
-        assert!(successor_ritual_instruction(&label, 2, true, &wf())
+        assert!(successor_ritual_instruction(&label, 2, true, &wf(), true)
             .contains("generation 3 for epic #5"));
-        assert!(recovery_ritual_instruction(&label, 2, None, &wf())
+        assert!(recovery_ritual_instruction(&label, 2, None, &wf(), true)
             .contains("you are generation 3 for epic #5."));
     }
 
@@ -2147,7 +2189,7 @@ mod tests {
     fn test_successor_ritual_instruction_list_shape_has_no_epic_framing() {
         // Pre-#83 configs store the raw comma list as the run's identity;
         // the brief must carry it verbatim, with zero epic framing.
-        let text = successor_ritual_instruction("77, 78", 2, true, &wf());
+        let text = successor_ritual_instruction("77, 78", 2, true, &wf(), true);
         assert!(text.contains("generation 3 for 77, 78"));
         assert!(!text.to_lowercase().contains("epic"));
         assert!(text.contains("generation 3"));
@@ -2156,7 +2198,7 @@ mod tests {
 
     #[test]
     fn test_recovery_ritual_instruction_list_shape_has_no_epic_framing() {
-        let text = recovery_ritual_instruction("77, 78", 2, Some("nachogl1/maestro"), &wf());
+        let text = recovery_ritual_instruction("77, 78", 2, Some("nachogl1/maestro"), &wf(), true);
         assert!(text.contains("generation 3 for 77, 78"));
         assert!(text.contains("read this run's GitHub issue(s) and ALL of their comments"));
         assert!(text.contains("comment on this run's GitHub issue(s)"));
@@ -2225,7 +2267,7 @@ mod tests {
     #[test]
     fn test_successor_ritual_instruction_instructs_pr_issue_linking() {
         for head_matched in [true, false] {
-            let text = successor_ritual_instruction("#37", 2, head_matched, &wf());
+            let text = successor_ritual_instruction("#37", 2, head_matched, &wf(), true);
             assert!(text.contains("Closes #N"), "{text}");
             assert!(text.contains("Fixes #N"), "{text}");
             assert!(text.contains("GitHub auto-closes them on merge"), "{text}");
@@ -2235,7 +2277,7 @@ mod tests {
     #[test]
     fn test_recovery_ritual_instruction_instructs_pr_issue_linking() {
         // Audited per issue #95: recovery briefs can open PRs too.
-        let text = recovery_ritual_instruction("#37", 2, None, &wf());
+        let text = recovery_ritual_instruction("#37", 2, None, &wf(), true);
         assert!(text.contains("Closes #N"));
         assert!(text.contains("Fixes #N"));
         assert!(text.contains("GitHub auto-closes them on merge"));
@@ -2261,7 +2303,7 @@ mod tests {
 
     #[test]
     fn test_successor_ritual_instruction_instructs_pr_title_enumerates_refs() {
-        let text = successor_ritual_instruction("#37", 2, true, &wf());
+        let text = successor_ritual_instruction("#37", 2, true, &wf(), true);
         assert!(
             text.contains(
                 "its title must list every issue/epic number this run covers, from the moment \
@@ -2285,10 +2327,10 @@ mod tests {
         let briefs = [
             launch_instruction(&RunRefs::epics_only("#38"), Some("nachogl1/maestro"), &wf()),
             launch_instruction(&RunRefs::new(NO_REFS, ["77", "78"]), None, &wf()),
-            successor_ritual_instruction("#37", 2, true, &wf()),
-            successor_ritual_instruction("#37", 2, false, &wf()),
-            recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf()),
-            recovery_ritual_instruction("#37", 2, None, &wf()),
+            successor_ritual_instruction("#37", 2, true, &wf(), true),
+            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true),
+            recovery_ritual_instruction("#37", 2, None, &wf(), true),
         ];
         for text in &briefs {
             // The exact tag the samurai_completion scanner watches for, in
@@ -2374,11 +2416,11 @@ mod tests {
         // order fixed at launch — they must not re-plan it, and a new
         // deviation goes through the same alert + confirmation.
         let briefs = [
-            successor_ritual_instruction("#37", 2, true, &wf()),
-            successor_ritual_instruction("#37", 2, false, &wf()),
-            successor_ritual_instruction("77, 78", 2, true, &wf()),
-            recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf()),
-            recovery_ritual_instruction("77, 78", 2, None, &wf()),
+            successor_ritual_instruction("#37", 2, true, &wf(), true),
+            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            successor_ritual_instruction("77, 78", 2, true, &wf(), true),
+            recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true),
+            recovery_ritual_instruction("77, 78", 2, None, &wf(), true),
         ];
         for text in &briefs {
             assert!(text.contains("fixed at launch"), "{text}");
@@ -2404,10 +2446,10 @@ mod tests {
         let briefs = [
             launch_instruction(&RunRefs::epics_only("#38"), Some("nachogl1/maestro"), &wf()),
             launch_instruction(&RunRefs::new(NO_REFS, ["76", "77", "78"]), None, &wf()),
-            successor_ritual_instruction("#37", 2, true, &wf()),
-            successor_ritual_instruction("#37", 2, false, &wf()),
-            recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf()),
-            recovery_ritual_instruction("#37", 2, None, &wf()),
+            successor_ritual_instruction("#37", 2, true, &wf(), true),
+            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true),
+            recovery_ritual_instruction("#37", 2, None, &wf(), true),
         ];
         for text in &briefs {
             assert!(
@@ -2463,8 +2505,8 @@ mod tests {
         let custom = "Step 1: custom implement Step 2: custom ship";
         for text in [
             launch_instruction(&RunRefs::epics_only("#38"), None, custom),
-            successor_ritual_instruction("#37", 2, true, custom),
-            recovery_ritual_instruction("#37", 2, None, custom),
+            successor_ritual_instruction("#37", 2, true, custom, true),
+            recovery_ritual_instruction("#37", 2, None, custom, true),
         ] {
             assert!(text.contains("Step 1: custom implement"), "{text}");
             assert!(text.contains("Step 2: custom ship"), "{text}");
@@ -2478,8 +2520,8 @@ mod tests {
         // pathological compiled string cannot smuggle a newline in.
         for text in [
             launch_instruction(&RunRefs::epics_only("#38"), None, ""),
-            successor_ritual_instruction("#37", 2, false, "  "),
-            recovery_ritual_instruction("#37", 2, None, ""),
+            successor_ritual_instruction("#37", 2, false, "  ", true),
+            recovery_ritual_instruction("#37", 2, None, "", true),
         ] {
             assert!(!text.contains("WORKFLOW"), "{text}");
             assert!(!text.contains("END OF"), "{text}");
@@ -2495,9 +2537,9 @@ mod tests {
         // brief must stay free of epic framing even WITH the workflow.
         let text = launch_instruction(&RunRefs::new(NO_REFS, ["76", "77", "78"]), None, &wf());
         assert!(!text.to_lowercase().contains("epic"), "{text}");
-        let text = successor_ritual_instruction("77, 78", 2, true, &wf());
+        let text = successor_ritual_instruction("77, 78", 2, true, &wf(), true);
         assert!(!text.to_lowercase().contains("epic"), "{text}");
-        let text = recovery_ritual_instruction("77, 78", 2, None, &wf());
+        let text = recovery_ritual_instruction("77, 78", 2, None, &wf(), true);
         assert!(!text.to_lowercase().contains("epic"), "{text}");
     }
 
@@ -2651,6 +2693,9 @@ mod tests {
             "{text}"
         );
         assert!(text.contains(RUN_COMPLETE_TAG), "{text}");
+        // M1: pure-prose launches must forbid cloud scheduling too, same as
+        // every other orchestrator brief.
+        assert!(text.contains("NEVER create cloud-scheduled agents"), "{text}");
         assert!(!text.contains('\n'), "single paste-able line");
 
         // Unpinned: the explicit caution replaces the pin note.
@@ -2660,5 +2705,45 @@ mod tests {
             "{unpinned}"
         );
         assert!(!unpinned.contains("--repo "), "{unpinned}");
+    }
+
+    // --- issue #128 fix L2: prose runs must not hunt nonexistent issues ---
+
+    #[test]
+    fn test_recovery_ritual_instruction_prose_skips_github_entirely() {
+        // A pure-prose run's `epic` identity is a prose_label, not a GitHub
+        // ref — recovery must not send the agent hunting for an issue that
+        // was never referenced.
+        let text = recovery_ritual_instruction("refactor-audit-panel-1a2b3c4d", 2, Some("o/r"), &wf(), false);
+        assert!(text.contains("RECOVERY MODE"), "{text}");
+        assert!(text.contains("references no GitHub issue"), "{text}");
+        assert!(!text.contains("GitHub issue(s)"), "{text}");
+        assert!(!text.contains("`gh` CLI"), "{text}");
+        assert!(!text.contains("--repo "), "{text}");
+        assert!(!text.contains("issue/epic number"), "{text}");
+        // The reconstruction sources shrink to git log + digest only.
+        assert!(text.contains("`git log --oneline -20`"), "{text}");
+        assert!(text.contains("pre-digested transcript summary"), "{text}");
+        assert!(text.contains("continue this run's remaining work"), "{text}");
+        assert!(!text.contains('\n'), "single paste-able line");
+    }
+
+    #[test]
+    fn test_successor_ritual_instruction_prose_skips_pr_ref_reminder() {
+        // A prose run has no issue/epic number for pr_discipline_reminder to
+        // enumerate, so the reminder is dropped entirely rather than telling
+        // the agent to list a ref number that does not exist.
+        for head_matched in [true, false] {
+            let text = successor_ritual_instruction(
+                "refactor-audit-panel-1a2b3c4d",
+                2,
+                head_matched,
+                &wf(),
+                false,
+            );
+            assert!(!text.contains("issue/epic number"), "{text}");
+            assert!(!text.contains("GitHub auto-closes them on merge"), "{text}");
+            assert!(!text.contains('\n'), "single paste-able line");
+        }
     }
 }

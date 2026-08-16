@@ -727,6 +727,22 @@ impl SamuraiReplicator {
         samurai_workflow::compiled_for_run(stored.as_ref())
     }
 
+    /// Whether the epic's run config carries any GitHub ref (issue #128 fix
+    /// L2): `false` only for a pure-prose run — launched via free text with
+    /// no `#N` refs — whose successor/recovery briefs must not send the
+    /// agent hunting for a GitHub issue that does not exist. Resolved at
+    /// brief-build time like [`Self::workflow_for`]; defaults to `true`
+    /// (today's ref-framed wording) when no store or config is bound, so a
+    /// missing config never silently strips the GitHub steps from a real
+    /// ref-based run.
+    fn has_refs_for(&self, project: &str, epic: &str) -> bool {
+        self.run_configs
+            .get()
+            .and_then(|s| s.get(project, epic))
+            .map(|c| !c.epics.is_empty() || !c.issues.is_empty())
+            .unwrap_or(true)
+    }
+
     /// One `successor_spawn_failed` ALERT (P2.4 pattern): the successor for
     /// `snapshot` cannot be spawned, a human has to step in.
     fn alert_spawn_failed(&self, snapshot: &SessionSnapshot, failure: &str) {
@@ -902,6 +918,7 @@ impl SamuraiReplicator {
                             snapshot.generation,
                             head_matched,
                             &workflow,
+                            self.has_refs_for(&snapshot.project, &snapshot.epic),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
@@ -940,6 +957,7 @@ impl SamuraiReplicator {
                             snapshot.generation,
                             repo_pin.as_deref(),
                             &workflow,
+                            self.has_refs_for(&snapshot.project, &snapshot.epic),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
@@ -1062,6 +1080,7 @@ impl SamuraiReplicator {
                         snapshot.generation,
                         None,
                         &workflow,
+                        self.has_refs_for(&snapshot.project, &snapshot.epic),
                     ),
                     samurai_prompts::journal_instruction(&default_journal_file()),
                 ),
@@ -1114,6 +1133,7 @@ impl SamuraiReplicator {
                             snapshot.generation,
                             Some(&pin),
                             &workflow,
+                            this.has_refs_for(&snapshot.project, &snapshot.epic),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     );
@@ -1265,7 +1285,13 @@ impl SamuraiReplicator {
                 // / fix M4: the journaling rider rides every version.
                 instruction: format!(
                     "{} {}",
-                    samurai_prompts::recovery_ritual_instruction(epic, prior, None, &workflow),
+                    samurai_prompts::recovery_ritual_instruction(
+                        epic,
+                        prior,
+                        None,
+                        &workflow,
+                        self.has_refs_for(project, epic),
+                    ),
                     samurai_prompts::journal_instruction(&default_journal_file()),
                 ),
                 predecessor_session_id: 0,
@@ -1326,6 +1352,7 @@ impl SamuraiReplicator {
                                 prior,
                                 head_matched,
                                 &workflow,
+                                this.has_refs_for(&project, &epic),
                             ),
                             samurai_prompts::journal_instruction(&default_journal_file()),
                         ),
@@ -1360,6 +1387,7 @@ impl SamuraiReplicator {
                                 prior,
                                 repo_pin.as_deref(),
                                 &workflow,
+                                this.has_refs_for(&project, &epic),
                             ),
                             samurai_prompts::journal_instruction(&default_journal_file()),
                         ),
