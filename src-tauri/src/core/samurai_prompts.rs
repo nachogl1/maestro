@@ -436,8 +436,37 @@ fn join_refs(refs: &[String]) -> String {
 /// Distinct refs can collide (`#37` and `37` both slug to `37`); accepted —
 /// worktrees are one-per-epic (PRD §5.9), so colliding refs would already be
 /// sharing a working directory, which is the real isolation boundary.
+///
+/// Fix S2 (issue #131 review 2): the result is LENGTH-BOUNDED — a slug
+/// longer than [`SLUG_MAX`] keeps a readable head plus an 8-hex FNV-1a hash
+/// of the whole slug, exactly the shape [`prose_label`] already uses. Only
+/// the prose path was bounded before; `RunRefs::label` grows ~4 chars per
+/// `#N` with no cap, so a realistic batch ("work #101 #102 … #120") produced
+/// a ~90-char slug and pushed `<worktree>/.maestro/handoffs/<slug>-gen1.md`
+/// past Windows `MAX_PATH` — every handoff write then failed a validation
+/// the agent could not satisfy and the run corrective-looped. Bounding HERE
+/// rather than in `label()` keeps the identity string readable in the briefs
+/// while capping every path derived from it (branch, worktree dir,
+/// run-config filename, handoff filename), and stays deterministic: the same
+/// identity always slugs to the same bounded string.
 pub fn epic_slug(epic: &str) -> String {
-    ref_slug(epic, "epic")
+    bound_slug(ref_slug(epic, "epic"))
+}
+
+/// Longest slug [`epic_slug`] emits: [`PROSE_SLUG_MAX`] readable characters,
+/// a dash, and 8 hex digits — the same bound a prose label already carries,
+/// so a prose identity passes through unchanged.
+const SLUG_MAX: usize = PROSE_SLUG_MAX + 9;
+
+/// Caps a slug at [`SLUG_MAX`] (fix S2), leaving anything already within the
+/// bound byte-for-byte alone. Slug characters are ASCII by construction
+/// ([`ref_slug`]), so the truncation is safe.
+fn bound_slug(slug: String) -> String {
+    if slug.len() <= SLUG_MAX {
+        return slug;
+    }
+    let head = slug[..PROSE_SLUG_MAX].trim_end_matches('-');
+    format!("{head}-{:08x}", fnv1a_64(&slug) as u32)
 }
 
 /// Shared collapsing sanitizer behind [`epic_slug`] and the project-name half
@@ -2751,6 +2780,64 @@ mod tests {
         assert_ne!(label, other.label());
         // The slug already passes epic_slug unchanged — no double mangling.
         assert_eq!(epic_slug(&label), label);
+    }
+
+    /// Fix S2 (issue #131 review 2): run identity was length-bounded only on
+    /// the prose path. `RunRefs::label` grows ~4 chars per `#N` with no cap
+    /// and feeds epic_branch → worktree dir → handoff filename, so a
+    /// realistic batch pushed the handoff path past Windows MAX_PATH and the
+    /// run corrective-looped on a validation it could not satisfy.
+    #[test]
+    fn test_epic_slug_is_bounded_for_a_long_ref_batch() {
+        let refs: Vec<String> = (101..=120).map(|n| n.to_string()).collect();
+        let label = RunRefs::new(std::iter::empty::<&str>(), &refs).label();
+        assert!(label.len() > 80, "the raw identity is long: {label}");
+
+        let slug = epic_slug(&label);
+        assert!(slug.len() <= SLUG_MAX, "slug too long: {slug}");
+        // Readable head kept, 8-hex tail, deterministic and stable.
+        assert!(slug.starts_with("issues-101"), "{slug}");
+        assert_eq!(slug, epic_slug(&label));
+        // Distinct batches stay distinct even when their heads match.
+        let other: Vec<String> = (101..=121).map(|n| n.to_string()).collect();
+        assert_ne!(
+            slug,
+            epic_slug(&RunRefs::new(std::iter::empty::<&str>(), &other).label())
+        );
+        // Everything derived from the slug inherits the bound.
+        assert!(handoff_file_relpath(&label, 1).len() <= SLUG_MAX + 30);
+        // Short identities are untouched — no gratuitous rename of existing
+        // worktrees, branches or configs.
+        assert_eq!(epic_slug("epic #5 · issues #7, #9"), "epic-5-issues-7-9");
+        assert_eq!(epic_slug("#37"), "37");
+    }
+
+    /// Fix T6 (issue #131 review 2): the identity bound must hold for
+    /// pathological requests too, not just the tidy 54-char ASCII one.
+    #[test]
+    fn test_prose_identity_survives_pathological_requests() {
+        let cases = [
+            "x".repeat(500),
+            "réfactorisér le pañel — ⚡🔥🚀 emoji only 🎌🎏".to_string(),
+            "🎌🎏⚡🔥🚀".to_string(),
+            "!@#$%^&*()_+-=[]{}|;':\",./<>?~`".to_string(),
+            "     ".to_string(),
+            "\u{0}\u{7f}".to_string(),
+        ];
+        for case in cases {
+            let input = LaunchInput::parse(&case);
+            let label = input.label();
+            let slug = epic_slug(&label);
+            assert!(slug.len() <= SLUG_MAX, "{case:?} → {slug}");
+            assert!(!slug.is_empty(), "{case:?} slugged to nothing");
+            assert!(slug.bytes().all(|b| b.is_ascii()), "{case:?} → {slug}");
+            // Deterministic: the same request always yields the same identity.
+            assert_eq!(label, LaunchInput::parse(&case).label());
+            assert_eq!(slug, epic_slug(&label));
+            // And it flows through every derived path without panicking.
+            assert!(handoff_file_relpath(&label, 1).ends_with("-gen1.md"));
+            assert!(!recovery_digest_relpath(&label, 2).is_empty());
+        }
     }
 
     #[test]
