@@ -122,6 +122,7 @@ function run(overrides: Partial<SamuraiRunListEntry> = {}): SamuraiRunListEntry 
     epic: "#38",
     epics: [],
     issues: [],
+    launch_text: null,
     repo_pin: "nachogl1/maestro",
     worktree_path: "C:\\data\\worktrees\\maestro-abc\\maestro-38",
     model: null,
@@ -249,14 +250,18 @@ describe("LaunchSection (issue #63)", () => {
     useWorkflowsViewStore.setState({ isOpen: false });
   });
 
+  /** The free-text launch box (issue #128). */
+  const textBox = () => screen.getByLabelText("What do you want to work on today");
+
   it("renders the form with the active project and a disabled Launch button", async () => {
     render(<LaunchSection />);
     expect(screen.getByText("Launch Run")).toBeInTheDocument();
     // The project is read-only context, shown by name — not an input.
     expect(screen.getByText("maestro")).toBeInTheDocument();
-    // Issue #83: epics and issues are separate fields.
-    expect(screen.getByLabelText("Epics")).toBeInTheDocument();
-    expect(screen.getByLabelText("Issues")).toBeInTheDocument();
+    // Issue #128: one free-text box replaces the epics + issues fields.
+    expect(textBox()).toBeInTheDocument();
+    expect(screen.queryByLabelText("Epics")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Issues")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Model")).toBeInTheDocument();
     expect(screen.getByLabelText("Handoff at context %")).toBeInTheDocument();
     // The agent-readiness declaration is gone — it is the model's call now.
@@ -286,7 +291,7 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.queryByLabelText("Edit step implement")).not.toBeInTheDocument();
   });
 
-  it("keeps Launch disabled while both ref fields are empty", async () => {
+  it("keeps Launch disabled while the request box is blank", async () => {
     render(<LaunchSection />);
     // Let the runs list and the usage poll land first — this test never
     // awaits anything else, and a late resolve would fire outside act().
@@ -296,23 +301,20 @@ describe("LaunchSection (issue #63)", () => {
     const button = () => screen.getByRole("button", { name: "Launch" });
     expect(button()).toBeDisabled();
 
-    // Whitespace and bare separators carry no ref — still nothing to run.
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "  , ," } });
+    // Whitespace carries no request — still nothing to run.
+    fireEvent.change(textBox(), { target: { value: "   " } });
     expect(button()).toBeDisabled();
 
-    // Either field on its own is enough.
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "7" } });
+    fireEvent.change(textBox(), { target: { value: "#7" } });
     expect(button()).toBeEnabled();
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "" } });
+    fireEvent.change(textBox(), { target: { value: "" } });
     expect(button()).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "5" } });
-    expect(button()).toBeEnabled();
   });
 
   it("runs preflight then launches from the one button, no declaration needed", async () => {
     render(<LaunchSection />);
     expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "38" } });
+    fireEvent.change(textBox(), { target: { value: "work on #38" } });
     expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
@@ -325,8 +327,8 @@ describe("LaunchSection (issue #63)", () => {
     expect(order.indexOf("samurai_preflight")).toBeLessThan(order.indexOf("samurai_launch_run"));
     expect(callsOf("samurai_launch_run")[0][1]).toEqual({
       projectPath: "C:\\git\\maestro",
-      epics: ["38"],
-      issues: [],
+      // Issue #128: the request rides to the backend verbatim.
+      text: "work on #38",
       model: null,
       handoffContextPct: null,
       skipTestGate: false,
@@ -345,88 +347,38 @@ describe("LaunchSection (issue #63)", () => {
     const edited: SamuraiWorkflowGraph = { ...workflowGraph(), edges: [] };
     useSamuraiWorkflowStore.setState({ graph: edited });
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
     expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({ workflow: edited });
   });
 
-  it("launches from the Issues field alone, with no epic (issue #83)", async () => {
+  it("summarises the refs detected in the request (issue #128)", async () => {
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "77, 78" } });
-    // The summary counts only what was filled in — no phantom epic.
-    expect(screen.getByText(/2 issues in one run/).textContent).not.toContain("epic");
+    fireEvent.change(textBox(), { target: { value: "finish #77 and #78" } });
+    expect(screen.getByText(/2 issue refs detected/)).toBeInTheDocument();
 
+    // Prose only: no phantom refs — the run works from the words alone.
+    fireEvent.change(textBox(), { target: { value: "fix 3 bugs in module 7" } });
+    expect(screen.queryByText(/refs detected/)).not.toBeInTheDocument();
+  });
+
+  it("launches plain prose without any inline validation error (issue #128)", async () => {
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "refactor the audit panel styling" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
     expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({
-      epics: [],
-      issues: ["77", "78"],
+      text: "refactor the audit panel styling",
     });
-  });
-
-  it("combines both fields into one run and counts each set", async () => {
-    render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "7, 9" } });
-    // Singular and plural agree per set.
-    expect(screen.getByText(/1 epic, 2 issues in one run/)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
-    await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
-    expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({
-      epics: ["5"],
-      issues: ["7", "9"],
-    });
-  });
-
-  it("accepts #-prefixed refs in both fields", async () => {
-    render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "#5, #12" } });
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: " #7 " } });
-    expect(screen.getByText(/2 epics, 1 issue in one run/)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
-    await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
-    // The `#` rides through — the backend strips it when it normalizes.
-    expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({
-      epics: ["#5", "#12"],
-      issues: ["#7"],
-    });
-  });
-
-  it("rejects a non-numeric ref inline and never calls the backend", async () => {
-    render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "7, feature/login" } });
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
-
-    expect(await screen.findByText(/"feature\/login" is not an issue number/)).toBeInTheDocument();
-    // Junk never reaches the launch — not even the preflight probe runs.
-    expect(callsOf("samurai_launch_run")).toHaveLength(0);
-    expect(callsOf("samurai_preflight")).toHaveLength(0);
-
-    // Fixing the field clears the way.
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "7" } });
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
-    await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
-  });
-
-  it("rejects junk in the Epics field too", async () => {
-    render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "epic-5" } });
-    // Something IS typed, so the button is clickable — that click is what
-    // renders the error a disabled button could never explain.
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
-
-    expect(await screen.findByText(/"epic-5" is not an issue number/)).toBeInTheDocument();
-    expect(callsOf("samurai_launch_run")).toHaveLength(0);
+    expect(screen.queryByText(/is not an issue number/)).not.toBeInTheDocument();
   });
 
   it("shows remaining allowance per model and pins the chosen one", async () => {
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
 
     // Wait for the usage poll to land before opening the picker.
     await waitFor(() => expect(callsOf("get_claude_usage").length).toBeGreaterThan(0));
@@ -449,8 +401,7 @@ describe("LaunchSection (issue #63)", () => {
 
   it("passes the per-run handoff % override to the launch (review F4)", async () => {
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Epics"), { target: { value: "38" } });
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "41" } });
+    fireEvent.change(textBox(), { target: { value: "#38 and #41" } });
     fireEvent.change(screen.getByLabelText("Handoff at context %"), {
       target: { value: "30" },
     });
@@ -459,8 +410,7 @@ describe("LaunchSection (issue #63)", () => {
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
     expect(callsOf("samurai_launch_run")[0][1]).toEqual({
       projectPath: "C:\\git\\maestro",
-      epics: ["38"],
-      issues: ["41"],
+      text: "#38 and #41",
       model: null,
       handoffContextPct: 30,
       skipTestGate: false,
@@ -468,14 +418,13 @@ describe("LaunchSection (issue #63)", () => {
     });
     // Every field clears together after a launch.
     await screen.findByText(/Run launched: epic #38/);
-    expect(screen.getByLabelText("Epics")).toHaveValue("");
-    expect(screen.getByLabelText("Issues")).toHaveValue("");
+    expect(textBox()).toHaveValue("");
     expect(screen.getByLabelText("Handoff at context %")).toHaveValue(null);
   });
 
   it("sends the skip test-gate toggle with the launch args (issue #90b)", async () => {
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Skip test-suite gate" }));
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
@@ -502,7 +451,7 @@ describe("LaunchSection (issue #63)", () => {
       }
     });
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
 
@@ -564,7 +513,7 @@ describe("LaunchSection (issue #63)", () => {
       }
     });
     const first = render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
 
@@ -623,7 +572,7 @@ describe("LaunchSection (issue #63)", () => {
       }
     });
     const first = render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
 
@@ -657,7 +606,7 @@ describe("LaunchSection (issue #63)", () => {
       },
     });
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
     expect(await screen.findByText(/gh auth failed/)).toBeInTheDocument();
@@ -962,7 +911,7 @@ describe("LaunchSection (issue #63)", () => {
       }
     });
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
     // Switch projects while the probe (gh auth status subprocess) is still out.
@@ -1000,7 +949,7 @@ describe("LaunchSection (issue #63)", () => {
       }
     });
     render(<LaunchSection />);
-    fireEvent.change(screen.getByLabelText("Issues"), { target: { value: "#38" } });
+    fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
     expect(

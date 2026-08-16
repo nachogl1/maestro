@@ -226,6 +226,11 @@ export interface SamuraiRunConfig {
   epics: string[];
   /** Standalone issue refs, bare (`7`); empty for pre-#83 configs. */
   issues: string[];
+  /**
+   * The free-text launch request this run was started from, verbatim
+   * (issue #128); null on configs written before free-text launches.
+   */
+  launch_text: string | null;
   /** `--repo owner/repo` pin for orchestrator prompts; null when unknown. */
   repo_pin: string | null;
   /** The epic's stable worktree path (PRD §5.9). */
@@ -334,11 +339,12 @@ export function samuraiPreflight(projectPath: string): Promise<SamuraiPreflight>
  * governing window, live session, red gate) arrive as rejected promises
  * with the reason.
  *
- * `epics` and `issues` are the launcher's two fields (issue #83) — parent
- * epics whose child issues the run discovers, and issues named directly.
- * Each element may itself be a comma-separated list, and a leading `#` is
- * optional: the backend splits and normalizes the spelling, so `["#77,78"]`
- * and `["#77", "78"]` are the same run. It refuses an empty combined set.
+ * `text` is the launcher's single free-text box (issue #128) — "what do you
+ * want to work on today". It rides to the orchestrator VERBATIM. Any `#N`
+ * refs found in it keep the ref-launch behavior (context read from GitHub,
+ * epic-first); pure prose runs on the words alone. The backend normalizes
+ * whitespace and derives the run's identity (refs label, or a short
+ * slug+hash for prose), and refuses an empty request.
  *
  * `workflow` (issue #91) is the run's workflow graph — the editor's edited
  * graph, or omitted/null for the default template. Whatever the run
@@ -347,8 +353,7 @@ export function samuraiPreflight(projectPath: string): Promise<SamuraiPreflight>
  */
 export function samuraiLaunchRun(
   projectPath: string,
-  epics: string[],
-  issues: string[],
+  text: string,
   model: string | null,
   handoffContextPct: number | null,
   skipTestGate: boolean,
@@ -356,8 +361,7 @@ export function samuraiLaunchRun(
 ): Promise<SamuraiLaunchResult> {
   return invoke("samurai_launch_run", {
     projectPath,
-    epics,
-    issues,
+    text,
     model,
     handoffContextPct,
     skipTestGate,
