@@ -141,6 +141,19 @@ impl TranscriptWatcher {
             return true;
         }
 
+        // The session-start hook can fire before Claude Code has created the
+        // project directory itself — a samurai orchestrator in a fresh
+        // worktree always does (issue #125). Watching a missing directory
+        // fails, the session is never retried, and every subagent of the
+        // session stays invisible. Create it up front instead; Claude writes
+        // the transcript into it moments later.
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log::warn!(
+                "TranscriptWatcher: could not create watch directory {}: {e}",
+                dir.display()
+            );
+        }
+
         let subscribers: Subscribers = Arc::new(Mutex::new(HashMap::new()));
         subscribers
             .lock()
@@ -1336,6 +1349,60 @@ mod tests {
                 if tokio::time::Instant::now() >= deadline {
                     panic!(
                         "nested agent never surfaced from the subagents folder. Got {:?}",
+                        *events
+                    );
+                }
+            }
+        }
+
+        watcher.stop_watching(1);
+    }
+
+    /// Issue #125: a samurai orchestrator runs in a fresh worktree, so its
+    /// session-start hook fires BEFORE Claude Code has created that worktree's
+    /// project directory under ~/.claude/projects. Watching the missing
+    /// directory used to fail permanently (the session is never retried), so
+    /// every subagent of the orchestrator was invisible. Starting the watch
+    /// before the directory exists must still surface the spawns written later.
+    #[tokio::test]
+    async fn test_watch_started_before_project_dir_exists_still_surfaces_spawns() {
+        use std::time::Duration;
+
+        let (event_bus, captured) = test_event_bus();
+        let watcher = TranscriptWatcher::new(event_bus);
+
+        let root = tempfile::tempdir().unwrap();
+        // The per-worktree project directory Claude has not created yet.
+        let project_dir = root.path().join("C--worktree-project");
+        let main_path = project_dir.join("t.jsonl");
+        watcher.start_watching(1, main_path.clone());
+        assert_eq!(
+            watcher.watched_sessions(),
+            vec![1],
+            "the session must be registered even though its directory does not exist yet"
+        );
+
+        // Claude creates the directory and writes the orchestrator's
+        // transcript moments later.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let spawn = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_S","name":"Agent","input":{"description":"samurai subagent","subagent_type":"general-purpose","prompt":"do the thing"}}]},"uuid":"m1","timestamp":"2026-08-15T20:27:30Z"}"#;
+        std::fs::write(&main_path, format!("{spawn}\n")).unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            {
+                let events = captured.lock().unwrap();
+                if events.iter().any(|e| matches!(
+                    e,
+                    ClaudeEvent::SubagentSpawned { agent_id, .. } if agent_id == "toolu_S"
+                )) {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    panic!(
+                        "spawn written after the watch started never surfaced. Got {:?}",
                         *events
                     );
                 }

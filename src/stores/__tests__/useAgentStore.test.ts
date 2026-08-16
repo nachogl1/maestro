@@ -76,6 +76,29 @@ describe("useAgentStore", () => {
     });
   });
 
+  // Issue #126: the spawn input can name the model the orchestrator asked for
+  // (e.g. "sonnet"); it must show on the node from the moment it appears, and
+  // the launch acknowledgement's RESOLVED model must replace it.
+  it("SubagentSpawned carries the requested model; SubagentLaunched resolves it", () => {
+    useAgentStore.getState().handleEvent(spawned(1, "toolu_m", { model: "sonnet" }));
+    expect(useAgentStore.getState().agents[0].model).toBe("sonnet");
+
+    useAgentStore.getState().handleEvent({
+      event_type: "SubagentLaunched",
+      session_id: 1,
+      agent_id: "toolu_m",
+      agent_run_id: "a1",
+      model: "claude-sonnet-5",
+      timestamp: "2026-07-13T10:00:05.000Z",
+    });
+    expect(useAgentStore.getState().agents[0].model).toBe("claude-sonnet-5");
+  });
+
+  it("a spawn without a model leaves it null (unknown, not empty string)", () => {
+    useAgentStore.getState().handleEvent(spawned(1, "toolu_n"));
+    expect(useAgentStore.getState().agents[0].model).toBeNull();
+  });
+
   // A nested agent's spawn (read from the subagents folder) names the agent
   // that spawned it, which is what the graphs hang the tree on.
   it("SubagentSpawned keeps the parent agent id", () => {

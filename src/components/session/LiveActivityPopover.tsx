@@ -61,28 +61,31 @@ export function LiveActivityPopover({
       </div>
 
       {activity ? (
-        <>
-          {activity.lastTool && (
-            <p
-              className="mt-1.5 w-full truncate text-[11px] text-maestro-text"
-              title={
-                activity.lastTool.summary
-                  ? `${activity.lastTool.name} — ${activity.lastTool.summary}`
-                  : activity.lastTool.name
-              }
-            >
-              <span className="font-semibold">{activity.lastTool.name}</span>
-              {activity.lastTool.summary && (
-                <span className="text-maestro-muted"> — {activity.lastTool.summary}</span>
-              )}
-            </p>
-          )}
+        /* Scrolls instead of clipping (issue #127): three wrapped tool lines
+           plus a snippet can outgrow the anchored card. */
+        <div className="max-h-64 overflow-y-auto">
+          {/* The latest tool calls, oldest first — the shape of the current
+              turn, each line wrapped in full rather than truncated. */}
+          {activity.recentTools.map((tool, index) => {
+            const current = index === activity.recentTools.length - 1;
+            return (
+              <p
+                key={`${tool.timestamp}-${tool.name}-${index}`}
+                className={`mt-1.5 w-full break-words text-[11px] ${
+                  current ? "text-maestro-text" : "text-maestro-muted opacity-80"
+                }`}
+              >
+                <span className="font-semibold">{tool.name}</span>
+                {tool.summary && <span className="text-maestro-muted"> — {tool.summary}</span>}
+              </p>
+            );
+          })}
           {activity.lastMessage && (
             <p className="mt-1.5 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-maestro-muted">
               {activity.lastMessage.snippet}
             </p>
           )}
-        </>
+        </div>
       ) : (
         <p className="mt-1.5 text-[11px] italic text-maestro-muted">
           Nothing captured yet — activity appears with the next tool call or message.

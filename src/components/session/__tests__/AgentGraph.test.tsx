@@ -374,6 +374,31 @@ describe("AgentGraph", () => {
     expect(screen.getByText("— /src/lib.rs")).toBeInTheDocument();
   });
 
+  it("shows the whole recent-tool trail, wrapped rather than clipped (issue #127)", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    const longCmd =
+      "npx vitest run src/components/session/__tests__/AgentGraph.test.tsx --reporter=verbose --no-coverage";
+    seedActivity(1, [
+      toolUseEvent("t1", "Read", "/src/stores/useAgentStore.ts", "2026-08-13T10:00:00Z"),
+      toolUseEvent("t2", "Grep", "SubagentSpawned in src", "2026-08-13T10:00:01Z"),
+      toolUseEvent("t3", "Bash", longCmd, "2026-08-13T10:00:02Z"),
+    ]);
+    render(<AgentGraph sessionId={1} />);
+    fireEvent.click(screen.getByLabelText("Show live activity"));
+
+    // Every recent tool is listed — not just the newest fragment.
+    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("Grep")).toBeInTheDocument();
+    expect(screen.getByText("Bash")).toBeInTheDocument();
+
+    // The tool target wraps instead of truncating, so the whole string is
+    // readable; and the card scrolls rather than clipping its content.
+    const target = screen.getByText(`— ${longCmd}`);
+    const line = target.closest("p");
+    expect(line?.className).not.toContain("truncate");
+    expect(line?.className).toContain("break-words");
+  });
+
   it("shows no eye when the session is not working", () => {
     useSessionStore.setState({ sessions: [session(1, { status: "Idle" })] });
     render(<AgentGraph sessionId={1} />);
@@ -404,6 +429,29 @@ describe("AgentGraph", () => {
     fireEvent.click(screen.getAllByTitle("Show the brief sent and the report returned")[1]);
     expect(screen.getByText("Report back ↑")).toBeInTheDocument();
     expect(screen.getByText("all shipped")).toBeInTheDocument();
+  });
+
+  // Issue #126: the model each agent runs is graph-visible — the session root
+  // shows the model of its latest assistant message, and a RUNNING subagent
+  // node already shows the model it was spawned with via its stats line.
+  it("shows the session's model on the root node and the agent's on its node", () => {
+    useSessionStore.setState({ sessions: [session(1, { name: "Orchestrator" })] });
+    seedActivity(1, [assistantEvent("a1", "Working on it.", "2026-08-13T10:00:00Z")]);
+    useAgentStore.setState({
+      agents: [agent(1, "toolu_run", { agentType: "Explore", model: "claude-sonnet-5" })],
+    });
+    render(<AgentGraph sessionId={1} />);
+
+    // assistantEvent's model is claude-fable-5 — shortened on the root badge.
+    expect(screen.getByTitle("Model: claude-fable-5")).toHaveTextContent("fable-5");
+    // The running agent's stats line names its model.
+    expect(screen.getByText("sonnet-5")).toBeInTheDocument();
+  });
+
+  it("shows no model badge when the session has produced no assistant message", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    render(<AgentGraph sessionId={1} />);
+    expect(screen.queryByTitle(/^Model: /)).not.toBeInTheDocument();
   });
 
   it("an unrecognised status is shown verbatim rather than as DONE", () => {

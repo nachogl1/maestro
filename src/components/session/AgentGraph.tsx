@@ -10,6 +10,7 @@ import {
   buildExportMarkdown,
   edgeStroke,
   SESSION_STATUS_BADGES,
+  shortModel,
   statsLine,
   ToolStatsRow,
 } from "@/components/session/agentPresentation";
@@ -17,6 +18,8 @@ import { LiveActivityPopover } from "@/components/session/LiveActivityPopover";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
 import { type AgentTreeNode, buildAgentTree } from "@/lib/agentTree";
+import { deriveSessionModel } from "@/lib/liveActivity";
+import { useActivityStore } from "@/stores/useActivityStore";
 import { useAgentStore } from "@/stores/useAgentStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 
@@ -87,6 +90,11 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
     }),
   );
 
+  // The model the session itself runs on (issue #126), read from the latest
+  // assistant message the transcript watcher has forwarded.
+  const activityEvents = useActivityStore((s) => s.sessions[sessionId]?.events);
+  const sessionModel = useMemo(() => deriveSessionModel(activityEvents ?? []), [activityEvents]);
+
   // Leaving Working closes the popover FOR REAL (`showLivePopover` below only
   // hides it) — otherwise Working→NeedsInput→Working would reopen it
   // uninvited with the stale `liveOpen` still true.
@@ -122,6 +130,14 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate text-xs font-semibold">{rootTitle}</span>
         <ThinkingIndicator sessionId={sessionId} />
+        {sessionModel && (
+          <span
+            className={`${badgeBaseClass} bg-maestro-muted/15 text-maestro-muted`}
+            title={`Model: ${sessionModel}`}
+          >
+            {shortModel(sessionModel)}
+          </span>
+        )}
         <span className={`${badgeBaseClass} ${rootBadge.cls}`}>{rootBadge.label}</span>
         {/* Samurai supervision (issue #46) — nothing for non-supervised sessions. */}
         <SamuraiBadge sessionId={sessionId} />
@@ -156,7 +172,7 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
           <LiveActivityPopover
             sessionId={sessionId}
             onClose={() => setLiveOpen(false)}
-            className="w-[260px]"
+            className="w-[320px]"
           />
         )}
         <p className="max-w-[280px] text-center text-[11px] italic text-maestro-muted">
@@ -304,7 +320,7 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
         {showLivePopover && (
           <div
             className="absolute z-20"
-            style={{ left: rootX, top: rootY + ROOT_H + 6, width: 260 }}
+            style={{ left: rootX, top: rootY + ROOT_H + 6, width: 320 }}
           >
             <LiveActivityPopover sessionId={sessionId} onClose={() => setLiveOpen(false)} />
           </div>

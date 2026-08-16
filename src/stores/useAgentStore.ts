@@ -115,7 +115,9 @@ function applyEvent(agents: SubagentInfo[], event: ClaudeEvent): SubagentInfo[] 
           success: null,
           report: "",
           status: null,
-          model: null,
+          // The requested model from the spawn input, when named (issue
+          // #126); the launch/completion later resolves the actual one.
+          model: event.model ?? null,
           durationMs: null,
           totalTokens: null,
           toolUseCount: null,

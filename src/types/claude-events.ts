@@ -68,6 +68,8 @@ export type ClaudeEvent =
       prompt: string;
       run_in_background: boolean;
       parent_agent_id: string | null;
+      /** Model the orchestrator asked for in the spawn input (e.g. "sonnet"). */
+      model?: string | null;
       timestamp: string;
     }
   | {
