@@ -208,6 +208,28 @@ describe("TerminalGrid samurai park (issue #122)", () => {
     expect(killSessionMock).toHaveBeenCalledTimes(1);
   });
 
+  it("kills the PTY of an ALREADY-PARKED tile the circuit breaker flips to PARKED", async () => {
+    const sessionId = await renderLaunchedGrid();
+
+    // The user parks a LIVE orchestrator with the P button: the tile hides,
+    // the PTY keeps running (that is what park means).
+    await act(async () => {
+      useSessionStore.getState().parkSession(sessionId);
+    });
+    expect(killSessionMock).not.toHaveBeenCalled();
+
+    // The Phase-2 circuit breaker later flips the same session to PARKED —
+    // the one path that leaves the PTY alive. The kill must still fire, or an
+    // agent running with --dangerously-skip-permissions keeps executing
+    // off-screen forever.
+    await act(async () => {
+      superviseSession(sessionId, "PARKED");
+    });
+
+    await waitFor(() => expect(killSessionMock).toHaveBeenCalledWith(sessionId));
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]);
+  });
+
   it("keeps a user unpark unparked after an auto-park (PR #131 review H2)", async () => {
     const sessionId = await renderLaunchedGrid();
 

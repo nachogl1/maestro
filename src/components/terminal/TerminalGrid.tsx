@@ -1960,7 +1960,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const samuraiAutoParkedSessionIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     for (const slot of slotsRef.current) {
-      if (slot.sessionId === null || parkedSet.has(slot.sessionId)) continue;
+      if (slot.sessionId === null) continue;
       if (samuraiAutoParkedSessionIdsRef.current.has(slot.sessionId)) continue;
       const info = samuraiBySessionId[slot.sessionId];
       if (info && SAMURAI_TERMINAL_STATES.has(info.state)) {
@@ -1971,12 +1971,20 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         // leaving the PTY running. Kill it there so no path can orphan a
         // live agent running with --dangerously-skip-permissions; skip the
         // redundant IPC call for DEAD, whose process is confirmed gone.
+        //
+        // The kill is decided by the SUPERVISOR STATE alone, never by
+        // `parkedSet` (PR #131 review H1): a tile the user already parked
+        // with the P button still has a LIVE PTY — park is CSS-only — so
+        // skipping it there is exactly the case that orphans an agent.
+        // The one-shot ref above is what stops a redundant re-kill.
         if (info.state !== "DEAD") {
           killSession(slot.sessionId).catch(console.error);
         }
-        // parkSession is idempotent and the `parkedSet` guard above stops
-        // this from re-firing for an already-parked session.
-        handlePark(slot.id);
+        // Only the tile move is conditional: parking an already-parked tile
+        // would steal zoom/focus from wherever the user moved them.
+        if (!parkedSet.has(slot.sessionId)) {
+          handlePark(slot.id);
+        }
       }
     }
   }, [samuraiBySessionId, parkedSet, handlePark]);
