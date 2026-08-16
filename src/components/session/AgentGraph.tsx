@@ -92,8 +92,15 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
 
   // The model the session itself runs on (issue #126), read from the latest
   // assistant message the transcript watcher has forwarded.
-  const activityEvents = useActivityStore((s) => s.sessions[sessionId]?.events);
-  const sessionModel = useMemo(() => deriveSessionModel(activityEvents ?? []), [activityEvents]);
+  //
+  // The DERIVED value is what gets selected, not the raw `events` array: one
+  // AgentGraph is mounted per terminal tile and the watcher batches events
+  // every 16ms, so subscribing to the array re-rendered every tile (SVG
+  // re-layout and all) 60 times a second. A `string | null` compares by
+  // Object.is, so the store stops the render instead.
+  const sessionModel = useActivityStore((s) =>
+    deriveSessionModel(s.sessions[sessionId]?.events ?? []),
+  );
 
   // Leaving Working closes the popover FOR REAL (`showLivePopover` below only
   // hides it) — otherwise Working→NeedsInput→Working would reopen it
