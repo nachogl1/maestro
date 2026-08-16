@@ -773,10 +773,7 @@ fn parse_session_file(path: &Path) -> Option<ClaudeSessionInfo> {
     // cwd that no longer exists (deleted worktree) cannot host a resume — keep
     // it for display, but mark the session not resumable with the reason.
     let (resumable, resume_blocked_reason) = if cwd.is_none() {
-        (
-            false,
-            Some("no working directory was recorded".to_string()),
-        )
+        (false, Some("no working directory was recorded".to_string()))
     } else if !cwd_exists {
         (false, Some("its directory no longer exists".to_string()))
     } else {
@@ -870,10 +867,7 @@ fn collect_sessions(
 /// conversation surfaced from a subdirectory or worktree would silently do
 /// nothing.
 #[tauri::command]
-pub async fn delete_claude_session(
-    project_path: String,
-    session_id: String,
-) -> Result<(), String> {
+pub async fn delete_claude_session(project_path: String, session_id: String) -> Result<(), String> {
     if !is_safe_session_id(&session_id) {
         return Err(format!("Invalid session id: {session_id}"));
     }
@@ -1027,10 +1021,7 @@ mod tests {
 
     #[test]
     fn encode_preserves_dashes_but_maps_underscores_to_dashes() {
-        assert_eq!(
-            encode_project_path("/a-b_c/d_e-f"),
-            "-a-b-c-d-e-f"
-        );
+        assert_eq!(encode_project_path("/a-b_c/d_e-f"), "-a-b-c-d-e-f");
     }
 
     #[test]
@@ -1224,9 +1215,8 @@ mod tests {
         let path = tmp.path().join("abc.jsonl");
         // 300 crab emojis => far beyond 200 chars and deliberately multibyte.
         let long = "🦀".repeat(300);
-        let jsonl = format!(
-            r#"{{"sessionId":"abc","type":"user","message":{{"content":"{long}"}}}}"#
-        );
+        let jsonl =
+            format!(r#"{{"sessionId":"abc","type":"user","message":{{"content":"{long}"}}}}"#);
         fs::write(&path, &jsonl).unwrap();
         let info = parse_session_file(&path).expect("parsed");
         let prompt = info.first_prompt.expect("prompt captured");
@@ -1421,8 +1411,9 @@ mod tests {
         let path = tmp.path().join("abc.jsonl");
         // Enough filler to exceed the (256 KB) tail budget.
         let filler_payload = "x".repeat(500);
-        let mut jsonl =
-            String::from("{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"start\"}}\n");
+        let mut jsonl = String::from(
+            "{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"start\"}}\n",
+        );
         for _ in 0..600 {
             jsonl.push_str(&format!(
                 "{{\"type\":\"assistant\",\"sessionId\":\"abc\",\"payload\":\"{filler_payload}\"}}\n"
@@ -1431,7 +1422,10 @@ mod tests {
         jsonl.push_str(
             "{\"type\":\"last-prompt\",\"lastPrompt\":\"the closing ask\",\"leafUuid\":\"z\",\"sessionId\":\"abc\"}\n",
         );
-        assert!(jsonl.len() as u64 > TAIL_SCAN_BYTES, "fixture must exceed the tail budget");
+        assert!(
+            jsonl.len() as u64 > TAIL_SCAN_BYTES,
+            "fixture must exceed the tail budget"
+        );
         fs::write(&path, &jsonl).unwrap();
         let info = parse_session_file(&path).expect("parsed");
         assert_eq!(info.last_prompt.as_deref(), Some("the closing ask"));
@@ -1467,7 +1461,8 @@ mod tests {
         // last-prompt (and the only timestamp) sit exactly on that boundary.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("abc.jsonl");
-        let head = "{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"start\"}}\n";
+        let head =
+            "{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"start\"}}\n";
         let boundary = "{\"type\":\"last-prompt\",\"lastPrompt\":\"the boundary ask\",\"leafUuid\":\"z\",\"sessionId\":\"abc\",\"timestamp\":\"2021-05-05T05:05:05.000Z\"}\n";
         // One filler line padded so the boundary line's first byte lands
         // exactly at `len - TAIL_SCAN_BYTES`.

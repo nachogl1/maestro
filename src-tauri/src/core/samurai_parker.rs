@@ -1570,7 +1570,12 @@ mod tests {
         // sweep completes without arming anything.
         wait_until(|| !h.parker.parking_engaged()).await;
         assert!(h.schedule.list().is_empty());
-        let rows = h.audit.read(ACCOUNT_PROJECT, None, None).await.unwrap().events;
+        let rows = h
+            .audit
+            .read(ACCOUNT_PROJECT, None, None)
+            .await
+            .unwrap()
+            .events;
         assert_eq!(
             rows.iter()
                 .filter(|r| r.details["kind"] == "gh_auth_lost")

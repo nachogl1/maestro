@@ -17,8 +17,8 @@ use tauri_plugin_store::StoreExt;
 use crate::commands::ai_runner::{artifact_base_dir, canonical_project_path};
 use crate::commands::usage::{get_claude_usage, UsageData};
 use crate::core::samurai_audit::{AuditEvent, AuditEventKind, AuditLog, AuditReadResult};
-use crate::core::samurai_context::SamuraiContextStore;
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
+use crate::core::samurai_context::SamuraiContextStore;
 use crate::core::samurai_files::{self, SamuraiFileEntry, SamuraiFilesRoots};
 use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
@@ -1340,7 +1340,10 @@ pub(crate) fn build_run_list_entries(
                 context_window: usage.as_ref().map(|u| u.context_window),
                 context_percent: usage.as_ref().map(|u| u.percent),
             };
-            SamuraiRunListEntry { config, orchestrator }
+            SamuraiRunListEntry {
+                config,
+                orchestrator,
+            }
         })
         .collect()
 }
@@ -1356,7 +1359,11 @@ pub fn samurai_list_runs(
     supervisor: State<'_, Arc<Supervisor>>,
     context: State<'_, Arc<SamuraiContextStore>>,
 ) -> Vec<SamuraiRunListEntry> {
-    build_run_list_entries(run_configs.load_unarchived(), &supervisor.list_sessions(), &context)
+    build_run_list_entries(
+        run_configs.load_unarchived(),
+        &supervisor.list_sessions(),
+        &context,
+    )
 }
 
 /// What one cleanup pass removed (PRD §5.9: surfaced in the UI, never
@@ -2003,7 +2010,12 @@ mod tests {
         }
     }
 
-    fn context_usage_event(session_id: u32, model: &str, window: u64, percent: f64) -> crate::core::claude_event::ClaudeEvent {
+    fn context_usage_event(
+        session_id: u32,
+        model: &str,
+        window: u64,
+        percent: f64,
+    ) -> crate::core::claude_event::ClaudeEvent {
         crate::core::claude_event::ClaudeEvent::ContextUsageUpdate {
             session_id,
             model: model.to_string(),
@@ -2030,7 +2042,13 @@ mod tests {
     #[test]
     fn test_latest_session_for_run_matches_by_slug_not_exact_spelling() {
         // The launcher/cleanup precedent: "38" and "#38" are one identity.
-        let sessions = vec![session_snapshot(7, "C:/git/x", "#38", 3, SupervisorState::Working)];
+        let sessions = vec![session_snapshot(
+            7,
+            "C:/git/x",
+            "#38",
+            3,
+            SupervisorState::Working,
+        )];
         let found = latest_session_for_run(&sessions, "C:/git/x", "38").unwrap();
         assert_eq!(found.session_id, 7);
     }
@@ -2065,7 +2083,13 @@ mod tests {
 
     #[test]
     fn test_latest_session_for_run_no_match_is_none() {
-        let sessions = vec![session_snapshot(1, "C:/git/x", "#38", 1, SupervisorState::Working)];
+        let sessions = vec![session_snapshot(
+            1,
+            "C:/git/x",
+            "#38",
+            1,
+            SupervisorState::Working,
+        )];
         assert!(latest_session_for_run(&sessions, "C:/git/x", "#99").is_none());
         assert!(latest_session_for_run(&sessions, "C:/git/other", "#38").is_none());
     }
@@ -2073,9 +2097,20 @@ mod tests {
     #[test]
     fn test_build_run_list_entries_joins_generation_session_and_live_context() {
         let config = SamuraiRunConfig::new("C:/git/x", "#38", "C:/git/x-wt");
-        let sessions = vec![session_snapshot(9, "C:/git/x", "#38", 2, SupervisorState::Working)];
+        let sessions = vec![session_snapshot(
+            9,
+            "C:/git/x",
+            "#38",
+            2,
+            SupervisorState::Working,
+        )];
         let context = crate::core::samurai_context::SamuraiContextStore::new();
-        context.observe(&context_usage_event(9, "claude-opus-4-6[1m]", 1_000_000, 38.5));
+        context.observe(&context_usage_event(
+            9,
+            "claude-opus-4-6[1m]",
+            1_000_000,
+            38.5,
+        ));
 
         let entries = build_run_list_entries(vec![config], &sessions, &context);
         assert_eq!(entries.len(), 1);
@@ -2111,7 +2146,13 @@ mod tests {
         // already tore down its context-store entry): the identity fields
         // are populated, the live reading is not — never frozen into 0%.
         let config = SamuraiRunConfig::new("C:/git/x", "#38", "C:/git/x-wt");
-        let sessions = vec![session_snapshot(9, "C:/git/x", "#38", 3, SupervisorState::Working)];
+        let sessions = vec![session_snapshot(
+            9,
+            "C:/git/x",
+            "#38",
+            3,
+            SupervisorState::Working,
+        )];
         let context = crate::core::samurai_context::SamuraiContextStore::new();
 
         let entries = build_run_list_entries(vec![config], &sessions, &context);
@@ -3045,10 +3086,7 @@ mod tests {
             err
         };
         let (first_result, second_err) = tokio::join!(first, second);
-        assert!(
-            second_err.contains("already in progress"),
-            "{second_err}"
-        );
+        assert!(second_err.contains("already in progress"), "{second_err}");
         first_result.expect("the first launch completes normally");
         assert_eq!(h.spawns.lock().unwrap().len(), 1, "exactly ONE gen-1 spawn");
         assert_eq!(h.run_configs.load_active().len(), 1, "one ACTIVE config");
@@ -3954,7 +3992,10 @@ mod tests {
                 .unwrap();
 
         let report = run_cleanup(&h, "#38").await.unwrap();
-        assert_eq!(report.branch, "samurai-38", "reports the branch it actually deleted");
+        assert_eq!(
+            report.branch, "samurai-38",
+            "reports the branch it actually deleted"
+        );
         assert!(report.worktree_removed);
         assert!(report.branch_deleted);
         assert!(!worktree.exists());

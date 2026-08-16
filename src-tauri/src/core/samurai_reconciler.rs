@@ -495,11 +495,7 @@ async fn audit_max_generation(audit: &AuditLog, project: &str, epic: &str) -> Op
 
 /// Acts on one decision: one structured log line each (the spec's per-epic
 /// trail); the audit rows carry the user-facing story.
-fn apply(
-    audit: &AuditLog,
-    config: &SamuraiRunConfig,
-    action: ReconcileAction,
-) {
+fn apply(audit: &AuditLog, config: &SamuraiRunConfig, action: ReconcileAction) {
     match action {
         ReconcileAction::SkipTimer => {
             log::info!(

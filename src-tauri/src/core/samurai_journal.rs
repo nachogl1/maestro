@@ -550,8 +550,7 @@ fn parse_line(line: &str, path: &Path) -> RawLine {
     // Marker lines are the ones carrying a `kind` discriminator; anything
     // else must parse as an entry or it is opaque.
     let parsed = if value.get("kind").is_some() {
-        serde_json::from_value::<HarvestMarker>(value)
-            .map(|m| RawLine::Marker(m, line.to_string()))
+        serde_json::from_value::<HarvestMarker>(value).map(|m| RawLine::Marker(m, line.to_string()))
     } else {
         serde_json::from_value::<JournalEntry>(value).map(|e| RawLine::Entry(e, line.to_string()))
     };
@@ -1114,7 +1113,10 @@ mod tests {
 
         let listed = s.list().unwrap().entries;
         let raw = listed[0].raw.clone();
-        assert_eq!(listed[1].raw, raw, "the two dup entries share identical raw bytes");
+        assert_eq!(
+            listed[1].raw, raw,
+            "the two dup entries share identical raw bytes"
+        );
 
         let removed = s.delete_entry(&raw).unwrap();
         assert_eq!(removed, 2, "byte-identical duplicates are deleted together");
@@ -1164,8 +1166,7 @@ mod tests {
         assert_eq!(never_written.delete_entry("anything").unwrap(), 0);
 
         let s = store(dir.path());
-        s.append_entry(&entry(JournalCategory::Error, "x"))
-            .unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "x")).unwrap();
         assert_eq!(s.delete_entry("not a real raw line").unwrap(), 0);
         // The untouched entry is still there.
         assert_eq!(s.list().unwrap().entries.len(), 1);
@@ -1215,7 +1216,10 @@ mod tests {
             after,
             vec![
                 ("keep-consumed".to_string(), JournalEntryStatus::Consumed),
-                ("keep-unconsumed".to_string(), JournalEntryStatus::Unconsumed),
+                (
+                    "keep-unconsumed".to_string(),
+                    JournalEntryStatus::Unconsumed
+                ),
             ]
         );
         // The marker itself survives the deletes untouched.
@@ -1280,7 +1284,7 @@ mod tests {
         let mut failed_once = false;
         atomic_write_carrying_appends_with(
             &path,
-            "{\"a\":1}\n".to_string(), // the rewrite: "b" deleted
+            "{\"a\":1}\n".to_string(),     // the rewrite: "b" deleted
             std::fs::read(&path).unwrap(), // what the pre-write recheck saw
             |tmp, target| {
                 if !failed_once {

@@ -53,7 +53,10 @@ fn copy_mcp_server_binary() {
         .map(|p| p.to_path_buf());
 
     let Some(project_root) = project_root else {
-        println!("cargo:warning=Could not find project root from OUT_DIR: {}", out_dir);
+        println!(
+            "cargo:warning=Could not find project root from OUT_DIR: {}",
+            out_dir
+        );
         return;
     };
 
@@ -64,9 +67,20 @@ fn copy_mcp_server_binary() {
     // 4. target/{target}/release/maestro-mcp-server (cross-compilation release)
     let candidates = [
         project_root.join("target").join(&profile).join(binary_name),
-        project_root.join("target").join("release").join(binary_name),
-        project_root.join("target").join(&target).join(&profile).join(binary_name),
-        project_root.join("target").join(&target).join("release").join(binary_name),
+        project_root
+            .join("target")
+            .join("release")
+            .join(binary_name),
+        project_root
+            .join("target")
+            .join(&target)
+            .join(&profile)
+            .join(binary_name),
+        project_root
+            .join("target")
+            .join(&target)
+            .join("release")
+            .join(binary_name),
     ];
 
     // Pick the NEWEST existing candidate, not the first: in a debug build,
@@ -81,7 +95,12 @@ fn copy_mcp_server_binary() {
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
         })
-        .unwrap_or_else(|| project_root.join("target").join("release").join(binary_name));
+        .unwrap_or_else(|| {
+            project_root
+                .join("target")
+                .join("release")
+                .join(binary_name)
+        });
 
     if !mcp_source.exists() {
         println!(
@@ -109,7 +128,10 @@ fn copy_mcp_server_binary() {
     if !target.is_empty() {
         let sidecar_dir = project_root.join("src-tauri").join("binaries");
         if let Err(e) = fs::create_dir_all(&sidecar_dir) {
-            println!("cargo:warning=Failed to create sidecar dir {:?}: {}", sidecar_dir, e);
+            println!(
+                "cargo:warning=Failed to create sidecar dir {:?}: {}",
+                sidecar_dir, e
+            );
         } else {
             #[cfg(target_os = "windows")]
             let sidecar_name = format!("maestro-mcp-server-{}.exe", target);
@@ -137,8 +159,12 @@ fn should_copy_file(source: &PathBuf, dest: &PathBuf) -> bool {
         let dest_meta = fs::metadata(dest).ok();
         match (source_meta, dest_meta) {
             (Some(s), Some(d)) => {
-                s.modified().ok().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-                    > d.modified().ok().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                s.modified()
+                    .ok()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                    > d.modified()
+                        .ok()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
             }
             _ => true,
         }

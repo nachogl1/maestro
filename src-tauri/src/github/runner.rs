@@ -138,7 +138,9 @@ impl GitHub {
 
     /// Executes a GraphQL query via `gh api graphql`.
     pub async fn graphql(&self, query: &str) -> Result<serde_json::Value, GitHubError> {
-        let output = self.run(&["api", "graphql", "-f", &format!("query={}", query)]).await?;
+        let output = self
+            .run(&["api", "graphql", "-f", &format!("query={}", query)])
+            .await?;
         let parsed: serde_json::Value = serde_json::from_str(&output.stdout)?;
         Ok(parsed)
     }

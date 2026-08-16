@@ -195,13 +195,7 @@ impl SamuraiResumer {
     pub fn mark_restored(&self, entries: &[ScheduleEntry]) {
         let set = entries
             .iter()
-            .map(|e| {
-                (
-                    e.project_path.clone(),
-                    e.epic.clone(),
-                    e.fire_at.clone(),
-                )
-            })
+            .map(|e| (e.project_path.clone(), e.epic.clone(), e.fire_at.clone()))
             .collect();
         let _ = self.restored.set(set);
     }

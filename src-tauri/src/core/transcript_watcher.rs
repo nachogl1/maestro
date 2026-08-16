@@ -628,10 +628,7 @@ fn read_new_lines(
         Ok(f) => f,
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {
-                log::error!(
-                    "TranscriptWatcher: failed to open {}: {e}",
-                    path.display()
-                );
+                log::error!("TranscriptWatcher: failed to open {}: {e}", path.display());
             }
             return byte_offset;
         }
@@ -787,7 +784,15 @@ mod tests {
         let path = file.path().to_path_buf();
         let (bus, collected) = test_event_bus();
 
-        let new_offset = read_new_lines(1, &path, 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        let new_offset = read_new_lines(
+            1,
+            &path,
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
 
         assert_eq!(new_offset, 0, "empty file should keep offset at 0");
         assert!(
@@ -805,9 +810,20 @@ mod tests {
         let path = file.path().to_path_buf();
         let (bus, collected) = test_event_bus();
 
-        let new_offset = read_new_lines(1, &path, 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        let new_offset = read_new_lines(
+            1,
+            &path,
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
 
-        assert!(new_offset > 0, "offset should advance past the written line");
+        assert!(
+            new_offset > 0,
+            "offset should advance past the written line"
+        );
 
         let events = collected.lock().unwrap();
         assert_eq!(events.len(), 1, "one JSONL line should produce one event");
@@ -853,7 +869,15 @@ mod tests {
         file.flush().expect("flush");
 
         // Second read starts from offset1 and should only pick up the new line.
-        let offset2 = read_new_lines(1, &path, offset1, &bus, &mut task_ids, &mut HashSet::new(), None);
+        let offset2 = read_new_lines(
+            1,
+            &path,
+            offset1,
+            &bus,
+            &mut task_ids,
+            &mut HashSet::new(),
+            None,
+        );
         assert!(
             offset2 > offset1,
             "offset should advance after reading second line"
@@ -889,7 +913,15 @@ mod tests {
         file.flush().unwrap();
 
         let (bus, collected) = test_event_bus();
-        read_new_lines(7, &file.path().to_path_buf(), 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        read_new_lines(
+            7,
+            &file.path().to_path_buf(),
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
 
         let events = collected.lock().unwrap();
         // The Task's result surfaces as SubagentCompleted…
@@ -960,7 +992,10 @@ mod tests {
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("expected ToolUseStarted for Bash, got {:?}", *events));
-            assert!(summary.ends_with("..."), "long input must be truncated: {summary}");
+            assert!(
+                summary.ends_with("..."),
+                "long input must be truncated: {summary}"
+            );
             assert_eq!(summary.chars().count(), 123, "120 chars + '...'");
             assert!(
                 summary.trim_end_matches("...").chars().all(|c| c == 'é'),
@@ -1064,7 +1099,12 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, ClaudeEvent::SubagentCompleted { .. }))
             .collect();
-        assert_eq!(completions.len(), 1, "exactly one completion: {:?}", *events);
+        assert_eq!(
+            completions.len(),
+            1,
+            "exactly one completion: {:?}",
+            *events
+        );
         if let ClaudeEvent::SubagentCompleted {
             agent_id,
             report,
@@ -1139,7 +1179,15 @@ mod tests {
         file.flush().unwrap();
 
         let (bus, collected) = test_event_bus();
-        read_new_lines(9, &file.path().to_path_buf(), 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        read_new_lines(
+            9,
+            &file.path().to_path_buf(),
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
 
         let events = collected.lock().unwrap();
         let completions: Vec<_> = events
@@ -1171,7 +1219,15 @@ mod tests {
         file.flush().unwrap();
 
         let (bus, collected) = test_event_bus();
-        read_new_lines(9, &file.path().to_path_buf(), 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        read_new_lines(
+            9,
+            &file.path().to_path_buf(),
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
 
         let events = collected.lock().unwrap();
         assert!(
@@ -1200,15 +1256,34 @@ mod tests {
         write!(file, "{first_half}").unwrap();
         file.flush().unwrap();
 
-        let offset = read_new_lines(1, &path, 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        let offset = read_new_lines(
+            1,
+            &path,
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
         assert_eq!(offset, 0, "offset must stay at the unfinished line's start");
-        assert!(collected.lock().unwrap().is_empty(), "no events from a fragment");
+        assert!(
+            collected.lock().unwrap().is_empty(),
+            "no events from a fragment"
+        );
 
         // The writer finishes the line.
         writeln!(file, "{second_half}").unwrap();
         file.flush().unwrap();
 
-        let offset = read_new_lines(1, &path, offset, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
+        let offset = read_new_lines(
+            1,
+            &path,
+            offset,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
+        );
         assert!(offset > 0, "offset advances once the line is complete");
         let events = collected.lock().unwrap();
         assert_eq!(events.len(), 1, "the completed line parses exactly once");
@@ -1309,7 +1384,11 @@ mod tests {
         let before = events.len();
         drop(events);
         read_subagent_files(5, &main_path, &bus, &mut tails);
-        assert_eq!(collected.lock().unwrap().len(), before, "no re-emission on a second pass");
+        assert_eq!(
+            collected.lock().unwrap().len(),
+            before,
+            "no re-emission on a second pass"
+        );
     }
 
     /// A subagent transcript whose meta hasn't been written yet is skipped —
@@ -1318,7 +1397,11 @@ mod tests {
     fn test_subagent_file_without_meta_is_retried_next_pass() {
         let dir = tempfile::tempdir().unwrap();
         let main_path = write_nested_fixture(dir.path());
-        let meta_path = dir.path().join("t").join("subagents").join("agent-a1.meta.json");
+        let meta_path = dir
+            .path()
+            .join("t")
+            .join("subagents")
+            .join("agent-a1.meta.json");
         let meta = std::fs::read_to_string(&meta_path).unwrap();
         std::fs::remove_file(&meta_path).unwrap();
 
@@ -1329,7 +1412,10 @@ mod tests {
             collected.lock().unwrap().is_empty(),
             "without its meta the file's owner is unknown; nothing may be emitted"
         );
-        assert!(tails.is_empty(), "the file is not tracked until its meta is readable");
+        assert!(
+            tails.is_empty(),
+            "the file is not tracked until its meta is readable"
+        );
 
         std::fs::write(&meta_path, meta).unwrap();
         read_subagent_files(5, &main_path, &bus, &mut tails);
@@ -1368,11 +1454,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(250)).await;
             {
                 let events = captured.lock().unwrap();
-                if events.iter().any(|e| matches!(
-                    e,
-                    ClaudeEvent::SubagentSpawned { agent_id, parent_agent_id: Some(parent), .. }
-                        if agent_id == "toolu_B" && parent == "toolu_A"
-                )) {
+                if events.iter().any(|e| {
+                    matches!(
+                        e,
+                        ClaudeEvent::SubagentSpawned { agent_id, parent_agent_id: Some(parent), .. }
+                            if agent_id == "toolu_B" && parent == "toolu_A"
+                    )
+                }) {
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {
@@ -1431,10 +1519,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
             {
                 let events = captured.lock().unwrap();
-                if events.iter().any(|e| matches!(
-                    e,
-                    ClaudeEvent::SubagentSpawned { agent_id, .. } if agent_id == "toolu_S"
-                )) {
+                if events.iter().any(|e| {
+                    matches!(
+                        e,
+                        ClaudeEvent::SubagentSpawned { agent_id, .. } if agent_id == "toolu_S"
+                    )
+                }) {
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {
@@ -1485,12 +1575,17 @@ mod tests {
         let path = PathBuf::from("/tmp/nonexistent_transcript_test_file_12345.jsonl");
         let (bus, collected) = test_event_bus();
 
-        let new_offset = read_new_lines(1, &path, 0, &bus, &mut HashSet::new(), &mut HashSet::new(), None);
-
-        assert_eq!(
-            new_offset, 0,
-            "nonexistent file should return offset 0"
+        let new_offset = read_new_lines(
+            1,
+            &path,
+            0,
+            &bus,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            None,
         );
+
+        assert_eq!(new_offset, 0, "nonexistent file should return offset 0");
         assert!(
             collected.lock().unwrap().is_empty(),
             "nonexistent file should produce no events"
@@ -1563,18 +1658,17 @@ mod tests {
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
             let events = captured.lock().unwrap();
-            let has_file_edited = events.iter().any(|e| matches!(
-                e,
-                ClaudeEvent::FileEdited { file_path, .. } if file_path == "/src/main.rs"
-            ));
+            let has_file_edited = events.iter().any(|e| {
+                matches!(
+                    e,
+                    ClaudeEvent::FileEdited { file_path, .. } if file_path == "/src/main.rs"
+                )
+            });
             if has_file_edited {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "Timed out waiting for FileEdited event. Got {:?}",
-                    *events
-                );
+                panic!("Timed out waiting for FileEdited event. Got {:?}", *events);
             }
         }
 
@@ -1628,7 +1722,11 @@ mod tests {
 
         watcher.start_watching(1, path_a.clone());
         watcher.start_watching(2, path_b.clone());
-        assert_eq!(watcher.dir_watchers.lock().unwrap().len(), 1, "one watch for the directory");
+        assert_eq!(
+            watcher.dir_watchers.lock().unwrap().len(),
+            1,
+            "one watch for the directory"
+        );
 
         // Session 1 stops; session 2 must keep receiving.
         watcher.stop_watching(1);
@@ -1640,7 +1738,10 @@ mod tests {
 
         {
             let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"sibling lives"}]},"uuid":"msg-b1","timestamp":"2026-02-24T10:00:00Z"}"#;
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path_b)
+                .unwrap();
             writeln!(f, "{}", line).unwrap();
             f.flush().unwrap();
         }
@@ -1650,10 +1751,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(250)).await;
             {
                 let events = captured.lock().unwrap();
-                if events.iter().any(|e| matches!(
-                    e,
-                    ClaudeEvent::UserMessage { text, .. } if text == "sibling lives"
-                )) {
+                if events.iter().any(|e| {
+                    matches!(
+                        e,
+                        ClaudeEvent::UserMessage { text, .. } if text == "sibling lives"
+                    )
+                }) {
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {
@@ -1781,10 +1884,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(250)).await;
             {
                 let events = captured.lock().unwrap();
-                if events.iter().any(|e| matches!(
-                    e,
-                    ClaudeEvent::UserMessage { text, .. } if text == "after clear"
-                )) {
+                if events.iter().any(|e| {
+                    matches!(
+                        e,
+                        ClaudeEvent::UserMessage { text, .. } if text == "after clear"
+                    )
+                }) {
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {

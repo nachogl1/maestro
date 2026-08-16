@@ -312,8 +312,8 @@ pub async fn delete_skill(skill_path: String) -> Result<(), String> {
         .map_err(|e| format!("Invalid skill path '{}': {}", skill_path.display(), e))?;
 
     // Get the user's home directory
-    let base_dirs = BaseDirs::new()
-        .ok_or_else(|| "Could not determine home directory".to_string())?;
+    let base_dirs =
+        BaseDirs::new().ok_or_else(|| "Could not determine home directory".to_string())?;
     let home_dir = base_dirs.home_dir();
 
     // Build allowed paths
@@ -324,7 +324,8 @@ pub async fn delete_skill(skill_path: String) -> Result<(), String> {
 
     // Check if it's a project skill (path contains .claude/skills/)
     let path_str = canonical_path.to_string_lossy();
-    let is_project_skill = path_str.contains("/.claude/skills/") || path_str.contains("\\.claude\\skills\\");
+    let is_project_skill =
+        path_str.contains("/.claude/skills/") || path_str.contains("\\.claude\\skills\\");
 
     if !is_personal_skill && !is_project_skill {
         return Err(format!(
@@ -369,8 +370,8 @@ pub async fn delete_plugin(plugin_path: String) -> Result<(), String> {
         .map_err(|e| format!("Invalid plugin path '{}': {}", plugin_path.display(), e))?;
 
     // Get the user's home directory
-    let base_dirs = BaseDirs::new()
-        .ok_or_else(|| "Could not determine home directory".to_string())?;
+    let base_dirs =
+        BaseDirs::new().ok_or_else(|| "Could not determine home directory".to_string())?;
     let home_dir = base_dirs.home_dir();
 
     // Build allowed paths
@@ -381,7 +382,8 @@ pub async fn delete_plugin(plugin_path: String) -> Result<(), String> {
 
     // Check if it's a project plugin (path contains .claude/plugins/)
     let path_str = canonical_path.to_string_lossy();
-    let is_project_plugin = path_str.contains("/.claude/plugins/") || path_str.contains("\\.claude\\plugins\\");
+    let is_project_plugin =
+        path_str.contains("/.claude/plugins/") || path_str.contains("\\.claude\\plugins\\");
 
     if !is_personal_plugin && !is_project_plugin {
         return Err(format!(

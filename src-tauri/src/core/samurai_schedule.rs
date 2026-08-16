@@ -590,7 +590,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let (cb, _) = collector();
         {
-            let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb.clone(), None);
+            let (schedule, _task) =
+                SamuraiSchedule::new(dir.path().to_path_buf(), cb.clone(), None);
             schedule
                 .arm(entry("C:/git/alpha", "#37", &in_one_hour()))
                 .unwrap();
@@ -868,8 +869,7 @@ mod tests {
         let on_change: ScheduleChangedCallback = Arc::new(move |entries| {
             changes_rec.lock().unwrap().push(entries.to_vec());
         });
-        let (schedule, _task) =
-            SamuraiSchedule::new(dir.path().to_path_buf(), cb, Some(on_change));
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, Some(on_change));
 
         schedule
             .arm(entry("C:/git/alpha", "#37", "2020-01-01T00:00:00+00:00"))
@@ -878,7 +878,11 @@ mod tests {
             .arm(entry("C:/git/alpha", "#38", &in_one_hour()))
             .unwrap();
         assert_eq!(changes.lock().unwrap().len(), 2);
-        assert_eq!(changes.lock().unwrap()[1].len(), 2, "full list, not a delta");
+        assert_eq!(
+            changes.lock().unwrap()[1].len(),
+            2,
+            "full list, not a delta"
+        );
 
         assert!(schedule.cancel("C:/git/alpha", "#38").unwrap());
         assert_eq!(changes.lock().unwrap().len(), 3);

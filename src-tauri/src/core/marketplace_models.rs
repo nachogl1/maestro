@@ -300,12 +300,17 @@ impl CatalogPlugin {
     ///
     /// The `marketplace_repo_url` is used to construct the full plugin URL
     /// when only a relative `source` path is provided.
-    pub fn into_marketplace_plugin(self, marketplace_id: &str, marketplace_repo_url: &str) -> MarketplacePlugin {
+    pub fn into_marketplace_plugin(
+        self,
+        marketplace_id: &str,
+        marketplace_repo_url: &str,
+    ) -> MarketplacePlugin {
         // Use explicit id or fall back to name
         let plugin_id = self.id.unwrap_or_else(|| self.name.clone());
 
         // Extract author name from either simple string or detailed object
-        let author_name = self.author
+        let author_name = self
+            .author
             .as_ref()
             .map(|a| a.name().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
@@ -320,7 +325,10 @@ impl CatalogPlugin {
             // Plugin is within the marketplace repo (monorepo pattern)
             // Store the base repo URL and the relative source path separately
             let path = source.trim_start_matches("./").to_string();
-            (Some(marketplace_repo_url.trim_end_matches('/').to_string()), Some(path))
+            (
+                Some(marketplace_repo_url.trim_end_matches('/').to_string()),
+                Some(path),
+            )
         } else {
             (None, None)
         };
@@ -332,7 +340,11 @@ impl CatalogPlugin {
             version: self.version.unwrap_or_else(|| "0.0.0".to_string()),
             author: author_name,
             category: parse_category(&self.category),
-            types: self.types.iter().filter_map(|t| parse_plugin_type(t)).collect(),
+            types: self
+                .types
+                .iter()
+                .filter_map(|t| parse_plugin_type(t))
+                .collect(),
             download_url: self.download_url,
             repository_url,
             source_path,

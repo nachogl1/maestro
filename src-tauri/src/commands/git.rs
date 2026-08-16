@@ -81,12 +81,8 @@ pub async fn git_worktree_add(
     validate_repo_path(&repo_path)?;
     let git = Git::new(&repo_path);
     let wt_path = PathBuf::from(&path);
-    git.worktree_add(
-        &wt_path,
-        new_branch.as_deref(),
-        checkout_ref.as_deref(),
-    )
-    .await
+    git.worktree_add(&wt_path, new_branch.as_deref(), checkout_ref.as_deref())
+        .await
 }
 
 /// Exposes `Git::worktree_remove` to the frontend.
@@ -126,9 +122,7 @@ pub async fn git_worktree_status(
 /// Returns the [`WorktreeStatus`] for every worktree of `repo_path`. Bad
 /// worktrees are skipped server-side rather than failing the whole call.
 #[tauri::command]
-pub async fn git_worktrees_status(
-    repo_path: String,
-) -> Result<Vec<WorktreeStatus>, GitError> {
+pub async fn git_worktrees_status(repo_path: String) -> Result<Vec<WorktreeStatus>, GitError> {
     validate_repo_path(&repo_path)?;
     let git = Git::new(&repo_path);
     git.all_worktrees_status().await
@@ -153,10 +147,7 @@ pub async fn git_discard_file(
 ///
 /// Deletes an untracked file or directory from `worktree_path`. Irreversible.
 #[tauri::command]
-pub async fn git_remove_file(
-    worktree_path: String,
-    path: String,
-) -> Result<(), GitError> {
+pub async fn git_remove_file(worktree_path: String, path: String) -> Result<(), GitError> {
     validate_repo_path(&worktree_path)?;
     let git = Git::new(&worktree_path);
     git.remove_file(&path).await
@@ -219,7 +210,8 @@ pub async fn git_create_branch(
 ) -> Result<(), GitError> {
     validate_repo_path(&repo_path)?;
     let git = Git::new(&repo_path);
-    git.create_branch(&branch_name, start_point.as_deref()).await
+    git.create_branch(&branch_name, start_point.as_deref())
+        .await
 }
 
 /// Deletes a local branch. `force` uses `-D` (delete even if unmerged).
@@ -301,11 +293,7 @@ pub async fn git_list_remotes(repo_path: String) -> Result<Vec<RemoteInfo>, GitE
 
 /// Adds a new remote with the given name and URL.
 #[tauri::command]
-pub async fn git_add_remote(
-    repo_path: String,
-    name: String,
-    url: String,
-) -> Result<(), GitError> {
+pub async fn git_add_remote(repo_path: String, name: String, url: String) -> Result<(), GitError> {
     validate_repo_path(&repo_path)?;
     let git = Git::new(&repo_path);
     git.add_remote(&name, &url).await
@@ -477,13 +465,11 @@ fn detect_repos_recursive(
 
             // Get primary remote URL (prefer "origin", fall back to first remote)
             let remote_url = match remotes {
-                Ok(remotes) => {
-                    remotes
-                        .iter()
-                        .find(|r| r.name == "origin")
-                        .or_else(|| remotes.first())
-                        .map(|r| r.url.clone())
-                }
+                Ok(remotes) => remotes
+                    .iter()
+                    .find(|r| r.name == "origin")
+                    .or_else(|| remotes.first())
+                    .map(|r| r.url.clone()),
                 Err(_) => None,
             };
 

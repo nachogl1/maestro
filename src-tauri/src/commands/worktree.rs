@@ -42,7 +42,14 @@ pub async fn prepare_session_worktree(
     worktree_base_path: Option<String>,
     force_new: Option<bool>,
 ) -> Result<WorktreePreparationResult, String> {
-    prepare_worktree_inner(&worktree_manager, project_path, branch, worktree_base_path, force_new.unwrap_or(false)).await
+    prepare_worktree_inner(
+        &worktree_manager,
+        project_path,
+        branch,
+        worktree_base_path,
+        force_new.unwrap_or(false),
+    )
+    .await
 }
 
 /// Inner implementation extracted from the Tauri command for testability.
@@ -145,8 +152,8 @@ pub(crate) async fn prepare_worktree_inner(
                     // Only adopt worktrees under the Maestro-managed base: a
                     // hand-made worktree adopted here would be force-deleted
                     // (uncommitted work included) on session close.
-                    let wt_canonical = std::fs::canonicalize(&wt.path)
-                        .unwrap_or_else(|_| PathBuf::from(&wt.path));
+                    let wt_canonical =
+                        std::fs::canonicalize(&wt.path).unwrap_or_else(|_| PathBuf::from(&wt.path));
                     if !wt_canonical.starts_with(&base) {
                         continue;
                     }
@@ -198,9 +205,13 @@ pub(crate) async fn prepare_worktree_inner(
     // branch_in_main: the branch is currently checked out in the main repo, use --force.
     let base_override = worktree_base_path.as_deref().map(Path::new);
     let create_result = if force_new {
-        worktree_manager.create_with_base_new(&local_branch, &repo_path, base_override).await
+        worktree_manager
+            .create_with_base_new(&local_branch, &repo_path, base_override)
+            .await
     } else {
-        worktree_manager.create_with_base(&local_branch, &repo_path, base_override, branch_in_main).await
+        worktree_manager
+            .create_with_base(&local_branch, &repo_path, base_override, branch_in_main)
+            .await
     };
     match create_result {
         Ok(wt_path) => {
@@ -243,7 +254,13 @@ pub async fn cleanup_session_worktree(
     worktree_path: String,
     worktree_base_path: Option<String>,
 ) -> Result<bool, String> {
-    cleanup_worktree_inner(&worktree_manager, project_path, worktree_path, worktree_base_path).await
+    cleanup_worktree_inner(
+        &worktree_manager,
+        project_path,
+        worktree_path,
+        worktree_base_path,
+    )
+    .await
 }
 
 /// Inner implementation for cleanup, extracted for testability.
@@ -388,14 +405,18 @@ async fn ensure_local_branch(
     branches: &[BranchInfo],
 ) -> Result<(), String> {
     // Check if the local branch already exists
-    let local_exists = branches.iter().any(|b| !b.is_remote && b.name == local_branch);
+    let local_exists = branches
+        .iter()
+        .any(|b| !b.is_remote && b.name == local_branch);
     if local_exists {
         return Ok(());
     }
 
     // Check if there's a remote ref we should track
     let is_remote_ref = original_branch.contains('/');
-    let remote_exists = branches.iter().any(|b| b.is_remote && b.name == original_branch);
+    let remote_exists = branches
+        .iter()
+        .any(|b| b.is_remote && b.name == original_branch);
 
     if is_remote_ref && remote_exists {
         // Create a local tracking branch from the remote ref
@@ -442,7 +463,9 @@ mod tests {
         let git = Git::new(&path);
 
         git.run(&["init"]).await.unwrap();
-        git.run(&["config", "user.email", "test@test.com"]).await.unwrap();
+        git.run(&["config", "user.email", "test@test.com"])
+            .await
+            .unwrap();
         git.run(&["config", "user.name", "Test"]).await.unwrap();
 
         // Create initial commit
@@ -474,13 +497,19 @@ mod tests {
     fn test_resolve_local_branch_name_local() {
         let branches = vec![local_branch("main"), local_branch("feature-x")];
         assert_eq!(resolve_local_branch_name("main", &branches), "main");
-        assert_eq!(resolve_local_branch_name("feature-x", &branches), "feature-x");
+        assert_eq!(
+            resolve_local_branch_name("feature-x", &branches),
+            "feature-x"
+        );
     }
 
     #[test]
     fn test_resolve_local_branch_name_remote() {
         let branches = vec![local_branch("main")];
-        assert_eq!(resolve_local_branch_name("origin/feature-x", &branches), "feature-x");
+        assert_eq!(
+            resolve_local_branch_name("origin/feature-x", &branches),
+            "feature-x"
+        );
         assert_eq!(resolve_local_branch_name("origin/main", &branches), "main");
         assert_eq!(
             resolve_local_branch_name("upstream/fix/nested", &branches),
@@ -496,28 +525,44 @@ mod tests {
             local_branch("feature/foo"),
             local_branch("fix/bar/baz"),
         ];
-        assert_eq!(resolve_local_branch_name("feature/foo", &branches), "feature/foo");
-        assert_eq!(resolve_local_branch_name("fix/bar/baz", &branches), "fix/bar/baz");
+        assert_eq!(
+            resolve_local_branch_name("feature/foo", &branches),
+            "feature/foo"
+        );
+        assert_eq!(
+            resolve_local_branch_name("fix/bar/baz", &branches),
+            "fix/bar/baz"
+        );
     }
 
     #[test]
     fn test_resolve_local_branch_name_slash_branch_not_local() {
         // feature/foo does NOT exist locally — treat as remote ref, strip first segment
         let branches = vec![local_branch("main")];
-        assert_eq!(resolve_local_branch_name("origin/feature-x", &branches), "feature-x");
+        assert_eq!(
+            resolve_local_branch_name("origin/feature-x", &branches),
+            "feature-x"
+        );
     }
 
     #[tokio::test]
     async fn test_prepare_no_branch_auto_detects_and_creates_worktree() {
         let (_dir, path) = create_test_repo().await;
         let wm = WorktreeManager::new();
-        let result = prepare_worktree_inner(&wm, path.to_string_lossy().to_string(), None, None, false)
-            .await
-            .unwrap();
+        let result =
+            prepare_worktree_inner(&wm, path.to_string_lossy().to_string(), None, None, false)
+                .await
+                .unwrap();
 
         // Auto-detects current HEAD branch and creates a worktree
-        assert!(result.created, "Should have created a worktree via auto-detection");
-        assert!(result.worktree_path.is_some(), "Should have a worktree path");
+        assert!(
+            result.created,
+            "Should have created a worktree via auto-detection"
+        );
+        assert!(
+            result.worktree_path.is_some(),
+            "Should have a worktree path"
+        );
         assert_ne!(
             result.working_directory,
             path.to_string_lossy().to_string(),
@@ -544,8 +589,14 @@ mod tests {
         .unwrap();
 
         // Empty string treated same as None — auto-detects and creates worktree
-        assert!(result.created, "Should have created a worktree via auto-detection");
-        assert!(result.worktree_path.is_some(), "Should have a worktree path");
+        assert!(
+            result.created,
+            "Should have created a worktree via auto-detection"
+        );
+        assert!(
+            result.worktree_path.is_some(),
+            "Should have a worktree path"
+        );
         assert_ne!(
             result.working_directory,
             path.to_string_lossy().to_string(),
@@ -618,9 +669,10 @@ mod tests {
         // NOT a git repo — current_branch() will fail → fall back gracefully
 
         let wm = WorktreeManager::new();
-        let result = prepare_worktree_inner(&wm, path.to_string_lossy().to_string(), None, None, false)
-            .await
-            .unwrap();
+        let result =
+            prepare_worktree_inner(&wm, path.to_string_lossy().to_string(), None, None, false)
+                .await
+                .unwrap();
 
         assert_eq!(result.working_directory, path.to_string_lossy().to_string());
         assert!(result.worktree_path.is_none());
@@ -722,10 +774,7 @@ mod tests {
 
         assert!(result.created);
         assert!(result.worktree_path.is_some());
-        assert_ne!(
-            result.working_directory,
-            path.to_string_lossy().to_string()
-        );
+        assert_ne!(result.working_directory, path.to_string_lossy().to_string());
 
         // Cleanup
         let wt_path = PathBuf::from(result.worktree_path.unwrap());
@@ -849,7 +898,10 @@ mod tests {
         let current = git.current_branch().await.unwrap();
 
         let fallback = get_fallback_branch(&git, &current).await;
-        assert!(fallback.is_none(), "Single-branch repo should have no fallback");
+        assert!(
+            fallback.is_none(),
+            "Single-branch repo should have no fallback"
+        );
     }
 
     #[tokio::test]
@@ -885,6 +937,9 @@ mod tests {
         .unwrap();
 
         assert!(!result, "unmanaged worktree must not be deleted");
-        assert!(wt_path.exists(), "unmanaged worktree directory must survive");
+        assert!(
+            wt_path.exists(),
+            "unmanaged worktree directory must survive"
+        );
     }
 }

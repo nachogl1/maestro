@@ -95,7 +95,11 @@ pub const ORDER_DEVIATION_KIND: &str = "order_deviation";
 /// probe failure (gh missing, network), which verification treats as "not
 /// confirmed".
 pub type IssueStateProbe = Arc<
-    dyn Fn(String, Option<String>, u64) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
+    dyn Fn(
+            String,
+            Option<String>,
+            u64,
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -115,7 +119,11 @@ pub struct PrProbe {
 /// Probe for the claimed pull request — same seam and arg shape as
 /// [`IssueStateProbe`].
 pub type PrStateProbe = Arc<
-    dyn Fn(String, Option<String>, u64) -> Pin<Box<dyn Future<Output = Result<PrProbe, String>> + Send>>
+    dyn Fn(
+            String,
+            Option<String>,
+            u64,
+        ) -> Pin<Box<dyn Future<Output = Result<PrProbe, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -658,9 +666,11 @@ mod tests {
         assert!(error("issues #1 pr #2 #3").contains("more than one PR number"));
         assert!(error("").contains("no PR number"));
         // A template echoed with placeholders parses as invalid, not a claim.
-        assert!(parse_completion_claim(&declared("issues #<a> #<b> pr #<n>"))
-            .unwrap()
-            .is_err());
+        assert!(
+            parse_completion_claim(&declared("issues #<a> #<b> pr #<n>"))
+                .unwrap()
+                .is_err()
+        );
         // Overflow is an error, not a panic.
         assert!(error("issues #99999999999999999999 pr #1").contains("out of range"));
     }
@@ -804,7 +814,10 @@ mod tests {
         let calls: ProbeCalls = Arc::new(Mutex::new(Vec::new()));
         let issue_calls = calls.clone();
         let issue_state: IssueStateProbe = Arc::new(move |_project, repo_pin, number| {
-            issue_calls.lock().unwrap().push(("issue", number, repo_pin));
+            issue_calls
+                .lock()
+                .unwrap()
+                .push(("issue", number, repo_pin));
             let result = issue_states
                 .get(&number)
                 .cloned()
@@ -1018,10 +1031,7 @@ mod tests {
         // fired by the HUMAN merge, so the declarable end state is the OPEN
         // batch PR whose links cover every still-open claimed issue.
         let h = harness(
-            HashMap::from([
-                (77, Ok("CLOSED".to_string())),
-                (78, Ok("OPEN".to_string())),
-            ]),
+            HashMap::from([(77, Ok("CLOSED".to_string())), (78, Ok("OPEN".to_string()))]),
             HashMap::from([(85, pr_probe("OPEN", &[78]))]),
         );
         launch_epic(&h, 4, "#38", 1);
@@ -1060,10 +1070,7 @@ mod tests {
         // still open was NOT closed by it, even if the (stale) links name
         // it. The run stays ACTIVE with an ALERT.
         let h = harness(
-            HashMap::from([
-                (77, Ok("CLOSED".to_string())),
-                (78, Ok("OPEN".to_string())),
-            ]),
+            HashMap::from([(77, Ok("CLOSED".to_string())), (78, Ok("OPEN".to_string()))]),
             HashMap::from([(85, pr_probe("MERGED", &[78]))]),
         );
         launch_epic(&h, 4, "#38", 1);
@@ -1083,10 +1090,7 @@ mod tests {
     #[tokio::test]
     async fn test_open_issue_fails_verification_and_stays_active() {
         let h = harness(
-            HashMap::from([
-                (77, Ok("CLOSED".to_string())),
-                (78, Ok("OPEN".to_string())),
-            ]),
+            HashMap::from([(77, Ok("CLOSED".to_string())), (78, Ok("OPEN".to_string()))]),
             HashMap::from([(85, pr_probe("OPEN", &[]))]),
         );
         launch_epic(&h, 4, "#38", 2);
@@ -1252,7 +1256,10 @@ mod tests {
         let calls: ProbeCalls = Arc::new(Mutex::new(Vec::new()));
         let issue_calls = calls.clone();
         let issue_state: IssueStateProbe = Arc::new(move |_project, repo_pin, number| {
-            issue_calls.lock().unwrap().push(("issue", number, repo_pin));
+            issue_calls
+                .lock()
+                .unwrap()
+                .push(("issue", number, repo_pin));
             Box::pin(async { Ok("CLOSED".to_string()) })
         });
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1325,8 +1332,10 @@ mod tests {
         h.watcher
             .observe(&reply(4, &format!("<{ORDER_ALERT_TAG}>unclosed")));
         // A session nobody supervises cannot raise the alert.
-        h.watcher
-            .observe(&reply(99, &order_alert("original: 1; proposed: 2; reasoning: x")));
+        h.watcher.observe(&reply(
+            99,
+            &order_alert("original: 1; proposed: 2; reasoning: x"),
+        ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(rows(&h.audit, AuditEventKind::Alert).await.is_empty());

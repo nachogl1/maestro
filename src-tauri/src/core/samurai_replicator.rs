@@ -3973,8 +3973,14 @@ mod tests {
         write_handoff(repo.path(), "epic-9", 3, &head);
         let working_dir = repo.path().to_string_lossy().into_owned();
 
-        h.replicator
-            .spawn_generation("C:/git/proj-sg-match", "epic-9", &working_dir, 4, Some(3), "resume_timer");
+        h.replicator.spawn_generation(
+            "C:/git/proj-sg-match",
+            "epic-9",
+            &working_dir,
+            4,
+            Some(3),
+            "resume_timer",
+        );
         wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
 
         // The spawn event names the fresh generation and its working dir.
@@ -4016,8 +4022,14 @@ mod tests {
         init_repo(repo.path()); // a repo, but NO handoff file for gen 3
         let working_dir = repo.path().to_string_lossy().into_owned();
 
-        h.replicator
-            .spawn_generation("C:/git/proj-sg-rec", "epic-9", &working_dir, 4, Some(3), "resume_timer");
+        h.replicator.spawn_generation(
+            "C:/git/proj-sg-rec",
+            "epic-9",
+            &working_dir,
+            4,
+            Some(3),
+            "resume_timer",
+        );
         wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
 
         let (_, instruction) = h.replicator.pending_view(4).unwrap();
@@ -4048,10 +4060,22 @@ mod tests {
         init_repo(repo.path());
         let working_dir = repo.path().to_string_lossy().into_owned();
 
-        h.replicator
-            .spawn_generation("C:/git/proj-sg-idem", "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        h.replicator
-            .spawn_generation("C:/git/proj-sg-idem", "epic-9", &working_dir, 4, Some(3), "resume_timer");
+        h.replicator.spawn_generation(
+            "C:/git/proj-sg-idem",
+            "epic-9",
+            &working_dir,
+            4,
+            Some(3),
+            "resume_timer",
+        );
+        h.replicator.spawn_generation(
+            "C:/git/proj-sg-idem",
+            "epic-9",
+            &working_dir,
+            4,
+            Some(3),
+            "resume_timer",
+        );
         wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
         // Give the (single) async prep task time to finish emitting.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -4066,8 +4090,14 @@ mod tests {
         // spawn_first_generation (issue #63), never this arm.
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
-        h.replicator
-            .spawn_generation("C:/git/proj-sg-gen1", "epic-9", "C:/tmp/wt", 1, None, "resume_timer");
+        h.replicator.spawn_generation(
+            "C:/git/proj-sg-gen1",
+            "epic-9",
+            "C:/tmp/wt",
+            1,
+            None,
+            "resume_timer",
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(h.replicator.pending_count(1), 0);
         assert!(h.spawns.lock().unwrap().is_empty());
@@ -4416,7 +4446,11 @@ mod tests {
 
         // The write was attempted, but nothing downstream may claim success.
         assert_eq!(*attempts.lock().unwrap(), vec![2]);
-        assert_eq!(h.replicator.delivered_count(), 0, "no watch on a failed write");
+        assert_eq!(
+            h.replicator.delivered_count(),
+            0,
+            "no watch on a failed write"
+        );
         let mut rows = Vec::new();
         for _ in 0..200 {
             rows = h.audit.read(project, None, None).await.unwrap().events;
@@ -4536,7 +4570,10 @@ mod tests {
         let mut rows = Vec::new();
         for _ in 0..200 {
             rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows.iter().any(|r| r.details["kind"] == "submit_unconfirmed") {
+            if rows
+                .iter()
+                .any(|r| r.details["kind"] == "submit_unconfirmed")
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4593,7 +4630,11 @@ mod tests {
             Arc::new(move |_id, _data, outcome| outcome(Err("pty gone".to_string())));
         inject_handoff_via_injector(&h, project, Some(failing));
 
-        assert_eq!(h.replicator.delivered_count(), 0, "no watch on a failed write");
+        assert_eq!(
+            h.replicator.delivered_count(),
+            0,
+            "no watch on a failed write"
+        );
         let mut rows = Vec::new();
         for _ in 0..200 {
             rows = h.audit.read(project, None, None).await.unwrap().events;

@@ -163,7 +163,10 @@ fn emit_fn_from_app_handle(app_handle: AppHandle) -> EmitFn {
 impl StatusServer {
     /// Find and bind to an available port in the given range.
     /// Returns the bound listener to avoid race conditions.
-    async fn find_and_bind_port(range_start: u16, range_end: u16) -> Option<(u16, tokio::net::TcpListener)> {
+    async fn find_and_bind_port(
+        range_start: u16,
+        range_end: u16,
+    ) -> Option<(u16, tokio::net::TcpListener)> {
         for port in range_start..=range_end {
             let addr = format!("127.0.0.1:{}", port);
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -253,8 +256,7 @@ impl StatusServer {
         }
         eprintln!(
             "[STATUS SERVER] Registered session {} for project '{}'",
-            session_id,
-            project_path
+            session_id, project_path
         );
 
         // Check for and flush any buffered status for this session
@@ -292,12 +294,7 @@ impl StatusServer {
 }
 
 /// Map MCP state string to session status string and call the emit function.
-fn emit_status(
-    emit_fn: &EmitFn,
-    session_id: u32,
-    project_path: &str,
-    payload: &StatusRequest,
-) {
+fn emit_status(emit_fn: &EmitFn, session_id: u32, project_path: &str, payload: &StatusRequest) {
     let status = match payload.state.as_str() {
         "idle" => "Idle",
         "working" => "Working",
@@ -334,9 +331,7 @@ async fn handle_status(
 ) -> StatusCode {
     eprintln!(
         "[STATUS] Received: session_id={}, instance_id={}, state={}",
-        payload.session_id,
-        payload.instance_id,
-        payload.state
+        payload.session_id, payload.instance_id, payload.state
     );
 
     // Look up session registration first.
@@ -424,10 +419,7 @@ fn is_within_claude_projects(transcript_path: &str) -> bool {
     // Reject traversal components outright rather than trusting canonicalization
     // (the file may not exist yet).
     let path = Path::new(transcript_path);
-    if path
-        .components()
-        .any(|c| matches!(c, Component::ParentDir))
-    {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return false;
     }
 
@@ -689,7 +681,14 @@ async fn handle_hook_pre_tool(
         // suppressed (the dialog is up — the session IS waiting); a later
         // PreToolUse is a fresh tool start after approval and paints
         // Working as before.
-        let notified = { state.notified_at.read().await.get(&maestro_session_id).copied() };
+        let notified = {
+            state
+                .notified_at
+                .read()
+                .await
+                .get(&maestro_session_id)
+                .copied()
+        };
         if !pre_tool_may_downgrade(notified, Instant::now()) {
             info!(
                 "[HOOK] pre-tool: session {} showed a permission prompt <{:?} ago — keeping NeedsInput (issue #109)",
@@ -1046,7 +1045,12 @@ mod tests {
     }
 
     /// Helper: build a StatusRequest for testing.
-    fn make_status(session_id: u32, instance_id: &str, state: &str, message: &str) -> StatusRequest {
+    fn make_status(
+        session_id: u32,
+        instance_id: &str,
+        state: &str,
+        message: &str,
+    ) -> StatusRequest {
         StatusRequest {
             session_id,
             instance_id: instance_id.to_string(),
@@ -1075,9 +1079,7 @@ mod tests {
         assert!(!is_within_claude_projects("C:/Windows/System32/config"));
         // Even a path nominally under the dir but using traversal is rejected.
         let base = directories::BaseDirs::new().unwrap();
-        let escaped = base
-            .home_dir()
-            .join(".claude/projects/../../secret.jsonl");
+        let escaped = base.home_dir().join(".claude/projects/../../secret.jsonl");
         assert!(!is_within_claude_projects(&escaped.to_string_lossy()));
         // A genuine transcript path is accepted.
         let ok = base.home_dir().join(".claude/projects/enc/abc.jsonl");
@@ -1113,12 +1115,30 @@ mod tests {
             "hook_event_name": "SessionStart",
         });
         // No instance header → 403 for every hook route.
-        assert_eq!(post_hook(addr, "/hook/session-start", None, body.clone()).await, 403);
-        assert_eq!(post_hook(addr, "/hook/session-end", None, body.clone()).await, 403);
-        assert_eq!(post_hook(addr, "/hook/pre-tool", None, body.clone()).await, 403);
-        assert_eq!(post_hook(addr, "/hook/post-tool", None, body.clone()).await, 403);
-        assert_eq!(post_hook(addr, "/hook/notification", None, body.clone()).await, 403);
-        assert_eq!(post_hook(addr, "/hook/user-prompt", None, body.clone()).await, 403);
+        assert_eq!(
+            post_hook(addr, "/hook/session-start", None, body.clone()).await,
+            403
+        );
+        assert_eq!(
+            post_hook(addr, "/hook/session-end", None, body.clone()).await,
+            403
+        );
+        assert_eq!(
+            post_hook(addr, "/hook/pre-tool", None, body.clone()).await,
+            403
+        );
+        assert_eq!(
+            post_hook(addr, "/hook/post-tool", None, body.clone()).await,
+            403
+        );
+        assert_eq!(
+            post_hook(addr, "/hook/notification", None, body.clone()).await,
+            403
+        );
+        assert_eq!(
+            post_hook(addr, "/hook/user-prompt", None, body.clone()).await,
+            403
+        );
         assert_eq!(post_hook(addr, "/hook/stop", None, body).await, 403);
     }
 
@@ -1146,13 +1166,19 @@ mod tests {
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
 
         // post_hook always sends X-Maestro-Session: 1
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
             "hook_event_name": "Stop",
         });
-        assert_eq!(post_hook(addr, "/hook/stop", Some("inst-secret"), body).await, 200);
+        assert_eq!(
+            post_hook(addr, "/hook/stop", Some("inst-secret"), body).await,
+            200
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 1);
@@ -1168,7 +1194,10 @@ mod tests {
     async fn session_start_hook_emits_idle_for_registered_session() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         // Must be inside ~/.claude/projects to pass the confinement check.
         let base = directories::BaseDirs::new().unwrap();
@@ -1195,7 +1224,10 @@ mod tests {
     async fn session_end_hook_emits_session_ended_for_registered_session() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
@@ -1217,7 +1249,10 @@ mod tests {
     async fn pre_tool_hook_emits_working_for_ordinary_tools() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
@@ -1226,7 +1261,10 @@ mod tests {
             "tool_use_id": "tu-1",
             "tool_input": {"command": "ls"},
         });
-        assert_eq!(post_hook(addr, "/hook/pre-tool", Some("inst-secret"), body).await, 200);
+        assert_eq!(
+            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), body).await,
+            200
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 1);
@@ -1239,7 +1277,10 @@ mod tests {
     async fn pre_tool_hook_emits_needs_input_for_ask_user_question() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
@@ -1248,7 +1289,10 @@ mod tests {
             "tool_use_id": "tu-2",
             "tool_input": {"questions": []},
         });
-        assert_eq!(post_hook(addr, "/hook/pre-tool", Some("inst-secret"), body).await, 200);
+        assert_eq!(
+            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), body).await,
+            200
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 1);
@@ -1260,7 +1304,10 @@ mod tests {
     async fn notification_hook_emits_needs_input_with_message_as_prompt() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
@@ -1275,7 +1322,10 @@ mod tests {
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].status, "NeedsInput");
-        assert_eq!(emitted[0].message, "Claude needs your permission to use Bash");
+        assert_eq!(
+            emitted[0].message,
+            "Claude needs your permission to use Bash"
+        );
         assert_eq!(
             emitted[0].needs_input_prompt.as_deref(),
             Some("Claude needs your permission to use Bash")
@@ -1286,7 +1336,10 @@ mod tests {
     async fn notification_hook_defaults_message_when_absent() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
@@ -1307,7 +1360,10 @@ mod tests {
     async fn user_prompt_hook_emits_working() {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         let body = serde_json::json!({
             "session_id": "claude-uuid",
@@ -1335,8 +1391,14 @@ mod tests {
         // Inside the window (strict boundary — exactly 2s still shields):
         // the permission dialog is up, the repaint is suppressed.
         assert!(!pre_tool_may_downgrade(Some(at), at));
-        assert!(!pre_tool_may_downgrade(Some(at), at + Duration::from_secs(1)));
-        assert!(!pre_tool_may_downgrade(Some(at), at + NOTIFICATION_SHIELD_WINDOW));
+        assert!(!pre_tool_may_downgrade(
+            Some(at),
+            at + Duration::from_secs(1)
+        ));
+        assert!(!pre_tool_may_downgrade(
+            Some(at),
+            at + NOTIFICATION_SHIELD_WINDOW
+        ));
         // Past the window: a fresh tool start after approval repaints.
         assert!(pre_tool_may_downgrade(
             Some(at),
@@ -1378,11 +1440,23 @@ mod tests {
             "message": "Claude needs your permission to use Bash",
         });
         assert_eq!(
-            post_hook(addr, "/hook/notification", Some("inst-secret"), notification).await,
+            post_hook(
+                addr,
+                "/hook/notification",
+                Some("inst-secret"),
+                notification
+            )
+            .await,
             200
         );
         assert_eq!(
-            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), bash_pre_tool_body()).await,
+            post_hook(
+                addr,
+                "/hook/pre-tool",
+                Some("inst-secret"),
+                bash_pre_tool_body()
+            )
+            .await,
             200
         );
 
@@ -1410,7 +1484,13 @@ mod tests {
             "message": "Claude needs your permission to use Bash",
         });
         assert_eq!(
-            post_hook(addr, "/hook/notification", Some("inst-secret"), notification).await,
+            post_hook(
+                addr,
+                "/hook/notification",
+                Some("inst-secret"),
+                notification
+            )
+            .await,
             200
         );
         // Age the stamp to 2.5s ago (machine uptime dwarfs 2.5s).
@@ -1420,7 +1500,13 @@ mod tests {
         state.notified_at.write().await.insert(1, aged);
 
         assert_eq!(
-            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), bash_pre_tool_body()).await,
+            post_hook(
+                addr,
+                "/hook/pre-tool",
+                Some("inst-secret"),
+                bash_pre_tool_body()
+            )
+            .await,
             200
         );
 
@@ -1451,7 +1537,10 @@ mod tests {
             "tool_use_id": "tu-2",
             "tool_input": {},
         });
-        assert_eq!(post_hook(addr, "/hook/pre-tool", Some("inst-secret"), body).await, 200);
+        assert_eq!(
+            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), body).await,
+            200
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 1);
@@ -1478,7 +1567,13 @@ mod tests {
             "message": "Claude needs your permission to use Bash",
         });
         assert_eq!(
-            post_hook(addr, "/hook/notification", Some("inst-secret"), notification).await,
+            post_hook(
+                addr,
+                "/hook/notification",
+                Some("inst-secret"),
+                notification
+            )
+            .await,
             200
         );
 
@@ -1496,7 +1591,13 @@ mod tests {
         );
         // Shield cleared: an immediate next PreToolUse paints Working too.
         assert_eq!(
-            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), bash_pre_tool_body()).await,
+            post_hook(
+                addr,
+                "/hook/pre-tool",
+                Some("inst-secret"),
+                bash_pre_tool_body()
+            )
+            .await,
             200
         );
 
@@ -1608,12 +1709,24 @@ mod tests {
         let (addr, projects, _) = start_test_http_server("inst-1", emit_fn).await;
 
         // Register two sessions for different projects
-        projects.write().await.insert(1, "/path/project-a".to_string());
-        projects.write().await.insert(2, "/path/project-b".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project-a".to_string());
+        projects
+            .write()
+            .await
+            .insert(2, "/path/project-b".to_string());
 
         // Send status for each
-        assert_eq!(post_status(addr, &make_status(1, "inst-1", "working", "Building")).await, 200);
-        assert_eq!(post_status(addr, &make_status(2, "inst-1", "idle", "Ready")).await, 200);
+        assert_eq!(
+            post_status(addr, &make_status(1, "inst-1", "working", "Building")).await,
+            200
+        );
+        assert_eq!(
+            post_status(addr, &make_status(2, "inst-1", "idle", "Ready")).await,
+            200
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 2);
@@ -1633,11 +1746,23 @@ mod tests {
         let (addr, projects, _) = start_test_http_server("inst-1", emit_fn).await;
 
         // Two sessions sharing the same project (e.g. worktrees of same repo)
-        projects.write().await.insert(1, "/path/shared-project".to_string());
-        projects.write().await.insert(2, "/path/shared-project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/shared-project".to_string());
+        projects
+            .write()
+            .await
+            .insert(2, "/path/shared-project".to_string());
 
-        assert_eq!(post_status(addr, &make_status(1, "inst-1", "working", "Task A")).await, 200);
-        assert_eq!(post_status(addr, &make_status(2, "inst-1", "idle", "Waiting")).await, 200);
+        assert_eq!(
+            post_status(addr, &make_status(1, "inst-1", "working", "Task A")).await,
+            200
+        );
+        assert_eq!(
+            post_status(addr, &make_status(2, "inst-1", "idle", "Waiting")).await,
+            200
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 2);
@@ -1659,7 +1784,10 @@ mod tests {
         let (emit_fn, events) = test_emit_fn();
         let (addr, projects, _) = start_test_http_server("inst-current", emit_fn).await;
 
-        projects.write().await.insert(1, "/path/project".to_string());
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
 
         // Send with stale instance ID — should succeed because session is registered
         let code = post_status(addr, &make_status(1, "inst-old", "working", "Stale")).await;
@@ -1715,10 +1843,16 @@ mod tests {
         projects.write().await.remove(&1);
 
         // Session 2 should still work
-        assert_eq!(post_status(addr, &make_status(2, "inst-1", "working", "Still here")).await, 200);
+        assert_eq!(
+            post_status(addr, &make_status(2, "inst-1", "working", "Still here")).await,
+            200
+        );
 
         // Session 1 should be buffered (no longer registered)
-        assert_eq!(post_status(addr, &make_status(1, "inst-1", "idle", "Gone")).await, 202);
+        assert_eq!(
+            post_status(addr, &make_status(1, "inst-1", "idle", "Gone")).await,
+            202
+        );
 
         let emitted = events.lock().unwrap();
         assert_eq!(emitted.len(), 1);
@@ -1733,10 +1867,11 @@ mod tests {
         let server = test_server("inst-1", emit_fn);
 
         // Simulate a buffered status (arrived before registration)
-        server.pending_statuses.write().await.insert(
-            7,
-            make_status(7, "inst-1", "idle", "Buffered hello"),
-        );
+        server
+            .pending_statuses
+            .write()
+            .await
+            .insert(7, make_status(7, "inst-1", "idle", "Buffered hello"));
 
         // Register the session — should flush
         server.register_session(7, "/path/project-x").await;
@@ -1774,10 +1909,11 @@ mod tests {
         let server = test_server("inst-1", emit_fn);
 
         // Buffer a status, then register, then unregister
-        server.pending_statuses.write().await.insert(
-            3,
-            make_status(3, "inst-1", "working", "Will be cleaned"),
-        );
+        server
+            .pending_statuses
+            .write()
+            .await
+            .insert(3, make_status(3, "inst-1", "working", "Will be cleaned"));
         server.register_session(3, "/path/project").await;
         server.unregister_session(3).await;
 
@@ -1796,10 +1932,11 @@ mod tests {
         server.register_session(3, "/project/alpha").await;
 
         // Buffer a status for session 4 (not yet registered)
-        server.pending_statuses.write().await.insert(
-            4,
-            make_status(4, "inst-1", "idle", "Waiting"),
-        );
+        server
+            .pending_statuses
+            .write()
+            .await
+            .insert(4, make_status(4, "inst-1", "idle", "Waiting"));
 
         // Unregister session 1 (project alpha)
         server.unregister_session(1).await;
@@ -1838,7 +1975,11 @@ mod tests {
             post_status(addr, &make_status(1, "inst-1", mcp_state, "msg")).await;
             let emitted = events.lock().unwrap();
             let last = emitted.last().unwrap();
-            assert_eq!(last.status, expected_status, "state '{}' should map to '{}'", mcp_state, expected_status);
+            assert_eq!(
+                last.status, expected_status,
+                "state '{}' should map to '{}'",
+                mcp_state, expected_status
+            );
         }
 
         assert_eq!(events.lock().unwrap().len(), 6);

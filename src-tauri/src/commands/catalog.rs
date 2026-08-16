@@ -293,7 +293,9 @@ fn fit_previous_catalog(markdown: &str, budget: usize) -> String {
 /// to the budget. `None` when the project has never been scanned.
 async fn previous_catalog_material(dir: &Path, budget: usize) -> Option<(String, String)> {
     let date = ai_runner::latest_artifact_date(dir, None).await?;
-    let (markdown, _) = ai_runner::load_artifact(dir, &date, ARTIFACT_NOUN).await.ok()??;
+    let (markdown, _) = ai_runner::load_artifact(dir, &date, ARTIFACT_NOUN)
+        .await
+        .ok()??;
     Some((date, fit_previous_catalog(&markdown, budget)))
 }
 
@@ -835,6 +837,9 @@ mod tests {
         let err = load_project_catalog("/tmp/x".to_string(), Some("../../secret".to_string()))
             .await
             .unwrap_err();
-        assert!(err.contains("Invalid catalog date"), "unexpected error: {err}");
+        assert!(
+            err.contains("Invalid catalog date"),
+            "unexpected error: {err}"
+        );
     }
 }

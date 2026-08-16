@@ -482,7 +482,10 @@ impl SamuraiProgress {
         let parked = self
             .supervisor
             .transition(session_id, SupervisorState::ParkRequested)
-            .and_then(|_| self.supervisor.transition(session_id, SupervisorState::Parked));
+            .and_then(|_| {
+                self.supervisor
+                    .transition(session_id, SupervisorState::Parked)
+            });
         match parked {
             Ok(snapshot) => {
                 log::error!(
@@ -635,7 +638,13 @@ mod tests {
     // --- pure decision tables ---
 
     fn alert(kind: &str) -> AuditEvent {
-        AuditEvent::now("epic-1", AuditEventKind::Alert, 1, 1, json!({ "kind": kind }))
+        AuditEvent::now(
+            "epic-1",
+            AuditEventKind::Alert,
+            1,
+            1,
+            json!({ "kind": kind }),
+        )
     }
 
     #[test]
@@ -649,12 +658,12 @@ mod tests {
             json!({ "phase": "requested", "from": "WORKING" }),
         );
         let table = [
-            (park, true),                          // any PARK row
-            (alert("circuit_breaker"), true),      // the breaker's own ALERT
-            (alert("handoff_churn"), true),        // the churn ALERT
-            (alert("ack_timeout"), false),         // injector ALERTs count
-            (alert("illegal_transition"), false),  // rejections count
-            (alert("dead"), false),                // watchdog ALERTs count
+            (park, true),                         // any PARK row
+            (alert("circuit_breaker"), true),     // the breaker's own ALERT
+            (alert("handoff_churn"), true),       // the churn ALERT
+            (alert("ack_timeout"), false),        // injector ALERTs count
+            (alert("illegal_transition"), false), // rejections count
+            (alert("dead"), false),               // watchdog ALERTs count
             (
                 AuditEvent::now("epic-1", AuditEventKind::Spawn, 1, 1, json!({})),
                 false,
@@ -747,10 +756,7 @@ mod tests {
     fn test_park_candidate_table() {
         // Only a WORKING session is parkable; the highest generation wins.
         assert_eq!(park_candidate(&[(1, 1, Working)]), Some(1));
-        assert_eq!(
-            park_candidate(&[(1, 1, Working), (2, 2, Working)]),
-            Some(2)
-        );
+        assert_eq!(park_candidate(&[(1, 1, Working), (2, 2, Working)]), Some(2));
         // Mid-handoff sessions defer (mutual exclusion), as does an
         // already-parking one and an empty list (between generations).
         assert_eq!(park_candidate(&[(1, 1, HandoffRequested)]), None);
@@ -1050,7 +1056,10 @@ mod tests {
         // row (still zero progress) then counted 1 — proving the reset
         // happened, since the pre-trip streak was already past that.
         let (_, count, latched) = h.progress.breaker_view(&project, "epic-m").unwrap();
-        assert!(count <= 1, "a successful trip resets the counter (got {count})");
+        assert!(
+            count <= 1,
+            "a successful trip resets the counter (got {count})"
+        );
         assert!(!latched);
         // Gen-1 went terminal (KILLED): its baseline entry is cleaned up.
         assert!(h.progress.baseline_view(1).is_none());

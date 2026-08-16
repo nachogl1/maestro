@@ -521,7 +521,9 @@ mod tests {
         // Pinned so the hardening survives a refactor: the exact behaviours
         // issue #97 needs the model told about.
         assert!(ARTIFACT_RUN_PREAMBLE.contains("Reply with ONLY"));
-        assert!(ARTIFACT_RUN_PREAMBLE.to_lowercase().contains("do not create, write, or edit any files"));
+        assert!(ARTIFACT_RUN_PREAMBLE
+            .to_lowercase()
+            .contains("do not create, write, or edit any files"));
         assert!(ARTIFACT_RUN_PREAMBLE.contains("Ignore any personal reply-formatting instruction"));
     }
 
@@ -585,13 +587,19 @@ mod tests {
         // Multi-line but missing the consumer's mandated heading — still not
         // the declared shape.
         let wrong_heading = "# Harvest Report\n- some bullet\n- another bullet";
-        assert!(!looks_like_artifact(wrong_heading, Some("## Recurring themes")));
+        assert!(!looks_like_artifact(
+            wrong_heading,
+            Some("## Recurring themes")
+        ));
     }
 
     #[test]
     fn looks_like_artifact_rejects_empty_and_blank_bodies() {
         assert!(!looks_like_artifact("", None));
-        assert!(!looks_like_artifact("   \n  \n", Some("## Recurring themes")));
+        assert!(!looks_like_artifact(
+            "   \n  \n",
+            Some("## Recurring themes")
+        ));
     }
 
     #[test]

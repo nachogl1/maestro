@@ -897,7 +897,11 @@ pub fn successor_ritual_instruction(
 /// `compiled_workflow` (issue #91) is the run's numbered workflow, compiled
 /// by the caller from the graph the launch is snapshotting into the run
 /// config (`samurai_workflow::compile`).
-pub fn launch_instruction(refs: &RunRefs, repo_pin: Option<&str>, compiled_workflow: &str) -> String {
+pub fn launch_instruction(
+    refs: &RunRefs,
+    repo_pin: Option<&str>,
+    compiled_workflow: &str,
+) -> String {
     let has_epics = !refs.epics().is_empty();
     let has_issues = !refs.issues().is_empty();
     let many_epics = refs.epics().len() > 1;
@@ -2211,9 +2215,9 @@ mod tests {
         ));
         assert!(text.contains("say so in your progress comment on the epic"));
         assert!(text.contains("comment progress on the epic's GitHub issue as issues complete"));
-        assert!(text.contains(
-            "CAUTION: Maestro could not determine this repository's origin remote"
-        ));
+        assert!(
+            text.contains("CAUTION: Maestro could not determine this repository's origin remote")
+        );
     }
 
     #[test]

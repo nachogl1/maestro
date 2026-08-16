@@ -1172,10 +1172,8 @@ impl SamuraiInjector {
                         snapshot.session_id,
                         percent.unwrap_or_default(),
                     );
-                    let instruction = samurai_prompts::handoff_instruction(
-                        &snapshot.epic,
-                        snapshot.generation,
-                    );
+                    let instruction =
+                        samurai_prompts::handoff_instruction(&snapshot.epic, snapshot.generation);
                     self.lock_pending().insert(
                         snapshot.session_id,
                         PendingInstruction::new(PendingKind::Handoff, &snapshot, instruction),
@@ -1402,8 +1400,7 @@ impl SamuraiInjector {
     /// a handoff entry can never be live here because the supervisor's
     /// mutual-exclusion guard rejects the PARK_REQUESTED transition first.
     pub fn begin_park(&self, snapshot: &SessionSnapshot) {
-        let instruction =
-            samurai_prompts::park_instruction(&snapshot.epic, snapshot.generation);
+        let instruction = samurai_prompts::park_instruction(&snapshot.epic, snapshot.generation);
         self.lock_pending().insert(
             snapshot.session_id,
             PendingInstruction::new(PendingKind::Park, snapshot, instruction),
@@ -1598,8 +1595,7 @@ impl SamuraiInjector {
         };
         match result {
             Ok(()) => {
-                let (excerpt, total_chars) =
-                    super::samurai_audit::instruction_excerpt(instruction);
+                let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(instruction);
                 audit.append(
                     &project,
                     AuditEvent::now(
@@ -1829,8 +1825,7 @@ impl SamuraiInjector {
                 return; // a validation for this marker is already in flight
             }
             // Same per-round, per-kind discipline as the ACK (finding C).
-            let Some(expected) = expected_written_value(p.kind, p.generation, p.corrective)
-            else {
+            let Some(expected) = expected_written_value(p.kind, p.generation, p.corrective) else {
                 log::warn!(
                     "samurai injector: written marker from session {session_id} for a {} instruction — ignored",
                     p.kind.as_str()
@@ -2271,10 +2266,10 @@ mod tests {
             (HandoffRequested, HandoffRequested, false, 1, true, true), // timed out → retry at idle
             (HandoffRequested, HandoffRequested, false, 1, false, false), // reply w/o marker: hold for timeout
             (HandoffRequested, HandoffRequested, false, 2, false, false), // both attempts spent
-            (HandoffRequested, HandoffRequested, false, 2, true, false), // never a third attempt
-            (HandoffRequested, HandoffRequested, true, 0, false, false), // ACKed before injection
-            (HandoffRequested, HandoffRequested, true, 1, false, false), // ACKed: done here
-            (Working, HandoffRequested, false, 0, false, false),         // not in handoff
+            (HandoffRequested, HandoffRequested, false, 2, true, false),  // never a third attempt
+            (HandoffRequested, HandoffRequested, true, 0, false, false),  // ACKed before injection
+            (HandoffRequested, HandoffRequested, true, 1, false, false),  // ACKed: done here
+            (Working, HandoffRequested, false, 0, false, false),          // not in handoff
             (HandoffWritten, HandoffRequested, false, 0, false, false),
             (Dead, HandoffRequested, false, 1, true, false),
             // Issue #60: the park ladder lives in PARK_REQUESTED …
@@ -2347,7 +2342,15 @@ mod tests {
     fn test_timeout_boundary_is_strict() {
         // "no ACK within N seconds": exactly N is still within.
         assert_eq!(
-            timeout_verdict(false, 1, false, Some(TIMEOUT), WAIT_OK, TIMEOUT, MAX_TURN_WAIT),
+            timeout_verdict(
+                false,
+                1,
+                false,
+                Some(TIMEOUT),
+                WAIT_OK,
+                TIMEOUT,
+                MAX_TURN_WAIT
+            ),
             TimeoutVerdict::Keep
         );
         assert_eq!(
@@ -3369,7 +3372,9 @@ mod tests {
             "<samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
         assert_eq!(
-            injector.pending_detail(1).map(|(_, validating, _)| validating),
+            injector
+                .pending_detail(1)
+                .map(|(_, validating, _)| validating),
             Some(false),
             "a replayed round-1 written marker must not start validation"
         );
@@ -3711,11 +3716,17 @@ mod tests {
 
         // The parker must not count a stuck entry as pending, or a hard park
         // sweep would stay open for the whole length of the long turn.
-        assert!(!injector.has_pending(1), "stuck entry does not block a sweep");
+        assert!(
+            !injector.has_pending(1),
+            "stuck entry does not block a sweep"
+        );
 
         // The long turn finally ends: the instruction goes in after all, and
         // the entry counts as live again.
-        assert!(injector.arm_injection_on_idle(1).is_some(), "late idle delivers");
+        assert!(
+            injector.arm_injection_on_idle(1).is_some(),
+            "late idle delivers"
+        );
         assert_eq!(injector.pending_view(1), Some((1, false, false)));
         assert!(injector.has_pending(1), "live again once injected");
     }
@@ -3764,8 +3775,14 @@ mod tests {
         assert_eq!(alerts[0].details["still_tracked"], true);
 
         // The retry still lands when the idle finally arrives.
-        assert!(!injector.has_pending(1), "stuck entry does not block a sweep");
-        assert!(injector.arm_injection_on_idle(1).is_some(), "late idle delivers");
+        assert!(
+            !injector.has_pending(1),
+            "stuck entry does not block a sweep"
+        );
+        assert!(
+            injector.arm_injection_on_idle(1).is_some(),
+            "late idle delivers"
+        );
         assert_eq!(injector.pending_view(1), Some((2, false, false)));
     }
 
@@ -3853,7 +3870,9 @@ mod tests {
             "<samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
         assert_eq!(
-            injector.pending_detail(1).map(|(_, validating, _)| validating),
+            injector
+                .pending_detail(1)
+                .map(|(_, validating, _)| validating),
             Some(false),
             "a handoff written value must not validate a park"
         );
@@ -3941,7 +3960,10 @@ mod tests {
         // BEFORE the written marker starts the real validation. The map
         // address filters out calls from other tests' injectors.
         injector.observe_hook(&stop_event(1));
-        injector.observe(&assistant_message(1, "<samurai-ack>park gen-2</samurai-ack>"));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>park gen-2</samurai-ack>",
+        ));
         let map_addr = Arc::as_ptr(&injector.pending) as usize;
         let observed: Arc<Mutex<Vec<(bool, bool)>>> = Arc::new(Mutex::new(Vec::new()));
         let observed_rec = observed.clone();
@@ -3974,7 +3996,11 @@ mod tests {
         );
         // The essence of the bug: the parked epic still gets its resume timer.
         let timers = schedule.list();
-        assert_eq!(timers.len(), 1, "the sweep's LAST park must arm its resume timer");
+        assert_eq!(
+            timers.len(),
+            1,
+            "the sweep's LAST park must arm its resume timer"
+        );
         assert_eq!(timers[0].epic, "epic-9");
         assert_eq!(timers[0].reason, "park");
     }
@@ -4011,7 +4037,9 @@ mod tests {
         assert!(data.contains("Park INVALID"));
         assert!(data.contains("WIP is not committed"));
         assert!(data.contains("<samurai-ack>park gen-2 retry</samurai-ack>"));
-        assert!(data.contains("<samurai-handoff-written>gen-2 park retry</samurai-handoff-written>"));
+        assert!(
+            data.contains("<samurai-handoff-written>gen-2 park retry</samurai-handoff-written>")
+        );
 
         // The corrective cycle fails too (repo still dirty) → a single
         // park_invalid ALERT; the session stays in PARK_REQUESTED.
@@ -4212,7 +4240,10 @@ mod tests {
         // there is nothing to clear — cancel the stale entry, send nothing.
         assert!(injector.begin_soft_winddown(&snapshot));
         assert!(!injector.begin_winddown_allclear(&snapshot));
-        assert!(injector.pending_view(1).is_none(), "stale wind-down cancelled");
+        assert!(
+            injector.pending_view(1).is_none(),
+            "stale wind-down cancelled"
+        );
         assert!(injector.arm_injection_on_idle(1).is_none());
     }
 

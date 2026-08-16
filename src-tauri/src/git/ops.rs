@@ -370,7 +370,8 @@ impl Git {
         new_branch: Option<&str>,
         checkout_ref: Option<&str>,
     ) -> Result<WorktreeInfo, GitError> {
-        self.worktree_add_inner(path, new_branch, checkout_ref, false).await
+        self.worktree_add_inner(path, new_branch, checkout_ref, false)
+            .await
     }
 
     pub async fn worktree_add_force(
@@ -378,7 +379,8 @@ impl Git {
         path: &Path,
         checkout_ref: Option<&str>,
     ) -> Result<WorktreeInfo, GitError> {
-        self.worktree_add_inner(path, None, checkout_ref, true).await
+        self.worktree_add_inner(path, None, checkout_ref, true)
+            .await
     }
 
     async fn worktree_add_inner(
@@ -417,7 +419,9 @@ impl Git {
 
         // Read back the created worktree info
         let head_output = self.run_in(path, &["rev-parse", "HEAD"]).await?;
-        let branch_output = self.run_in(path, &["symbolic-ref", "--short", "HEAD"]).await;
+        let branch_output = self
+            .run_in(path, &["symbolic-ref", "--short", "HEAD"])
+            .await;
 
         let branch = match branch_output {
             Ok(o) => Some(o.trimmed().to_string()),
@@ -427,7 +431,10 @@ impl Git {
                 None // Detached HEAD
             }
             Err(e) => {
-                log::warn!("symbolic-ref in worktree {:?} failed unexpectedly: {e}", path);
+                log::warn!(
+                    "symbolic-ref in worktree {:?} failed unexpectedly: {e}",
+                    path
+                );
                 None
             }
         };
@@ -670,7 +677,8 @@ impl Git {
     pub async fn rename_branch(&self, old_name: &str, new_name: &str) -> Result<(), GitError> {
         reject_option_like_ref(old_name)?;
         reject_option_like_ref(new_name)?;
-        self.run(&["branch", "-m", "--", old_name, new_name]).await?;
+        self.run(&["branch", "-m", "--", old_name, new_name])
+            .await?;
         Ok(())
     }
 
@@ -709,9 +717,21 @@ impl Git {
 
             let status_char = parts[0].chars().next().unwrap_or('?');
             let (status, path, old_path) = match status_char {
-                'A' => (FileChangeStatus::Added, parts.get(1).unwrap_or(&"").to_string(), None),
-                'M' => (FileChangeStatus::Modified, parts.get(1).unwrap_or(&"").to_string(), None),
-                'D' => (FileChangeStatus::Deleted, parts.get(1).unwrap_or(&"").to_string(), None),
+                'A' => (
+                    FileChangeStatus::Added,
+                    parts.get(1).unwrap_or(&"").to_string(),
+                    None,
+                ),
+                'M' => (
+                    FileChangeStatus::Modified,
+                    parts.get(1).unwrap_or(&"").to_string(),
+                    None,
+                ),
+                'D' => (
+                    FileChangeStatus::Deleted,
+                    parts.get(1).unwrap_or(&"").to_string(),
+                    None,
+                ),
                 'R' => {
                     // Renamed: R100\told_path\tnew_path
                     let old = parts.get(1).map(|s| s.to_string());
@@ -724,7 +744,11 @@ impl Git {
                     let new = parts.get(2).unwrap_or(&"").to_string();
                     (FileChangeStatus::Copied, new, old)
                 }
-                _ => (FileChangeStatus::Unknown, parts.get(1).unwrap_or(&"").to_string(), None),
+                _ => (
+                    FileChangeStatus::Unknown,
+                    parts.get(1).unwrap_or(&"").to_string(),
+                    None,
+                ),
             };
 
             if !path.is_empty() {
@@ -849,10 +873,7 @@ impl Git {
             .collect();
 
         // Get tags pointing to this commit
-        if let Ok(tag_output) = self
-            .run(&["tag", "--points-at", hash])
-            .await
-        {
+        if let Ok(tag_output) = self.run(&["tag", "--points-at", hash]).await {
             for tag in tag_output.lines() {
                 if !tag.is_empty() {
                     refs.push(format!("tag:{}", tag));
@@ -932,7 +953,10 @@ impl Git {
         }
 
         // Fall back to global
-        match self.run(&["config", "--global", "init.defaultBranch"]).await {
+        match self
+            .run(&["config", "--global", "init.defaultBranch"])
+            .await
+        {
             Ok(output) => Ok(Some(output.trimmed().to_string())),
             Err(GitError::CommandFailed { code: 1, .. }) => Ok(None), // Not set
             Err(e) => Err(e),
@@ -944,7 +968,8 @@ impl Git {
     /// If `global` is true, sets the global config; otherwise, sets repository-local config.
     pub async fn set_default_branch(&self, branch: &str, global: bool) -> Result<(), GitError> {
         let scope = if global { "--global" } else { "--local" };
-        self.run(&["config", scope, "init.defaultBranch", branch]).await?;
+        self.run(&["config", scope, "init.defaultBranch", branch])
+            .await?;
         Ok(())
     }
 
@@ -972,8 +997,10 @@ impl Git {
         let common_dir = std::path::Path::new(common_dir.trimmed());
 
         // Canonicalize both for reliable comparison (handles relative paths)
-        let git_dir_canon = std::fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_path_buf());
-        let common_dir_canon = std::fs::canonicalize(common_dir).unwrap_or_else(|_| common_dir.to_path_buf());
+        let git_dir_canon =
+            std::fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_path_buf());
+        let common_dir_canon =
+            std::fs::canonicalize(common_dir).unwrap_or_else(|_| common_dir.to_path_buf());
 
         Ok(git_dir_canon != common_dir_canon)
     }
@@ -1045,11 +1072,7 @@ impl Git {
 
         // Custom format: hash|short|timestamp|author|summary
         let out = self
-            .run(&[
-                "log",
-                "@{u}..HEAD",
-                "--pretty=format:%H|%h|%at|%an|%s",
-            ])
+            .run(&["log", "@{u}..HEAD", "--pretty=format:%H|%h|%at|%an|%s"])
             .await?;
 
         let mut commits = Vec::new();
@@ -1226,11 +1249,7 @@ impl Git {
     ///   original path is restored too so the rename is fully undone.
     ///
     /// This is irreversible: uncommitted edits to the file are lost.
-    pub async fn discard_file(
-        &self,
-        path: &str,
-        old_path: Option<&str>,
-    ) -> Result<(), GitError> {
+    pub async fn discard_file(&self, path: &str, old_path: Option<&str>) -> Result<(), GitError> {
         // Restore the rename source (if any) so the original file comes back.
         if let Some(old) = old_path {
             if self.path_in_head(old).await {
@@ -1297,7 +1316,11 @@ impl Git {
             old_path: old_path.map(str::to_string),
             is_binary,
             is_untracked: false,
-            diff: if is_binary { String::new() } else { output.stdout },
+            diff: if is_binary {
+                String::new()
+            } else {
+                output.stdout
+            },
             content: None,
         })
     }
@@ -1474,7 +1497,10 @@ mod tests {
         // before reaching git.
         let (_dir, git) = create_test_repo().await;
         let err = git.create_branch("-m", Some("origin/-m")).await;
-        assert!(err.is_err(), "create_branch must reject a dash-prefixed name");
+        assert!(
+            err.is_err(),
+            "create_branch must reject a dash-prefixed name"
+        );
         // The real branch set is unchanged (no rename happened).
         let branches = git.list_branches().await.unwrap();
         assert!(
@@ -1637,9 +1663,13 @@ mod tests {
         // Fabricate a remote-tracking ref and the origin/HEAD symref without
         // needing a real network remote.
         let head = git.run(&["rev-parse", "HEAD"]).await.unwrap();
-        git.run(&["update-ref", "refs/remotes/origin/feature-x", head.stdout.trim()])
-            .await
-            .unwrap();
+        git.run(&[
+            "update-ref",
+            "refs/remotes/origin/feature-x",
+            head.stdout.trim(),
+        ])
+        .await
+        .unwrap();
         git.run(&[
             "symbolic-ref",
             "refs/remotes/origin/HEAD",
@@ -1674,7 +1704,9 @@ mod tests {
         git.create_branch("from-head", None).await.unwrap();
 
         let branches = git.list_branches().await.unwrap();
-        assert!(branches.iter().any(|b| b.name == "from-head" && !b.is_remote));
+        assert!(branches
+            .iter()
+            .any(|b| b.name == "from-head" && !b.is_remote));
     }
 
     #[tokio::test]
@@ -1798,12 +1830,15 @@ mod tests {
 
         let (staged, unstaged, untracked) = git.working_tree_changes().await.unwrap();
 
-        assert!(staged.iter().any(|f| f.path == "staged-new.txt"
-            && f.status == FileStatusKind::Added));
-        assert!(staged.iter().any(|f| f.path == "README.md"
-            && f.status == FileStatusKind::Modified));
-        assert!(unstaged.iter().any(|f| f.path == "README.md"
-            && f.status == FileStatusKind::Modified));
+        assert!(staged
+            .iter()
+            .any(|f| f.path == "staged-new.txt" && f.status == FileStatusKind::Added));
+        assert!(staged
+            .iter()
+            .any(|f| f.path == "README.md" && f.status == FileStatusKind::Modified));
+        assert!(unstaged
+            .iter()
+            .any(|f| f.path == "README.md" && f.status == FileStatusKind::Modified));
         assert_eq!(untracked, vec!["untracked.txt".to_string()]);
     }
 
@@ -1845,7 +1880,9 @@ mod tests {
     #[tokio::test]
     async fn test_working_tree_changes_rename_records_old_path() {
         let (_dir, git) = create_test_repo().await;
-        git.run(&["mv", "README.md", "MOVED README.md"]).await.unwrap();
+        git.run(&["mv", "README.md", "MOVED README.md"])
+            .await
+            .unwrap();
 
         let (staged, _, _) = git.working_tree_changes().await.unwrap();
         let entry = staged

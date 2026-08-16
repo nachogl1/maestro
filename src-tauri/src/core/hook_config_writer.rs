@@ -137,8 +137,7 @@ fn merge_maestro_hooks(config: &mut Value, fresh: Value) {
         match hooks.get_mut(&event) {
             Some(existing) if existing.is_array() => {
                 strip_maestro_entries(existing);
-                if let (Some(arr), Some(new_groups)) =
-                    (existing.as_array_mut(), groups.as_array())
+                if let (Some(arr), Some(new_groups)) = (existing.as_array_mut(), groups.as_array())
                 {
                     arr.extend(new_groups.iter().cloned());
                 }
@@ -298,9 +297,12 @@ mod tests {
     async fn test_write_hooks_config_fresh() {
         let dir = tempdir().unwrap();
 
-        let result =
-            write_session_hooks_config(dir.path(), 3, 9900, "test-instance-abc").await;
-        assert!(result.is_ok(), "write_session_hooks_config failed: {:?}", result.err());
+        let result = write_session_hooks_config(dir.path(), 3, 9900, "test-instance-abc").await;
+        assert!(
+            result.is_ok(),
+            "write_session_hooks_config failed: {:?}",
+            result.err()
+        );
 
         // Verify the file exists
         let settings_path = dir.path().join(".claude/settings.local.json");
@@ -373,8 +375,7 @@ mod tests {
             .unwrap();
 
         // Read back and verify both keys exist
-        let content =
-            std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
+        let content = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
 
         // enabledPlugins should be preserved
@@ -442,8 +443,7 @@ mod tests {
         remove_session_hooks_config(dir.path()).await.unwrap();
 
         // Read back and verify
-        let content =
-            std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
+        let content = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
 
         // hooks should be gone
@@ -564,8 +564,13 @@ mod tests {
             );
         }
         // The surviving entry is the LATEST write's.
-        let command = config["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
-        assert!(command.contains("127.0.0.1:9950"), "stale entry replaced: {command}");
+        let command = config["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(
+            command.contains("127.0.0.1:9950"),
+            "stale entry replaced: {command}"
+        );
         assert!(command.contains("X-Maestro-Session: 2"));
     }
 
@@ -584,8 +589,7 @@ mod tests {
         // SessionStart should NOT have "async"
         let session_start_hook = &hooks["SessionStart"][0]["hooks"][0];
         assert!(
-            session_start_hook.get("async").is_none()
-                || session_start_hook["async"].is_null(),
+            session_start_hook.get("async").is_none() || session_start_hook["async"].is_null(),
             "SessionStart should NOT have async flag, got: {:?}",
             session_start_hook.get("async")
         );
@@ -593,8 +597,7 @@ mod tests {
         // SessionEnd should NOT have "async"
         let session_end_hook = &hooks["SessionEnd"][0]["hooks"][0];
         assert!(
-            session_end_hook.get("async").is_none()
-                || session_end_hook["async"].is_null(),
+            session_end_hook.get("async").is_none() || session_end_hook["async"].is_null(),
             "SessionEnd should NOT have async flag"
         );
 

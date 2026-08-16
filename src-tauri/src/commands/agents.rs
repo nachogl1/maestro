@@ -22,7 +22,10 @@ pub async fn export_agent_run(path: String, content: String) -> Result<(), Strin
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
-    if !matches!(extension.as_deref(), Some("md") | Some("json") | Some("txt")) {
+    if !matches!(
+        extension.as_deref(),
+        Some("md") | Some("json") | Some("txt")
+    ) {
         return Err("Export must be a .md, .json or .txt file".to_string());
     }
 

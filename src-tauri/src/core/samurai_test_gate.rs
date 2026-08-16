@@ -67,9 +67,8 @@ pub struct GateCommandOutput {
 /// The injectable process seam: run `program args…` in `cwd`, blocking,
 /// killing the child once `timeout` expires (review F2), and report the
 /// outcome. Tests inject a recorder; the app injects [`system_runner`].
-pub type GateCommandRunner = Arc<
-    dyn Fn(&Path, &str, &[&str], Duration) -> Result<GateCommandOutput, String> + Send + Sync,
->;
+pub type GateCommandRunner =
+    Arc<dyn Fn(&Path, &str, &[&str], Duration) -> Result<GateCommandOutput, String> + Send + Sync>;
 
 /// The injectable progress sink — lib-side this wraps
 /// `app.emit("samurai-test-gate-event", …)`; tests collect into a Vec.
@@ -306,14 +305,23 @@ fn run_gate(
                     ),
                 );
             }
-            Err(e) => return fail(TestGateFailureKind::Bootstrap, bootstrap_run_error("npm", &e)),
+            Err(e) => {
+                return fail(
+                    TestGateFailureKind::Bootstrap,
+                    bootstrap_run_error("npm", &e),
+                )
+            }
         }
     }
 
     // Bootstrap 2: the mcp-server binary (src-tauri's build.rs copies it;
     // without it the workspace build itself warns/fails on fresh
     // worktrees). Only when the member exists in this repo.
-    if worktree.join("maestro-mcp-server").join("Cargo.toml").is_file() {
+    if worktree
+        .join("maestro-mcp-server")
+        .join("Cargo.toml")
+        .is_file()
+    {
         progress("bootstrap_mcp", "bootstrap: building maestro-mcp-server…");
         match runner(
             &cargo_dir,
@@ -339,14 +347,22 @@ fn run_gate(
                 );
             }
             Err(e) => {
-                return fail(TestGateFailureKind::Bootstrap, bootstrap_run_error("cargo", &e))
+                return fail(
+                    TestGateFailureKind::Bootstrap,
+                    bootstrap_run_error("cargo", &e),
+                )
             }
         }
     }
 
     // The gate itself: the full workspace suite in the epic worktree.
     progress("cargo_test", "cargo test: running the workspace suite…");
-    match runner(&cargo_dir, "cargo", &["test", "--workspace"], CARGO_TEST_TIMEOUT) {
+    match runner(
+        &cargo_dir,
+        "cargo",
+        &["test", "--workspace"],
+        CARGO_TEST_TIMEOUT,
+    ) {
         Ok(out) if out.timed_out => timeout_fail("cargo test --workspace", CARGO_TEST_TIMEOUT),
         Ok(out) if out.success => {
             progress("passed", "test suite green");
@@ -360,7 +376,10 @@ fn run_gate(
                 failure_summary(&out.stdout, &out.stderr)
             ),
         ),
-        Err(e) => fail(TestGateFailureKind::Bootstrap, bootstrap_run_error("cargo", &e)),
+        Err(e) => fail(
+            TestGateFailureKind::Bootstrap,
+            bootstrap_run_error("cargo", &e),
+        ),
     }
 }
 
@@ -390,7 +409,11 @@ fn failure_summary(stdout: &str, stderr: &str) -> String {
         }
     }
     if lines.is_empty() {
-        let source = if stderr.trim().is_empty() { stdout } else { stderr };
+        let source = if stderr.trim().is_empty() {
+            stdout
+        } else {
+            stderr
+        };
         lines = source
             .lines()
             .rev()
@@ -496,7 +519,11 @@ mod tests {
     }
 
     fn steps(sink: &Arc<Mutex<Vec<TestGateProgress>>>) -> Vec<String> {
-        sink.lock().unwrap().iter().map(|p| p.step.clone()).collect()
+        sink.lock()
+            .unwrap()
+            .iter()
+            .map(|p| p.step.clone())
+            .collect()
     }
 
     #[tokio::test]
@@ -511,7 +538,8 @@ mod tests {
         std::fs::write(
             wt.path().join("maestro-mcp-server").join("Cargo.toml"),
             "[package]\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let calls = Arc::new(Mutex::new(Vec::new()));
         let runner = scripted_runner(vec![], calls.clone(), wt.path().to_path_buf());
@@ -545,7 +573,11 @@ mod tests {
         // member — only the suite runs, inside src-tauri.
         let wt = tempdir().unwrap();
         std::fs::create_dir_all(wt.path().join("src-tauri")).unwrap();
-        std::fs::write(wt.path().join("src-tauri").join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(
+            wt.path().join("src-tauri").join("Cargo.toml"),
+            "[package]\n",
+        )
+        .unwrap();
 
         let calls = Arc::new(Mutex::new(Vec::new()));
         let runner = scripted_runner(vec![], calls.clone(), wt.path().to_path_buf());
@@ -601,7 +633,8 @@ mod tests {
         let err = gate.run("C:/git/proj", "#38", wt.path()).await.unwrap_err();
         assert_eq!(err.kind, TestGateFailureKind::RedSuite);
         assert!(
-            err.message.contains("test result: FAILED. 40 passed; 2 failed"),
+            err.message
+                .contains("test result: FAILED. 40 passed; 2 failed"),
             "summary line must surface: {}",
             err.message
         );
@@ -620,7 +653,10 @@ mod tests {
 
         let calls = Arc::new(Mutex::new(Vec::new()));
         let runner = scripted_runner(
-            vec![("npm install", failed_output("", "npm ERR! network timeout\n"))],
+            vec![(
+                "npm install",
+                failed_output("", "npm ERR! network timeout\n"),
+            )],
             calls.clone(),
             wt.path().to_path_buf(),
         );

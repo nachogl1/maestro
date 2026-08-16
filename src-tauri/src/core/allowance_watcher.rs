@@ -729,12 +729,19 @@ mod tests {
         };
 
         // Nothing crossed: nothing to re-hand.
-        assert_eq!(w.latched_hard_event(&with_resets(Some(10.0), None), &cfg()), None);
+        assert_eq!(
+            w.latched_hard_event(&with_resets(Some(10.0), None), &cfg()),
+            None
+        );
 
         // Both hard windows cross (5h also passes its soft line on the way).
         // The LATER reset (7d) wins — resuming at the 5h reset would land
         // straight back in an exhausted weekly.
-        assert_eq!(w.evaluate(&with_resets(Some(91.0), Some(96.0)), &cfg()).len(), 3);
+        assert_eq!(
+            w.evaluate(&with_resets(Some(91.0), Some(96.0)), &cfg())
+                .len(),
+            3
+        );
         let event = w
             .latched_hard_event(&with_resets(Some(91.0), Some(96.0)), &cfg())
             .expect("both latched");
@@ -775,8 +782,13 @@ mod tests {
         );
 
         // Weekly resets too: nothing latched, nothing to re-hand.
-        assert!(w.evaluate(&with_resets(Some(2.0), Some(4.0)), &cfg()).is_empty());
-        assert_eq!(w.latched_hard_event(&with_resets(Some(2.0), Some(4.0)), &cfg()), None);
+        assert!(w
+            .evaluate(&with_resets(Some(2.0), Some(4.0)), &cfg())
+            .is_empty());
+        assert_eq!(
+            w.latched_hard_event(&with_resets(Some(2.0), Some(4.0)), &cfg()),
+            None
+        );
     }
 
     #[test]

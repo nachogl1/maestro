@@ -339,15 +339,8 @@ pub async fn generate_daily_plan(
     // No fixed heading: the plan's own voice rules forbid one (see
     // PLAN_PROMPT_TEMPLATE), so the shared runner's save-time validation
     // falls back to its generic "not a one-line chat reply" check.
-    let markdown = ai_runner::run_and_save(
-        &dir.to_string_lossy(),
-        prompt,
-        &dir,
-        &today,
-        None,
-        NOUN,
-    )
-    .await?;
+    let markdown =
+        ai_runner::run_and_save(&dir.to_string_lossy(), prompt, &dir, &today, None, NOUN).await?;
 
     Ok(DailyPlan {
         date: today,

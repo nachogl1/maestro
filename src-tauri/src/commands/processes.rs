@@ -186,7 +186,9 @@ async fn listening_ports_by_pid() -> HashMap<u32, Vec<u16>> {
         cmd.args(["-nP", "-iTCP", "-sTCP:LISTEN"]);
         cmd.hide_console_window();
         match cmd.output().await {
-            Ok(o) if o.status.success() => parse_lsof_listening(&String::from_utf8_lossy(&o.stdout)),
+            Ok(o) if o.status.success() => {
+                parse_lsof_listening(&String::from_utf8_lossy(&o.stdout))
+            }
             _ => Vec::new(),
         }
     };
@@ -369,8 +371,7 @@ pub async fn list_dev_processes(
         // one place the expensive PEB read is worth it, and scoping it here is
         // what lets the sweep above stay syscall-free.
         if !out.is_empty() {
-            let matched_pids: Vec<Pid> =
-                out.iter().map(|p| Pid::from_u32(p.pid)).collect();
+            let matched_pids: Vec<Pid> = out.iter().map(|p| Pid::from_u32(p.pid)).collect();
             sys.refresh_processes_specifics(
                 // `false`: this pass must not prune the snapshot that
                 // `kill_process_tree`'s ancestry guard later reads.
@@ -399,10 +400,7 @@ pub async fn list_dev_processes(
 /// check uses the last scan snapshot — best-effort, but the UI only offers
 /// kill buttons on watchlist-matched rows anyway.
 #[tauri::command]
-pub async fn kill_process_tree(
-    pid: u32,
-    state: State<'_, ProcessScanState>,
-) -> Result<(), String> {
+pub async fn kill_process_tree(pid: u32, state: State<'_, ProcessScanState>) -> Result<(), String> {
     let own_pid = sysinfo::get_current_pid().map_err(|e| e.to_string())?;
     if pid == own_pid.as_u32() {
         return Err("Refusing to kill Maestro itself".to_string());
@@ -461,7 +459,11 @@ pub async fn kill_process_tree(
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(format!("taskkill failed: {} {}", stdout.trim(), stderr.trim()));
+            return Err(format!(
+                "taskkill failed: {} {}",
+                stdout.trim(),
+                stderr.trim()
+            ));
         }
     }
 
@@ -519,8 +521,7 @@ pub async fn list_docker_containers() -> Result<DockerPs, String> {
         .hide_console_window()
         .kill_on_drop(true);
 
-    let output = match tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output()).await
-    {
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output()).await {
         Ok(Ok(output)) => output,
         // CLI missing, or a hung daemon — treat both as "no Docker here".
         _ => return Ok(unavailable),
@@ -534,8 +535,12 @@ pub async fn list_docker_containers() -> Result<DockerPs, String> {
         .lines()
         .filter_map(|line| {
             let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-            let field =
-                |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let field = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
             let id = field("ID");
             if id.is_empty() {
                 return None;
@@ -572,7 +577,9 @@ pub async fn stop_docker_container(id: String) -> Result<(), String> {
     }
 
     let mut cmd = tokio::process::Command::new("docker");
-    cmd.args(["stop", &id]).hide_console_window().kill_on_drop(true);
+    cmd.args(["stop", &id])
+        .hide_console_window()
+        .kill_on_drop(true);
 
     // `docker stop` waits up to 10s for a graceful shutdown before killing;
     // the outer timeout only covers a truly hung daemon.
@@ -653,7 +660,11 @@ python    999 me      6u  IPv4 0x5e6f      0t0  TCP 127.0.0.1:8000 (LISTEN)
     fn longest_cmdline_match_wins() {
         let wl = list(&["uvicorn", "django"]);
         // Both present: prefer the more specific (longer) entry.
-        let m = match_watchlist("python", "python -m uvicorn django_app.asgi:application", &wl);
+        let m = match_watchlist(
+            "python",
+            "python -m uvicorn django_app.asgi:application",
+            &wl,
+        );
         assert_eq!(m.as_deref(), Some("uvicorn"));
     }
 

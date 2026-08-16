@@ -400,7 +400,7 @@ pub struct DiscussionDetail {
 /// Filter options for listing pull requests.
 #[derive(Debug, Clone, Default)]
 pub struct PullRequestFilter {
-    pub state: Option<String>,  // "open", "closed", "merged", "all"
+    pub state: Option<String>, // "open", "closed", "merged", "all"
     pub limit: Option<u32>,
     pub search: Option<String>,
 }
@@ -408,7 +408,7 @@ pub struct PullRequestFilter {
 /// Filter options for listing issues.
 #[derive(Debug, Clone, Default)]
 pub struct IssueFilter {
-    pub state: Option<String>,  // "open", "closed", "all"
+    pub state: Option<String>, // "open", "closed", "all"
     pub limit: Option<u32>,
     pub search: Option<String>,
 }
@@ -467,13 +467,11 @@ impl GitHub {
                     scopes: vec![],
                 })
             }
-            Err(GitHubError::NotAuthenticated) => {
-                Ok(AuthStatus {
-                    logged_in: false,
-                    username: None,
-                    scopes: vec![],
-                })
-            }
+            Err(GitHubError::NotAuthenticated) => Ok(AuthStatus {
+                logged_in: false,
+                username: None,
+                scopes: vec![],
+            }),
             Err(e) => Err(e),
         }
     }
@@ -576,11 +574,16 @@ impl GitHub {
         branch: &str,
     ) -> Result<Option<BranchPullRequest>, GitHubError> {
         let args = vec![
-            "pr", "list",
-            "--head", branch,
-            "--state", "all",
-            "--limit", "20",
-            "--json", "number,title,state,isDraft,url,updatedAt",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--limit",
+            "20",
+            "--json",
+            "number,title,state,isDraft,url,updatedAt",
         ];
 
         let rows: Vec<BranchPrRow> = self.run_json(&args).await?;
@@ -664,33 +667,37 @@ impl GitHub {
         })?;
 
         // Convert raw comments to Comment struct
-        let comments: Vec<Comment> = response.comments.into_iter().map(|c| {
-            let mut reactions = CommentReactions::default();
-            for rg in &c.reaction_groups {
-                let count = rg.users.total_count;
-                reactions.total_count += count;
-                match rg.content.as_str() {
-                    "THUMBS_UP" => reactions.thumbs_up = count,
-                    "THUMBS_DOWN" => reactions.thumbs_down = count,
-                    "LAUGH" => reactions.laugh = count,
-                    "HOORAY" => reactions.hooray = count,
-                    "CONFUSED" => reactions.confused = count,
-                    "HEART" => reactions.heart = count,
-                    "ROCKET" => reactions.rocket = count,
-                    "EYES" => reactions.eyes = count,
-                    _ => {}
+        let comments: Vec<Comment> = response
+            .comments
+            .into_iter()
+            .map(|c| {
+                let mut reactions = CommentReactions::default();
+                for rg in &c.reaction_groups {
+                    let count = rg.users.total_count;
+                    reactions.total_count += count;
+                    match rg.content.as_str() {
+                        "THUMBS_UP" => reactions.thumbs_up = count,
+                        "THUMBS_DOWN" => reactions.thumbs_down = count,
+                        "LAUGH" => reactions.laugh = count,
+                        "HOORAY" => reactions.hooray = count,
+                        "CONFUSED" => reactions.confused = count,
+                        "HEART" => reactions.heart = count,
+                        "ROCKET" => reactions.rocket = count,
+                        "EYES" => reactions.eyes = count,
+                        _ => {}
+                    }
                 }
-            }
-            Comment {
-                id: c.id,
-                author: c.author,
-                body: c.body,
-                created_at: c.created_at,
-                updated_at: c.updated_at,
-                reactions,
-                is_answer: false,
-            }
-        }).collect();
+                Comment {
+                    id: c.id,
+                    author: c.author,
+                    body: c.body,
+                    created_at: c.created_at,
+                    updated_at: c.updated_at,
+                    reactions,
+                    is_answer: false,
+                }
+            })
+            .collect();
 
         // Re-parse the raw rollup entries to compute the same summary the
         // list payload carries; the raw form is also kept on the detail for
@@ -796,11 +803,16 @@ impl GitHub {
         options: CreatePullRequestOptions,
     ) -> Result<PullRequestInfo, GitHubError> {
         let mut args = vec![
-            "pr", "create",
-            "--title", &options.title,
-            "--body", &options.body,
-            "--base", &options.base,
-            "--head", &options.head,
+            "pr",
+            "create",
+            "--title",
+            &options.title,
+            "--body",
+            &options.body,
+            "--base",
+            &options.base,
+            "--head",
+            &options.head,
         ];
 
         if options.draft {
@@ -872,15 +884,18 @@ impl GitHub {
     /// Adds a comment to a pull request.
     pub async fn comment_pull_request(&self, number: u64, body: &str) -> Result<(), GitHubError> {
         let number_str = number.to_string();
-        self.run(&["pr", "comment", &number_str, "--body", body]).await?;
+        self.run(&["pr", "comment", &number_str, "--body", body])
+            .await?;
         Ok(())
     }
 
     /// Lists issues with optional filtering.
     pub async fn list_issues(&self, filter: IssueFilter) -> Result<Vec<IssueInfo>, GitHubError> {
         let mut args = vec![
-            "issue", "list",
-            "--json", "number,title,state,author,createdAt,updatedAt,url,labels,closedAt",
+            "issue",
+            "list",
+            "--json",
+            "number,title,state,author,createdAt,updatedAt,url,labels,closedAt",
         ];
 
         let state_arg;
@@ -912,8 +927,11 @@ impl GitHub {
 
         // First get the basic issue info with JSON
         let args = vec![
-            "issue", "view", &number_str,
-            "--json", "number,title,body,state,author,createdAt,updatedAt,url,labels,closedAt,comments",
+            "issue",
+            "view",
+            &number_str,
+            "--json",
+            "number,title,body,state,author,createdAt,updatedAt,url,labels,closedAt,comments",
         ];
 
         #[derive(Deserialize)]
@@ -972,33 +990,37 @@ impl GitHub {
         })?;
 
         // Convert raw comments to Comment struct
-        let comments: Vec<Comment> = response.comments.into_iter().map(|c| {
-            let mut reactions = CommentReactions::default();
-            for rg in &c.reaction_groups {
-                let count = rg.users.total_count;
-                reactions.total_count += count;
-                match rg.content.as_str() {
-                    "THUMBS_UP" => reactions.thumbs_up = count,
-                    "THUMBS_DOWN" => reactions.thumbs_down = count,
-                    "LAUGH" => reactions.laugh = count,
-                    "HOORAY" => reactions.hooray = count,
-                    "CONFUSED" => reactions.confused = count,
-                    "HEART" => reactions.heart = count,
-                    "ROCKET" => reactions.rocket = count,
-                    "EYES" => reactions.eyes = count,
-                    _ => {}
+        let comments: Vec<Comment> = response
+            .comments
+            .into_iter()
+            .map(|c| {
+                let mut reactions = CommentReactions::default();
+                for rg in &c.reaction_groups {
+                    let count = rg.users.total_count;
+                    reactions.total_count += count;
+                    match rg.content.as_str() {
+                        "THUMBS_UP" => reactions.thumbs_up = count,
+                        "THUMBS_DOWN" => reactions.thumbs_down = count,
+                        "LAUGH" => reactions.laugh = count,
+                        "HOORAY" => reactions.hooray = count,
+                        "CONFUSED" => reactions.confused = count,
+                        "HEART" => reactions.heart = count,
+                        "ROCKET" => reactions.rocket = count,
+                        "EYES" => reactions.eyes = count,
+                        _ => {}
+                    }
                 }
-            }
-            Comment {
-                id: c.id,
-                author: c.author,
-                body: c.body,
-                created_at: c.created_at,
-                updated_at: c.updated_at,
-                reactions,
-                is_answer: false,
-            }
-        }).collect();
+                Comment {
+                    id: c.id,
+                    author: c.author,
+                    body: c.body,
+                    created_at: c.created_at,
+                    updated_at: c.updated_at,
+                    reactions,
+                    is_answer: false,
+                }
+            })
+            .collect();
 
         Ok(IssueDetail {
             number: response.number,
@@ -1018,7 +1040,8 @@ impl GitHub {
     /// Adds a comment to an issue.
     pub async fn comment_issue(&self, number: u64, body: &str) -> Result<(), GitHubError> {
         let number_str = number.to_string();
-        self.run(&["issue", "comment", &number_str, "--body", body]).await?;
+        self.run(&["issue", "comment", &number_str, "--body", body])
+            .await?;
         Ok(())
     }
 
@@ -1250,33 +1273,38 @@ impl GitHub {
         let response: DiscussionResponse = serde_json::from_value(discussion.clone())?;
 
         // Convert raw comments to Comment struct
-        let comments: Vec<Comment> = response.comments.nodes.into_iter().map(|c| {
-            let mut reactions = CommentReactions::default();
-            for rg in &c.reaction_groups {
-                let count = rg.users.total_count;
-                reactions.total_count += count;
-                match rg.content.as_str() {
-                    "THUMBS_UP" => reactions.thumbs_up = count,
-                    "THUMBS_DOWN" => reactions.thumbs_down = count,
-                    "LAUGH" => reactions.laugh = count,
-                    "HOORAY" => reactions.hooray = count,
-                    "CONFUSED" => reactions.confused = count,
-                    "HEART" => reactions.heart = count,
-                    "ROCKET" => reactions.rocket = count,
-                    "EYES" => reactions.eyes = count,
-                    _ => {}
+        let comments: Vec<Comment> = response
+            .comments
+            .nodes
+            .into_iter()
+            .map(|c| {
+                let mut reactions = CommentReactions::default();
+                for rg in &c.reaction_groups {
+                    let count = rg.users.total_count;
+                    reactions.total_count += count;
+                    match rg.content.as_str() {
+                        "THUMBS_UP" => reactions.thumbs_up = count,
+                        "THUMBS_DOWN" => reactions.thumbs_down = count,
+                        "LAUGH" => reactions.laugh = count,
+                        "HOORAY" => reactions.hooray = count,
+                        "CONFUSED" => reactions.confused = count,
+                        "HEART" => reactions.heart = count,
+                        "ROCKET" => reactions.rocket = count,
+                        "EYES" => reactions.eyes = count,
+                        _ => {}
+                    }
                 }
-            }
-            Comment {
-                id: c.id,
-                author: c.author,
-                body: c.body,
-                created_at: c.created_at,
-                updated_at: c.updated_at,
-                reactions,
-                is_answer: c.is_answer,
-            }
-        }).collect();
+                Comment {
+                    id: c.id,
+                    author: c.author,
+                    body: c.body,
+                    created_at: c.created_at,
+                    updated_at: c.updated_at,
+                    reactions,
+                    is_answer: c.is_answer,
+                }
+            })
+            .collect();
 
         Ok(DiscussionDetail {
             number: response.number,
@@ -1408,7 +1436,13 @@ mod tests {
         );
         assert_eq!(
             pr_completion_args("85", None),
-            vec!["pr", "view", "85", "--json", "state,closingIssuesReferences"]
+            vec![
+                "pr",
+                "view",
+                "85",
+                "--json",
+                "state,closingIssuesReferences"
+            ]
         );
     }
 
