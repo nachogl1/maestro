@@ -946,6 +946,42 @@ pub(crate) enum ScheduledLaunchOutcome {
     Ignored,
 }
 
+/// Fix M2 (issue #131 review): whether launching `epic` in `project` right
+/// now would silently clobber an existing run of the same identity — an
+/// ACTIVE (non-completed) run config, or a pending park-resume timer.
+/// `ScheduleEntry::arm` replaces any earlier entry for the exact same
+/// (project, epic) outright, and a fresh gen-1 spawn overwrites the run
+/// config the same way — fine for a deliberate manual relaunch, but a
+/// SCHEDULED launch runs unattended: nobody is watching to notice a park
+/// timer vanish or an ACTIVE config get overwritten with a fresh gen-1.
+/// Refuse instead of clobbering; matched by slug like every other identity
+/// lookup in this module (`epic_slug`), so "38" and "#38" collide too.
+fn scheduled_launch_collision(
+    run_configs: &RunConfigStore,
+    schedule: &SamuraiSchedule,
+    project: &str,
+    epic: &str,
+) -> Option<String> {
+    if let Some(config) = run_configs.get(project, epic) {
+        if config.status == RunConfigStatus::Active {
+            return Some(format!(
+                "scheduled launch refused: an ACTIVE run already exists for {epic} in this \
+                 project — launching would silently overwrite its config; recover, resume, or \
+                 clean it up first",
+            ));
+        }
+    }
+    if schedule.list().iter().any(|e| {
+        e.reason == "park" && e.project_path == project && epic_slug(&e.epic) == epic_slug(epic)
+    }) {
+        return Some(format!(
+            "scheduled launch refused: {epic} has a pending park-resume timer in this project — \
+             launching would silently cancel it; let it resume, or discard the timer first",
+        ));
+    }
+    None
+}
+
 /// Arms a one-shot scheduled launch (issue #129), extracted from the Tauri
 /// command for testability. The entry's identity is the request's derived
 /// label (issue #128) — the same identity the launch itself will use — so
@@ -954,6 +990,7 @@ pub(crate) enum ScheduledLaunchOutcome {
 /// matches it by slug.
 pub(crate) fn schedule_launch_inner(
     schedule: &SamuraiSchedule,
+    run_configs: &RunConfigStore,
     project: &str,
     text: &str,
     fire_at: &str,
@@ -969,6 +1006,10 @@ pub(crate) fn schedule_launch_inner(
         .map_err(|e| format!("unusable schedule time {fire_at:?}: {e}"))?;
     if fire <= chrono::Utc::now() {
         return Err("the scheduled time is in the past — pick a future day and time".to_string());
+    }
+    if let Some(reason) = scheduled_launch_collision(run_configs, schedule, project, &input.label())
+    {
+        return Err(reason);
     }
     let entry = ScheduleEntry {
         project_path: project.to_string(),
@@ -1000,6 +1041,7 @@ pub(crate) fn schedule_launch_inner(
 #[tauri::command]
 pub fn samurai_schedule_launch(
     schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
     project_path: String,
     text: String,
     fire_at: String,
@@ -1010,6 +1052,7 @@ pub fn samurai_schedule_launch(
     let project = canonical_project_path(&project_path);
     schedule_launch_inner(
         &schedule,
+        &run_configs,
         &project,
         &text,
         &fire_at,
@@ -1050,26 +1093,36 @@ pub(crate) async fn scheduled_launch_fire_inner(
         return ScheduledLaunchOutcome::Ignored;
     };
     let input = LaunchInput::parse(&spec.text);
-    let launched = launch_run_inner(
-        supervisor,
-        schedule,
-        worktrees,
-        run_configs,
-        replicator,
-        audit,
-        in_flight,
-        test_gate,
-        spec.skip_test_gate,
-        preflight,
-        global_config,
-        &entry.project_path,
-        &input,
-        spec.model.clone(),
-        spec.handoff_context_pct,
-        None,
-        worktree_base,
-    )
-    .await;
+    // Fix M2: re-check the same collision `schedule_launch_inner` refused at
+    // arm time — an ACTIVE config or a park timer for this identity may have
+    // appeared in the meantime (a manual launch, a park sweep since this
+    // entry was armed). Firing over either is exactly the unattended clobber
+    // the arm-time refusal exists to prevent.
+    let launched = match scheduled_launch_collision(run_configs, schedule, &entry.project_path, &entry.epic) {
+        Some(reason) => Err(reason),
+        None => {
+            launch_run_inner(
+                supervisor,
+                schedule,
+                worktrees,
+                run_configs,
+                replicator,
+                audit,
+                in_flight,
+                test_gate,
+                spec.skip_test_gate,
+                preflight,
+                global_config,
+                &entry.project_path,
+                &input,
+                spec.model.clone(),
+                spec.handoff_context_pct,
+                None,
+                worktree_base,
+            )
+            .await
+        }
+    };
     let reason = match launched {
         Ok(result) => {
             log::info!(
@@ -3230,7 +3283,17 @@ mod tests {
     /// arm path.
     fn arm_scheduled_launch(h: &CleanupHarness, text: &str) -> ScheduleEntry {
         let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        schedule_launch_inner(&h.schedule, &h.project, text, &fire_at, None, None, true).unwrap()
+        schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            text,
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
     }
 
     /// Drives one scheduled-launch fire through the harness with the given
@@ -3264,6 +3327,7 @@ mod tests {
         let fire_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
         let entry = schedule_launch_inner(
             &h.schedule,
+            &h.run_configs,
             &h.project,
             "work   #7 and #9",
             &fire_at,
@@ -3290,6 +3354,7 @@ mod tests {
         let later = (chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
         schedule_launch_inner(
             &h.schedule,
+            &h.run_configs,
             &h.project,
             "work #7 and #9",
             &later,
@@ -3303,11 +3368,21 @@ mod tests {
         assert_eq!(entries[0].fire_at, later);
 
         // Refusals: empty request, past time, junk time — nothing armed.
-        let err = schedule_launch_inner(&h.schedule, &h.project, "  ", &fire_at, None, None, true)
-            .unwrap_err();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "  ",
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
         assert!(err.contains("scheduled request is empty"), "{err}");
         let err = schedule_launch_inner(
             &h.schedule,
+            &h.run_configs,
             &h.project,
             "#5",
             "2020-01-01T00:00:00+00:00",
@@ -3317,11 +3392,104 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("in the past"), "{err}");
-        let err =
-            schedule_launch_inner(&h.schedule, &h.project, "#5", "tomorrow", None, None, true)
-                .unwrap_err();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "#5",
+            "tomorrow",
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
         assert!(err.contains("unusable schedule time"), "{err}");
         assert_eq!(h.schedule.list().len(), 1, "refusals armed nothing");
+    }
+
+    // --- issue #131 fix M2: scheduling must not silently clobber a park
+    // timer or an ACTIVE run config of the same identity ---
+
+    #[tokio::test]
+    async fn test_schedule_launch_refuses_when_it_would_clobber_an_active_run() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        // An ACTIVE run already exists under the identity "work #38" derives
+        // (issue #38, standalone) — the same label a schedule for the same
+        // text would key its entry with.
+        run_launch(&h, &gate, true, "work #38").await.unwrap();
+
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "work #38",
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("ACTIVE run already exists"), "{err}");
+        assert!(
+            h.schedule.list().is_empty(),
+            "the refused schedule must not arm"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schedule_launch_refuses_when_it_would_clobber_a_park_timer() {
+        let h = cleanup_harness();
+        // A pending park-resume timer for the same identity "work #38"
+        // derives — arming over it would silently cancel the run's resume.
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "issue #38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "work #38",
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("pending park-resume timer"), "{err}");
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1, "only the pre-existing park timer");
+        assert_eq!(entries[0].reason, "park");
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_refuses_a_collision_that_appeared_since_arming() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        // Between arming and firing, a manual launch created an ACTIVE run
+        // under the SAME identity — firing over it would silently overwrite
+        // that config with a fresh gen-1.
+        run_launch(&h, &gate, true, "work #38").await.unwrap();
+        let before = h.run_configs.get(&h.project, "issue #38").unwrap();
+
+        let outcome = fire_scheduled(&h, &gate, &preflight(true, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Retried { attempts: 1 });
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "no second, clobbering spawn");
+        let after = h.run_configs.get(&h.project, "issue #38").unwrap();
+        assert_eq!(before, after, "the existing ACTIVE config is untouched");
     }
 
     #[tokio::test]
