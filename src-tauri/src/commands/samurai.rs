@@ -836,9 +836,18 @@ pub(crate) async fn recover_run_inner(
         ));
     };
     let generation = prior + 1;
+    // Fix L1 (issue #131 review): a dash-variant handoff (`<slug>-gen-N.md`,
+    // the spelling `latest_handoff_generation` already tolerates for
+    // discovery) is a perfectly readable handoff — checking only the
+    // canonical spelling here reported `from_handoff = false` for a run that
+    // has one, misleadingly implying a full reconstruction when the true
+    // resume point was actually readable.
     let from_handoff = worktree
         .join(samurai_prompts::handoff_file_relpath(epic, prior))
-        .exists();
+        .exists()
+        || worktree
+            .join(samurai_prompts::handoff_file_dash_relpath(epic, prior))
+            .exists();
 
     // A pending resume timer is superseded by this manual recovery — left
     // armed it would fire into the recovered run and double-spawn.
@@ -3118,6 +3127,15 @@ mod tests {
         std::fs::write(path, "# Handoff\n").unwrap();
     }
 
+    /// Fix L1: the same fixture as [`write_handoff`], but at the DASH-spelled
+    /// path a deviating orchestrator actually writes (issue #119).
+    fn write_handoff_dash(worktree: &str, epic: &str, generation: u32) {
+        let path =
+            Path::new(worktree).join(samurai_prompts::handoff_file_dash_relpath(epic, generation));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# Handoff\n").unwrap();
+    }
+
     #[tokio::test]
     async fn test_recover_refuses_missing_completed_and_live_runs() {
         let h = cleanup_harness();
@@ -3245,6 +3263,32 @@ mod tests {
         assert_eq!(resume.details["trigger"], "manual_recovery");
         assert_eq!(resume.details["predecessor_generation"], 2);
         assert_eq!(resume.details["branch"], launched.branch);
+    }
+
+    #[tokio::test]
+    async fn test_recover_reports_from_handoff_for_a_dash_variant_handoff() {
+        // Fix L1: a run whose true resume point's handoff exists only as the
+        // dash-spelled variant (issue #119's tolerated deviation) must still
+        // report `from_handoff: true` — checking only the canonical spelling
+        // misreported a perfectly readable handoff as missing.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+
+        write_handoff_dash(&launched.worktree_path, "issue #38", 1);
+
+        let result = recover(&h, "issue #38").await.unwrap();
+        assert_eq!(result.prior_generation, 1);
+        assert!(
+            result.from_handoff,
+            "the dash-variant handoff is readable — this is a resume, not a reconstruction"
+        );
     }
 
     #[tokio::test]

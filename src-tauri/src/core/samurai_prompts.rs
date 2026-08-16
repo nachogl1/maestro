@@ -463,6 +463,19 @@ pub fn handoff_file_relpath(epic: &str, generation: u32) -> String {
     format!(".maestro/handoffs/{}-gen{generation}.md", epic_slug(epic))
 }
 
+/// The DASH-spelled sibling of [`handoff_file_relpath`] —
+/// `.maestro/handoffs/<epic>-gen-<N>.md` — the deviating spelling issue #119
+/// tolerates for DISCOVERY ([`parse_handoff_generation`]). Fix L1 (issue
+/// #131 review): a read that only tries the canonical path treats a
+/// perfectly readable dash-variant handoff as missing, sending a run into
+/// full reconstruction it does not need — callers that read (not just list)
+/// handoff files must fall back to this spelling on a canonical-read miss.
+/// Nothing writes this spelling on purpose; it exists only so a deviating
+/// orchestrator's actual output is still found.
+pub fn handoff_file_dash_relpath(epic: &str, generation: u32) -> String {
+    format!(".maestro/handoffs/{}-gen-{generation}.md", epic_slug(epic))
+}
+
 /// Parses the generation number out of a handoff FILENAME shaped by
 /// [`handoff_file_relpath`] — `<slug>-gen<N>.md` → `Some(N)`. The resume path
 /// (issue #61) scans `.maestro/handoffs/` with this to find the latest
@@ -1368,6 +1381,23 @@ mod tests {
             handoff_file_relpath("Epic 12", 10),
             ".maestro/handoffs/epic-12-gen10.md"
         );
+    }
+
+    #[test]
+    fn test_handoff_file_dash_relpath_shape_and_parses_back() {
+        // Fix L1: the dash spelling a deviating orchestrator actually
+        // writes — distinct from the canonical path, but still parses.
+        assert_eq!(
+            handoff_file_dash_relpath("#37", 2),
+            ".maestro/handoffs/37-gen-2.md"
+        );
+        assert_ne!(
+            handoff_file_dash_relpath("#37", 2),
+            handoff_file_relpath("#37", 2)
+        );
+        let filename = handoff_file_dash_relpath("#37", 2);
+        let filename = filename.rsplit('/').next().unwrap();
+        assert_eq!(parse_handoff_generation(filename), Some(2));
     }
 
     #[test]
