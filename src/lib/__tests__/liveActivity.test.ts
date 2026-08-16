@@ -111,7 +111,7 @@ describe("recentTools (issue #127: activity detail too shallow)", () => {
     );
     const activity = deriveLiveActivity(events);
     expect(activity?.recentTools).toHaveLength(RECENT_TOOLS_MAX);
-    expect(activity?.recentTools.at(-1)?.name).toBe(`Tool${RECENT_TOOLS_MAX + 1}`);
+    expect(activity?.recentTools.slice(-1)[0]?.name).toBe(`Tool${RECENT_TOOLS_MAX + 1}`);
     expect(activity?.recentTools[0]?.name).toBe("Tool2");
   });
 
@@ -168,6 +168,6 @@ describe("boundSnippet", () => {
     const points = Array.from(out);
     expect(points).toHaveLength(SNIPPET_MAX_CHARS + 1);
     expect(points.slice(0, -1).every((p) => p === "😀")).toBe(true);
-    expect(points.at(-1)).toBe("…");
+    expect(points[points.length - 1]).toBe("…");
   });
 });

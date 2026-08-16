@@ -90,7 +90,7 @@ export function deriveLiveActivity(events: readonly ClaudeEvent[]): LiveActivity
   }
 
   const recentTools = toolsNewestFirst.reverse();
-  const lastTool = recentTools.at(-1) ?? null;
+  const lastTool = recentTools[recentTools.length - 1] ?? null;
   if (!lastTool && !lastMessage) return null;
   // Transcript timestamps are ISO-8601 UTC, so lexicographic order is time order.
   const stamps = [lastTool?.timestamp, lastMessage?.timestamp].filter(
