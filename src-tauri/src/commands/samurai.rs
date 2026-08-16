@@ -1103,6 +1103,13 @@ pub(crate) async fn scheduled_launch_fire_inner(
             entry.epic,
             entry.project_path,
         );
+        // Fix M3: `fire_due` leaves this entry held (in flight) instead of
+        // removing it — resolving it is this function's job from here on,
+        // even on this defensive "should never happen" path, or it would
+        // linger in schedule.json forever (held is never auto-due).
+        if let Err(e) = schedule.cancel(&entry.project_path, &entry.epic) {
+            log::error!("samurai scheduled launch: failed to clear the dropped entry: {e}");
+        }
         return ScheduledLaunchOutcome::Ignored;
     };
     let input = LaunchInput::parse(&spec.text);
