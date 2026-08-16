@@ -1353,11 +1353,20 @@ impl SamuraiInjector {
     /// Issue #60: soft wind-down for a WORKING session. Returns `false`
     /// (nothing armed) when the session already has a pending instruction of
     /// any kind — it is already heading somewhere; the caller logs the skip.
+    ///
+    /// Fix L6 (issue #131 review): a pending, un-acked
+    /// [`PendingKind::WinddownAllClear`] left over from an EARLIER episode is
+    /// the one exception — it is superseded outright (mirrors
+    /// [`begin_winddown_allclear`](Self::begin_winddown_allclear) superseding
+    /// a delivered wind-down), so a real new wind-down episode is never
+    /// silently blocked by a stale all-clear the caller has not acked yet.
     pub fn begin_soft_winddown(&self, snapshot: &SessionSnapshot) -> bool {
         {
             let mut pending = self.lock_pending();
-            if pending.contains_key(&snapshot.session_id) {
-                return false;
+            match pending.get(&snapshot.session_id) {
+                Some(p) if p.kind == PendingKind::WinddownAllClear => {}
+                Some(_) => return false,
+                None => {}
             }
             let instruction =
                 samurai_prompts::soft_winddown_instruction(snapshot.generation);
@@ -1425,6 +1434,20 @@ impl SamuraiInjector {
         self.lock_pending()
             .get(&session_id)
             .is_some_and(|p| !p.stuck_alerted)
+    }
+
+    /// Whether a pending entry blocks a NEW soft wind-down (issue #131 fix
+    /// L6): every kind except a [`PendingKind::WinddownAllClear`] — that one
+    /// is stale the moment a real new episode is due, so `begin_soft_winddown`
+    /// supersedes it instead of being blocked by it. Without this, an
+    /// un-acked all-clear left over from a PRIOR episode silently ate every
+    /// wind-down eligibility check for the session until it was acked (or
+    /// timed out), so the session ran full speed through a real wind-down
+    /// episode and then received a stale "resume full throughput".
+    pub(crate) fn blocks_soft_winddown(&self, session_id: u32) -> bool {
+        self.lock_pending()
+            .get(&session_id)
+            .is_some_and(|p| !p.stuck_alerted && p.kind != PendingKind::WinddownAllClear)
     }
 
     /// A session that is idle RIGHT NOW (its last signal was a Stop) never
@@ -4098,6 +4121,51 @@ mod tests {
         assert!(!injector.begin_winddown_allclear(&snapshot));
         assert!(injector.pending_view(1).is_none(), "stale wind-down cancelled");
         assert!(injector.arm_injection_on_idle(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_begin_soft_winddown_supersedes_a_pending_winddown_allclear() {
+        // Fix L6 (issue #131 review): a pending, un-acked all-clear left
+        // over from an EARLIER episode must not block a REAL new wind-down
+        // episode — the stale all-clear is superseded outright, the same
+        // way an all-clear supersedes a delivered wind-down.
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-super2".into(), "epic-9".into(), 2)
+            .unwrap();
+
+        // Episode 1: delivered and acked wind-down, then the all-clear arms
+        // but is never acked — it sits pending, un-acked, stale.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        injector.arm_injection_on_idle(1).expect("winddown delivered");
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-2</samurai-ack>",
+        ));
+        assert!(injector.begin_winddown_allclear(&snapshot));
+        assert!(injector.has_pending(1), "the all-clear is armed, un-acked");
+
+        // Episode 2's real wind-down supersedes the stale all-clear outright
+        // — the next idle injects the NEW wind-down, never the stale
+        // all-clear.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        let data = injector
+            .arm_injection_on_idle(1)
+            .expect("the new wind-down attempt");
+        assert!(data.contains("<samurai-ack>winddown gen-2</samurai-ack>"));
+        assert!(!data.contains("allclear"));
+
+        // Any OTHER pending instruction still refuses a new wind-down
+        // outright — only WinddownAllClear is superseded.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-2</samurai-ack>",
+        ));
+        assert!(injector.pending_view(1).is_none());
+        let parked = supervisor.transition(1, ParkRequested).unwrap();
+        injector.begin_park(&parked);
+        assert!(!injector.begin_soft_winddown(&parked));
     }
 
     #[tokio::test]
