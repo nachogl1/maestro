@@ -46,6 +46,7 @@ import { type ContextDoc, listContextDocs, readContextDoc } from "@/lib/claudemd
 import type { McpConnector, McpCustomServer, McpManagedServer } from "@/lib/mcp";
 import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
+import { isParkEntry } from "@/lib/samurai";
 import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { type SubagentInfo, useAgentStore } from "@/stores/useAgentStore";
@@ -432,7 +433,12 @@ function AgentsSection({
         .filter(
           (p) =>
             p.sessions.length > 0 ||
-            samuraiSchedule.some((e) => samePath(e.project_path, p.tab.projectPath)),
+            // Park timers only: a scheduled launch (issue #129) is a run that
+            // does not exist yet, so it must not keep an empty Agents row
+            // alive with a chip that renders nothing.
+            samuraiSchedule.some(
+              (e) => isParkEntry(e) && samePath(e.project_path, p.tab.projectPath),
+            ),
         ),
     [tabs, sessions, samuraiSchedule],
   );

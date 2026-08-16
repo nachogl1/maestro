@@ -78,6 +78,35 @@ describe("SamuraiScheduleChip (issue #61)", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  // Issue #129's scheduled-launch timers share the schedule list but are NOT
+  // parks: one would paint "parked · resumes 09:00 — work resumes
+  // automatically" on a project that has no run at all, and a held (overdue)
+  // one would count down into the past.
+  it("ignores scheduled-launch timers — they are not parks", () => {
+    useSessionStore.setState({
+      samuraiSchedule: [entry({ reason: "scheduled_launch" })],
+    });
+    const { container } = render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("counts down to a real park while a scheduled launch is also armed", () => {
+    const park = entry({ epic: "#37", fire_at: "2026-08-06T18:00:00+00:00" });
+    // Earlier than the park: an unfiltered chip would count down to THIS.
+    const scheduled = entry({
+      epic: "#99",
+      fire_at: "2026-08-06T13:00:00+00:00",
+      reason: "scheduled_launch",
+    });
+    useSessionStore.setState({ samuraiSchedule: [scheduled, park] });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    const chip = screen.getByText(/^parked · resumes /);
+    expect(chip.textContent).toContain(formatFireDateTime(park.fire_at));
+    expect(chip.getAttribute("title")).not.toContain("#99");
+  });
+
   it("counts down to the EARLIEST epic when several parked", () => {
     const early = entry({ epic: "#38", fire_at: "2026-08-06T13:00:00+00:00" });
     const late = entry({ epic: "#37", fire_at: "2026-08-06T18:00:00+00:00" });

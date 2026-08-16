@@ -108,6 +108,59 @@ import {
 import { TerminalView } from "./TerminalView";
 import { SessionStatusDot, ThinkingIndicator } from "./ThinkingIndicator";
 
+/**
+ * How many parked samurai transcripts one grid keeps mounted (issue #122).
+ *
+ * A parked tile stays MOUNTED — it renders `display: none`, so its
+ * TerminalView and xterm scrollback live on — and since the cap no longer
+ * bounds them (see `occupiedSlotCount`) nothing else reaps them: an overnight
+ * run at 30-minute handoffs would accrue ~48 of them plus a shelf chip each.
+ * The newest few are what anyone actually reads back, so the rest are
+ * disposed (PR #131 review M5).
+ */
+export const MAX_RETAINED_PARKED_SAMURAI_TILES = 3;
+
+/** The parked samurai terminal-state session ids among these slots, oldest
+ *  first — session ids are assigned in launch order and never reused. */
+function parkedSamuraiSessionIds(slots: SessionSlot[]): number[] {
+  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
+  return slots
+    .flatMap((slot) => (slot.sessionId === null ? [] : [slot.sessionId]))
+    .filter((sessionId) => {
+      const info = samuraiBySessionId[sessionId];
+      return (
+        info !== undefined &&
+        SAMURAI_TERMINAL_STATES.has(info.state) &&
+        parkedSessionIds.includes(sessionId)
+      );
+    })
+    .sort((a, b) => a - b);
+}
+
+/**
+ * How many of these slots count against `MAX_SESSIONS`.
+ *
+ * Parked samurai terminal-state tiles (issue #122) are dead weight: the PTY
+ * is gone and only the transcript remains. A long autonomous run leaves one
+ * per generation, so counting them would first drop a successor's launch
+ * AFTER `consume` claimed it (silently stalling the run) and then make the
+ * "+" button a silent no-op for the whole project. Both call sites — the
+ * pending-launch claim and `addSession` — go through here so the exemption
+ * cannot drift apart again (PR #131 review M4/F4).
+ */
+function occupiedSlotCount(slots: SessionSlot[]): number {
+  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
+  return slots.filter((slot) => {
+    if (slot.sessionId === null) return true;
+    const info = samuraiBySessionId[slot.sessionId];
+    return !(
+      info !== undefined &&
+      SAMURAI_TERMINAL_STATES.has(info.state) &&
+      parkedSessionIds.includes(slot.sessionId)
+    );
+  }).length;
+}
+
 /** Stable empty arrays to avoid infinite re-render loops in Zustand selectors. */
 const EMPTY_MCP_SERVERS: McpServerConfig[] = [];
 const EMPTY_SKILLS: SkillConfig[] = [];
@@ -1773,10 +1826,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
    * Adds a new pre-launch slot to the grid.
    */
   const addSession = useCallback(() => {
-    if (slotsRef.current.length >= MAX_SESSIONS) return;
+    if (occupiedSlotCount(slotsRef.current) >= MAX_SESSIONS) return;
     const newSlot = createEmptySlot(mcpServers, skills, plugins);
     setSlots((prev) => {
-      if (prev.length >= MAX_SESSIONS) return prev;
+      if (occupiedSlotCount(prev) >= MAX_SESSIONS) return prev;
       return [...prev, newSlot];
     });
     // Rebuild layout as a clean 2D grid (matching old CSS grid dimensions)
@@ -1841,22 +1894,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       !launchingSlotIdsRef.current.has(current[0].id)
         ? current[0]
         : null;
-    // Parked samurai terminal-state tiles (issue #122) are dead weight: the
-    // PTY is gone and only the transcript remains. A long autonomous run
-    // leaves one per generation, so counting them against the cap would
-    // drop a successor's launch AFTER `consume` claimed it — silently
-    // stalling the run (PR #131 review M4). Exempt them from the count.
-    const sessionState = useSessionStore.getState();
-    const occupiedCount = current.filter((s) => {
-      if (s.sessionId === null) return true;
-      const samuraiInfo = sessionState.samuraiBySessionId[s.sessionId];
-      return !(
-        samuraiInfo !== undefined &&
-        SAMURAI_TERMINAL_STATES.has(samuraiInfo.state) &&
-        sessionState.parkedSessionIds.includes(s.sessionId)
-      );
-    }).length;
-    if (!reusable && occupiedCount >= MAX_SESSIONS) {
+    // Parked samurai terminal-state tiles do not count — see
+    // `occupiedSlotCount`, shared with `addSession`.
+    if (!reusable && occupiedSlotCount(current) >= MAX_SESSIONS) {
       setError(`Cannot resume: maximum of ${MAX_SESSIONS} sessions per project`);
       return;
     }
@@ -1960,7 +2000,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const samuraiAutoParkedSessionIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     for (const slot of slotsRef.current) {
-      if (slot.sessionId === null || parkedSet.has(slot.sessionId)) continue;
+      if (slot.sessionId === null) continue;
       if (samuraiAutoParkedSessionIdsRef.current.has(slot.sessionId)) continue;
       const info = samuraiBySessionId[slot.sessionId];
       if (info && SAMURAI_TERMINAL_STATES.has(info.state)) {
@@ -1971,15 +2011,33 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         // leaving the PTY running. Kill it there so no path can orphan a
         // live agent running with --dangerously-skip-permissions; skip the
         // redundant IPC call for DEAD, whose process is confirmed gone.
+        //
+        // The kill is decided by the SUPERVISOR STATE alone, never by
+        // `parkedSet` (PR #131 review H1): a tile the user already parked
+        // with the P button still has a LIVE PTY — park is CSS-only — so
+        // skipping it there is exactly the case that orphans an agent.
+        // The one-shot ref above is what stops a redundant re-kill.
         if (info.state !== "DEAD") {
           killSession(slot.sessionId).catch(console.error);
         }
-        // parkSession is idempotent and the `parkedSet` guard above stops
-        // this from re-firing for an already-parked session.
-        handlePark(slot.id);
+        // Only the tile move is conditional: parking an already-parked tile
+        // would steal zoom/focus from wherever the user moved them.
+        if (!parkedSet.has(slot.sessionId)) {
+          handlePark(slot.id);
+        }
       }
     }
-  }, [samuraiBySessionId, parkedSet, handlePark]);
+    // Dispose everything past the retention cap, oldest first: a parked tile
+    // is still mounted, so an unbounded run would hoard a TerminalView + xterm
+    // buffer per generation. `keepDirArtifacts` is essential — the worktree,
+    // MCP and hooks config belong to the RUN, which the next generation is
+    // still working in.
+    const retired = parkedSamuraiSessionIds(slotsRef.current);
+    const excess = retired.length - MAX_RETAINED_PARKED_SAMURAI_TILES;
+    for (const sessionId of retired.slice(0, Math.max(0, excess))) {
+      handleKill(sessionId, { keepDirArtifacts: true });
+    }
+  }, [samuraiBySessionId, parkedSet, handlePark, handleKill]);
 
   // Handle zoom toggle for a slot
   const handleToggleZoom = useCallback(

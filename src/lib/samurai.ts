@@ -82,6 +82,20 @@ export interface SamuraiAuditReadResult {
 }
 
 /**
+ * The one non-park timer reason (issue #129) — see
+ * `SamuraiScheduleEntry.reason`. Every park-facing view filters it out:
+ * a scheduled launch is a run that does not exist yet, so treating it as a
+ * park badges an empty project "parked · resumes …", and a held (overdue)
+ * one counts down into the past.
+ */
+export const SCHEDULED_LAUNCH_REASON = "scheduled_launch";
+
+/** A park (resume) timer, as opposed to a scheduled launch. */
+export function isParkEntry(entry: SamuraiScheduleEntry): boolean {
+  return entry.reason !== SCHEDULED_LAUNCH_REASON;
+}
+
+/**
  * One pending resume timer — mirrors the Rust `ScheduleEntry`
  * (`core/samurai_schedule.rs`). Also the element type of the
  * `samurai-schedule-event` payload, which carries the FULL current list on
@@ -115,6 +129,12 @@ export interface SamuraiScheduledLaunchSpec {
   model: string | null;
   handoff_context_pct: number | null;
   skip_test_gate: boolean;
+  /**
+   * The workflow graph snapshotted when the launch was scheduled (issue #91).
+   * Absent on entries armed before the field existed — the backend then
+   * compiles its default template, exactly as an unedited editor would.
+   */
+  workflow?: SamuraiWorkflowGraph | null;
   /** Unattended fire attempts already failed and re-armed. */
   attempts: number;
 }
@@ -212,6 +232,7 @@ export function samuraiScheduleLaunch(
   model: string | null,
   handoffContextPct: number | null,
   skipTestGate: boolean,
+  workflow?: SamuraiWorkflowGraph | null,
 ): Promise<SamuraiScheduleEntry> {
   return invoke("samurai_schedule_launch", {
     projectPath,
@@ -220,6 +241,10 @@ export function samuraiScheduleLaunch(
     model,
     handoffContextPct,
     skipTestGate,
+    // Issue #91: the edited graph must ride the SCHEDULED path too. Omitting
+    // it made the backend snapshot the default template into the run config
+    // when the timer fired, silently discarding the user's workflow.
+    workflow: workflow ?? null,
   });
 }
 

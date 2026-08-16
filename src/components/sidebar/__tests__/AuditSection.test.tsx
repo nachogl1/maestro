@@ -26,7 +26,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 import type { SamuraiAuditEvent, SamuraiAuditEventPayload } from "@/lib/samurai";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
-import { AuditSection } from "../AuditSection";
+import { ALERT_SENTENCES, AuditSection } from "../AuditSection";
 
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
@@ -202,16 +202,12 @@ describe("AuditSection (issue #46)", () => {
     expect(screen.getAllByText("SPAWN")).toHaveLength(2);
   });
 
-  it("scrolls the event list in a bounded box instead of growing forever", async () => {
-    mockInvoke([auditEvent()]);
-    const { container } = render(<AuditSection />);
-    await screen.findByText("SPAWN");
-
-    const list = container.querySelector('[data-testid="audit-events"]');
-    expect(list).not.toBeNull();
-    expect(list?.className).toMatch(/overflow-y-auto/);
-    expect(list?.className).toMatch(/max-h-/);
-  });
+  // T9: the previous version of this test asserted the className contained
+  // `overflow-y-auto` / `max-h-` — a Tailwind rename keeps that green while
+  // the panel still pushes the Files card down, and happy-dom applies no
+  // stylesheet, so the computed max-height/overflow it would need instead is
+  // always the initial value. Deleted as untestable here; the bounded box is
+  // covered by the browser QA pass, not by a class-string echo.
 
   it("shows the empty state when the log has no rows", async () => {
     mockInvoke([]);
@@ -330,5 +326,78 @@ describe("AuditSection (issue #46)", () => {
       }),
     );
     expect(await screen.findByText("No audit events for this project.")).toBeInTheDocument();
+  });
+});
+
+/**
+ * The ALERT sub-kinds `src-tauri` really emits, grepped from the emit sites
+ * (`json!({ "kind": … })` and the `*_KIND` / `invalid_kind()` constants) in:
+ * supervisor.rs, allowance_watcher.rs, samurai_injector.rs,
+ * samurai_reconciler.rs, samurai_parker.rs, samurai_resumer.rs,
+ * samurai_auth_watch.rs, samurai_progress.rs, samurai_replicator.rs,
+ * samurai_completion.rs, samurai_scheduler.rs.
+ *
+ * This list is the completeness claim `ALERT_SENTENCES` used to make in
+ * prose: a kind added backend-side and appended here fails the test below
+ * instead of silently shipping a raw `kind=…` row to the user.
+ */
+const BACKEND_ALERT_KINDS = [
+  "allowance_threshold",
+  "no_governing_window",
+  "allowance_serialize_error",
+  "illegal_transition",
+  "unexpected_transition_to_working",
+  "ack_timeout",
+  "delivery_failed",
+  "context_blind",
+  "reconcile_orphan",
+  "reconcile_gh_auth",
+  "reconcile_unstartable",
+  "reconcile_interrupted",
+  "resume_interrupted_restart",
+  "park_no_reset_time",
+  "resume_run_not_active",
+  "resume_no_handoff",
+  "handoff_churn",
+  "circuit_breaker",
+  "successor_spawn_failed",
+  "spawn_dropped",
+  "successor_no_start",
+  "submit_retry",
+  "submit_unconfirmed",
+  "launch_test_gate",
+  "scheduled_launch_gave_up",
+  "completion_declaration_invalid",
+  "completion_verification_failed",
+  "order_deviation",
+  "gh_auth_lost",
+  "handoff_invalid",
+  "park_invalid",
+  "soft_winddown_invalid",
+  "winddown_allclear_invalid",
+];
+
+describe("ALERT_SENTENCES coverage (issue #123)", () => {
+  it("has a plain-language sentence for every kind the backend emits", () => {
+    const missing = BACKEND_ALERT_KINDS.filter((kind) => !(kind in ALERT_SENTENCES));
+    expect(missing).toEqual([]);
+  });
+
+  it("renders a sentence, not a raw kind=…, for the highest-signal alerts", () => {
+    // `gh_auth_lost` carries nothing but `kind`, so it used to render as the
+    // bare fallback — on the one alert that parks every run at once.
+    expect(ALERT_SENTENCES.gh_auth_lost({ kind: "gh_auth_lost" })).toContain(
+      "GitHub authentication was lost",
+    );
+    expect(ALERT_SENTENCES.reconcile_interrupted({ epic: "#38", prior_generation: 4 })).toContain(
+      "#38",
+    );
+    expect(ALERT_SENTENCES.handoff_invalid({ failure: "WIP is not committed" })).toContain(
+      "WIP is not committed",
+    );
+    // A missing field degrades to a shorter sentence, never to "undefined".
+    for (const kind of BACKEND_ALERT_KINDS) {
+      expect(ALERT_SENTENCES[kind]({})).not.toContain("undefined");
+    }
   });
 });

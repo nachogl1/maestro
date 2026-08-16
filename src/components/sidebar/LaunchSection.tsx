@@ -16,10 +16,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
+  isParkEntry,
   type SamuraiPreflight,
   type SamuraiRunListEntry,
   type SamuraiRunOrchestrator,
   type SamuraiTestGateProgress,
+  SCHEDULED_LAUNCH_REASON,
   samuraiCleanupEpic,
   samuraiLaunchRun,
   samuraiListRuns,
@@ -29,6 +31,7 @@ import {
   samuraiTimerCancel,
 } from "@/lib/samurai";
 import type { UsageData } from "@/lib/usageParser";
+import { type PendingLaunch, usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import {
   initSamuraiGateListener,
   latestGateForProject,
@@ -301,9 +304,6 @@ function epicSlug(epic: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** The one non-park timer reason (issue #129) — see `SamuraiScheduleEntry.reason`. */
-const SCHEDULED_LAUNCH_REASON = "scheduled_launch";
-
 /**
  * The pending resume timer for one run, or null when it is not parked.
  * Project paths go through `samePath`, never `===`: the same directory has
@@ -320,10 +320,24 @@ function findScheduleEntry(
   return (
     schedule.find(
       (e) =>
-        e.reason !== SCHEDULED_LAUNCH_REASON &&
-        samePath(e.project_path, run.project_path) &&
-        epicSlug(e.epic) === slug,
+        isParkEntry(e) && samePath(e.project_path, run.project_path) && epicSlug(e.epic) === slug,
     ) ?? null
+  );
+}
+
+/**
+ * A successor generation for this run is already queued in the frontend's
+ * launch store (issue #55): the replicator emitted `samurai-spawn-successor`
+ * and no grid has spawned it yet. The predecessor sits KILLED for that whole
+ * window, so without this check the row offers Recover during every routine
+ * handoff (PR #131 review F7).
+ */
+function hasPendingSuccessor(run: SamuraiRunListEntry, pending: PendingLaunch[]): boolean {
+  return pending.some(
+    (p) =>
+      p.samurai != null &&
+      p.samurai.epic.trim() === run.epic.trim() &&
+      samePath(p.samurai.project, run.project_path),
   );
 }
 
@@ -397,7 +411,9 @@ function RunRow({
   onOpen,
   onCleanup,
   onRecover,
+  successorPending,
   pending,
+  recovering,
   otherBusy,
   error,
 }: {
@@ -411,12 +427,17 @@ function RunRow({
   onCleanup: (run: SamuraiRunListEntry) => void;
   /** Issue #124: explicit crash-recovery relaunch of a non-completed run. */
   onRecover: (run: SamuraiRunListEntry) => void;
+  /** A successor generation for this run is already queued in the frontend's
+   *  launch store (issue #55) — recovering on top of it would double-spawn. */
+  successorPending: boolean;
   /** Issue #99: this exact row's cleanup is in flight — spinner + dimmed row
    *  until the backend answers, so the click reads as "working" immediately
    *  instead of doing nothing for several seconds. */
   pending: boolean;
-  /** A different row's cleanup is in flight — this row waits too, so two
-   *  cleanups never race. */
+  /** This exact row's recovery is in flight (PR #131 review F2). */
+  recovering: boolean;
+  /** A different row's cleanup or recovery is in flight — this row waits too,
+   *  so two of either never race. */
   otherBusy: boolean;
   /** The last cleanup attempt for this row failed — shown in place rather
    *  than silently reverting to the pre-click row (issue #99). */
@@ -429,6 +450,20 @@ function RunRow({
   // a KILLED/PARKED/DEAD session keeps its parked tile openable, and that
   // dead-agent-with-a-tile shape is exactly what Recover exists for.
   const hasLiveAgent = target.kind === "open" && !SAMURAI_TERMINAL_STATES.has(target.state);
+  // Recover exists for a run whose agent DIED. Three shapes look identical to
+  // `hasLiveAgent` but are not crashes, and recovering any of them spawns a
+  // duplicate gen N+1 into the same worktree (PR #131 review F3/F7):
+  //  - parked: no live agent BY DESIGN, and clicking here cancels the resume
+  //    timer and burns the exhausted allowance window the park protected —
+  //    the backend only refuses while `parking_engaged()`, which clears as
+  //    soon as the sweep arms its timers;
+  //  - a queued successor: KILLED is the NORMAL post-handoff state, held
+  //    until the successor registers, and the replicator has already staged
+  //    its own gen N+1;
+  //  - COMPLETED: finished; cleanup is its next step.
+  // A KILLED run whose successor never got staged (spawn_dropped,
+  // successor_no_start) still offers Recover — it is the only way out.
+  const recoverable = !isCompleted && !hasLiveAgent && parked === null && !successorPending;
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned
   // the park. The badge below is that missing state — dated, because a park
@@ -479,22 +514,22 @@ function RunRow({
         {/* Issue #124: recover a crashed run — only offered while the run is
             not finished and has no live agent to duplicate. The backend
             re-verifies both before spawning anything. */}
-        {!isCompleted && !hasLiveAgent && (
+        {recoverable && (
           <button
             type="button"
             onClick={() => onRecover(run)}
-            disabled={pending || otherBusy}
+            disabled={pending || recovering || otherBusy}
             className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
             aria-label={`Recover run ${run.epic}`}
             title="The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
           >
-            <RefreshCw size={12} />
+            {recovering ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           </button>
         )}
         <button
           type="button"
           onClick={() => onCleanup(run)}
-          disabled={pending || otherBusy}
+          disabled={pending || recovering || otherBusy}
           className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
           aria-label={`Clean up run ${run.epic}`}
           title="Delete this run's worktree and branch, cancel its timer, archive its run config (asks first)"
@@ -643,6 +678,14 @@ export function LaunchSection({
   // row's error so the row can render it in place.
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ key: string; message: string } | null>(null);
+  // PR #131 review F2: which row's recovery is in flight. The ref is the real
+  // guard — two clicks in the same tick share one render's closure, so a
+  // state check alone lets both through, and `recover_run_inner` takes no
+  // lock: both would pass its "no live session" check and stage TWO gen-N+1
+  // orchestrators into the same worktree.
+  const recoveringKeyRef = useRef<string | null>(null);
+  const [recoveringKey, setRecoveringKey] = useState<string | null>(null);
+  const pendingLaunches = usePendingLaunchStore((s) => s.pending);
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -744,6 +787,11 @@ export function LaunchSection({
     // cannot arm the same launch twice.
     setPhase("scheduling");
     try {
+      // Issue #91: the edited workflow graph rides the scheduled arm exactly
+      // as it rides an immediate launch — the fired timer builds the run
+      // config from this spec, so a missing graph there is the DEFAULT
+      // template silently replacing the user's edits.
+      const workflow = await workflowGraphForLaunch();
       const entry = await samuraiScheduleLaunch(
         projectPath,
         text,
@@ -751,6 +799,7 @@ export function LaunchSection({
         model.trim() || null,
         pct,
         skipGate,
+        workflow,
       );
       setNotice(`Launch scheduled: ${entry.epic} at ${new Date(entry.fire_at).toLocaleString()}`);
       setText("");
@@ -847,7 +896,10 @@ export function LaunchSection({
     setNotice(null);
     setPhase("spawning");
     try {
-      const workflow = await workflowGraphForLaunch();
+      // Launch what was SCHEDULED: the spec carries the graph snapshotted at
+      // arm time (issue #91). Entries armed before that field existed fall
+      // back to the current editor, which is what this path always used.
+      const workflow = spec.workflow ?? (await workflowGraphForLaunch());
       const result = await samuraiLaunchRun(
         entry.project_path,
         spec.text,
@@ -884,7 +936,10 @@ export function LaunchSection({
    * surfaces on the row.
    */
   const handleRecover = async (run: SamuraiRunListEntry) => {
+    if (recoveringKeyRef.current !== null) return;
     const key = runKey(run);
+    recoveringKeyRef.current = key;
+    setRecoveringKey(key);
     setRowError(null);
     setError(null);
     setNotice(null);
@@ -900,6 +955,9 @@ export function LaunchSection({
       await refreshRuns();
     } catch (err) {
       setRowError({ key, message: String(err) });
+    } finally {
+      recoveringKeyRef.current = null;
+      setRecoveringKey(null);
     }
   };
 
@@ -1249,8 +1307,13 @@ export function LaunchSection({
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}
                   onRecover={handleRecover}
+                  successorPending={hasPendingSuccessor(run, pendingLaunches)}
                   pending={deletingKey === key}
-                  otherBusy={deletingKey !== null && deletingKey !== key}
+                  recovering={recoveringKey === key}
+                  otherBusy={
+                    (deletingKey !== null && deletingKey !== key) ||
+                    (recoveringKey !== null && recoveringKey !== key)
+                  }
                   error={rowError?.key === key ? rowError.message : null}
                 />
               );

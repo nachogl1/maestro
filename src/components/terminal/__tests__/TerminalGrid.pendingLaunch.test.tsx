@@ -118,6 +118,17 @@ vi.mock("@/lib/terminalPrompt", async (importOriginal) => {
   };
 });
 
+// The cap-exemption tests below have to FILL the grid, and every filled slot
+// is a full mocked launch. At the production cap of 12 that cost ~8s of a
+// 15s budget — the flake class tracked in issue #116. The behaviour under
+// test is "parked samurai tiles do not count", which is identical at any
+// cap, so the cap itself is mocked down to 3 (the rest of splitTree stays
+// real).
+vi.mock("../splitTree", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../splitTree")>();
+  return { ...actual, MAX_SESSIONS: 3 };
+});
+
 import { invoke } from "@tauri-apps/api/core";
 import { samuraiHarvestArm, samuraiRegisterSession } from "@/lib/samurai";
 import { spawnShell, writeStdin } from "@/lib/terminal";
@@ -285,7 +296,12 @@ describe("TerminalGrid pending samurai launch", () => {
   // tile (issue #122), so a long autonomous run fills the session cap with
   // dead weight — and its successor's pending launch used to be dropped
   // AFTER `consume` had already claimed it, silently stalling the run.
-  it("exempts parked samurai terminal-state slots from the session cap (PR #131 review M4)", async () => {
+  /**
+   * Fills the grid to MAX_SESSIONS launched sessions, then auto-parks the
+   * oldest one as a finished samurai generation. Returns the grid handle and
+   * that parked session's id.
+   */
+  async function fillGridWithOneParkedGeneration() {
     let nextId = 100;
     spawnShellMock.mockImplementation(async () => nextId++);
     const ref = createRef<TerminalGridHandle>();
@@ -293,7 +309,6 @@ describe("TerminalGrid pending samurai launch", () => {
     const handle = ref.current;
     if (!handle) throw new Error("expected TerminalGrid ref to be attached");
 
-    // Fill the grid to the cap with launched sessions.
     await act(async () => {
       for (let i = 1; i < MAX_SESSIONS; i++) handle.addSession();
     });
@@ -301,7 +316,6 @@ describe("TerminalGrid pending samurai launch", () => {
       await handle.launchAll();
     });
     await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(MAX_SESSIONS));
-    expect(spawnShellMock).toHaveBeenCalledTimes(MAX_SESSIONS);
 
     // One earlier samurai generation ended: the auto-park effect moves its
     // tile to the tray, where it stays a KILLED transcript forever.
@@ -315,6 +329,12 @@ describe("TerminalGrid pending samurai launch", () => {
       }));
     });
     await waitFor(() => expect(useSessionStore.getState().parkedSessionIds).toEqual([deadId]));
+    return { handle, deadId };
+  }
+
+  it("exempts parked samurai terminal-state slots from the session cap (PR #131 review M4)", async () => {
+    await fillGridWithOneParkedGeneration();
+    const launchesBefore = spawnShellMock.mock.calls.length;
 
     // The successor's queued launch must still get a slot.
     await act(async () => {
@@ -329,10 +349,29 @@ describe("TerminalGrid pending samurai launch", () => {
       });
     });
 
-    await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(MAX_SESSIONS + 1));
+    await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(launchesBefore + 1));
     expect(screen.queryByText(/maximum of/)).not.toBeInTheDocument();
-    // Launching 12 mocked sessions first makes this test legitimately slow.
-  }, 15_000);
+  });
+
+  // The same exemption has to hold for the manual "+" button: it lives on a
+  // different code path (`addSession`), and counting parked samurai tiles
+  // there makes "+" a SILENT no-op — early return, no error — so after a few
+  // generations the user cannot open a terminal in that project at all.
+  it("exempts parked samurai terminal-state slots from the '+' button cap too", async () => {
+    const { handle } = await fillGridWithOneParkedGeneration();
+    const launchesBefore = spawnShellMock.mock.calls.length;
+
+    await act(async () => {
+      handle.addSession();
+    });
+    // The new slot is real only if it can actually launch a terminal — a
+    // refused `addSession` leaves nothing for `launchAll` to spawn.
+    await act(async () => {
+      await handle.launchAll();
+    });
+
+    await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(launchesBefore + 1));
+  });
 
   // The injection rides claude's SessionStart hook, which no other CLI posts:
   // a non-Claude launch must NOT arm (it would strand a stale entry backend-

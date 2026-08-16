@@ -37,6 +37,7 @@ import type {
   SamuraiWorkflowGraph,
 } from "@/lib/samurai";
 import type { UsageData } from "@/lib/usageParser";
+import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { stopSamuraiGateListener, useSamuraiGateStore } from "@/stores/useSamuraiGateStore";
 import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
 import {
@@ -260,6 +261,7 @@ describe("LaunchSection (issue #63)", () => {
     // Untouched workflow editor by default — launches send workflow: null.
     useSamuraiWorkflowStore.setState({ graph: null });
     useSessionStore.setState({ samuraiBySessionId: {}, samuraiSchedule: [] });
+    usePendingLaunchStore.setState({ pending: [] });
     // Issue #109: the gate listener + store are module-level (they outlive
     // mounts on purpose) — detach and drain them between tests so each test
     // captures a fresh handler from ITS listen mock.
@@ -374,6 +376,35 @@ describe("LaunchSection (issue #63)", () => {
     expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({ workflow: edited });
   });
 
+  // The scheduled path sent no `workflow` at all, so the backend snapshotted
+  // the DEFAULT template into the run config and issue #91's edited graph was
+  // silently discarded for every scheduled launch.
+  it("sends the edited workflow graph with a SCHEDULED launch too (issue #91)", async () => {
+    const edited: SamuraiWorkflowGraph = { ...workflowGraph(), edges: [] };
+    useSamuraiWorkflowStore.setState({ graph: edited });
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2030-01-01T09:30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+
+    await waitFor(() => expect(callsOf("samurai_schedule_launch")).toHaveLength(1));
+    expect(callsOf("samurai_schedule_launch")[0][1]).toMatchObject({ workflow: edited });
+  });
+
+  it("sends workflow: null with a scheduled launch when the editor is untouched", async () => {
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2030-01-01T09:30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+
+    await waitFor(() => expect(callsOf("samurai_schedule_launch")).toHaveLength(1));
+    expect(callsOf("samurai_schedule_launch")[0][1]).toMatchObject({ workflow: null });
+  });
+
   it("summarises the refs detected in the request (issue #128)", async () => {
     render(<LaunchSection />);
     fireEvent.change(textBox(), { target: { value: "finish #77 and #78" } });
@@ -413,6 +444,7 @@ describe("LaunchSection (issue #63)", () => {
       model: null,
       handoffContextPct: null,
       skipTestGate: false,
+      workflow: null,
     });
     // Nothing launched now, and the form cleared for the next request.
     expect(callsOf("samurai_launch_run")).toHaveLength(0);
@@ -561,6 +593,95 @@ describe("LaunchSection (issue #63)", () => {
     expect(await screen.findByRole("button", { name: OPEN_LABEL("#38") })).toBeEnabled();
     // …AND the run is recoverable — the two are not mutually exclusive.
     fireEvent.click(screen.getByRole("button", { name: "Recover run #38" }));
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+  });
+
+  // `recover_run_inner` takes no lock and fire-and-forgets the generation
+  // spawn, so two calls that both pass its "no live session" check stage TWO
+  // gen-N+1 orchestrators into the same worktree.
+  it("ignores a second Recover click while the first is still in flight", async () => {
+    let releaseRecover: (() => void) | undefined;
+    mockInvoke({ runs: [run()] });
+    const base = invokeMock.getMockImplementation();
+    if (!base) throw new Error("expected mockInvoke to install an implementation");
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "samurai_recover_run") {
+        await new Promise<void>((resolve) => {
+          releaseRecover = resolve;
+        });
+      }
+      return base(cmd, args as never);
+    });
+    render(<LaunchSection />);
+    await screen.findByText("#38");
+
+    const button = screen.getByRole("button", { name: "Recover run #38" });
+    // Both clicks inside ONE act: React batches, so the second handler runs
+    // against the same render's closure and the button has not disabled yet —
+    // the real double-click, which a state-only guard does not catch.
+    await act(async () => {
+      button.click();
+      button.click();
+    });
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+
+    // Even after the click handlers settle, the second click stayed dropped.
+    await act(async () => {
+      releaseRecover?.();
+    });
+    expect(callsOf("samurai_recover_run")).toHaveLength(1);
+  });
+
+  // The backend only refuses a recovery while `parking_engaged()` is true,
+  // and that flag clears as soon as the sweep arms its timers — so a click on
+  // the refresh icon right above a "PARKED · resumes …" badge cancelled the
+  // resume timer and spawned a fresh generation into the exhausted allowance
+  // window the park existed to protect.
+  it("offers no recovery on a parked run", async () => {
+    useSessionStore.setState({ samuraiSchedule: [timer()] });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText(/^PARKED · resumes /)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+  });
+
+  // KILLED is the NORMAL post-handoff state, held until the successor
+  // registers — a click there spawns gen N+1 concurrently with the
+  // replicator's own gen N+1.
+  it("offers no recovery while the run's successor launch is still queued", async () => {
+    useSessionStore.setState({
+      samuraiBySessionId: { 3: supervised({ generation: 2, state: "KILLED" }) },
+    });
+    usePendingLaunchStore.setState({
+      pending: [
+        {
+          tabId: "tab-1",
+          mode: "Claude",
+          resumeSessionId: null,
+          workingDirOverride: "C:\\data\\worktrees\\maestro-abc\\maestro-38",
+          branch: null,
+          samurai: { project: "C:\\git\\maestro", epic: "#38", generation: 3, model: null },
+        },
+      ],
+    });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection onNavigate={vi.fn()} />);
+
+    await screen.findByText("#38");
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+  });
+
+  // …but a KILLED run whose successor never got staged (spawn_dropped,
+  // successor_no_start) is genuinely stuck, and Recover is its only way out.
+  it("still offers recovery on a KILLED run with no queued successor", async () => {
+    useSessionStore.setState({
+      samuraiBySessionId: { 3: supervised({ generation: 2, state: "KILLED" }) },
+    });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection onNavigate={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Recover run #38" }));
     await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
   });
 
@@ -1247,6 +1368,9 @@ describe("LaunchSection (issue #63)", () => {
     expect(button).toBeEnabled();
     fireEvent.click(button);
     expect(onNavigate).toHaveBeenCalledWith("tab-1", 3);
+    // The unpark half of that promise belongs to `zoomSession`, which App
+    // routes onNavigate to — covered in TerminalGrid.samuraiClose.test.tsx
+    // ("unparks the session when zoomSession opens a parked tile").
   });
 
   it("never cross-focuses two projects running the same epic ref", async () => {

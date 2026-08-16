@@ -171,26 +171,34 @@ describe("useSessionStore samurai supervisor tracking (issue #46)", () => {
   // PARKED (allowance park), and now DEAD (watchdog) — parks its tile into
   // the existing footer tray (TerminalGrid's samurai-park effect) instead of
   // leaving it live in the grid. Live states never park a tile.
-  it("terminal states are exactly KILLED, PARKED and DEAD", () => {
-    expect(SAMURAI_TERMINAL_STATES.has("KILLED")).toBe(true);
-    expect(SAMURAI_TERMINAL_STATES.has("PARKED")).toBe(true);
-    expect(SAMURAI_TERMINAL_STATES.has("DEAD")).toBe(true);
-    for (const live of ["WORKING", "HANDOFF_REQUESTED", "HANDOFF_WRITTEN", "PARK_REQUESTED"]) {
-      expect(SAMURAI_TERMINAL_STATES.has(live)).toBe(false);
-    }
-  });
-
+  //
+  // T8: the membership check used to be its own test that asserted the
+  // contents of the very constant it imported, so it could never fail. It
+  // rides the behavioural chain below instead: the states the supervisor
+  // really walks through, checked against the set as they land.
   it("a park chain lands PARKED in samuraiBySessionId for the samurai-park effect", () => {
     useSessionStore.setState({ sessions: [session(1)] });
-    emitSupervisorEvent(snapshot(1, { state: "PARK_REQUESTED", previous_state: "WORKING" }));
-    expect(
-      SAMURAI_TERMINAL_STATES.has(useSessionStore.getState().samuraiBySessionId[1].state),
-    ).toBe(false);
+    // Every state the chain passes through on the way is LIVE — none of them
+    // may park a tile.
+    for (const live of ["WORKING", "HANDOFF_REQUESTED", "HANDOFF_WRITTEN", "PARK_REQUESTED"]) {
+      emitSupervisorEvent(snapshot(1, { state: live as never, previous_state: "WORKING" }));
+      expect(
+        SAMURAI_TERMINAL_STATES.has(useSessionStore.getState().samuraiBySessionId[1].state),
+      ).toBe(false);
+    }
 
     emitSupervisorEvent(snapshot(1, { state: "PARKED", previous_state: "PARK_REQUESTED" }));
 
     const info = useSessionStore.getState().samuraiBySessionId[1];
     expect(info.state).toBe("PARKED");
     expect(SAMURAI_TERMINAL_STATES.has(info.state)).toBe(true);
+
+    // …and the other two terminal states the effect must also act on.
+    for (const terminal of ["KILLED", "DEAD"]) {
+      emitSupervisorEvent(snapshot(1, { state: terminal as never, previous_state: "PARKED" }));
+      expect(
+        SAMURAI_TERMINAL_STATES.has(useSessionStore.getState().samuraiBySessionId[1].state),
+      ).toBe(true);
+    }
   });
 });
