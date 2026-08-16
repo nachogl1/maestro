@@ -1093,7 +1093,41 @@ impl LaunchInput {
 /// Every `#N` token in `text`, in first-appearance order, deduplicated —
 /// `#7` twice in one request is one ref, or the label (the run's identity)
 /// would differ from the same request typed once.
+///
+/// Fix S5 (issue #131 review 2): the ref must be a STANDALONE TOKEN. Any
+/// `#<digits>` anywhere in the prose used to count, so a URL fragment
+/// (`…/issues/9#issuecomment-1234`), a hex colour (`#0056b3`) or a version
+/// anchor flipped the brief to the full issue-gathering shape and hijacked
+/// the run's identity — and on a scheduled launch nobody is watching the
+/// orchestrator autonomously work an unrelated issue. The `#` must open a
+/// token (start of text, whitespace, or an opening delimiter) and the digits
+/// must close one.
 fn extract_hash_refs(text: &str) -> Vec<String> {
+    /// What may precede the `#`: nothing swallows it into a larger token.
+    fn opens_token(before: Option<u8>) -> bool {
+        match before {
+            None => true,
+            // `,`/`;` because "#77,#78" is a real spelling of a ref list.
+            Some(b) => {
+                b.is_ascii_whitespace()
+                    || matches!(b, b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b',' | b';')
+            }
+        }
+    }
+    /// What may follow the digits: end of a token, not more of one.
+    fn closes_token(after: Option<u8>) -> bool {
+        match after {
+            None => true,
+            Some(b) => {
+                b.is_ascii_whitespace()
+                    || matches!(
+                        b,
+                        b',' | b'.' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}' | b'>' | b'"' | b'\''
+                    )
+            }
+        }
+    }
+
     let bytes = text.as_bytes();
     let mut refs: Vec<String> = Vec::new();
     let mut i = 0;
@@ -1104,7 +1138,10 @@ fn extract_hash_refs(text: &str) -> Vec<String> {
             while end < bytes.len() && bytes[end].is_ascii_digit() {
                 end += 1;
             }
-            if end > start {
+            if end > start
+                && opens_token(i.checked_sub(1).map(|p| bytes[p]))
+                && closes_token(bytes.get(end).copied())
+            {
                 let number = &text[start..end];
                 if !refs.iter().any(|r| r == number) {
                     refs.push(number.to_string());
@@ -2747,6 +2784,42 @@ mod tests {
         assert!(input.refs().is_empty());
         // A lone `#` with no digits carries nothing.
         assert!(LaunchInput::parse("look at # and #x").refs().is_empty());
+    }
+
+    /// Fix S5 (issue #131 review 2): a `#<digits>` that is not a standalone
+    /// token is not a GitHub work item. Treating one as a ref flips the
+    /// brief to the full issue-gathering shape and hijacks the run identity
+    /// — on a scheduled launch, unattended.
+    #[test]
+    fn test_hash_refs_require_a_standalone_token() {
+        let no_refs = [
+            // A URL fragment / comment anchor.
+            "see https://github.com/o/r/issues/9#issuecomment-1234 for context",
+            // A hex colour: `#0056b3` used to yield the ref `0056`.
+            "make the header #0056b3 like the mock",
+            "use #1a2b3c for the border",
+            // Digits welded onto more token.
+            "the sprint tag is #12abc",
+            "bump to v#2_final",
+        ];
+        for text in no_refs {
+            let input = LaunchInput::parse(text);
+            assert!(input.refs().is_empty(), "{text} → {:?}", input.refs());
+        }
+
+        // Real refs, in every spelling a request actually uses.
+        let with_refs = [
+            ("work #7", vec!["7"]),
+            ("#7", vec!["7"]),
+            ("ship #7, #9 and #11.", vec!["7", "9", "11"]),
+            ("close (#7) then [#9]", vec!["7", "9"]),
+            ("#7,#9", vec!["7", "9"]),
+            ("fix #7: the flaky test", vec!["7"]),
+        ];
+        for (text, expected) in with_refs {
+            let input = LaunchInput::parse(text);
+            assert_eq!(input.refs().issues(), expected, "{text}");
+        }
     }
 
     #[test]
