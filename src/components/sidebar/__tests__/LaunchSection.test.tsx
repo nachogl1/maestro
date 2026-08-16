@@ -415,6 +415,21 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.queryByText(/refs detected/)).not.toBeInTheDocument();
   });
 
+  it("counts refs the same way the backend extracts them (issue #128)", async () => {
+    render(<LaunchSection />);
+
+    // Welded into a larger token — the backend's boundary rule rejects these,
+    // so the banner must not promise GitHub context that never gets read.
+    fireEvent.change(textBox(), {
+      target: { value: "restyle the button to #0056b3, see docs#12" },
+    });
+    expect(screen.queryByText(/refs detected/)).not.toBeInTheDocument();
+
+    // Comma-separated and bracketed refs are real spellings of a ref list.
+    fireEvent.change(textBox(), { target: { value: "close #77,#78 (#79)" } });
+    expect(screen.getByText(/3 issue refs detected \(#77, #78, #79\)/)).toBeInTheDocument();
+  });
+
   it("launches plain prose without any inline validation error (issue #128)", async () => {
     render(<LaunchSection />);
     fireEvent.change(textBox(), { target: { value: "refactor the audit panel styling" } });

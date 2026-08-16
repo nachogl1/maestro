@@ -57,9 +57,12 @@ function baseName(path: string): string {
 }
 
 /** Every `#N` ref in the request text (issue #128), for the detected-refs
- *  summary. Purely informational — the backend re-extracts on its own. */
+ *  summary. The boundary rule mirrors `extract_hash_refs` in samurai_prompts.rs:
+ *  a ref welded into a larger token (`#0056b3`, `docs#12`) is not a work item,
+ *  and this banner must not promise context the backend will never read. */
 function detectedRefs(text: string): string[] {
-  return text.match(/#\d+/g) ?? [];
+  const refs = text.match(/(?<=^|[\s([{<"',;])#\d+(?=$|[\s,.;:!?)\]}>"'])/g) ?? [];
+  return [...new Set(refs)];
 }
 
 /**
