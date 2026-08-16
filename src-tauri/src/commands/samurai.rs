@@ -35,6 +35,7 @@ use crate::core::samurai_schedule::{
 use crate::core::samurai_test_gate::{self, SamuraiTestGate, TestGateProgress};
 use crate::core::samurai_workflow::{self, WorkflowGraph};
 use crate::core::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
+use crate::core::windows_process::StdCommandExt;
 use crate::core::worktree_manager::{project_name, WorktreeManager};
 use crate::git::{Git, GitError};
 use crate::github::{AuthStatus, GitHub};
@@ -736,6 +737,10 @@ fn verify_worktree_git(worktree: &Path) -> Result<(String, String), String> {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(worktree)
+            // Fix R4 (issue #131 review 2): every other backend `git` call
+            // hides the console window; without it each recovery click
+            // flashes console windows over the app on Windows.
+            .hide_console_window()
             .output()
             .map_err(|e| format!("git did not run in {}: {e}", worktree.display()))?;
         if !output.status.success() {
@@ -3292,6 +3297,92 @@ mod tests {
         assert_eq!(resume.details["trigger"], "manual_recovery");
         assert_eq!(resume.details["predecessor_generation"], 2);
         assert_eq!(resume.details["branch"], launched.branch);
+    }
+
+    /// Fix T2 (issue #131 review 2): "recovery re-verifies real state via
+    /// git, not disk" was asserted as `result.branch == launched.branch` —
+    /// exactly what a stored record would produce, so reverting
+    /// `verify_worktree_git` to read the run config would still have passed.
+    /// The worktree is MUTATED here, so only git can answer correctly.
+    #[tokio::test]
+    async fn test_recover_reports_the_worktrees_real_git_state_not_the_launch_record() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+
+        // The crashed agent had moved on: a new commit, on a branch that is
+        // NOT the one the launch recorded.
+        let worktree = PathBuf::from(&launched.worktree_path);
+        let git = |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&worktree)
+                .hide_console_window()
+                .output()
+                .expect("git must be runnable in tests");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["checkout", "-q", "-b", "drifted-since-launch"]);
+        std::fs::write(worktree.join("drift.txt"), "moved on\n").unwrap();
+        git(&["add", "drift.txt"]);
+        git(&["commit", "-q", "-m", "chore: drift"]);
+        let real_head = git(&["rev-parse", "--short", "HEAD"]);
+
+        let result = recover(&h, "issue #38").await.unwrap();
+
+        assert_eq!(result.branch, "drifted-since-launch");
+        assert_ne!(
+            result.branch, launched.branch,
+            "the launch record must not be the source of truth"
+        );
+        assert_eq!(result.head, real_head);
+        // The audit row carries the same git-verified branch.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row lands before the spawn");
+        assert_eq!(resume.details["branch"], "drifted-since-launch");
+    }
+
+    /// Fix T2: a worktree git cannot answer for is a REFUSAL, not a spawn.
+    #[tokio::test]
+    async fn test_recover_refuses_a_worktree_git_cannot_answer_for() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        h.supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+
+        // The config points at a directory that exists but is no repository
+        // (the worktree was replaced by a plain folder, or its .git is gone).
+        let not_a_repo = tempdir().unwrap();
+        let mut config = h.run_configs.get(&h.project, "issue #38").unwrap();
+        config.worktree_path = not_a_repo.path().to_string_lossy().into_owned();
+        h.run_configs.save(&config).unwrap();
+
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("git"), "{err}");
+        assert_eq!(
+            h.spawns.lock().unwrap().len(),
+            1,
+            "only the original launch spawn — recovery refused"
+        );
     }
 
     #[tokio::test]
