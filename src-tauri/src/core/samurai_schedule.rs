@@ -150,6 +150,9 @@ pub struct SamuraiSchedule {
     /// `None` only where nobody listens (some tests) — see
     /// [`ScheduleChangedCallback`].
     on_change: Option<ScheduleChangedCallback>,
+    /// The ALERT details for a lossy load at construction (fix S3), or
+    /// `None` when the file loaded clean. Read once by the app at startup.
+    load_alert: Option<serde_json::Value>,
 }
 
 impl SamuraiSchedule {
@@ -163,12 +166,14 @@ impl SamuraiSchedule {
         on_change: Option<ScheduleChangedCallback>,
     ) -> (Arc<Self>, impl std::future::Future<Output = ()> + Send) {
         let path = base_dir.join("schedule.json");
-        let entries = load_entries(&path);
+        let report = load_entries(&path);
+        let load_alert = report.alert();
         let schedule = Arc::new(Self {
             path,
-            entries: Mutex::new(entries),
+            entries: Mutex::new(report.entries),
             on_fire,
             on_change,
+            load_alert,
         });
         let loop_schedule = schedule.clone();
         let task = async move {
@@ -216,6 +221,14 @@ impl SamuraiSchedule {
         };
         self.notify_change(&snapshot);
         Ok(true)
+    }
+
+    /// The ALERT details for a lossy load at construction (fix S3), or
+    /// `None` when `schedule.json` loaded clean. The app appends this to the
+    /// audit trail at startup: a dropped scheduled launch has no cold-start
+    /// reconciliation backstop, so nothing else would ever surface it.
+    pub fn load_alert(&self) -> Option<serde_json::Value> {
+        self.load_alert.clone()
     }
 
     /// Snapshot of every pending timer (for a future Tauri command / the
@@ -399,24 +412,102 @@ fn is_due(entry: &ScheduleEntry, now: DateTime<Utc>) -> bool {
     }
 }
 
-fn load_entries(path: &PathBuf) -> Vec<ScheduleEntry> {
+/// What one load salvaged, and what it lost (fix S3, issue #131 review 2).
+#[derive(Debug, Default)]
+struct LoadReport {
+    entries: Vec<ScheduleEntry>,
+    /// Entries that could not be deserialized and were skipped.
+    dropped: usize,
+    /// Path the unusable file was copied to, when anything was lost.
+    quarantined: Option<PathBuf>,
+}
+
+impl LoadReport {
+    /// The ALERT details for a lossy load, or `None` when nothing was lost.
+    /// The app appends this at startup — unlike park timers, a #129
+    /// scheduled launch has NO cold-start reconciliation backstop (no run
+    /// config is written until after the test gate), so a silently dropped
+    /// entry is a pending overnight launch that simply never happens.
+    fn alert(&self) -> Option<serde_json::Value> {
+        let quarantined = self.quarantined.as_ref()?;
+        Some(serde_json::json!({
+            "kind": "schedule_entries_dropped",
+            "dropped": self.dropped,
+            "quarantined": quarantined.to_string_lossy(),
+        }))
+    }
+}
+
+/// Copies an unusable `schedule.json` aside before the next mutation
+/// overwrites it, so a human can still read what was lost. A copy, not a
+/// rename: the surviving entries live only in memory until something
+/// persists them, and moving the original would lose them to a crash in
+/// that window.
+fn quarantine(path: &PathBuf) -> Option<PathBuf> {
+    let stamp = Utc::now().format("%Y%m%dT%H%M%S");
+    let target = path.with_extension(format!("corrupt-{stamp}.json"));
+    match std::fs::copy(path, &target) {
+        Ok(_) => {
+            log::warn!("samurai schedule: quarantined {path:?} to {target:?}");
+            Some(target)
+        }
+        Err(e) => {
+            log::error!("samurai schedule: could not quarantine {path:?}: {e}");
+            None
+        }
+    }
+}
+
+/// Loads the persisted timers, ENTRY BY ENTRY (fix S3). One malformed entry
+/// used to make `serde_json::from_str::<Vec<ScheduleEntry>>` fail for the
+/// whole file, silently discarding every pending timer behind nothing but a
+/// `log::warn!` — a truncated or hand-edited `schedule.json` deleted every
+/// overnight launch. Each element is now deserialized on its own so the
+/// healthy ones survive, and whatever is lost is quarantined and ALERTed.
+fn load_entries(path: &PathBuf) -> LoadReport {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadReport::default(),
         Err(e) => {
             log::warn!("samurai schedule: cannot read {path:?}: {e} — starting empty");
-            return Vec::new();
+            return LoadReport::default();
         }
     };
-    match serde_json::from_str(&content) {
-        Ok(entries) => entries,
+    // The outer array only. A file too broken even for this (truncated
+    // mid-write, replaced by something else) salvages nothing, but it is
+    // still quarantined and ALERTed rather than passed over in a log line.
+    let values: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(v) => v,
         Err(e) => {
-            log::warn!(
-                "samurai schedule: corrupt {path:?}: {e} — starting empty \
-                 (cold-start reconciliation backstops any lost timer)"
-            );
-            Vec::new()
+            log::error!("samurai schedule: unreadable {path:?}: {e} — starting empty");
+            return LoadReport {
+                entries: Vec::new(),
+                dropped: 0,
+                quarantined: quarantine(path),
+            };
         }
+    };
+    let total = values.len();
+    let entries: Vec<ScheduleEntry> = values
+        .into_iter()
+        .filter_map(|value| match serde_json::from_value::<ScheduleEntry>(value) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                log::error!("samurai schedule: dropping a malformed entry in {path:?}: {e}");
+                None
+            }
+        })
+        .collect();
+    let dropped = total - entries.len();
+    let quarantined = if dropped > 0 {
+        quarantine(path)
+    } else {
+        None
+    };
+    LoadReport {
+        entries,
+        dropped,
+        quarantined,
     }
 }
 
@@ -586,7 +677,7 @@ mod tests {
         // in memory and on disk.
         assert_eq!(schedule.list().len(), 1);
         assert_eq!(schedule.list()[0].epic, "#38");
-        let on_disk = load_entries(&dir.path().join("schedule.json"));
+        let on_disk = load_entries(&dir.path().join("schedule.json")).entries;
         assert_eq!(on_disk.len(), 1);
         assert_eq!(on_disk[0].epic, "#38");
     }
@@ -666,7 +757,103 @@ mod tests {
         schedule
             .arm(entry("C:/git/alpha", "#37", &in_one_hour()))
             .unwrap();
-        assert_eq!(load_entries(&path).len(), 1);
+        assert_eq!(load_entries(&path).entries.len(), 1);
+    }
+
+    /// Fix S3 (issue #131 review 2): one malformed entry used to make the
+    /// WHOLE file fail to parse, silently discarding every pending timer
+    /// behind a `log::warn!`. Unlike park timers, a #129 scheduled launch
+    /// has no cold-start reconciliation backstop, so a hand-edited
+    /// schedule.json deleted every pending overnight launch with nothing to
+    /// show for it.
+    #[test]
+    fn test_one_malformed_entry_never_discards_the_healthy_ones() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("schedule.json");
+        std::fs::write(
+            &path,
+            r##"[
+              {"project_path":"C:/git/alpha","epic":"#37","fire_at":"2030-01-01T00:00:00+00:00","reason":"park"},
+              {"epic":"#38","reason":"park"},
+              {"project_path":"C:/git/alpha","epic":"#39","fire_at":"2030-01-02T00:00:00+00:00","reason":"scheduled_launch"}
+            ]"##,
+        )
+        .unwrap();
+
+        let (cb, _) = collector();
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+
+        let kept = schedule.list();
+        assert_eq!(kept.len(), 2, "the healthy entries survive: {kept:?}");
+        assert_eq!(kept[0].epic, "#37");
+        assert_eq!(kept[1].epic, "#39");
+
+        // The loss is ALERTed, naming how many entries went, and the
+        // unusable file is quarantined for a human to read.
+        let alert = schedule.load_alert().expect("a lossy load must ALERT");
+        assert_eq!(alert["kind"], "schedule_entries_dropped");
+        assert_eq!(alert["dropped"], 1);
+        let quarantined = PathBuf::from(alert["quarantined"].as_str().unwrap());
+        assert!(quarantined.exists(), "{quarantined:?}");
+        assert!(std::fs::read_to_string(&quarantined).unwrap().contains("#38"));
+    }
+
+    #[test]
+    fn test_a_clean_load_alerts_nothing() {
+        let dir = tempdir().unwrap();
+        let (cb, _) = collector();
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+        schedule
+            .arm(entry("C:/git/alpha", "#37", &in_one_hour()))
+            .unwrap();
+
+        let (cb, _) = collector();
+        let (reloaded, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+        assert_eq!(reloaded.list().len(), 1);
+        assert!(reloaded.load_alert().is_none());
+    }
+
+    /// Fix T5 (issue #131 review 2): "an overdue scheduled launch never
+    /// auto-fires at startup" was enforced only by a comment in lib.rs
+    /// ordering `hold_overdue_launches()` before the fire loop spawns. This
+    /// pins the schedule-level contract that comment depends on.
+    #[test]
+    fn test_overdue_launch_on_disk_fires_only_if_never_held() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("schedule.json");
+        // An overdue scheduled launch, persisted while the app was closed.
+        let overdue = ScheduleEntry {
+            fire_at: "2020-01-01T00:00:00+00:00".to_string(),
+            ..launch_entry("C:/git/alpha", "issue #7", "2020-01-01T00:00:00+00:00")
+        };
+        persist(&path, std::slice::from_ref(&overdue)).unwrap();
+
+        let (cb, fired) = collector();
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+
+        // The startup hold runs FIRST, exactly as lib.rs orders it…
+        let held = schedule.hold_overdue_launches();
+        assert_eq!(held.len(), 1);
+        // …and the first tick then fires nothing: a held entry is never due.
+        schedule.fire_due();
+        assert!(
+            fired.lock().unwrap().is_empty(),
+            "an overdue launch must wait for the human's launch-or-discard"
+        );
+        assert!(schedule.list()[0].held);
+
+        // The negative control: without the hold, that same first tick DOES
+        // fire it — which is precisely why the ordering is load-bearing.
+        let (cb, fired) = collector();
+        let (unheld, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+        unheld
+            .arm(ScheduleEntry {
+                held: false,
+                ..overdue
+            })
+            .unwrap();
+        unheld.fire_due();
+        assert_eq!(fired.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -720,7 +907,7 @@ mod tests {
             r##"[{"project_path":"C:/git/alpha","epic":"#37","fire_at":"2030-01-01T00:00:00+00:00","reason":"park"}]"##,
         )
         .unwrap();
-        let loaded = load_entries(&path);
+        let loaded = load_entries(&path).entries;
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].launch, None);
         assert!(!loaded[0].held);
@@ -851,7 +1038,7 @@ mod tests {
             "held — not due — so the next 30s tick doesn't re-dispatch the \
              same launch while it's still in flight"
         );
-        let on_disk = load_entries(&dir.path().join("schedule.json"));
+        let on_disk = load_entries(&dir.path().join("schedule.json")).entries;
         assert_eq!(on_disk.len(), 1, "persisted, not just held in memory");
         assert!(on_disk[0].held);
     }

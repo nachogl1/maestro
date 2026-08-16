@@ -918,6 +918,25 @@ pub fn run() {
             // schedule.json, stranding the epic (the reconciler snapshot
             // lists it as timer-owned, so nothing respawns it either).
             let reconcile_timers = samurai_schedule.list();
+            // Fix S3 (issue #131 review 2): a corrupt/truncated
+            // schedule.json used to discard every pending timer behind a
+            // log line. Surviving entries are now salvaged per-entry and
+            // whatever was lost gets a durable, account-wide ALERT — a
+            // dropped scheduled launch has no cold-start reconciliation
+            // backstop, so nothing else would ever surface it.
+            if let Some(details) = samurai_schedule.load_alert() {
+                log::error!("samurai schedule: entries were dropped at load — {details}");
+                audit_log.append(
+                    core::allowance_watcher::ACCOUNT_PROJECT,
+                    core::samurai_audit::AuditEvent::now(
+                        "",
+                        core::samurai_audit::AuditEventKind::Alert,
+                        0,
+                        0,
+                        details,
+                    ),
+                );
+            }
             app.manage(samurai_schedule.clone());
 
             // Samurai (issue #60): the allowance parker — the backend
