@@ -726,6 +726,30 @@ pub fn run() {
             // tracker above (finding H): pending instruction + idle flag.
             app.manage(injector.clone());
             let _ = samurai_injector.set(injector.clone());
+            // Issue #118: the blindness self-heal. A session whose transcript
+            // stream is dead (watch never attached — e.g. a lost SessionStart
+            // hook or a refused OS watcher — or silently died) is re-resolved
+            // to the newest transcript in its Claude project directory (the
+            // same fallback the recovery digest uses) and force-restarted,
+            // instead of staying blind for the rest of the run.
+            let rewatch_watcher = app.state::<Arc<TranscriptWatcher>>().inner().clone();
+            let rewatch_handle = app.handle().clone();
+            injector.set_rewatcher(Arc::new(move |session_id| {
+                let Some(dir) = rewatch_handle
+                    .state::<SessionManager>()
+                    .get_session(session_id)
+                    .map(|s| s.working_directory.unwrap_or(s.project_path))
+                else {
+                    return false;
+                };
+                match commands::claude_sessions::newest_transcript_for_project(&dir) {
+                    Some(path) => {
+                        rewatch_watcher.restart_watching(session_id, path);
+                        true
+                    }
+                    None => false,
+                }
+            }));
             core::samurai_injector::spawn_injector(injector.clone());
 
             // Samurai (issue #59): per-epic run-config store + persisted

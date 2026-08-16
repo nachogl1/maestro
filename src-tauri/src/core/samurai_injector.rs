@@ -106,6 +106,23 @@ const BLIND_TICKS_BEFORE_ALERT: u32 = 10;
 /// managed state.
 pub type SessionDirResolver = Arc<dyn Fn(u32) -> Option<String> + Send + Sync>;
 
+/// Re-resolves one session's transcript and force-reattaches its watch
+/// (issue #118). Returns `true` when a transcript was found and a fresh
+/// watch attached. Production (lib.rs) resolves the session's working
+/// directory to the newest transcript in its Claude projects directory and
+/// calls `TranscriptWatcher::restart_watching`; tests inject a recorder.
+pub type TranscriptRewatcher = Arc<dyn Fn(u32) -> bool + Send + Sync>;
+
+/// One session's blindness episode (issue #118): consecutive WORKING ticks
+/// with no context reading, plus whether this episode's single self-heal
+/// (transcript rewatch) already ran. The episode ends when a reading lands
+/// (the entry is removed), so a later blind spell heals and alerts afresh.
+#[derive(Default)]
+struct BlindState {
+    ticks: u32,
+    rewatch_attempted: bool,
+}
+
 /// Which ladder a pending entry runs (issue #60). The mechanics (idle-gate,
 /// ACK, retry-once, written window, corrective round, timeouts) are shared;
 /// the kind selects the supervisor state the entry lives in, the marker
@@ -904,9 +921,14 @@ pub struct SamuraiInjector {
     idle_now: Arc<Mutex<HashSet<u32>>>,
     /// Consecutive ticks a WORKING session has had NO context reading, per
     /// session — the blindness detector behind the `context_blind` ALERT
-    /// ([`note_blind_tick`](SamuraiInjector::note_blind_tick)). Cleared the
-    /// moment a reading lands, and pruned to the supervised set each tick.
-    blind_ticks: Mutex<HashMap<u32, u32>>,
+    /// ([`note_blind_tick`](SamuraiInjector::note_blind_tick)), plus the
+    /// per-episode self-heal flag (issue #118). Cleared the moment a reading
+    /// lands, and pruned to the supervised set each tick.
+    blind_ticks: Mutex<HashMap<u32, BlindState>>,
+    /// Issue #118: the transcript-rewatch closure the blindness detector
+    /// heals through before alerting. Late-bound like the parker (the
+    /// watcher wiring lives in lib.rs setup); unset = alert-only behavior.
+    rewatch: std::sync::OnceLock<TranscriptRewatcher>,
     /// Issue #55: the replication controller a validated handoff chains
     /// into. It also shares this controller's tick (its no-start timeout
     /// pass) and hook tap (SessionStarted ritual delivery). `None` only in
@@ -943,6 +965,7 @@ impl SamuraiInjector {
             pending: Arc::new(Mutex::new(HashMap::new())),
             idle_now: Arc::new(Mutex::new(HashSet::new())),
             blind_ticks: Mutex::new(HashMap::new()),
+            rewatch: std::sync::OnceLock::new(),
             replicator,
             parker: std::sync::OnceLock::new(),
             run_configs: std::sync::OnceLock::new(),
@@ -961,6 +984,13 @@ impl SamuraiInjector {
     /// ignored.
     pub fn set_run_configs(&self, store: Arc<super::samurai_run_config::RunConfigStore>) {
         let _ = self.run_configs.set(store);
+    }
+
+    /// Issue #118: late-binds the transcript-rewatch closure the blindness
+    /// detector self-heals through, same pattern as `set_parker`. Second
+    /// calls are ignored.
+    pub fn set_rewatcher(&self, rewatch: TranscriptRewatcher) {
+        let _ = self.rewatch.set(rewatch);
     }
 
     /// The epic's per-run handoff threshold override, when its run config
@@ -1758,28 +1788,63 @@ impl SamuraiInjector {
     /// Test-only view of a session's consecutive blind-tick count.
     #[cfg(test)]
     pub(crate) fn blind_ticks_view(&self, session_id: u32) -> Option<u32> {
-        self.lock_blind().get(&session_id).copied()
+        self.lock_blind().get(&session_id).map(|s| s.ticks)
     }
 
-    fn lock_blind(&self) -> std::sync::MutexGuard<'_, HashMap<u32, u32>> {
+    fn lock_blind(&self) -> std::sync::MutexGuard<'_, HashMap<u32, BlindState>> {
         self.blind_ticks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Counts one tick of a WORKING session with no context reading, and
-    /// raises the `context_blind` ALERT on the tick the count reaches
-    /// [`BLIND_TICKS_BEFORE_ALERT`] — exactly once, since the count only
-    /// equals it once and a reading clears the entry.
+    /// Counts one tick of a WORKING session with no context reading. On the
+    /// tick the count reaches [`BLIND_TICKS_BEFORE_ALERT`], blindness means
+    /// the transcript stream is dead (the watch never attached, or silently
+    /// died — issue #118), so the injector first tries to SELF-HEAL: one
+    /// transcript rewatch per episode through the late-bound
+    /// [`TranscriptRewatcher`], which resets the window so the fresh watch
+    /// gets a full window to deliver a reading. The `context_blind` ALERT
+    /// fires only when the reattach fails (or no rewatcher is bound), or
+    /// when blindness persists a full further window after a successful
+    /// reattach — exactly once per episode either way, since the count only
+    /// equals the threshold once per (re)start and a reading clears the
+    /// entry. The rewatch does bounded FS work inline on the tick — one
+    /// `read_dir` over one directory, at most once per 5-minute episode
+    /// (same budget class as the tick's per-session run-config read).
     fn note_blind_tick(&self, session: &SessionSnapshot) {
-        let ticks = {
+        let (ticks, rewatch_attempted) = {
             let mut blind = self.lock_blind();
-            let entry = blind.entry(session.session_id).or_insert(0);
-            *entry += 1;
-            *entry
+            let entry = blind.entry(session.session_id).or_default();
+            entry.ticks += 1;
+            (entry.ticks, entry.rewatch_attempted)
         };
         if ticks != BLIND_TICKS_BEFORE_ALERT {
             return;
+        }
+        if !rewatch_attempted {
+            if let Some(rewatch) = self.rewatch.get() {
+                let healed = rewatch(session.session_id);
+                {
+                    let mut blind = self.lock_blind();
+                    if let Some(entry) = blind.get_mut(&session.session_id) {
+                        entry.rewatch_attempted = true;
+                        if healed {
+                            entry.ticks = 0;
+                        }
+                    }
+                }
+                if healed {
+                    log::warn!(
+                        "samurai injector: session {} had no context reading for {ticks} ticks — transcript watch re-attached; alerting only if blindness persists",
+                        session.session_id
+                    );
+                    return;
+                }
+                log::warn!(
+                    "samurai injector: session {} transcript rewatch failed — no transcript resolvable",
+                    session.session_id
+                );
+            }
         }
         log::warn!(
             "samurai injector: session {} has had no context reading for {ticks} ticks — the handoff trigger is blind",
@@ -2570,6 +2635,108 @@ mod tests {
         context.observe(&context_event(1, 10.0));
         injector.tick();
         assert!(injector.blind_ticks_view(1).is_none());
+    }
+
+    /// Issue #118: blindness means a dead transcript stream — observed live
+    /// as zero context readings, undetected ACK markers, a false
+    /// ack_timeout, and a session stuck PARKING forever. Before alerting,
+    /// the injector must SELF-HEAL: re-resolve and re-attach the watch via
+    /// the injected rewatcher, hold the alert while the fresh watch gets a
+    /// full window, and alert only if blindness persists.
+    #[tokio::test]
+    async fn test_blindness_reattaches_the_watch_and_holds_the_alert() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-blind-heal";
+        supervisor
+            .register_session(1, project.into(), "epic-blind".into(), 1)
+            .unwrap();
+        let rewatched: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let rewatched_rec = rewatched.clone();
+        injector.set_rewatcher(Arc::new(move |session_id| {
+            rewatched_rec.lock().unwrap().push(session_id);
+            true
+        }));
+        let alerts = |rows: Vec<AuditEvent>| {
+            rows.into_iter()
+                .filter(|r| {
+                    r.event == AuditEventKind::Alert && r.details["kind"] == "context_blind"
+                })
+                .count()
+        };
+
+        // The blindness threshold: the rewatcher heals instead of alerting,
+        // and the fresh watch gets a fresh full window.
+        for _ in 0..BLIND_TICKS_BEFORE_ALERT {
+            injector.tick();
+        }
+        assert_eq!(
+            *rewatched.lock().unwrap(),
+            vec![1],
+            "one reattach at the threshold"
+        );
+        assert_eq!(
+            alerts(audit.read(project, None, None).await.unwrap().events),
+            0,
+            "a successful reattach holds the alert"
+        );
+        assert_eq!(
+            injector.blind_ticks_view(1),
+            Some(0),
+            "the reattached watch gets a full fresh window"
+        );
+
+        // Still blind a full window later: the reattach did not cure it —
+        // the alert fires now, and the episode never re-heals.
+        for _ in 0..BLIND_TICKS_BEFORE_ALERT {
+            injector.tick();
+        }
+        injector.tick();
+        assert_eq!(
+            *rewatched.lock().unwrap(),
+            vec![1],
+            "one heal attempt per blind episode"
+        );
+        assert_eq!(
+            alerts(audit.read(project, None, None).await.unwrap().events),
+            1,
+            "persistent blindness after the reattach alerts once"
+        );
+    }
+
+    /// Issue #118: when the reattach fails (no transcript resolvable), the
+    /// original `context_blind` ALERT must fire exactly as before — the
+    /// self-heal replaces the alert only when it actually reattached.
+    #[tokio::test]
+    async fn test_blindness_alerts_when_the_reattach_fails() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-blind-fail";
+        supervisor
+            .register_session(1, project.into(), "epic-blind".into(), 1)
+            .unwrap();
+        let rewatched: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let rewatched_rec = rewatched.clone();
+        injector.set_rewatcher(Arc::new(move |session_id| {
+            rewatched_rec.lock().unwrap().push(session_id);
+            false
+        }));
+
+        for _ in 0..BLIND_TICKS_BEFORE_ALERT {
+            injector.tick();
+        }
+        injector.tick();
+        assert_eq!(*rewatched.lock().unwrap(), vec![1], "reattach was tried");
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.into_iter()
+                .filter(|r| {
+                    r.event == AuditEventKind::Alert && r.details["kind"] == "context_blind"
+                })
+                .count(),
+            1,
+            "a failed reattach keeps the alert, once"
+        );
     }
 
     #[tokio::test]

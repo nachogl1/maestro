@@ -327,6 +327,26 @@ impl TranscriptWatcher {
         );
     }
 
+    /// Force-reattach a session's watch (issue #118): stop whatever watcher
+    /// the session has — even one registered for this SAME path, which
+    /// `start_watching` would treat as a no-op — and start a fresh one.
+    ///
+    /// The samurai blindness self-heal calls this when a session's
+    /// transcript stream went silent: the fresh reader re-reads from byte 0
+    /// (re-feeding the context store; marker scans are replay-safe by
+    /// design — `claude --resume` already re-reads transcripts from byte 0),
+    /// and, when this session was the directory's only subscriber, the
+    /// directory's OS watch is recreated instead of rejoining one that may
+    /// have silently died.
+    pub fn restart_watching(&self, session_id: u32, transcript_path: PathBuf) {
+        log::info!(
+            "TranscriptWatcher: force-restarting session {session_id} at {}",
+            transcript_path.display()
+        );
+        self.stop_watching(session_id);
+        self.start_watching(session_id, transcript_path);
+    }
+
     /// Stop watching a session's transcript file and clean up resources.
     pub fn stop_watching(&self, session_id: u32) {
         if let Some((_, state)) = self.watchers.remove(&session_id) {
@@ -1521,6 +1541,66 @@ mod tests {
         watcher.start_watching(3, path_a);
         assert_eq!(watcher.dir_watchers.lock().unwrap().len(), 1);
         watcher.stop_watching(3);
+    }
+
+    /// Issue #118: a session whose watch silently died (or never attached)
+    /// can only be revived by a FORCED restart — `start_watching` with the
+    /// same path is a documented no-op, which would leave the stream dead.
+    /// `restart_watching` must attach a fresh reader that re-reads from
+    /// byte 0, proving the session got a live watcher again.
+    #[tokio::test]
+    async fn test_restart_watching_attaches_a_fresh_reader_for_the_same_path() {
+        use std::time::Duration;
+
+        let (event_bus, captured) = test_event_bus();
+        let watcher = TranscriptWatcher::new(event_bus.clone());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, format!("{USER_MSG_LINE}\n")).unwrap();
+        let path = path.canonicalize().unwrap();
+
+        watcher.start_watching(1, path.clone());
+        let count = |captured: &Arc<std::sync::Mutex<Vec<ClaudeEvent>>>| {
+            captured
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| matches!(e, ClaudeEvent::UserMessage { text, .. } if text == "hello"))
+                .count()
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while count(&captured) < 1 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "initial catch-up never delivered"
+            );
+        }
+
+        // The bus dedups replayed uuids for 5s; a real heal happens minutes
+        // after the original read, so expire the window rather than sleep.
+        event_bus.clear_dedup_cache();
+
+        // Same path through start_watching: the documented no-op — nothing
+        // is re-read, which is exactly why a dead watch stayed dead.
+        watcher.start_watching(1, path.clone());
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(count(&captured), 1, "start_watching with the same path is a no-op");
+
+        // The forced restart attaches a fresh reader: byte 0 is re-read, so
+        // the same line is delivered again — the stream is demonstrably live.
+        watcher.restart_watching(1, path);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while count(&captured) < 2 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "restart_watching never delivered a fresh catch-up"
+            );
+        }
+        assert_eq!(watcher.watched_sessions(), vec![1]);
+        watcher.stop_watching(1);
     }
 
     /// Regression: re-registering a session with a NEW transcript path (what
