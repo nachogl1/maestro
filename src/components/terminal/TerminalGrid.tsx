@@ -108,6 +108,30 @@ import {
 import { TerminalView } from "./TerminalView";
 import { SessionStatusDot, ThinkingIndicator } from "./ThinkingIndicator";
 
+/**
+ * How many of these slots count against `MAX_SESSIONS`.
+ *
+ * Parked samurai terminal-state tiles (issue #122) are dead weight: the PTY
+ * is gone and only the transcript remains. A long autonomous run leaves one
+ * per generation, so counting them would first drop a successor's launch
+ * AFTER `consume` claimed it (silently stalling the run) and then make the
+ * "+" button a silent no-op for the whole project. Both call sites — the
+ * pending-launch claim and `addSession` — go through here so the exemption
+ * cannot drift apart again (PR #131 review M4/F4).
+ */
+function occupiedSlotCount(slots: SessionSlot[]): number {
+  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
+  return slots.filter((slot) => {
+    if (slot.sessionId === null) return true;
+    const info = samuraiBySessionId[slot.sessionId];
+    return !(
+      info !== undefined &&
+      SAMURAI_TERMINAL_STATES.has(info.state) &&
+      parkedSessionIds.includes(slot.sessionId)
+    );
+  }).length;
+}
+
 /** Stable empty arrays to avoid infinite re-render loops in Zustand selectors. */
 const EMPTY_MCP_SERVERS: McpServerConfig[] = [];
 const EMPTY_SKILLS: SkillConfig[] = [];
@@ -1773,10 +1797,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
    * Adds a new pre-launch slot to the grid.
    */
   const addSession = useCallback(() => {
-    if (slotsRef.current.length >= MAX_SESSIONS) return;
+    if (occupiedSlotCount(slotsRef.current) >= MAX_SESSIONS) return;
     const newSlot = createEmptySlot(mcpServers, skills, plugins);
     setSlots((prev) => {
-      if (prev.length >= MAX_SESSIONS) return prev;
+      if (occupiedSlotCount(prev) >= MAX_SESSIONS) return prev;
       return [...prev, newSlot];
     });
     // Rebuild layout as a clean 2D grid (matching old CSS grid dimensions)
@@ -1841,22 +1865,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       !launchingSlotIdsRef.current.has(current[0].id)
         ? current[0]
         : null;
-    // Parked samurai terminal-state tiles (issue #122) are dead weight: the
-    // PTY is gone and only the transcript remains. A long autonomous run
-    // leaves one per generation, so counting them against the cap would
-    // drop a successor's launch AFTER `consume` claimed it — silently
-    // stalling the run (PR #131 review M4). Exempt them from the count.
-    const sessionState = useSessionStore.getState();
-    const occupiedCount = current.filter((s) => {
-      if (s.sessionId === null) return true;
-      const samuraiInfo = sessionState.samuraiBySessionId[s.sessionId];
-      return !(
-        samuraiInfo !== undefined &&
-        SAMURAI_TERMINAL_STATES.has(samuraiInfo.state) &&
-        sessionState.parkedSessionIds.includes(s.sessionId)
-      );
-    }).length;
-    if (!reusable && occupiedCount >= MAX_SESSIONS) {
+    // Parked samurai terminal-state tiles do not count — see
+    // `occupiedSlotCount`, shared with `addSession`.
+    if (!reusable && occupiedSlotCount(current) >= MAX_SESSIONS) {
       setError(`Cannot resume: maximum of ${MAX_SESSIONS} sessions per project`);
       return;
     }
