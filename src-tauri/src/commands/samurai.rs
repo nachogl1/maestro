@@ -24,6 +24,7 @@ use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
 };
+use crate::core::samurai_parker::SamuraiParker;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
 use crate::core::samurai_resumer::latest_handoff_generation;
@@ -767,6 +768,7 @@ pub(crate) async fn recover_run_inner(
     run_configs: &RunConfigStore,
     replicator: &Arc<SamuraiReplicator>,
     audit: &AuditLog,
+    parker: &SamuraiParker,
     project: &str,
     epic: &str,
 ) -> Result<SamuraiRecoverResult, String> {
@@ -779,6 +781,18 @@ pub(crate) async fn recover_run_inner(
         return Err(format!(
             "run {epic} is {:?}, not ACTIVE — only a non-completed run can be recovered",
             config.status,
+        ));
+    }
+    // Fix L5: every other successor path (the resumer's `should_defer`)
+    // refuses to spawn while a hard park sweep is engaged — spawning would
+    // burn the exhausted allowance the sweep exists to protect, and the
+    // fresh orchestrator gets immediately re-swept. Recovery must honour the
+    // same guard.
+    if parker.parking_engaged() {
+        return Err(format!(
+            "run {epic} cannot be recovered while allowance parking is engaged — a hard park \
+             sweep is reclaiming exhausted allowance right now; wait for it to finish, then \
+             recover or let the epic resume normally",
         ));
     }
     // A live orchestrator must never be duplicated — recovery is for a
@@ -886,6 +900,7 @@ pub async fn samurai_recover_run(
     run_configs: State<'_, Arc<RunConfigStore>>,
     replicator: State<'_, Arc<SamuraiReplicator>>,
     audit: State<'_, AuditLog>,
+    parker: State<'_, Arc<SamuraiParker>>,
     project_path: String,
     epic: String,
 ) -> Result<SamuraiRecoverResult, String> {
@@ -896,6 +911,7 @@ pub async fn samurai_recover_run(
         &run_configs,
         &replicator,
         &audit,
+        &parker,
         &project,
         &epic,
     )
@@ -2138,10 +2154,41 @@ mod tests {
         worktrees: WorktreeManager,
         audit: AuditLog,
         in_flight: Arc<LaunchInFlight>,
+        parker: Arc<SamuraiParker>,
         project: String,
         _dirs: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
         base: tempfile::TempDir,
         repo: tempfile::TempDir,
+    }
+
+    /// A parker wired to the harness's own supervisor/schedule/audit, with
+    /// inert context/injector collaborators — enough to drive
+    /// `on_allowance_event` and observe `parking_engaged()` (fix L5's test).
+    fn test_parker(
+        supervisor: Arc<Supervisor>,
+        schedule: Arc<SamuraiSchedule>,
+        audit: AuditLog,
+    ) -> Arc<SamuraiParker> {
+        use crate::core::samurai_context::SamuraiContextStore;
+        use crate::core::samurai_injector::SamuraiInjector;
+        use std::sync::RwLock;
+
+        let context = Arc::new(SamuraiContextStore::new());
+        let config: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
+        let injector = Arc::new(SamuraiInjector::new(
+            supervisor.clone(),
+            context.clone(),
+            config,
+            Arc::new(|_, _, outcome: crate::core::samurai_pty::DeliveryOutcome| outcome(Ok(()))),
+            audit.clone(),
+            Arc::new(|_| None),
+            None,
+        ));
+        let teardown: crate::core::samurai_replicator::SessionTeardown =
+            Arc::new(|_| Box::pin(async {}));
+        let parker = SamuraiParker::new(supervisor, context, injector.clone(), schedule, audit, teardown);
+        injector.set_parker(parker.clone());
+        parker
     }
 
     /// A replicator wired to inert collaborators — enough for the staging /
@@ -2198,6 +2245,7 @@ mod tests {
         let project = repo.path().to_string_lossy().into_owned();
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let (replicator, spawns) = test_replicator(supervisor.clone(), audit.clone());
+        let parker = test_parker(supervisor.clone(), schedule.clone(), audit.clone());
         CleanupHarness {
             supervisor,
             schedule,
@@ -2207,6 +2255,7 @@ mod tests {
             worktrees: WorktreeManager::new(),
             audit,
             in_flight: Arc::new(LaunchInFlight::default()),
+            parker,
             project,
             _dirs: (audit_dir, schedule_dir, runs_dir),
             base: tempdir().unwrap(),
@@ -3001,6 +3050,7 @@ mod tests {
             &h.run_configs,
             &h.replicator,
             &h.audit,
+            &h.parker,
             &h.project,
             epic,
         )
@@ -3041,6 +3091,39 @@ mod tests {
         assert!(err.contains("not ACTIVE"), "{err}");
 
         assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    #[tokio::test]
+    async fn test_recover_refuses_while_parking_engaged() {
+        // Fix L5: recovery must honour the same "parking engaged" guard the
+        // resumer's `should_defer` applies to every other successor spawn —
+        // spawning into an exhausted allowance mid-hard-park-sweep just gets
+        // the fresh orchestrator immediately re-swept.
+        use crate::core::allowance_watcher::{AllowanceEvent, AllowanceWindow, ThresholdKind};
+
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        run_launch(&h, &gate, true, "#38").await.unwrap();
+        // A WORKING session (any epic) keeps the sweep from completing
+        // instantly — it sits ParkRequested awaiting its ACK, which is
+        // exactly the "sweep still in flight" state recovery must refuse
+        // to spawn into.
+        h.supervisor
+            .register_session(99, h.project.clone(), "#other".to_string(), 1)
+            .unwrap();
+
+        h.parker.on_allowance_event(&AllowanceEvent::ThresholdCrossed {
+            window: AllowanceWindow::FiveHour,
+            threshold_kind: ThresholdKind::Hard,
+            value: 99.0,
+            threshold: 90.0,
+            resets_at: Some("2030-01-01T00:00:00Z".to_string()),
+        });
+        assert!(h.parker.parking_engaged(), "sweep must be engaged");
+
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("parking is engaged"), "{err}");
+        assert!(h.spawns.lock().unwrap().len() == 1, "no successor spawned");
     }
 
     #[tokio::test]
