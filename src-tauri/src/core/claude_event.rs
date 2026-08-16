@@ -126,6 +126,12 @@ pub enum ClaudeEvent {
         /// serialized before this field existed still deserialize.
         #[serde(default)]
         parent_agent_id: Option<String>,
+        /// Model the orchestrator asked for in the spawn input (e.g. "sonnet").
+        /// `None` when the input names none; the launch/completion may later
+        /// resolve the actual model. `default` so older serialized events
+        /// still deserialize.
+        #[serde(default)]
+        model: Option<String>,
         timestamp: String,
     },
 
@@ -366,6 +372,7 @@ mod tests {
             prompt: "p".into(),
             run_in_background: false,
             parent_agent_id: None,
+            model: None,
             timestamp: "t".into(),
         };
         assert_ne!(spawned(1).dedup_key(), spawned(2).dedup_key());
@@ -410,7 +417,7 @@ mod tests {
             ClaudeEvent::ToolUseCompleted { session_id: 6, tool_name: "Read".into(), tool_use_id: "x".into(), success: true, timestamp: "t".into() },
             ClaudeEvent::FileEdited { session_id: 7, file_path: "/a".into(), tool: "Edit".into(), timestamp: "t".into() },
             ClaudeEvent::FileCreated { session_id: 8, file_path: "/b".into(), timestamp: "t".into() },
-            ClaudeEvent::SubagentSpawned { session_id: 9, agent_type: "Explore".into(), agent_id: "s".into(), description: "d".into(), prompt: "p".into(), run_in_background: false, parent_agent_id: None, timestamp: "t".into() },
+            ClaudeEvent::SubagentSpawned { session_id: 9, agent_type: "Explore".into(), agent_id: "s".into(), description: "d".into(), prompt: "p".into(), run_in_background: false, parent_agent_id: None, model: None, timestamp: "t".into() },
             ClaudeEvent::SubagentCompleted { session_id: 10, agent_id: "s".into(), success: true, report: "r".into(), status: None, agent_type: None, model: None, duration_ms: None, total_tokens: None, tool_use_count: None, tool_stats: None, agent_run_id: None, timestamp: "t".into() },
             ClaudeEvent::StatusUpdate { session_id: 11, state: "working".into(), message: "m".into(), needs_input_prompt: None, timestamp: "t".into() },
             ClaudeEvent::TokenUsageUpdate { session_id: 12, input_tokens: 100, output_tokens: 50, cache_read_tokens: 10, cache_creation_tokens: 5, timestamp: "t".into() },

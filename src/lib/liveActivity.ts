@@ -98,3 +98,23 @@ export function deriveLiveActivity(events: readonly ClaudeEvent[]): LiveActivity
   );
   return { lastTool, recentTools, lastMessage, updatedAt: stamps.sort()[stamps.length - 1] };
 }
+
+/**
+ * The model the session itself runs on (issue #126): the model named by the
+ * latest assistant message. Entries with no model or the watcher's
+ * "<synthetic>" placeholder (API-error entries) are skipped. Null until the
+ * session has produced an assistant message.
+ */
+export function deriveSessionModel(events: readonly ClaudeEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (
+      event.event_type === "AssistantMessage" &&
+      event.model !== "" &&
+      event.model !== "<synthetic>"
+    ) {
+      return event.model;
+    }
+  }
+  return null;
+}

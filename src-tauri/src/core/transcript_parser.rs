@@ -640,6 +640,14 @@ fn parse_assistant_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
                         .get("run_in_background")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+                    // The model the orchestrator asked for, when the spawn
+                    // names one (issue #126). The launch/completion later
+                    // reports the model Claude actually resolved.
+                    let model = input
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .filter(|m| !m.is_empty())
+                        .map(|m| m.to_string());
                     events.push(ClaudeEvent::SubagentSpawned {
                         session_id,
                         agent_type,
@@ -651,6 +659,7 @@ fn parse_assistant_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
                         // which file it came from; the watcher stamps the
                         // parent when the line belongs to a subagent's file.
                         parent_agent_id: None,
+                        model,
                         timestamp: timestamp.clone(),
                     });
                 }
@@ -855,6 +864,35 @@ mod tests {
             assert_eq!(agent_type, "Explore");
             assert_eq!(agent_id, "toolu_task1");
             assert_eq!(description, "Search for auth code");
+        }
+    }
+
+    /// Issue #126: the Task input can name the model the orchestrator asked
+    /// for; the spawn event carries it so the graph shows it from the start.
+    #[test]
+    fn test_parse_subagent_spawn_carries_requested_model() {
+        let line = r#"{"parentUuid":"uuid-user-1","isSidechain":false,"type":"assistant","message":{"model":"claude-fable-5","id":"msg_005","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_task_m","name":"Task","input":{"description":"Review tests","prompt":"Review the suite","subagent_type":"Explore","model":"sonnet"}}],"usage":{"input_tokens":10,"output_tokens":5}},"uuid":"uuid-asst-5","timestamp":"2026-07-31T10:00:20.000Z"}"#;
+        let events = parse_transcript_line(8, line);
+
+        let spawn_event = events
+            .iter()
+            .find(|e| matches!(e, ClaudeEvent::SubagentSpawned { .. }));
+        assert!(spawn_event.is_some(), "Should have a SubagentSpawned event");
+        if let Some(ClaudeEvent::SubagentSpawned { model, .. }) = spawn_event {
+            assert_eq!(model.as_deref(), Some("sonnet"));
+        }
+    }
+
+    /// A spawn whose input names no model stays None — unknown, not "".
+    #[test]
+    fn test_parse_subagent_spawn_without_model_is_none() {
+        let events = parse_transcript_line(4, ASSISTANT_MSG_TASK);
+        let spawn_event = events
+            .iter()
+            .find(|e| matches!(e, ClaudeEvent::SubagentSpawned { .. }));
+        assert!(spawn_event.is_some(), "Should have a SubagentSpawned event");
+        if let Some(ClaudeEvent::SubagentSpawned { model, .. }) = spawn_event {
+            assert!(model.is_none());
         }
     }
 

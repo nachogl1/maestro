@@ -431,6 +431,29 @@ describe("AgentGraph", () => {
     expect(screen.getByText("all shipped")).toBeInTheDocument();
   });
 
+  // Issue #126: the model each agent runs is graph-visible — the session root
+  // shows the model of its latest assistant message, and a RUNNING subagent
+  // node already shows the model it was spawned with via its stats line.
+  it("shows the session's model on the root node and the agent's on its node", () => {
+    useSessionStore.setState({ sessions: [session(1, { name: "Orchestrator" })] });
+    seedActivity(1, [assistantEvent("a1", "Working on it.", "2026-08-13T10:00:00Z")]);
+    useAgentStore.setState({
+      agents: [agent(1, "toolu_run", { agentType: "Explore", model: "claude-sonnet-5" })],
+    });
+    render(<AgentGraph sessionId={1} />);
+
+    // assistantEvent's model is claude-fable-5 — shortened on the root badge.
+    expect(screen.getByTitle("Model: claude-fable-5")).toHaveTextContent("fable-5");
+    // The running agent's stats line names its model.
+    expect(screen.getByText("sonnet-5")).toBeInTheDocument();
+  });
+
+  it("shows no model badge when the session has produced no assistant message", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    render(<AgentGraph sessionId={1} />);
+    expect(screen.queryByTitle(/^Model: /)).not.toBeInTheDocument();
+  });
+
   it("an unrecognised status is shown verbatim rather than as DONE", () => {
     useSessionStore.setState({ sessions: [session(1)] });
     useAgentStore.setState({

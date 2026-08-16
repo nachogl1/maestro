@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   boundSnippet,
   deriveLiveActivity,
+  deriveSessionModel,
   RECENT_TOOLS_MAX,
   SNIPPET_MAX_CHARS,
 } from "@/lib/liveActivity";
@@ -117,6 +118,33 @@ describe("recentTools (issue #127: activity detail too shallow)", () => {
   it("is empty when the feed holds assistant text only", () => {
     const activity = deriveLiveActivity([assistant("a1", "Thinking…", "2026-08-13T10:00:00Z")]);
     expect(activity?.recentTools).toEqual([]);
+  });
+});
+
+describe("deriveSessionModel (issue #126: model on the session node)", () => {
+  it("returns the model of the latest assistant message", () => {
+    expect(
+      deriveSessionModel([
+        assistant("a1", "hi", "2026-08-13T10:00:00Z"),
+        { ...assistant("a2", "later", "2026-08-13T10:00:05Z"), model: "claude-sonnet-5" },
+      ]),
+    ).toBe("claude-sonnet-5");
+  });
+
+  it("skips synthetic/empty models (API-error entries) and non-assistant events", () => {
+    expect(
+      deriveSessionModel([
+        assistant("a1", "real", "2026-08-13T10:00:00Z"),
+        { ...assistant("a2", "API Error", "2026-08-13T10:00:01Z"), model: "<synthetic>" },
+        { ...assistant("a3", "", "2026-08-13T10:00:02Z"), model: "" },
+        toolUse("t1", "Bash", "cargo test", "2026-08-13T10:00:03Z"),
+      ]),
+    ).toBe("claude-fable-5");
+  });
+
+  it("returns null when no assistant message named a model", () => {
+    expect(deriveSessionModel([])).toBeNull();
+    expect(deriveSessionModel([toolUse("t1", "Read", "/a.rs", "2026-08-13T10:00:00Z")])).toBeNull();
   });
 });
 
