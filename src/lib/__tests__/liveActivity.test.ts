@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { boundSnippet, deriveLiveActivity, SNIPPET_MAX_CHARS } from "@/lib/liveActivity";
+import {
+  boundSnippet,
+  deriveLiveActivity,
+  RECENT_TOOLS_MAX,
+  SNIPPET_MAX_CHARS,
+} from "@/lib/liveActivity";
 import type { ClaudeEvent } from "@/types/claude-events";
 
 function toolUse(id: string, name: string, summary: string, timestamp: string): ClaudeEvent {
@@ -84,6 +89,34 @@ describe("deriveLiveActivity", () => {
       assistant("a1", "Done reading.", "2026-08-13T10:00:09Z"),
     ]);
     expect(activity?.updatedAt).toBe("2026-08-13T10:00:09Z");
+  });
+});
+
+describe("recentTools (issue #127: activity detail too shallow)", () => {
+  it("collects the latest tool calls oldest-first so the popover can show the whole turn", () => {
+    const activity = deriveLiveActivity([
+      toolUse("t1", "Read", "/src/config.rs", "2026-08-13T10:00:01Z"),
+      toolUse("t2", "Grep", "TODO in src", "2026-08-13T10:00:02Z"),
+      toolUse("t3", "Bash", "cargo test --workspace", "2026-08-13T10:00:03Z"),
+    ]);
+    expect(activity?.recentTools.map((t) => t.name)).toEqual(["Read", "Grep", "Bash"]);
+    // The newest of them is still the headline tool.
+    expect(activity?.lastTool?.name).toBe("Bash");
+  });
+
+  it(`caps the list at ${RECENT_TOOLS_MAX} keeping the newest calls`, () => {
+    const events = Array.from({ length: RECENT_TOOLS_MAX + 2 }, (_, i) =>
+      toolUse(`t${i}`, `Tool${i}`, `target ${i}`, `2026-08-13T10:00:0${i}Z`),
+    );
+    const activity = deriveLiveActivity(events);
+    expect(activity?.recentTools).toHaveLength(RECENT_TOOLS_MAX);
+    expect(activity?.recentTools.at(-1)?.name).toBe(`Tool${RECENT_TOOLS_MAX + 1}`);
+    expect(activity?.recentTools[0]?.name).toBe("Tool2");
+  });
+
+  it("is empty when the feed holds assistant text only", () => {
+    const activity = deriveLiveActivity([assistant("a1", "Thinking…", "2026-08-13T10:00:00Z")]);
+    expect(activity?.recentTools).toEqual([]);
   });
 });
 

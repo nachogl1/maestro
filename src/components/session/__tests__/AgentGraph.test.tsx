@@ -374,6 +374,31 @@ describe("AgentGraph", () => {
     expect(screen.getByText("— /src/lib.rs")).toBeInTheDocument();
   });
 
+  it("shows the whole recent-tool trail, wrapped rather than clipped (issue #127)", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    const longCmd =
+      "npx vitest run src/components/session/__tests__/AgentGraph.test.tsx --reporter=verbose --no-coverage";
+    seedActivity(1, [
+      toolUseEvent("t1", "Read", "/src/stores/useAgentStore.ts", "2026-08-13T10:00:00Z"),
+      toolUseEvent("t2", "Grep", "SubagentSpawned in src", "2026-08-13T10:00:01Z"),
+      toolUseEvent("t3", "Bash", longCmd, "2026-08-13T10:00:02Z"),
+    ]);
+    render(<AgentGraph sessionId={1} />);
+    fireEvent.click(screen.getByLabelText("Show live activity"));
+
+    // Every recent tool is listed — not just the newest fragment.
+    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("Grep")).toBeInTheDocument();
+    expect(screen.getByText("Bash")).toBeInTheDocument();
+
+    // The tool target wraps instead of truncating, so the whole string is
+    // readable; and the card scrolls rather than clipping its content.
+    const target = screen.getByText(`— ${longCmd}`);
+    const line = target.closest("p");
+    expect(line?.className).not.toContain("truncate");
+    expect(line?.className).toContain("break-words");
+  });
+
   it("shows no eye when the session is not working", () => {
     useSessionStore.setState({ sessions: [session(1, { status: "Idle" })] });
     render(<AgentGraph sessionId={1} />);

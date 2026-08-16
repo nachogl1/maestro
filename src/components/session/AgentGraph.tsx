@@ -156,7 +156,7 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
           <LiveActivityPopover
             sessionId={sessionId}
             onClose={() => setLiveOpen(false)}
-            className="w-[260px]"
+            className="w-[320px]"
           />
         )}
         <p className="max-w-[280px] text-center text-[11px] italic text-maestro-muted">
@@ -304,7 +304,7 @@ export function AgentGraph({ sessionId }: AgentGraphProps) {
         {showLivePopover && (
           <div
             className="absolute z-20"
-            style={{ left: rootX, top: rootY + ROOT_H + 6, width: 260 }}
+            style={{ left: rootX, top: rootY + ROOT_H + 6, width: 320 }}
           >
             <LiveActivityPopover sessionId={sessionId} onClose={() => setLiveOpen(false)} />
           </div>
