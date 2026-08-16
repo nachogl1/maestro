@@ -24,6 +24,7 @@ use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
 };
+use crate::core::samurai_parker::SamuraiParker;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
 use crate::core::samurai_resumer::latest_handoff_generation;
@@ -761,12 +762,14 @@ fn verify_worktree_git(worktree: &Path) -> Result<(String, String), String> {
 /// generation through the replicator — which resumes from the prior handoff
 /// when it exists, or runs the full recovery ritual (reconstruct from git +
 /// gh + transcript digest, verify before trusting) when it does not.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn recover_run_inner(
     supervisor: &Supervisor,
     schedule: &SamuraiSchedule,
     run_configs: &RunConfigStore,
     replicator: &Arc<SamuraiReplicator>,
     audit: &AuditLog,
+    parker: &SamuraiParker,
     project: &str,
     epic: &str,
 ) -> Result<SamuraiRecoverResult, String> {
@@ -779,6 +782,18 @@ pub(crate) async fn recover_run_inner(
         return Err(format!(
             "run {epic} is {:?}, not ACTIVE — only a non-completed run can be recovered",
             config.status,
+        ));
+    }
+    // Fix L5: every other successor path (the resumer's `should_defer`)
+    // refuses to spawn while a hard park sweep is engaged — spawning would
+    // burn the exhausted allowance the sweep exists to protect, and the
+    // fresh orchestrator gets immediately re-swept. Recovery must honour the
+    // same guard.
+    if parker.parking_engaged() {
+        return Err(format!(
+            "run {epic} cannot be recovered while allowance parking is engaged — a hard park \
+             sweep is reclaiming exhausted allowance right now; wait for it to finish, then \
+             recover or let the epic resume normally",
         ));
     }
     // A live orchestrator must never be duplicated — recovery is for a
@@ -822,9 +837,18 @@ pub(crate) async fn recover_run_inner(
         ));
     };
     let generation = prior + 1;
+    // Fix L1 (issue #131 review): a dash-variant handoff (`<slug>-gen-N.md`,
+    // the spelling `latest_handoff_generation` already tolerates for
+    // discovery) is a perfectly readable handoff — checking only the
+    // canonical spelling here reported `from_handoff = false` for a run that
+    // has one, misleadingly implying a full reconstruction when the true
+    // resume point was actually readable.
     let from_handoff = worktree
         .join(samurai_prompts::handoff_file_relpath(epic, prior))
-        .exists();
+        .exists()
+        || worktree
+            .join(samurai_prompts::handoff_file_dash_relpath(epic, prior))
+            .exists();
 
     // A pending resume timer is superseded by this manual recovery — left
     // armed it would fire into the recovered run and double-spawn.
@@ -879,6 +903,7 @@ pub(crate) async fn recover_run_inner(
 /// Recovers a crashed, non-completed run (issue #124): an explicit,
 /// human-only action that verifies the real state via git before spawning
 /// the next generation from the true resume point. See [`recover_run_inner`].
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn samurai_recover_run(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -886,6 +911,7 @@ pub async fn samurai_recover_run(
     run_configs: State<'_, Arc<RunConfigStore>>,
     replicator: State<'_, Arc<SamuraiReplicator>>,
     audit: State<'_, AuditLog>,
+    parker: State<'_, Arc<SamuraiParker>>,
     project_path: String,
     epic: String,
 ) -> Result<SamuraiRecoverResult, String> {
@@ -896,6 +922,7 @@ pub async fn samurai_recover_run(
         &run_configs,
         &replicator,
         &audit,
+        &parker,
         &project,
         &epic,
     )
@@ -930,14 +957,52 @@ pub(crate) enum ScheduledLaunchOutcome {
     Ignored,
 }
 
+/// Fix M2 (issue #131 review): whether launching `epic` in `project` right
+/// now would silently clobber an existing run of the same identity — an
+/// ACTIVE (non-completed) run config, or a pending park-resume timer.
+/// `ScheduleEntry::arm` replaces any earlier entry for the exact same
+/// (project, epic) outright, and a fresh gen-1 spawn overwrites the run
+/// config the same way — fine for a deliberate manual relaunch, but a
+/// SCHEDULED launch runs unattended: nobody is watching to notice a park
+/// timer vanish or an ACTIVE config get overwritten with a fresh gen-1.
+/// Refuse instead of clobbering; matched by slug like every other identity
+/// lookup in this module (`epic_slug`), so "38" and "#38" collide too.
+fn scheduled_launch_collision(
+    run_configs: &RunConfigStore,
+    schedule: &SamuraiSchedule,
+    project: &str,
+    epic: &str,
+) -> Option<String> {
+    if let Some(config) = run_configs.get(project, epic) {
+        if config.status == RunConfigStatus::Active {
+            return Some(format!(
+                "scheduled launch refused: an ACTIVE run already exists for {epic} in this \
+                 project — launching would silently overwrite its config; recover, resume, or \
+                 clean it up first",
+            ));
+        }
+    }
+    if schedule.list().iter().any(|e| {
+        e.reason == "park" && e.project_path == project && epic_slug(&e.epic) == epic_slug(epic)
+    }) {
+        return Some(format!(
+            "scheduled launch refused: {epic} has a pending park-resume timer in this project — \
+             launching would silently cancel it; let it resume, or discard the timer first",
+        ));
+    }
+    None
+}
+
 /// Arms a one-shot scheduled launch (issue #129), extracted from the Tauri
 /// command for testability. The entry's identity is the request's derived
 /// label (issue #128) — the same identity the launch itself will use — so
 /// re-scheduling the same request replaces the earlier pick (one pending
 /// timer per (project, run)), and the eventual launch's stale-timer cancel
 /// matches it by slug.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn schedule_launch_inner(
     schedule: &SamuraiSchedule,
+    run_configs: &RunConfigStore,
     project: &str,
     text: &str,
     fire_at: &str,
@@ -953,6 +1018,10 @@ pub(crate) fn schedule_launch_inner(
         .map_err(|e| format!("unusable schedule time {fire_at:?}: {e}"))?;
     if fire <= chrono::Utc::now() {
         return Err("the scheduled time is in the past — pick a future day and time".to_string());
+    }
+    if let Some(reason) = scheduled_launch_collision(run_configs, schedule, project, &input.label())
+    {
+        return Err(reason);
     }
     let entry = ScheduleEntry {
         project_path: project.to_string(),
@@ -981,9 +1050,11 @@ pub(crate) fn schedule_launch_inner(
 /// free-text request (issue #128) is stored on the timer and launched — with
 /// full server-side preflight and the refusal matrix — when it fires.
 /// Discarding is the existing `samurai_timer_cancel`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn samurai_schedule_launch(
     schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
     project_path: String,
     text: String,
     fire_at: String,
@@ -994,6 +1065,7 @@ pub fn samurai_schedule_launch(
     let project = canonical_project_path(&project_path);
     schedule_launch_inner(
         &schedule,
+        &run_configs,
         &project,
         &text,
         &fire_at,
@@ -1031,29 +1103,47 @@ pub(crate) async fn scheduled_launch_fire_inner(
             entry.epic,
             entry.project_path,
         );
+        // Fix M3: `fire_due` leaves this entry held (in flight) instead of
+        // removing it — resolving it is this function's job from here on,
+        // even on this defensive "should never happen" path, or it would
+        // linger in schedule.json forever (held is never auto-due).
+        if let Err(e) = schedule.cancel(&entry.project_path, &entry.epic) {
+            log::error!("samurai scheduled launch: failed to clear the dropped entry: {e}");
+        }
         return ScheduledLaunchOutcome::Ignored;
     };
     let input = LaunchInput::parse(&spec.text);
-    let launched = launch_run_inner(
-        supervisor,
-        schedule,
-        worktrees,
-        run_configs,
-        replicator,
-        audit,
-        in_flight,
-        test_gate,
-        spec.skip_test_gate,
-        preflight,
-        global_config,
-        &entry.project_path,
-        &input,
-        spec.model.clone(),
-        spec.handoff_context_pct,
-        None,
-        worktree_base,
-    )
-    .await;
+    // Fix M2: re-check the same collision `schedule_launch_inner` refused at
+    // arm time — an ACTIVE config or a park timer for this identity may have
+    // appeared in the meantime (a manual launch, a park sweep since this
+    // entry was armed). Firing over either is exactly the unattended clobber
+    // the arm-time refusal exists to prevent.
+    let launched =
+        match scheduled_launch_collision(run_configs, schedule, &entry.project_path, &entry.epic) {
+            Some(reason) => Err(reason),
+            None => {
+                launch_run_inner(
+                    supervisor,
+                    schedule,
+                    worktrees,
+                    run_configs,
+                    replicator,
+                    audit,
+                    in_flight,
+                    test_gate,
+                    spec.skip_test_gate,
+                    preflight,
+                    global_config,
+                    &entry.project_path,
+                    &input,
+                    spec.model.clone(),
+                    spec.handoff_context_pct,
+                    None,
+                    worktree_base,
+                )
+                .await
+            }
+        };
     let reason = match launched {
         Ok(result) => {
             log::info!(
@@ -2138,10 +2228,48 @@ mod tests {
         worktrees: WorktreeManager,
         audit: AuditLog,
         in_flight: Arc<LaunchInFlight>,
+        parker: Arc<SamuraiParker>,
         project: String,
         _dirs: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
         base: tempfile::TempDir,
         repo: tempfile::TempDir,
+    }
+
+    /// A parker wired to the harness's own supervisor/schedule/audit, with
+    /// inert context/injector collaborators — enough to drive
+    /// `on_allowance_event` and observe `parking_engaged()` (fix L5's test).
+    fn test_parker(
+        supervisor: Arc<Supervisor>,
+        schedule: Arc<SamuraiSchedule>,
+        audit: AuditLog,
+    ) -> Arc<SamuraiParker> {
+        use crate::core::samurai_context::SamuraiContextStore;
+        use crate::core::samurai_injector::SamuraiInjector;
+        use std::sync::RwLock;
+
+        let context = Arc::new(SamuraiContextStore::new());
+        let config: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
+        let injector = Arc::new(SamuraiInjector::new(
+            supervisor.clone(),
+            context.clone(),
+            config,
+            Arc::new(|_, _, outcome: crate::core::samurai_pty::DeliveryOutcome| outcome(Ok(()))),
+            audit.clone(),
+            Arc::new(|_| None),
+            None,
+        ));
+        let teardown: crate::core::samurai_replicator::SessionTeardown =
+            Arc::new(|_| Box::pin(async {}));
+        let parker = SamuraiParker::new(
+            supervisor,
+            context,
+            injector.clone(),
+            schedule,
+            audit,
+            teardown,
+        );
+        injector.set_parker(parker.clone());
+        parker
     }
 
     /// A replicator wired to inert collaborators — enough for the staging /
@@ -2198,6 +2326,7 @@ mod tests {
         let project = repo.path().to_string_lossy().into_owned();
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let (replicator, spawns) = test_replicator(supervisor.clone(), audit.clone());
+        let parker = test_parker(supervisor.clone(), schedule.clone(), audit.clone());
         CleanupHarness {
             supervisor,
             schedule,
@@ -2207,6 +2336,7 @@ mod tests {
             worktrees: WorktreeManager::new(),
             audit,
             in_flight: Arc::new(LaunchInFlight::default()),
+            parker,
             project,
             _dirs: (audit_dir, schedule_dir, runs_dir),
             base: tempdir().unwrap(),
@@ -3001,6 +3131,7 @@ mod tests {
             &h.run_configs,
             &h.replicator,
             &h.audit,
+            &h.parker,
             &h.project,
             epic,
         )
@@ -3011,6 +3142,15 @@ mod tests {
     fn write_handoff(worktree: &str, epic: &str, generation: u32) {
         let path =
             Path::new(worktree).join(samurai_prompts::handoff_file_relpath(epic, generation));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# Handoff\n").unwrap();
+    }
+
+    /// Fix L1: the same fixture as [`write_handoff`], but at the DASH-spelled
+    /// path a deviating orchestrator actually writes (issue #119).
+    fn write_handoff_dash(worktree: &str, epic: &str, generation: u32) {
+        let path =
+            Path::new(worktree).join(samurai_prompts::handoff_file_dash_relpath(epic, generation));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "# Handoff\n").unwrap();
     }
@@ -3041,6 +3181,40 @@ mod tests {
         assert!(err.contains("not ACTIVE"), "{err}");
 
         assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    #[tokio::test]
+    async fn test_recover_refuses_while_parking_engaged() {
+        // Fix L5: recovery must honour the same "parking engaged" guard the
+        // resumer's `should_defer` applies to every other successor spawn —
+        // spawning into an exhausted allowance mid-hard-park-sweep just gets
+        // the fresh orchestrator immediately re-swept.
+        use crate::core::allowance_watcher::{AllowanceEvent, AllowanceWindow, ThresholdKind};
+
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        run_launch(&h, &gate, true, "#38").await.unwrap();
+        // A WORKING session (any epic) keeps the sweep from completing
+        // instantly — it sits ParkRequested awaiting its ACK, which is
+        // exactly the "sweep still in flight" state recovery must refuse
+        // to spawn into.
+        h.supervisor
+            .register_session(99, h.project.clone(), "#other".to_string(), 1)
+            .unwrap();
+
+        h.parker
+            .on_allowance_event(&AllowanceEvent::ThresholdCrossed {
+                window: AllowanceWindow::FiveHour,
+                threshold_kind: ThresholdKind::Hard,
+                value: 99.0,
+                threshold: 90.0,
+                resets_at: Some("2030-01-01T00:00:00Z".to_string()),
+            });
+        assert!(h.parker.parking_engaged(), "sweep must be engaged");
+
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("parking is engaged"), "{err}");
+        assert!(h.spawns.lock().unwrap().len() == 1, "no successor spawned");
     }
 
     #[tokio::test]
@@ -3112,6 +3286,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recover_reports_from_handoff_for_a_dash_variant_handoff() {
+        // Fix L1: a run whose true resume point's handoff exists only as the
+        // dash-spelled variant (issue #119's tolerated deviation) must still
+        // report `from_handoff: true` — checking only the canonical spelling
+        // misreported a perfectly readable handoff as missing.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+
+        write_handoff_dash(&launched.worktree_path, "issue #38", 1);
+
+        let result = recover(&h, "issue #38").await.unwrap();
+        assert_eq!(result.prior_generation, 1);
+        assert!(
+            result.from_handoff,
+            "the dash-variant handoff is readable — this is a resume, not a reconstruction"
+        );
+    }
+
+    #[tokio::test]
     async fn test_recover_without_a_prior_handoff_reconstructs_or_refuses() {
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
@@ -3147,7 +3347,17 @@ mod tests {
     /// arm path.
     fn arm_scheduled_launch(h: &CleanupHarness, text: &str) -> ScheduleEntry {
         let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        schedule_launch_inner(&h.schedule, &h.project, text, &fire_at, None, None, true).unwrap()
+        schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            text,
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
     }
 
     /// Drives one scheduled-launch fire through the harness with the given
@@ -3181,6 +3391,7 @@ mod tests {
         let fire_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
         let entry = schedule_launch_inner(
             &h.schedule,
+            &h.run_configs,
             &h.project,
             "work   #7 and #9",
             &fire_at,
@@ -3207,6 +3418,7 @@ mod tests {
         let later = (chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
         schedule_launch_inner(
             &h.schedule,
+            &h.run_configs,
             &h.project,
             "work #7 and #9",
             &later,
@@ -3220,11 +3432,21 @@ mod tests {
         assert_eq!(entries[0].fire_at, later);
 
         // Refusals: empty request, past time, junk time — nothing armed.
-        let err = schedule_launch_inner(&h.schedule, &h.project, "  ", &fire_at, None, None, true)
-            .unwrap_err();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "  ",
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
         assert!(err.contains("scheduled request is empty"), "{err}");
         let err = schedule_launch_inner(
             &h.schedule,
+            &h.run_configs,
             &h.project,
             "#5",
             "2020-01-01T00:00:00+00:00",
@@ -3234,11 +3456,108 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("in the past"), "{err}");
-        let err =
-            schedule_launch_inner(&h.schedule, &h.project, "#5", "tomorrow", None, None, true)
-                .unwrap_err();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "#5",
+            "tomorrow",
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
         assert!(err.contains("unusable schedule time"), "{err}");
         assert_eq!(h.schedule.list().len(), 1, "refusals armed nothing");
+    }
+
+    // --- issue #131 fix M2: scheduling must not silently clobber a park
+    // timer or an ACTIVE run config of the same identity ---
+
+    #[tokio::test]
+    async fn test_schedule_launch_refuses_when_it_would_clobber_an_active_run() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        // An ACTIVE run already exists under the identity "work #38" derives
+        // (issue #38, standalone) — the same label a schedule for the same
+        // text would key its entry with.
+        run_launch(&h, &gate, true, "work #38").await.unwrap();
+
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "work #38",
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("ACTIVE run already exists"), "{err}");
+        assert!(
+            h.schedule.list().is_empty(),
+            "the refused schedule must not arm"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schedule_launch_refuses_when_it_would_clobber_a_park_timer() {
+        let h = cleanup_harness();
+        // A pending park-resume timer for the same identity "work #38"
+        // derives — arming over it would silently cancel the run's resume.
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "issue #38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.run_configs,
+            &h.project,
+            "work #38",
+            &fire_at,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("pending park-resume timer"), "{err}");
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1, "only the pre-existing park timer");
+        assert_eq!(entries[0].reason, "park");
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_refuses_a_collision_that_appeared_since_arming() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        // Between arming and firing, a manual launch created an ACTIVE run
+        // under the SAME identity — firing over it would silently overwrite
+        // that config with a fresh gen-1.
+        run_launch(&h, &gate, true, "work #38").await.unwrap();
+        let before = h.run_configs.get(&h.project, "issue #38").unwrap();
+
+        let outcome = fire_scheduled(&h, &gate, &preflight(true, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Retried { attempts: 1 });
+        assert_eq!(
+            h.spawns.lock().unwrap().len(),
+            1,
+            "no second, clobbering spawn"
+        );
+        let after = h.run_configs.get(&h.project, "issue #38").unwrap();
+        assert_eq!(before, after, "the existing ACTIVE config is untouched");
     }
 
     #[tokio::test]

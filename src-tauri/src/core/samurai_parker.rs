@@ -356,7 +356,10 @@ impl SamuraiParker {
     /// Soft crossing: wind down every eligible session, log the skips.
     fn soft_winddown(&self) {
         for session in self.supervisor.list_sessions() {
-            let has_pending = self.injector.has_pending(session.session_id);
+            // Fix L6: a pending, un-acked WinddownAllClear left over from an
+            // earlier episode must not block THIS eligibility check —
+            // `begin_soft_winddown` supersedes it outright.
+            let has_pending = self.injector.blocks_soft_winddown(session.session_id);
             if soft_eligible(session.state, session.in_flight, has_pending) {
                 if self.injector.begin_soft_winddown(&session) {
                     // Issue #120: remember the episode so the recovery edge
@@ -386,6 +389,21 @@ impl SamuraiParker {
     /// the ack-only all-clear; the episode set drains so the edge triggers
     /// at most once per wind-down episode.
     fn winddown_allclear(&self) {
+        // Fix M6 (issue #131 review): a hard park sweep walks WORKING
+        // sessions toward ParkRequested one at a time — a session still
+        // queued for that sweep is still WORKING right up to the moment its
+        // turn comes, so without this guard a 5h-window reset mid-sweep
+        // would inject "resume full throughput" into a session the sweep is
+        // about to park anyway, against a 7d allowance that is still
+        // exhausted. DEFER rather than drop: the wound-down episode set is
+        // left intact (not drained) so the next SoftRecovered edge — once
+        // the sweep actually completes and parking disengages — can still
+        // all-clear whatever sessions the sweep never touched (e.g. ones
+        // that ALERTed and were skipped, staying WORKING).
+        if self.parking_engaged() {
+            log::info!("samurai parker: soft all-clear deferred — a hard park sweep is engaged");
+            return;
+        }
         let wound: HashSet<u32> = std::mem::take(&mut *self.lock_wound_down());
         if wound.is_empty() {
             return;
@@ -999,7 +1017,7 @@ mod tests {
         h.injector.observe_hook(&stop_event(1));
         h.injector.observe(&assistant_message(
             1,
-            "<samurai-ack>winddown gen-1</samurai-ack>",
+            "<samurai-ack>winddown gen-1-1</samurai-ack>",
         ));
         assert!(!h.injector.has_pending(1));
 
@@ -1018,7 +1036,7 @@ mod tests {
         h.injector.observe_hook(&stop_event(1));
         h.injector.observe(&assistant_message(
             1,
-            "<samurai-ack>allclear gen-1</samurai-ack>",
+            "<samurai-ack>allclear gen-1-1</samurai-ack>",
         ));
         assert!(!h.injector.has_pending(1));
         assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::Working));
@@ -1027,6 +1045,83 @@ mod tests {
         // wind-down sends nothing.
         h.parker.on_allowance_event(&recovered_event());
         assert!(!h.injector.has_pending(1));
+    }
+
+    #[tokio::test]
+    async fn test_soft_recovery_defers_all_clear_while_parking_engaged() {
+        // Fix M6: a hard park sweep in flight walks WORKING sessions toward
+        // ParkRequested one at a time — a session still queued for its turn
+        // is still WORKING, so a 5h-window reset mid-sweep must not inject
+        // "resume full throughput" into it while the 7d allowance the sweep
+        // exists to protect is still exhausted.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-defer";
+
+        // Session 2 winds down first, then ALERTs its (unrelated, prior)
+        // park attempt — excluded from every future sweep's candidates, so
+        // it stays WORKING for the sweep's whole life without ever being
+        // targeted.
+        h.supervisor
+            .register_session(2, project.into(), "#2".into(), 1)
+            .unwrap();
+        h.parker.on_allowance_event(&soft_event());
+        assert!(h.injector.has_pending(2), "session 2 wound down");
+        h.parker.on_park_failed(2);
+
+        // Session 1 is the sweep's real, parkable target.
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#1", 1);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        h.supervisor
+            .register_session(1, project.into(), "#1".into(), 1)
+            .unwrap();
+
+        h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
+        assert!(h.parker.parking_engaged());
+        assert_eq!(
+            state_of(&h.supervisor, 1),
+            Some(SupervisorState::ParkRequested)
+        );
+        assert_eq!(state_of(&h.supervisor, 2), Some(SupervisorState::Working));
+
+        // The 5h window resets mid-sweep: deferred, not delivered — session
+        // 2's ORIGINAL wind-down entry is untouched (acking it with the
+        // wind-down value, not an all-clear value, still completes it
+        // normally, proving nothing overwrote it).
+        h.parker.on_allowance_event(&recovered_event());
+        assert!(h.parker.parking_engaged(), "sweep still in flight");
+        h.injector.observe_hook(&stop_event(2));
+        h.injector.observe(&assistant_message(
+            2,
+            "<samurai-ack>winddown gen-1-1</samurai-ack>",
+        ));
+        assert!(
+            !h.injector.has_pending(2),
+            "the deferred all-clear never overwrote the wind-down entry"
+        );
+
+        // Complete the sweep: session 1 parks, its timer arms, engaged
+        // clears. Session 2 was never touched.
+        complete_park(&h, 1, 1);
+        wait_until(|| !h.parker.parking_engaged()).await;
+        assert_eq!(
+            state_of(&h.supervisor, 2),
+            Some(SupervisorState::Working),
+            "the failed, excluded session was never targeted"
+        );
+
+        // DEFERRED, not DROPPED: a fresh recovery once parking has
+        // disengaged still finds session 2's wound-down episode and
+        // all-clears it — the earlier deferral did not lose the episode.
+        h.parker.on_allowance_event(&recovered_event());
+        assert!(
+            h.injector.has_pending(2),
+            "the deferred episode survives to the next non-engaged recovery"
+        );
     }
 
     #[tokio::test]

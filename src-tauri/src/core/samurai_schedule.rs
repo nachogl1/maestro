@@ -29,6 +29,18 @@
 //! removing first would silently lose the resume on a crash. When the last
 //! entry is removed the file itself is deleted.
 //!
+//! **[`REASON_SCHEDULED_LAUNCH`] is the one exception** (issue #131 review,
+//! fix M3): its callback only dispatches the launch onto the async runtime
+//! and returns — the real work (network preflight + the full test-suite
+//! gate) runs for minutes afterward, so "remove after the callback
+//! returns" would erase the entry the instant it is dispatched, well
+//! before it resolves. [`fire_due`](SamuraiSchedule::fire_due) instead
+//! marks it `held` (persisted before the callback runs) and skips the
+//! removal below; the callback owns resolving it from there — cancel on a
+//! successful launch, re-arm un-held on a retry, re-arm held on a give-up.
+//! A crash mid-launch leaves it held, same as any other overdue scheduled
+//! launch: waiting for a human, never silently gone.
+//!
 //! **Fire granularity:** a 30s interval tick (same shape as
 //! `samurai_watchdog::spawn_watchdog` / `allowance_watcher`), not exact
 //! sleeps — timers are minute-granular by design (resets + 5 min).
@@ -229,6 +241,56 @@ impl SamuraiSchedule {
                 entry.reason,
                 entry.fire_at,
             );
+
+            // Fix M3 (issue #131 review): a SCHEDULED LAUNCH entry's
+            // callback only dispatches the launch (spawns it onto the
+            // async runtime) and returns immediately — the real work
+            // (network preflight + the full test-suite gate) runs for
+            // minutes AFTER this call returns, unlike a park timer's
+            // resume, which stages synchronously inside the callback.
+            // Removing the entry right after the callback returns, like
+            // every other reason below, would erase it the instant the
+            // launch is dispatched — long before it resolves. A crash in
+            // that gap would lose the entry with nothing else to show for
+            // the scheduled run: no run config (written only after the
+            // gate), no held state, no alert.
+            //
+            // Hold it in place instead, persisted BEFORE the callback
+            // runs so it is on disk for the whole gap. `is_due` skips held
+            // entries, so this also stops the next tick from re-dispatching
+            // the same launch while it is still in flight. Ownership of
+            // resolving it transfers to the callback from here: a
+            // successful launch's own stale-timer sweep
+            // (`launch_run_inner`, review F5) cancels this same entry once
+            // the gate passes, a retry re-arms it un-held further out, and
+            // a give-up re-arms it held with the ALERT — so this loop must
+            // NOT also remove it below. A crash leaves it exactly like any
+            // other overdue-but-held scheduled launch: `hold_overdue_launches`
+            // already treats that as "wait for a human" (issue #129), the
+            // same nothing-auto-starts-on-reopen rule park timers get.
+            if entry.reason == REASON_SCHEDULED_LAUNCH {
+                let snapshot = {
+                    let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+                    for e in entries.iter_mut() {
+                        if e.project_path == entry.project_path
+                            && e.epic == entry.epic
+                            && e.fire_at == entry.fire_at
+                        {
+                            e.held = true;
+                        }
+                    }
+                    if let Err(e) = persist(&self.path, &entries) {
+                        log::error!(
+                            "samurai schedule: failed to persist in-flight launch marker: {e}"
+                        );
+                    }
+                    entries.clone()
+                };
+                self.notify_change(&snapshot);
+                (self.on_fire)(entry.clone());
+                continue;
+            }
+
             (self.on_fire)(entry.clone());
             // Remove AFTER the callback returned (module doc: a crash
             // mid-callback re-fires on next launch — the safe direction).
@@ -728,6 +790,60 @@ mod tests {
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].epic, "#38");
         assert_eq!(schedule.list().len(), 2, "held + future launches remain");
+    }
+
+    #[test]
+    fn test_scheduled_launch_survives_fire_dispatch_until_resolved() {
+        // Fix M3 (issue #131 review): a scheduled launch's real work
+        // (network preflight + the full test-suite gate) runs for minutes
+        // on the async runtime — the synchronous fire callback only
+        // dispatches it and returns immediately, unlike a park timer's
+        // resume, which stages synchronously inside the callback. The
+        // module's crash-refire invariant ("remove AFTER the callback
+        // returned") only protects synchronous work: if `fire_due` removed
+        // this entry the instant the dispatching callback returned — same
+        // as every other reason — an app crash during those in-flight
+        // minutes would lose the entry with nothing else to show for it (no
+        // run config, written only after the gate; no held state; no
+        // alert). This callback only records that it fired (mirroring the
+        // real one, which spawns onto the runtime and returns without
+        // waiting) — proving the entry itself, not the launch outcome, must
+        // still be there afterward.
+        let dir = tempdir().unwrap();
+        let (cb, fired) = collector();
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+        schedule
+            .arm(launch_entry(
+                "C:/git/alpha",
+                "issue #7",
+                "2020-01-01T00:00:00+00:00",
+            ))
+            .unwrap();
+
+        schedule.fire_due();
+
+        assert_eq!(fired.lock().unwrap().len(), 1, "the launch was dispatched");
+        let remaining = schedule.list();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the entry must survive dispatch — a crash right here, before the \
+             async launch resolves, must not silently drop the scheduled run"
+        );
+        assert_eq!(remaining[0].epic, "issue #7");
+        assert_eq!(
+            remaining[0].launch.as_ref().unwrap().text,
+            "work issue #7",
+            "the launch spec itself, not just a bare marker, survives"
+        );
+        assert!(
+            remaining[0].held,
+            "held — not due — so the next 30s tick doesn't re-dispatch the \
+             same launch while it's still in flight"
+        );
+        let on_disk = load_entries(&dir.path().join("schedule.json"));
+        assert_eq!(on_disk.len(), 1, "persisted, not just held in memory");
+        assert!(on_disk[0].held);
     }
 
     #[test]

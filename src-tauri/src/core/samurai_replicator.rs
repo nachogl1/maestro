@@ -245,6 +245,32 @@ fn head_matches(handoff_sha: Option<&str>, current_head: Option<&str>) -> bool {
     }
 }
 
+/// Reads the gen-`generation` handoff in `dir`, falling back to the DASH
+/// spelling (`handoff_file_dash_relpath`) when the canonical path
+/// (`handoff_file_relpath`) is missing. Fix L1 (issue #131 review): the
+/// HEAD gate used to read only the canonical spelling, so a run whose
+/// orchestrator actually wrote the dash variant (issue #119's tolerated
+/// deviation) read as "handoff vanished" and fell into full-reconstruction
+/// recovery despite having a perfectly good handoff to resume from.
+fn read_handoff_tolerant(dir: &Path, epic: &str, generation: u32) -> Option<String> {
+    let canonical = samurai_prompts::handoff_file_relpath(epic, generation);
+    std::fs::read_to_string(dir.join(&canonical))
+        .map_err(|e| {
+            log::info!(
+                "samurai replicator: no gen-{generation} handoff at {canonical} ({e}) — trying the dash spelling"
+            );
+        })
+        .or_else(|_| {
+            let dash = samurai_prompts::handoff_file_dash_relpath(epic, generation);
+            std::fs::read_to_string(dir.join(&dash)).map_err(|e| {
+                log::info!(
+                    "samurai replicator: no gen-{generation} handoff at {dash} either ({e}) — recovery mode"
+                );
+            })
+        })
+        .ok()
+}
+
 /// Whether one pending ritual has waited too long for its successor to
 /// start. Strict boundary, same discipline as the injector's timeouts.
 fn no_start_expired(
@@ -727,6 +753,22 @@ impl SamuraiReplicator {
         samurai_workflow::compiled_for_run(stored.as_ref())
     }
 
+    /// Whether the epic's run config carries any GitHub ref (issue #128 fix
+    /// L2): `false` only for a pure-prose run — launched via free text with
+    /// no `#N` refs — whose successor/recovery briefs must not send the
+    /// agent hunting for a GitHub issue that does not exist. Resolved at
+    /// brief-build time like [`Self::workflow_for`]; defaults to `true`
+    /// (today's ref-framed wording) when no store or config is bound, so a
+    /// missing config never silently strips the GitHub steps from a real
+    /// ref-based run.
+    fn has_refs_for(&self, project: &str, epic: &str) -> bool {
+        self.run_configs
+            .get()
+            .and_then(|s| s.get(project, epic))
+            .map(|c| !c.epics.is_empty() || !c.issues.is_empty())
+            .unwrap_or(true)
+    }
+
     /// One `successor_spawn_failed` ALERT (P2.4 pattern): the successor for
     /// `snapshot` cannot be spawned, a human has to step in.
     fn alert_spawn_failed(&self, snapshot: &SessionSnapshot, failure: &str) {
@@ -780,14 +822,11 @@ impl SamuraiReplicator {
         // just-validated handoff file is missing/unreadable — it vanished in
         // the validation→prep window (issue #56 trigger b) — and selects
         // recovery mode below.
-        let relpath = samurai_prompts::handoff_file_relpath(&snapshot.epic, snapshot.generation);
+        let gate_epic = snapshot.epic.clone();
+        let gate_generation = snapshot.generation;
         let gate_dir = PathBuf::from(working_dir.clone());
         let head_gate: Option<bool> = tokio::task::spawn_blocking(move || {
-            let handoff = std::fs::read_to_string(gate_dir.join(&relpath))
-                .map_err(|e| {
-                    log::warn!("samurai replicator: could not re-read handoff {relpath}: {e}");
-                })
-                .ok()?;
+            let handoff = read_handoff_tolerant(&gate_dir, &gate_epic, gate_generation)?;
             let handoff_sha = samurai_prompts::handoff_head_sha(&handoff);
             let head = read_repo_head(&gate_dir)
                 .map_err(|e| log::warn!("samurai replicator: {e}"))
@@ -902,6 +941,7 @@ impl SamuraiReplicator {
                             snapshot.generation,
                             head_matched,
                             &workflow,
+                            self.has_refs_for(&snapshot.project, &snapshot.epic),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
@@ -940,6 +980,7 @@ impl SamuraiReplicator {
                             snapshot.generation,
                             repo_pin.as_deref(),
                             &workflow,
+                            self.has_refs_for(&snapshot.project, &snapshot.epic),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
@@ -1062,6 +1103,7 @@ impl SamuraiReplicator {
                         snapshot.generation,
                         None,
                         &workflow,
+                        self.has_refs_for(&snapshot.project, &snapshot.epic),
                     ),
                     samurai_prompts::journal_instruction(&default_journal_file()),
                 ),
@@ -1114,6 +1156,7 @@ impl SamuraiReplicator {
                             snapshot.generation,
                             Some(&pin),
                             &workflow,
+                            this.has_refs_for(&snapshot.project, &snapshot.epic),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     );
@@ -1265,7 +1308,13 @@ impl SamuraiReplicator {
                 // / fix M4: the journaling rider rides every version.
                 instruction: format!(
                     "{} {}",
-                    samurai_prompts::recovery_ritual_instruction(epic, prior, None, &workflow),
+                    samurai_prompts::recovery_ritual_instruction(
+                        epic,
+                        prior,
+                        None,
+                        &workflow,
+                        self.has_refs_for(project, epic),
+                    ),
                     samurai_prompts::journal_instruction(&default_journal_file()),
                 ),
                 predecessor_session_id: 0,
@@ -1292,14 +1341,7 @@ impl SamuraiReplicator {
             let gate_dir = PathBuf::from(working_dir.clone());
             let gate_epic = epic.clone();
             let head_gate: Option<bool> = tokio::task::spawn_blocking(move || {
-                let relpath = samurai_prompts::handoff_file_relpath(&gate_epic, prior);
-                let handoff = std::fs::read_to_string(gate_dir.join(&relpath))
-                    .map_err(|e| {
-                        log::info!(
-                            "samurai replicator: no gen-{prior} handoff at {relpath} ({e}) — fresh spawn uses recovery mode"
-                        );
-                    })
-                    .ok()?;
+                let handoff = read_handoff_tolerant(&gate_dir, &gate_epic, prior)?;
                 let handoff_sha = samurai_prompts::handoff_head_sha(&handoff);
                 let head = read_repo_head(&gate_dir)
                     .map_err(|e| log::warn!("samurai replicator: {e}"))
@@ -1326,6 +1368,7 @@ impl SamuraiReplicator {
                                 prior,
                                 head_matched,
                                 &workflow,
+                                this.has_refs_for(&project, &epic),
                             ),
                             samurai_prompts::journal_instruction(&default_journal_file()),
                         ),
@@ -1360,6 +1403,7 @@ impl SamuraiReplicator {
                                 prior,
                                 repo_pin.as_deref(),
                                 &workflow,
+                                this.has_refs_for(&project, &epic),
                             ),
                             samurai_prompts::journal_instruction(&default_journal_file()),
                         ),
@@ -2261,6 +2305,26 @@ mod tests {
         .unwrap();
     }
 
+    /// Fix L1: the same fixture as [`write_handoff`], but at the DASH-spelled
+    /// path (`handoff_file_dash_relpath`) instead of the canonical one — the
+    /// deviation issue #119 tolerates for discovery.
+    fn write_handoff_dash(dir: &Path, epic: &str, generation: u32, sha: &str) {
+        let rel = samurai_prompts::handoff_file_dash_relpath(epic, generation);
+        let path = dir.join(&rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                "# Handoff — epic {epic} — gen {generation}\n\
+                 ## Goal\nship it\n\
+                 ## Repo state\nbranch main, HEAD SHA: {sha}\n\
+                 ## Verify\ncargo test\n\
+                 ## Next steps\n1. next\n"
+            ),
+        )
+        .unwrap();
+    }
+
     /// Registers session 1 and walks it to HANDOFF_WRITTEN, returning that
     /// snapshot (the exact value the injector hands to the replicator).
     fn to_handoff_written(
@@ -2462,6 +2526,34 @@ mod tests {
         assert!(instruction.contains("journal.jsonl"));
         assert!(instruction.contains("\"BOTTLENECK\""));
         assert!(instruction.contains("NEVER rewrite or delete existing lines"));
+    }
+
+    #[tokio::test]
+    async fn test_handoff_written_head_gates_a_dash_variant_handoff() {
+        // Fix L1: a run whose orchestrator wrote the dash-spelled handoff
+        // (`<slug>-gen-N.md`, issue #119's tolerated deviation) must still
+        // HEAD-gate and resume normally — not fall into full-reconstruction
+        // recovery because the canonical-only read saw "missing".
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-dash";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let head = read_repo_head(repo.path()).unwrap();
+        write_handoff_dash(repo.path(), "epic-9", 2, &head);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
+
+        h.replicator.on_handoff_written(&snapshot);
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+
+        let (registered, instruction) = h.replicator.pending_view(3).unwrap();
+        assert_eq!(registered, None);
+        assert!(!instruction.contains("RECOVERY MODE"), "{instruction}");
+        assert!(instruction.contains("SKIP"), "HEAD matched: {instruction}");
     }
 
     #[tokio::test]

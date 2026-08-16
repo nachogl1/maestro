@@ -179,16 +179,26 @@ impl PendingKind {
 }
 
 /// The round-scoped ACK value one entry expects (finding C discipline,
-/// per kind).
-fn expected_ack_value(kind: PendingKind, generation: u32, corrective: bool) -> String {
+/// per kind). `episode` (issue #131 fix M7) additionally scopes the two
+/// ack-only kinds to one wind-down episode within the generation — see
+/// [`samurai_prompts::soft_winddown_ack_value`]; ignored by every other
+/// kind, which is unique per generation alone.
+fn expected_ack_value(
+    kind: PendingKind,
+    generation: u32,
+    corrective: bool,
+    episode: u32,
+) -> String {
     match (kind, corrective) {
         (PendingKind::Handoff, false) => samurai_prompts::handoff_ack_value(generation),
         (PendingKind::Handoff, true) => samurai_prompts::handoff_ack_retry_value(generation),
         (PendingKind::Park, false) => samurai_prompts::park_ack_value(generation),
         (PendingKind::Park, true) => samurai_prompts::park_ack_retry_value(generation),
-        (PendingKind::SoftWinddown, _) => samurai_prompts::soft_winddown_ack_value(generation),
+        (PendingKind::SoftWinddown, _) => {
+            samurai_prompts::soft_winddown_ack_value(generation, episode)
+        }
         (PendingKind::WinddownAllClear, _) => {
-            samurai_prompts::winddown_allclear_ack_value(generation)
+            samurai_prompts::winddown_allclear_ack_value(generation, episode)
         }
     }
 }
@@ -215,14 +225,21 @@ fn corrective_instruction_for(
     epic: &str,
     generation: u32,
     failure: &str,
+    episode: u32,
 ) -> String {
     match kind {
         PendingKind::Handoff => {
             samurai_prompts::handoff_corrective_instruction(epic, generation, failure)
         }
-        PendingKind::Park => samurai_prompts::park_corrective_instruction(epic, generation, failure),
-        PendingKind::SoftWinddown => samurai_prompts::soft_winddown_instruction(generation),
-        PendingKind::WinddownAllClear => samurai_prompts::winddown_allclear_instruction(generation),
+        PendingKind::Park => {
+            samurai_prompts::park_corrective_instruction(epic, generation, failure)
+        }
+        PendingKind::SoftWinddown => {
+            samurai_prompts::soft_winddown_instruction(generation, episode)
+        }
+        PendingKind::WinddownAllClear => {
+            samurai_prompts::winddown_allclear_instruction(generation, episode)
+        }
     }
 }
 
@@ -312,6 +329,12 @@ struct PendingInstruction {
     /// the ALERT is one-shot and the parker must stop counting it as pending
     /// — see [`TimeoutVerdict::AlertStuck`] and `has_pending`.
     stuck_alerted: bool,
+    /// The wind-down EPISODE this entry belongs to (issue #131 fix M7):
+    /// meaningful only for [`PendingKind::SoftWinddown`] /
+    /// [`PendingKind::WinddownAllClear`], 0 for every other kind. See
+    /// [`samurai_prompts::soft_winddown_ack_value`] for why generation+kind
+    /// alone is not a unique ack value for these two kinds.
+    episode: u32,
 }
 
 impl PendingInstruction {
@@ -333,7 +356,16 @@ impl PendingInstruction {
             corrective: false,
             failure: None,
             stuck_alerted: false,
+            episode: 0,
         }
+    }
+
+    /// Fix M7: stamps the wind-down episode number onto a freshly built
+    /// [`PendingKind::SoftWinddown`] / [`PendingKind::WinddownAllClear`]
+    /// entry.
+    fn with_episode(mut self, episode: u32) -> Self {
+        self.episode = episode;
+        self
     }
 
     /// How long since the latest injection; `None` before the first.
@@ -680,7 +712,7 @@ fn arm_corrective(p: &mut PendingInstruction, failure: String) {
         p.kind.as_str(),
         p.generation
     );
-    p.instruction = corrective_instruction_for(p.kind, &p.epic, p.generation, &failure);
+    p.instruction = corrective_instruction_for(p.kind, &p.epic, p.generation, &failure, p.episode);
     p.attempts = 1;
     p.awaiting_retry = true;
     // The wait for the corrective's idle starts now (finding E age cap).
@@ -953,6 +985,14 @@ pub struct SamuraiInjector {
     /// per-run `handoff_context_pct` override (`thresholds` on the epic's
     /// run config). Late-bound like the parker; unset = global config only.
     run_configs: std::sync::OnceLock<Arc<super::samurai_run_config::RunConfigStore>>,
+    /// Per-session wind-down EPISODE counter (issue #131 fix M7): the next
+    /// number [`begin_soft_winddown`](Self::begin_soft_winddown) stamps on a
+    /// FRESH wind-down entry. Outlives the entry itself (an ack-only kind is
+    /// removed from `pending` the moment it is acked), so
+    /// [`begin_winddown_allclear`](Self::begin_winddown_allclear) can still
+    /// read the current episode to close even after the wind-down entry is
+    /// long gone.
+    winddown_episode: Mutex<HashMap<u32, u32>>,
 }
 
 impl SamuraiInjector {
@@ -979,7 +1019,33 @@ impl SamuraiInjector {
             replicator,
             parker: std::sync::OnceLock::new(),
             run_configs: std::sync::OnceLock::new(),
+            winddown_episode: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Bumps and returns the NEXT wind-down episode for `session_id` (fix
+    /// M7) — called once per fresh [`begin_soft_winddown`](Self::begin_soft_winddown).
+    fn next_winddown_episode(&self, session_id: u32) -> u32 {
+        let mut episodes = self
+            .winddown_episode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = episodes.get(&session_id).copied().unwrap_or(0) + 1;
+        episodes.insert(session_id, next);
+        next
+    }
+
+    /// The CURRENT wind-down episode for `session_id` (fix M7) — the last
+    /// one [`next_winddown_episode`](Self::next_winddown_episode) handed
+    /// out, or `1` when none has yet (an all-clear with no prior wind-down
+    /// this session, e.g. a defensive/test call).
+    fn current_winddown_episode(&self, session_id: u32) -> u32 {
+        self.winddown_episode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .copied()
+            .unwrap_or(1)
     }
 
     /// Issue #60: late-binds the parker (constructed after the injector; it
@@ -1353,17 +1419,30 @@ impl SamuraiInjector {
     /// Issue #60: soft wind-down for a WORKING session. Returns `false`
     /// (nothing armed) when the session already has a pending instruction of
     /// any kind — it is already heading somewhere; the caller logs the skip.
+    ///
+    /// Fix L6 (issue #131 review): a pending, un-acked
+    /// [`PendingKind::WinddownAllClear`] left over from an EARLIER episode is
+    /// the one exception — it is superseded outright (mirrors
+    /// [`begin_winddown_allclear`](Self::begin_winddown_allclear) superseding
+    /// a delivered wind-down), so a real new wind-down episode is never
+    /// silently blocked by a stale all-clear the caller has not acked yet.
     pub fn begin_soft_winddown(&self, snapshot: &SessionSnapshot) -> bool {
+        // Fix M7: a fresh episode number for this wind-down, allocated
+        // before the pending lock (separate map) — see `winddown_episode`.
+        let episode = self.next_winddown_episode(snapshot.session_id);
         {
             let mut pending = self.lock_pending();
-            if pending.contains_key(&snapshot.session_id) {
-                return false;
+            match pending.get(&snapshot.session_id) {
+                Some(p) if p.kind == PendingKind::WinddownAllClear => {}
+                Some(_) => return false,
+                None => {}
             }
             let instruction =
-                samurai_prompts::soft_winddown_instruction(snapshot.generation);
+                samurai_prompts::soft_winddown_instruction(snapshot.generation, episode);
             pending.insert(
                 snapshot.session_id,
-                PendingInstruction::new(PendingKind::SoftWinddown, snapshot, instruction),
+                PendingInstruction::new(PendingKind::SoftWinddown, snapshot, instruction)
+                    .with_episode(episode),
             );
         }
         log::info!(
@@ -1386,6 +1465,11 @@ impl SamuraiInjector {
     /// - any other pending instruction refuses the all-clear (`false`) —
     ///   the session is already heading somewhere.
     pub fn begin_winddown_allclear(&self, snapshot: &SessionSnapshot) -> bool {
+        // Fix M7: closes the SAME episode the wind-down it supersedes was
+        // opened under — read, not allocated (an ack-only entry is removed
+        // from `pending` the moment it is acked, so the episode number lives
+        // in the separate, longer-lived `winddown_episode` map).
+        let episode = self.current_winddown_episode(snapshot.session_id);
         {
             let mut pending = self.lock_pending();
             match pending.get(&snapshot.session_id) {
@@ -1400,10 +1484,12 @@ impl SamuraiInjector {
                 Some(p) if p.kind != PendingKind::SoftWinddown => return false,
                 _ => {}
             }
-            let instruction = samurai_prompts::winddown_allclear_instruction(snapshot.generation);
+            let instruction =
+                samurai_prompts::winddown_allclear_instruction(snapshot.generation, episode);
             pending.insert(
                 snapshot.session_id,
-                PendingInstruction::new(PendingKind::WinddownAllClear, snapshot, instruction),
+                PendingInstruction::new(PendingKind::WinddownAllClear, snapshot, instruction)
+                    .with_episode(episode),
             );
         }
         log::info!(
@@ -1425,6 +1511,20 @@ impl SamuraiInjector {
         self.lock_pending()
             .get(&session_id)
             .is_some_and(|p| !p.stuck_alerted)
+    }
+
+    /// Whether a pending entry blocks a NEW soft wind-down (issue #131 fix
+    /// L6): every kind except a [`PendingKind::WinddownAllClear`] — that one
+    /// is stale the moment a real new episode is due, so `begin_soft_winddown`
+    /// supersedes it instead of being blocked by it. Without this, an
+    /// un-acked all-clear left over from a PRIOR episode silently ate every
+    /// wind-down eligibility check for the session until it was acked (or
+    /// timed out), so the session ran full speed through a real wind-down
+    /// episode and then received a stale "resume full throughput".
+    pub(crate) fn blocks_soft_winddown(&self, session_id: u32) -> bool {
+        self.lock_pending()
+            .get(&session_id)
+            .is_some_and(|p| !p.stuck_alerted && p.kind != PendingKind::WinddownAllClear)
     }
 
     /// A session that is idle RIGHT NOW (its last signal was a Stop) never
@@ -1627,12 +1727,28 @@ impl SamuraiInjector {
             if p.acked {
                 return;
             }
+            // Fix M7 (issue #131 review): an ACK for an entry that was never
+            // actually delivered (attempts == 0) cannot be genuine — the
+            // agent never saw the instruction to acknowledge. Without this,
+            // a transcript replay (issue #118's byte-0 re-read) surfacing an
+            // EARLIER episode's ack line before this entry's own first
+            // delivery would spuriously complete a wind-down/all-clear the
+            // agent never received.
+            if p.attempts == 0 {
+                log::warn!(
+                    "samurai injector: ACK marker from session {session_id} for an undelivered instruction (attempts=0) — ignored"
+                );
+                return;
+            }
             // Round-scoped (finding C) AND kind-scoped (issue #60): the
             // corrective round expects a DISTINCT value, so a transcript replay
             // of round 1's ACK (claude --resume rewrites history into a new
             // transcript, read from byte 0) can never consume the corrective
             // round — and a replayed handoff ACK can never consume a park.
-            let expected = expected_ack_value(p.kind, p.generation, p.corrective);
+            // Fix M7: also episode-scoped for the two ack-only kinds, whose
+            // value otherwise repeats identically across episodes within one
+            // generation (see `soft_winddown_ack_value`).
+            let expected = expected_ack_value(p.kind, p.generation, p.corrective, p.episode);
             if value != expected {
                 log::warn!(
                     "samurai injector: session {session_id} ACK value {value:?} does not match expected {expected:?} — ignored"
@@ -3947,7 +4063,7 @@ mod tests {
         // Injected on idle while the session stays WORKING; the text carries
         // the wind-down ACK and no written marker.
         let data = injector.arm_injection_on_idle(1).expect("attempt 1");
-        assert!(data.contains("<samurai-ack>winddown gen-3</samurai-ack>"));
+        assert!(data.contains("<samurai-ack>winddown gen-3-1</samurai-ack>"));
         assert!(!data.contains("<samurai-handoff-written>"));
         assert_eq!(injector.session_state(1), Some(Working));
 
@@ -3957,7 +4073,7 @@ mod tests {
         // supervisor-side (no HANDOFF/PARK/ALERT rows).
         injector.observe(&assistant_message(
             1,
-            "Winding down. <samurai-ack>winddown gen-3</samurai-ack>",
+            "Winding down. <samurai-ack>winddown gen-3-1</samurai-ack>",
         ));
         assert!(injector.pending_view(1).is_none());
         assert_eq!(injector.session_state(1), Some(Working));
@@ -4024,14 +4140,14 @@ mod tests {
         injector.arm_injection_on_idle(1).expect("winddown attempt");
         injector.observe(&assistant_message(
             1,
-            "<samurai-ack>winddown gen-3</samurai-ack>",
+            "<samurai-ack>winddown gen-3-1</samurai-ack>",
         ));
         assert!(injector.pending_view(1).is_none());
 
         // Recovery: the all-clear arms, injects on idle, and is ack-only.
         assert!(injector.begin_winddown_allclear(&snapshot));
         let data = injector.arm_injection_on_idle(1).expect("allclear attempt");
-        assert!(data.contains("<samurai-ack>allclear gen-3</samurai-ack>"));
+        assert!(data.contains("<samurai-ack>allclear gen-3-1</samurai-ack>"));
         assert!(!data.contains("<samurai-handoff-written>"));
         assert_eq!(injector.session_state(1), Some(Working));
 
@@ -4039,7 +4155,7 @@ mod tests {
         // inject, and the audit trail shows the acked all-clear.
         injector.observe(&assistant_message(
             1,
-            "Back to full speed. <samurai-ack>allclear gen-3</samurai-ack>",
+            "Back to full speed. <samurai-ack>allclear gen-3-1</samurai-ack>",
         ));
         assert!(injector.pending_view(1).is_none());
         assert_eq!(injector.session_state(1), Some(Working));
@@ -4069,11 +4185,11 @@ mod tests {
             .expect("winddown delivered");
         assert!(injector.begin_winddown_allclear(&snapshot));
         let data = injector.arm_injection_on_idle(1).expect("allclear attempt");
-        assert!(data.contains("<samurai-ack>allclear gen-2</samurai-ack>"));
+        assert!(data.contains("<samurai-ack>allclear gen-2-1</samurai-ack>"));
         assert!(!data.contains("winddown"));
         injector.observe(&assistant_message(
             1,
-            "<samurai-ack>allclear gen-2</samurai-ack>",
+            "<samurai-ack>allclear gen-2-1</samurai-ack>",
         ));
 
         // Any OTHER pending instruction refuses the all-clear outright.
@@ -4101,6 +4217,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_begin_soft_winddown_supersedes_a_pending_winddown_allclear() {
+        // Fix L6 (issue #131 review): a pending, un-acked all-clear left
+        // over from an EARLIER episode must not block a REAL new wind-down
+        // episode — the stale all-clear is superseded outright, the same
+        // way an all-clear supersedes a delivered wind-down.
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-super2".into(), "epic-9".into(), 2)
+            .unwrap();
+
+        // Episode 1: delivered and acked wind-down, then the all-clear arms
+        // but is never acked — it sits pending, un-acked, stale.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        injector
+            .arm_injection_on_idle(1)
+            .expect("winddown delivered");
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-2-1</samurai-ack>",
+        ));
+        assert!(injector.begin_winddown_allclear(&snapshot));
+        assert!(injector.has_pending(1), "the all-clear is armed, un-acked");
+
+        // Episode 2's real wind-down supersedes the stale all-clear outright
+        // — the next idle injects the NEW wind-down (its OWN episode-2
+        // value, distinct from episode 1's), never the stale all-clear.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        let data = injector
+            .arm_injection_on_idle(1)
+            .expect("the new wind-down attempt");
+        assert!(data.contains("<samurai-ack>winddown gen-2-2</samurai-ack>"));
+        assert!(!data.contains("allclear"));
+
+        // Any OTHER pending instruction still refuses a new wind-down
+        // outright — only WinddownAllClear is superseded.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-2-2</samurai-ack>",
+        ));
+        assert!(injector.pending_view(1).is_none());
+        let parked = supervisor.transition(1, ParkRequested).unwrap();
+        injector.begin_park(&parked);
+        assert!(!injector.begin_soft_winddown(&parked));
+    }
+
+    #[tokio::test]
     async fn test_begin_park_supersedes_a_pending_soft_winddown() {
         let dir = tempdir().unwrap();
         let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
@@ -4117,5 +4280,97 @@ mod tests {
         let data = injector.arm_injection_on_idle(1).expect("park attempt 1");
         assert!(data.contains("<samurai-ack>park gen-2</samurai-ack>"));
         assert!(!data.contains("winddown"));
+    }
+
+    // --- issue #131 fix M7: replay-safe wind-down/all-clear acks ---
+
+    #[tokio::test]
+    async fn test_scan_ack_ignores_an_undelivered_instruction() {
+        // A pending entry with attempts == 0 was never actually injected —
+        // the agent cannot have acked it for real, so a marker matching its
+        // expected value (e.g. a transcript replay surfacing an EARLIER
+        // episode's identical text before THIS entry's own delivery) must
+        // not complete it.
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-undelivered".into(), "epic-9".into(), 5)
+            .unwrap();
+
+        assert!(injector.begin_soft_winddown(&snapshot));
+        assert!(injector.has_pending(1));
+        // No `arm_injection_on_idle` call — attempts stays 0.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-5-1</samurai-ack>",
+        ));
+        assert!(
+            injector.has_pending(1),
+            "an ack for an undelivered instruction must not complete it"
+        );
+
+        // The NORMAL path still works once actually delivered.
+        injector.arm_injection_on_idle(1).expect("now delivered");
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-5-1</samurai-ack>",
+        ));
+        assert!(
+            injector.pending_view(1).is_none(),
+            "the real ack completes it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_ack_replay_of_an_earlier_episode_cannot_complete_a_later_one() {
+        // Issue #118: `restart_watching`'s blind-heal re-reads the transcript
+        // from byte 0. Episode 1's ack line is textually IDENTICAL across
+        // episodes but for the episode number — a replay of episode 1's
+        // line must never satisfy episode 2's still-pending, already-
+        // delivered entry.
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-replay".into(), "epic-9".into(), 5)
+            .unwrap();
+
+        // Episode 1: delivered and genuinely acked — the entry is gone.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        injector
+            .arm_injection_on_idle(1)
+            .expect("episode 1 delivered");
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-5-1</samurai-ack>",
+        ));
+        assert!(injector.pending_view(1).is_none());
+
+        // Episode 2: a fresh wind-down, delivered (attempts > 0) — its
+        // expected value is episode-scoped, distinct from episode 1's.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        let data = injector
+            .arm_injection_on_idle(1)
+            .expect("episode 2 delivered");
+        assert!(data.contains("<samurai-ack>winddown gen-5-2</samurai-ack>"));
+
+        // The blind-heal replay: episode 1's OLD ack line resurfaces.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-5-1</samurai-ack>",
+        ));
+        assert!(
+            injector.has_pending(1),
+            "a replayed EARLIER episode's ack must not complete a LATER one"
+        );
+
+        // The NORMAL path: episode 2's own, correct value still completes it.
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-5-2</samurai-ack>",
+        ));
+        assert!(
+            injector.pending_view(1).is_none(),
+            "the real ack completes it"
+        );
     }
 }
