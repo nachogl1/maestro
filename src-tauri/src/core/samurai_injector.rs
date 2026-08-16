@@ -139,6 +139,10 @@ pub(crate) enum PendingKind {
     /// Soft wind-down (issue #60): no supervisor transition — the session
     /// stays WORKING and the ACK alone completes the entry.
     SoftWinddown,
+    /// Wind-down all-clear (issue #120): the allowance recovered, so a
+    /// wound-down-never-parked session may resume full throughput. Ack-only
+    /// like the wind-down: no transition, no file, no written marker.
+    WinddownAllClear,
 }
 
 impl PendingKind {
@@ -148,7 +152,7 @@ impl PendingKind {
         match self {
             Self::Handoff => SupervisorState::HandoffRequested,
             Self::Park => SupervisorState::ParkRequested,
-            Self::SoftWinddown => SupervisorState::Working,
+            Self::SoftWinddown | Self::WinddownAllClear => SupervisorState::Working,
         }
     }
 
@@ -158,6 +162,7 @@ impl PendingKind {
             Self::Handoff => "handoff",
             Self::Park => "park",
             Self::SoftWinddown => "soft_winddown",
+            Self::WinddownAllClear => "winddown_allclear",
         }
     }
 
@@ -168,6 +173,7 @@ impl PendingKind {
             Self::Handoff => "handoff_invalid",
             Self::Park => "park_invalid",
             Self::SoftWinddown => "soft_winddown_invalid",
+            Self::WinddownAllClear => "winddown_allclear_invalid",
         }
     }
 }
@@ -181,6 +187,9 @@ fn expected_ack_value(kind: PendingKind, generation: u32, corrective: bool) -> S
         (PendingKind::Park, false) => samurai_prompts::park_ack_value(generation),
         (PendingKind::Park, true) => samurai_prompts::park_ack_retry_value(generation),
         (PendingKind::SoftWinddown, _) => samurai_prompts::soft_winddown_ack_value(generation),
+        (PendingKind::WinddownAllClear, _) => {
+            samurai_prompts::winddown_allclear_ack_value(generation)
+        }
     }
 }
 
@@ -194,7 +203,7 @@ fn expected_written_value(kind: PendingKind, generation: u32, corrective: bool) 
         }
         (PendingKind::Park, false) => Some(samurai_prompts::park_written_value(generation)),
         (PendingKind::Park, true) => Some(samurai_prompts::park_written_retry_value(generation)),
-        (PendingKind::SoftWinddown, _) => None,
+        (PendingKind::SoftWinddown, _) | (PendingKind::WinddownAllClear, _) => None,
     }
 }
 
@@ -213,6 +222,7 @@ fn corrective_instruction_for(
         }
         PendingKind::Park => samurai_prompts::park_corrective_instruction(epic, generation, failure),
         PendingKind::SoftWinddown => samurai_prompts::soft_winddown_instruction(generation),
+        PendingKind::WinddownAllClear => samurai_prompts::winddown_allclear_instruction(generation),
     }
 }
 
@@ -862,10 +872,10 @@ fn finish_validation(
                         ),
                     }
                 }
-                // The soft wind-down has no written stage, so no validation ever
-                // runs for it — defensive arm, never expected.
-                PendingKind::SoftWinddown => log::warn!(
-                    "samurai injector: unexpected validation completion for a soft wind-down (session {session_id}) — ignored"
+                // The ack-only kinds have no written stage, so no validation
+                // ever runs for them — defensive arm, never expected.
+                PendingKind::SoftWinddown | PendingKind::WinddownAllClear => log::warn!(
+                    "samurai injector: unexpected validation completion for an ack-only instruction (session {session_id}) — ignored"
                 ),
             }
             // Review F3a: removal AFTER the chain returned (see the Ok arm
@@ -1365,6 +1375,46 @@ impl SamuraiInjector {
         true
     }
 
+    /// Issue #120: the wind-down all-clear for a WORKING session whose
+    /// allowance recovered. Ack-only, like the wind-down itself. A pending
+    /// entry decides the outcome:
+    ///
+    /// - a DELIVERED wind-down (attempts > 0) is superseded — the agent was
+    ///   told to slow down, so it must be told the order is lifted;
+    /// - an UNDELIVERED wind-down (attempts == 0) is cancelled silently —
+    ///   the agent never saw it, so there is nothing to clear (`false`);
+    /// - any other pending instruction refuses the all-clear (`false`) —
+    ///   the session is already heading somewhere.
+    pub fn begin_winddown_allclear(&self, snapshot: &SessionSnapshot) -> bool {
+        {
+            let mut pending = self.lock_pending();
+            match pending.get(&snapshot.session_id) {
+                Some(p) if p.kind == PendingKind::SoftWinddown && p.attempts == 0 => {
+                    pending.remove(&snapshot.session_id);
+                    log::info!(
+                        "samurai injector: session {} undelivered wind-down cancelled by the all-clear — nothing to send",
+                        snapshot.session_id,
+                    );
+                    return false;
+                }
+                Some(p) if p.kind != PendingKind::SoftWinddown => return false,
+                _ => {}
+            }
+            let instruction = samurai_prompts::winddown_allclear_instruction(snapshot.generation);
+            pending.insert(
+                snapshot.session_id,
+                PendingInstruction::new(PendingKind::WinddownAllClear, snapshot, instruction),
+            );
+        }
+        log::info!(
+            "samurai injector: session {} (gen-{}) wind-down all-clear armed — awaiting idle",
+            snapshot.session_id,
+            snapshot.generation,
+        );
+        self.inject_if_idle(snapshot.session_id);
+        true
+    }
+
     /// Whether a pending instruction (any kind) is being shepherded for the
     /// session. The parker's eligibility/blocking decisions read this.
     pub fn has_pending(&self, session_id: u32) -> bool {
@@ -1611,9 +1661,12 @@ impl SamuraiInjector {
                     }),
                 ),
             );
-            // The soft wind-down has no written stage: the ACK IS the
+            // The ack-only kinds have no written stage: the ACK IS the
             // completion — stop tracking, the session keeps WORKING.
-            if p.kind == PendingKind::SoftWinddown {
+            if matches!(
+                p.kind,
+                PendingKind::SoftWinddown | PendingKind::WinddownAllClear
+            ) {
                 pending.remove(&session_id);
             } else {
                 p.acked = true;
@@ -3953,6 +4006,98 @@ mod tests {
         }
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["instruction"], "soft_winddown");
+    }
+
+    // --- issue #120: the wind-down all-clear ladder ---
+
+    #[tokio::test]
+    async fn test_winddown_allclear_ack_completes_without_any_transition() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-allclear";
+        let snapshot = supervisor
+            .register_session(1, project.into(), "epic-9".into(), 3)
+            .unwrap();
+
+        // The episode: a wind-down delivered and acked.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        injector.arm_injection_on_idle(1).expect("winddown attempt");
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-3</samurai-ack>",
+        ));
+        assert!(injector.pending_view(1).is_none());
+
+        // Recovery: the all-clear arms, injects on idle, and is ack-only.
+        assert!(injector.begin_winddown_allclear(&snapshot));
+        let data = injector.arm_injection_on_idle(1).expect("allclear attempt");
+        assert!(data.contains("<samurai-ack>allclear gen-3</samurai-ack>"));
+        assert!(!data.contains("<samurai-handoff-written>"));
+        assert_eq!(injector.session_state(1), Some(Working));
+
+        // The ACK alone completes it — no state change, nothing left to
+        // inject, and the audit trail shows the acked all-clear.
+        injector.observe(&assistant_message(
+            1,
+            "Back to full speed. <samurai-ack>allclear gen-3</samurai-ack>",
+        ));
+        assert!(injector.pending_view(1).is_none());
+        assert_eq!(injector.session_state(1), Some(Working));
+        assert!(injector.arm_injection_on_idle(1).is_none());
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        let acked: Vec<&AuditEvent> = rows
+            .iter()
+            .filter(|r| r.event == AuditEventKind::Inject && r.details["phase"] == "acked")
+            .collect();
+        assert_eq!(acked.len(), 2, "wind-down ack + all-clear ack");
+        assert_eq!(acked[1].details["instruction"], "winddown_allclear");
+    }
+
+    #[tokio::test]
+    async fn test_winddown_allclear_supersedes_only_a_delivered_winddown() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-allclear2".into(), "epic-9".into(), 2)
+            .unwrap();
+
+        // Delivered but not yet acked: the all-clear replaces it — the next
+        // idle injects the all-clear, never the stale wind-down.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        injector
+            .arm_injection_on_idle(1)
+            .expect("winddown delivered");
+        assert!(injector.begin_winddown_allclear(&snapshot));
+        let data = injector.arm_injection_on_idle(1).expect("allclear attempt");
+        assert!(data.contains("<samurai-ack>allclear gen-2</samurai-ack>"));
+        assert!(!data.contains("winddown"));
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>allclear gen-2</samurai-ack>",
+        ));
+
+        // Any OTHER pending instruction refuses the all-clear outright.
+        let parked = supervisor.transition(1, ParkRequested).unwrap();
+        injector.begin_park(&parked);
+        assert!(!injector.begin_winddown_allclear(&parked));
+        let data = injector.arm_injection_on_idle(1).expect("park attempt");
+        assert!(data.contains("<samurai-ack>park gen-2</samurai-ack>"));
+    }
+
+    #[tokio::test]
+    async fn test_winddown_allclear_cancels_an_undelivered_winddown_silently() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-allclear3".into(), "epic-9".into(), 2)
+            .unwrap();
+
+        // Armed but never injected: the agent never saw a wind-down, so
+        // there is nothing to clear — cancel the stale entry, send nothing.
+        assert!(injector.begin_soft_winddown(&snapshot));
+        assert!(!injector.begin_winddown_allclear(&snapshot));
+        assert!(injector.pending_view(1).is_none(), "stale wind-down cancelled");
+        assert!(injector.arm_injection_on_idle(1).is_none());
     }
 
     #[tokio::test]

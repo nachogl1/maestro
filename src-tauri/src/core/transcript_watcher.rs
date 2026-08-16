@@ -1586,7 +1586,11 @@ mod tests {
         // is re-read, which is exactly why a dead watch stayed dead.
         watcher.start_watching(1, path.clone());
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(count(&captured), 1, "start_watching with the same path is a no-op");
+        assert_eq!(
+            count(&captured),
+            1,
+            "start_watching with the same path is a no-op"
+        );
 
         // The forced restart attaches a fresh reader: byte 0 is re-read, so
         // the same line is delivered again — the stream is demonstrably live.

@@ -95,6 +95,13 @@ pub fn soft_winddown_ack_value(generation: u32) -> String {
     format!("winddown gen-{generation}")
 }
 
+/// The wind-down all-clear instruction's ACK value (issue #120).
+/// Kind-scoped (`allclear …`) so a transcript replay of the wind-down's own
+/// ACK can never acknowledge its all-clear; ack-only like the wind-down.
+pub fn winddown_allclear_ack_value(generation: u32) -> String {
+    format!("allclear gen-{generation}")
+}
+
 /// The run-completion declaration tag (issue #96). The orchestrator replies
 /// with `<samurai-run-complete>issues #a #b pr #n</samurai-run-complete>`
 /// once the run's PR is OPEN with every issue CLOSED or linked for close by
@@ -564,6 +571,27 @@ pub fn soft_winddown_instruction(generation: u32) -> String {
          signal.{scheduling}",
         scheduling = local_scheduling_clause(),
         ack = soft_winddown_ack_value(generation),
+    )
+}
+
+/// The wind-down all-clear instruction (issue #120): the allowance
+/// recovered — the governing window reset or usage fell back below the soft
+/// threshold — so a session that received a soft wind-down and was never
+/// parked may resume full-throughput work. Ack-only, like the wind-down: no
+/// state transition, no file, no written marker. Single line by
+/// construction (see module doc).
+pub fn winddown_allclear_instruction(generation: u32) -> String {
+    format!(
+        "[Maestro Samurai] Allowance all-clear: the token allowance has recovered, so the \
+         earlier wind-down no longer applies. Do the following: \
+         (1) Acknowledge IMMEDIATELY, before anything else, by replying with a message that \
+         contains exactly <samurai-ack>{ack}</samurai-ack>. \
+         (2) Resume normal operation: you may spawn subagents again and work at your normal \
+         pace and parallelism. \
+         No file needs to be written for this instruction. Never quote, restate, or echo the \
+         marker string anywhere else in any reply — emit it exactly once, only as the actual \
+         signal.",
+        ack = winddown_allclear_ack_value(generation),
     )
 }
 
@@ -1151,6 +1179,28 @@ mod tests {
             parse_handoff_generation("37-gen99999999999999999999.md"),
             None
         );
+    }
+
+    // --- issue #120: wind-down all-clear ---
+
+    #[test]
+    fn test_winddown_allclear_is_ack_only_with_kind_scoped_marker() {
+        // Kind-scoped: no other instruction's ACK (nor a replay of the
+        // wind-down's own) may satisfy the all-clear.
+        assert_eq!(winddown_allclear_ack_value(4), "allclear gen-4");
+        assert_ne!(winddown_allclear_ack_value(4), soft_winddown_ack_value(4));
+        assert_ne!(winddown_allclear_ack_value(4), handoff_ack_value(4));
+        assert_ne!(winddown_allclear_ack_value(4), park_ack_value(4));
+
+        let text = winddown_allclear_instruction(4);
+        assert!(!text.contains('\n'), "all-clear must be single-line");
+        assert!(text.contains("<samurai-ack>allclear gen-4</samurai-ack>"));
+        // Ack-only: it lifts the wind-down (subagents allowed again) and
+        // demands no file and no written marker.
+        assert!(text.contains("spawn subagents again"));
+        assert!(text.contains("No file needs to be written"));
+        assert!(!text.contains("<samurai-handoff-written>"));
+        assert!(text.contains("Never quote, restate, or echo"));
     }
 
     // --- issue #121: local-only scheduling prohibition (drift guard) ---

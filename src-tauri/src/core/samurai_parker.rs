@@ -181,6 +181,10 @@ pub struct SamuraiParker {
     /// crossing, cleared only after the sweep completed AND timers armed.
     engaged: AtomicBool,
     state: Mutex<SweepState>,
+    /// Issue #120: sessions holding an un-cleared soft wind-down episode —
+    /// inserted when their wind-down is armed, drained on the allowance's
+    /// recovery edge so each episode all-clears at most once.
+    wound_down: Mutex<HashSet<u32>>,
 }
 
 impl SamuraiParker {
@@ -201,6 +205,7 @@ impl SamuraiParker {
             teardown,
             engaged: AtomicBool::new(false),
             state: Mutex::new(SweepState::default()),
+            wound_down: Mutex::new(HashSet::new()),
         })
     }
 
@@ -223,6 +228,9 @@ impl SamuraiParker {
                 );
                 self.engage_hard(resets_at.as_deref());
             }
+            // Issue #120: the soft falling edge — window reset or usage
+            // decay, whichever came first — lifts the wind-down.
+            AllowanceEvent::SoftRecovered { .. } => self.winddown_allclear(),
             // Preflight's business (P3.5); never a parking decision.
             AllowanceEvent::NoGoverningWindow => {}
         }
@@ -350,7 +358,11 @@ impl SamuraiParker {
         for session in self.supervisor.list_sessions() {
             let has_pending = self.injector.has_pending(session.session_id);
             if soft_eligible(session.state, session.in_flight, has_pending) {
-                if !self.injector.begin_soft_winddown(&session) {
+                if self.injector.begin_soft_winddown(&session) {
+                    // Issue #120: remember the episode so the recovery edge
+                    // can all-clear exactly the sessions it wound down.
+                    self.lock_wound_down().insert(session.session_id);
+                } else {
                     // Raced an instruction armed between the check and here.
                     log::info!(
                         "samurai parker: session {} gained an instruction mid-decision — wind-down skipped",
@@ -367,6 +379,42 @@ impl SamuraiParker {
                 );
             }
         }
+    }
+
+    /// Issue #120: the allowance recovered. Every session wound down this
+    /// episode that is still WORKING (never parked, never handed off) gets
+    /// the ack-only all-clear; the episode set drains so the edge triggers
+    /// at most once per wind-down episode.
+    fn winddown_allclear(&self) {
+        let wound: HashSet<u32> = std::mem::take(&mut *self.lock_wound_down());
+        if wound.is_empty() {
+            return;
+        }
+        for session in self.supervisor.list_sessions() {
+            if !wound.contains(&session.session_id) {
+                continue;
+            }
+            if session.state != SupervisorState::Working {
+                log::info!(
+                    "samurai parker: session {} left WORKING ({}) since its wind-down — no all-clear",
+                    session.session_id,
+                    session.state.as_str(),
+                );
+                continue;
+            }
+            if !self.injector.begin_winddown_allclear(&session) {
+                log::info!(
+                    "samurai parker: session {} busy with another instruction (or its wind-down never delivered) — all-clear skipped",
+                    session.session_id,
+                );
+            }
+        }
+    }
+
+    fn lock_wound_down(&self) -> std::sync::MutexGuard<'_, HashSet<u32>> {
+        self.wound_down
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Hard crossing: engage (idempotent — a second event mid-sweep only
@@ -917,6 +965,66 @@ mod tests {
         // no-op for that session (no duplicate entry, attempts untouched).
         h.parker.on_allowance_event(&soft_event());
         assert_eq!(h.injector.pending_view(1), Some((0, false, false)));
+    }
+
+    /// Issue #120: the watcher's soft falling edge — window reset or usage
+    /// decay, whichever came first.
+    fn recovered_event() -> AllowanceEvent {
+        AllowanceEvent::SoftRecovered {
+            window: AllowanceWindow::FiveHour,
+            value: 10.0,
+            threshold: 78.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_soft_recovery_all_clears_wound_down_sessions_once() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        // Session 1: WORKING, wound down. Session 2: mid-handoff, skipped.
+        h.supervisor
+            .register_session(1, "C:/git/p".into(), "#1".into(), 1)
+            .unwrap();
+        h.supervisor
+            .register_session(2, "C:/git/p".into(), "#2".into(), 1)
+            .unwrap();
+        h.supervisor
+            .transition(2, SupervisorState::HandoffRequested)
+            .unwrap();
+
+        // The episode: wind-down delivered and acked.
+        h.parker.on_allowance_event(&soft_event());
+        h.injector.observe_hook(&stop_event(1));
+        h.injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-1</samurai-ack>",
+        ));
+        assert!(!h.injector.has_pending(1));
+
+        // Recovery: only the wound-down, never-parked session gets the
+        // ack-only all-clear; nothing transitions.
+        h.parker.on_allowance_event(&recovered_event());
+        assert!(
+            h.injector.has_pending(1),
+            "wound-down session gets the all-clear"
+        );
+        assert!(
+            !h.injector.has_pending(2),
+            "never-wound-down session gets nothing"
+        );
+        assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::Working));
+        h.injector.observe_hook(&stop_event(1));
+        h.injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>allclear gen-1</samurai-ack>",
+        ));
+        assert!(!h.injector.has_pending(1));
+        assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::Working));
+
+        // Edge-trigger once per episode: a second recovery without a new
+        // wind-down sends nothing.
+        h.parker.on_allowance_event(&recovered_event());
+        assert!(!h.injector.has_pending(1));
     }
 
     #[tokio::test]

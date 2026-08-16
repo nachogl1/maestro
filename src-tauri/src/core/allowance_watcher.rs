@@ -90,6 +90,19 @@ pub enum AllowanceEvent {
         /// When the window resets (ISO 8601), when the API reported it.
         resets_at: Option<String>,
     },
+    /// The 5h usage fell back below the SOFT threshold (issue #120): the
+    /// wind-down episode is over. A governing-window reset also surfaces as
+    /// this falling edge (the next poll reads the reset window's low usage),
+    /// so "window reset OR usage recovered, whichever first" is this ONE
+    /// edge. The parker answers with the wind-down all-clear.
+    #[serde(rename = "allowance_recovered")]
+    SoftRecovered {
+        window: AllowanceWindow,
+        /// The window's usage percentage at the tick that fell below.
+        value: f64,
+        /// The configured soft threshold it fell below.
+        threshold: f64,
+    },
     /// Neither the 5h nor the 7d window is reported (enterprise-style
     /// account): there is no governing window to park on. Phase 3's
     /// preflight blocks on this.
@@ -152,6 +165,7 @@ impl AllowanceWatcher {
         // Only the handoff trigger consults per-run overrides
         // (`samurai_injector::handoff_threshold_for`).
         if let Some(pct) = reading.session_percent {
+            let was_above_soft = self.above_soft_5h;
             edge(
                 &mut self.above_soft_5h,
                 pct,
@@ -170,6 +184,16 @@ impl AllowanceWatcher {
                 &reading.session_resets_at,
                 &mut events,
             );
+            // Issue #120: the soft latch's FALLING edge is the recovery —
+            // the same re-arm that always existed, now announced so the
+            // parker can all-clear wound-down sessions.
+            if was_above_soft && !self.above_soft_5h {
+                events.push(AllowanceEvent::SoftRecovered {
+                    window: AllowanceWindow::FiveHour,
+                    value: pct,
+                    threshold: config.park_soft_5h_pct,
+                });
+            }
         }
         if let Some(pct) = reading.weekly_percent {
             edge(
@@ -238,7 +262,7 @@ impl AllowanceWatcher {
                 .as_deref()
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|d| d.with_timezone(&chrono::Utc)),
-            AllowanceEvent::NoGoverningWindow => None,
+            AllowanceEvent::SoftRecovered { .. } | AllowanceEvent::NoGoverningWindow => None,
         })
     }
 }
@@ -414,7 +438,7 @@ mod tests {
                     threshold_kind,
                     ..
                 } => Some((*window, *threshold_kind)),
-                AllowanceEvent::NoGoverningWindow => None,
+                AllowanceEvent::SoftRecovered { .. } | AllowanceEvent::NoGoverningWindow => None,
             })
             .collect()
     }
@@ -458,14 +482,44 @@ mod tests {
     fn rearms_after_falling_below_and_fires_on_recross() {
         let mut w = AllowanceWatcher::default();
         assert_eq!(w.evaluate(&reading(Some(80.0), None), &cfg()).len(), 1);
-        // Fall back below (5h window reset): silent re-arm.
-        assert!(w.evaluate(&reading(Some(10.0), None), &cfg()).is_empty());
+        // Fall back below (5h window reset): the threshold re-arms and the
+        // recovery event fires (#120) — no new ThresholdCrossed.
+        let events = w.evaluate(&reading(Some(10.0), None), &cfg());
+        assert!(kinds(&events).is_empty());
+        assert_eq!(events.len(), 1, "the falling edge is the recovery event");
         // Re-cross: fires again.
         let events = w.evaluate(&reading(Some(79.0), None), &cfg());
         assert_eq!(
             kinds(&events),
             vec![(AllowanceWindow::FiveHour, ThresholdKind::Soft)]
         );
+    }
+
+    #[test]
+    fn soft_recovery_fires_once_per_winddown_episode() {
+        // Issue #120: one falling edge per episode — a governing-window
+        // reset and a usage decay below the soft threshold both surface as
+        // the same falling reading, so "whichever first" is this one edge.
+        let mut w = AllowanceWatcher::default();
+        // Below from the start: falling readings never fire a recovery.
+        assert!(w.evaluate(&reading(Some(50.0), None), &cfg()).is_empty());
+        assert!(w.evaluate(&reading(Some(10.0), None), &cfg()).is_empty());
+        // Episode 1: cross soft, then recover.
+        assert_eq!(w.evaluate(&reading(Some(80.0), None), &cfg()).len(), 1);
+        let events = w.evaluate(&reading(Some(10.0), None), &cfg());
+        assert_eq!(
+            events,
+            vec![AllowanceEvent::SoftRecovered {
+                window: AllowanceWindow::FiveHour,
+                value: 10.0,
+                threshold: 78.0,
+            }]
+        );
+        // Staying below: no repeat — edge, not level.
+        assert!(w.evaluate(&reading(Some(9.0), None), &cfg()).is_empty());
+        // Episode 2: both edges fire afresh.
+        assert_eq!(w.evaluate(&reading(Some(80.0), None), &cfg()).len(), 1);
+        assert_eq!(w.evaluate(&reading(Some(5.0), None), &cfg()).len(), 1);
     }
 
     #[test]
@@ -516,8 +570,11 @@ mod tests {
                 (AllowanceWindow::FiveHour, ThresholdKind::Hard),
             ]
         );
-        // Restoring the threshold re-arms (value now below it) …
-        assert!(w.evaluate(&reading(Some(40.0), None), &cfg()).is_empty());
+        // Restoring the threshold re-arms (value now below it) — announced
+        // as the #120 recovery event, never a crossing …
+        let events = w.evaluate(&reading(Some(40.0), None), &cfg());
+        assert!(kinds(&events).is_empty());
+        assert_eq!(events.len(), 1, "the soft re-arm is the recovery event");
         // … so lowering it again fires again: repeatable live testing.
         let events = w.evaluate(&reading(Some(40.0), None), &test_cfg);
         assert_eq!(events.len(), 2);
@@ -579,8 +636,10 @@ mod tests {
         assert!(w.hard_latched());
         assert!(w.evaluate(&reading(Some(92.0), None), &cfg()).is_empty());
         assert!(w.hard_latched());
-        // 5h window resets below every threshold → re-armed, not latched.
-        assert!(w.evaluate(&reading(Some(3.0), None), &cfg()).is_empty());
+        // 5h window resets below every threshold → re-armed, not latched
+        // (the falling soft edge is the #120 recovery event, no crossings).
+        let events = w.evaluate(&reading(Some(3.0), None), &cfg());
+        assert!(kinds(&events).is_empty());
         assert!(!w.hard_latched());
         // The 7d window latches it just as well.
         assert_eq!(w.evaluate(&reading(Some(3.0), Some(96.0)), &cfg()).len(), 1);
@@ -620,8 +679,9 @@ mod tests {
         // The 5h window resets while the 7d latch still holds the sweep open.
         // The re-hand must now be the 7d event with the WEEKLY reset time —
         // the bug was re-handing the remembered 5h event, whose `resets_at`
-        // is now in the past.
-        assert!(w.evaluate(&with_resets(Some(2.0), Some(96.0)), &cfg()).is_empty());
+        // is now in the past. (The falling soft edge announces the #120
+        // recovery; no new crossing.)
+        assert!(kinds(&w.evaluate(&with_resets(Some(2.0), Some(96.0)), &cfg())).is_empty());
         let event = w
             .latched_hard_event(&with_resets(Some(2.0), Some(96.0)), &cfg())
             .expect("7d still latched");
