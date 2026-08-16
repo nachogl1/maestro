@@ -163,6 +163,13 @@ struct SweepState {
     /// allowance crossing joins the sweep: that brings a reset story, and
     /// its timers must arm normally.
     suppress_timers: bool,
+    /// Fix C1 (issue #131 review 2): a `SoftRecovered` edge arrived while
+    /// this sweep held the all-clear back. That edge is a strict ONE-SHOT
+    /// falling edge (`allowance_watcher`: fired only when `above_soft_5h`
+    /// goes true→false), so there is no second edge to re-drive it —
+    /// remembering it here is what makes the deferral a DEFERRAL and not a
+    /// silent drop. Consumed by [`SamuraiParker::complete_sweep`].
+    pending_allclear: bool,
 }
 
 /// The allowance parker. Fed by the allowance loop (events), the injector
@@ -396,12 +403,17 @@ impl SamuraiParker {
         // would inject "resume full throughput" into a session the sweep is
         // about to park anyway, against a 7d allowance that is still
         // exhausted. DEFER rather than drop: the wound-down episode set is
-        // left intact (not drained) so the next SoftRecovered edge — once
-        // the sweep actually completes and parking disengages — can still
-        // all-clear whatever sessions the sweep never touched (e.g. ones
-        // that ALERTed and were skipped, staying WORKING).
+        // left intact (not drained) AND the edge itself is remembered
+        // (`pending_allclear`), because `SoftRecovered` is a strict one-shot
+        // falling edge — waiting for "the next edge" would wait forever and
+        // leave the sweep's skipped sessions wound down for the rest of the
+        // window (fix C1, the bug #120 shape). `complete_sweep` re-drives
+        // this function the moment parking disengages.
         if self.parking_engaged() {
-            log::info!("samurai parker: soft all-clear deferred — a hard park sweep is engaged");
+            log::info!(
+                "samurai parker: soft all-clear deferred — a hard park sweep is engaged; it will be re-driven when the sweep completes"
+            );
+            self.lock_state().pending_allclear = true;
             return;
         }
         let wound: HashSet<u32> = std::mem::take(&mut *self.lock_wound_down());
@@ -522,7 +534,17 @@ impl SamuraiParker {
             )
         });
         if !blocked {
-            self.complete_sweep(&mut state);
+            let deferred_allclear = self.complete_sweep(&mut state);
+            // The state guard must be gone before the all-clear runs: it
+            // re-enters `winddown_allclear`, which takes this same lock when
+            // it has to defer again (a fresh sweep engaged in between).
+            drop(state);
+            if deferred_allclear {
+                log::info!(
+                    "samurai parker: park sweep disengaged — re-driving the all-clear it deferred"
+                );
+                self.winddown_allclear();
+            }
         }
     }
 
@@ -536,10 +558,15 @@ impl SamuraiParker {
     /// (review F2) drops stale timers instead of spawning — duplicating
     /// that gate here would only add a run-config dependency for noise
     /// reduction.
-    fn complete_sweep(&self, state: &mut SweepState) {
+    ///
+    /// Returns whether an all-clear was DEFERRED by this sweep and must now
+    /// be re-driven (fix C1) — the caller does that after dropping the state
+    /// guard.
+    fn complete_sweep(&self, state: &mut SweepState) -> bool {
         let parked_epics = std::mem::take(&mut state.parked_epics);
         let resets_at = state.resets_at.take();
         let suppress_timers = std::mem::take(&mut state.suppress_timers);
+        let pending_allclear = std::mem::take(&mut state.pending_allclear);
         state.failed.clear();
 
         // Issue #63: an externally engaged sweep (gh auth loss) arms nothing
@@ -552,7 +579,7 @@ impl SamuraiParker {
                 parked_epics.len()
             );
             self.engaged.store(false, Ordering::SeqCst);
-            return;
+            return pending_allclear;
         }
 
         log::info!(
@@ -628,6 +655,7 @@ impl SamuraiParker {
             }
         }
         self.engaged.store(false, Ordering::SeqCst);
+        pending_allclear
     }
 
     /// Recover from a poisoned lock rather than panicking — event-path
@@ -1114,13 +1142,61 @@ mod tests {
             "the failed, excluded session was never targeted"
         );
 
-        // DEFERRED, not DROPPED: a fresh recovery once parking has
-        // disengaged still finds session 2's wound-down episode and
-        // all-clears it — the earlier deferral did not lose the episode.
-        h.parker.on_allowance_event(&recovered_event());
+        // Fix C1: DEFERRED, not DROPPED — and the deferral is re-driven by
+        // the SWEEP's completion, with NO second allowance event. That is
+        // the whole point: `SoftRecovered` is a one-shot falling edge
+        // (`allowance_watcher`: only when above_soft_5h goes true→false), so
+        // a second event the real watcher can never emit must not be what
+        // rescues the episode.
+        wait_until(|| h.injector.has_pending(2)).await;
+        h.injector.observe_hook(&stop_event(2));
+        h.injector.observe(&assistant_message(
+            2,
+            "<samurai-ack>allclear gen-1-1</samurai-ack>",
+        ));
         assert!(
-            h.injector.has_pending(2),
-            "the deferred episode survives to the next non-engaged recovery"
+            !h.injector.has_pending(2),
+            "the re-driven instruction is the all-clear (its ack value clears it)"
+        );
+        assert_eq!(state_of(&h.supervisor, 2), Some(SupervisorState::Working));
+    }
+
+    /// Fix T1 (issue #131 review 2): the parker-seam proof for fix L6 —
+    /// `soft_winddown` must consult `blocks_soft_winddown`, not `has_pending`.
+    /// A session sitting on an un-acked all-clear from a PRIOR episode is
+    /// still eligible for a NEW wind-down; reverting the check to
+    /// `has_pending` makes this test fail.
+    #[tokio::test]
+    async fn test_soft_crossing_winds_down_over_a_pending_unacked_all_clear() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        h.supervisor
+            .register_session(1, "C:/git/p".into(), "#1".into(), 1)
+            .unwrap();
+
+        // Episode 1: wind down, ack it, then all-clear — and leave the
+        // all-clear UN-ACKED (the agent never replied).
+        h.parker.on_allowance_event(&soft_event());
+        h.injector.observe_hook(&stop_event(1));
+        h.injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-1-1</samurai-ack>",
+        ));
+        h.parker.on_allowance_event(&recovered_event());
+        assert!(h.injector.has_pending(1), "all-clear is pending, un-acked");
+
+        // Episode 2: usage climbs back over soft. The stale all-clear must
+        // NOT eat this crossing — the session winds down again.
+        h.parker.on_allowance_event(&soft_event());
+        h.injector.observe_hook(&stop_event(1));
+        h.injector.observe(&assistant_message(
+            1,
+            "<samurai-ack>winddown gen-1-2</samurai-ack>",
+        ));
+        assert!(
+            !h.injector.has_pending(1),
+            "the pending entry is episode 2's WIND-DOWN (only its ack value clears it), \
+             not the superseded all-clear"
         );
     }
 
