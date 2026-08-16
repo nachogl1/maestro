@@ -242,7 +242,8 @@ describe("UtilityPanel", () => {
   it("renders the Launch panel with the run form and active runs", async () => {
     render(<UtilityPanel panel="launch" width={320} onResize={() => {}} onClose={() => {}} />);
     expect(screen.getByText("Launch Run")).toBeInTheDocument();
-    expect(screen.getByLabelText("Issues")).toBeInTheDocument();
+    // Issue #128: one free-text box replaced the epics + issues fields.
+    expect(screen.getByLabelText("What do you want to work on today")).toBeInTheDocument();
     // One button: it runs preflight itself, so there is no separate step.
     expect(screen.queryByRole("button", { name: "Run preflight" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
