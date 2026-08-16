@@ -360,6 +360,35 @@ impl TranscriptWatcher {
         self.start_watching(session_id, transcript_path);
     }
 
+    /// The samurai blindness self-heal's entry point (issue #118), hardened
+    /// by fix C3 (issue #131 review 2): force-reattach `session_id` to the
+    /// transcript it is REGISTERED against, and refuse — `false`, which the
+    /// injector turns into the `context_blind` ALERT — when it is registered
+    /// against none.
+    ///
+    /// It used to re-bind to "the newest `*.jsonl` in the session's Claude
+    /// project directory", which matches no session identity at all. Every
+    /// generation of a run shares one worktree, so that directory holds
+    /// gen-1…gen-N transcripts: a session blind because its watch never
+    /// attached got the PREDECESSOR generation's file restarted from byte 0,
+    /// replaying gen-N-1's context readings into gen-N's handoff trigger and
+    /// its markers into the injector's ack scanner. A human ALERT is the
+    /// correct outcome for a session whose transcript was never registered.
+    pub fn rewatch_registered(&self, session_id: u32) -> bool {
+        match self.transcript_path(session_id) {
+            Some(path) => {
+                self.restart_watching(session_id, path);
+                true
+            }
+            None => {
+                log::warn!(
+                    "TranscriptWatcher: session {session_id} has no registered transcript — refusing to guess one (its session-start hook never landed)"
+                );
+                false
+            }
+        }
+    }
+
     /// Stop watching a session's transcript file and clean up resources.
     pub fn stop_watching(&self, session_id: u32) {
         if let Some((_, state)) = self.watchers.remove(&session_id) {
@@ -1410,6 +1439,37 @@ mod tests {
         }
 
         watcher.stop_watching(1);
+    }
+
+    /// Fix C3 (issue #131 review 2): the blindness self-heal reattaches ONLY
+    /// the session's own registered transcript. A run's generations share one
+    /// worktree — and therefore one Claude project directory holding
+    /// gen-1…gen-N — so "newest file in the directory" would hand a blind
+    /// gen-N its PREDECESSOR's transcript and replay it from byte 0.
+    #[tokio::test]
+    async fn test_rewatch_only_reattaches_the_sessions_own_transcript() {
+        let (event_bus, _captured) = test_event_bus();
+        let watcher = TranscriptWatcher::new(event_bus);
+        let dir = tempfile::tempdir().unwrap();
+
+        // The shared project dir: the predecessor's transcript is the NEWEST
+        // file in it, written after this session's own.
+        let mine = dir.path().join("gen-2.jsonl");
+        std::fs::write(&mine, "").unwrap();
+        let predecessor = dir.path().join("gen-1-newer.jsonl");
+        std::fs::write(&predecessor, "").unwrap();
+
+        // A session with no registered transcript (its session-start hook
+        // never landed) refuses to heal — the injector ALERTs instead.
+        assert!(!watcher.rewatch_registered(7), "nothing registered");
+        assert!(watcher.watched_sessions().is_empty());
+
+        // A registered session reattaches to ITS OWN file, never the newer
+        // sibling.
+        watcher.start_watching(7, mine.clone());
+        assert!(watcher.rewatch_registered(7));
+        assert_eq!(watcher.transcript_path(7), Some(mine));
+        watcher.stop_watching(7);
     }
 
     #[test]
