@@ -123,6 +123,13 @@ const ALERT_SENTENCES: Record<string, (d: Record<string, unknown>) => string> = 
   submit_retry: () => "Instruction submission retried",
   submit_unconfirmed: () => "Instruction submission unconfirmed",
   launch_test_gate: () => "Launch blocked by the test gate",
+  scheduled_launch_gave_up: (d) => {
+    const attempts = numField(d, "attempts");
+    const error = strField(d, "error");
+    return `Scheduled launch gave up${
+      attempts !== null ? ` after ${attempts} attempt${attempts === 1 ? "" : "s"}` : ""
+    } — held for launch-or-discard${error ? `: ${error}` : ""}`;
+  },
   completion_declaration_invalid: (d) => {
     const error = strField(d, "error");
     return `Malformed completion declaration${error ? `: ${error}` : ""}`;

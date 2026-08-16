@@ -130,6 +130,29 @@ describe("AuditSection (issue #46)", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a plain sentence for a scheduled-launch give-up (PR #131 review L3)", async () => {
+    // Issue #129's give-up alert (commands/samurai.rs): the retries are
+    // spent and the entry is HELD for an explicit launch-or-discard.
+    mockInvoke([
+      auditEvent({
+        event: "ALERT",
+        generation: 0,
+        details: {
+          kind: "scheduled_launch_gave_up",
+          attempts: 3,
+          error: "launch refused",
+        },
+      }),
+    ]);
+    render(<AuditSection />);
+
+    expect(
+      await screen.findByText(
+        "Scheduled launch gave up after 3 attempts — held for launch-or-discard: launch refused",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("falls back to the raw summary for an unrecognized ALERT sub-kind", async () => {
     mockInvoke([
       auditEvent({
