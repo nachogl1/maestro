@@ -53,6 +53,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::samurai_prompts::epic_slug;
+use super::samurai_workflow::WorkflowGraph;
 
 /// How often the loop checks for due entries. Coarse on purpose (module doc).
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
@@ -96,6 +97,14 @@ pub struct ScheduledLaunchSpec {
     /// was re-armed (issue #129: unattended retry with backoff, bounded).
     #[serde(default)]
     pub attempts: u32,
+    /// The workflow graph the run launches with (issue #91). Fix C4 (issue
+    /// #131 review 2): without it the fire path snapshotted
+    /// `WorkflowGraph::default()` into the run config, so a user who EDITED
+    /// the graph and then SCHEDULED the run silently got the default
+    /// template in gen-1 and in every successor brief. `None` = the default
+    /// template, the same meaning it has on the immediate-launch path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowGraph>,
 }
 
 /// One persisted timer. Kept lean (PRD §8): identity + when + why — the run
@@ -477,6 +486,7 @@ mod tests {
                 handoff_context_pct: None,
                 skip_test_gate: false,
                 attempts: 0,
+                workflow: None,
             }),
             ..entry(project, epic, fire_at)
         }
