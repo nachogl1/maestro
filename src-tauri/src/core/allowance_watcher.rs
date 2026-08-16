@@ -194,6 +194,30 @@ impl AllowanceWatcher {
                     threshold: config.park_soft_5h_pct,
                 });
             }
+        } else if self.above_soft_5h {
+            // Fix T4 (issue #131 review 2): the decided policy is "all-clear
+            // on whichever comes first: window RESET or usage below soft",
+            // but the falling edge above only ever fired on a decay — a
+            // reset that makes the API stop reporting the 5h window left
+            // `above_soft_5h` latched forever, so every wound-down session
+            // stayed wound down with no edge left to lift it (the same
+            // shape as bug #120). A window that stopped being reported while
+            // another governing window still is IS the reset: re-arm the
+            // soft latch and announce the recovery, reporting 0% because
+            // there is no usage left in the window to report.
+            //
+            // Only the SOFT latch — a hard latch keeps the parking guard
+            // engaged, and re-arming it here would let a hard crossing
+            // re-fire a park sweep on a data gap.
+            log::info!(
+                "samurai allowance: the 5h window stopped being reported while above soft — treating it as the window reset and all-clearing"
+            );
+            self.above_soft_5h = false;
+            events.push(AllowanceEvent::SoftRecovered {
+                window: AllowanceWindow::FiveHour,
+                value: 0.0,
+                threshold: config.park_soft_5h_pct,
+            });
         }
         if let Some(pct) = reading.weekly_percent {
             edge(
@@ -520,6 +544,45 @@ mod tests {
         // Episode 2: both edges fire afresh.
         assert_eq!(w.evaluate(&reading(Some(80.0), None), &cfg()).len(), 1);
         assert_eq!(w.evaluate(&reading(Some(5.0), None), &cfg()).len(), 1);
+    }
+
+    /// Fix T4 (issue #131 review 2): policy (a) is "all-clear on whichever
+    /// comes FIRST — the window reset or usage below soft". Only the decay
+    /// half was exercised: a reset that makes the API stop reporting the 5h
+    /// window used to leave `above_soft_5h` latched, so wound-down sessions
+    /// were never all-cleared and no further edge could lift them.
+    #[test]
+    fn soft_recovery_fires_when_the_5h_window_stops_being_reported() {
+        let mut w = AllowanceWatcher::default();
+        assert_eq!(w.evaluate(&reading(Some(80.0), Some(50.0)), &cfg()).len(), 1);
+
+        // The 5h window resets and the API stops reporting it; the weekly
+        // window is still there, so this is NOT the no-governing-window case.
+        let events = w.evaluate(&reading(None, Some(50.0)), &cfg());
+        assert_eq!(
+            events,
+            vec![AllowanceEvent::SoftRecovered {
+                window: AllowanceWindow::FiveHour,
+                value: 0.0,
+                threshold: 78.0,
+            }]
+        );
+        // Edge, not level: staying unreported says nothing more.
+        assert!(w.evaluate(&reading(None, Some(50.0)), &cfg()).is_empty());
+        // And the latch really re-armed — the next crossing fires afresh.
+        assert_eq!(
+            kinds(&w.evaluate(&reading(Some(80.0), Some(50.0)), &cfg())),
+            vec![(AllowanceWindow::FiveHour, ThresholdKind::Soft)]
+        );
+    }
+
+    #[test]
+    fn an_unreported_5h_window_below_soft_stays_silent() {
+        // No wind-down episode is open, so a disappearing window announces
+        // nothing — the all-clear is an edge off a real crossing.
+        let mut w = AllowanceWatcher::default();
+        assert!(w.evaluate(&reading(Some(50.0), Some(50.0)), &cfg()).is_empty());
+        assert!(w.evaluate(&reading(None, Some(50.0)), &cfg()).is_empty());
     }
 
     #[test]
