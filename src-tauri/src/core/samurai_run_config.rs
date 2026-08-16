@@ -90,6 +90,11 @@ pub struct SamuraiRunConfig {
     /// [`epics`](Self::epics).
     #[serde(default)]
     pub issues: Vec<String>,
+    /// The free-text launch request this run was started from, verbatim
+    /// (issue #128) — the durable record of what the user asked for. `None`
+    /// on configs written before free-text launches existed.
+    #[serde(default)]
+    pub launch_text: Option<String>,
     /// `--repo owner/repo` pin for orchestrator prompts (PRD §10). `None`
     /// when the remote did not parse — the prompt then carries an explicit
     /// caution instead (same policy as `samurai_replicator::derive_repo_pin`,
@@ -132,6 +137,7 @@ impl SamuraiRunConfig {
             epic: epic.into(),
             epics: Vec::new(),
             issues: Vec::new(),
+            launch_text: None,
             repo_pin: None,
             worktree_path: worktree_path.into(),
             model: None,

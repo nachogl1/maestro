@@ -956,6 +956,187 @@ pub fn launch_instruction(refs: &RunRefs, repo_pin: Option<&str>, compiled_workf
     )
 }
 
+/// One free-text launch request (issue #128): the launcher's single "what do
+/// you want to work on today" input, replacing the structured epics + issues
+/// fields.
+///
+/// The text is whitespace-collapsed to one line at parse time (module doc:
+/// every instruction must stay one paste-able line), so two spellings of the
+/// same request — extra padding, a stray newline — are ONE request. Every
+/// `#N` token found in the text becomes a ref (held as standalone issues —
+/// the #87 no-epic-framing contract; whether a ref is an epic is gen-1's
+/// discovery, briefed epic-first either way). Bare numbers are NOT refs: in
+/// prose ("fix 3 bugs") they are just words, and a false ref would hijack
+/// the run's identity.
+///
+/// **Identity:** [`Self::label`] is the run's identity string, the exact
+/// role [`RunRefs::label`] plays for ref launches — branch, worktree,
+/// handoff filenames, resume timers and the refusal matrix all key off it
+/// via [`epic_slug`]. Refs present → the refs label (`issues #7, #9`).
+/// Pure prose → a short slug of the text plus an FNV-1a hash
+/// (`fix-the-flaky-test-1a2b3c4d`): stable for the same text, distinct for
+/// different text, and bounded (≤ [`PROSE_SLUG_MAX`] + 9 chars) so Windows
+/// `MAX_PATH` never bites the worktree dir built from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchInput {
+    text: String,
+    refs: RunRefs,
+}
+
+impl LaunchInput {
+    /// Parses the launcher's free-text box (see type doc).
+    pub fn parse(raw: &str) -> Self {
+        let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        let refs = RunRefs::new(std::iter::empty::<&str>(), extract_hash_refs(&text));
+        Self { text, refs }
+    }
+
+    /// Nothing usable was typed — the launch command refuses this before any
+    /// side effect.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// The request, whitespace-collapsed to one line.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The `#N` refs found in the text, as standalone issues (type doc).
+    pub fn refs(&self) -> &RunRefs {
+        &self.refs
+    }
+
+    /// The run's identity/display string (type doc).
+    pub fn label(&self) -> String {
+        if self.refs.is_empty() {
+            prose_label(&self.text)
+        } else {
+            self.refs.label()
+        }
+    }
+}
+
+/// Every `#N` token in `text`, in first-appearance order, deduplicated —
+/// `#7` twice in one request is one ref, or the label (the run's identity)
+/// would differ from the same request typed once.
+fn extract_hash_refs(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut refs: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            if end > start {
+                let number = &text[start..end];
+                if !refs.iter().any(|r| r == number) {
+                    refs.push(number.to_string());
+                }
+            }
+            i = end.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    refs
+}
+
+/// Longest slug prefix a prose label keeps before its hash — chosen so the
+/// whole label stays ≤ 33 chars and the worktree dir built from it never
+/// pushes a Windows path over `MAX_PATH`.
+const PROSE_SLUG_MAX: usize = 24;
+
+/// `fix-the-flaky-test-1a2b3c4d`: a readable head from the text plus an
+/// 8-hex FNV-1a hash of the WHOLE (collapsed) text, so two prose requests
+/// sharing their first words still get distinct run identities. Slug chars
+/// are ASCII by construction ([`ref_slug`]), so the byte truncation is safe.
+fn prose_label(text: &str) -> String {
+    let slug = ref_slug(text, "run");
+    let head = slug[..slug.len().min(PROSE_SLUG_MAX)].trim_end_matches('-');
+    format!("{head}-{:08x}", fnv1a_64(text) as u32)
+}
+
+/// FNV-1a over the raw text (the `samurai_schedule::jitter_secs` constants).
+fn fnv1a_64(input: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// The gen-1 opening brief for a FREE-TEXT launch (issue #128) — what
+/// [`launch_instruction`] is to the structured refs, this is to the single
+/// text box. Two shapes:
+///
+/// - **Refs found in the text:** the full [`launch_instruction`] for those
+///   refs (issues shape — #87: no epic framing), followed by the user's
+///   request VERBATIM (the text is the work order, and any constraint it
+///   states must survive the trip) and an explicit EPIC-FIRST rider: a
+///   referenced issue that is an epic brings every child issue into the run
+///   — the same epic-first context gathering the old Epics field bought.
+/// - **Pure prose:** no GitHub context gathering at all — the request text
+///   IS the scope. The brief keeps the same working discipline (plan, small
+///   idempotent subagent commits, one run PR, never another branch), the
+///   `--repo` pin or its caution, the workflow section and the completion
+///   clause.
+///
+/// Single line by construction (see module doc); the text is
+/// whitespace-collapsed by [`LaunchInput::parse`].
+pub fn launch_text_instruction(
+    input: &LaunchInput,
+    repo_pin: Option<&str>,
+    compiled_workflow: &str,
+) -> String {
+    let text = input.text();
+    if !input.refs().is_empty() {
+        let base = launch_instruction(input.refs(), repo_pin, compiled_workflow);
+        return format!(
+            "{base} The user's launch request, VERBATIM: \"{text}\" — it is the work order \
+             behind the issue references above; honour any constraint it states. EPIC-FIRST: \
+             any referenced issue that is itself an epic brings EVERY child issue it references \
+             into this run — read each child and ALL of its comments before planning."
+        );
+    }
+    let (gh_note, caution) = match repo_pin {
+        Some(pin) => (
+            format!(" For any `gh` command you run, pass `--repo {pin}` explicitly."),
+            String::new(),
+        ),
+        None => (
+            String::new(),
+            " CAUTION: Maestro could not determine this repository's origin remote, so no \
+             `--repo` pin is available — before running any `gh` command, double-check it \
+             targets the correct repository."
+                .to_string(),
+        ),
+    };
+    let workflow = workflow_section(compiled_workflow);
+    let clause = completion_declaration_clause();
+    format!(
+        "[Maestro Samurai] You are generation 1, the FIRST orchestrator, for this run. This \
+         directory is this run's dedicated worktree on its own branch. The user's request, \
+         VERBATIM: \"{text}\". The request references no GitHub issue, so the request text is \
+         your FULL scope — do not go hunting for issues to work. Do the following: \
+         (1) Plan the work the request describes before touching code. \
+         (2) Work it via SMALL idempotent subagent tasks, each committing its completed step \
+         to THIS branch (stage named paths only, never `git add .` or `git add -A`; \
+         Conventional Commit messages `type(scope): summary`). \
+         (3) Open the run's pull request for finished work and keep it updated — every PR \
+         body must contain `Closes #N` (or `Fixes #N`) for each issue it resolves, and the \
+         title must summarise this run's scope from the moment it is created.{gh_note} \
+         (4) NEVER switch to, commit to, or push any other branch, and NEVER touch any \
+         repository other than this one.{caution}{workflow}{clause}"
+    )
+}
+
 /// Repo-relative path of the pre-digested transcript summary Maestro writes
 /// for a gen-`successor_generation` RECOVERY successor (issue #56). Lives
 /// next to the handoffs so the Second Brain panel's file listing picks it up;
@@ -2365,5 +2546,119 @@ mod tests {
         assert!(text.contains("Malformed lines are skipped"));
         assert!(text.contains("NEVER rewrite or delete existing lines"));
         assert!(text.contains("append-only"));
+    }
+
+    // --- issue #128: free-text launch input ---
+
+    #[test]
+    fn test_launch_input_extracts_hash_refs_as_issues() {
+        let input = LaunchInput::parse("Please work on #77 and #78 (see #77 for context).");
+        assert_eq!(
+            input.refs().issues(),
+            ["77", "78"],
+            "deduplicated, in order"
+        );
+        assert!(input.refs().epics().is_empty());
+        assert_eq!(input.label(), "issues #77, #78");
+        // Bare numbers in prose are NOT refs — they are just words.
+        let input = LaunchInput::parse("fix 3 bugs in module 7");
+        assert!(input.refs().is_empty());
+        // A lone `#` with no digits carries nothing.
+        assert!(LaunchInput::parse("look at # and #x").refs().is_empty());
+    }
+
+    #[test]
+    fn test_launch_input_collapses_whitespace_into_one_identity() {
+        // Two spellings of one request must be ONE run identity — label()
+        // keys the branch, worktree, handoffs and refusal matrix.
+        let a = LaunchInput::parse("  fix the   flaky\ntest ");
+        let b = LaunchInput::parse("fix the flaky test");
+        assert_eq!(a.text(), "fix the flaky test");
+        assert_eq!(a.label(), b.label());
+        assert!(!a.text().contains('\n'), "text must stay one line");
+    }
+
+    #[test]
+    fn test_launch_input_prose_label_is_short_slug_plus_stable_hash() {
+        let input = LaunchInput::parse("Fix the flaky UtilityPanel empty-state test under load");
+        let label = input.label();
+        // slug head + 8-hex hash, bounded for Windows MAX_PATH.
+        assert!(label.len() <= PROSE_SLUG_MAX + 9, "label too long: {label}");
+        assert!(
+            label.starts_with("fix-the-flaky"),
+            "readable head expected: {label}"
+        );
+        let tail = label.rsplit('-').next().unwrap();
+        assert_eq!(tail.len(), 8, "8-hex hash tail: {label}");
+        assert!(tail.bytes().all(|b| b.is_ascii_hexdigit()));
+        // Stable for the same text; distinct for different text (even when
+        // the readable head matches).
+        assert_eq!(label, LaunchInput::parse(input.text()).label());
+        let other = LaunchInput::parse("Fix the flaky UtilityPanel empty-state test differently");
+        assert_ne!(label, other.label());
+        // The slug already passes epic_slug unchanged — no double mangling.
+        assert_eq!(epic_slug(&label), label);
+    }
+
+    #[test]
+    fn test_launch_input_empty_and_symbol_only() {
+        assert!(LaunchInput::parse("").is_empty());
+        assert!(LaunchInput::parse("   \n\t ").is_empty());
+        assert!(!LaunchInput::parse("#77").is_empty());
+        assert!(!LaunchInput::parse("do things").is_empty());
+    }
+
+    #[test]
+    fn test_launch_text_instruction_with_refs_rides_the_ref_brief_verbatim() {
+        let input = LaunchInput::parse("Ship #7 and #9, tests first please");
+        let text = launch_text_instruction(&input, Some("nachogl1/maestro"), &wf());
+        // The full issues-shape launch instruction rides first, unmodified.
+        let base = launch_instruction(input.refs(), Some("nachogl1/maestro"), &wf());
+        assert!(text.starts_with(&base), "ref brief must ride first");
+        // The user's request reaches the orchestrator VERBATIM…
+        assert!(
+            text.contains("VERBATIM: \"Ship #7 and #9, tests first please\""),
+            "{text}"
+        );
+        // …and the refs keep epic-first context gathering: a referenced epic
+        // brings its children into the run.
+        assert!(text.contains("EPIC-FIRST"), "{text}");
+        assert!(text.contains("EVERY child issue it references"), "{text}");
+        assert!(!text.contains('\n'), "single paste-able line");
+    }
+
+    #[test]
+    fn test_launch_text_instruction_prose_skips_context_gathering() {
+        let input = LaunchInput::parse("Refactor the audit panel styling");
+        let text = launch_text_instruction(&input, Some("nachogl1/maestro"), &wf());
+        assert!(
+            text.contains("VERBATIM: \"Refactor the audit panel styling\""),
+            "{text}"
+        );
+        // No GitHub context gathering for pure prose — the text IS the scope.
+        assert!(text.contains("references no GitHub issue"), "{text}");
+        assert!(text.contains("FULL scope"), "{text}");
+        assert!(!text.contains("ALL of their comments"), "{text}");
+        // The working discipline, pin, workflow and completion clause stay.
+        assert!(text.contains("--repo nachogl1/maestro"), "{text}");
+        assert!(text.contains("SMALL idempotent subagent tasks"), "{text}");
+        assert!(
+            text.contains("NEVER switch to, commit to, or push"),
+            "{text}"
+        );
+        assert!(
+            text.contains("WORKFLOW — the process for this run"),
+            "{text}"
+        );
+        assert!(text.contains(RUN_COMPLETE_TAG), "{text}");
+        assert!(!text.contains('\n'), "single paste-able line");
+
+        // Unpinned: the explicit caution replaces the pin note.
+        let unpinned = launch_text_instruction(&input, None, &wf());
+        assert!(
+            unpinned.contains("CAUTION: Maestro could not determine"),
+            "{unpinned}"
+        );
+        assert!(!unpinned.contains("--repo "), "{unpinned}");
     }
 }

@@ -613,6 +613,8 @@ mod tests {
             epic: epic.to_string(),
             fire_at: fire_at.to_string(),
             reason: "park".to_string(),
+            launch: None,
+            held: false,
         }
     }
 

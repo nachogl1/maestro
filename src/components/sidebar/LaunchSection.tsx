@@ -24,6 +24,9 @@ import {
   samuraiLaunchRun,
   samuraiListRuns,
   samuraiPreflight,
+  samuraiRecoverRun,
+  samuraiScheduleLaunch,
+  samuraiTimerCancel,
 } from "@/lib/samurai";
 import type { UsageData } from "@/lib/usageParser";
 import {
@@ -48,20 +51,10 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/** One accepted ref (issue #83): a GitHub number, with or without its `#`. */
-const REF_PATTERN = /^#?\d+$/;
-
-/** The non-empty, trimmed comma-separated parts of a refs field. */
-function refParts(text: string): string[] {
-  return text
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-}
-
-/** `1 epic` / `2 epics` — a count with its noun agreeing. */
-function countPhrase(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** Every `#N` ref in the request text (issue #128), for the detected-refs
+ *  summary. Purely informational — the backend re-extracts on its own. */
+function detectedRefs(text: string): string[] {
+  return text.match(/#\d+/g) ?? [];
 }
 
 /**
@@ -384,6 +377,7 @@ function RunRow({
   now,
   onOpen,
   onCleanup,
+  onRecover,
   pending,
   otherBusy,
   error,
@@ -396,6 +390,8 @@ function RunRow({
   now: number;
   onOpen: (tabId: string, sessionId: number) => void;
   onCleanup: (run: SamuraiRunListEntry) => void;
+  /** Issue #124: explicit crash-recovery relaunch of a non-completed run. */
+  onRecover: (run: SamuraiRunListEntry) => void;
   /** Issue #99: this exact row's cleanup is in flight — spinner + dimmed row
    *  until the backend answers, so the click reads as "working" immediately
    *  instead of doing nothing for several seconds. */
@@ -457,6 +453,21 @@ function RunRow({
             <TerminalSquare size={12} />
           </button>
         </span>
+        {/* Issue #124: recover a crashed run — only offered while the run is
+            not finished and has no live agent to duplicate. The backend
+            re-verifies both before spawning anything. */}
+        {!isCompleted && target.kind !== "open" && (
+          <button
+            type="button"
+            onClick={() => onRecover(run)}
+            disabled={pending || otherBusy}
+            className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
+            aria-label={`Recover run ${run.epic}`}
+            title="The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+          >
+            <RefreshCw size={12} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onCleanup(run)}
@@ -570,11 +581,9 @@ export function LaunchSection({
   const startPolling = useUsageStore((s) => s.startPolling);
   useEffect(() => startPolling(), [startPolling]);
 
-  // Issue #83: the run's work, split so the orchestrator prompt can name each
-  // set for what it is — parent epics whose children it discovers, and issues
-  // named directly. Either may be empty; both may not.
-  const [epics, setEpics] = useState("");
-  const [issues, setIssues] = useState("");
+  // Issue #128: the run's work as one free-text request — pasted issue/epic
+  // refs (#N), plain prose, or both. Sent to the backend verbatim.
+  const [text, setText] = useState("");
   const [model, setModel] = useState("");
   // Review F4: optional per-run handoff trigger override. Empty = the
   // global config applies (backend stores thresholds: None).
@@ -582,6 +591,9 @@ export function LaunchSection({
   // Issue #90b: the explicit red-baseline override. Default OFF — the gate
   // runs and a red `cargo test --workspace` blocks the launch.
   const [skipGate, setSkipGate] = useState(false);
+  // Issue #129: optional day+time to launch later instead of now. Empty =
+  // launch immediately; set = the button arms a one-shot scheduled launch.
+  const [scheduleAt, setScheduleAt] = useState("");
   // Issue #109: gate progress + verdict live in a store fed by a module-
   // level subscription, so a sidebar-panel switch mid-gate loses nothing —
   // this remount re-reads the current step (or the failure) below.
@@ -656,47 +668,73 @@ export function LaunchSection({
       }s`
     : "";
 
-  const epicRefs = useMemo(() => refParts(epics), [epics]);
-  const issueRefs = useMemo(() => refParts(issues), [issues]);
+  /** The `#N` refs found in the request — informational (issue #128). */
+  const refs = useMemo(() => detectedRefs(text), [text]);
 
-  /** `1 epic, 2 issues` — empty while both fields are. */
-  const refSummary = useMemo(() => {
-    const phrases: string[] = [];
-    if (epicRefs.length > 0) phrases.push(countPhrase(epicRefs.length, "epic"));
-    if (issueRefs.length > 0) phrases.push(countPhrase(issueRefs.length, "issue"));
-    return phrases.join(", ");
-  }, [epicRefs, issueRefs]);
+  // Enabled as soon as anything is typed — free text needs no ref parsing
+  // (issue #128), only a non-blank request.
+  const canLaunch = Boolean(projectPath) && text.trim().length > 0 && phase === null;
 
-  // Enabled as soon as either field holds something, not once it parses: a
-  // disabled button cannot explain itself, so the click is what renders the
-  // "not an issue number" error below.
-  const canLaunch =
-    Boolean(projectPath) && epicRefs.length + issueRefs.length > 0 && phase === null;
+  // Issue #129: this project's scheduled launches — pending ones count down
+  // to their fire, HELD ones (overdue at app start, or retries exhausted)
+  // wait for an explicit launch-or-discard.
+  const scheduledLaunches = samuraiSchedule.filter(
+    (e) => e.reason === "scheduled_launch" && samePath(e.project_path, projectPath),
+  );
 
-  const handleLaunch = async () => {
-    // Issue #83: a ref is a number, `#` optional. Anything else is a form
-    // error — same treatment as the handoff override below — and never
-    // reaches the backend, which would otherwise slug it into a branch name.
-    const badRef = [...epicRefs, ...issueRefs].find((ref) => !REF_PATTERN.test(ref));
-    if (badRef) {
-      setError(`"${badRef}" is not an issue number — use numbers like 5 or #5, 12`);
-      return;
-    }
-
-    // Review F4: an unparseable override is a form error, not a null.
+  /**
+   * The validated handoff override: `null` = use the global default,
+   * `undefined` = invalid (the form error is already set). Review F4: an
+   * unparseable override is a form error, not a null.
+   */
+  const parseHandoffPct = (): number | null | undefined => {
     const pctText = handoffPct.trim();
     const pct = pctText === "" ? null : Number(pctText);
     if (pct !== null && !Number.isFinite(pct)) {
       setError("Handoff context % must be a number (or empty for the global default)");
-      return;
+      return undefined;
     }
     // Mirror the backend's SamuraiConfig::validate range: 0 would make every
     // `percent >= threshold` test true and arm a permanent handoff loop, so
     // it is rejected here rather than surfacing as a launch failure.
     if (pct !== null && (pct <= 0 || pct > 100)) {
       setError("Handoff context % must be between 1 and 100 (or empty for the global default)");
+      return undefined;
+    }
+    return pct;
+  };
+
+  /** Issue #129: arm the one-shot scheduled launch instead of launching. */
+  const handleSchedule = async () => {
+    const pct = parseHandoffPct();
+    if (pct === undefined) return;
+    const fireAt = new Date(scheduleAt);
+    if (Number.isNaN(fireAt.getTime()) || fireAt.getTime() <= Date.now()) {
+      setError("Pick a future day and time for the scheduled launch");
       return;
     }
+    setError(null);
+    setNotice(null);
+    try {
+      const entry = await samuraiScheduleLaunch(
+        projectPath,
+        text,
+        fireAt.toISOString(),
+        model.trim() || null,
+        pct,
+        skipGate,
+      );
+      setNotice(`Launch scheduled: ${entry.epic} at ${new Date(entry.fire_at).toLocaleString()}`);
+      setText("");
+      setScheduleAt("");
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleLaunch = async () => {
+    const pct = parseHandoffPct();
+    if (pct === undefined) return;
 
     const target = projectPath;
     setError(null);
@@ -742,8 +780,7 @@ export function LaunchSection({
       const workflow = await workflowGraphForLaunch();
       const result = await samuraiLaunchRun(
         target,
-        epicRefs,
-        issueRefs,
+        text,
         model.trim() || null,
         pct,
         skipGate,
@@ -753,8 +790,7 @@ export function LaunchSection({
       setNotice(
         `Run launched: ${result.epic} on ${result.branch} (worktree ${result.worktree_path})${result.stale_timer_cancelled ? " — stale resume timer cancelled" : ""}`,
       );
-      setEpics("");
-      setIssues("");
+      setText("");
       setHandoffPct("");
       setPreflight(null);
       // The gate passed and the run is live — its progress line is done.
@@ -766,6 +802,74 @@ export function LaunchSection({
       if (currentProjectRef.current === target) setError(String(err));
     } finally {
       setPhase(null);
+    }
+  };
+
+  /**
+   * Issue #129: launch a scheduled entry NOW — the explicit half of the
+   * launch-or-discard a held (overdue / given-up) entry waits for. The
+   * normal launch path's stale-timer cancel consumes the entry on success.
+   */
+  const handleLaunchNow = async (entry: SamuraiScheduleEntry) => {
+    const spec = entry.launch;
+    if (!spec) return;
+    setError(null);
+    setNotice(null);
+    setPhase("spawning");
+    try {
+      const workflow = await workflowGraphForLaunch();
+      const result = await samuraiLaunchRun(
+        entry.project_path,
+        spec.text,
+        spec.model,
+        spec.handoff_context_pct,
+        spec.skip_test_gate,
+        workflow,
+      );
+      setNotice(`Run launched: ${result.epic} on ${result.branch}`);
+      await refreshRuns();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setPhase(null);
+    }
+  };
+
+  /** Issue #129: discard a scheduled launch — cancel its timer, launch nothing. */
+  const handleDiscard = async (entry: SamuraiScheduleEntry) => {
+    setError(null);
+    setNotice(null);
+    try {
+      await samuraiTimerCancel(entry.project_path, entry.epic);
+      setNotice(`Scheduled launch discarded: ${entry.epic}`);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  /**
+   * Issue #124: explicit crash-recovery relaunch. The backend verifies the
+   * real state (ACTIVE run, no live agent, worktree branch + HEAD via git)
+   * and spawns the next generation from the true resume point; a refusal
+   * surfaces on the row.
+   */
+  const handleRecover = async (run: SamuraiRunListEntry) => {
+    const key = runKey(run);
+    setRowError(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await samuraiRecoverRun(run.project_path, run.epic);
+      setNotice(
+        `Recovery started: gen-${result.generation} for ${result.epic} on ${result.branch} @ ${result.head} (${
+          result.from_handoff
+            ? `resuming from gen-${result.prior_generation}'s handoff`
+            : "reconstructing from git and GitHub"
+        })`,
+      );
+      await refreshRuns();
+    } catch (err) {
+      setRowError({ key, message: String(err) });
     }
   };
 
@@ -837,39 +941,23 @@ export function LaunchSection({
 
           <div>
             <FieldLabel
-              htmlFor="samurai-launch-epics"
-              hint="GitHub epic numbers. The run reads each epic's issue and every child issue it references, so you do not have to list the children."
+              htmlFor="samurai-launch-text"
+              hint="Paste GitHub issue or epic refs (#5, #12), describe the work in plain words, or both. Refs get their context read from GitHub (an epic brings its child issues along); plain prose runs on your words alone. Everything typed here is worked by ONE run, in one worktree."
             >
-              Epics
+              What do you want to work on today
             </FieldLabel>
-            <input
-              id="samurai-launch-epics"
-              type="text"
-              value={epics}
-              onChange={(e) => setEpics(e.target.value)}
-              placeholder="5 or 5, 12"
-              className="w-full rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <FieldLabel
-              htmlFor="samurai-launch-issues"
-              hint="GitHub issue numbers the run works directly, with no parent epic. Fill either field, or both — everything named here is worked by one run, in one worktree."
-            >
-              Issues
-            </FieldLabel>
-            <input
-              id="samurai-launch-issues"
-              type="text"
-              value={issues}
-              onChange={(e) => setIssues(e.target.value)}
-              placeholder="7, 9"
-              className="w-full rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
+            <textarea
+              id="samurai-launch-text"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={3}
+              placeholder="Work #77 and #78 — or describe the work in plain words"
+              className="w-full resize-y rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
             />
             <p className="mt-0.5 text-[10px] leading-snug text-maestro-muted">
-              Numbers, with or without #, comma-separated. Fill either field or both.
-              {refSummary ? ` ${refSummary} in one run.` : ""}
+              {refs.length > 0
+                ? `${refs.length} issue ref${refs.length === 1 ? "" : "s"} detected (${refs.join(", ")}) — their GitHub context is read first.`
+                : "Issue refs (#N) are read from GitHub; plain prose runs on your words alone."}
             </p>
           </div>
 
@@ -930,6 +1018,25 @@ export function LaunchSection({
             </p>
           </div>
 
+          <div>
+            <FieldLabel
+              htmlFor="samurai-launch-schedule-at"
+              hint="Pick a day and time to launch this run later instead of now (one-shot). Maestro must be running at that time; a launch whose time passes while Maestro is closed is held on reopen and asks you to launch or discard it."
+            >
+              Schedule for later
+            </FieldLabel>
+            <input
+              id="samurai-launch-schedule-at"
+              type="datetime-local"
+              value={scheduleAt}
+              onChange={(e) => setScheduleAt(e.target.value)}
+              className="w-full rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text focus:border-maestro-accent focus:outline-none"
+            />
+            <p className="mt-0.5 text-[10px] leading-snug text-maestro-muted">
+              Empty launches now. Set, the button below schedules the run for that day and time.
+            </p>
+          </div>
+
           <div className="flex items-start gap-1.5 rounded border border-maestro-orange/40 bg-maestro-orange/10 p-1.5 text-[10px] leading-snug text-maestro-text">
             <AlertTriangle size={12} className="mt-px shrink-0 text-maestro-orange" />
             <span>
@@ -941,7 +1048,7 @@ export function LaunchSection({
 
           <button
             type="button"
-            onClick={handleLaunch}
+            onClick={scheduleAt ? handleSchedule : handleLaunch}
             disabled={!canLaunch}
             className="w-full rounded bg-maestro-accent/20 px-2 py-1 text-[11px] font-semibold text-maestro-accent transition-colors hover:bg-maestro-accent/30 disabled:opacity-40"
           >
@@ -953,10 +1060,56 @@ export function LaunchSection({
                     the generic spawning label. */}
                 {gateRunning && phase === "spawning" ? gateLine : PHASE_LABEL[phase]}
               </span>
+            ) : scheduleAt ? (
+              "Schedule"
             ) : (
               "Launch"
             )}
           </button>
+
+          {/* Issue #129: this project's scheduled launches. Pending entries
+              fire on their own at their time; HELD entries (overdue at app
+              start, or unattended retries exhausted) never fire and wait for
+              the explicit launch-or-discard below. */}
+          {scheduledLaunches.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-maestro-muted">
+                Scheduled launches
+              </p>
+              {scheduledLaunches.map((entry) => (
+                <div
+                  key={`${entry.project_path}|${entry.epic}`}
+                  className="space-y-1 rounded border border-maestro-border/40 bg-maestro-surface/60 p-1.5"
+                >
+                  <p className="truncate text-[11px] text-maestro-text" title={entry.launch?.text}>
+                    {entry.epic}
+                  </p>
+                  <p className="text-[10px] leading-snug text-maestro-muted">
+                    {entry.held
+                      ? "Overdue — did not launch. Launch it now, or discard it."
+                      : `Launches at ${new Date(entry.fire_at).toLocaleString()}`}
+                  </p>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleLaunchNow(entry)}
+                      disabled={phase !== null}
+                      className="rounded bg-maestro-accent/20 px-2 py-0.5 text-[10px] font-semibold text-maestro-accent transition-colors hover:bg-maestro-accent/30 disabled:opacity-40"
+                    >
+                      Launch now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDiscard(entry)}
+                      className="rounded bg-maestro-surface px-2 py-0.5 text-[10px] font-semibold text-maestro-muted transition-colors hover:text-maestro-red"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Issue #109: a remount mid-gate (sidebar panel switch) re-reads
               the running step from the store — the launching mount's phase
@@ -1065,6 +1218,7 @@ export function LaunchSection({
                   now={now}
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}
+                  onRecover={handleRecover}
                   pending={deletingKey === key}
                   otherBusy={deletingKey !== null && deletingKey !== key}
                   error={rowError?.key === key ? rowError.message : null}

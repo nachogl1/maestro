@@ -24,10 +24,13 @@ use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
 };
-use crate::core::samurai_prompts::{self, epic_slug, ref_slug, RunRefs};
+use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
+use crate::core::samurai_resumer::latest_handoff_generation;
 use crate::core::samurai_run_config::{RunConfigStatus, RunConfigStore, SamuraiRunConfig};
-use crate::core::samurai_schedule::{SamuraiSchedule, ScheduleEntry};
+use crate::core::samurai_schedule::{
+    SamuraiSchedule, ScheduleEntry, ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH,
+};
 use crate::core::samurai_test_gate::{self, SamuraiTestGate, TestGateProgress};
 use crate::core::samurai_workflow::{self, WorkflowGraph};
 use crate::core::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
@@ -291,24 +294,6 @@ fn epic_branch(project: &str, epic: &str) -> String {
     format!("{project_slug}-{}", epic_slug(epic))
 }
 
-/// The run's refs, built from the launcher's two fields (issue #83): parent
-/// EPICS whose children the orchestrator discovers, and standalone ISSUES
-/// named directly.
-///
-/// Every element is split on commas before [`RunRefs`] normalises it. The
-/// frontend splits its own comma-separated inputs, but the backend must not
-/// depend on that: `["7, 9"]` and `["7", "9"]` have to produce ONE identity,
-/// because [`RunRefs::label`] is the run's key everywhere (branch slug,
-/// worktree, handoff filenames, resume timers) and two spellings of one run
-/// must never produce two runs. `RunRefs` collapses whitespace and drops
-/// empties for the same reason.
-fn run_refs(epics: &[String], issues: &[String]) -> RunRefs {
-    RunRefs::new(
-        epics.iter().flat_map(|e| e.split(',')),
-        issues.iter().flat_map(|i| i.split(',')),
-    )
-}
-
 /// The launch refusal matrix, in check order. `None` = clear to launch.
 fn launch_refusal(preflight: &SamuraiPreflight, live_session: bool) -> Option<String> {
     if live_session {
@@ -446,20 +431,21 @@ pub struct SamuraiLaunchResult {
     pub stale_timer_cancelled: bool,
 }
 
-/// The gen-1 opening brief: the launch instruction (carrying the run's
+/// The gen-1 opening brief: the free-text launch instruction (issue #128 —
+/// carrying the user's request verbatim, the refs found in it, and the run's
 /// compiled workflow section, issue #91) plus the issue-#72 journaling
 /// rider, so the first orchestrator records its own friction in the ops
 /// journal (PRD §5.12). The journal path is resolved at this call site per
 /// the P5.1 contract (`default_journal_file`); a single space joins the two
 /// single-line instructions, keeping the brief one paste-able line.
-///
-/// Issue #83: the refs arrive already split into epics and issues, so the
-/// gen-1 brief names each set for what it is instead of calling a pair of
-/// sibling issues an epic.
-fn launch_brief(refs: &RunRefs, repo_pin: Option<&str>, workflow: &WorkflowGraph) -> String {
+fn launch_brief(input: &LaunchInput, repo_pin: Option<&str>, workflow: &WorkflowGraph) -> String {
     format!(
         "{} {}",
-        samurai_prompts::launch_instruction(refs, repo_pin, &samurai_workflow::compile(workflow)),
+        samurai_prompts::launch_text_instruction(
+            input,
+            repo_pin,
+            &samurai_workflow::compile(workflow)
+        ),
         samurai_prompts::journal_instruction(&default_journal_file()),
     )
 }
@@ -482,21 +468,22 @@ pub(crate) async fn launch_run_inner(
     preflight: &SamuraiPreflight,
     global_config: SamuraiConfig,
     project: &str,
-    refs: &RunRefs,
+    input: &LaunchInput,
     model: Option<String>,
     handoff_context_pct: Option<f64>,
     workflow: Option<WorkflowGraph>,
     worktree_base: Option<&Path>,
 ) -> Result<SamuraiLaunchResult, String> {
-    // Issue #83: the refs are the launch input, and `label()` is the single
-    // identity string every downstream surface already keys off — branch,
-    // worktree, run config filename, handoff filenames, resume timers and the
-    // supervisor's session epic all flow through `epic_slug` on this value, so
-    // nothing below had to learn about the split.
-    if refs.is_empty() {
-        return Err("at least one epic or issue reference is required".to_string());
+    // Issue #128: the free text is the launch input, and `label()` is the
+    // single identity string every downstream surface already keys off —
+    // branch, worktree, run config filename, handoff filenames, resume
+    // timers and the supervisor's session epic all flow through `epic_slug`
+    // on this value: refs found in the text label as before (`issues #7,
+    // #9`), pure prose derives a short stable slug+hash.
+    if input.is_empty() {
+        return Err("describe what to work on — the launch request is empty".to_string());
     }
-    let epic = refs.label();
+    let epic = input.label();
     let model = model
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty());
@@ -613,14 +600,16 @@ pub(crate) async fn launch_run_inner(
     let workflow = workflow.unwrap_or_default();
     let mut config =
         SamuraiRunConfig::new(project.to_string(), epic.clone(), worktree_path.clone())
-            .with_refs(refs);
+            .with_refs(input.refs());
     config.repo_pin = repo_pin.clone();
     config.model = model;
     config.thresholds = thresholds;
     config.workflow = Some(workflow.clone());
+    // Issue #128: the verbatim request is part of the run's durable record.
+    config.launch_text = Some(input.text().to_string());
     run_configs.save(&config)?;
 
-    let instruction = launch_brief(refs, repo_pin.as_deref(), &workflow);
+    let instruction = launch_brief(input, repo_pin.as_deref(), &workflow);
     replicator.spawn_first_generation(project, &epic, &worktree_path, instruction);
 
     log::info!(
@@ -657,18 +646,17 @@ pub async fn samurai_launch_run(
     in_flight: State<'_, Arc<LaunchInFlight>>,
     config: State<'_, SharedSamuraiConfig>,
     project_path: String,
-    epics: Vec<String>,
-    issues: Vec<String>,
+    text: String,
     model: Option<String>,
     handoff_context_pct: Option<f64>,
     skip_test_gate: Option<bool>,
     workflow: Option<WorkflowGraph>,
 ) -> Result<SamuraiLaunchResult, String> {
     let project = canonical_project_path(&project_path);
-    // The frontend validates its two fields, but the backend re-normalises
-    // them here and `launch_run_inner` refuses an empty set — the wire is not
-    // trusted to have done either.
-    let refs = run_refs(&epics, &issues);
+    // Issue #128: one free-text box. The backend normalises it here and
+    // `launch_run_inner` refuses an empty request — the wire is not trusted
+    // to have done either.
+    let input = LaunchInput::parse(&text);
     let preflight = run_preflight(&project).await;
     let global_config = config
         .read()
@@ -695,7 +683,7 @@ pub async fn samurai_launch_run(
         &preflight,
         global_config,
         &project,
-        &refs,
+        &input,
         model,
         handoff_context_pct,
         workflow,
@@ -710,6 +698,468 @@ pub async fn samurai_launch_run(
 #[tauri::command]
 pub fn samurai_default_workflow() -> WorkflowGraph {
     WorkflowGraph::default()
+}
+
+// ---------------------------------------------------------------------------
+// Issue #124: crash-recovery relaunch — explicit "recover run" action
+// ---------------------------------------------------------------------------
+
+/// What the recovery started (issue #124) — the UI's confirmation line.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SamuraiRecoverResult {
+    pub epic: String,
+    /// The generation now spawning.
+    pub generation: u32,
+    /// The true resume point: the highest generation the supervisor
+    /// registry or the handoff files on disk know.
+    pub prior_generation: u32,
+    /// Whether the prior generation's handoff file exists — resume from the
+    /// handoff, vs the full recovery ritual (reconstruct from git + gh +
+    /// transcript digest, then verify, before continuing).
+    pub from_handoff: bool,
+    /// The worktree's CURRENT branch, verified via git — not read from any
+    /// stored record.
+    pub branch: String,
+    /// The worktree's current short HEAD sha, verified via git.
+    pub head: String,
+    /// A pending resume timer was superseded by this manual recovery.
+    pub timer_cancelled: bool,
+}
+
+/// The worktree's current `(branch, short HEAD)`, straight from git (issue
+/// #124: disk is the map, git is the territory — a recovery trusts the
+/// repository itself, never a stored record of it). A worktree git cannot
+/// answer for is broken, and that is a refusal, not a spawn.
+fn verify_worktree_git(worktree: &Path) -> Result<(String, String), String> {
+    let git_out = |args: &[&str]| -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(worktree)
+            .output()
+            .map_err(|e| format!("git did not run in {}: {e}", worktree.display()))?;
+        if !output.status.success() {
+            return Err(format!(
+                "`git {}` failed in {}: {}",
+                args.join(" "),
+                worktree.display(),
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let branch = git_out(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let head = git_out(&["rev-parse", "--short", "HEAD"])?;
+    Ok((branch, head))
+}
+
+/// The explicit "recover run" action (issue #124), extracted from the Tauri
+/// command for testability. NEVER automatic — only a human clicks it, on a
+/// non-completed run whose agent died. Verifies the real state first (ACTIVE
+/// config, no live orchestrator, worktree present, branch + HEAD via git),
+/// determines the true resume point (highest generation across the
+/// supervisor registry and the handoff files), then spawns the next
+/// generation through the replicator — which resumes from the prior handoff
+/// when it exists, or runs the full recovery ritual (reconstruct from git +
+/// gh + transcript digest, verify before trusting) when it does not.
+pub(crate) async fn recover_run_inner(
+    supervisor: &Supervisor,
+    schedule: &SamuraiSchedule,
+    run_configs: &RunConfigStore,
+    replicator: &Arc<SamuraiReplicator>,
+    audit: &AuditLog,
+    project: &str,
+    epic: &str,
+) -> Result<SamuraiRecoverResult, String> {
+    // Only a non-completed run recovers: COMPLETED is finished (cleanup is
+    // its next step), ARCHIVED/missing has nothing to restart.
+    let config = run_configs
+        .get(project, epic)
+        .ok_or_else(|| format!("no run config found for {epic} — nothing to recover"))?;
+    if config.status != RunConfigStatus::Active {
+        return Err(format!(
+            "run {epic} is {:?}, not ACTIVE — only a non-completed run can be recovered",
+            config.status,
+        ));
+    }
+    // A live orchestrator must never be duplicated — recovery is for a
+    // crashed run.
+    let live = supervisor.list_sessions().iter().any(|s| {
+        s.project == project && epic_slug(&s.epic) == epic_slug(epic) && !s.state.is_terminal()
+    });
+    if live {
+        return Err(format!(
+            "run {epic} still has a live supervised session — recovery is for a crashed run; \
+             let the live agent finish (or kill it) first",
+        ));
+    }
+    let working_dir = strip_extended_prefix(&config.worktree_path).to_string();
+    let worktree = PathBuf::from(&working_dir);
+    if !worktree.exists() {
+        return Err(format!(
+            "the run's worktree is gone ({working_dir}) — clean the run up and relaunch instead",
+        ));
+    }
+    // Disk is the map, git the territory: the worktree must answer for its
+    // own branch and HEAD before anything spawns into it.
+    let verify_dir = worktree.clone();
+    let (branch, head) = tokio::task::spawn_blocking(move || verify_worktree_git(&verify_dir))
+        .await
+        .map_err(|e| format!("git verification did not finish: {e}"))??;
+
+    // The true resume point — the resumer's exact derivation: the highest
+    // generation either the registry or the handoff files on disk know.
+    let registry_max = supervisor
+        .list_sessions()
+        .iter()
+        .filter(|s| s.project == project && epic_slug(&s.epic) == epic_slug(epic))
+        .map(|s| s.generation)
+        .max();
+    let files_max = latest_handoff_generation(&worktree.join(".maestro").join("handoffs"), epic);
+    let Some(prior) = registry_max.max(files_max) else {
+        return Err(format!(
+            "run {epic} has no handoff files and no known generations — nothing to resume \
+             from; relaunch the run instead",
+        ));
+    };
+    let generation = prior + 1;
+    let from_handoff = worktree
+        .join(samurai_prompts::handoff_file_relpath(epic, prior))
+        .exists();
+
+    // A pending resume timer is superseded by this manual recovery — left
+    // armed it would fire into the recovered run and double-spawn.
+    let mut timer_cancelled = false;
+    for entry in schedule.list() {
+        if entry.project_path == project && epic_slug(&entry.epic) == epic_slug(epic) {
+            timer_cancelled |= schedule.cancel(&entry.project_path, &entry.epic)?;
+        }
+    }
+
+    log::info!(
+        "samurai recover: run {epic} in {project} — spawning gen-{generation} (prior gen-{prior}, from_handoff={from_handoff}, branch {branch} @ {head})"
+    );
+    // The RESUME row BEFORE the spawn (the resumer's convention), with the
+    // verified repository state on the record.
+    audit.append(
+        project,
+        AuditEvent::now(
+            epic,
+            AuditEventKind::Resume,
+            generation,
+            // 0 sentinel: the successor session does not exist yet.
+            0,
+            json!({
+                "trigger": "manual_recovery",
+                "predecessor_generation": prior,
+                "from_handoff": from_handoff,
+                "branch": branch,
+                "head": head,
+            }),
+        ),
+    );
+    replicator.spawn_generation(
+        project,
+        epic,
+        &working_dir,
+        generation,
+        Some(prior),
+        "manual_recovery",
+    );
+    Ok(SamuraiRecoverResult {
+        epic: epic.to_string(),
+        generation,
+        prior_generation: prior,
+        from_handoff,
+        branch,
+        head,
+        timer_cancelled,
+    })
+}
+
+/// Recovers a crashed, non-completed run (issue #124): an explicit,
+/// human-only action that verifies the real state via git before spawning
+/// the next generation from the true resume point. See [`recover_run_inner`].
+#[tauri::command]
+pub async fn samurai_recover_run(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    replicator: State<'_, Arc<SamuraiReplicator>>,
+    audit: State<'_, AuditLog>,
+    project_path: String,
+    epic: String,
+) -> Result<SamuraiRecoverResult, String> {
+    let project = canonical_project_path(&project_path);
+    recover_run_inner(
+        &supervisor,
+        &schedule,
+        &run_configs,
+        &replicator,
+        &audit,
+        &project,
+        &epic,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Issue #129: scheduled launches — arm by day+time, fire → launch with retry
+// ---------------------------------------------------------------------------
+
+/// How far an unattended fire whose preflight/refusal failed is pushed out
+/// before retrying (issue #129: ~every 15 minutes).
+const SCHEDULED_LAUNCH_RETRY_SECS: i64 = 900;
+
+/// Total attempts before a scheduled launch gives up (issue #129: a bounded
+/// ~2h window — 8 tries, 15 minutes apart). It then stays HELD in the
+/// schedule, unlaunched, for an explicit launch-or-discard.
+const SCHEDULED_LAUNCH_MAX_ATTEMPTS: u32 = 8;
+
+/// What one scheduled-launch fire did — the fire handler's testable outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ScheduledLaunchOutcome {
+    /// The run launched.
+    Launched,
+    /// Preflight/refusal failed; the entry was re-armed
+    /// [`SCHEDULED_LAUNCH_RETRY_SECS`] out with the attempt counted.
+    Retried { attempts: u32 },
+    /// The retry window is exhausted; the entry is HELD (unlaunched, waiting
+    /// for launch-or-discard) and an ALERT records why.
+    GaveUp,
+    /// Not a well-formed scheduled launch (no spec) — logged and dropped.
+    Ignored,
+}
+
+/// Arms a one-shot scheduled launch (issue #129), extracted from the Tauri
+/// command for testability. The entry's identity is the request's derived
+/// label (issue #128) — the same identity the launch itself will use — so
+/// re-scheduling the same request replaces the earlier pick (one pending
+/// timer per (project, run)), and the eventual launch's stale-timer cancel
+/// matches it by slug.
+pub(crate) fn schedule_launch_inner(
+    schedule: &SamuraiSchedule,
+    project: &str,
+    text: &str,
+    fire_at: &str,
+    model: Option<String>,
+    handoff_context_pct: Option<f64>,
+    skip_test_gate: bool,
+) -> Result<ScheduleEntry, String> {
+    let input = LaunchInput::parse(text);
+    if input.is_empty() {
+        return Err("describe what to work on — the scheduled request is empty".to_string());
+    }
+    let fire = chrono::DateTime::parse_from_rfc3339(fire_at)
+        .map_err(|e| format!("unusable schedule time {fire_at:?}: {e}"))?;
+    if fire <= chrono::Utc::now() {
+        return Err("the scheduled time is in the past — pick a future day and time".to_string());
+    }
+    let entry = ScheduleEntry {
+        project_path: project.to_string(),
+        epic: input.label(),
+        fire_at: fire.to_rfc3339(),
+        reason: REASON_SCHEDULED_LAUNCH.to_string(),
+        launch: Some(ScheduledLaunchSpec {
+            text: input.text().to_string(),
+            model,
+            handoff_context_pct,
+            skip_test_gate,
+            attempts: 0,
+        }),
+        held: false,
+    };
+    schedule.arm(entry.clone())?;
+    log::info!(
+        "samurai schedule launch: run {} in {project} armed for {}",
+        entry.epic,
+        entry.fire_at,
+    );
+    Ok(entry)
+}
+
+/// Schedules a run launch for a day+time (issue #129, one-shot v1): the
+/// free-text request (issue #128) is stored on the timer and launched — with
+/// full server-side preflight and the refusal matrix — when it fires.
+/// Discarding is the existing `samurai_timer_cancel`.
+#[tauri::command]
+pub fn samurai_schedule_launch(
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    project_path: String,
+    text: String,
+    fire_at: String,
+    model: Option<String>,
+    handoff_context_pct: Option<f64>,
+    skip_test_gate: Option<bool>,
+) -> Result<ScheduleEntry, String> {
+    let project = canonical_project_path(&project_path);
+    schedule_launch_inner(
+        &schedule,
+        &project,
+        &text,
+        &fire_at,
+        model,
+        handoff_context_pct,
+        skip_test_gate.unwrap_or(false),
+    )
+}
+
+/// One scheduled-launch fire (issue #129), extracted for testability: run
+/// the launch sequence (preflight-checked, refusal-matrixed, test-gated —
+/// the exact path a manual launch takes); an unattended failure re-arms the
+/// entry [`SCHEDULED_LAUNCH_RETRY_SECS`] out until
+/// [`SCHEDULED_LAUNCH_MAX_ATTEMPTS`] is spent, after which the entry is HELD
+/// — kept unlaunched in the schedule for launch-or-discard — with an ALERT
+/// row surfacing the give-up.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn scheduled_launch_fire_inner(
+    supervisor: &Supervisor,
+    schedule: &SamuraiSchedule,
+    worktrees: &WorktreeManager,
+    run_configs: &RunConfigStore,
+    replicator: &Arc<SamuraiReplicator>,
+    audit: &AuditLog,
+    in_flight: &Arc<LaunchInFlight>,
+    test_gate: &SamuraiTestGate,
+    preflight: &SamuraiPreflight,
+    global_config: SamuraiConfig,
+    entry: ScheduleEntry,
+    worktree_base: Option<&Path>,
+) -> ScheduledLaunchOutcome {
+    let Some(spec) = entry.launch.clone() else {
+        log::warn!(
+            "samurai scheduled launch: entry for {} in {} fired without a launch spec — dropped",
+            entry.epic,
+            entry.project_path,
+        );
+        return ScheduledLaunchOutcome::Ignored;
+    };
+    let input = LaunchInput::parse(&spec.text);
+    let launched = launch_run_inner(
+        supervisor,
+        schedule,
+        worktrees,
+        run_configs,
+        replicator,
+        audit,
+        in_flight,
+        test_gate,
+        spec.skip_test_gate,
+        preflight,
+        global_config,
+        &entry.project_path,
+        &input,
+        spec.model.clone(),
+        spec.handoff_context_pct,
+        None,
+        worktree_base,
+    )
+    .await;
+    let reason = match launched {
+        Ok(result) => {
+            log::info!(
+                "samurai scheduled launch: run {} launched on schedule in {} (branch {})",
+                result.epic,
+                entry.project_path,
+                result.branch,
+            );
+            return ScheduledLaunchOutcome::Launched;
+        }
+        Err(reason) => reason,
+    };
+
+    // Unattended failure: nobody is watching to fix gh auth or the red
+    // suite, so retry on a bounded backoff instead of dropping the launch.
+    let attempts = spec.attempts + 1;
+    if attempts >= SCHEDULED_LAUNCH_MAX_ATTEMPTS {
+        log::warn!(
+            "samurai scheduled launch: run {} in {} gave up after {attempts} attempts ({reason}) — held for launch-or-discard",
+            entry.epic,
+            entry.project_path,
+        );
+        // Durable surface for the give-up (the reconciler's account-wide
+        // ALERT convention: generation 0, session 0).
+        audit.append(
+            &entry.project_path,
+            AuditEvent::now(
+                &entry.epic,
+                AuditEventKind::Alert,
+                0,
+                0,
+                json!({
+                    "kind": "scheduled_launch_gave_up",
+                    "attempts": attempts,
+                    "error": reason,
+                }),
+            ),
+        );
+        // Held, with a fresh fire_at so the fired entry's self-clean (which
+        // matches on fire_at) does not remove it: the run stays visible,
+        // unlaunched, until the human launches or discards it.
+        let held = ScheduleEntry {
+            fire_at: chrono::Utc::now().to_rfc3339(),
+            held: true,
+            launch: Some(ScheduledLaunchSpec { attempts, ..spec }),
+            ..entry
+        };
+        if let Err(e) = schedule.arm(held) {
+            log::error!("samurai scheduled launch: failed to persist the held entry: {e}");
+        }
+        return ScheduledLaunchOutcome::GaveUp;
+    }
+
+    let fire_at =
+        (chrono::Utc::now() + chrono::Duration::seconds(SCHEDULED_LAUNCH_RETRY_SECS)).to_rfc3339();
+    log::warn!(
+        "samurai scheduled launch: run {} in {} failed attempt {attempts} ({reason}) — retrying at {fire_at}",
+        entry.epic,
+        entry.project_path,
+    );
+    let retry = ScheduleEntry {
+        fire_at,
+        launch: Some(ScheduledLaunchSpec { attempts, ..spec }),
+        ..entry
+    };
+    if let Err(e) = schedule.arm(retry) {
+        log::error!("samurai scheduled launch: failed to re-arm the retry: {e}");
+    }
+    ScheduledLaunchOutcome::Retried { attempts }
+}
+
+/// The fire-callback entry point for a [`REASON_SCHEDULED_LAUNCH`] timer
+/// (`lib.rs` routes here; `"park"` timers keep going to the resumer). Pulls
+/// the managed state the launch needs, runs the real preflight, and hands
+/// off to [`scheduled_launch_fire_inner`]. Async — the schedule's fire
+/// callback spawns it onto the runtime.
+pub async fn handle_scheduled_launch_fire(app: AppHandle, entry: ScheduleEntry) {
+    use tauri::Manager;
+    let preflight = run_preflight(&entry.project_path).await;
+    let global_config = app
+        .state::<SharedSamuraiConfig>()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let gate_app = app.clone();
+    let test_gate = SamuraiTestGate::new(
+        samurai_test_gate::system_runner(),
+        Arc::new(move |p: &TestGateProgress| {
+            let _ = gate_app.emit("samurai-test-gate-event", p);
+        }),
+    );
+    scheduled_launch_fire_inner(
+        &app.state::<Arc<Supervisor>>(),
+        &app.state::<Arc<SamuraiSchedule>>(),
+        &app.state::<WorktreeManager>(),
+        &app.state::<Arc<RunConfigStore>>(),
+        &app.state::<Arc<SamuraiReplicator>>(),
+        &app.state::<AuditLog>(),
+        &app.state::<Arc<LaunchInFlight>>(),
+        &test_gate,
+        &preflight,
+        global_config,
+        entry,
+        None,
+    )
+    .await;
 }
 
 /// The live orchestrator facts behind one run row (issue #102). `generation`
@@ -1351,42 +1801,38 @@ mod tests {
     }
 
     #[test]
-    fn test_run_refs_collapses_spellings_of_one_run() {
-        // Whatever shape the frontend sends — one comma-separated element or
-        // one element per ref — the same run must land on one identity, or
-        // the same work could be launched twice as two separate runs.
+    fn test_launch_input_collapses_spellings_of_one_run() {
+        // Issue #128: whatever spelling the free-text box holds, the same
+        // set of refs must land on one identity, or the same work could be
+        // launched twice as two separate runs.
         for spelling in [
-            vec!["77,78".to_string()],
-            vec!["77, 78".to_string()],
-            vec![" 77 ,  78 ".to_string()],
-            vec!["77,,78".to_string()],
-            vec!["77, 78,".to_string()],
-            vec!["#77".to_string(), " 78 ".to_string()],
+            "#77, #78",
+            "#77,#78",
+            "  #77   #78 ",
+            "#77 then #78 then #77",
         ] {
-            let refs = run_refs(&spelling, &[]);
-            assert_eq!(refs.epics(), ["77", "78"], "spelling: {spelling:?}");
-            assert_eq!(refs.label(), "epics #77, #78", "spelling: {spelling:?}");
+            let input = LaunchInput::parse(spelling);
+            assert_eq!(
+                input.refs().issues(),
+                ["77", "78"],
+                "spelling: {spelling:?}"
+            );
+            assert_eq!(input.label(), "issues #77, #78", "spelling: {spelling:?}");
         }
-
-        // The two fields stay apart, and each is normalised the same way.
-        let refs = run_refs(&["#5".to_string()], &["7, #9".to_string()]);
-        assert_eq!(refs.epics(), ["5"]);
-        assert_eq!(refs.issues(), ["7", "9"]);
-        assert_eq!(refs.label(), "epic #5 · issues #7, #9");
-
-        // Junk on both sides is empty, so the launch refusal still fires.
-        assert!(run_refs(&["   ,  , ".to_string()], &["#".to_string()]).is_empty());
-        assert!(run_refs(&[], &[]).is_empty());
+        // Nothing usable → empty, so the launch refusal still fires.
+        assert!(LaunchInput::parse("   ").is_empty());
+        assert!(LaunchInput::parse("").is_empty());
     }
 
     #[test]
-    fn test_launch_brief_is_launch_instruction_plus_journal_rider() {
-        // Issue #72: the composed gen-1 brief = the unmodified launch
-        // instruction, then the journaling rider, one paste-able line.
+    fn test_launch_brief_is_launch_text_instruction_plus_journal_rider() {
+        // Issue #72: the composed gen-1 brief = the unmodified free-text
+        // launch instruction, then the journaling rider, one paste-able line.
         let workflow = WorkflowGraph::default();
-        let brief = launch_brief(&RunRefs::epics_only("#38"), Some("nachogl1/maestro"), &workflow);
-        let launch = samurai_prompts::launch_instruction(
-            &RunRefs::epics_only("#38"),
+        let input = LaunchInput::parse("work #38");
+        let brief = launch_brief(&input, Some("nachogl1/maestro"), &workflow);
+        let launch = samurai_prompts::launch_text_instruction(
+            &input,
             Some("nachogl1/maestro"),
             &samurai_workflow::compile(&workflow),
         );
@@ -1416,7 +1862,7 @@ mod tests {
             .find(|n| n.id == "review")
             .unwrap()
             .text = "Custom review ritual".to_string();
-        let brief = launch_brief(&RunRefs::epics_only("#38"), None, &workflow);
+        let brief = launch_brief(&LaunchInput::parse("#38"), None, &workflow);
         assert!(
             brief.contains("WORKFLOW — the process for this run"),
             "{brief}"
@@ -1769,17 +2215,14 @@ mod tests {
     }
 
     /// Launch through the harness with an all-green preflight and the
-    /// global default config — the gate/skip flag and the split refs are
-    /// what varies; the worktree base is kept in the tempdir.
+    /// global default config — the gate/skip flag and the free-text request
+    /// are what varies; the worktree base is kept in the tempdir.
     async fn run_launch(
         h: &CleanupHarness,
         gate: &SamuraiTestGate,
         skip_test_gate: bool,
-        epics: &[&str],
-        issues: &[&str],
+        text: &str,
     ) -> Result<SamuraiLaunchResult, String> {
-        let epics: Vec<String> = epics.iter().map(|s| s.to_string()).collect();
-        let issues: Vec<String> = issues.iter().map(|s| s.to_string()).collect();
         launch_run_inner(
             &h.supervisor,
             &h.schedule,
@@ -1793,7 +2236,7 @@ mod tests {
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
-            &run_refs(&epics, &issues),
+            &LaunchInput::parse(text),
             None,
             None,
             None,
@@ -1838,6 +2281,8 @@ mod tests {
                 epic: "#38".to_string(),
                 fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
         // A terminal leftover session must NOT block cleanup.
@@ -1959,15 +2404,17 @@ mod tests {
         replicator.set_run_configs(run_configs.clone());
 
         // A stale timer from the run's previous generation — armed under the
-        // "epic 38" spelling of the identity label while the relaunch below
-        // produces "epic #38": the cancel must match by slug (re-review F5),
+        // "issue 38" spelling of the identity label while the relaunch below
+        // produces "issue #38": the cancel must match by slug (re-review F5),
         // not exact string.
         schedule
             .arm(ScheduleEntry {
                 project_path: project.clone(),
-                epic: "epic 38".to_string(),
+                epic: "issue 38".to_string(),
                 fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
 
@@ -1989,7 +2436,7 @@ mod tests {
             &preflight(true, true),
             global.clone(),
             &project,
-            &run_refs(&["38".to_string()], &[]),
+            &LaunchInput::parse("#38"),
             Some("opus".to_string()),
             Some(30.0),
             None,
@@ -1998,9 +2445,9 @@ mod tests {
         .await
         .unwrap();
 
-        // F5: the "epic 38"-spelled timer is gone despite the launch's own
-        // "epic #38" spelling, and the result reports it.
-        assert_eq!(result.epic, "epic #38");
+        // F5: the "issue 38"-spelled timer is gone despite the launch's own
+        // "issue #38" spelling, and the result reports it.
+        assert_eq!(result.epic, "issue #38");
         assert!(result.stale_timer_cancelled);
         assert!(schedule.list().is_empty(), "stale timer cancelled");
 
@@ -2037,7 +2484,7 @@ mod tests {
             &preflight(true, true),
             global,
             &project,
-            &run_refs(&["#38".to_string()], &[]),
+            &LaunchInput::parse("finish #38"),
             None,
             None,
             None,
@@ -2046,88 +2493,114 @@ mod tests {
         .await
         .unwrap();
         assert!(!again.stale_timer_cancelled);
-        assert_eq!(again.epic, "epic #38", "`38` and `#38` are one run");
+        assert_eq!(again.epic, "issue #38", "differently worded text, one run");
         assert_eq!(
-            run_configs.get(&project, "epic #38").unwrap().thresholds,
+            run_configs.get(&project, "issue #38").unwrap().thresholds,
             None
         );
     }
 
     #[tokio::test]
-    async fn test_launch_identity_per_ref_shape() {
-        // Issue #83 §3: one run carries ALL its numbers. The label is the
-        // run's identity, and branch, worktree folder and run-config filename
-        // are its slug — epics-only, issues-only and both.
+    async fn test_launch_identity_per_text_shape() {
+        // Issue #128: the free text is the launch input. Refs found in it
+        // label the run as before; pure prose derives a short stable
+        // slug+hash — and branch, worktree folder and run-config filename
+        // are the label's slug either way.
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
         let project_slug = ref_slug(&project_name(Path::new(&h.project)), "samurai");
-        for (epics, issues, label, slug) in [
-            (vec!["5"], vec![], "epic #5", "epic-5"),
-            (vec![], vec!["7", "9"], "issues #7, #9", "issues-7-9"),
-            (
-                vec!["5"],
-                vec!["7", "9"],
-                "epic #5 · issues #7, #9",
-                "epic-5-issues-7-9",
-            ),
-        ] {
-            let result = run_launch(&h, &gate, true, &epics, &issues).await.unwrap();
-            assert_eq!(result.epic, label, "label for {epics:?} + {issues:?}");
-            let expected_branch = format!("{project_slug}-{slug}");
-            assert_eq!(result.branch, expected_branch);
-            assert!(
-                Path::new(&result.worktree_path).ends_with(&expected_branch),
-                "worktree {} must use the combined slug",
-                result.worktree_path
-            );
 
-            // The config is keyed by the label and keeps the two lists that
-            // built it, so the prompt shape survives a resume.
-            let config = h
-                .run_configs
-                .get(&h.project, label)
-                .expect("config saved under the label");
-            assert_eq!(config.epics, epics);
-            assert_eq!(config.issues, issues);
-            assert_eq!(config.worktree_path, result.worktree_path);
-        }
-        assert_eq!(h.run_configs.load_active().len(), 3, "three distinct runs");
+        // Refs in the text: identity is the refs label.
+        let result = run_launch(&h, &gate, true, "work #7 and #9 please")
+            .await
+            .unwrap();
+        assert_eq!(result.epic, "issues #7, #9");
+        let expected_branch = format!("{project_slug}-issues-7-9");
+        assert_eq!(result.branch, expected_branch);
+        assert!(
+            Path::new(&result.worktree_path).ends_with(&expected_branch),
+            "worktree {} must use the label slug",
+            result.worktree_path
+        );
+        let config = h
+            .run_configs
+            .get(&h.project, "issues #7, #9")
+            .expect("config saved under the label");
+        assert_eq!(config.issues, ["7", "9"]);
+        assert!(config.epics.is_empty());
+        assert_eq!(
+            config.launch_text.as_deref(),
+            Some("work #7 and #9 please"),
+            "the verbatim request is part of the durable record"
+        );
+        assert_eq!(config.worktree_path, result.worktree_path);
+
+        // Pure prose: identity is the slug+hash label, short enough for a
+        // Windows worktree path.
+        let prose = run_launch(&h, &gate, true, "refactor the audit panel styling")
+            .await
+            .unwrap();
+        let label = LaunchInput::parse("refactor the audit panel styling").label();
+        assert_eq!(prose.epic, label);
+        assert!(label.len() <= 33, "prose label stays MAX_PATH-friendly");
+        assert_eq!(
+            prose.branch,
+            format!("{project_slug}-{}", epic_slug(&label))
+        );
+        let config = h
+            .run_configs
+            .get(&h.project, &label)
+            .expect("config saved under the prose label");
+        assert!(config.epics.is_empty() && config.issues.is_empty());
+        assert_eq!(
+            config.launch_text.as_deref(),
+            Some("refactor the audit panel styling")
+        );
+
+        assert_eq!(h.run_configs.load_active().len(), 2, "two distinct runs");
     }
 
     #[tokio::test]
-    async fn test_launch_refuses_empty_refs_and_a_live_duplicate_run() {
+    async fn test_launch_refuses_empty_text_and_a_live_duplicate_run() {
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
 
-        // Nothing usable on either side: refused before any side effect, no
-        // matter what the frontend thought it validated.
-        let err = run_launch(&h, &gate, true, &["  ", "#"], &[","])
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains("at least one epic or issue reference"),
-            "{err}"
-        );
+        // Nothing usable typed: refused before any side effect, no matter
+        // what the frontend thought it validated.
+        let err = run_launch(&h, &gate, true, "   ").await.unwrap_err();
+        assert!(err.contains("launch request is empty"), "{err}");
         assert!(h.run_configs.load_active().is_empty());
         assert!(h.spawns.lock().unwrap().is_empty());
 
         // A real launch, then a live session registered for it the way the
         // frontend does — under the run's label.
-        let result = run_launch(&h, &gate, true, &["5"], &["7", "9"]).await.unwrap();
+        let result = run_launch(&h, &gate, true, "work #7 and #9").await.unwrap();
         h.supervisor
             .register_session(1, h.project.clone(), result.epic.clone(), 1)
             .unwrap();
 
         // Relaunching the same run is refused, and the duplicate check
-        // matches by SLUG: a differently spelled but identical set of refs is
-        // the same run.
-        let dup = run_launch(&h, &gate, true, &["#5"], &["#7", "9"])
+        // matches on the DERIVED identity: differently worded text naming
+        // the same refs is the same run (the refusal matrix, issue #128).
+        let dup = run_launch(&h, &gate, true, "please finish #7, #9")
             .await
             .unwrap_err();
         assert!(dup.contains("live supervised session"), "{dup}");
 
         // A DIFFERENT set is a different run and still launches.
-        assert!(run_launch(&h, &gate, true, &["5"], &["7"]).await.is_ok());
+        assert!(run_launch(&h, &gate, true, "#7").await.is_ok());
+
+        // Prose identity guards the same way: same text = same run.
+        let prose = run_launch(&h, &gate, true, "polish the styling")
+            .await
+            .unwrap();
+        h.supervisor
+            .register_session(2, h.project.clone(), prose.epic.clone(), 1)
+            .unwrap();
+        let dup = run_launch(&h, &gate, true, " polish   the styling ")
+            .await
+            .unwrap_err();
+        assert!(dup.contains("live supervised session"), "{dup}");
     }
 
     #[tokio::test]
@@ -2139,8 +2612,8 @@ mod tests {
         let (gate, _calls) = recording_gate(vec![]);
 
         // No explicit graph → the default template is snapshotted.
-        run_launch(&h, &gate, true, &["#38"], &[]).await.unwrap();
-        let config = h.run_configs.get(&h.project, "epic #38").unwrap();
+        run_launch(&h, &gate, true, "#38").await.unwrap();
+        let config = h.run_configs.get(&h.project, "issue #38").unwrap();
         assert_eq!(config.workflow, Some(WorkflowGraph::default()));
 
         // An explicit (edited) graph is stored verbatim.
@@ -2164,7 +2637,7 @@ mod tests {
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
-            &run_refs(&["#39".to_string()], &[]),
+            &LaunchInput::parse("#39"),
             None,
             None,
             Some(custom.clone()),
@@ -2172,7 +2645,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let config = h.run_configs.get(&h.project, "epic #39").unwrap();
+        let config = h.run_configs.get(&h.project, "issue #39").unwrap();
         assert_eq!(config.workflow, Some(custom));
     }
 
@@ -2193,9 +2666,9 @@ mod tests {
         );
         let (gate, calls) = recording_gate(vec![]);
 
-        let result = run_launch(&h, &gate, false, &["#38"], &[]).await.unwrap();
+        let result = run_launch(&h, &gate, false, "#38").await.unwrap();
         let project_slug = ref_slug(&project_name(Path::new(&h.project)), "samurai");
-        assert_eq!(result.branch, format!("{project_slug}-epic-38"));
+        assert_eq!(result.branch, format!("{project_slug}-issue-38"));
 
         assert_eq!(
             *calls.lock().unwrap(),
@@ -2226,9 +2699,7 @@ mod tests {
             },
         )]);
 
-        let err = run_launch(&h, &gate, false, &["#38"], &[])
-            .await
-            .unwrap_err();
+        let err = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(err.contains("launch blocked"), "{err}");
         assert!(
             err.contains("test result: FAILED. 40 passed; 2 failed"),
@@ -2248,7 +2719,7 @@ mod tests {
             .iter()
             .find(|e| e.event == AuditEventKind::Alert)
             .expect("an ALERT row records the block");
-        assert_eq!(alert.epic, "epic #38");
+        assert_eq!(alert.epic, "issue #38");
         assert_eq!(alert.details["kind"], "launch_test_gate");
         assert_eq!(alert.details["phase"], "red_suite");
 
@@ -2266,8 +2737,8 @@ mod tests {
         let h = cleanup_harness();
         let (gate, calls) = recording_gate(vec![]);
 
-        let result = run_launch(&h, &gate, true, &["#38"], &[]).await.unwrap();
-        assert_eq!(result.epic, "epic #38");
+        let result = run_launch(&h, &gate, true, "#38").await.unwrap();
+        assert_eq!(result.epic, "issue #38");
         assert!(calls.lock().unwrap().is_empty(), "no gate command ran");
         assert_eq!(h.spawns.lock().unwrap().len(), 1, "gen-1 spawned");
         assert_eq!(h.run_configs.load_active().len(), 1, "ACTIVE config saved");
@@ -2293,9 +2764,7 @@ mod tests {
             },
         )]);
 
-        let err = run_launch(&h, &gate, false, &["#38"], &[])
-            .await
-            .unwrap_err();
+        let err = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(
             err.contains("bootstrap failed at `npm install`"),
             "a broken bootstrap is its own error, not a red suite: {err}"
@@ -2332,9 +2801,11 @@ mod tests {
             .arm(ScheduleEntry {
                 project_path: h.project.clone(),
                 // The previous run's identity label — what a real park armed.
-                epic: "epic #38".to_string(),
+                epic: "issue #38".to_string(),
                 fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                 reason: "park".to_string(),
+                launch: None,
+                held: false,
             })
             .unwrap();
 
@@ -2347,9 +2818,7 @@ mod tests {
                 stderr: String::new(),
             },
         )]);
-        run_launch(&h, &red_gate, false, &["#38"], &[])
-            .await
-            .unwrap_err();
+        run_launch(&h, &red_gate, false, "#38").await.unwrap_err();
         assert_eq!(
             h.schedule.list().len(),
             1,
@@ -2358,9 +2827,7 @@ mod tests {
 
         // The gate passing is what consumes the stale timer.
         let (green_gate, _calls) = recording_gate(vec![]);
-        let result = run_launch(&h, &green_gate, false, &["#38"], &[])
-            .await
-            .unwrap();
+        let result = run_launch(&h, &green_gate, false, "#38").await.unwrap();
         assert!(result.stale_timer_cancelled);
         assert!(h.schedule.list().is_empty());
     }
@@ -2404,7 +2871,7 @@ mod tests {
         });
         let slow_gate = SamuraiTestGate::new(runner, Arc::new(|_| {}));
 
-        let first = run_launch(&h, &slow_gate, false, &["38"], &[]);
+        let first = run_launch(&h, &slow_gate, false, "work on #38");
         let second = async {
             // Wait (off the async thread) until the first launch is inside
             // its gate — the exact window the component-local UI guard used
@@ -2420,9 +2887,10 @@ mod tests {
             .await
             .unwrap();
 
-            // The double click — spelled differently, same run: refused by
-            // the in-flight slot (slug identity) before any side effect.
-            let err = run_launch(&h, &slow_gate, false, &["#38"], &[])
+            // The double click — worded differently, same ref, same run:
+            // refused by the in-flight slot (slug identity) before any side
+            // effect.
+            let err = run_launch(&h, &slow_gate, false, "#38 please")
                 .await
                 .unwrap_err();
 
@@ -2459,13 +2927,13 @@ mod tests {
             },
         )]);
 
-        let err = run_launch(&h, &gate, false, &["#38"], &[]).await.unwrap_err();
+        let err = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(err.contains("launch blocked"), "{err}");
 
         // The RAII guard released the slot on the red-gate exit: the
         // relaunch reaches the gate again instead of bouncing off the
         // in-flight check.
-        let again = run_launch(&h, &gate, false, &["#38"], &[]).await.unwrap_err();
+        let again = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(!again.contains("already in progress"), "{again}");
         assert!(again.contains("launch blocked"), "{again}");
     }
@@ -2474,11 +2942,11 @@ mod tests {
     async fn test_launch_slot_released_after_success() {
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
-        run_launch(&h, &gate, true, &["#38"], &[]).await.unwrap();
+        run_launch(&h, &gate, true, "#38").await.unwrap();
         // Released on the success path too: a relaunch of the same epic is
         // not refused by the in-flight slot (nothing else refuses it either
         // — no live session is registered in this harness).
-        run_launch(&h, &gate, true, &["#38"], &[]).await.unwrap();
+        run_launch(&h, &gate, true, "#38").await.unwrap();
     }
 
     #[tokio::test]
@@ -2502,7 +2970,7 @@ mod tests {
             },
         )]);
 
-        let err = run_launch(&h, &gate, false, &["#38"], &[]).await.unwrap_err();
+        let err = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         assert!(err.contains("may be hung"), "{err}");
 
@@ -2519,9 +2987,339 @@ mod tests {
 
         // Released: the relaunch reaches the gate again instead of bouncing
         // off the in-flight check.
-        let again = run_launch(&h, &gate, false, &["#38"], &[]).await.unwrap_err();
+        let again = run_launch(&h, &gate, false, "#38").await.unwrap_err();
         assert!(!again.contains("already in progress"), "{again}");
         assert!(again.contains("timed out"), "{again}");
+    }
+
+    // --- issue #124: crash-recovery relaunch ---
+
+    async fn recover(h: &CleanupHarness, epic: &str) -> Result<SamuraiRecoverResult, String> {
+        recover_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.project,
+            epic,
+        )
+        .await
+    }
+
+    /// Writes gen-`generation`'s handoff file into the run's worktree.
+    fn write_handoff(worktree: &str, epic: &str, generation: u32) {
+        let path =
+            Path::new(worktree).join(samurai_prompts::handoff_file_relpath(epic, generation));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# Handoff\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_recover_refuses_missing_completed_and_live_runs() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+
+        // Missing config: nothing to recover.
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("no run config"), "{err}");
+
+        // A live orchestrator: recovery is for a CRASHED run.
+        let result = run_launch(&h, &gate, true, "#38").await.unwrap();
+        h.supervisor
+            .register_session(1, h.project.clone(), result.epic.clone(), 1)
+            .unwrap();
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("live supervised session"), "{err}");
+
+        // A COMPLETED run: finished, not crashed — cleanup is its next step.
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+        let mut config = h.run_configs.get(&h.project, "issue #38").unwrap();
+        config.status = RunConfigStatus::Completed;
+        h.run_configs.save(&config).unwrap();
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("not ACTIVE"), "{err}");
+
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    #[tokio::test]
+    async fn test_recover_spawns_the_next_generation_from_the_handoff_resume_point() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        // Gen-1 registered (which consumes the staged launch spawn) and then
+        // DIED — the crashed run this action exists for. Without the
+        // registration the replicator would refuse to stage another
+        // generation behind the still-pending gen-1; production wires the
+        // registration into `on_registered`, the harness calls it directly.
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+
+        // The crashed run's disk state: handoffs up to gen-2 — the true
+        // resume point — plus a pending resume timer from an earlier park.
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        write_handoff(&launched.worktree_path, "issue #38", 2);
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "issue #38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+
+        let result = recover(&h, "issue #38").await.unwrap();
+
+        assert_eq!(result.prior_generation, 2, "highest handoff wins");
+        assert_eq!(result.generation, 3);
+        assert!(
+            result.from_handoff,
+            "gen-2's handoff exists — resume from it"
+        );
+        // Verified via git in the real worktree, not read from any record.
+        assert_eq!(result.branch, launched.branch);
+        assert!(!result.head.is_empty());
+        // The stale timer is superseded by the manual recovery.
+        assert!(result.timer_cancelled);
+        assert!(h.schedule.list().is_empty());
+        // Gen-3 staged through the replicator (the spawn event is emitted
+        // from a spawned task — poll briefly rather than racing it).
+        for _ in 0..100 {
+            if h.spawns.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(h.spawns.lock().unwrap().len(), 2);
+        assert_eq!(h.spawns.lock().unwrap()[1].generation, 3);
+        // The RESUME row records the recovery and the verified repo state.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row lands before the spawn");
+        assert_eq!(resume.details["trigger"], "manual_recovery");
+        assert_eq!(resume.details["predecessor_generation"], 2);
+        assert_eq!(resume.details["branch"], launched.branch);
+    }
+
+    #[tokio::test]
+    async fn test_recover_without_a_prior_handoff_reconstructs_or_refuses() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#39").await.unwrap();
+
+        // No handoffs, no registry generations: nothing to resume from —
+        // a relaunch, not a recovery.
+        let err = recover(&h, "issue #39").await.unwrap_err();
+        assert!(err.contains("nothing to resume"), "{err}");
+
+        // The registry knows a DEAD gen-2 but its handoff never landed:
+        // recovery still spawns gen-3, via the full reconstruction ritual.
+        h.supervisor
+            .register_session(7, h.project.clone(), "issue #39".to_string(), 2)
+            .unwrap();
+        h.supervisor.transition(7, SupervisorState::Dead).unwrap();
+        write_handoff(&launched.worktree_path, "issue #39", 1);
+        let result = recover(&h, "issue #39").await.unwrap();
+        assert_eq!(
+            result.prior_generation, 2,
+            "registry beats the older handoff"
+        );
+        assert_eq!(result.generation, 3);
+        assert!(
+            !result.from_handoff,
+            "gen-2 left no handoff — reconstruction, not resume"
+        );
+    }
+
+    // --- issue #129: scheduled launches ---
+
+    /// The harness's future-dated scheduled launch, armed through the real
+    /// arm path.
+    fn arm_scheduled_launch(h: &CleanupHarness, text: &str) -> ScheduleEntry {
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        schedule_launch_inner(&h.schedule, &h.project, text, &fire_at, None, None, true).unwrap()
+    }
+
+    /// Drives one scheduled-launch fire through the harness with the given
+    /// preflight.
+    async fn fire_scheduled(
+        h: &CleanupHarness,
+        gate: &SamuraiTestGate,
+        pf: &SamuraiPreflight,
+        entry: ScheduleEntry,
+    ) -> ScheduledLaunchOutcome {
+        scheduled_launch_fire_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            gate,
+            pf,
+            SamuraiConfig::default(),
+            entry,
+            Some(h.base.path()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_schedule_launch_arms_a_one_shot_entry_keyed_by_the_run_identity() {
+        let h = cleanup_harness();
+        let fire_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let entry = schedule_launch_inner(
+            &h.schedule,
+            &h.project,
+            "work   #7 and #9",
+            &fire_at,
+            Some("opus".to_string()),
+            Some(30.0),
+            false,
+        )
+        .unwrap();
+
+        // The entry's identity IS the request's derived label (issue #128),
+        // so the eventual launch and its stale-timer cancel key the same run.
+        assert_eq!(entry.epic, "issues #7, #9");
+        assert_eq!(entry.reason, REASON_SCHEDULED_LAUNCH);
+        assert!(!entry.held);
+        let spec = entry.launch.clone().expect("the spec rides on the entry");
+        assert_eq!(spec.text, "work #7 and #9", "normalized, carried verbatim");
+        assert_eq!(spec.model.as_deref(), Some("opus"));
+        assert_eq!(spec.handoff_context_pct, Some(30.0));
+        assert!(!spec.skip_test_gate);
+        assert_eq!(spec.attempts, 0);
+
+        // One-shot, one timer per run: re-scheduling the same request
+        // replaces the earlier pick.
+        let later = (chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
+        schedule_launch_inner(
+            &h.schedule,
+            &h.project,
+            "work #7 and #9",
+            &later,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].fire_at, later);
+
+        // Refusals: empty request, past time, junk time — nothing armed.
+        let err = schedule_launch_inner(&h.schedule, &h.project, "  ", &fire_at, None, None, true)
+            .unwrap_err();
+        assert!(err.contains("scheduled request is empty"), "{err}");
+        let err = schedule_launch_inner(
+            &h.schedule,
+            &h.project,
+            "#5",
+            "2020-01-01T00:00:00+00:00",
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("in the past"), "{err}");
+        let err =
+            schedule_launch_inner(&h.schedule, &h.project, "#5", "tomorrow", None, None, true)
+                .unwrap_err();
+        assert!(err.contains("unusable schedule time"), "{err}");
+        assert_eq!(h.schedule.list().len(), 1, "refusals armed nothing");
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_launches_the_run() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        let outcome = fire_scheduled(&h, &gate, &preflight(true, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Launched);
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "gen-1 spawned");
+        let config = h
+            .run_configs
+            .get(&h.project, "issue #38")
+            .expect("ACTIVE config saved under the run identity");
+        assert_eq!(config.launch_text.as_deref(), Some("work #38"));
+        // The launch's stale-timer cancel consumed the armed entry: nothing
+        // pending, nothing to re-fire.
+        assert!(h.schedule.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_retries_with_backoff_on_unattended_refusal() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        // gh auth failed at fire time and nobody is at the keyboard.
+        let outcome = fire_scheduled(&h, &gate, &preflight(false, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Retried { attempts: 1 });
+        assert!(h.spawns.lock().unwrap().is_empty(), "nothing launched");
+        assert!(h.run_configs.load_active().is_empty());
+        // Re-armed ~15 minutes out with the attempt counted, still un-held.
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1);
+        let re = &entries[0];
+        assert_eq!(re.reason, REASON_SCHEDULED_LAUNCH);
+        assert!(!re.held);
+        assert_eq!(re.launch.as_ref().unwrap().attempts, 1);
+        assert_eq!(re.launch.as_ref().unwrap().text, "work #38");
+        let fire_at = chrono::DateTime::parse_from_rfc3339(&re.fire_at).unwrap();
+        let secs_out = (fire_at.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+        assert!(
+            (800..=SCHEDULED_LAUNCH_RETRY_SECS).contains(&secs_out),
+            "retry ~15 min out, got {secs_out}s"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_gives_up_after_the_window_and_holds_the_entry() {
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let mut entry = arm_scheduled_launch(&h, "work #38");
+        // The bounded ~2h window is spent: this fire is the last attempt.
+        entry.launch.as_mut().unwrap().attempts = SCHEDULED_LAUNCH_MAX_ATTEMPTS - 1;
+
+        let outcome = fire_scheduled(&h, &gate, &preflight(false, true), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::GaveUp);
+        assert!(h.spawns.lock().unwrap().is_empty(), "kept unlaunched");
+        // HELD — it never fires again on its own, but stays visible for the
+        // human's launch-or-discard.
+        let entries = h.schedule.list();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].held);
+        assert_eq!(
+            entries[0].launch.as_ref().unwrap().attempts,
+            SCHEDULED_LAUNCH_MAX_ATTEMPTS
+        );
+        // The give-up is a durable ALERT, not just a log line.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let alert = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Alert)
+            .expect("an ALERT surfaces the give-up");
+        assert_eq!(alert.epic, "issue #38");
+        assert_eq!(alert.details["kind"], "scheduled_launch_gave_up");
+        assert_eq!(alert.details["attempts"], 8);
     }
 
     #[test]
@@ -2543,6 +3341,8 @@ mod tests {
                     epic: epic.to_string(),
                     fire_at: "2030-01-01T00:00:00+00:00".to_string(),
                     reason: "park".to_string(),
+                    launch: None,
+                    held: false,
                 })
                 .unwrap();
         }

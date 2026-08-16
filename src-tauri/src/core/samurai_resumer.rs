@@ -701,6 +701,8 @@ mod tests {
             epic: epic.to_string(),
             fire_at: "2026-08-06T12:00:00+00:00".to_string(),
             reason: "park".to_string(),
+            launch: None,
+            held: false,
         }
     }
 
