@@ -19,7 +19,6 @@ import {
   type SamuraiPreflight,
   type SamuraiRunListEntry,
   type SamuraiRunOrchestrator,
-  type SamuraiSupervisorState,
   type SamuraiTestGateProgress,
   samuraiCleanupEpic,
   samuraiLaunchRun,
@@ -34,7 +33,6 @@ import {
 } from "@/stores/useSamuraiGateStore";
 import { workflowGraphForLaunch } from "@/stores/useSamuraiWorkflowStore";
 import {
-  SAMURAI_TILE_CLOSE_STATES,
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
   useSessionStore,
@@ -337,16 +335,6 @@ const OPEN_HINT = "Switch to this run's project and focus its live agent's termi
 const NO_SESSION_REASON = "No live agent for this run — it is not running in this Maestro session";
 
 /**
- * Why a run that IS registered still has no tile to focus. Only the states
- * whose tile the frontend closes (`SAMURAI_TILE_CLOSE_STATES`) land here —
- * DEAD deliberately keeps its tile, so a dead agent stays openable.
- */
-const CLOSED_TILE_REASON: Partial<Record<SamuraiSupervisorState, string>> = {
-  PARKED: "No live agent for this run — it was parked, and resuming starts a fresh agent",
-  KILLED: "No live agent for this run — its agent was killed",
-};
-
-/**
  * Finds the terminal to open for one run.
  *
  * The run's `epic` is its identity AND the string the supervisor registers its
@@ -355,6 +343,12 @@ const CLOSED_TILE_REASON: Partial<Record<SamuraiSupervisorState, string>> = {
  * go through `samePath`, never `===`: the same directory has several spellings
  * on Windows, and matching on the ref alone would cross-focus two projects
  * running the same epic number.
+ *
+ * Every terminal state (KILLED/PARKED/DEAD) now parks its terminal into the
+ * footer tray instead of closing it (issue #122), so there is no "closed
+ * tile" case to block on any more — the newest generation's terminal always
+ * exists somewhere, and opening it (`onNavigate` → `zoomSession`) unparks it
+ * if needed, same as clicking its tray chip.
  */
 function findOpenTarget(
   run: SamuraiRunListEntry,
@@ -367,19 +361,9 @@ function findOpenTarget(
       ({ info }) =>
         info.epic.trim() === run.epic.trim() && samePath(info.project, run.project_path),
     )
-    // Newest generation first: with several alive, that is the one working.
+    // Newest generation first: with several around, that is the one working.
     .sort((a, b) => b.info.generation - a.info.generation);
   if (matches.length === 0) return { kind: "blocked", reason: NO_SESSION_REASON };
-
-  const live = matches.find(({ info }) => !SAMURAI_TILE_CLOSE_STATES.has(info.state));
-  if (!live) {
-    // The newest generation's state is the honest reason — an older gen being
-    // KILLED says nothing about why the run has no terminal now.
-    return {
-      kind: "blocked",
-      reason: CLOSED_TILE_REASON[matches[0].info.state] ?? NO_SESSION_REASON,
-    };
-  }
 
   const tab = tabs.find((t) => samePath(t.projectPath, run.project_path));
   if (!tab) {
@@ -388,7 +372,7 @@ function findOpenTarget(
       reason: "No live agent for this run — its project is not open in a tab",
     };
   }
-  return { kind: "open", tabId: tab.id, sessionId: live.sessionId };
+  return { kind: "open", tabId: tab.id, sessionId: matches[0].sessionId };
 }
 
 /** One listed run (live or finished-awaiting-cleanup) with its

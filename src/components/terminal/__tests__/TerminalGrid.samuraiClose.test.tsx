@@ -131,7 +131,7 @@ async function renderLaunchedGrid() {
   return useSessionStore.getState().sessions[0].id;
 }
 
-describe("TerminalGrid samurai tile close", () => {
+describe("TerminalGrid samurai park (issue #122)", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
@@ -149,23 +149,26 @@ describe("TerminalGrid samurai tile close", () => {
     useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
   });
 
-  it("kills the PTY when a supervised session goes PARKED", async () => {
+  it("kills the PTY and parks the tile when a supervised session goes PARKED", async () => {
     const sessionId = await renderLaunchedGrid();
     expect(killSessionMock).not.toHaveBeenCalled();
 
     // The Phase-2 circuit breaker (samurai_progress.rs) transitions to PARKED
-    // with no backend teardown — closing the tile without this kill would
+    // with no backend teardown — parking the tile without this kill would
     // orphan a live `claude --dangerously-skip-permissions` PTY.
     await act(async () => {
       superviseSession(sessionId, "PARKED");
     });
 
     await waitFor(() => expect(killSessionMock).toHaveBeenCalledWith(sessionId));
-    // The tile is gone too: handleKill still runs the rest of the cleanup.
-    expect(useSessionStore.getState().sessions).toHaveLength(0);
+    // The tile moves to the existing footer parking tray — same mechanism as
+    // the P button — rather than being torn down: the session stays known,
+    // just parked, so unparking reopens its transcript.
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]);
   });
 
-  it("kills the PTY when a supervised session goes KILLED", async () => {
+  it("kills the PTY and parks the tile when a supervised session goes KILLED", async () => {
     const sessionId = await renderLaunchedGrid();
 
     await act(async () => {
@@ -173,16 +176,35 @@ describe("TerminalGrid samurai tile close", () => {
     });
 
     await waitFor(() => expect(killSessionMock).toHaveBeenCalledWith(sessionId));
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]);
   });
 
-  it("leaves a DEAD session's tile and PTY alone", async () => {
+  it("parks a DEAD session's tile without killing (process is already gone)", async () => {
     const sessionId = await renderLaunchedGrid();
 
     await act(async () => {
       superviseSession(sessionId, "DEAD");
     });
 
+    await waitFor(() => expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]));
     expect(killSessionMock).not.toHaveBeenCalled();
     expect(useSessionStore.getState().sessions).toHaveLength(1);
+  });
+
+  it("does not re-kill an already-parked session on a redundant supervisor event", async () => {
+    const sessionId = await renderLaunchedGrid();
+
+    await act(async () => {
+      superviseSession(sessionId, "PARKED");
+    });
+    await waitFor(() => expect(killSessionMock).toHaveBeenCalledTimes(1));
+
+    // A duplicate/late event for the same terminal state must not re-fire
+    // the kill — the parkedSet guard in TerminalGrid's effect stops it.
+    await act(async () => {
+      superviseSession(sessionId, "PARKED");
+    });
+
+    expect(killSessionMock).toHaveBeenCalledTimes(1);
   });
 });
