@@ -136,12 +136,16 @@ async function renderLaunchedGrid() {
   return useSessionStore.getState().sessions[0].id;
 }
 
+/** The imperative handle of the grid `renderLaunchedGridWith` last rendered. */
+let lastGridHandle: TerminalGridHandle | null = null;
+
 /** Renders the grid with `count` launched slots, returning their session ids. */
 async function renderLaunchedGridWith(count: number) {
   const ref = createRef<TerminalGridHandle>();
   render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
   const handle = ref.current;
   if (!handle) throw new Error("expected TerminalGrid ref to be attached");
+  lastGridHandle = handle;
   await act(async () => {
     for (let i = 1; i < count; i++) handle.addSession();
   });
@@ -169,6 +173,7 @@ describe("TerminalGrid samurai park (issue #122)", () => {
     killSessionMock.mockClear();
     spawnShellMock.mockReset();
     spawnShellMock.mockImplementation(async () => 1);
+    lastGridHandle = null;
     useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
   });
 
@@ -280,6 +285,26 @@ describe("TerminalGrid samurai park (issue #122)", () => {
     expect(useSessionStore.getState().parkedSessionIds).toEqual(
       ids.slice(-MAX_RETAINED_PARKED_SAMURAI_TILES),
     );
+  });
+
+  // T11: the sidebar's "open a parked run" test only asserts that onNavigate
+  // fired — nothing covered the unpark it promises. This is that half: App
+  // routes onNavigate to `zoomSession`, which must bring the tile back out of
+  // the tray, or the click opens a pane the user still cannot see.
+  it("unparks the session when zoomSession opens a parked tile", async () => {
+    const [sessionId] = await renderLaunchedGridWith(1);
+    const handle = lastGridHandle;
+    if (!handle) throw new Error("expected TerminalGrid ref to be attached");
+    await act(async () => {
+      useSessionStore.getState().parkSession(sessionId);
+    });
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]);
+
+    await act(async () => {
+      expect(handle.zoomSession(sessionId)).toBe(true);
+    });
+
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([]);
   });
 
   it("keeps a user unpark unparked after an auto-park (PR #131 review H2)", async () => {

@@ -1368,6 +1368,9 @@ describe("LaunchSection (issue #63)", () => {
     expect(button).toBeEnabled();
     fireEvent.click(button);
     expect(onNavigate).toHaveBeenCalledWith("tab-1", 3);
+    // The unpark half of that promise belongs to `zoomSession`, which App
+    // routes onNavigate to — covered in TerminalGrid.samuraiClose.test.tsx
+    // ("unparks the session when zoomSession opens a parked tile").
   });
 
   it("never cross-focuses two projects running the same epic ref", async () => {
