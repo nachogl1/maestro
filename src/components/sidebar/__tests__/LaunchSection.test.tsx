@@ -37,6 +37,7 @@ import type {
   SamuraiWorkflowGraph,
 } from "@/lib/samurai";
 import type { UsageData } from "@/lib/usageParser";
+import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { stopSamuraiGateListener, useSamuraiGateStore } from "@/stores/useSamuraiGateStore";
 import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
 import {
@@ -260,6 +261,7 @@ describe("LaunchSection (issue #63)", () => {
     // Untouched workflow editor by default — launches send workflow: null.
     useSamuraiWorkflowStore.setState({ graph: null });
     useSessionStore.setState({ samuraiBySessionId: {}, samuraiSchedule: [] });
+    usePendingLaunchStore.setState({ pending: [] });
     // Issue #109: the gate listener + store are module-level (they outlive
     // mounts on purpose) — detach and drain them between tests so each test
     // captures a fresh handler from ITS listen mock.
@@ -561,6 +563,95 @@ describe("LaunchSection (issue #63)", () => {
     expect(await screen.findByRole("button", { name: OPEN_LABEL("#38") })).toBeEnabled();
     // …AND the run is recoverable — the two are not mutually exclusive.
     fireEvent.click(screen.getByRole("button", { name: "Recover run #38" }));
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+  });
+
+  // `recover_run_inner` takes no lock and fire-and-forgets the generation
+  // spawn, so two calls that both pass its "no live session" check stage TWO
+  // gen-N+1 orchestrators into the same worktree.
+  it("ignores a second Recover click while the first is still in flight", async () => {
+    let releaseRecover: (() => void) | undefined;
+    mockInvoke({ runs: [run()] });
+    const base = invokeMock.getMockImplementation();
+    if (!base) throw new Error("expected mockInvoke to install an implementation");
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "samurai_recover_run") {
+        await new Promise<void>((resolve) => {
+          releaseRecover = resolve;
+        });
+      }
+      return base(cmd, args as never);
+    });
+    render(<LaunchSection />);
+    await screen.findByText("#38");
+
+    const button = screen.getByRole("button", { name: "Recover run #38" });
+    // Both clicks inside ONE act: React batches, so the second handler runs
+    // against the same render's closure and the button has not disabled yet —
+    // the real double-click, which a state-only guard does not catch.
+    await act(async () => {
+      button.click();
+      button.click();
+    });
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+
+    // Even after the click handlers settle, the second click stayed dropped.
+    await act(async () => {
+      releaseRecover?.();
+    });
+    expect(callsOf("samurai_recover_run")).toHaveLength(1);
+  });
+
+  // The backend only refuses a recovery while `parking_engaged()` is true,
+  // and that flag clears as soon as the sweep arms its timers — so a click on
+  // the refresh icon right above a "PARKED · resumes …" badge cancelled the
+  // resume timer and spawned a fresh generation into the exhausted allowance
+  // window the park existed to protect.
+  it("offers no recovery on a parked run", async () => {
+    useSessionStore.setState({ samuraiSchedule: [timer()] });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText(/^PARKED · resumes /)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+  });
+
+  // KILLED is the NORMAL post-handoff state, held until the successor
+  // registers — a click there spawns gen N+1 concurrently with the
+  // replicator's own gen N+1.
+  it("offers no recovery while the run's successor launch is still queued", async () => {
+    useSessionStore.setState({
+      samuraiBySessionId: { 3: supervised({ generation: 2, state: "KILLED" }) },
+    });
+    usePendingLaunchStore.setState({
+      pending: [
+        {
+          tabId: "tab-1",
+          mode: "Claude",
+          resumeSessionId: null,
+          workingDirOverride: "C:\\data\\worktrees\\maestro-abc\\maestro-38",
+          branch: null,
+          samurai: { project: "C:\\git\\maestro", epic: "#38", generation: 3, model: null },
+        },
+      ],
+    });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection onNavigate={vi.fn()} />);
+
+    await screen.findByText("#38");
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+  });
+
+  // …but a KILLED run whose successor never got staged (spawn_dropped,
+  // successor_no_start) is genuinely stuck, and Recover is its only way out.
+  it("still offers recovery on a KILLED run with no queued successor", async () => {
+    useSessionStore.setState({
+      samuraiBySessionId: { 3: supervised({ generation: 2, state: "KILLED" }) },
+    });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection onNavigate={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Recover run #38" }));
     await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
   });
 
