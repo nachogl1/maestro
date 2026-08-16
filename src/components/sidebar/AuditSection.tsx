@@ -68,15 +68,15 @@ function formatUtcTime(ts: string | null): string | null {
 }
 
 /**
- * One plain-language sentence per ALERT sub-kind (`details.kind`), covering
- * every kind the backend emits as of issue #123 (grepped from `src-tauri`:
- * `supervisor.rs`, `allowance_watcher.rs`, `samurai_injector.rs`,
- * `samurai_reconciler.rs`, `samurai_parker.rs`, `samurai_resumer.rs`,
- * `samurai_progress.rs`, `samurai_replicator.rs`, `samurai_completion.rs`).
- * An unlisted (future) sub-kind falls through to the raw key=value summary —
- * never a blank row.
+ * One plain-language sentence per ALERT sub-kind (`details.kind`).
+ *
+ * The completeness claim is not prose: `AuditSection.test.tsx` holds the
+ * grepped list of every kind `src-tauri` emits and asserts each one has an
+ * entry here, so adding a kind backend-side fails that test instead of
+ * silently shipping a `kind=…` row. An unlisted (future) sub-kind still
+ * falls through to the raw key=value summary — never a blank row.
  */
-const ALERT_SENTENCES: Record<string, (d: Record<string, unknown>) => string> = {
+export const ALERT_SENTENCES: Record<string, (d: Record<string, unknown>) => string> = {
   allowance_threshold: (d) => {
     const window = strField(d, "window");
     const value = numField(d, "value");
@@ -141,7 +141,39 @@ const ALERT_SENTENCES: Record<string, (d: Record<string, unknown>) => string> = 
     }`;
   },
   order_deviation: () => "Execution order deviation flagged",
+  // The highest-signal alert there is: corporate SSO tokens expire mid-run, so
+  // every supervised run parks at once and NO resume timer is armed (the
+  // condition has no reset time — a human fixes auth and resumes). Carries no
+  // fields beyond `kind` (samurai_auth_watch.rs / samurai_parker.rs).
+  gh_auth_lost: () =>
+    "GitHub authentication was lost — every run parked, and none will resume until you fix `gh auth` and restart them",
+  // Reconciler, at app start: the run was interrupted (no live process, no
+  // usable handoff) and needs a manual restart.
+  reconcile_interrupted: (d) => {
+    const epic = strField(d, "epic");
+    const prior = numField(d, "prior_generation");
+    return `Run ${epic ?? "(unknown)"} was interrupted${
+      prior !== null ? ` after gen-${prior}` : ""
+    } — resume it manually`;
+  },
+  // A resume timer fired for a run whose agent did not survive the restart.
+  resume_interrupted_restart: (d) =>
+    `Resume found run ${strField(d, "epic") ?? "(unknown)"} interrupted by a restart — resume it manually`,
+  // Injector: the corrective re-instruction round was exhausted and the
+  // instruction's own validation still fails. `failure` names the check.
+  handoff_invalid: (d) => invalidInstruction("handoff", d),
+  park_invalid: (d) => invalidInstruction("park", d),
+  soft_winddown_invalid: (d) => invalidInstruction("soft wind-down", d),
+  winddown_allclear_invalid: (d) => invalidInstruction("wind-down all-clear", d),
 };
+
+/** Shared wording for the injector's four `*_invalid` ALERTs. */
+function invalidInstruction(what: string, d: Record<string, unknown>): string {
+  const failure = strField(d, "failure");
+  return `The ${what} instruction is still invalid after the corrective round${
+    failure ? `: ${failure}` : ""
+  }`;
+}
 
 /** SPAWN: always renders — a session registering always carries a generation. */
 function describeSpawn(event: SamuraiAuditEvent, d: Record<string, unknown>): string {
