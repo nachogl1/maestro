@@ -444,18 +444,20 @@ pub fn handoff_file_relpath(epic: &str, generation: u32) -> String {
 /// Parses the generation number out of a handoff FILENAME shaped by
 /// [`handoff_file_relpath`] — `<slug>-gen<N>.md` → `Some(N)`. The resume path
 /// (issue #61) scans `.maestro/handoffs/` with this to find the latest
-/// generation on disk. Anything else returns `None` — including the
-/// `-recovery` digests ([`recovery_digest_relpath`]), whose tail after
-/// `-gen<N>` is not all digits. `rsplit_once` takes the LAST `-gen`, so an
-/// epic slug that itself contains `-gen` (e.g. `x-gen5-gen2.md`) still
-/// parses the real generation.
+/// generation on disk. Issue #119 (tolerant discovery): the dash spelling a
+/// deviating orchestrator actually produced, `<slug>-gen-<N>.md`, parses
+/// too. Anything else returns `None` — including the `-recovery` digests
+/// ([`recovery_digest_relpath`]), whose tail after `-gen<N>` is not all
+/// digits. `rsplit_once` takes the LAST `-gen`, so an epic slug that itself
+/// contains `-gen` (e.g. `x-gen5-gen2.md`) still parses the real generation.
 pub fn parse_handoff_generation(filename: &str) -> Option<u32> {
     let stem = filename.strip_suffix(".md")?;
     let (_, tail) = stem.rsplit_once("-gen")?;
-    if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+    let digits = tail.strip_prefix('-').unwrap_or(tail);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    tail.parse().ok()
+    digits.parse().ok()
 }
 
 /// Full idle-injected handoff instruction (PRD §5.4 + §6): immediate ACK,
@@ -474,7 +476,9 @@ pub fn handoff_instruction(epic: &str, generation: u32) -> String {
          (3) Ensure `.maestro/` is listed in this repo's .gitignore; add it if missing. \
          (4) Commit WIP to this run's branch: stage named paths only (never `git add .` or \
          `git add -A`), one Conventional Commit message (`type(scope): summary`). \
-         (5) Write the handoff file to {relpath} following the PRD section 6 template EXACTLY, \
+         (5) Write the handoff file to {relpath} — EXACTLY this repo-relative path inside this \
+         worktree, creating directories as needed; NEVER invent another filename or location \
+         (never a HANDOFF-*.md at the repo root) — following the PRD section 6 template EXACTLY, \
          with these headings in this order: Goal / Done / In progress / Decisions + why / \
          Failed attempts / Repo state / Verify / Next steps. \"Failed attempts\" is REQUIRED — \
          record the dead ends you tried so your successor does not repeat them. Keep every \
@@ -511,7 +515,9 @@ pub fn handoff_corrective_instruction(epic: &str, generation: u32, failure: &str
          <samurai-ack>{ack}</samurai-ack> — note the value differs from the first \
          instruction's; use exactly this one. \
          (2) Fix the failure above: write the handoff file and/or commit WIP to this run's \
-         branch (stage named paths only, Conventional Commit message). \
+         branch (stage named paths only, Conventional Commit message). If you wrote the \
+         handoff under any other filename or directory (e.g. a HANDOFF-*.md at the repo \
+         root), MOVE it to exactly {relpath}. \
          (3) Then reply with a message that contains exactly \
          <samurai-handoff-written>{written}</samurai-handoff-written>. \
          Never quote, restate, or echo these marker strings anywhere else in any reply — \
@@ -564,7 +570,9 @@ pub fn park_instruction(epic: &str, generation: u32) -> String {
          (3) Ensure `.maestro/` is listed in this repo's .gitignore; add it if missing. \
          (4) Commit ALL WIP to this run's branch: stage named paths only (never `git add .` or \
          `git add -A`), one Conventional Commit message (`type(scope): summary`). \
-         (5) Write or update the handoff file at {relpath} following the PRD section 6 \
+         (5) Write or update the handoff file at {relpath} — EXACTLY this repo-relative path \
+         inside this worktree, creating directories as needed; NEVER invent another filename \
+         or location (never a HANDOFF-*.md at the repo root) — following the PRD section 6 \
          template EXACTLY, with these headings in this order: Goal / Done / In progress / \
          Decisions + why / Failed attempts / Repo state / Verify / Next steps. It doubles as \
          the park state your successor resumes from, so keep every section to pointers \
@@ -597,7 +605,9 @@ pub fn park_corrective_instruction(epic: &str, generation: u32, failure: &str) -
          <samurai-ack>{ack}</samurai-ack> — note the value differs from the first \
          instruction's; use exactly this one. \
          (2) Fix the failure above: write/update the handoff file and/or commit ALL WIP to \
-         this run's branch (stage named paths only, Conventional Commit message). \
+         this run's branch (stage named paths only, Conventional Commit message). If you \
+         wrote the handoff under any other filename or directory (e.g. a HANDOFF-*.md at \
+         the repo root), MOVE it to exactly {relpath}. \
          (3) Then reply with a message that contains exactly \
          <samurai-handoff-written>{written}</samurai-handoff-written>. \
          Never quote, restate, or echo these marker strings anywhere else in any reply — \
@@ -1119,6 +1129,58 @@ mod tests {
             parse_handoff_generation("37-gen99999999999999999999.md"),
             None
         );
+    }
+
+    // --- issue #119: exactly ONE canonical handoff path ---
+
+    #[test]
+    fn test_file_writing_instructions_forbid_inventing_another_handoff_path() {
+        // A live gen-1 wrote `HANDOFF-…-gen-1.md` at the worktree ROOT —
+        // invisible to the Second Brain files panel and unparseable on
+        // resume. Both file-writing instructions must pin the canonical
+        // path and forbid any other name or location outright.
+        for text in [handoff_instruction("#37", 2), park_instruction("#37", 2)] {
+            assert!(text.contains(".maestro/handoffs/37-gen2.md"));
+            assert!(
+                text.contains("EXACTLY this repo-relative path"),
+                "missing exact-path pin: {text}"
+            );
+            assert!(
+                text.contains("never a HANDOFF-*.md at the repo root"),
+                "missing root-convention prohibition: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_correctives_direct_a_move_to_the_exact_expected_path() {
+        // The validator is the enforcement point (#119): when the file is
+        // missing, the corrective must CORRECT a deviating agent — name the
+        // exact expected path and tell it to move a misplaced handoff there
+        // — not just restate the checks.
+        for text in [
+            handoff_corrective_instruction("#37", 4, "the handoff file is missing"),
+            park_corrective_instruction("#37", 4, "the handoff file is missing"),
+        ] {
+            assert!(text.contains(".maestro/handoffs/37-gen4.md"));
+            assert!(
+                text.contains("MOVE it to exactly .maestro/handoffs/37-gen4.md"),
+                "missing move-to-canonical-path correction: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_handoff_generation_tolerates_a_gen_dash_variant() {
+        // #119 tolerant discovery: the observed deviation spelled the
+        // generation `-gen-1`, not `-gen1`.
+        assert_eq!(parse_handoff_generation("37-gen-1.md"), Some(1));
+        assert_eq!(parse_handoff_generation("37-gen-42.md"), Some(42));
+        // Garbled variants still parse as nothing.
+        assert_eq!(parse_handoff_generation("37-gen-.md"), None);
+        assert_eq!(parse_handoff_generation("37-gen-2x.md"), None);
+        // Recovery digests stay excluded in the dash spelling too.
+        assert_eq!(parse_handoff_generation("37-gen-3-recovery.md"), None);
     }
 
     #[test]

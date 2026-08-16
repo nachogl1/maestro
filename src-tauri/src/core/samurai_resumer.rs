@@ -117,9 +117,10 @@ fn next_generation(registry_max: Option<u32>, files_max: Option<u32>) -> Option<
 
 /// Highest generation among the epic's handoff files in `handoffs_dir`
 /// (`<working_dir>/.maestro/handoffs`). Filenames only — no file is read.
-/// A candidate must reconstruct EXACTLY as `<slug>-gen<N>.md`, which
-/// excludes recovery digests (`…-recovery.md`) and other epics whose slug
-/// merely shares a prefix. A missing/unreadable directory is `None`.
+/// A candidate must reconstruct EXACTLY as `<slug>-gen<N>.md` — or, issue
+/// #119's tolerated dash variant, `<slug>-gen-<N>.md` — which excludes
+/// recovery digests (`…-recovery.md`) and other epics whose slug merely
+/// shares a prefix. A missing/unreadable directory is `None`.
 /// `pub(crate)`: cold-start reconciliation (issue #62) derives generations
 /// with the same scan.
 pub(crate) fn latest_handoff_generation(handoffs_dir: &Path, epic: &str) -> Option<u32> {
@@ -130,7 +131,9 @@ pub(crate) fn latest_handoff_generation(handoffs_dir: &Path, epic: &str) -> Opti
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let generation = parse_handoff_generation(&name)?;
-            (name == format!("{prefix}{generation}.md")).then_some(generation)
+            (name == format!("{prefix}{generation}.md")
+                || name == format!("{prefix}-{generation}.md"))
+            .then_some(generation)
         })
         .max()
 }
@@ -542,6 +545,20 @@ mod tests {
             latest_handoff_generation(&dir.path().join("missing"), "#37"),
             None
         );
+    }
+
+    #[test]
+    fn test_latest_handoff_generation_accepts_the_gen_dash_variant() {
+        // #119 tolerant discovery: a deviating orchestrator spelled the
+        // generation `-gen-<N>` — accept that variant inside the canonical
+        // directory so a relaunch still finds the run's state.
+        let dir = tempdir().unwrap();
+        let handoffs = dir.path().join(".maestro").join("handoffs");
+        std::fs::create_dir_all(&handoffs).unwrap();
+        for name in ["37-gen1.md", "37-gen-4.md", "37-gen-x.md"] {
+            std::fs::write(handoffs.join(name), "x").unwrap();
+        }
+        assert_eq!(latest_handoff_generation(&handoffs, "#37"), Some(4));
     }
 
     // --- integration (real supervisor + replicator + schedule + parker) ---
