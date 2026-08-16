@@ -1404,23 +1404,31 @@ mod tests {
         // The per-worktree project directory Claude has not created yet.
         let project_dir = root.path().join("C--worktree-project");
         let main_path = project_dir.join("t.jsonl");
+        assert!(!project_dir.exists(), "the directory must be missing first");
         watcher.start_watching(1, main_path.clone());
         assert_eq!(
             watcher.watched_sessions(),
             vec![1],
             "the session must be registered even though its directory does not exist yet"
         );
+        // Fix T12 (issue #131 review 2): this is the #125 fix itself, and it
+        // is deterministic — the watch CREATES the missing directory rather
+        // than failing permanently. Asserting it removes the fixed 300ms
+        // sleep the test used to race against (the #116 flake class); only
+        // OS notify delivery below is genuinely asynchronous, and that is
+        // polled to a deadline, never slept on.
+        assert!(
+            project_dir.is_dir(),
+            "starting the watch must create the missing project directory"
+        );
 
-        // Claude creates the directory and writes the orchestrator's
-        // transcript moments later.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        std::fs::create_dir_all(&project_dir).unwrap();
+        // Claude writes the orchestrator's transcript moments later.
         let spawn = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_S","name":"Agent","input":{"description":"samurai subagent","subagent_type":"general-purpose","prompt":"do the thing"}}]},"uuid":"m1","timestamp":"2026-08-15T20:27:30Z"}"#;
         std::fs::write(&main_path, format!("{spawn}\n")).unwrap();
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
             {
                 let events = captured.lock().unwrap();
                 if events.iter().any(|e| matches!(
