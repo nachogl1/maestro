@@ -36,8 +36,10 @@ import {
 } from "@/stores/useSamuraiGateStore";
 import { workflowGraphForLaunch } from "@/stores/useSamuraiWorkflowStore";
 import {
+  SAMURAI_TERMINAL_STATES,
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
+  type SamuraiSupervisorState,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { useUsageStore } from "@/stores/useUsageStore";
@@ -299,11 +301,16 @@ function epicSlug(epic: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** The one non-park timer reason (issue #129) — see `SamuraiScheduleEntry.reason`. */
+const SCHEDULED_LAUNCH_REASON = "scheduled_launch";
+
 /**
  * The pending resume timer for one run, or null when it is not parked.
  * Project paths go through `samePath`, never `===`: the same directory has
  * several spellings on Windows, and matching on the epic alone would badge a
- * run in one project with another project's timer.
+ * run in one project with another project's timer. Scheduled-launch timers
+ * (issue #129) share the schedule list but are NOT parks — one whose slug
+ * matches a live run must never badge it PARKED.
  */
 function findScheduleEntry(
   run: SamuraiRunListEntry,
@@ -311,14 +318,21 @@ function findScheduleEntry(
 ): SamuraiScheduleEntry | null {
   const slug = epicSlug(run.epic);
   return (
-    schedule.find((e) => samePath(e.project_path, run.project_path) && epicSlug(e.epic) === slug) ??
-    null
+    schedule.find(
+      (e) =>
+        e.reason !== SCHEDULED_LAUNCH_REASON &&
+        samePath(e.project_path, run.project_path) &&
+        epicSlug(e.epic) === slug,
+    ) ?? null
   );
 }
 
-/** Where a run's live agent sits, or why it cannot be opened (issue #84). */
+/** Where a run's live agent sits, or why it cannot be opened (issue #84).
+ *  `state` is the newest matching session's supervisor state: since issue
+ *  #122 a terminal-state (KILLED/PARKED/DEAD) session keeps an openable
+ *  parked tile, so "open" alone no longer implies a LIVE agent. */
 type OpenTarget =
-  | { kind: "open"; tabId: string; sessionId: number }
+  | { kind: "open"; tabId: string; sessionId: number; state: SamuraiSupervisorState }
   | { kind: "blocked"; reason: string };
 
 /** Hover text of an openable run's button. */
@@ -365,7 +379,12 @@ function findOpenTarget(
       reason: "No live agent for this run — its project is not open in a tab",
     };
   }
-  return { kind: "open", tabId: tab.id, sessionId: matches[0].sessionId };
+  return {
+    kind: "open",
+    tabId: tab.id,
+    sessionId: matches[0].sessionId,
+    state: matches[0].info.state,
+  };
 }
 
 /** One listed run (live or finished-awaiting-cleanup) with its
@@ -406,6 +425,10 @@ function RunRow({
   const isCompleted = run.status === "COMPLETED";
   const open = target.kind === "open" ? target : null;
   const openHint = target.kind === "open" ? OPEN_HINT : target.reason;
+  // Issue #124 × #122: an openable target no longer implies a live agent —
+  // a KILLED/PARKED/DEAD session keeps its parked tile openable, and that
+  // dead-agent-with-a-tile shape is exactly what Recover exists for.
+  const hasLiveAgent = target.kind === "open" && !SAMURAI_TERMINAL_STATES.has(target.state);
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned
   // the park. The badge below is that missing state — dated, because a park
@@ -456,7 +479,7 @@ function RunRow({
         {/* Issue #124: recover a crashed run — only offered while the run is
             not finished and has no live agent to duplicate. The backend
             re-verifies both before spawning anything. */}
-        {!isCompleted && target.kind !== "open" && (
+        {!isCompleted && !hasLiveAgent && (
           <button
             type="button"
             onClick={() => onRecover(run)}
@@ -531,12 +554,13 @@ function FieldLabel({
   );
 }
 
-/** What the Launch button is doing right now (null = idle). */
-type LaunchPhase = "preflight" | "spawning";
+/** What the Launch/Schedule button is doing right now (null = idle). */
+type LaunchPhase = "preflight" | "spawning" | "scheduling";
 
 const PHASE_LABEL: Record<LaunchPhase, string> = {
   preflight: "Checking gh auth + allowance…",
   spawning: "Creating worktree, spawning gen-1…",
+  scheduling: "Scheduling launch…",
 };
 
 /** Gate steps that are still running (issue #90b) — the ones worth a live
@@ -679,7 +703,7 @@ export function LaunchSection({
   // to their fire, HELD ones (overdue at app start, or retries exhausted)
   // wait for an explicit launch-or-discard.
   const scheduledLaunches = samuraiSchedule.filter(
-    (e) => e.reason === "scheduled_launch" && samePath(e.project_path, projectPath),
+    (e) => e.reason === SCHEDULED_LAUNCH_REASON && samePath(e.project_path, projectPath),
   );
 
   /**
@@ -715,6 +739,10 @@ export function LaunchSection({
     }
     setError(null);
     setNotice(null);
+    // Busy-guard, same as the launch path: the button disables (canLaunch
+    // requires phase === null) while the arm is in flight, so a double-click
+    // cannot arm the same launch twice.
+    setPhase("scheduling");
     try {
       const entry = await samuraiScheduleLaunch(
         projectPath,
@@ -729,6 +757,8 @@ export function LaunchSection({
       setScheduleAt("");
     } catch (err) {
       setError(String(err));
+    } finally {
+      setPhase(null);
     }
   };
 

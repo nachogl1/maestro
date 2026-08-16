@@ -421,6 +421,41 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.getByLabelText("Schedule for later")).toHaveValue("");
   });
 
+  it("arms the scheduled launch once on a double-click (PR #131 review L4)", async () => {
+    // Hold the arm call open so the second click lands while it is in flight.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const base = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "samurai_schedule_launch") {
+        await gate;
+        return timer({
+          epic: "issue #38",
+          reason: "scheduled_launch",
+          fire_at: "2030-01-01T09:30:00.000Z",
+        });
+      }
+      return base?.(cmd, args as never);
+    });
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2030-01-01T09:30" },
+    });
+
+    const button = screen.getByRole("button", { name: "Schedule" });
+    fireEvent.click(button);
+    // Busy while the backend arms — a second click must be inert.
+    await waitFor(() => expect(button).toBeDisabled());
+    fireEvent.click(button);
+    release();
+
+    expect(await screen.findByText(/Launch scheduled: issue #38/)).toBeInTheDocument();
+    expect(callsOf("samurai_schedule_launch")).toHaveLength(1);
+  });
+
   it("rejects a past schedule time inline and never calls the backend (issue #129)", async () => {
     render(<LaunchSection />);
     fireEvent.change(textBox(), { target: { value: "work #38" } });
@@ -510,6 +545,23 @@ describe("LaunchSection (issue #63)", () => {
     const open = await screen.findByRole("button", { name: OPEN_LABEL("#38") });
     expect(open).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+  });
+
+  it("offers recovery when the run's newest session is in a terminal state (PR #131 review H1)", async () => {
+    // Issue #122 parks a dead session's tile instead of removing it, so the
+    // store still holds its entry — but a DEAD agent is exactly the crashed
+    // case Recover (issue #124) exists for.
+    useSessionStore.setState({
+      samuraiBySessionId: { 3: supervised({ generation: 2, state: "DEAD" }) },
+    });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection onNavigate={vi.fn()} />);
+
+    // The parked tile stays openable (issue #122)…
+    expect(await screen.findByRole("button", { name: OPEN_LABEL("#38") })).toBeEnabled();
+    // …AND the run is recoverable — the two are not mutually exclusive.
+    fireEvent.click(screen.getByRole("button", { name: "Recover run #38" }));
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
   });
 
   it("shows a pending scheduled launch with its fire time (issue #129)", async () => {
@@ -943,6 +995,31 @@ describe("LaunchSection (issue #63)", () => {
 
     expect(await screen.findByText(/^PARKED · resumes /)).toBeInTheDocument();
     expect(screen.getAllByText(/^PARKED/)).toHaveLength(1);
+  });
+
+  it("never badges a run PARKED for a scheduled-launch timer with the same slug (PR #131 review M5)", async () => {
+    mockInvoke({ runs: [run()] });
+    // Issue #129 keeps scheduled launches in the same schedule list as parks;
+    // only a park-reason timer may badge the run.
+    useSessionStore.setState({
+      samuraiSchedule: [
+        timer({
+          reason: "scheduled_launch",
+          fire_at: "2030-01-01T09:30:00.000Z",
+          launch: {
+            text: "work #38",
+            model: null,
+            handoff_context_pct: null,
+            skip_test_gate: false,
+            attempts: 0,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+
+    await screen.findByText("ACTIVE");
+    expect(screen.queryByText(/^PARKED/)).not.toBeInTheDocument();
   });
 
   it("still badges PARKED when the fire time does not parse, and clears on resume", async () => {
