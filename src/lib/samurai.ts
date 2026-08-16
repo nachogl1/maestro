@@ -129,6 +129,12 @@ export interface SamuraiScheduledLaunchSpec {
   model: string | null;
   handoff_context_pct: number | null;
   skip_test_gate: boolean;
+  /**
+   * The workflow graph snapshotted when the launch was scheduled (issue #91).
+   * Absent on entries armed before the field existed — the backend then
+   * compiles its default template, exactly as an unedited editor would.
+   */
+  workflow?: SamuraiWorkflowGraph | null;
   /** Unattended fire attempts already failed and re-armed. */
   attempts: number;
 }
@@ -226,6 +232,7 @@ export function samuraiScheduleLaunch(
   model: string | null,
   handoffContextPct: number | null,
   skipTestGate: boolean,
+  workflow?: SamuraiWorkflowGraph | null,
 ): Promise<SamuraiScheduleEntry> {
   return invoke("samurai_schedule_launch", {
     projectPath,
@@ -234,6 +241,10 @@ export function samuraiScheduleLaunch(
     model,
     handoffContextPct,
     skipTestGate,
+    // Issue #91: the edited graph must ride the SCHEDULED path too. Omitting
+    // it made the backend snapshot the default template into the run config
+    // when the timer fired, silently discarding the user's workflow.
+    workflow: workflow ?? null,
   });
 }
 

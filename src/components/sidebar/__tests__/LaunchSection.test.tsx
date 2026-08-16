@@ -376,6 +376,35 @@ describe("LaunchSection (issue #63)", () => {
     expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({ workflow: edited });
   });
 
+  // The scheduled path sent no `workflow` at all, so the backend snapshotted
+  // the DEFAULT template into the run config and issue #91's edited graph was
+  // silently discarded for every scheduled launch.
+  it("sends the edited workflow graph with a SCHEDULED launch too (issue #91)", async () => {
+    const edited: SamuraiWorkflowGraph = { ...workflowGraph(), edges: [] };
+    useSamuraiWorkflowStore.setState({ graph: edited });
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2030-01-01T09:30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+
+    await waitFor(() => expect(callsOf("samurai_schedule_launch")).toHaveLength(1));
+    expect(callsOf("samurai_schedule_launch")[0][1]).toMatchObject({ workflow: edited });
+  });
+
+  it("sends workflow: null with a scheduled launch when the editor is untouched", async () => {
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "work #38" } });
+    fireEvent.change(screen.getByLabelText("Schedule for later"), {
+      target: { value: "2030-01-01T09:30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+
+    await waitFor(() => expect(callsOf("samurai_schedule_launch")).toHaveLength(1));
+    expect(callsOf("samurai_schedule_launch")[0][1]).toMatchObject({ workflow: null });
+  });
+
   it("summarises the refs detected in the request (issue #128)", async () => {
     render(<LaunchSection />);
     fireEvent.change(textBox(), { target: { value: "finish #77 and #78" } });
@@ -415,6 +444,7 @@ describe("LaunchSection (issue #63)", () => {
       model: null,
       handoffContextPct: null,
       skipTestGate: false,
+      workflow: null,
     });
     // Nothing launched now, and the form cleared for the next request.
     expect(callsOf("samurai_launch_run")).toHaveLength(0);

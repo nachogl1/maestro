@@ -787,6 +787,11 @@ export function LaunchSection({
     // cannot arm the same launch twice.
     setPhase("scheduling");
     try {
+      // Issue #91: the edited workflow graph rides the scheduled arm exactly
+      // as it rides an immediate launch — the fired timer builds the run
+      // config from this spec, so a missing graph there is the DEFAULT
+      // template silently replacing the user's edits.
+      const workflow = await workflowGraphForLaunch();
       const entry = await samuraiScheduleLaunch(
         projectPath,
         text,
@@ -794,6 +799,7 @@ export function LaunchSection({
         model.trim() || null,
         pct,
         skipGate,
+        workflow,
       );
       setNotice(`Launch scheduled: ${entry.epic} at ${new Date(entry.fire_at).toLocaleString()}`);
       setText("");
@@ -890,7 +896,10 @@ export function LaunchSection({
     setNotice(null);
     setPhase("spawning");
     try {
-      const workflow = await workflowGraphForLaunch();
+      // Launch what was SCHEDULED: the spec carries the graph snapshotted at
+      // arm time (issue #91). Entries armed before that field existed fall
+      // back to the current editor, which is what this path always used.
+      const workflow = spec.workflow ?? (await workflowGraphForLaunch());
       const result = await samuraiLaunchRun(
         entry.project_path,
         spec.text,
