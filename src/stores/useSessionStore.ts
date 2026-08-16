@@ -1023,25 +1023,27 @@ interface SamuraiSupervisorEvent {
   state: string;
 }
 
-/** Terminal supervisor states — sessions past saving, no allowance attention. */
-const SAMURAI_TERMINAL_STATES = new Set(["KILLED", "PARKED", "DEAD"]);
-
 /**
- * Supervisor states whose backend teardown already ran, so the frontend must
- * close the tile (TerminalGrid's samurai-close effect): KILLED (replication,
- * issue #55) and PARKED (allowance park, issue #60 — resume is always a fresh
- * spawn, a parked terminal serves no purpose). DEAD deliberately stays open:
- * that tile shows the error until a human dismisses it.
+ * Terminal supervisor states — the run is over, one way or another: KILLED
+ * (replication, issue #55), PARKED (allowance park, issue #60), DEAD (the
+ * watchdog declared the process gone, issue #44). No allowance attention
+ * (see {@link applySamuraiAllowanceEvent}), and — per issue #122's decided
+ * policy — every one of them moves its terminal into the existing footer
+ * parking tray (TerminalGrid's samurai-park effect) instead of leaving it in
+ * the grid: resuming is always a fresh spawn, so the old terminal has
+ * nothing left to do live, but its transcript stays one unpark away.
  */
-export const SAMURAI_TILE_CLOSE_STATES: ReadonlySet<string> = new Set(["KILLED", "PARKED"]);
+export const SAMURAI_TERMINAL_STATES: ReadonlySet<string> = new Set(["KILLED", "PARKED", "DEAD"]);
 
 /**
  * Tracks every supervisor state change into `samuraiBySessionId` (the badge
  * data for issue #46), and surfaces a watchdog-declared death (issue #44):
  * a crashed claude fires no hook, so without this the session would sit on
  * its last MCP status — usually "Working" — forever. On a DEAD supervisor
- * event the session flips to Error chrome and gets the same unpark +
- * attention treatment as an auto-unparked NeedsInput session.
+ * event the session flips to Error chrome (the parked-shelf chip picks that
+ * up as its attention border, issue #122) — moving the tile to the parking
+ * tray is TerminalGrid's samurai-park effect's job, keyed off
+ * `SAMURAI_TERMINAL_STATES`, same as KILLED/PARKED.
  */
 function applySamuraiSupervisorEvent(payload: SamuraiSupervisorEvent): void {
   useSessionStore.setState((state) => {
@@ -1070,10 +1072,6 @@ function applySamuraiSupervisorEvent(payload: SamuraiSupervisorEvent): void {
             }
           : s,
       ),
-      parkedSessionIds: state.parkedSessionIds.filter((id) => id !== payload.session_id),
-      attentionSessionIds: state.attentionSessionIds.includes(payload.session_id)
-        ? state.attentionSessionIds
-        : [...state.attentionSessionIds, payload.session_id],
     };
   });
 }

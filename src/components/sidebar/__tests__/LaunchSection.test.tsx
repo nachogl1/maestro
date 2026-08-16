@@ -1045,15 +1045,22 @@ describe("LaunchSection (issue #63)", () => {
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
-  it("names parking as the reason when the run's tile was closed", async () => {
+  it("opens (and unparks) a run whose terminal was parked to the footer tray (issue #122)", async () => {
     mockInvoke({ runs: [run()] });
     useSessionStore.setState({
       samuraiBySessionId: { 3: supervised({ generation: 2, state: "PARKED" }) },
     });
-    render(<LaunchSection onNavigate={vi.fn()} />);
+    const onNavigate = vi.fn();
+    render(<LaunchSection onNavigate={onNavigate} />);
 
-    expect(await screen.findByRole("button", { name: OPEN_LABEL("#38") })).toBeDisabled();
-    expect(screen.getByTitle(/it was parked/)).toBeInTheDocument();
+    // PARKED no longer closes the tile (issue #122: it moves to the existing
+    // footer parking tray instead), so the open button stays enabled and
+    // opening it is the same navigate-to-session path as any live run —
+    // TerminalGrid's zoomSession unparks it on the way in.
+    const button = await screen.findByRole("button", { name: OPEN_LABEL("#38") });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onNavigate).toHaveBeenCalledWith("tab-1", 3);
   });
 
   it("never cross-focuses two projects running the same epic ref", async () => {

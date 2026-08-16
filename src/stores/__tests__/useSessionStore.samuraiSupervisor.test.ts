@@ -14,7 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   type BackendSessionStatus,
   initSamuraiSupervisorListener,
-  SAMURAI_TILE_CLOSE_STATES,
+  SAMURAI_TERMINAL_STATES,
   type SessionConfig,
   stopSamuraiSupervisorListener,
   useSessionStore,
@@ -167,30 +167,30 @@ describe("useSessionStore samurai supervisor tracking (issue #46)", () => {
     expect(useSessionStore.getState().attentionSessionIds).toBe(before);
   });
 
-  // Issue #60: after a validated allowance park the backend tears the
-  // session down (like a replication kill), so TerminalGrid's samurai-close
-  // effect must treat PARKED exactly like KILLED — DEAD stays open for a
-  // human, and live states never close a tile.
-  it("tile-close states are exactly KILLED and PARKED", () => {
-    expect(SAMURAI_TILE_CLOSE_STATES.has("KILLED")).toBe(true);
-    expect(SAMURAI_TILE_CLOSE_STATES.has("PARKED")).toBe(true);
-    expect(SAMURAI_TILE_CLOSE_STATES.has("DEAD")).toBe(false);
+  // Issue #122: every terminal supervisor state — KILLED (replication),
+  // PARKED (allowance park), and now DEAD (watchdog) — parks its tile into
+  // the existing footer tray (TerminalGrid's samurai-park effect) instead of
+  // leaving it live in the grid. Live states never park a tile.
+  it("terminal states are exactly KILLED, PARKED and DEAD", () => {
+    expect(SAMURAI_TERMINAL_STATES.has("KILLED")).toBe(true);
+    expect(SAMURAI_TERMINAL_STATES.has("PARKED")).toBe(true);
+    expect(SAMURAI_TERMINAL_STATES.has("DEAD")).toBe(true);
     for (const live of ["WORKING", "HANDOFF_REQUESTED", "HANDOFF_WRITTEN", "PARK_REQUESTED"]) {
-      expect(SAMURAI_TILE_CLOSE_STATES.has(live)).toBe(false);
+      expect(SAMURAI_TERMINAL_STATES.has(live)).toBe(false);
     }
   });
 
-  it("a park chain lands PARKED in samuraiBySessionId for the tile-close effect", () => {
+  it("a park chain lands PARKED in samuraiBySessionId for the samurai-park effect", () => {
     useSessionStore.setState({ sessions: [session(1)] });
     emitSupervisorEvent(snapshot(1, { state: "PARK_REQUESTED", previous_state: "WORKING" }));
     expect(
-      SAMURAI_TILE_CLOSE_STATES.has(useSessionStore.getState().samuraiBySessionId[1].state),
+      SAMURAI_TERMINAL_STATES.has(useSessionStore.getState().samuraiBySessionId[1].state),
     ).toBe(false);
 
     emitSupervisorEvent(snapshot(1, { state: "PARKED", previous_state: "PARK_REQUESTED" }));
 
     const info = useSessionStore.getState().samuraiBySessionId[1];
     expect(info.state).toBe("PARKED");
-    expect(SAMURAI_TILE_CLOSE_STATES.has(info.state)).toBe(true);
+    expect(SAMURAI_TERMINAL_STATES.has(info.state)).toBe(true);
   });
 });

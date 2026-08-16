@@ -59,7 +59,13 @@ describe("useSessionStore samurai death listener (issue #44)", () => {
     });
   });
 
-  it("flips a DEAD session to Error and marks attention", () => {
+  // Issue #122: DEAD is now a terminal state like KILLED/PARKED — the store
+  // only flips status/chrome here, TerminalGrid's samurai-park effect is what
+  // moves the tile into the footer tray. ParkedShelf reads its attention
+  // border straight off the session's Error status (see chipAttentionClass /
+  // ATTENTION_STATUSES in ParkedShelf.tsx), so this listener no longer needs
+  // to touch attentionSessionIds too.
+  it("flips a DEAD session to Error, leaving attention tracking to the tray's own status read", () => {
     useSessionStore.setState({ sessions: [session(1, "Working")] });
 
     emitSupervisorEvent(1, "DEAD");
@@ -67,18 +73,18 @@ describe("useSessionStore samurai death listener (issue #44)", () => {
     const state = useSessionStore.getState();
     expect(state.sessions[0].status).toBe("Error");
     expect(state.sessions[0].statusMessage).toBe("claude process died (Samurai watchdog)");
-    expect(state.attentionSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([]);
   });
 
-  it("unparks a parked session on DEAD so the failure is visible", () => {
+  it("leaves an already-parked session parked on DEAD — the tray chip's Error border is the signal", () => {
     useSessionStore.setState({ sessions: [session(1, "Working")] });
     useSessionStore.getState().parkSession(1);
 
     emitSupervisorEvent(1, "DEAD");
 
     const state = useSessionStore.getState();
-    expect(state.parkedSessionIds).toEqual([]);
-    expect(state.attentionSessionIds).toEqual([1]);
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.sessions[0].status).toBe("Error");
   });
 
   it("ignores non-DEAD supervisor states", () => {
@@ -125,12 +131,14 @@ describe("useSessionStore samurai death listener (issue #44)", () => {
     expect(useSessionStore.getState().sessions[0].status).toBe("Error");
   });
 
-  it("does not duplicate the attention id on repeated DEAD events", () => {
+  it("repeated DEAD events stay idempotent (status stable, no attention churn)", () => {
     useSessionStore.setState({ sessions: [session(1, "Working")] });
 
     emitSupervisorEvent(1, "DEAD");
     emitSupervisorEvent(1, "DEAD");
 
-    expect(useSessionStore.getState().attentionSessionIds).toEqual([1]);
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("Error");
+    expect(state.attentionSessionIds).toEqual([]);
   });
 });
