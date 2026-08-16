@@ -490,20 +490,18 @@ fn load_entries(path: &PathBuf) -> LoadReport {
     let total = values.len();
     let entries: Vec<ScheduleEntry> = values
         .into_iter()
-        .filter_map(|value| match serde_json::from_value::<ScheduleEntry>(value) {
-            Ok(entry) => Some(entry),
-            Err(e) => {
-                log::error!("samurai schedule: dropping a malformed entry in {path:?}: {e}");
-                None
-            }
-        })
+        .filter_map(
+            |value| match serde_json::from_value::<ScheduleEntry>(value) {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    log::error!("samurai schedule: dropping a malformed entry in {path:?}: {e}");
+                    None
+                }
+            },
+        )
         .collect();
     let dropped = total - entries.len();
-    let quarantined = if dropped > 0 {
-        quarantine(path)
-    } else {
-        None
-    };
+    let quarantined = if dropped > 0 { quarantine(path) } else { None };
     LoadReport {
         entries,
         dropped,
@@ -795,7 +793,9 @@ mod tests {
         assert_eq!(alert["dropped"], 1);
         let quarantined = PathBuf::from(alert["quarantined"].as_str().unwrap());
         assert!(quarantined.exists(), "{quarantined:?}");
-        assert!(std::fs::read_to_string(&quarantined).unwrap().contains("#38"));
+        assert!(std::fs::read_to_string(&quarantined)
+            .unwrap()
+            .contains("#38"));
     }
 
     #[test]

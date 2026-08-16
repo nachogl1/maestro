@@ -845,7 +845,10 @@ impl SamuraiReplicator {
             let head = read_repo_head(&gate_dir)
                 .map_err(|e| log::warn!("samurai replicator: {e}"))
                 .ok();
-            Some((head_matches(handoff_sha.as_deref(), head.as_deref()), relpath))
+            Some((
+                head_matches(handoff_sha.as_deref(), head.as_deref()),
+                relpath,
+            ))
         })
         .await
         // An internal join failure is not evidence the handoff vanished:
@@ -1363,14 +1366,15 @@ impl SamuraiReplicator {
                 let head = read_repo_head(&gate_dir)
                     .map_err(|e| log::warn!("samurai replicator: {e}"))
                     .ok();
-                Some((head_matches(handoff_sha.as_deref(), head.as_deref()), relpath))
+                Some((
+                    head_matches(handoff_sha.as_deref(), head.as_deref()),
+                    relpath,
+                ))
             })
             .await
             // A join failure is not evidence the handoff is missing; verify-
             // required is the safe default (same policy as replicate).
-            .unwrap_or_else(|_| {
-                Some((false, samurai_prompts::handoff_file_relpath(&epic, prior)))
-            });
+            .unwrap_or_else(|_| Some((false, samurai_prompts::handoff_file_relpath(&epic, prior))));
 
             let (instruction, recovery) = match head_gate {
                 Some((head_matched, handoff_relpath)) => {

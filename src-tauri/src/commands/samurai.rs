@@ -3717,7 +3717,10 @@ mod tests {
             Some(custom.clone()),
         )
         .unwrap();
-        assert_eq!(entry.launch.as_ref().unwrap().workflow, Some(custom.clone()));
+        assert_eq!(
+            entry.launch.as_ref().unwrap().workflow,
+            Some(custom.clone())
+        );
 
         let outcome = fire_scheduled(&h, &gate, &preflight(true, true), entry).await;
 

@@ -1103,28 +1103,16 @@ impl LaunchInput {
 /// token (start of text, whitespace, or an opening delimiter) and the digits
 /// must close one.
 fn extract_hash_refs(text: &str) -> Vec<String> {
-    /// What may precede the `#`: nothing swallows it into a larger token.
-    fn opens_token(before: Option<u8>) -> bool {
-        match before {
+    /// Openers the `#` may follow — `,`/`;` included because "#77,#78" is a
+    /// real spelling of a ref list.
+    const OPENERS: &[u8] = b"([{<\"',;";
+    /// Closers the digits may be followed by — sentence and list punctuation.
+    const CLOSERS: &[u8] = b",.;:!?)]}>\"'";
+    /// Nothing may swallow the ref into a larger token on either side.
+    fn boundary(byte: Option<u8>, allowed: &[u8]) -> bool {
+        match byte {
             None => true,
-            // `,`/`;` because "#77,#78" is a real spelling of a ref list.
-            Some(b) => {
-                b.is_ascii_whitespace()
-                    || matches!(b, b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b',' | b';')
-            }
-        }
-    }
-    /// What may follow the digits: end of a token, not more of one.
-    fn closes_token(after: Option<u8>) -> bool {
-        match after {
-            None => true,
-            Some(b) => {
-                b.is_ascii_whitespace()
-                    || matches!(
-                        b,
-                        b',' | b'.' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}' | b'>' | b'"' | b'\''
-                    )
-            }
+            Some(b) => b.is_ascii_whitespace() || allowed.contains(&b),
         }
     }
 
@@ -1139,8 +1127,8 @@ fn extract_hash_refs(text: &str) -> Vec<String> {
                 end += 1;
             }
             if end > start
-                && opens_token(i.checked_sub(1).map(|p| bytes[p]))
-                && closes_token(bytes.get(end).copied())
+                && boundary(i.checked_sub(1).map(|p| bytes[p]), OPENERS)
+                && boundary(bytes.get(end).copied(), CLOSERS)
             {
                 let number = &text[start..end];
                 if !refs.iter().any(|r| r == number) {
@@ -1905,8 +1893,10 @@ mod tests {
             );
         }
         // No resolved path (no read happened) still falls back to canonical.
-        assert!(successor_ritual_instruction("#37", 2, true, &wf(), true, None)
-            .contains(&handoff_file_relpath("#37", 2)));
+        assert!(
+            successor_ritual_instruction("#37", 2, true, &wf(), true, None)
+                .contains(&handoff_file_relpath("#37", 2))
+        );
     }
 
     #[test]
@@ -2310,8 +2300,10 @@ mod tests {
         // And an epic-only run still reads exactly as it did: the label
         // itself supplies the word.
         let label = RunRefs::epics_only("#5").label();
-        assert!(successor_ritual_instruction(&label, 2, true, &wf(), true, None)
-            .contains("generation 3 for epic #5"));
+        assert!(
+            successor_ritual_instruction(&label, 2, true, &wf(), true, None)
+                .contains("generation 3 for epic #5")
+        );
         assert!(recovery_ritual_instruction(&label, 2, None, &wf(), true)
             .contains("you are generation 3 for epic #5."));
     }

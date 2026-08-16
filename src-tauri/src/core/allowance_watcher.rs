@@ -554,7 +554,10 @@ mod tests {
     #[test]
     fn soft_recovery_fires_when_the_5h_window_stops_being_reported() {
         let mut w = AllowanceWatcher::default();
-        assert_eq!(w.evaluate(&reading(Some(80.0), Some(50.0)), &cfg()).len(), 1);
+        assert_eq!(
+            w.evaluate(&reading(Some(80.0), Some(50.0)), &cfg()).len(),
+            1
+        );
 
         // The 5h window resets and the API stops reporting it; the weekly
         // window is still there, so this is NOT the no-governing-window case.
@@ -581,7 +584,9 @@ mod tests {
         // No wind-down episode is open, so a disappearing window announces
         // nothing — the all-clear is an edge off a real crossing.
         let mut w = AllowanceWatcher::default();
-        assert!(w.evaluate(&reading(Some(50.0), Some(50.0)), &cfg()).is_empty());
+        assert!(w
+            .evaluate(&reading(Some(50.0), Some(50.0)), &cfg())
+            .is_empty());
         assert!(w.evaluate(&reading(None, Some(50.0)), &cfg()).is_empty());
     }
 
