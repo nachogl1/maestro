@@ -16,10 +16,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
+  isParkEntry,
   type SamuraiPreflight,
   type SamuraiRunListEntry,
   type SamuraiRunOrchestrator,
   type SamuraiTestGateProgress,
+  SCHEDULED_LAUNCH_REASON,
   samuraiCleanupEpic,
   samuraiLaunchRun,
   samuraiListRuns,
@@ -301,9 +303,6 @@ function epicSlug(epic: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** The one non-park timer reason (issue #129) — see `SamuraiScheduleEntry.reason`. */
-const SCHEDULED_LAUNCH_REASON = "scheduled_launch";
-
 /**
  * The pending resume timer for one run, or null when it is not parked.
  * Project paths go through `samePath`, never `===`: the same directory has
@@ -320,9 +319,7 @@ function findScheduleEntry(
   return (
     schedule.find(
       (e) =>
-        e.reason !== SCHEDULED_LAUNCH_REASON &&
-        samePath(e.project_path, run.project_path) &&
-        epicSlug(e.epic) === slug,
+        isParkEntry(e) && samePath(e.project_path, run.project_path) && epicSlug(e.epic) === slug,
     ) ?? null
   );
 }

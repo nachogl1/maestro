@@ -166,7 +166,7 @@ describe("Sidebar tab bar", () => {
     mockInvoke();
     localStorage.clear();
     useWorkspaceStore.setState({ tabs: [buildTab()] });
-    useSessionStore.setState({ sessions: [] });
+    useSessionStore.setState({ sessions: [], samuraiSchedule: [] });
   });
 
   it("renders the four tabs with General active by default", () => {
@@ -182,6 +182,46 @@ describe("Sidebar tab bar", () => {
     expect(screen.getByText("Git Repository")).toBeInTheDocument();
     // Content from other tabs is not mounted
     expect(screen.queryByText("MCP Servers")).not.toBeInTheDocument();
+  });
+
+  // A parked project keeps its Agents row (the row carries the park chip),
+  // but a scheduled-launch timer (issue #129) is a run that does not exist
+  // yet: keeping the row alive for one leaves an empty project heading with
+  // no chip under it.
+  it("does not keep an Agents row alive for a scheduled launch", () => {
+    useSessionStore.setState({
+      sessions: [],
+      samuraiSchedule: [
+        {
+          project_path: "C:\\git\\maestro",
+          epic: "#42",
+          fire_at: "2099-01-01T09:00:00Z",
+          reason: "scheduled_launch",
+        },
+      ],
+    });
+    render(<ControlledSidebar />);
+
+    expect(screen.getByText("No running agents")).toBeInTheDocument();
+    expect(screen.queryByText("maestro")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Agents row alive for a real park", () => {
+    useSessionStore.setState({
+      sessions: [],
+      samuraiSchedule: [
+        {
+          project_path: "C:\\git\\maestro",
+          epic: "#42",
+          fire_at: "2099-01-01T09:00:00Z",
+          reason: "park",
+        },
+      ],
+    });
+    render(<ControlledSidebar />);
+
+    expect(screen.queryByText("No running agents")).not.toBeInTheDocument();
+    expect(screen.getByText(/^parked/)).toBeInTheDocument();
   });
 
   it("switches to Infra (MCP + skills + project context)", () => {

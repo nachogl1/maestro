@@ -82,6 +82,20 @@ export interface SamuraiAuditReadResult {
 }
 
 /**
+ * The one non-park timer reason (issue #129) — see
+ * `SamuraiScheduleEntry.reason`. Every park-facing view filters it out:
+ * a scheduled launch is a run that does not exist yet, so treating it as a
+ * park badges an empty project "parked · resumes …", and a held (overdue)
+ * one counts down into the past.
+ */
+export const SCHEDULED_LAUNCH_REASON = "scheduled_launch";
+
+/** A park (resume) timer, as opposed to a scheduled launch. */
+export function isParkEntry(entry: SamuraiScheduleEntry): boolean {
+  return entry.reason !== SCHEDULED_LAUNCH_REASON;
+}
+
+/**
  * One pending resume timer — mirrors the Rust `ScheduleEntry`
  * (`core/samurai_schedule.rs`). Also the element type of the
  * `samurai-schedule-event` payload, which carries the FULL current list on

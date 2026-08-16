@@ -2,6 +2,7 @@ import { memo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
+import { isParkEntry } from "@/lib/samurai";
 import { type SamuraiScheduleEntry, useSessionStore } from "@/stores/useSessionStore";
 
 /**
@@ -41,7 +42,12 @@ export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
   className?: string;
 }) {
   const entries = useSessionStore(
-    useShallow((s) => s.samuraiSchedule.filter((e) => samePath(e.project_path, projectPath))),
+    useShallow((s) =>
+      // `isParkEntry` is not optional: scheduled-launch timers (issue #129)
+      // share this list, and one would paint "parked · resumes …" on a
+      // project with no run at all.
+      s.samuraiSchedule.filter((e) => isParkEntry(e) && samePath(e.project_path, projectPath)),
+    ),
   );
   const soonest = earliestEntry(entries);
   // Hooks run unconditionally; the tick only arms while something is parked.
