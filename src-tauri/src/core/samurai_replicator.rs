@@ -252,23 +252,32 @@ fn head_matches(handoff_sha: Option<&str>, current_head: Option<&str>) -> bool {
 /// orchestrator actually wrote the dash variant (issue #119's tolerated
 /// deviation) read as "handoff vanished" and fell into full-reconstruction
 /// recovery despite having a perfectly good handoff to resume from.
-fn read_handoff_tolerant(dir: &Path, epic: &str, generation: u32) -> Option<String> {
+///
+/// Returns `(contents, resolved repo-relative path)`. Fix C2 (issue #131
+/// review 2): the RESOLVED path is what the successor brief must name —
+/// briefing the canonical path for a dash-spelled handoff points gen-N+1 at
+/// a file that does not exist, and the HEAD-matched arm waives the Verify
+/// section on top of it.
+fn read_handoff_tolerant(dir: &Path, epic: &str, generation: u32) -> Option<(String, String)> {
     let canonical = samurai_prompts::handoff_file_relpath(epic, generation);
-    std::fs::read_to_string(dir.join(&canonical))
-        .map_err(|e| {
+    match std::fs::read_to_string(dir.join(&canonical)) {
+        Ok(contents) => Some((contents, canonical)),
+        Err(e) => {
             log::info!(
                 "samurai replicator: no gen-{generation} handoff at {canonical} ({e}) — trying the dash spelling"
             );
-        })
-        .or_else(|_| {
             let dash = samurai_prompts::handoff_file_dash_relpath(epic, generation);
-            std::fs::read_to_string(dir.join(&dash)).map_err(|e| {
-                log::info!(
-                    "samurai replicator: no gen-{generation} handoff at {dash} either ({e}) — recovery mode"
-                );
-            })
-        })
-        .ok()
+            match std::fs::read_to_string(dir.join(&dash)) {
+                Ok(contents) => Some((contents, dash)),
+                Err(e) => {
+                    log::info!(
+                        "samurai replicator: no gen-{generation} handoff at {dash} either ({e}) — recovery mode"
+                    );
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// Whether one pending ritual has waited too long for its successor to
@@ -825,18 +834,23 @@ impl SamuraiReplicator {
         let gate_epic = snapshot.epic.clone();
         let gate_generation = snapshot.generation;
         let gate_dir = PathBuf::from(working_dir.clone());
-        let head_gate: Option<bool> = tokio::task::spawn_blocking(move || {
-            let handoff = read_handoff_tolerant(&gate_dir, &gate_epic, gate_generation)?;
+        let canonical_relpath =
+            samurai_prompts::handoff_file_relpath(&snapshot.epic, snapshot.generation);
+        // `(head matched, the path the handoff was actually read from)` —
+        // fix C2: the successor brief names the RESOLVED path, not the
+        // canonical one the read may have missed on.
+        let head_gate: Option<(bool, String)> = tokio::task::spawn_blocking(move || {
+            let (handoff, relpath) = read_handoff_tolerant(&gate_dir, &gate_epic, gate_generation)?;
             let handoff_sha = samurai_prompts::handoff_head_sha(&handoff);
             let head = read_repo_head(&gate_dir)
                 .map_err(|e| log::warn!("samurai replicator: {e}"))
                 .ok();
-            Some(head_matches(handoff_sha.as_deref(), head.as_deref()))
+            Some((head_matches(handoff_sha.as_deref(), head.as_deref()), relpath))
         })
         .await
         // An internal join failure is not evidence the handoff vanished:
         // stay on the normal ritual, verify required.
-        .unwrap_or(Some(false));
+        .unwrap_or(Some((false, canonical_relpath)));
 
         // Recovery needs the predecessor's transcript, and the teardown
         // below stops the transcript watcher — resolve the path NOW. The
@@ -923,7 +937,7 @@ impl SamuraiReplicator {
         // config snapshotted at launch — rides both ritual variants.
         let workflow = self.workflow_for(&snapshot.project, &snapshot.epic);
         let (instruction, recovery) = match head_gate {
-            Some(head_matched) => {
+            Some((head_matched, handoff_relpath)) => {
                 log::info!(
                     "samurai replicator: session {} (gen-{}) killed for epic {} — staging gen-{generation} (HEAD gate: {})",
                     snapshot.session_id,
@@ -942,6 +956,7 @@ impl SamuraiReplicator {
                             head_matched,
                             &workflow,
                             self.has_refs_for(&snapshot.project, &snapshot.epic),
+                            Some(&handoff_relpath),
                         ),
                         samurai_prompts::journal_instruction(&default_journal_file()),
                     ),
@@ -1340,21 +1355,25 @@ impl SamuraiReplicator {
             // replicate); a missing/unreadable file selects recovery.
             let gate_dir = PathBuf::from(working_dir.clone());
             let gate_epic = epic.clone();
-            let head_gate: Option<bool> = tokio::task::spawn_blocking(move || {
-                let handoff = read_handoff_tolerant(&gate_dir, &gate_epic, prior)?;
+            // Fix C2: `(head matched, the path the handoff was actually read
+            // from)` — same contract as `replicate`.
+            let head_gate: Option<(bool, String)> = tokio::task::spawn_blocking(move || {
+                let (handoff, relpath) = read_handoff_tolerant(&gate_dir, &gate_epic, prior)?;
                 let handoff_sha = samurai_prompts::handoff_head_sha(&handoff);
                 let head = read_repo_head(&gate_dir)
                     .map_err(|e| log::warn!("samurai replicator: {e}"))
                     .ok();
-                Some(head_matches(handoff_sha.as_deref(), head.as_deref()))
+                Some((head_matches(handoff_sha.as_deref(), head.as_deref()), relpath))
             })
             .await
             // A join failure is not evidence the handoff is missing; verify-
             // required is the safe default (same policy as replicate).
-            .unwrap_or(Some(false));
+            .unwrap_or_else(|_| {
+                Some((false, samurai_prompts::handoff_file_relpath(&epic, prior)))
+            });
 
             let (instruction, recovery) = match head_gate {
-                Some(head_matched) => {
+                Some((head_matched, handoff_relpath)) => {
                     log::info!(
                         "samurai replicator: fresh gen-{generation} for epic {epic} reads the gen-{prior} handoff (HEAD gate: {})",
                         if head_matched { "match, verify skipped" } else { "mismatch, verify required" },
@@ -1369,6 +1388,7 @@ impl SamuraiReplicator {
                                 head_matched,
                                 &workflow,
                                 this.has_refs_for(&project, &epic),
+                                Some(&handoff_relpath),
                             ),
                             samurai_prompts::journal_instruction(&default_journal_file()),
                         ),
@@ -2554,6 +2574,14 @@ mod tests {
         assert_eq!(registered, None);
         assert!(!instruction.contains("RECOVERY MODE"), "{instruction}");
         assert!(instruction.contains("SKIP"), "HEAD matched: {instruction}");
+        // Fix C2: the brief must name the path the handoff was ACTUALLY
+        // read from. Naming the canonical path here sends gen-3 to a file
+        // that does not exist — while the HEAD-matched arm above has
+        // already waived the Verify section.
+        let dash = samurai_prompts::handoff_file_dash_relpath("epic-9", 2);
+        let canonical = samurai_prompts::handoff_file_relpath("epic-9", 2);
+        assert!(instruction.contains(&dash), "{instruction}");
+        assert!(!instruction.contains(&canonical), "{instruction}");
     }
 
     #[tokio::test]

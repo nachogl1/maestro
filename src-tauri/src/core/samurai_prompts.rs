@@ -792,10 +792,18 @@ pub fn successor_ritual_instruction(
     head_matched: bool,
     compiled_workflow: &str,
     has_refs: bool,
+    handoff_relpath: Option<&str>,
 ) -> String {
     let epic_text = epic.split_whitespace().collect::<Vec<_>>().join(" ");
     let generation = predecessor_generation + 1;
-    let relpath = handoff_file_relpath(epic, predecessor_generation);
+    // Fix C2 (issue #131 review 2): the caller passes the path the handoff
+    // was ACTUALLY read from — issue #119's dash spelling is tolerated by
+    // the HEAD gate, and briefing the canonical path for a run that used the
+    // dash one sends the successor to a file that does not exist while
+    // ALSO waiving verification. `None` only where no read happened.
+    let relpath = handoff_relpath
+        .map(str::to_string)
+        .unwrap_or_else(|| handoff_file_relpath(epic, predecessor_generation));
     // Issue #87: a comma-separated issue list must not get epic framing in
     // the reminders. The identity string itself is self-describing from
     // issue #83 onward (`RunRefs::label`), so the opening uses it verbatim.
@@ -1485,8 +1493,8 @@ mod tests {
         // tempt an agent to "come back later" carries the prohibition.
         let texts = [
             launch_instruction(&RunRefs::epics_only("#37"), Some("o/r"), &wf()),
-            successor_ritual_instruction("#37", 2, true, &wf(), true),
-            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            successor_ritual_instruction("#37", 2, true, &wf(), true, None),
+            successor_ritual_instruction("#37", 2, false, &wf(), true, None),
             recovery_ritual_instruction("#37", 2, Some("o/r"), &wf(), true),
             park_instruction("#37", 2),
             soft_winddown_instruction(2, 1),
@@ -1776,19 +1784,40 @@ mod tests {
     #[test]
     fn test_ritual_instruction_is_single_line_both_branches() {
         for head_matched in [true, false] {
-            let text = successor_ritual_instruction("#37", 2, head_matched, &wf(), true);
+            let text = successor_ritual_instruction("#37", 2, head_matched, &wf(), true, None);
             assert!(!text.contains('\n'), "ritual must not contain \\n");
             assert!(!text.contains('\r'), "ritual must not contain \\r");
         }
         // A pathological epic ref cannot smuggle a newline into the paste.
-        let text = successor_ritual_instruction("epic\nwith newline", 2, true, &wf(), true);
+        let text = successor_ritual_instruction("epic\nwith newline", 2, true, &wf(), true, None);
         assert!(!text.contains('\n'));
         assert!(text.contains("epic with newline"));
     }
 
+    /// Fix C2 (issue #131 review 2): the brief names the handoff path the
+    /// caller RESOLVED, not a recomputed canonical one — issue #119's dash
+    /// spelling is readable by the HEAD gate, so a run that used it must not
+    /// be pointed at a canonical file that does not exist.
+    #[test]
+    fn test_ritual_instruction_names_the_resolved_handoff_path() {
+        let dash = handoff_file_dash_relpath("#37", 2);
+        for head_matched in [true, false] {
+            let text =
+                successor_ritual_instruction("#37", 2, head_matched, &wf(), true, Some(&dash));
+            assert!(text.contains(&dash), "{text}");
+            assert!(
+                !text.contains(&handoff_file_relpath("#37", 2)),
+                "the canonical path must not appear: {text}"
+            );
+        }
+        // No resolved path (no read happened) still falls back to canonical.
+        assert!(successor_ritual_instruction("#37", 2, true, &wf(), true, None)
+            .contains(&handoff_file_relpath("#37", 2)));
+    }
+
     #[test]
     fn test_ritual_instruction_head_match_branch_skips_verify() {
-        let text = successor_ritual_instruction("#37", 2, true, &wf(), true);
+        let text = successor_ritual_instruction("#37", 2, true, &wf(), true, None);
         // Identity: generation, the run's own ref, predecessor. Issue #83:
         // the ref is NOT prefixed with "epic" here — the identity string
         // (RunRefs::label) already says what the run is.
@@ -1809,7 +1838,7 @@ mod tests {
 
     #[test]
     fn test_ritual_instruction_mismatch_branch_requires_verify() {
-        let text = successor_ritual_instruction("#37", 2, false, &wf(), true);
+        let text = successor_ritual_instruction("#37", 2, false, &wf(), true, None);
         assert!(text.contains("generation 3"));
         assert!(text.contains("successor to generation 2"));
         assert!(text.contains(".maestro/handoffs/37-gen2.md"));
@@ -2165,7 +2194,7 @@ mod tests {
         // From step 1b onward these receive RunRefs::label() — an
         // issues-only run must never be described as an epic anywhere.
         let label = RunRefs::new(NO_REFS, ["7", "9"]).label();
-        let successor = successor_ritual_instruction(&label, 2, true, &wf(), true);
+        let successor = successor_ritual_instruction(&label, 2, true, &wf(), true, None);
         assert!(successor.contains("generation 3 for issues #7, #9"));
         let recovery =
             recovery_ritual_instruction(&label, 2, Some("nachogl1/maestro"), &wf(), true);
@@ -2187,7 +2216,7 @@ mod tests {
         // And an epic-only run still reads exactly as it did: the label
         // itself supplies the word.
         let label = RunRefs::epics_only("#5").label();
-        assert!(successor_ritual_instruction(&label, 2, true, &wf(), true)
+        assert!(successor_ritual_instruction(&label, 2, true, &wf(), true, None)
             .contains("generation 3 for epic #5"));
         assert!(recovery_ritual_instruction(&label, 2, None, &wf(), true)
             .contains("you are generation 3 for epic #5."));
@@ -2243,7 +2272,7 @@ mod tests {
     fn test_successor_ritual_instruction_list_shape_has_no_epic_framing() {
         // Pre-#83 configs store the raw comma list as the run's identity;
         // the brief must carry it verbatim, with zero epic framing.
-        let text = successor_ritual_instruction("77, 78", 2, true, &wf(), true);
+        let text = successor_ritual_instruction("77, 78", 2, true, &wf(), true, None);
         assert!(text.contains("generation 3 for 77, 78"));
         assert!(!text.to_lowercase().contains("epic"));
         assert!(text.contains("generation 3"));
@@ -2321,7 +2350,7 @@ mod tests {
     #[test]
     fn test_successor_ritual_instruction_instructs_pr_issue_linking() {
         for head_matched in [true, false] {
-            let text = successor_ritual_instruction("#37", 2, head_matched, &wf(), true);
+            let text = successor_ritual_instruction("#37", 2, head_matched, &wf(), true, None);
             assert!(text.contains("Closes #N"), "{text}");
             assert!(text.contains("Fixes #N"), "{text}");
             assert!(text.contains("GitHub auto-closes them on merge"), "{text}");
@@ -2357,7 +2386,7 @@ mod tests {
 
     #[test]
     fn test_successor_ritual_instruction_instructs_pr_title_enumerates_refs() {
-        let text = successor_ritual_instruction("#37", 2, true, &wf(), true);
+        let text = successor_ritual_instruction("#37", 2, true, &wf(), true, None);
         assert!(
             text.contains(
                 "its title must list every issue/epic number this run covers, from the moment \
@@ -2381,8 +2410,8 @@ mod tests {
         let briefs = [
             launch_instruction(&RunRefs::epics_only("#38"), Some("nachogl1/maestro"), &wf()),
             launch_instruction(&RunRefs::new(NO_REFS, ["77", "78"]), None, &wf()),
-            successor_ritual_instruction("#37", 2, true, &wf(), true),
-            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            successor_ritual_instruction("#37", 2, true, &wf(), true, None),
+            successor_ritual_instruction("#37", 2, false, &wf(), true, None),
             recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true),
             recovery_ritual_instruction("#37", 2, None, &wf(), true),
         ];
@@ -2470,9 +2499,9 @@ mod tests {
         // order fixed at launch — they must not re-plan it, and a new
         // deviation goes through the same alert + confirmation.
         let briefs = [
-            successor_ritual_instruction("#37", 2, true, &wf(), true),
-            successor_ritual_instruction("#37", 2, false, &wf(), true),
-            successor_ritual_instruction("77, 78", 2, true, &wf(), true),
+            successor_ritual_instruction("#37", 2, true, &wf(), true, None),
+            successor_ritual_instruction("#37", 2, false, &wf(), true, None),
+            successor_ritual_instruction("77, 78", 2, true, &wf(), true, None),
             recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true),
             recovery_ritual_instruction("77, 78", 2, None, &wf(), true),
         ];
@@ -2500,8 +2529,8 @@ mod tests {
         let briefs = [
             launch_instruction(&RunRefs::epics_only("#38"), Some("nachogl1/maestro"), &wf()),
             launch_instruction(&RunRefs::new(NO_REFS, ["76", "77", "78"]), None, &wf()),
-            successor_ritual_instruction("#37", 2, true, &wf(), true),
-            successor_ritual_instruction("#37", 2, false, &wf(), true),
+            successor_ritual_instruction("#37", 2, true, &wf(), true, None),
+            successor_ritual_instruction("#37", 2, false, &wf(), true, None),
             recovery_ritual_instruction("#37", 2, Some("nachogl1/maestro"), &wf(), true),
             recovery_ritual_instruction("#37", 2, None, &wf(), true),
         ];
@@ -2559,7 +2588,7 @@ mod tests {
         let custom = "Step 1: custom implement Step 2: custom ship";
         for text in [
             launch_instruction(&RunRefs::epics_only("#38"), None, custom),
-            successor_ritual_instruction("#37", 2, true, custom, true),
+            successor_ritual_instruction("#37", 2, true, custom, true, None),
             recovery_ritual_instruction("#37", 2, None, custom, true),
         ] {
             assert!(text.contains("Step 1: custom implement"), "{text}");
@@ -2574,7 +2603,7 @@ mod tests {
         // pathological compiled string cannot smuggle a newline in.
         for text in [
             launch_instruction(&RunRefs::epics_only("#38"), None, ""),
-            successor_ritual_instruction("#37", 2, false, "  ", true),
+            successor_ritual_instruction("#37", 2, false, "  ", true, None),
             recovery_ritual_instruction("#37", 2, None, "", true),
         ] {
             assert!(!text.contains("WORKFLOW"), "{text}");
@@ -2591,7 +2620,7 @@ mod tests {
         // brief must stay free of epic framing even WITH the workflow.
         let text = launch_instruction(&RunRefs::new(NO_REFS, ["76", "77", "78"]), None, &wf());
         assert!(!text.to_lowercase().contains("epic"), "{text}");
-        let text = successor_ritual_instruction("77, 78", 2, true, &wf(), true);
+        let text = successor_ritual_instruction("77, 78", 2, true, &wf(), true, None);
         assert!(!text.to_lowercase().contains("epic"), "{text}");
         let text = recovery_ritual_instruction("77, 78", 2, None, &wf(), true);
         assert!(!text.to_lowercase().contains("epic"), "{text}");
@@ -2806,6 +2835,7 @@ mod tests {
                 head_matched,
                 &wf(),
                 false,
+                None,
             );
             assert!(!text.contains("issue/epic number"), "{text}");
             assert!(!text.contains("GitHub auto-closes them on merge"), "{text}");
