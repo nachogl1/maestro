@@ -554,14 +554,81 @@ fn read_report(harvest_dir: &Path, path: &str) -> Result<String, String> {
     std::fs::read_to_string(&requested).map_err(|e| format!("Failed to read {}: {}", NOUN, e))
 }
 
-/// Reads one saved harvest report by absolute path — the Second Brain lists
-/// `HARVEST_REPORT` rows by path, this serves their content. New reports no
-/// longer land here (issue #98 moved harvest into an interactive session),
-/// but previously generated ones stay readable. Refuses anything that is
-/// not a regular file directly under the harvest dir.
+/// Reads one saved harvest report by absolute path — the Journal panel's
+/// legacy-reports section lists rows by path, this serves their content. New
+/// reports no longer land here (issue #98 moved harvest into an interactive
+/// session), but previously generated ones stay readable. Refuses anything
+/// that is not a regular file directly under the harvest dir.
 #[tauri::command]
 pub fn samurai_harvest_read(path: String) -> Result<String, String> {
     read_report(&harvest_dir(), &path)
+}
+
+/// One legacy harvest report on disk (issue #142) — the row the Journal
+/// panel's legacy-reports section lists. Deliberately NOT a
+/// `SamuraiFileEntry`: these files belong to no run and no PR review, so
+/// they carry no group, no epic and no project.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HarvestReportRow {
+    /// Absolute path — the identity `samurai_harvest_read` and
+    /// `samurai_file_delete` both take back.
+    pub path: String,
+    pub size_bytes: u64,
+    /// RFC 3339 modified time; `None` when the file's metadata could be read
+    /// but its modified time specifically could not.
+    pub modified_at: Option<String>,
+}
+
+/// Every legacy report directly under `dir`, newest first (tie-broken by
+/// path, descending — `read_dir` order is arbitrary, the precedent already
+/// noted at `core::samurai_files::Groups::upsert_pr` and
+/// `test_a_pr_title_fills_an_empty_label_whatever_the_record_order`). No
+/// extension filter: the retired `push_dir_files` lister listed every
+/// regular file and [`read_report`] accepts every regular file, so filtering
+/// here would hide a file the user can neither see nor remove. A
+/// subdirectory is skipped, matching `read_report`'s "regular file directly
+/// under the dir" rule. An absent or unreadable directory yields an empty
+/// list, never a panic or an error (Q4: this is the NORMAL state since #98).
+fn list_reports(dir: &Path) -> Vec<HarvestReportRow> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<HarvestReportRow> = read
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            // A file whose metadata cannot be read at all is skipped rather
+            // than emitted with a lying size (the `core::samurai_files::stat`
+            // precedent).
+            let meta = std::fs::metadata(&path).ok()?;
+            let modified_at = meta
+                .modified()
+                .ok()
+                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+            Some(HarvestReportRow {
+                path: path.to_string_lossy().into_owned(),
+                size_bytes: meta.len(),
+                modified_at,
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.modified_at
+            .cmp(&a.modified_at)
+            .then_with(|| b.path.cmp(&a.path))
+    });
+    rows
+}
+
+/// Every legacy harvest report saved under `<app data>/harvest/` (issues
+/// #98/#142) — the Journal panel's legacy-reports section list. Never fails:
+/// an absent directory is the NORMAL state since #98 moved harvest into an
+/// interactive session whose `/insights` report goes to Downloads, so this
+/// answers with an empty list rather than an error.
+#[tauri::command]
+pub fn samurai_harvest_list() -> Vec<HarvestReportRow> {
+    list_reports(&harvest_dir())
 }
 
 #[cfg(test)]
@@ -1324,6 +1391,88 @@ mod tests {
         // A path that does not exist is refused before any compare.
         let err = read_report(&harvest, &harvest.join("nope.md").to_string_lossy()).unwrap_err();
         assert!(err.contains("harvest report not found"), "{err}");
+    }
+
+    #[test]
+    fn test_list_reports_lists_regular_files_newest_first() {
+        let dir = tempdir().unwrap();
+        let harvest = dir.path();
+
+        // Backdate each file so mtime ordering is deterministic — the
+        // `newest_jsonl_picks_latest_transcript` precedent
+        // (commands/claude_sessions.rs).
+        let write_at = |name: &str, content: &str, secs_ago: u64| -> PathBuf {
+            let path = harvest.join(name);
+            std::fs::write(&path, content).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago),
+                )
+                .unwrap();
+            path
+        };
+        let newest = write_at("newest.md", "AAA", 60);
+        // Extension irrelevant — the old lister filtered on none, and
+        // `read_report` accepts any regular file.
+        let middle = write_at("middle.log", "BBBBB", 600);
+        let oldest = write_at("oldest.md", "C", 3600);
+        // A subdirectory (even a "*.md"-suffixed one) is skipped.
+        std::fs::create_dir_all(harvest.join("sub.md")).unwrap();
+        std::fs::write(harvest.join("sub.md").join("nested.md"), "nested").unwrap();
+
+        let rows = list_reports(harvest);
+
+        assert_eq!(
+            rows.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            vec![
+                newest.to_string_lossy().into_owned(),
+                middle.to_string_lossy().into_owned(),
+                oldest.to_string_lossy().into_owned(),
+            ],
+            "newest first, subdirectory excluded, extension irrelevant"
+        );
+        assert_eq!(rows[0].size_bytes, 3);
+        assert_eq!(rows[1].size_bytes, 5);
+        assert_eq!(rows[2].size_bytes, 1);
+        for row in &rows {
+            let modified_at = row
+                .modified_at
+                .as_deref()
+                .unwrap_or_else(|| panic!("{row:?}"));
+            chrono::DateTime::parse_from_rfc3339(modified_at)
+                .unwrap_or_else(|e| panic!("not RFC 3339: {e}: {row:?}"));
+        }
+    }
+
+    #[test]
+    fn test_list_reports_on_absent_or_empty_dir_is_empty_not_an_error() {
+        let base = tempdir().unwrap();
+
+        let absent = base.path().join("does-not-exist");
+        assert!(list_reports(&absent).is_empty());
+
+        let empty = base.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(list_reports(&empty).is_empty());
+    }
+
+    #[test]
+    fn test_every_listed_report_passes_the_read_guard() {
+        let dir = tempdir().unwrap();
+        let harvest = dir.path();
+        std::fs::write(harvest.join("a.md"), "alpha").unwrap();
+        std::fs::write(harvest.join("b.txt"), "beta").unwrap();
+
+        let rows = list_reports(harvest);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for row in &rows {
+            let content = read_report(harvest, &row.path)
+                .unwrap_or_else(|e| panic!("list emitted a path its own reader refuses: {e}"));
+            assert_eq!(content, std::fs::read_to_string(&row.path).unwrap());
+        }
     }
 
     /// A resolver that answers every session id with `dir`'s path — the

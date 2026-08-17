@@ -85,8 +85,10 @@ pub enum SamuraiFileKind {
     /// Phase 5 harvest report (row 5). Kept for the readers that still serve
     /// these legacy files by path (`samurai_harvest_read`); the inventory no
     /// longer lists them, because a harvest report belongs to no run and no PR
-    /// review and issue #139 admits no generic group to park it in. What that
-    /// costs, and the options for giving them a home, are tracked in #142.
+    /// review and issue #139 admits no generic group to park it in. The
+    /// Journal panel lists them instead, via `commands::harvest::
+    /// samurai_harvest_list` (issue #142); `samurai_harvest_read` and
+    /// `delete_file` still serve and remove them by path.
     HarvestReport,
 }
 
@@ -315,7 +317,9 @@ pub fn sweep_handoff_retention(
 ///   [`SamuraiFileGroup::journal_entries`]. `schedule.json` was already only
 ///   ever listed as its timers.
 /// * A **harvest report** belongs to no run and no PR review, so it is no
-///   longer listed at all (#142). `samurai_harvest_read` still serves the
+///   longer listed here — the Journal panel lists them instead, via
+///   `commands::harvest::samurai_harvest_list` (issue #142).
+///   `samurai_harvest_read` and [`delete_file`] still serve and remove the
 ///   legacy files by path.
 ///
 /// Slicing must never make a file DISAPPEAR, though — before the grouping,
@@ -2495,6 +2499,39 @@ mod tests {
         )
         .unwrap();
         assert!(!Path::new(&archived.path).exists());
+    }
+
+    /// Pins Q3/R2 (issue #142): a legacy harvest report carries no group and
+    /// is never emitted by [`list_files`], yet the Journal panel's delete
+    /// action still reaches it through this same guard — because
+    /// `roots.harvest_dir` stays a managed root. Dropping it from the
+    /// `managed` vec above would silently break that surface without this
+    /// test failing loudly.
+    #[test]
+    fn test_delete_removes_a_legacy_harvest_report_though_it_is_not_listed() {
+        let f = fixture();
+        let (_, entries) = list(&f, &[], &[]);
+        let configs = f.store.list_with_paths();
+        let report = f.roots.harvest_dir.join("harvest-2026-08-07.md");
+        assert!(report.exists());
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.kind != SamuraiFileKind::HarvestReport),
+            "the legacy report must not appear in the inventory"
+        );
+
+        delete_file(
+            &f.roots,
+            &configs,
+            &f.pr_runs,
+            &entries,
+            &report.to_string_lossy(),
+            false,
+        )
+        .unwrap();
+
+        assert!(!report.exists());
     }
 
     #[test]

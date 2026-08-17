@@ -111,6 +111,8 @@ function mockInvoke() {
         };
       case "samurai_list_runs":
         return [];
+      case "samurai_harvest_list":
+        return [];
       case "samurai_files_list":
         return {
           // Issue #140: the panel renders one card per run / PR review, so

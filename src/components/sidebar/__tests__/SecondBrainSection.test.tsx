@@ -140,6 +140,8 @@ function mockInvoke(
         return { events: auditEvents, file_size_bytes: 0 };
       case "samurai_journal_list":
         return { entries: [], file_size_bytes: 0 };
+      case "samurai_harvest_list":
+        return [];
       case "samurai_harvest_read":
         return harvestMarkdown;
       case "samurai_file_read": {

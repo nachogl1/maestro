@@ -781,8 +781,8 @@ export function samuraiHarvestArm(sessionId: number): Promise<void> {
 }
 
 /**
- * Reads one saved harvest report by absolute path — the Second Brain lists
- * `HARVEST_REPORT` rows by path, this serves their content (Rust
+ * Reads one saved harvest report by absolute path — the Journal panel's
+ * legacy-reports section lists rows by path, this serves their content (Rust
  * `samurai_harvest_read`). New reports no longer land there (issue #98
  * moved harvest into an interactive session, whose /insights report goes to
  * Downloads), but previously generated ones stay readable. The backend
@@ -791,6 +791,23 @@ export function samuraiHarvestArm(sessionId: number): Promise<void> {
  */
 export function samuraiHarvestRead(path: string): Promise<string> {
   return invoke("samurai_harvest_read", { path });
+}
+
+/** Mirrors the Rust `HarvestReportRow` (issue #142). */
+export interface SamuraiHarvestReport {
+  path: string;
+  size_bytes: number;
+  modified_at: string | null;
+}
+
+/**
+ * Every legacy harvest report saved under `<app data>/harvest/` (Rust
+ * `samurai_harvest_list`), newest first. Resolves an EMPTY list when the
+ * directory was never created or holds nothing — that is the normal state
+ * since #98 moved harvest into an interactive session, not a failure.
+ */
+export function samuraiHarvestList(): Promise<SamuraiHarvestReport[]> {
+  return invoke("samurai_harvest_list");
 }
 
 // ---------------------------------------------------------------------------
