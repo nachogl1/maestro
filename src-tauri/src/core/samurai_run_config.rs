@@ -341,6 +341,30 @@ impl RunConfigStore {
         atomic_write_json(&path, &config)
     }
 
+    /// Overwrites `ref_titles` on the config for `(project, epic)` — the
+    /// launch-time title lookup's writer (issue #141). Unlike
+    /// [`Self::archive`]/[`Self::complete`], this carries NO status guard:
+    /// the lookup races nothing that cares, so a late-arriving title is
+    /// written whatever state the config is found in (Active, Completed or
+    /// Archived all accept it). `Err` on a missing config is a normal,
+    /// non-panicking outcome the caller logs and drops (the run was
+    /// archived/cleaned up before the lookup finished).
+    pub fn set_ref_titles(
+        &self,
+        project: &str,
+        epic: &str,
+        titles: Vec<RefTitle>,
+    ) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.config_path(&normalize_project(project), epic);
+        let mut config = read_config(&path).map_err(|e| match e {
+            ReadError::Missing => format!("no run config for epic {epic:?} at {path:?}"),
+            ReadError::Other(e) => e,
+        })?;
+        config.ref_titles = titles;
+        atomic_write_json(&path, &config)
+    }
+
     fn config_path(&self, normalized_project: &str, epic: &str) -> PathBuf {
         self.base_dir
             .join(project_dir_name(normalized_project))
@@ -636,6 +660,86 @@ mod tests {
         )
         .unwrap();
         assert!(store.get("C:/git/old", "#1").unwrap().ref_titles.is_empty());
+    }
+
+    #[test]
+    fn test_set_ref_titles_overwrites_and_persists() {
+        // Issue #141: the launch-time title-lookup writer. `set_ref_titles`
+        // is a plain overwrite — no read-then-merge — so a later call simply
+        // replaces whatever the previous lookup found.
+        let dir = tempdir().unwrap();
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        let config = sample("C:/git/maestro", "#38");
+        store.save(&config).unwrap();
+
+        store
+            .set_ref_titles(
+                "C:/git/maestro",
+                "#38",
+                vec![RefTitle {
+                    r#ref: "38".to_string(),
+                    title: "Samurai supervision".to_string(),
+                }],
+            )
+            .unwrap();
+
+        let loaded = store.get("C:/git/maestro", "#38").unwrap();
+        assert_eq!(
+            loaded.ref_titles,
+            vec![RefTitle {
+                r#ref: "38".to_string(),
+                title: "Samurai supervision".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_set_ref_titles_on_missing_config_returns_err_not_panic() {
+        // A lookup racing a run that got cleaned up before it finished: the
+        // caller logs and drops the error, but the store must never panic
+        // and must never create a file for a run that no longer exists.
+        let dir = tempdir().unwrap();
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+
+        let err = store
+            .set_ref_titles(
+                "C:/git/maestro",
+                "#38",
+                vec![RefTitle {
+                    r#ref: "38".to_string(),
+                    title: "Samurai supervision".to_string(),
+                }],
+            )
+            .unwrap_err();
+        assert!(!err.is_empty());
+        assert!(!store.config_path("C:/git/maestro", "#38").exists());
+    }
+
+    #[test]
+    fn test_set_ref_titles_overwrites_regardless_of_status() {
+        // Unlike `archive`/`complete`, `set_ref_titles` carries no status
+        // guard: a title lookup racing a fast-completing run must not be
+        // swallowed just because the config moved on to COMPLETED.
+        let dir = tempdir().unwrap();
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        let config = sample("C:/git/maestro", "#38");
+        store.save(&config).unwrap();
+        store.complete("C:/git/maestro", "#38").unwrap();
+
+        store
+            .set_ref_titles(
+                "C:/git/maestro",
+                "#38",
+                vec![RefTitle {
+                    r#ref: "38".to_string(),
+                    title: "Samurai supervision".to_string(),
+                }],
+            )
+            .unwrap();
+
+        let loaded = store.get("C:/git/maestro", "#38").unwrap();
+        assert_eq!(loaded.status, RunConfigStatus::Completed);
+        assert_eq!(loaded.ref_titles[0].title, "Samurai supervision");
     }
 
     #[test]

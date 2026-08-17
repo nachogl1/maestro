@@ -6,8 +6,11 @@
 //! Project paths are canonicalized (and the Windows `\\?\` prefix stripped)
 //! at this boundary so every layer below sees one spelling per project.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::json;
@@ -29,7 +32,9 @@ use crate::core::samurai_pr_runs::PrRunStore;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, SamuraiReplicator};
 use crate::core::samurai_resumer::latest_handoff_generation;
-use crate::core::samurai_run_config::{RunConfigStatus, RunConfigStore, SamuraiRunConfig};
+use crate::core::samurai_run_config::{
+    RefTitle, RunConfigStatus, RunConfigStore, SamuraiRunConfig,
+};
 use crate::core::samurai_schedule::{
     SamuraiSchedule, ScheduleEntry, ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH,
 };
@@ -493,6 +498,135 @@ fn launch_brief(input: &LaunchInput, repo_pin: Option<&str>, workflow: &Workflow
     )
 }
 
+/// A ref's title, looked up via `gh issue view <ref> --json title` — the
+/// launch-time probe (issue #141). Args are (project path, the run's
+/// `--repo` pin if stored, the bare ref). Same injected-DI shape as
+/// `samurai_completion::IssueStateProbe`: tests never shell out.
+pub(crate) type IssueTitleProbe = Arc<
+    dyn Fn(
+            String,
+            Option<String>,
+            String,
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// The production [`IssueTitleProbe`]: shells out via the same
+/// `github::GitHub` runner as every other samurai probe (issue #141). Shared
+/// by the manual and the scheduled launch path so the two can never drift.
+/// A non-numeric ref is a lookup failure like any other — an `Err` the
+/// caller logs and drops, never a panic and never a `gh` invocation.
+fn issue_title_probe() -> IssueTitleProbe {
+    Arc::new(|project: String, repo_pin: Option<String>, r: String| {
+        Box::pin(async move {
+            let number: u64 = r
+                .parse()
+                .map_err(|e| format!("ref {r:?} is not a numeric issue number: {e}"))?;
+            GitHub::new(project)
+                .get_issue_title(number, repo_pin.as_deref())
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
+}
+
+/// Per-ref wall-clock ceiling for [`RefTitleLookup`]'s background lookup
+/// (issue #141): belt-and-suspenders so a misbehaving `gh` (hung auth
+/// prompt, etc.) can't leave the background task running forever, even
+/// though nothing downstream ever awaits it.
+const TITLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Best-effort, off-launch-path GitHub title lookup for a run's refs (issue
+/// #141) — labels a Second Brain run `Epic #38 — Samurai supervision`
+/// instead of `Epic #38`. Bundles the injected [`IssueTitleProbe`] with the
+/// `Arc<RunConfigStore>` handle its spawned background task needs to
+/// outlive the launch call (the `SamuraiTestGate` shape: one collaborator
+/// carrying its own runner + sink, not a bare closure parameter threaded
+/// alongside a separately-owned store).
+#[derive(Clone)]
+pub(crate) struct RefTitleLookup {
+    run_configs: Arc<RunConfigStore>,
+    probe: IssueTitleProbe,
+    timeout: Duration,
+}
+
+impl RefTitleLookup {
+    pub(crate) fn new(run_configs: Arc<RunConfigStore>, probe: IssueTitleProbe) -> Self {
+        Self::with_timeout(run_configs, probe, TITLE_LOOKUP_TIMEOUT)
+    }
+
+    /// Same as [`Self::new`] but with an explicit per-ref timeout — tests
+    /// inject a short one so a hanging-probe assertion never has to wait
+    /// out the real ceiling.
+    pub(crate) fn with_timeout(
+        run_configs: Arc<RunConfigStore>,
+        probe: IssueTitleProbe,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            run_configs,
+            probe,
+            timeout,
+        }
+    }
+
+    /// Fire-and-forget: spawns a background task that looks up each ref's
+    /// title (guarded per-ref by `self.timeout`) and writes any that
+    /// resolve onto the run config. Nothing here is ever awaited by the
+    /// caller — `launch_run_inner` must return without waiting on this
+    /// (issue #141's "never blocks or slows a launch"). A timeout or a
+    /// probe error is logged and the ref is dropped, never propagated,
+    /// never panics; an empty `refs` spawns nothing. `epic` must be the
+    /// SAME string the caller just saved the run config under, or the
+    /// write below looks up the wrong file.
+    pub(crate) fn spawn(
+        &self,
+        project: String,
+        epic: String,
+        repo_pin: Option<String>,
+        refs: Vec<String>,
+    ) {
+        if refs.is_empty() {
+            return;
+        }
+        let run_configs = self.run_configs.clone();
+        let probe = self.probe.clone();
+        let timeout = self.timeout;
+        tauri::async_runtime::spawn(async move {
+            let mut titles = Vec::with_capacity(refs.len());
+            for r in refs {
+                match tokio::time::timeout(
+                    timeout,
+                    probe(project.clone(), repo_pin.clone(), r.clone()),
+                )
+                .await
+                {
+                    Ok(Ok(title)) => titles.push(RefTitle { r#ref: r, title }),
+                    Ok(Err(e)) => {
+                        log::warn!(
+                            "samurai launch: title lookup for ref {r} in {project} failed: {e}"
+                        );
+                    }
+                    Err(_) => {
+                        log::warn!(
+                            "samurai launch: title lookup for ref {r} in {project} timed out after {timeout:?}"
+                        );
+                    }
+                }
+            }
+            if titles.is_empty() {
+                return;
+            }
+            if let Err(e) = run_configs.set_ref_titles(&project, &epic, titles) {
+                log::warn!(
+                    "samurai launch: failed to persist ref titles for epic {epic} in {project}: {e}"
+                );
+            }
+        });
+    }
+}
+
 /// The launch sequence after preflight, extracted from the Tauri command for
 /// testability (the `cleanup_epic_inner` precedent; `preflight` is passed in
 /// so tests never hit gh or the usage API, `worktree_base` exists only so
@@ -507,6 +641,7 @@ pub(crate) async fn launch_run_inner(
     audit: &AuditLog,
     in_flight: &Arc<LaunchInFlight>,
     test_gate: &SamuraiTestGate,
+    title_lookup: &RefTitleLookup,
     skip_test_gate: bool,
     preflight: &SamuraiPreflight,
     global_config: SamuraiConfig,
@@ -657,6 +792,22 @@ pub(crate) async fn launch_run_inner(
     config.launch_text = Some(input.text().to_string());
     run_configs.save(&config)?;
 
+    // Issue #141: best-effort GitHub title lookup for the run's refs, off
+    // the launch path — spawned, never awaited, so it can never block or
+    // slow this launch down. A timeout or a probe failure just leaves
+    // `ref_titles` empty and the label degrades to refs-only.
+    title_lookup.spawn(
+        project.to_string(),
+        config.epic.clone(),
+        repo_pin.clone(),
+        config
+            .epics
+            .iter()
+            .chain(config.issues.iter())
+            .cloned()
+            .collect(),
+    );
+
     let instruction = launch_brief(input, repo_pin.as_deref(), &workflow);
     replicator.spawn_first_generation(project, &epic, &worktree_path, instruction);
 
@@ -718,6 +869,8 @@ pub async fn samurai_launch_run(
             let _ = gate_app.emit("samurai-test-gate-event", p);
         }),
     );
+    // Issue #141: the real probe, shared with the scheduled launch path.
+    let title_lookup = RefTitleLookup::new(run_configs.inner().clone(), issue_title_probe());
     launch_run_inner(
         &supervisor,
         &schedule,
@@ -727,6 +880,7 @@ pub async fn samurai_launch_run(
         &audit,
         &in_flight,
         &test_gate,
+        &title_lookup,
         skip_test_gate.unwrap_or(false),
         &preflight,
         global_config,
@@ -1150,6 +1304,7 @@ pub(crate) async fn scheduled_launch_fire_inner(
     audit: &AuditLog,
     in_flight: &Arc<LaunchInFlight>,
     test_gate: &SamuraiTestGate,
+    title_lookup: &RefTitleLookup,
     preflight: &SamuraiPreflight,
     global_config: SamuraiConfig,
     entry: ScheduleEntry,
@@ -1189,6 +1344,7 @@ pub(crate) async fn scheduled_launch_fire_inner(
                     audit,
                     in_flight,
                     test_gate,
+                    title_lookup,
                     spec.skip_test_gate,
                     preflight,
                     global_config,
@@ -1295,6 +1451,11 @@ pub async fn handle_scheduled_launch_fire(app: AppHandle, entry: ScheduleEntry) 
             let _ = gate_app.emit("samurai-test-gate-event", p);
         }),
     );
+    // Issue #141: same real probe as the manual launch path.
+    let title_lookup = RefTitleLookup::new(
+        app.state::<Arc<RunConfigStore>>().inner().clone(),
+        issue_title_probe(),
+    );
     scheduled_launch_fire_inner(
         &app.state::<Arc<Supervisor>>(),
         &app.state::<Arc<SamuraiSchedule>>(),
@@ -1304,6 +1465,7 @@ pub async fn handle_scheduled_launch_fire(app: AppHandle, entry: ScheduleEntry) 
         &app.state::<AuditLog>(),
         &app.state::<Arc<LaunchInFlight>>(),
         &test_gate,
+        &title_lookup,
         &preflight,
         global_config,
         entry,
@@ -2327,6 +2489,19 @@ mod tests {
         (SamuraiTestGate::new(runner, Arc::new(|_| {})), calls)
     }
 
+    /// Polls until `cond` holds or ~2s pass — the `samurai_completion`
+    /// suite's pattern, needed here because issue #141's title lookup
+    /// finishes on a background task the caller never awaits.
+    async fn wait_until(mut cond: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("condition not reached within 2s");
+    }
+
     #[tokio::test]
     async fn test_ensure_epic_worktree_creates_then_reuses_the_stable_path() {
         let repo = tempdir().unwrap();
@@ -2363,11 +2538,16 @@ mod tests {
         schedule: Arc<SamuraiSchedule>,
         replicator: Arc<SamuraiReplicator>,
         spawns: Arc<std::sync::Mutex<Vec<crate::core::samurai_replicator::SuccessorSpawn>>>,
-        run_configs: RunConfigStore,
+        run_configs: Arc<RunConfigStore>,
         worktrees: WorktreeManager,
         audit: AuditLog,
         in_flight: Arc<LaunchInFlight>,
         parker: Arc<SamuraiParker>,
+        /// Issue #141: a stub that always fails, so ordinary tests never
+        /// race a background write onto `ref_titles` — tests exercising the
+        /// lookup itself build their own `RefTitleLookup` and call
+        /// `launch_run_inner` directly.
+        title_lookup: RefTitleLookup,
         project: String,
         _dirs: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
         base: tempfile::TempDir,
@@ -2466,16 +2646,24 @@ mod tests {
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let (replicator, spawns) = test_replicator(supervisor.clone(), audit.clone());
         let parker = test_parker(supervisor.clone(), schedule.clone(), audit.clone());
+        let run_configs = Arc::new(RunConfigStore::new(runs_dir.path().to_path_buf()));
+        let title_lookup = RefTitleLookup::new(
+            run_configs.clone(),
+            Arc::new(|_project: String, _repo_pin: Option<String>, r: String| {
+                Box::pin(async move { Err(format!("no title probe configured for ref {r}")) })
+            }),
+        );
         CleanupHarness {
             supervisor,
             schedule,
             replicator,
             spawns,
-            run_configs: RunConfigStore::new(runs_dir.path().to_path_buf()),
+            run_configs,
             worktrees: WorktreeManager::new(),
             audit,
             in_flight: Arc::new(LaunchInFlight::default()),
             parker,
+            title_lookup,
             project,
             _dirs: (audit_dir, schedule_dir, runs_dir),
             base: tempdir().unwrap(),
@@ -2501,6 +2689,7 @@ mod tests {
             &h.audit,
             &h.in_flight,
             gate,
+            &h.title_lookup,
             skip_test_gate,
             &preflight(true, true),
             SamuraiConfig::default(),
@@ -2691,6 +2880,12 @@ mod tests {
         // The fixture repo has no Cargo.toml, so the gate is skipped here —
         // its own launch behavior has dedicated tests below.
         let (gate, _calls) = recording_gate(vec![]);
+        let title_lookup = RefTitleLookup::new(
+            run_configs.clone(),
+            Arc::new(|_project: String, _repo_pin: Option<String>, r: String| {
+                Box::pin(async move { Err(format!("no title probe configured for ref {r}")) })
+            }),
+        );
         let global = SamuraiConfig::default();
         let in_flight = Arc::new(LaunchInFlight::default());
         let result = launch_run_inner(
@@ -2702,6 +2897,7 @@ mod tests {
             &audit,
             &in_flight,
             &gate,
+            &title_lookup,
             true,
             &preflight(true, true),
             global.clone(),
@@ -2750,6 +2946,7 @@ mod tests {
             &audit,
             &in_flight,
             &gate,
+            &title_lookup,
             true,
             &preflight(true, true),
             global,
@@ -2903,6 +3100,7 @@ mod tests {
             &h.audit,
             &h.in_flight,
             &gate,
+            &h.title_lookup,
             true,
             &preflight(true, true),
             SamuraiConfig::default(),
@@ -2917,6 +3115,363 @@ mod tests {
         .unwrap();
         let config = h.run_configs.get(&h.project, "issue #39").unwrap();
         assert_eq!(config.workflow, Some(custom));
+    }
+
+    // --- issue #141: launch-time ref-title lookup ---
+
+    #[tokio::test]
+    async fn test_launch_captures_titles_when_probe_succeeds() {
+        // The acceptance case from the issue: a launch whose probe resolves
+        // ends up with a `ref_titles` entry a Second Brain label can render
+        // as `Epic #38 — Samurai supervision`.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let title_lookup = RefTitleLookup::new(
+            h.run_configs.clone(),
+            Arc::new(|_project: String, _repo_pin: Option<String>, _r: String| {
+                Box::pin(async move { Ok("Samurai supervision".to_string()) })
+            }),
+        );
+        let result = launch_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            &gate,
+            &title_lookup,
+            true,
+            &preflight(true, true),
+            SamuraiConfig::default(),
+            &h.project,
+            &LaunchInput::parse("#38"),
+            None,
+            None,
+            None,
+            Some(h.base.path()),
+        )
+        .await
+        .unwrap();
+
+        wait_until(|| {
+            h.run_configs
+                .get(&h.project, &result.epic)
+                .is_some_and(|c| !c.ref_titles.is_empty())
+        })
+        .await;
+        let config = h.run_configs.get(&h.project, &result.epic).unwrap();
+        assert_eq!(
+            config.ref_titles,
+            vec![RefTitle {
+                r#ref: "38".to_string(),
+                title: "Samurai supervision".to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_launch_leaves_ref_titles_empty_when_probe_fails() {
+        // A probe failure (gh missing, not authenticated, …) is logged and
+        // dropped — the run config still ends up saved, just refs-only.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let probed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probed_rec = probed.clone();
+        let title_lookup = RefTitleLookup::new(
+            h.run_configs.clone(),
+            Arc::new(
+                move |_project: String, _repo_pin: Option<String>, r: String| {
+                    probed_rec.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async move { Err(format!("gh not authenticated for ref {r}")) })
+                },
+            ),
+        );
+        let result = launch_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            &gate,
+            &title_lookup,
+            true,
+            &preflight(true, true),
+            SamuraiConfig::default(),
+            &h.project,
+            &LaunchInput::parse("#38"),
+            None,
+            None,
+            None,
+            Some(h.base.path()),
+        )
+        .await
+        .unwrap();
+
+        // Wait for the probe to have actually RUN before asserting the
+        // absence — a bare sleep would pass just as well if the lookup had
+        // never been spawned at all.
+        wait_until(|| probed.load(std::sync::atomic::Ordering::SeqCst)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let config = h.run_configs.get(&h.project, &result.epic).unwrap();
+        assert!(
+            config.ref_titles.is_empty(),
+            "a failed probe must never populate ref_titles"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_launch_leaves_ref_titles_empty_when_probe_times_out() {
+        // A hanging probe is cut off by the per-ref timeout — an injected
+        // short one here, so the test doesn't wait out the real 10s ceiling.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let probed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probed_rec = probed.clone();
+        let title_lookup = RefTitleLookup::with_timeout(
+            h.run_configs.clone(),
+            Arc::new(
+                move |_project: String, _repo_pin: Option<String>, _r: String| {
+                    probed_rec.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(std::future::pending::<Result<String, String>>())
+                },
+            ),
+            Duration::from_millis(30),
+        );
+        let result = launch_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            &gate,
+            &title_lookup,
+            true,
+            &preflight(true, true),
+            SamuraiConfig::default(),
+            &h.project,
+            &LaunchInput::parse("#38"),
+            None,
+            None,
+            None,
+            Some(h.base.path()),
+        )
+        .await
+        .unwrap();
+
+        // The probe really was entered (so the absence below is the timeout
+        // firing, not a lookup that never spawned), then well past the 30ms
+        // ceiling — still no ref_titles.
+        wait_until(|| probed.load(std::sync::atomic::Ordering::SeqCst)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let config = h.run_configs.get(&h.project, &result.epic).unwrap();
+        assert!(
+            config.ref_titles.is_empty(),
+            "a timed-out probe must never populate ref_titles"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_launch_returns_immediately_without_waiting_on_probe() {
+        // The core "never block" assertion: a probe that hangs forever must
+        // not slow `launch_run_inner` down — it runs off the launch path
+        // structurally (spawned, never awaited), not just "eventually
+        // succeeds".
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let title_lookup = RefTitleLookup::new(
+            h.run_configs.clone(),
+            Arc::new(|_project: String, _repo_pin: Option<String>, _r: String| {
+                Box::pin(std::future::pending::<Result<String, String>>())
+            }),
+        );
+        // Wrapped in a bounded timeout rather than a tight wall-clock
+        // assertion: real worktree creation (a fresh git repo + branch +
+        // checkout) already costs a few seconds on its own in this test
+        // environment, so a tight ceiling would be flaky. What actually
+        // proves "never blocks" is that the call returns at all — the probe
+        // above NEVER resolves, so if `launch_run_inner` awaited it instead
+        // of spawning it, this would hang forever and the timeout below
+        // would fire.
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(15),
+            launch_run_inner(
+                &h.supervisor,
+                &h.schedule,
+                &h.worktrees,
+                &h.run_configs,
+                &h.replicator,
+                &h.audit,
+                &h.in_flight,
+                &gate,
+                &title_lookup,
+                true,
+                &preflight(true, true),
+                SamuraiConfig::default(),
+                &h.project,
+                &LaunchInput::parse("#38"),
+                None,
+                None,
+                None,
+                Some(h.base.path()),
+            ),
+        )
+        .await;
+        outcome
+            .expect(
+                "launch_run_inner must return without waiting on the title probe — it hung past the 15s bound",
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_launch_probes_every_ref_for_a_multi_issue_run() {
+        // A multi-ref launch probes and captures every ref, even though
+        // today's run-label rendering only shows a title for a single-ref
+        // run — the config must still end up complete.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_rec = seen.clone();
+        let title_lookup = RefTitleLookup::new(
+            h.run_configs.clone(),
+            Arc::new(
+                move |_project: String, _repo_pin: Option<String>, r: String| {
+                    seen_rec.lock().unwrap().push(r.clone());
+                    Box::pin(async move { Ok(format!("title for {r}")) })
+                },
+            ),
+        );
+        let result = launch_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            &gate,
+            &title_lookup,
+            true,
+            &preflight(true, true),
+            SamuraiConfig::default(),
+            &h.project,
+            &LaunchInput::parse("issues #7, #9"),
+            None,
+            None,
+            None,
+            Some(h.base.path()),
+        )
+        .await
+        .unwrap();
+
+        wait_until(|| {
+            h.run_configs
+                .get(&h.project, &result.epic)
+                .is_some_and(|c| c.ref_titles.len() == 2)
+        })
+        .await;
+
+        {
+            let mut calls = seen.lock().unwrap().clone();
+            calls.sort();
+            assert_eq!(calls, vec!["7".to_string(), "9".to_string()]);
+        }
+        let mut titles = h
+            .run_configs
+            .get(&h.project, &result.epic)
+            .unwrap()
+            .ref_titles;
+        titles.sort_by(|a, b| a.r#ref.cmp(&b.r#ref));
+        assert_eq!(
+            titles,
+            vec![
+                RefTitle {
+                    r#ref: "7".to_string(),
+                    title: "title for 7".to_string(),
+                },
+                RefTitle {
+                    r#ref: "9".to_string(),
+                    title: "title for 9".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_launch_probes_nothing_for_a_ref_less_prose_run() {
+        // A free-text launch naming no ref (issue #128) has nothing to look
+        // up: the lookup must not spawn, must not reach `gh`, and must not
+        // write titles under the prose label.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_rec = seen.clone();
+        let title_lookup = RefTitleLookup::new(
+            h.run_configs.clone(),
+            Arc::new(
+                move |_project: String, _repo_pin: Option<String>, r: String| {
+                    seen_rec.lock().unwrap().push(r.clone());
+                    Box::pin(async move { Ok(format!("title for {r}")) })
+                },
+            ),
+        );
+        let result = launch_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            &gate,
+            &title_lookup,
+            true,
+            &preflight(true, true),
+            SamuraiConfig::default(),
+            &h.project,
+            &LaunchInput::parse("refactor the audit panel styling"),
+            None,
+            None,
+            None,
+            Some(h.base.path()),
+        )
+        .await
+        .unwrap();
+
+        // A window in which a spawned probe would have run and written.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a ref-less launch must never probe GitHub"
+        );
+        assert!(h
+            .run_configs
+            .get(&h.project, &result.epic)
+            .unwrap()
+            .ref_titles
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_real_title_probe_rejects_a_non_numeric_ref_without_shelling_out() {
+        // The production probe's guard: `gh issue view` is only ever handed
+        // a parsed `u64`, so no ref string can reach its argv. A ref that is
+        // not a number comes back as a plain `Err` the caller logs and
+        // drops — never a panic, never a `gh` call.
+        let err = issue_title_probe()(
+            "C:/git/maestro".to_string(),
+            None,
+            "38 --repo evil/repo".to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("not a numeric issue number"), "{err}");
     }
 
     // --- issue #90b: the launch test-suite gate ---
@@ -3623,6 +4178,7 @@ mod tests {
             &h.audit,
             &h.in_flight,
             gate,
+            &h.title_lookup,
             pf,
             SamuraiConfig::default(),
             entry,

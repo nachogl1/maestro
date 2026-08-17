@@ -227,6 +227,16 @@ fn issue_state_args<'a>(number: &'a str, repo_pin: Option<&'a str>) -> Vec<&'a s
     args
 }
 
+/// Args for [`GitHub::get_issue_title`] — same pin discipline as
+/// [`issue_state_args`], for the launch-time ref-title lookup (issue #141).
+fn issue_title_args<'a>(number: &'a str, repo_pin: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec!["issue", "view", number, "--json", "title"];
+    if let Some(pin) = repo_pin {
+        args.extend_from_slice(&["--repo", pin]);
+    }
+    args
+}
+
 /// Args for [`GitHub::get_pull_request_completion`] — same pin discipline as
 /// [`issue_state_args`]; `closingIssuesReferences` carries the issues the PR
 /// body links for auto-close (review F3).
@@ -757,6 +767,28 @@ impl GitHub {
             .run_json(&issue_state_args(&number_str, repo_pin))
             .await?;
         Ok(response.state)
+    }
+
+    /// Title of one issue, optionally pinned to a repo — the launch-time
+    /// ref-title lookup (issue #141) that labels a Second Brain run
+    /// `Epic #38 — Samurai supervision` instead of `Epic #38`. Same shape
+    /// and pin discipline as [`Self::get_issue_state`].
+    pub async fn get_issue_title(
+        &self,
+        number: u64,
+        repo_pin: Option<&str>,
+    ) -> Result<String, GitHubError> {
+        let number_str = number.to_string();
+
+        #[derive(Deserialize)]
+        struct TitleOnly {
+            title: String,
+        }
+
+        let response: TitleOnly = self
+            .run_json(&issue_title_args(&number_str, repo_pin))
+            .await?;
+        Ok(response.title)
     }
 
     /// State of one pull request plus the numbers of the issues its body
@@ -1443,6 +1475,29 @@ mod tests {
                 "--json",
                 "state,closingIssuesReferences"
             ]
+        );
+    }
+
+    #[test]
+    fn test_issue_title_args_pin_the_repo_when_known() {
+        // Issue #141: the launch-time title lookup's args builder — same
+        // pin discipline as `issue_state_args`, `--json title` instead of
+        // `--json state`.
+        assert_eq!(
+            issue_title_args("77", Some("nachogl1/maestro")),
+            vec![
+                "issue",
+                "view",
+                "77",
+                "--json",
+                "title",
+                "--repo",
+                "nachogl1/maestro"
+            ]
+        );
+        assert_eq!(
+            issue_title_args("77", None),
+            vec!["issue", "view", "77", "--json", "title"]
         );
     }
 
