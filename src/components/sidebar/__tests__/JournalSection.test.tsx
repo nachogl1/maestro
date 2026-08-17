@@ -75,6 +75,8 @@ function mockInvoke(rows: JournalRow[], opts: { fileSizeBytes?: number } = {}) {
     switch (cmd) {
       case "samurai_journal_list":
         return { entries: rows, file_size_bytes: opts.fileSizeBytes ?? 2048 };
+      case "samurai_harvest_list":
+        return [];
       case "samurai_journal_add": {
         const { category, text, project } = args as SamuraiJournalEntry & { project?: string };
         const entry: SamuraiJournalEntry = {
@@ -202,6 +204,9 @@ describe("JournalSection (issue #71)", () => {
         if (fail) throw "journal file unreadable";
         return { entries: [journalRow()], file_size_bytes: 1024 };
       }
+      // The Journal card mounts HarvestReportsSection (issue #142), which
+      // lists on mount — the command answers a `Vec`, never `undefined`.
+      if (cmd === "samurai_harvest_list") return [];
       return undefined;
     });
     render(<JournalSection />);
@@ -289,6 +294,8 @@ describe("JournalSection (issue #71)", () => {
       if (cmd === "samurai_journal_delete") {
         throw "journal entry not found — it may already be gone, or a harvest changed it";
       }
+      // See above: the mounted HarvestReportsSection re-lists on every render.
+      if (cmd === "samurai_harvest_list") return [];
       return undefined;
     });
     askMock.mockResolvedValueOnce(true);
@@ -299,5 +306,27 @@ describe("JournalSection (issue #71)", () => {
     ).toBeInTheDocument();
     // The failed delete did not remove the row.
     expect(screen.getByText("will fail")).toBeInTheDocument();
+  });
+
+  // Issue #142: the legacy harvest reports surface (HarvestReportsSection)
+  // is mounted inside the Journal card, below the entries.
+  it("mounts the legacy harvest reports surface inside the Journal card", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "samurai_journal_list") return { entries: [], file_size_bytes: 0 };
+      if (cmd === "samurai_harvest_list") {
+        return [
+          {
+            path: "C:\\data\\harvest\\maestro-harvest-insights-2026-08-07.md",
+            size_bytes: 1024,
+            modified_at: "2026-08-07T10:00:00Z",
+          },
+        ];
+      }
+      return undefined;
+    });
+    render(<JournalSection />);
+
+    expect(await screen.findByText("maestro-harvest-insights-2026-08-07.md")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("samurai_harvest_list");
   });
 });

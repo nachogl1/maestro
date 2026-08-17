@@ -16,6 +16,7 @@ import {
 } from "@/lib/samurai";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { HarvestReportsSection } from "./HarvestReportsSection";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 /**
@@ -136,6 +137,11 @@ function JournalRow({
  * report, keep/file/discard discussion — on the session's first
  * SessionStarted. Entry statuses flip to CONSUMED at that injection, so this
  * list updates on the next refresh, not on click.
+ *
+ * Below the entries, [`HarvestReportsSection`] surfaces whatever is left
+ * from the retired headless harvest under `<app data>/harvest/*` (issue
+ * #142) — legacy reports the Files panel deliberately does not list (no
+ * generic group, epic #136).
  */
 export function JournalSection() {
   const tabs = useWorkspaceStore((s) => s.tabs);
@@ -414,6 +420,7 @@ export function JournalSection() {
           ))}
         </div>
       )}
+      <HarvestReportsSection />
     </div>
   );
 }
