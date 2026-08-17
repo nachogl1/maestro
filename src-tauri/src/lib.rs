@@ -892,7 +892,8 @@ pub fn run() {
                     harvest_deliver,
                 )
                 .with_notify(harvest_notify)
-                .with_delivery_watch(harvest_watch),
+                .with_delivery_watch(harvest_watch)
+                .with_session_dirs(session_dirs.clone()),
             );
             app.manage(harvest_triage.clone());
             let _ = harvest_triage_slot.set(harvest_triage);
