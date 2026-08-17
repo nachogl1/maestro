@@ -3348,12 +3348,26 @@ mod tests {
             Some(SupervisorState::HandoffRequested)
         );
 
-        // The instruction really was typed, and it is the handoff one.
+        // Something really was typed, and — the handoff instruction being far
+        // over the brief-file gate (issue #143) — what reached the PTY is the
+        // one-line POINTER at gen-1's handoff brief, not the instruction.
         use crate::core::samurai_injector::{ACK_TAG, WRITTEN_TAG};
-        let instruction = typed.lock().unwrap().join("");
+        let typed_text = typed.lock().unwrap().join("");
+        assert_eq!(
+            typed_text,
+            samurai_brief::pointer_instruction(&format!(
+                "{}/gen-1-handoff.md",
+                samurai_brief::BRIEF_DIR
+            )),
+            "the injected text must be the pointer at gen-1's handoff brief: {typed_text}"
+        );
+
+        // Following that pointer — opening the brief it names, in the session's
+        // own worktree — must land on the real handoff instruction, verbatim.
+        let instruction = brief_text(repo.path(), &typed_text);
         assert!(
             instruction.contains(ACK_TAG) && instruction.contains("Handoff requested"),
-            "the injected text must be the handoff instruction: {instruction}"
+            "the delivered instruction must be the handoff one: {instruction}"
         );
         let relpath = samurai_prompts::handoff_file_relpath(epic, 1);
         assert!(
