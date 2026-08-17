@@ -59,6 +59,7 @@ use serde_json::json;
 
 use super::claude_event::ClaudeEvent;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
+use super::samurai_brief;
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_context::SamuraiContextStore;
 use super::samurai_parker::SamuraiParker;
@@ -240,6 +241,31 @@ fn corrective_instruction_for(
         PendingKind::WinddownAllClear => {
             samurai_prompts::winddown_allclear_instruction(generation, episode)
         }
+    }
+}
+
+/// Brief-file stem for one pending instruction (issue #143), mirroring
+/// `samurai_replicator::ritual_brief_name`'s naming but keyed on
+/// [`PendingKind`] + corrective + wind-down episode instead of
+/// launch/ritual/recovery. Distinct prefixes from the replicator's own
+/// `gen-<N>-launch/ritual/recovery` stems so both controllers can write into
+/// the same `.maestro/briefs/` directory without colliding.
+fn injector_brief_name(
+    kind: PendingKind,
+    generation: u32,
+    corrective: bool,
+    episode: u32,
+) -> String {
+    let base = match kind {
+        PendingKind::Handoff => format!("gen-{generation}-handoff"),
+        PendingKind::Park => format!("gen-{generation}-park"),
+        PendingKind::SoftWinddown => format!("gen-{generation}-winddown-{episode}"),
+        PendingKind::WinddownAllClear => format!("gen-{generation}-allclear-{episode}"),
+    };
+    if corrective {
+        format!("{base}-corrective")
+    } else {
+        base
     }
 }
 
@@ -1685,12 +1711,44 @@ impl SamuraiInjector {
         Some(p.instruction.clone())
     }
 
+    /// What is actually typed for `session_id`'s pending instruction, per
+    /// issue #143: routed through the same brief-file gate
+    /// [`SamuraiReplicator`] already uses
+    /// ([`samurai_brief::deliverable_instruction`]), resolved against the
+    /// pending entry's own kind/generation/corrective/episode and the
+    /// session's worktree (`self.session_dirs`). No pending entry, or no
+    /// recorded working directory, types `data` exactly as before #143 — the
+    /// same "no new failure mode" fallback #137 already established for a
+    /// failed brief write.
+    ///
+    /// The lock is acquired and released *before* any I/O —
+    /// `deliverable_instruction` never runs under `self.pending`'s mutex.
+    fn deliverable(&self, session_id: u32, data: String) -> String {
+        let name = self
+            .lock_pending()
+            .get(&session_id)
+            .map(|p| injector_brief_name(p.kind, p.generation, p.corrective, p.episode));
+        match (name, (self.session_dirs)(session_id)) {
+            (Some(name), Some(dir)) => {
+                samurai_brief::deliverable_instruction(&PathBuf::from(dir), &name, data)
+            }
+            _ => data,
+        }
+    }
+
     /// Write the instruction into the session's PTY through the injected
     /// writer (production: `samurai_pty::submit_instruction`, which submits
     /// with a separate Enter — a single text-plus-CR write is read as a
     /// paste and never submits). The `delivered` audit row and the
     /// Enter-resend watch ride the writer's verdict callback (issue #109),
     /// never the mere attempt.
+    ///
+    /// What is physically typed goes through [`Self::deliverable`] (issue
+    /// #143): an instruction over the brief-file gate is staged as a file and
+    /// a one-line pointer replaces it here. The audit's `instruction` clone
+    /// stays the RAW `data`, taken before that conversion, so
+    /// `record_delivery_outcome`'s excerpt/`total_chars` keep describing the
+    /// real instruction, never the pointer.
     fn spawn_write(&self, session_id: u32, gate: &'static str, data: String) {
         let pending = self.pending.clone();
         let audit = self.audit.clone();
@@ -1707,7 +1765,8 @@ impl SamuraiInjector {
                 result,
             );
         });
-        (self.deliver)(session_id, data, outcome);
+        let to_type = self.deliverable(session_id, data);
+        (self.deliver)(session_id, to_type, outcome);
     }
 
     /// ACK scan for one assistant reply. Only the session's own expected
@@ -3259,6 +3318,301 @@ mod tests {
         ));
         let rows = audit.read(project, None, None).await.unwrap().events;
         assert_eq!(rows.len(), before);
+    }
+
+    // --- issue #143: injector instructions route through the brief-file gate ---
+
+    #[test]
+    fn test_injector_brief_name_shape() {
+        assert_eq!(
+            injector_brief_name(PendingKind::Handoff, 3, false, 0),
+            "gen-3-handoff"
+        );
+        assert_eq!(
+            injector_brief_name(PendingKind::Handoff, 3, true, 0),
+            "gen-3-handoff-corrective"
+        );
+        assert_eq!(
+            injector_brief_name(PendingKind::Park, 3, false, 0),
+            "gen-3-park"
+        );
+        assert_eq!(
+            injector_brief_name(PendingKind::Park, 3, true, 0),
+            "gen-3-park-corrective"
+        );
+        assert_eq!(
+            injector_brief_name(PendingKind::SoftWinddown, 3, false, 1),
+            "gen-3-winddown-1"
+        );
+        assert_eq!(
+            injector_brief_name(PendingKind::WinddownAllClear, 3, false, 1),
+            "gen-3-allclear-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deliverable_stages_a_long_handoff_instruction_as_a_pointer_with_a_byte_identical_brief(
+    ) {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-brief";
+        let repo = tempdir().unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        supervisor
+            .register_session(1, project.into(), "epic-7".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick(); // WORKING -> HANDOFF_REQUESTED, real handoff_instruction staged
+
+        let instruction = samurai_prompts::handoff_instruction("epic-7", 3);
+        assert!(
+            instruction.len() > samurai_brief::INLINE_MAX_BYTES,
+            "fixture assumption: the real handoff instruction is over the gate"
+        );
+
+        let staged = injector.deliverable(1, instruction.clone());
+
+        let relpath = format!("{}/gen-3-handoff.md", samurai_brief::BRIEF_DIR);
+        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
+            instruction,
+            "the brief on disk is byte-identical to what would have been typed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deliverable_stages_long_park_and_corrective_instructions_as_pointers() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-brief-park";
+        let repo = tempdir().unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+
+        let snapshot = drive_to_park_requested(&injector, &supervisor, project, 2);
+
+        let park = samurai_prompts::park_instruction(&snapshot.epic, snapshot.generation);
+        assert!(
+            park.len() > samurai_brief::INLINE_MAX_BYTES,
+            "fixture assumption"
+        );
+        let staged = injector.deliverable(1, park.clone());
+        let relpath = format!("{}/gen-2-park.md", samurai_brief::BRIEF_DIR);
+        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
+            park
+        );
+
+        // The same entry, now corrective, routes to the "-corrective" stem.
+        injector.lock_pending().get_mut(&1).unwrap().corrective = true;
+        let park_corrective = samurai_prompts::park_corrective_instruction(
+            &snapshot.epic,
+            snapshot.generation,
+            "bad",
+        );
+        assert!(
+            park_corrective.len() > samurai_brief::INLINE_MAX_BYTES,
+            "fixture assumption"
+        );
+        let staged = injector.deliverable(1, park_corrective.clone());
+        let relpath = format!("{}/gen-2-park-corrective.md", samurai_brief::BRIEF_DIR);
+        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
+            park_corrective
+        );
+
+        // A handoff-corrective entry on another session.
+        let snap2 = supervisor
+            .register_session(2, project.into(), "epic-9".into(), 5)
+            .unwrap();
+        injector.lock_pending().insert(
+            2,
+            PendingInstruction::new(PendingKind::Handoff, &snap2, "placeholder".into()),
+        );
+        injector.lock_pending().get_mut(&2).unwrap().corrective = true;
+        dirs.lock()
+            .unwrap()
+            .insert(2, repo.path().to_string_lossy().into_owned());
+        let handoff_corrective =
+            samurai_prompts::handoff_corrective_instruction("epic-9", 5, "bad");
+        assert!(
+            handoff_corrective.len() > samurai_brief::INLINE_MAX_BYTES,
+            "fixture assumption"
+        );
+        let staged = injector.deliverable(2, handoff_corrective.clone());
+        let relpath = format!("{}/gen-5-handoff-corrective.md", samurai_brief::BRIEF_DIR);
+        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
+            handoff_corrective
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deliverable_keeps_a_short_instruction_inline_and_writes_no_file() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-brief-short";
+        let repo = tempdir().unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snap = supervisor
+            .register_session(1, project.into(), "epic-1".into(), 1)
+            .unwrap();
+        let short = "x".repeat(samurai_brief::INLINE_MAX_BYTES);
+        injector.lock_pending().insert(
+            1,
+            PendingInstruction::new(PendingKind::Handoff, &snap, short.clone()),
+        );
+
+        let staged = injector.deliverable(1, short.clone());
+
+        assert_eq!(staged, short);
+        assert!(
+            !repo.path().join(samurai_brief::BRIEF_DIR).exists(),
+            "no brief written"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deliverable_falls_back_to_the_full_text_when_the_brief_write_fails() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-brief-fail";
+        let repo = tempdir().unwrap();
+        std::fs::write(repo.path().join(".maestro"), "not a directory").unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snap = supervisor
+            .register_session(1, project.into(), "epic-1".into(), 1)
+            .unwrap();
+        let instruction = samurai_prompts::handoff_instruction("epic-1", 1);
+        injector.lock_pending().insert(
+            1,
+            PendingInstruction::new(PendingKind::Handoff, &snap, instruction.clone()),
+        );
+
+        let staged = injector.deliverable(1, instruction.clone());
+
+        assert_eq!(
+            staged, instruction,
+            "a failed write falls back to the full text"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deliverable_with_no_recorded_working_directory_types_the_instruction_as_before() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-brief-nodir";
+        let snap = supervisor
+            .register_session(1, project.into(), "epic-1".into(), 1)
+            .unwrap();
+        let instruction = samurai_prompts::handoff_instruction("epic-1", 1);
+        injector.lock_pending().insert(
+            1,
+            PendingInstruction::new(PendingKind::Handoff, &snap, instruction.clone()),
+        );
+
+        let staged = injector.deliverable(1, instruction.clone());
+
+        assert_eq!(staged, instruction);
+    }
+
+    #[tokio::test]
+    async fn test_deliverable_with_no_pending_entry_types_the_data_unchanged() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, _supervisor, _context, dirs) = harness(dir.path());
+        let repo = tempdir().unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let instruction = samurai_prompts::handoff_instruction("epic-1", 1);
+
+        let staged = injector.deliverable(1, instruction.clone());
+
+        assert_eq!(staged, instruction);
+    }
+
+    /// The last `data` the injected writer was asked to type.
+    type DeliveryCapture = Arc<Mutex<Option<String>>>;
+
+    /// Same wiring as [`harness`], but the injected writer also records the
+    /// last `data` it was asked to type — issue #143's end-to-end check needs
+    /// to see what actually reached the PTY, not just the pending entry's raw
+    /// instruction.
+    fn harness_capturing_delivery(
+        dir: &std::path::Path,
+    ) -> (
+        SamuraiInjector,
+        AuditLog,
+        Arc<Supervisor>,
+        Arc<SamuraiContextStore>,
+        DirMap,
+        DeliveryCapture,
+    ) {
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        tokio::spawn(task);
+        let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
+        let context = Arc::new(SamuraiContextStore::new());
+        let config: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
+        let dirs: DirMap = Arc::new(Mutex::new(HashMap::new()));
+        let dirs_for_resolver = dirs.clone();
+        let resolver: SessionDirResolver =
+            Arc::new(move |session_id| dirs_for_resolver.lock().unwrap().get(&session_id).cloned());
+        let captured: DeliveryCapture = Arc::new(Mutex::new(None));
+        let captured_for_deliver = captured.clone();
+        let deliver: StdinWriter = Arc::new(move |_, data, outcome: DeliveryOutcome| {
+            *captured_for_deliver.lock().unwrap() = Some(data);
+            outcome(Ok(()))
+        });
+        let injector = SamuraiInjector::new(
+            supervisor.clone(),
+            context.clone(),
+            config,
+            deliver,
+            audit.clone(),
+            resolver,
+            None,
+        );
+        (injector, audit, supervisor, context, dirs, captured)
+    }
+
+    #[tokio::test]
+    async fn test_handoff_trigger_delivers_a_pointer_through_the_full_harness() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, context, dirs, captured) =
+            harness_capturing_delivery(dir.path());
+        let project = "C:/git/proj-inj-brief-e2e";
+        let repo = tempdir().unwrap();
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        supervisor
+            .register_session(1, project.into(), "epic-7".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+
+        injector.observe_hook(&stop_event(1));
+
+        let typed = captured.lock().unwrap().clone().expect("delivery captured");
+        let full = samurai_prompts::handoff_instruction("epic-7", 3);
+        let relpath = format!("{}/gen-3-handoff.md", samurai_brief::BRIEF_DIR);
+        assert_eq!(typed, samurai_brief::pointer_instruction(&relpath));
+        assert_ne!(typed, full);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
+            full
+        );
     }
 
     // --- issue #54: written marker → validation → HANDOFF_WRITTEN ---
