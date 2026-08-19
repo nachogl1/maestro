@@ -33,6 +33,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use super::samurai_brief::StagedBrief;
+use super::samurai_files::normalize_project;
 
 /// Directory name, inside the `runs` root, holding PR-review records.
 pub const PR_RUNS_DIR: &str = "pr";
@@ -234,7 +235,18 @@ impl PrRunStore {
                 .map_err(|e| e.to_string())
                 .and_then(|c| serde_json::from_str::<PrReviewRun>(&c).map_err(|e| e.to_string()))
             {
-                Ok(run) => runs.push((path, run)),
+                Ok(mut run) => {
+                    // A record written before #161 carries the mangled
+                    // relative spelling of a UNC checkout. Repaired here, in
+                    // memory only: the brief provably landed under the same
+                    // directory — `UNC\server\share\…` was only ever produced
+                    // from `\\?\UNC\server\share\…` — so the sweep and the
+                    // Second Brain get the absolute root back without the
+                    // record file being rewritten.
+                    run.project_path = normalize_project(&run.project_path);
+                    run.brief_root = run.brief_root.as_deref().map(normalize_project);
+                    runs.push((path, run));
+                }
                 Err(e) => log::warn!("samurai pr runs: skipping unreadable record {path:?}: {e}"),
             }
         }
@@ -264,18 +276,6 @@ fn record_file_name(run: &PrReviewRun) -> String {
         "{repo}-{}-{}-{}.json",
         run.pr, run.launch_id, run.session_id
     )
-}
-
-/// Strips the Windows `\\?\` extended-length prefix, per fork convention (see
-/// `commands/ai_runner.rs::canonical_project_path`,
-/// `samurai_audit::normalize_project` and `samurai_run_config`). Applied on
-/// construction so a record's checkout hashes to the same audit file, and
-/// keys the same Second Brain project, as every other samurai surface.
-fn normalize_project(project: &str) -> String {
-    // Strips `\\?\` only, so a `\\?\UNC\` checkout is left RELATIVE and its
-    // brief is skipped rather than swept — safe, but retention then silently
-    // never runs for a share-hosted tree. Tracked in #161.
-    project.strip_prefix(r"\\?\").unwrap_or(project).to_string()
 }
 
 /// Lowercased, with every run of non-`[a-z0-9]` characters collapsed to one
@@ -593,6 +593,50 @@ mod tests {
             }),
         );
         assert_eq!(run.brief_root.as_deref(), Some(r"C:\git\maestro"));
+    }
+
+    #[test]
+    fn test_normalization_keeps_a_unc_checkout_absolute() {
+        // Issue #161: `\\?\UNC\server\share\…` must strip to
+        // `\\server\share\…`, never to a relative-looking
+        // `UNC\server\share\…` — [`staged_brief_path`] rejects a relative
+        // root, so the #145 sweep silently never ran on a share-hosted
+        // checkout.
+        let run = PrReviewRun::now(
+            PrReviewLaunch {
+                project_path: r"\\?\UNC\server\share\maestro".to_string(),
+                ..launch()
+            },
+            7,
+            Some(StagedBrief {
+                root: PathBuf::from(r"\\?\UNC\server\share\tab"),
+                relpath: "a.md".to_string(),
+            }),
+        );
+        assert_eq!(run.project_path, r"\\server\share\maestro");
+        assert_eq!(run.brief_root.as_deref(), Some(r"\\server\share\tab"));
+    }
+
+    #[test]
+    fn test_list_repairs_records_written_under_the_old_normalization() {
+        // A record persisted before #161 carries the mangled relative
+        // spelling. Reading repairs it in memory, so the retention sweep and
+        // the Second Brain see the absolute tree the brief was really staged
+        // under — without rewriting the file.
+        let dir = tempdir().unwrap();
+        let store = PrRunStore::new(dir.path().to_path_buf());
+        let mut run = PrReviewRun::now(launch(), 7, staged("a.md"));
+        run.project_path = r"UNC\server\share\maestro".to_string();
+        run.brief_root = Some(r"UNC\server\share\tab".to_string());
+        store.record(&run).unwrap();
+
+        let listed = store.list_with_paths();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].1.project_path, r"\\server\share\maestro");
+        assert_eq!(
+            listed[0].1.brief_root.as_deref(),
+            Some(r"\\server\share\tab")
+        );
     }
 
     #[test]

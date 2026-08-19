@@ -52,6 +52,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::samurai_files::normalize_project;
 use super::samurai_prompts::epic_slug;
 use super::samurai_workflow::WorkflowGraph;
 
@@ -111,8 +112,9 @@ pub struct ScheduledLaunchSpec {
 /// config (`samurai_run_config`) holds everything a resume spawn needs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleEntry {
-    /// Canonical project path, `\\?\`-stripped (fork convention); re-
-    /// normalized on `arm` so lookups by either spelling match.
+    /// Canonical project path, normalized per
+    /// `samurai_files::normalize_project` (fork convention); re-normalized
+    /// on `arm` and on load so lookups by any spelling match.
     pub project_path: String,
     /// Epic reference — with `project_path`, the timer's identity: one
     /// pending timer per (project, epic).
@@ -502,7 +504,14 @@ fn load_entries(path: &PathBuf) -> LoadReport {
         .into_iter()
         .filter_map(
             |value| match serde_json::from_value::<ScheduleEntry>(value) {
-                Ok(entry) => Some(entry),
+                Ok(mut entry) => {
+                    // A timer persisted before #161 can carry the mangled
+                    // relative spelling of a UNC checkout; repaired here so
+                    // arm/cancel matching and the resume launch see the
+                    // absolute path (the next persist rewrites it).
+                    entry.project_path = normalize_project(&entry.project_path);
+                    Some(entry)
+                }
                 Err(e) => {
                     log::error!("samurai schedule: dropping a malformed entry in {path:?}: {e}");
                     None
@@ -540,12 +549,6 @@ fn persist(path: &PathBuf, entries: &[ScheduleEntry]) -> Result<(), String> {
     std::fs::write(&tmp, json).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
-}
-
-/// Strips the Windows `\\?\` extended-length prefix, per fork convention
-/// (see `samurai_audit::normalize_project`).
-fn normalize_project(project: &str) -> String {
-    project.strip_prefix(r"\\?\").unwrap_or(project).to_string()
 }
 
 #[cfg(test)]
@@ -614,6 +617,32 @@ mod tests {
         let mut epics: Vec<String> = schedule.list().into_iter().map(|e| e.epic).collect();
         epics.sort();
         assert_eq!(epics, vec!["#37".to_string(), "#9".to_string()]);
+    }
+
+    #[test]
+    fn test_load_repairs_the_pre_161_relative_unc_spelling() {
+        // A timer persisted before #161 carries the mangled relative
+        // spelling of a UNC checkout. Loading repairs it, so the entry lists
+        // under the absolute path and cancel — which normalizes its argument
+        // the same way — still matches it.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("schedule.json");
+        let persisted = serde_json::json!([{
+            "project_path": r"UNC\server\share\maestro",
+            "epic": "#9",
+            "fire_at": in_one_hour(),
+            "reason": "park",
+        }]);
+        std::fs::write(&path, serde_json::to_string(&persisted).unwrap()).unwrap();
+
+        let (cb, _) = collector();
+        let (schedule, _task) = SamuraiSchedule::new(dir.path().to_path_buf(), cb, None);
+        let listed = schedule.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].project_path, r"\\server\share\maestro");
+        assert!(schedule
+            .cancel(r"\\?\UNC\server\share\maestro", "#9")
+            .unwrap());
     }
 
     #[test]

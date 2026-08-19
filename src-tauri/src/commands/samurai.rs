@@ -22,7 +22,9 @@ use crate::commands::usage::{get_claude_usage, UsageData};
 use crate::core::samurai_audit::{AuditEvent, AuditEventKind, AuditLog, AuditReadResult};
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
 use crate::core::samurai_context::SamuraiContextStore;
-use crate::core::samurai_files::{self, SamuraiFileEntry, SamuraiFileGroup, SamuraiFilesRoots};
+use crate::core::samurai_files::{
+    self, normalize_project, SamuraiFileEntry, SamuraiFileGroup, SamuraiFilesRoots,
+};
 use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
@@ -52,6 +54,18 @@ use crate::github::{AuthStatus, GitHub};
 const SAMURAI_CONFIG_STORE: &str = "samurai-config.json";
 /// The single key the whole config object lives under.
 const SAMURAI_CONFIG_KEY: &str = "config";
+
+/// Project identity at the samurai command boundary:
+/// [`canonical_project_path`] plus the shared samurai repair
+/// (`samurai_files::normalize_project`). `canonical_project_path` strips only
+/// `\\?\`, which leaves a `\\?\UNC\server\share\…` checkout RELATIVE
+/// (`UNC\server\share\…`) — a spelling that matches none of the stores'
+/// normalized records and is unusable as a working directory (issue #161).
+/// Every samurai command canonicalizes through THIS, so the same project can
+/// never enter the subsystem under two spellings.
+fn samurai_project(project_path: &str) -> String {
+    normalize_project(&canonical_project_path(project_path))
+}
 
 /// Loads the persisted Samurai config, falling back to PRD §7 defaults for
 /// a missing/partial/unreadable store. Called once at startup (`lib.rs`) to
@@ -142,7 +156,7 @@ pub fn samurai_register_session(
     generation: Option<u32>,
     launch_line_prompt: Option<bool>,
 ) -> Result<SamuraiRegisterResult, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     let generation = generation.unwrap_or(1);
     let session = match replicator.spawn_details(&project, &epic, generation) {
         Some(details) => supervisor
@@ -215,7 +229,7 @@ pub async fn samurai_audit_read(
     tail: Option<usize>,
     since_ts: Option<String>,
 ) -> Result<AuditReadResult, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     audit.read(&project, tail, since_ts).await
 }
 
@@ -226,7 +240,7 @@ pub async fn samurai_audit_clear(
     audit: State<'_, AuditLog>,
     project_path: String,
 ) -> Result<(), String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     audit.clear(&project).await
 }
 
@@ -312,7 +326,7 @@ async fn run_preflight(project: &str) -> SamuraiPreflight {
 /// the command itself broke, never that a check failed.
 #[tauri::command]
 pub async fn samurai_preflight(project_path: String) -> Result<SamuraiPreflight, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     Ok(run_preflight(&project).await)
 }
 
@@ -903,7 +917,7 @@ pub async fn samurai_launch_run(
     skip_test_gate: Option<bool>,
     workflow: Option<WorkflowGraph>,
 ) -> Result<SamuraiLaunchResult, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     // Issue #128: one free-text box. The backend normalises it here and
     // `launch_run_inner` refuses an empty request — the wire is not trusted
     // to have done either.
@@ -1172,7 +1186,7 @@ pub async fn samurai_recover_run(
     project_path: String,
     epic: String,
 ) -> Result<SamuraiRecoverResult, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     recover_run_inner(
         &supervisor,
         &schedule,
@@ -1325,7 +1339,7 @@ pub fn samurai_schedule_launch(
     skip_test_gate: Option<bool>,
     workflow: Option<WorkflowGraph>,
 ) -> Result<ScheduleEntry, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     schedule_launch_inner(
         &schedule,
         &run_configs,
@@ -1809,7 +1823,7 @@ pub async fn samurai_cleanup_epic(
     project_path: String,
     epic: String,
 ) -> Result<SamuraiCleanupReport, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     cleanup_epic_inner(
         &supervisor,
         &schedule,
@@ -2031,7 +2045,7 @@ pub fn samurai_timer_cancel(
     project_path: String,
     epic: String,
 ) -> Result<bool, String> {
-    let project = canonical_project_path(&project_path);
+    let project = samurai_project(&project_path);
     timer_cancel_inner(&schedule, &project, &epic)
 }
 
@@ -2054,7 +2068,7 @@ pub fn samurai_journal_add(
     if text.trim().is_empty() {
         return Err("journal entry text must not be empty".to_string());
     }
-    let project = project.map(|p| canonical_project_path(&p));
+    let project = project.map(|p| samurai_project(&p));
     journal.append_entry(&JournalEntry::now(category, text, project, None))
 }
 
@@ -4856,6 +4870,23 @@ mod tests {
         assert_eq!(
             strip_extended_length("/var/data/journal.jsonl"),
             "/var/data/journal.jsonl"
+        );
+    }
+
+    #[test]
+    fn test_samurai_project_keeps_a_unc_checkout_absolute() {
+        // Issue #161: `canonical_project_path` alone strips only `\\?\`,
+        // leaving a verbatim UNC checkout RELATIVE. The samurai boundary
+        // repairs it, so the same project can never enter the subsystem
+        // under two spellings. Neither path exists, so canonicalize passes
+        // them through — the string rule is under test, on any host OS.
+        assert_eq!(
+            samurai_project(r"\\?\UNC\server\share\maestro"),
+            r"\\server\share\maestro"
+        );
+        assert_eq!(
+            samurai_project(r"UNC\server\share\maestro"),
+            r"\\server\share\maestro"
         );
     }
 
