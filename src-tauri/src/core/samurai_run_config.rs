@@ -40,6 +40,7 @@ use std::sync::{Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use super::samurai_config::SamuraiConfig;
+use super::samurai_files::normalize_project;
 use super::samurai_pr_runs;
 use super::samurai_prompts::{epic_slug, RunRefs};
 use super::samurai_workflow::WorkflowGraph;
@@ -212,9 +213,65 @@ pub struct RunConfigStore {
 
 impl RunConfigStore {
     pub fn new(base_dir: PathBuf) -> Self {
-        Self {
+        let store = Self {
             base_dir,
             lock: Mutex::new(()),
+        };
+        store.migrate_misplaced();
+        store
+    }
+
+    /// One-shot repair for configs filed where today's key no longer looks
+    /// (issue #161): a pre-#161 save keyed a `\\?\UNC\…` checkout's project
+    /// directory on the mangled relative spelling, so every lookup under the
+    /// repaired absolute path would miss it and a parked UNC run would read
+    /// as "no config". Each such config is rewritten — with the repaired
+    /// project path `read_config` already gave it — at the path `config_path`
+    /// computes today, and the stale file is then removed. Best-effort: a
+    /// file that cannot be moved stays where it is, which is exactly the
+    /// pre-migration state.
+    fn migrate_misplaced(&self) {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        for (path, config) in self.load_all() {
+            let expected = self.config_path(&config.project_path, &config.epic);
+            if path == expected {
+                continue;
+            }
+            if expected.exists() {
+                // A post-#161 save already owns the current key; the stale
+                // file is not deleted over it — a visible duplicate beats
+                // silent data loss.
+                log::warn!(
+                    "samurai run-config: {path:?} and {expected:?} both describe ({:?}, {:?}) — \
+                     leaving the former in place",
+                    config.project_path,
+                    config.epic
+                );
+                continue;
+            }
+            let moved = expected
+                .parent()
+                .ok_or_else(|| "config path has no parent".to_string())
+                .and_then(|parent| {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create {parent:?}: {e}"))
+                })
+                .and_then(|()| atomic_write_json(&expected, &config))
+                .and_then(|()| {
+                    std::fs::remove_file(&path)
+                        .map_err(|e| format!("failed to remove {path:?}: {e}"))
+                });
+            match moved {
+                Ok(()) => {
+                    // Drop the legacy project directory if this emptied it;
+                    // failure is fine (something else still lives there).
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::remove_dir(parent);
+                    }
+                    log::info!("samurai run-config: re-keyed {path:?} to {expected:?} (#161)");
+                }
+                Err(e) => log::warn!("samurai run-config: could not re-key {path:?}: {e}"),
+            }
         }
     }
 
@@ -431,7 +488,16 @@ fn read_config(path: &Path) -> Result<SamuraiRunConfig, ReadError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ReadError::Missing),
         Err(e) => return Err(ReadError::Other(format!("read failed: {e}"))),
     };
-    serde_json::from_str(&content).map_err(|e| ReadError::Other(format!("parse failed: {e}")))
+    serde_json::from_str(&content)
+        .map(|mut config: SamuraiRunConfig| {
+            // A config saved before #161 can carry the mangled relative
+            // spelling of a UNC checkout; repaired on every read so grouping
+            // and liveness matching see the absolute path. The FILE placement
+            // for such a config is healed once by `migrate_misplaced`.
+            config.project_path = normalize_project(&config.project_path);
+            config
+        })
+        .map_err(|e| ReadError::Other(format!("parse failed: {e}")))
 }
 
 /// Serialize-to-temp then rename: a crash at any point leaves either the old
@@ -444,14 +510,6 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
     std::fs::write(&tmp, json).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
-}
-
-/// Strips the Windows `\\?\` extended-length prefix `fs::canonicalize` adds,
-/// per fork convention (see `commands/ai_runner.rs::canonical_project_path`
-/// and `samurai_audit::normalize_project`). Applied on every save/lookup so
-/// both spellings of one path always hit the same file.
-fn normalize_project(project: &str) -> String {
-    project.strip_prefix(r"\\?\").unwrap_or(project).to_string()
 }
 
 /// Directory name for a project: `<sanitized-basename>-<hash12>`. Same
@@ -487,6 +545,64 @@ mod tests {
         config.repo_pin = Some("nachogl1/maestro".to_string());
         config.model = Some("opus".to_string());
         config
+    }
+
+    /// A config file laid out exactly as a pre-#161 save left it for a UNC
+    /// checkout: project mangled to the relative spelling, filed under the
+    /// directory THAT spelling hashes to.
+    fn write_legacy_unc_config(base: &Path, epic: &str) -> PathBuf {
+        let config = sample(r"UNC\server\share\maestro", epic);
+        let dir = base.join(project_dir_name(r"UNC\server\share\maestro"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", epic_slug(epic)));
+        std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_construction_rekeys_a_pre_161_unc_config_where_lookups_find_it() {
+        let dir = tempdir().unwrap();
+        let legacy_path = write_legacy_unc_config(dir.path(), "#9");
+
+        // Constructing the store migrates: the config is found under the
+        // REPAIRED absolute project — the spelling every post-#161 lookup
+        // uses — with its project field repaired, and the stale file is gone
+        // (directory included).
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        let found = store.get(r"\\server\share\maestro", "#9").unwrap();
+        assert_eq!(found.project_path, r"\\server\share\maestro");
+        assert!(!legacy_path.exists());
+        assert!(!legacy_path.parent().unwrap().exists());
+        assert_eq!(store.list_with_paths().len(), 1);
+
+        // And the migrated file round-trips through the normal keyed ops.
+        store.archive(r"\\server\share\maestro", "#9").unwrap();
+        assert_eq!(
+            store.get(r"\\server\share\maestro", "#9").unwrap().status,
+            RunConfigStatus::Archived
+        );
+    }
+
+    #[test]
+    fn test_migration_never_deletes_over_an_existing_config() {
+        let dir = tempdir().unwrap();
+        // A post-#161 save already owns the repaired key…
+        let mut current = sample(r"\\server\share\maestro", "#9");
+        current.status = RunConfigStatus::Completed;
+        RunConfigStore::new(dir.path().to_path_buf())
+            .save(&current)
+            .unwrap();
+        // …and a legacy file for the same (project, epic) also exists.
+        let legacy_path = write_legacy_unc_config(dir.path(), "#9");
+
+        // The colliding legacy file is left in place — a visible duplicate,
+        // never a silent overwrite — and the current config keeps its state.
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        assert!(legacy_path.exists());
+        assert_eq!(
+            store.get(r"\\server\share\maestro", "#9").unwrap().status,
+            RunConfigStatus::Completed
+        );
     }
 
     #[test]

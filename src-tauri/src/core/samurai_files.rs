@@ -1420,6 +1420,34 @@ pub(crate) fn strip_extended_length(path: &str) -> String {
     }
 }
 
+/// The ONE project-identity normalization every samurai surface shares —
+/// audit file names, run-config placement, schedule timers, journal entries,
+/// PR-review records and the command boundary all key the same project on
+/// this string, so it lives in exactly one place (issue #161; the per-module
+/// copies it replaces had already drifted from [`strip_extended_length`]).
+///
+/// Two rules:
+///
+/// * [`strip_extended_length`]: the `\\?\` / `\\?\UNC\` verbatim prefix
+///   `fs::canonicalize` adds on Windows is dropped, keeping a
+///   `\\?\UNC\server\share\…` checkout ABSOLUTE (`\\server\share\…`) rather
+///   than stripping it to a relative-looking `UNC\server\share\…`.
+/// * Legacy repair: a string already mangled to that relative spelling — by
+///   the pre-#161 copies of this function, persisted in their stores, or
+///   arriving from `commands/ai_runner.rs::canonical_project_path`, which
+///   still strips only `\\?\` — is mapped back to `\\server\share\…`. A
+///   leading `UNC\` component cannot occur in a genuine project path (those
+///   are absolute by construction), so the repair is unambiguous, and it is
+///   what lets every store accept its own pre-#161 records without a
+///   rewrite.
+pub(crate) fn normalize_project(project: &str) -> String {
+    let stripped = strip_extended_length(project);
+    match stripped.strip_prefix(r"UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => stripped,
+    }
+}
+
 /// Lossless `\\?\`-strip of a path for display/wire use (no canonicalize —
 /// listing must not require every path to exist).
 fn stripped(path: &Path) -> String {
@@ -1457,6 +1485,45 @@ mod tests {
     use crate::core::samurai_run_config::RunConfigStore;
     use crate::core::supervisor::SupervisorState;
     use tempfile::{tempdir, TempDir};
+
+    /// The shared project-identity rule (issue #161), pure string in / string
+    /// out so every case — including the Windows verbatim spellings a Linux
+    /// CI runner can never produce via `fs::canonicalize` — is asserted on
+    /// any host.
+    #[test]
+    fn test_normalize_project_keeps_every_absolute_form_absolute() {
+        // The verbatim prefix is dropped…
+        assert_eq!(normalize_project(r"\\?\C:\git\maestro"), r"C:\git\maestro");
+        // …and a verbatim UNC path stays ABSOLUTE — `UNC\server\share\…`
+        // would be relative, which `staged_brief_path` rightly refuses.
+        assert_eq!(
+            normalize_project(r"\\?\UNC\server\share\maestro"),
+            r"\\server\share\maestro"
+        );
+        // Already-plain spellings pass through untouched.
+        assert_eq!(normalize_project(r"C:\git\maestro"), r"C:\git\maestro");
+        assert_eq!(
+            normalize_project(r"\\server\share\maestro"),
+            r"\\server\share\maestro"
+        );
+        assert_eq!(normalize_project("/home/me/maestro"), "/home/me/maestro");
+    }
+
+    #[test]
+    fn test_normalize_project_repairs_the_pre_161_relative_unc_spelling() {
+        // What the pre-#161 normalization (and `canonical_project_path`
+        // still) made of a verbatim UNC path — persisted in stores, so it
+        // must be accepted on read and mapped back to the absolute form.
+        assert_eq!(
+            normalize_project(r"UNC\server\share\maestro"),
+            r"\\server\share\maestro"
+        );
+        // Idempotent: repairing twice changes nothing.
+        assert_eq!(
+            normalize_project(&normalize_project(r"\\?\UNC\server\share\maestro")),
+            r"\\server\share\maestro"
+        );
+    }
 
     fn roots_in(base: &Path) -> SamuraiFilesRoots {
         SamuraiFilesRoots {

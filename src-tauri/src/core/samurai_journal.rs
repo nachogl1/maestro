@@ -56,6 +56,8 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
+use super::samurai_files::normalize_project;
+
 /// Name of the active journal file inside the journal dir.
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 /// Name of the archive file inside the journal dir.
@@ -829,7 +831,14 @@ fn parse_line(line: &str, path: &Path) -> RawLine {
     let parsed = if value.get("kind").is_some() {
         serde_json::from_value::<HarvestMarker>(value).map(|m| RawLine::Marker(m, line.to_string()))
     } else {
-        serde_json::from_value::<JournalEntry>(value).map(|e| RawLine::Entry(e, line.to_string()))
+        serde_json::from_value::<JournalEntry>(value).map(|mut e| {
+            // An entry appended before #161 can carry the mangled relative
+            // spelling of a UNC checkout. Repaired on the PARSED entry only —
+            // the raw line stays byte-exact, because harvest consumption and
+            // deletes anchor on it.
+            e.project = e.project.as_deref().map(normalize_project);
+            RawLine::Entry(e, line.to_string())
+        })
     };
     parsed.unwrap_or_else(|e| {
         log::warn!("skipping unknown-shape journal line in {path:?}: {e}");
@@ -937,13 +946,6 @@ fn atomic_write_carrying_appends_with(
     }
 }
 
-/// Strips the Windows `\\?\` extended-length prefix `fs::canonicalize`
-/// adds, per fork convention (see `commands/ai_runner.rs::
-/// canonical_project_path` and `samurai_audit::normalize_project`).
-fn normalize_project(project: &str) -> String {
-    project.strip_prefix(r"\\?\").unwrap_or(project).to_string()
-}
-
 /// Absolute path of the ACTIVE journal file as orchestrator prompts embed it
 /// (issue #72): `artifact_base_dir("journal")` + [`JOURNAL_FILE`],
 /// `\\?\`-stripped per fork convention. Resolved HERE — lib.rs roots the
@@ -1022,6 +1024,25 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(category).unwrap(), wire);
         }
+    }
+
+    #[test]
+    fn test_read_repairs_the_pre_161_relative_unc_spelling() {
+        // A line appended before #161 can carry the mangled relative
+        // spelling of a UNC checkout. Parsing repairs the ENTRY (so grouping
+        // and display see the absolute path) while the raw line stays
+        // byte-exact — harvest consumption and deletes anchor on it.
+        let dir = tempdir().unwrap();
+        let line = r#"{"ts":"2026-08-19T10:00:00Z","category":"ERROR","text":"x","project":"UNC\\server\\share\\maestro"}"#;
+        std::fs::write(dir.path().join(JOURNAL_FILE), format!("{line}\n")).unwrap();
+
+        let listed = store(dir.path()).list().unwrap();
+        assert_eq!(listed.entries.len(), 1);
+        assert_eq!(
+            listed.entries[0].entry.project.as_deref(),
+            Some(r"\\server\share\maestro")
+        );
+        assert_eq!(listed.entries[0].raw, line);
     }
 
     #[test]

@@ -25,6 +25,7 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
+use super::samurai_files::normalize_project;
 use super::status_server::StatusServer;
 
 /// The audit event kinds (PRD §5.10). Sub-kinds (ack-timeout, breaker-tripped,
@@ -219,14 +220,6 @@ impl AuditLog {
         rx.await
             .map_err(|_| "audit writer task dropped the reply".to_string())?
     }
-}
-
-/// Strips the Windows `\\?\` extended-length prefix `fs::canonicalize` adds,
-/// per fork convention (see `commands/ai_runner.rs::canonical_project_path`).
-/// Done here as well as at the command layer so that a verbatim and a plain
-/// spelling of the same path can never map to two different audit files.
-fn normalize_project(project: &str) -> String {
-    project.strip_prefix(r"\\?\").unwrap_or(project).to_string()
 }
 
 /// File name for a project's audit log: `<sanitized-basename>-<hash12>.jsonl`.
@@ -670,6 +663,13 @@ mod tests {
         assert_eq!(
             audit_file_name(&normalize_project(r"\\?\C:\git\maestro")),
             audit_file_name(&normalize_project(r"C:\git\maestro")),
+        );
+        // And the UNC pair (issue #161): the verbatim spelling of a
+        // share-hosted checkout keys the same audit file as its plain
+        // absolute spelling.
+        assert_eq!(
+            audit_file_name(&normalize_project(r"\\?\UNC\server\share\maestro")),
+            audit_file_name(&normalize_project(r"\\server\share\maestro")),
         );
     }
 
