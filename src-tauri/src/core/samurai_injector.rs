@@ -346,7 +346,11 @@ struct PendingInstruction {
     instruction: String,
     /// Injection attempts so far: 0 (waiting for first idle), 1, or 2 (max).
     attempts: u8,
-    /// When the latest injection was written; `None` before the first.
+    /// When the latest injection's delivery RESOLVED — the writer's verdict
+    /// callback, not the arm (issue #160): the staging hop and the PTY write
+    /// sit between the two, and the ACK window must not charge them to the
+    /// agent. `None` before the first delivery and while a write is in
+    /// flight (armed, verdict not yet in).
     injected_at: Option<AgeableInstant>,
     /// When the entry started (or resumed) WAITING for an idle signal:
     /// stamped at creation, and re-stamped whenever a retry/corrective is
@@ -411,7 +415,8 @@ impl PendingInstruction {
         self
     }
 
-    /// How long since the latest injection; `None` before the first.
+    /// How long since the latest injection's delivery resolved; `None`
+    /// before the first delivery and while a write is in flight (#160).
     /// [`AgeableInstant`] carries the test-only backdate offset (issue #90),
     /// so these reads never underflow on a freshly booted machine.
     fn injected_elapsed(&self) -> Option<Duration> {
@@ -516,8 +521,12 @@ enum TimeoutVerdict {
     /// The retry ran out of time too: ALERT once and stop tracking.
     Alert,
     /// Finding E: a waiting state aged out — the trigger fired but the Stop
-    /// hook never came (wedged turn), or the retry was armed and idle never
-    /// came. ALERT once (`never_idled` / `retry_never_injected`).
+    /// hook never came (wedged turn), the retry was armed and idle never
+    /// came, or the latest attempt's write never reported a verdict (issue
+    /// #160 — the stamp rides the delivery outcome, so a vanished callback
+    /// leaves the entry unstamped and the tick re-arms the retry). ALERT
+    /// once (`never_idled` / `retry_never_injected` /
+    /// `delivery_unresolved`).
     ///
     /// Unlike [`Alert`](Self::Alert) the entry is KEPT: "no idle yet" is not
     /// "cannot be instructed". A long turn — a subagent wave, a full
@@ -529,8 +538,11 @@ enum TimeoutVerdict {
     AlertStuck,
 }
 
-/// Pure ACK-timeout decision. `elapsed` is time since the latest injection
-/// (`None` = not injected yet, still waiting for the first idle);
+/// Pure ACK-timeout decision. `elapsed` is time since the latest attempt's
+/// delivery RESOLVED (the writer's verdict, not the arm — issue #160);
+/// `None` = nothing delivered yet: still waiting for the first idle, or the
+/// write is in flight — both wait under the waiting caps, never the ACK
+/// window, so a slow staging hop is never charged to the agent.
 /// `waiting_elapsed` is time since the entry started waiting for an idle
 /// signal (creation / retry armed). Both boundaries are strict (`>`),
 /// matching "no ACK within N seconds".
@@ -563,7 +575,10 @@ fn timeout_verdict(
         };
     }
     let Some(elapsed) = elapsed else {
-        // Trigger fired, Stop never came — the long-turn cap.
+        // Nothing delivered yet — the trigger fired and Stop never came, or
+        // the write is still in flight (issue #160). The long-turn cap
+        // bounds the wait either way; the verdict callback resumes the ACK
+        // ladder the moment the delivery resolves.
         return if waiting_elapsed > max_turn_wait {
             TimeoutVerdict::AlertStuck
         } else {
@@ -574,7 +589,10 @@ fn timeout_verdict(
         return TimeoutVerdict::Keep;
     }
     match attempts {
-        0 => TimeoutVerdict::Keep, // unreachable (elapsed implies an attempt); never panic
+        // Near-unreachable (a stamp implies an armed attempt; only a stale
+        // outcome racing a re-created entry can stamp one unarmed) — Keep,
+        // never panic.
+        0 => TimeoutVerdict::Keep,
         1 => TimeoutVerdict::ArmRetry,
         _ => TimeoutVerdict::Alert,
     }
@@ -1299,18 +1317,32 @@ impl SamuraiInjector {
                         }
                         TimeoutVerdict::AlertStuck => {
                             // Finding E: no injection was possible yet —
-                            // either the trigger's Stop never came (a very
-                            // long turn) or the armed retry's idle never
-                            // came. One ack_timeout ALERT with the exact
-                            // flavor, then KEEP TRACKING: the turn ends
-                            // eventually and the instruction is still owed.
-                            // Latched so the ALERT stays one-shot.
+                            // the trigger's Stop never came (a very long
+                            // turn), the armed retry's idle never came, or
+                            // the latest attempt's write never resolved
+                            // (issue #160). One ack_timeout ALERT with the
+                            // exact flavor, then KEEP TRACKING: the turn
+                            // ends eventually and the instruction is still
+                            // owed. Latched so the ALERT stays one-shot.
                             if p.stuck_alerted {
                                 continue;
                             }
                             p.stuck_alerted = true;
                             let flag = if p.awaiting_retry {
                                 "retry_never_injected"
+                            } else if p.attempts > 0 {
+                                // Armed, delivered into the writer, and the
+                                // verdict callback never came back (issue
+                                // #160): without a stamp the ACK ladder
+                                // cannot run, and `should_inject_on_idle`
+                                // blocks a bare attempts=1 entry — so also
+                                // re-arm the retry here, or a vanished
+                                // verdict would wedge the entry forever.
+                                // The next idle re-injects, exactly as an
+                                // `ack_timeout` retry did before #160.
+                                p.awaiting_retry = true;
+                                p.waiting_since = AgeableInstant::now();
+                                "delivery_unresolved"
                             } else {
                                 "never_idled"
                             };
@@ -1616,8 +1648,16 @@ impl SamuraiInjector {
     /// On `Err` it records a distinct `delivery_failed` ALERT instead — the
     /// pending entry stays, so the ACK ladder still times out and retries.
     ///
-    /// Reads the entry back under its own short lock (the outcome fires
-    /// right after the arm decision); a raced removal simply skips the rows.
+    /// Either verdict stamps `injected_at` (issue #160): the ACK window runs
+    /// from the moment the delivery attempt RESOLVED, not from arm time, so
+    /// the staging hop and the PTY write are never charged against the
+    /// agent's `ack_timeout_secs`. `Err` stamps too — nothing reached the
+    /// agent, but the failed attempt still times out `ack_timeout_secs`
+    /// later and walks the existing retry ladder, exactly as above.
+    ///
+    /// Reads the entry back (and stamps it) under its own short lock (the
+    /// outcome fires right after the arm decision); a raced removal simply
+    /// skips the rows.
     fn record_delivery_outcome(
         pending: &Mutex<HashMap<u32, PendingInstruction>>,
         audit: &AuditLog,
@@ -1628,10 +1668,20 @@ impl SamuraiInjector {
         result: Result<(), String>,
     ) {
         let entry = {
-            let pending = pending
+            let mut pending = pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pending.get(&session_id).map(|p| {
+            pending.get_mut(&session_id).map(|p| {
+                // The delivery attempt just resolved: the ACK window starts
+                // NOW (issue #160). Only for an ARMED entry — arming always
+                // precedes the outcome, so an attempts=0 occupant is a
+                // DIFFERENT entry re-created after ours vanished (e.g. an
+                // all-clear superseding an armed wind-down), and a stale
+                // stamp on it would suppress the never-idled wait cap until
+                // its own first arm.
+                if p.attempts > 0 {
+                    p.injected_at = Some(AgeableInstant::now());
+                }
                 (
                     p.project.clone(),
                     p.epic.clone(),
@@ -1713,7 +1763,11 @@ impl SamuraiInjector {
             return None;
         }
         p.attempts += 1;
-        p.injected_at = Some(AgeableInstant::now());
+        // Issue #160: the stamp rides the delivery outcome, not the arm —
+        // the ACK window must not charge the staging hop and the PTY write
+        // to the agent. Cleared here so attempt 2's in-flight gap can never
+        // be timed against attempt 1's expired stamp.
+        p.injected_at = None;
         p.awaiting_retry = false;
         // The long turn finally ended and the instruction went in: the entry
         // is live again, so it counts as pending once more and a later
@@ -1818,7 +1872,10 @@ impl SamuraiInjector {
     /// Every decision the ACK ladder reads — the `pending` bookkeeping
     /// `arm_injection_on_idle` just wrote and the `idle_now` clear — already
     /// happened in `on_idle` before this call, and [`Self::brief_target`] is
-    /// resolved here, synchronously. Only the write itself travels.
+    /// resolved here, synchronously. Only the write itself travels. The one
+    /// exception is `injected_at` (issue #160): the ACK clock starts at the
+    /// writer's verdict, so the stamp travels WITH the write instead of
+    /// preceding it.
     fn spawn_write(&self, session_id: u32, gate: &'static str, data: String) {
         let pending = self.pending.clone();
         let audit = self.audit.clone();
@@ -2214,6 +2271,27 @@ impl SamuraiInjector {
             .map(|p| p.instruction.clone())
     }
 
+    /// Test-only: whether the latest attempt's delivery outcome has stamped
+    /// the ACK clock (issue #160) — `false` before the first delivery and
+    /// while a write is in flight.
+    #[cfg(test)]
+    fn delivery_stamped(&self, session_id: u32) -> bool {
+        self.lock_pending()
+            .get(&session_id)
+            .is_some_and(|p| p.injected_at.is_some())
+    }
+
+    /// Test-only: stand in for the writer's verdict callback on entries the
+    /// ladder tests arm via [`Self::arm_injection_on_idle`] directly, with
+    /// no writer in the loop — the ACK clock only starts once a delivery
+    /// outcome stamps the entry (issue #160).
+    #[cfg(test)]
+    fn mark_delivered(&self, session_id: u32) {
+        let mut pending = self.lock_pending();
+        let p = pending.get_mut(&session_id).expect("no pending entry");
+        p.injected_at = Some(AgeableInstant::now());
+    }
+
     /// Test-only: age the latest injection so timeout paths run without
     /// real waiting. `pub(crate)` for the parker's sweep tests (issue #60).
     ///
@@ -2222,14 +2300,25 @@ impl SamuraiInjector {
     /// `Instant::now().checked_sub(by)` underflows whenever machine uptime
     /// is shorter than `by` (issue #90), which made this flaky right after
     /// a reboot.
+    /// The stamp rides the delivery outcome (issue #160), which lands on the
+    /// tauri runtime a moment after the arm — this waits for it (bounded),
+    /// so tests can keep backdating right after driving an idle signal.
     #[cfg(test)]
     pub(crate) fn backdate_injection(&self, session_id: u32, by: Duration) {
-        let mut pending = self.lock_pending();
-        let p = pending.get_mut(&session_id).expect("no pending entry");
-        p.injected_at
-            .as_mut()
-            .expect("nothing injected")
-            .backdate(by);
+        for _ in 0..200 {
+            {
+                let mut pending = self.lock_pending();
+                let p = pending.get_mut(&session_id).expect("no pending entry");
+                if let Some(at) = p.injected_at.as_mut() {
+                    at.backdate(by);
+                    return;
+                }
+            }
+            // The delivery resolves on the tauri runtime / blocking pool,
+            // not this test's runtime, so a thread sleep cannot deadlock it.
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("nothing injected within 2s");
     }
 
     /// Test-only: age the ACK so written-window paths run without waiting.
@@ -3232,6 +3321,7 @@ mod tests {
         context.observe(&context_event(1, 50.0));
         injector.tick();
         injector.arm_injection_on_idle(1).expect("attempt 1");
+        injector.mark_delivered(1);
 
         // Wrong generation (e.g. a replayed old transcript line): ignored.
         injector.observe(&assistant_message(
@@ -3270,12 +3360,14 @@ mod tests {
 
         // Attempt 1 times out → the tick arms the retry.
         injector.arm_injection_on_idle(1).expect("attempt 1");
+        injector.mark_delivered(1);
         injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         injector.tick();
         assert_eq!(injector.pending_view(1), Some((1, false, true)));
 
         // Next idle → attempt 2; it times out too → single ALERT, untracked.
         injector.arm_injection_on_idle(1).expect("attempt 2");
+        injector.mark_delivered(1);
         assert_eq!(injector.pending_view(1), Some((2, false, false)));
         injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         injector.tick();
@@ -3905,6 +3997,250 @@ mod tests {
         );
     }
 
+    type OutcomeQueue = Arc<Mutex<std::collections::VecDeque<DeliveryOutcome>>>;
+
+    /// Same wiring as [`harness`], but the injected writer QUEUES each
+    /// delivery's verdict callback instead of invoking it — issue #160's
+    /// tests place the delivery moment by resolving them by hand.
+    fn harness_deferred_delivery(
+        dir: &std::path::Path,
+    ) -> (
+        SamuraiInjector,
+        AuditLog,
+        Arc<Supervisor>,
+        Arc<SamuraiContextStore>,
+        OutcomeQueue,
+    ) {
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        tokio::spawn(task);
+        let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
+        let context = Arc::new(SamuraiContextStore::new());
+        let config: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
+        let dirs: DirMap = Arc::new(Mutex::new(HashMap::new()));
+        let dirs_for_resolver = dirs.clone();
+        let resolver: SessionDirResolver =
+            Arc::new(move |session_id| dirs_for_resolver.lock().unwrap().get(&session_id).cloned());
+        let outcomes: OutcomeQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let outcomes_for_deliver = outcomes.clone();
+        let deliver: StdinWriter = Arc::new(move |_, _, outcome: DeliveryOutcome| {
+            outcomes_for_deliver.lock().unwrap().push_back(outcome);
+        });
+        let injector = SamuraiInjector::new(
+            supervisor.clone(),
+            context.clone(),
+            config,
+            deliver,
+            audit.clone(),
+            resolver,
+            None,
+        );
+        (injector, audit, supervisor, context, outcomes)
+    }
+
+    /// Pops the oldest queued delivery verdict and resolves it — the stamp
+    /// lands synchronously (`record_delivery_outcome` runs inside the call).
+    fn resolve_delivery(outcomes: &OutcomeQueue, result: Result<(), String>) {
+        let outcome = outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("no delivery in flight");
+        outcome(result);
+    }
+
+    // --- issue #160: the ACK window starts at delivery, not at arm ---
+
+    #[tokio::test]
+    async fn test_ack_window_starts_at_delivery_not_arm() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, context, outcomes) =
+            harness_deferred_delivery(dir.path());
+        supervisor
+            .register_session(1, "C:/git/proj-inj-delivstamp".into(), "epic".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+
+        // Idle → attempt 1 armed; the write is in flight (the staging hop
+        // plus the PTY write) and the writer's verdict has not fired yet.
+        injector.observe_hook(&stop_event(1));
+        assert_eq!(injector.pending_view(1), Some((1, false, false)));
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+
+        // The previously-unfair case (issue #160): a cold worktree makes the
+        // staging hop slow exactly when an arm-time stamp had the ACK window
+        // already running. Mid-flight there is no stamp, so no tick can
+        // charge the hop to the agent, however long it takes.
+        assert!(
+            !injector.delivery_stamped(1),
+            "no ACK clock before delivery"
+        );
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, false)));
+
+        // The body reaches the PTY: the window starts NOW.
+        resolve_delivery(&outcomes, Ok(()));
+        assert!(injector.delivery_stamped(1));
+        // Just over `ack_timeout_secs` measured FROM DELIVERY arms the retry.
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, true)));
+    }
+
+    #[tokio::test]
+    async fn test_failed_delivery_starts_the_window_and_still_retries() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, outcomes) =
+            harness_deferred_delivery(dir.path());
+        let project = "C:/git/proj-inj-delivfail";
+        supervisor
+            .register_session(1, project.into(), "epic".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+        injector.observe_hook(&stop_event(1));
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+
+        // A failed write stamps too: `record_delivery_outcome`'s documented
+        // ladder ("the pending entry stays, so the ACK ladder still times
+        // out and retries") keeps running from the failure moment.
+        resolve_delivery(&outcomes, Err("pipe closed".into()));
+        assert!(injector.delivery_stamped(1));
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, true)));
+
+        // And the failure itself was reported (audit appends are async —
+        // poll rather than read once).
+        let mut found = false;
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            if rows
+                .iter()
+                .any(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "delivery_failed")
+            {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(found, "the delivery_failed ALERT row landed");
+    }
+
+    #[tokio::test]
+    async fn test_retry_arm_clears_the_previous_attempts_stamp() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, context, outcomes) =
+            harness_deferred_delivery(dir.path());
+        supervisor
+            .register_session(1, "C:/git/proj-inj-restamp".into(), "epic".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+
+        // Attempt 1 delivers, then times out → the retry is armed.
+        injector.observe_hook(&stop_event(1));
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        resolve_delivery(&outcomes, Ok(()));
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, true)));
+
+        // Attempt 2 arms at the next idle; its write is in flight. Attempt
+        // 1's EXPIRED stamp must be gone — a tick straddling the gap would
+        // otherwise read it as attempt 2 already out of time and fire the
+        // final ALERT while the instruction is still being staged.
+        injector.observe_hook(&stop_event(1));
+        assert_eq!(injector.pending_view(1), Some((2, false, false)));
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        assert!(!injector.delivery_stamped(1), "stale stamp cleared");
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((2, false, false)));
+
+        // Attempt 2's own window still expires normally once delivered.
+        resolve_delivery(&outcomes, Ok(()));
+        injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
+        injector.tick();
+        assert!(injector.pending_view(1).is_none(), "final ALERT untracked");
+    }
+
+    #[tokio::test]
+    async fn test_stale_outcome_never_stamps_a_replacement_entry() {
+        let dir = tempdir().unwrap();
+        let (injector, _audit, supervisor, _context, outcomes) =
+            harness_deferred_delivery(dir.path());
+        let snapshot = supervisor
+            .register_session(1, "C:/git/proj-inj-staleout".into(), "epic-9".into(), 5)
+            .unwrap();
+
+        // A wind-down arms and its write goes in flight...
+        assert!(injector.begin_soft_winddown(&snapshot));
+        injector.observe_hook(&stop_event(1));
+        assert_eq!(injector.pending_view(1), Some((1, false, false)));
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+
+        // ...and the all-clear supersedes it while the write is still out:
+        // the session slot now holds a DIFFERENT, never-armed entry.
+        assert!(injector.begin_winddown_allclear(&snapshot));
+        assert_eq!(injector.pending_view(1), Some((0, false, false)));
+
+        // The stale verdict resolves. It must not stamp the replacement —
+        // an attempts=0 entry with a stamp would sit on `timeout_verdict`'s
+        // defensive Keep arm forever, suppressing the never-idled wait cap.
+        resolve_delivery(&outcomes, Ok(()));
+        assert!(!injector.delivery_stamped(1), "replacement stays unstamped");
+
+        // The cap still governs the replacement: it can go stuck-ALERT.
+        injector.backdate_waiting(1, TURN_WAIT_OVER);
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((0, false, false)), "kept");
+        assert!(!injector.has_pending(1), "stuck-alerted, not pending");
+    }
+
+    #[tokio::test]
+    async fn test_unresolved_delivery_alerts_and_rearms_the_retry() {
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, outcomes) =
+            harness_deferred_delivery(dir.path());
+        let project = "C:/git/proj-inj-noverdict";
+        supervisor
+            .register_session(1, project.into(), "epic".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+        injector.observe_hook(&stop_event(1));
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+
+        // The write's verdict NEVER comes back (a wedged blocking write).
+        // Past the long-turn cap the tick alerts with the exact flavor and
+        // RE-ARMS the retry — an unstamped attempts=1 entry would otherwise
+        // never inject again.
+        injector.backdate_waiting(1, TURN_WAIT_OVER);
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((1, false, true)), "re-armed");
+        assert!(!injector.has_pending(1), "stuck-alerted for the parker");
+
+        let mut found = false;
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            if rows.iter().any(|r| {
+                r.event == AuditEventKind::Alert
+                    && r.details["kind"] == "ack_timeout"
+                    && r.details["delivery_unresolved"] == true
+                    && r.details["still_tracked"] == true
+            }) {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(found, "the delivery_unresolved ALERT row landed");
+
+        // The next idle delivers attempt 2 — the ladder is running again.
+        injector.observe_hook(&stop_event(1));
+        assert_eq!(injector.pending_view(1), Some((2, false, false)));
+    }
+
     // --- issue #54: written marker → validation → HANDOFF_WRITTEN ---
 
     /// Drives session 1 (generation `generation`) through trigger, idle
@@ -4186,6 +4522,7 @@ mod tests {
         injector.backdate_ack(1, WINDOW + Duration::from_secs(1));
         injector.tick();
         injector.arm_injection_on_idle(1).expect("corrective");
+        injector.mark_delivered(1);
 
         // The corrective itself is never ACKed → the existing attempts=2
         // timeout path fires, but as handoff_invalid, not ack_timeout.
@@ -4428,6 +4765,7 @@ mod tests {
 
         // Attempt 1 times out → retry armed; idle then NEVER comes.
         injector.arm_injection_on_idle(1).expect("attempt 1");
+        injector.mark_delivered(1);
         injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         injector.tick();
         assert_eq!(injector.pending_view(1), Some((1, false, true)));
@@ -4810,10 +5148,12 @@ mod tests {
 
         // Attempt 1 times out → retry; attempt 2 times out → ALERT, done.
         injector.arm_injection_on_idle(1).expect("attempt 1");
+        injector.mark_delivered(1);
         injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         injector.tick();
         assert_eq!(injector.pending_view(1), Some((1, false, true)));
         injector.arm_injection_on_idle(1).expect("attempt 2");
+        injector.mark_delivered(1);
         injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         injector.tick();
 
