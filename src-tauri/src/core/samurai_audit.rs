@@ -250,6 +250,35 @@ fn audit_file_path(base_dir: &Path, project: &str) -> PathBuf {
     base_dir.join(audit_file_name(project))
 }
 
+/// [`audit_file_path`] plus the one-shot #161 heal, called only from the
+/// writer task (the sole IO owner): a UNC project's log written before #161
+/// sits under the name its mangled relative spelling (`UNC\server\share\…`)
+/// hashed to, and every op now keys on the repaired `\\server\share\…` form.
+/// When the modern file is absent and that legacy file exists, the legacy
+/// file is RENAMED to the modern name — history stays readable and new
+/// events keep appending to it. When both exist (a post-#161 file already
+/// started), the legacy file is left alone: still visible in the Second
+/// Brain's directory scan, never merged into or deleted over.
+async fn resolve_audit_file(base_dir: &Path, project: &str) -> PathBuf {
+    let path = audit_file_path(base_dir, project);
+    // Only a repaired UNC spelling can have a legacy twin; `project` arrives
+    // normalized, so a verbatim `\\?\` prefix cannot occur here.
+    let Some(rest) = project.strip_prefix(r"\\") else {
+        return path;
+    };
+    if tokio::fs::metadata(&path).await.is_ok() {
+        return path;
+    }
+    let legacy = audit_file_path(base_dir, &format!(r"UNC\{rest}"));
+    if tokio::fs::metadata(&legacy).await.is_ok() {
+        match tokio::fs::rename(&legacy, &path).await {
+            Ok(()) => log::info!("samurai audit: re-keyed {legacy:?} to {path:?} (#161)"),
+            Err(e) => log::warn!("samurai audit: could not re-key {legacy:?}: {e}"),
+        }
+    }
+    path
+}
+
 /// The single writer task. Owns all file IO; processes operations strictly in
 /// channel order.
 async fn writer_task(
@@ -260,7 +289,7 @@ async fn writer_task(
     while let Some(op) = rx.recv().await {
         match op {
             AuditOp::Append { project, event } => {
-                let path = audit_file_path(&base_dir, &project);
+                let path = resolve_audit_file(&base_dir, &project).await;
                 match append_line(&path, &event).await {
                     Ok(()) => {
                         if let Some(cb) = &on_append {
@@ -276,11 +305,11 @@ async fn writer_task(
                 since_ts,
                 reply,
             } => {
-                let path = audit_file_path(&base_dir, &project);
+                let path = resolve_audit_file(&base_dir, &project).await;
                 let _ = reply.send(read_events(&path, tail, since_ts).await);
             }
             AuditOp::Clear { project, reply } => {
-                let path = audit_file_path(&base_dir, &project);
+                let path = resolve_audit_file(&base_dir, &project).await;
                 let result = match tokio::fs::remove_file(&path).await {
                     Ok(()) => Ok(()),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -671,6 +700,46 @@ mod tests {
             audit_file_name(&normalize_project(r"\\?\UNC\server\share\maestro")),
             audit_file_name(&normalize_project(r"\\server\share\maestro")),
         );
+    }
+
+    #[tokio::test]
+    async fn test_ops_heal_a_pre_161_unc_audit_file() {
+        // A UNC project's log written before #161 sits under the name its
+        // mangled relative spelling hashed to. The first op on the repaired
+        // spelling renames it, so history stays readable and new events keep
+        // appending to the same file.
+        let dir = tempdir().unwrap();
+        let legacy = audit_file_path(dir.path(), r"UNC\server\share\maestro");
+        let line = serde_json::to_string(&event(AuditEventKind::Spawn, 7, json!({}))).unwrap();
+        std::fs::write(&legacy, format!("{line}\n")).unwrap();
+
+        let log = spawn_log(dir.path().to_path_buf());
+        let read = log
+            .read(r"\\server\share\maestro", None, None)
+            .await
+            .unwrap();
+        assert_eq!(read.events.len(), 1, "pre-#161 history must stay readable");
+        assert!(!legacy.exists(), "the legacy file is re-keyed, not copied");
+
+        log.append(
+            r"\\server\share\maestro",
+            event(AuditEventKind::Alert, 8, json!({})),
+        );
+        let read = log
+            .read(r"\\server\share\maestro", None, None)
+            .await
+            .unwrap();
+        assert_eq!(read.events.len(), 2, "appends continue the healed file");
+
+        // When a post-#161 file already exists, the legacy one is left in
+        // place — never merged into or deleted over.
+        std::fs::write(&legacy, format!("{line}\n")).unwrap();
+        let read = log
+            .read(r"\\server\share\maestro", None, None)
+            .await
+            .unwrap();
+        assert_eq!(read.events.len(), 2);
+        assert!(legacy.exists());
     }
 
     #[tokio::test]
