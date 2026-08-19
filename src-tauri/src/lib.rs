@@ -1346,6 +1346,7 @@ pub fn run() {
             // samurai_harvest_list surfaces them to the Journal panel —
             // issue #142)
             commands::harvest::samurai_harvest_arm,
+            commands::harvest::samurai_harvest_preview,
             commands::harvest::samurai_harvest_read,
             commands::harvest::samurai_harvest_list,
             // Generic "launch a terminal with an initial prompt" injection

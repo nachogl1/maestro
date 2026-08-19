@@ -733,11 +733,13 @@ export interface SamuraiJournalEntry {
 /**
  * Consumption status derived from the harvest markers — mirrors the Rust
  * `JournalEntryStatus`: after the last marker = UNCONSUMED, between the
- * last two = CONSUMED; ARCHIVED shows only for stragglers a crashed
- * harvest left in the active file (the next harvest moves them to
- * `archive.jsonl`).
+ * last two = PENDING while that harvest's triage is still unevidenced
+ * (issue #159 — the next harvest either promotes the batch to CONSUMED or
+ * re-delivers it) and CONSUMED once it is; ARCHIVED shows only for
+ * stragglers a crashed harvest left in the active file (the next harvest
+ * moves them to `archive.jsonl`).
  */
-export type SamuraiJournalEntryStatus = "UNCONSUMED" | "CONSUMED" | "ARCHIVED";
+export type SamuraiJournalEntryStatus = "UNCONSUMED" | "PENDING" | "CONSUMED" | "ARCHIVED";
 
 /**
  * Mirrors the Rust `JournalEntryWithStatus`. `raw` is the entry's exact
@@ -800,12 +802,24 @@ export function samuraiJournalDelete(raw: string): Promise<number> {
  * `samurai_harvest_arm`, issue #98). TerminalGrid calls this right before it
  * types the CLI command — like the samurai successor registration — so the
  * backend can inject the journal-triage prompt on the session's first
- * SessionStarted hook signal. Journal entries flip to consumed AT that
- * injection, not here. Rejects with "Nothing to harvest…" when the journal
- * has no unconsumed entries.
+ * SessionStarted hook signal. Journal entries flip to PENDING at that
+ * injection, not here (issue #159 — they are promoted to consumed by the
+ * NEXT harvest, once the run shows evidence of triage). Rejects with
+ * "Nothing to harvest…" when a harvest would deliver nothing.
  */
 export function samuraiHarvestArm(sessionId: number): Promise<void> {
   return invoke("samurai_harvest_arm", { sessionId });
+}
+
+/**
+ * How many journal entries a harvest would deliver right now (Rust
+ * `samurai_harvest_preview`, issue #159): the UNCONSUMED entries plus a
+ * PENDING batch whose run shows no evidence of triage — those are
+ * re-delivered, so the Journal panel can no longer derive this count from
+ * the listed statuses alone. 0 means nothing to harvest.
+ */
+export function samuraiHarvestPreview(): Promise<number> {
+  return invoke("samurai_harvest_preview");
 }
 
 /**

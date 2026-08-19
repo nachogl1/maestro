@@ -10,6 +10,7 @@ import {
   type SamuraiJournalEntry,
   type SamuraiJournalEntryStatus,
   type SamuraiJournalListEntry,
+  samuraiHarvestPreview,
   samuraiJournalAdd,
   samuraiJournalDelete,
   samuraiJournalList,
@@ -87,7 +88,9 @@ function JournalRow({
   onDelete: () => void;
 }) {
   const badgeCls = CATEGORY_BADGES[entry.category] ?? "bg-maestro-muted/15 text-maestro-muted";
-  // CONSUMED/ARCHIVED entries went into a harvest already — muted, labeled.
+  // PENDING/CONSUMED/ARCHIVED entries went into a harvest already — muted,
+  // labeled (PENDING means delivered but not yet evidenced as triaged, issue
+  // #159 — the next harvest promotes or re-delivers it).
   const consumed = status !== "UNCONSUMED";
   return (
     <div
@@ -142,8 +145,10 @@ function JournalRow({
  * project's grid (the History-tab mechanism), the grid arms the backend, and
  * the backend injects the journal-triage prompt — /insights, Downloads
  * report, keep/file/discard discussion — on the session's first
- * SessionStarted. Entry statuses flip to CONSUMED at that injection, so this
- * list updates on the next refresh, not on click.
+ * SessionStarted. Entry statuses flip to PENDING at that injection (issue
+ * #159 — promoted to CONSUMED by the next harvest once the run shows
+ * evidence of triage, re-delivered otherwise), so this list updates on the
+ * next refresh, not on click.
  *
  * Below the entries, [`HarvestReportsSection`] surfaces whatever is left
  * from the retired headless harvest under `<app data>/harvest/*` (issue
@@ -302,9 +307,12 @@ export function JournalSection() {
       return;
     }
     try {
-      const result = await samuraiJournalList();
-      const unconsumed = result.entries.filter((e) => e.status === "UNCONSUMED").length;
-      if (unconsumed === 0) {
+      // The backend owns the count (issue #159): UNCONSUMED rows plus a
+      // PENDING batch whose run left no evidence of triage — that batch is
+      // re-delivered, so a client-side UNCONSUMED filter would refuse a
+      // journal that still has work.
+      const deliverable = await samuraiHarvestPreview();
+      if (deliverable === 0) {
         setError(NOTHING_TO_HARVEST);
         return;
       }
@@ -321,7 +329,7 @@ export function JournalSection() {
       // the request (the project may sit on the idle landing view).
       useWorkspaceStore.getState().setSessionsLaunched(activeTab.id, true);
       setNotice(
-        `Triage session opened — ${unconsumed} ${unconsumed === 1 ? "entry" : "entries"} will be injected there`,
+        `Triage session opened — ${deliverable} ${deliverable === 1 ? "entry" : "entries"} will be injected there`,
       );
     } catch (err) {
       // Matter-of-fact: the backend's message.

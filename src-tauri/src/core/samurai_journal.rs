@@ -12,10 +12,28 @@
 //! unsafe in-place mutation. Consumption is instead marked by appending a
 //! `HARVEST` marker line; an entry's status is derived from its position
 //! relative to the markers: after the last marker = `UNCONSUMED`, between
-//! the last two markers = `CONSUMED`, before the previous marker =
-//! `ARCHIVED` ([`JournalStore::commit_harvest`] moves those into
-//! `archive.jsonl`, so an active-file `ARCHIVED` entry only exists after a
-//! crash mid-harvest — the next harvest sweeps it up).
+//! the last two markers = `CONSUMED` (or `PENDING` while that marker is
+//! still pending, below), before the previous marker = `ARCHIVED`
+//! ([`JournalStore::commit_harvest`] moves those into `archive.jsonl`, so
+//! an active-file `ARCHIVED` entry only exists after a crash mid-harvest —
+//! the next harvest sweeps it up).
+//!
+//! **Two-phase consume (issue #159):** a delivered prompt is not a read
+//! prompt — the brief file can be deleted, the session can die before its
+//! Read, the pointer can scroll past — so [`JournalStore::commit_harvest`]
+//! appends its marker with `pending: true`: the batch is only DELIVERED.
+//! Before the next harvest delivers anything,
+//! [`JournalStore::resolve_pending`] settles that batch against the
+//! caller's evidence of triage: evidence → the marker is rewritten
+//! non-pending (the batch is CONSUMED and the next commit may archive it);
+//! no evidence → the marker line is dropped, so the batch derives back to
+//! `UNCONSUMED` and is re-delivered instead of archived unseen. At most one
+//! pending marker ever exists (every commit resolves first — enforced:
+//! `commit_harvest` refuses to run over an unresolved pending marker), so
+//! re-delivery merges an unverified batch into the next one rather than
+//! stacking phases. Journals written before #159 hold only non-pending
+//! markers, which resolve_pending leaves byte-untouched — their entries
+//! stay consumed/archived exactly as they were.
 //!
 //! **Concurrency:** a `Mutex` serializes in-process writers (the
 //! `RunConfigStore` pattern — writers are rare, the audit log's
@@ -131,15 +149,36 @@ pub struct HarvestMarker {
     pub kind: MarkerKind,
     /// Date of the harvest report that consumed the entries (`YYYY-MM-DD`).
     pub report: String,
+    /// Two-phase consume (issue #159): `true` while the batch this marker
+    /// closes is only DELIVERED — the prompt reached the session, but the
+    /// run has not yet shown evidence of triage.
+    /// [`JournalStore::resolve_pending`] settles it: promoted to `false` on
+    /// evidence, or the marker is dropped (re-delivery) without it. Absent
+    /// from the wire when `false`, so pre-#159 markers — which never carry
+    /// the field — parse as already-consumed and old journals keep their
+    /// exact meaning.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 impl HarvestMarker {
-    /// Builds a marker stamped with the current UTC time.
+    /// Builds a non-pending (consumed) marker stamped with the current UTC
+    /// time — the pre-#159 shape, byte for byte.
     pub fn now(report: impl Into<String>) -> Self {
         Self {
             ts: chrono::Utc::now().to_rfc3339(),
             kind: MarkerKind::Harvest,
             report: report.into(),
+            pending: false,
+        }
+    }
+
+    /// Builds a PENDING marker stamped with the current UTC time — the phase
+    /// [`JournalStore::commit_harvest`] appends at delivery (issue #159).
+    pub fn now_pending(report: impl Into<String>) -> Self {
+        Self {
+            pending: true,
+            ..Self::now(report)
         }
     }
 }
@@ -150,6 +189,11 @@ impl HarvestMarker {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum JournalEntryStatus {
     Unconsumed,
+    /// Delivered to a triage session, evidence of triage not yet seen
+    /// (issue #159): the entry sits behind a marker whose `pending` flag is
+    /// still set. The next harvest either promotes it to `Consumed` or
+    /// returns it to `Unconsumed` for re-delivery.
+    Pending,
     Consumed,
     Archived,
 }
@@ -259,13 +303,17 @@ impl JournalStore {
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let (lines, file_size_bytes) = read_lines(&self.journal_path())?;
         let (last, prev) = marker_positions(&lines);
+        // The consumed region reads PENDING while the marker closing it is
+        // still pending (issue #159) — delivered, but not yet evidenced.
+        let last_pending =
+            last.is_some_and(|i| matches!(&lines[i], RawLine::Marker(m, _) if m.pending));
         let entries = lines
             .iter()
             .enumerate()
             .filter_map(|(i, line)| match line {
                 RawLine::Entry(entry, raw) => Some(JournalEntryWithStatus {
                     entry: entry.clone(),
-                    status: entry_status(i, last, prev),
+                    status: entry_status(i, last, prev, last_pending),
                     raw: raw.clone(),
                 }),
                 _ => None,
@@ -304,9 +352,16 @@ impl JournalStore {
             .collect())
     }
 
-    /// Marks the harvest's rendered entries as consumed by the `report_date`
-    /// (`YYYY-MM-DD`) harvest by inserting the new marker immediately after
-    /// them. `rendered` holds the exact raw JSONL lines (the `raw` field
+    /// Marks the harvest's rendered entries as DELIVERED to the
+    /// `report_date` (`YYYY-MM-DD`) harvest by inserting the new marker —
+    /// `pending: true`, issue #159 — immediately after them; the batch is
+    /// promoted to consumed (or returned for re-delivery) by
+    /// [`JournalStore::resolve_pending`] ahead of the NEXT harvest, once
+    /// there is (or is not) evidence the run actually triaged it. Refuses to
+    /// run while an unresolved pending marker is still in the file: the
+    /// archive sweep below must never move a batch nobody has evidenced,
+    /// and the delivery flow (`commands::harvest`) always resolves first.
+    /// `rendered` holds the exact raw JSONL lines (the `raw` field
     /// [`JournalStore::list`] hands back) the harvest actually rendered into
     /// its prompt; the marker lands before the first unconsumed line NOT
     /// among them. Content-anchored rather than count-based on purpose: a
@@ -346,6 +401,21 @@ impl JournalStore {
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let journal_path = self.journal_path();
         let (lines, original) = read_lines_with_bytes(&journal_path)?;
+        // Issue #159: an unresolved pending marker means the previous
+        // delivery has not been settled — archiving past it would move a
+        // batch nobody evidenced, the exact loss two-phase consume removes.
+        // The delivery flow resolves before committing, so this branch only
+        // fires on a misused call sequence.
+        if lines
+            .iter()
+            .any(|l| matches!(l, RawLine::Marker(m, _) if m.pending))
+        {
+            return Err(
+                "the journal still holds an unresolved PENDING harvest marker — \
+                 resolve_pending must run before a new harvest commits"
+                    .to_string(),
+            );
+        }
         // Lines before the CURRENT last marker are older than what will be
         // the previous marker once the new one lands — entries AND markers
         // there move out (the active file never holds more than two markers).
@@ -353,7 +423,7 @@ impl JournalStore {
             .iter()
             .rposition(|l| matches!(l, RawLine::Marker(..)))
             .unwrap_or(0);
-        let marker_line = serde_json::to_string(&HarvestMarker::now(report_date))
+        let marker_line = serde_json::to_string(&HarvestMarker::now_pending(report_date))
             .map_err(|e| format!("failed to serialize harvest marker: {e}"))?;
 
         let mut archived = String::new();
@@ -430,6 +500,133 @@ impl JournalStore {
         // inside the Windows rename-retry sleeps. Same guarantee the delete
         // path next door already had.
         atomic_write_carrying_appends(&journal_path, kept, original)
+    }
+
+    /// The last still-pending harvest marker, when one exists (issue #159) —
+    /// what the harvest's arm/preview checks evidence against without
+    /// mutating anything. Under the two-phase invariant only the LAST marker
+    /// can be pending; the reverse scan is just lenient about a hand-edited
+    /// file.
+    pub fn last_pending_marker(&self) -> Result<Option<HarvestMarker>, String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let (lines, _) = read_lines(&self.journal_path())?;
+        Ok(lines.iter().rev().find_map(|l| match l {
+            RawLine::Marker(m, _) if m.pending => Some(m.clone()),
+            _ => None,
+        }))
+    }
+
+    /// Settles the pending batch (issue #159) ahead of a new delivery:
+    /// every marker still carrying `pending: true` is promoted to a plain
+    /// consumed marker when `evidence(marker)` says the run it stamped
+    /// actually triaged its entries, and DROPPED when it does not — the
+    /// batch behind a dropped marker derives back to `UNCONSUMED`, so the
+    /// next delivery carries those entries again instead of the next commit
+    /// archiving them unseen.
+    ///
+    /// A journal with no pending marker — every pre-#159 journal, and every
+    /// journal already resolved — is returned untouched, no rewrite at all:
+    /// old files keep their exact bytes and their exact meaning. Because
+    /// every commit resolves first, at most one pending marker ever exists,
+    /// so a no-evidence batch MERGES into the next delivery's single new
+    /// pending marker — phases never stack and re-delivery cannot grow
+    /// unbounded. The rewrite carries a same-window out-of-process append
+    /// through untouched (the [`JournalStore::delete_entry`] pattern):
+    /// re-read before the write, and again before every rename attempt.
+    pub fn resolve_pending(
+        &self,
+        evidence: impl Fn(&HarvestMarker) -> bool,
+    ) -> Result<PendingResolution, String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.journal_path();
+        const MAX_ATTEMPTS: usize = 5;
+        for attempt in 0..MAX_ATTEMPTS {
+            let original = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(PendingResolution::default())
+                }
+                Err(e) => return Err(format!("failed to read journal file {path:?}: {e}")),
+            };
+            let text = String::from_utf8(original.clone())
+                .map_err(|e| format!("journal file {path:?} is not valid UTF-8: {e}"))?;
+            let lines = parse_lines(&text, &path);
+            if !lines
+                .iter()
+                .any(|l| matches!(l, RawLine::Marker(m, _) if m.pending))
+            {
+                return Ok(PendingResolution::default());
+            }
+
+            let mut resolution = PendingResolution::default();
+            let mut kept = String::new();
+            // Entries seen since the previous marker — the batch a pending
+            // marker closes, counted for the resolution report.
+            let mut entries_since_marker = 0usize;
+            for line in &lines {
+                match line {
+                    RawLine::Entry(_, raw) => {
+                        entries_since_marker += 1;
+                        kept.push_str(raw);
+                        kept.push('\n');
+                    }
+                    RawLine::Marker(marker, raw) => {
+                        if marker.pending {
+                            if evidence(marker) {
+                                let promoted = HarvestMarker {
+                                    pending: false,
+                                    ..marker.clone()
+                                };
+                                let promoted_raw =
+                                    serde_json::to_string(&promoted).map_err(|e| {
+                                        format!("failed to serialize harvest marker: {e}")
+                                    })?;
+                                kept.push_str(&promoted_raw);
+                                kept.push('\n');
+                                resolution.promoted += 1;
+                            } else {
+                                // Dropped: the batch behind it reads
+                                // UNCONSUMED again and re-delivers.
+                                resolution.redelivered += entries_since_marker;
+                            }
+                        } else {
+                            kept.push_str(raw);
+                            kept.push('\n');
+                        }
+                        entries_since_marker = 0;
+                    }
+                    // Never counted, never dropped — carried through
+                    // verbatim, the journal-wide contract.
+                    RawLine::Opaque(raw) => {
+                        kept.push_str(raw);
+                        kept.push('\n');
+                    }
+                }
+            }
+
+            let current = std::fs::read(&path)
+                .map_err(|e| format!("failed to read journal file {path:?}: {e}"))?;
+            if current == original {
+                atomic_write_carrying_appends(&path, kept, current)?;
+                return Ok(resolution);
+            }
+            if current.len() > original.len() && current.starts_with(&original) {
+                // A same-window out-of-process append — carry its exact
+                // bytes into the rewrite so it is never lost.
+                kept.push_str(&String::from_utf8_lossy(&current[original.len()..]));
+                atomic_write_carrying_appends(&path, kept, current)?;
+                return Ok(resolution);
+            }
+            // Neither unchanged nor our bytes plus an appended tail — should
+            // be impossible under the append-only contract; retry with a
+            // fresh read rather than risk writing over content we never saw.
+            if attempt + 1 == MAX_ATTEMPTS {
+                return Err(format!(
+                    "journal file {path:?} changed unexpectedly while resolving pending entries; try again"
+                ));
+            }
+        }
+        unreachable!("loop always returns or errors within MAX_ATTEMPTS")
     }
 
     /// Deletes every active-file line whose entry's raw JSONL text is
@@ -668,6 +865,18 @@ impl JournalStore {
     }
 }
 
+/// What [`JournalStore::resolve_pending`] did with the pending batch
+/// (issue #159).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PendingResolution {
+    /// Markers promoted PENDING → consumed: their run showed evidence of
+    /// triage, so the batch is digested and the next commit may archive it.
+    pub promoted: usize,
+    /// Entries returned to `UNCONSUMED` because their pending marker showed
+    /// no evidence of triage — the next delivery carries them again.
+    pub redelivered: usize,
+}
+
 /// Whether the entry at position `idx` sits after the last harvest marker —
 /// the `UNCONSUMED` half of [`entry_status`], the only region
 /// [`JournalStore::split_oversized_unconsumed`] may rewrite.
@@ -769,11 +978,20 @@ fn marker_positions(lines: &[RawLine]) -> (Option<usize>, Option<usize>) {
 }
 
 /// Derived status of the entry at position `idx` (see the module docs).
-fn entry_status(idx: usize, last: Option<usize>, prev: Option<usize>) -> JournalEntryStatus {
+/// `last_pending` says whether the LAST marker still carries its `pending`
+/// flag (issue #159) — the consumed region then reads `Pending` instead of
+/// `Consumed`.
+fn entry_status(
+    idx: usize,
+    last: Option<usize>,
+    prev: Option<usize>,
+    last_pending: bool,
+) -> JournalEntryStatus {
     match (last, prev) {
         (None, _) => JournalEntryStatus::Unconsumed,
         (Some(last), _) if idx > last => JournalEntryStatus::Unconsumed,
         (Some(_), Some(prev)) if idx < prev => JournalEntryStatus::Archived,
+        _ if last_pending => JournalEntryStatus::Pending,
         _ => JournalEntryStatus::Consumed,
     }
 }
@@ -1092,15 +1310,31 @@ mod tests {
             .unwrap();
         s.commit_harvest("2026-08-07", &rendered(&s, 2)).unwrap();
 
-        // First harvest: both consumed, nothing archived yet.
+        // First harvest: both PENDING (delivered, issue #159), nothing
+        // archived yet.
         let after_first = s.list().unwrap();
         assert_eq!(after_first.entries.len(), 2);
         assert!(after_first
             .entries
             .iter()
-            .all(|e| e.status == JournalEntryStatus::Consumed));
+            .all(|e| e.status == JournalEntryStatus::Pending));
         assert!(s.unconsumed().unwrap().is_empty());
         assert!(!dir.path().join(ARCHIVE_FILE).exists());
+
+        // The run shows evidence of triage: the batch promotes to consumed.
+        assert_eq!(
+            s.resolve_pending(|_| true).unwrap(),
+            PendingResolution {
+                promoted: 1,
+                redelivered: 0
+            }
+        );
+        assert!(s
+            .list()
+            .unwrap()
+            .entries
+            .iter()
+            .all(|e| e.status == JournalEntryStatus::Consumed));
 
         s.append_entry(&entry(JournalCategory::Improvement, "third"))
             .unwrap();
@@ -1117,11 +1351,12 @@ mod tests {
         assert_eq!(archived[0].text, "first");
         assert_eq!(archived[1].text, "second");
 
-        // …the third is CONSUMED in the active file, marker count is 2.
+        // …the third is PENDING in the active file (its own delivery is not
+        // evidenced yet), marker count is 2.
         let after_second = s.list().unwrap();
         assert_eq!(after_second.entries.len(), 1);
         assert_eq!(after_second.entries[0].entry.text, "third");
-        assert_eq!(after_second.entries[0].status, JournalEntryStatus::Consumed);
+        assert_eq!(after_second.entries[0].status, JournalEntryStatus::Pending);
         let journal = std::fs::read_to_string(dir.path().join(JOURNAL_FILE)).unwrap();
         let markers = journal
             .lines()
@@ -1200,6 +1435,9 @@ mod tests {
         std::fs::write(&path, content).unwrap();
 
         s.commit_harvest("2026-08-07", &rendered(&s, 1)).unwrap();
+        // Two-phase (issue #159): settle the delivered batch before the
+        // next harvest commits, as the delivery flow always does.
+        s.resolve_pending(|_| true).unwrap();
         s.append_entry(&entry(JournalCategory::Error, "second"))
             .unwrap();
         s.commit_harvest("2026-08-08", &rendered(&s, 1)).unwrap();
@@ -1264,8 +1502,8 @@ mod tests {
         assert_eq!(
             statuses,
             vec![
-                ("snapshotted one".to_string(), JournalEntryStatus::Consumed),
-                ("snapshotted two".to_string(), JournalEntryStatus::Consumed),
+                ("snapshotted one".to_string(), JournalEntryStatus::Pending),
+                ("snapshotted two".to_string(), JournalEntryStatus::Pending),
                 ("mid-run".to_string(), JournalEntryStatus::Unconsumed),
             ]
         );
@@ -1282,12 +1520,16 @@ mod tests {
         // archive.jsonl with their entries, in file order.
         let dir = tempdir().unwrap();
         let s = store(dir.path());
+        // Each delivered batch is settled before the next commit (issue
+        // #159), as the delivery flow always does.
         s.append_entry(&entry(JournalCategory::Error, "one"))
             .unwrap();
         s.commit_harvest("2026-08-06", &rendered(&s, 1)).unwrap();
+        s.resolve_pending(|_| true).unwrap();
         s.append_entry(&entry(JournalCategory::Error, "two"))
             .unwrap();
         s.commit_harvest("2026-08-07", &rendered(&s, 1)).unwrap();
+        s.resolve_pending(|_| true).unwrap();
         s.append_entry(&entry(JournalCategory::Error, "three"))
             .unwrap();
         s.commit_harvest("2026-08-08", &rendered(&s, 1)).unwrap();
@@ -1448,6 +1690,9 @@ mod tests {
         s.append_entry(&entry(JournalCategory::Error, "delete-consumed"))
             .unwrap();
         s.commit_harvest("2026-08-07", &rendered(&s, 2)).unwrap();
+        // Promoted to consumed (issue #159 evidence) — this test is about
+        // the delete/marker interplay, not the pending phase.
+        s.resolve_pending(|_| true).unwrap();
         s.append_entry(&entry(JournalCategory::Error, "keep-unconsumed"))
             .unwrap();
         s.append_entry(&entry(JournalCategory::Error, "delete-unconsumed"))
@@ -1607,7 +1852,7 @@ mod tests {
         assert_eq!(
             statuses,
             vec![
-                ("injected two".to_string(), JournalEntryStatus::Consumed),
+                ("injected two".to_string(), JournalEntryStatus::Pending),
                 ("never injected".to_string(), JournalEntryStatus::Unconsumed),
             ]
         );
@@ -1645,7 +1890,7 @@ mod tests {
             .collect();
         assert_eq!(
             statuses,
-            vec![JournalEntryStatus::Consumed, JournalEntryStatus::Unconsumed],
+            vec![JournalEntryStatus::Pending, JournalEntryStatus::Unconsumed],
             "the withheld duplicate stays unconsumed"
         );
     }
@@ -1676,6 +1921,227 @@ mod tests {
         assert_eq!(survivor.status, JournalEntryStatus::Unconsumed);
         // …and the identity `list()` reports still deletes it.
         assert_eq!(s.delete_entry(&survivor.raw).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_commit_harvest_marks_the_batch_pending_on_the_wire() {
+        // Issue #159: delivery makes a batch PENDING, not consumed — on the
+        // wire for the frontend ("PENDING") and on disk in the marker
+        // (`"pending":true`). A non-pending marker keeps the exact pre-#159
+        // shape: the field is absent, not false.
+        assert_eq!(
+            serde_json::to_value(JournalEntryStatus::Pending).unwrap(),
+            "PENDING"
+        );
+        let plain = serde_json::to_value(HarvestMarker::now("2026-08-07")).unwrap();
+        assert!(
+            plain.get("pending").is_none(),
+            "pre-#159 marker shape unchanged: {plain}"
+        );
+        let pending = serde_json::to_value(HarvestMarker::now_pending("2026-08-07")).unwrap();
+        assert_eq!(pending["pending"], true);
+
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        s.append_entry(&entry(JournalCategory::Error, "delivered"))
+            .unwrap();
+        s.commit_harvest("2026-08-07", &rendered(&s, 1)).unwrap();
+        let listed = s.list().unwrap().entries;
+        assert_eq!(listed[0].status, JournalEntryStatus::Pending);
+        let journal = std::fs::read_to_string(dir.path().join(JOURNAL_FILE)).unwrap();
+        let marker: HarvestMarker = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+        assert!(marker.pending, "the committed marker is pending: {journal}");
+    }
+
+    #[test]
+    fn test_last_pending_marker_tracks_the_delivery_phase() {
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        assert!(s.last_pending_marker().unwrap().is_none(), "missing file");
+        s.append_entry(&entry(JournalCategory::Error, "boom"))
+            .unwrap();
+        assert!(s.last_pending_marker().unwrap().is_none(), "no marker yet");
+
+        s.commit_harvest("2026-08-07", &rendered(&s, 1)).unwrap();
+        let marker = s
+            .last_pending_marker()
+            .unwrap()
+            .expect("a fresh delivery is pending");
+        assert_eq!(marker.report, "2026-08-07");
+        assert!(marker.pending);
+
+        s.resolve_pending(|_| true).unwrap();
+        assert!(
+            s.last_pending_marker().unwrap().is_none(),
+            "a promoted batch is no longer pending"
+        );
+    }
+
+    #[test]
+    fn test_resolve_pending_with_evidence_promotes_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        s.append_entry(&entry(JournalCategory::Error, "one"))
+            .unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "two"))
+            .unwrap();
+        s.commit_harvest("2026-08-07", &rendered(&s, 2)).unwrap();
+
+        assert_eq!(
+            s.resolve_pending(|_| true).unwrap(),
+            PendingResolution {
+                promoted: 1,
+                redelivered: 0
+            }
+        );
+        assert!(s
+            .list()
+            .unwrap()
+            .entries
+            .iter()
+            .all(|e| e.status == JournalEntryStatus::Consumed));
+        assert!(s.unconsumed().unwrap().is_empty());
+
+        // Settled means settled: a second resolution has nothing to do and
+        // never consults the evidence again.
+        assert_eq!(
+            s.resolve_pending(|_| panic!("no pending marker may be consulted"))
+                .unwrap(),
+            PendingResolution::default()
+        );
+    }
+
+    #[test]
+    fn test_resolve_pending_without_evidence_returns_the_batch_to_unconsumed() {
+        // Issue #159, the re-delivery half: no evidence of triage means the
+        // pending marker is dropped, the batch derives back to UNCONSUMED,
+        // and the next commit merges old and new under ONE new pending
+        // marker — phases never stack and nothing is archived unseen.
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        s.append_entry(&entry(JournalCategory::Error, "one"))
+            .unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "two"))
+            .unwrap();
+        s.commit_harvest("2026-08-07", &rendered(&s, 2)).unwrap();
+        assert!(s.unconsumed().unwrap().is_empty());
+
+        assert_eq!(
+            s.resolve_pending(|_| false).unwrap(),
+            PendingResolution {
+                promoted: 0,
+                redelivered: 2
+            }
+        );
+        let listed = s.list().unwrap().entries;
+        assert_eq!(listed.len(), 2);
+        assert!(listed
+            .iter()
+            .all(|e| e.status == JournalEntryStatus::Unconsumed));
+        assert_eq!(s.unconsumed().unwrap().len(), 2, "live again");
+
+        s.append_entry(&entry(JournalCategory::Error, "three"))
+            .unwrap();
+        s.commit_harvest("2026-08-08", &rendered(&s, 3)).unwrap();
+        let journal = std::fs::read_to_string(dir.path().join(JOURNAL_FILE)).unwrap();
+        let markers = journal
+            .lines()
+            .filter(|l| {
+                serde_json::from_str::<HarvestMarker>(l)
+                    .is_ok_and(|m| m.kind == MarkerKind::Harvest)
+            })
+            .count();
+        assert_eq!(markers, 1, "one merged pending batch: {journal}");
+        assert!(
+            !dir.path().join(ARCHIVE_FILE).exists(),
+            "an unevidenced batch is never archived"
+        );
+        assert!(s
+            .list()
+            .unwrap()
+            .entries
+            .iter()
+            .all(|e| e.status == JournalEntryStatus::Pending));
+    }
+
+    #[test]
+    fn test_resolve_pending_leaves_a_pre_159_journal_byte_untouched() {
+        // Compat: journals written before #159 hold only plain markers.
+        // Resolution must not rewrite them (their bytes are delete
+        // identities), their statuses keep their exact meaning, and the
+        // next harvest archives history exactly as before — long-archived
+        // entries are never re-delivered.
+        let dir = tempdir().unwrap();
+        let lines = [
+            serde_json::to_string(&entry(JournalCategory::Error, "e1")).unwrap(),
+            serde_json::to_string(&HarvestMarker::now("2026-08-06")).unwrap(),
+            serde_json::to_string(&entry(JournalCategory::Error, "e2")).unwrap(),
+            serde_json::to_string(&HarvestMarker::now("2026-08-07")).unwrap(),
+            serde_json::to_string(&entry(JournalCategory::Error, "e3")).unwrap(),
+        ];
+        let path = dir.path().join(JOURNAL_FILE);
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let s = store(dir.path());
+        let before = std::fs::read(&path).unwrap();
+
+        assert_eq!(
+            s.resolve_pending(|_| panic!("no pending marker may be consulted"))
+                .unwrap(),
+            PendingResolution::default()
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a pre-#159 journal keeps its exact bytes"
+        );
+
+        // A new harvest over it behaves exactly as before the change: the
+        // history before the last marker — e1 (crashed-harvest leftover)
+        // and the consumed e2 — moves to the archive; only the freshly
+        // delivered e3 stays, pending its own evidence.
+        s.commit_harvest("2026-08-08", &rendered(&s, 1)).unwrap();
+        let archive = std::fs::read_to_string(dir.path().join(ARCHIVE_FILE)).unwrap();
+        assert!(
+            archive.contains("e1") && archive.contains("e2"),
+            "history archived as before: {archive}"
+        );
+        assert!(!archive.contains("e3"));
+        let statuses: Vec<(String, JournalEntryStatus)> = s
+            .list()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| (e.entry.text, e.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![("e3".to_string(), JournalEntryStatus::Pending)]
+        );
+    }
+
+    #[test]
+    fn test_commit_harvest_refuses_over_an_unresolved_pending_marker() {
+        // The state-machine guard: archiving past an unresolved pending
+        // marker would move a batch nobody evidenced — the exact loss
+        // two-phase consume exists to remove. The delivery flow always
+        // resolves first, so this only fires on a misused call sequence,
+        // and a refused commit writes nothing.
+        let dir = tempdir().unwrap();
+        let s = store(dir.path());
+        s.append_entry(&entry(JournalCategory::Error, "one"))
+            .unwrap();
+        s.commit_harvest("2026-08-07", &rendered(&s, 1)).unwrap();
+        s.append_entry(&entry(JournalCategory::Error, "two"))
+            .unwrap();
+        let path = dir.path().join(JOURNAL_FILE);
+        let before = std::fs::read(&path).unwrap();
+
+        let err = s
+            .commit_harvest("2026-08-08", &rendered(&s, 1))
+            .unwrap_err();
+        assert!(err.contains("unresolved PENDING"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing written");
+        assert!(!dir.path().join(ARCHIVE_FILE).exists());
     }
 
     // --- issue #135: oversized-entry split ---
