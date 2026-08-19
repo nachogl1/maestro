@@ -17,14 +17,22 @@
 //! which types the prompt in via
 //! `core::samurai_pty::submit_instruction_confirmed`.
 //!
-//! **Consumption:** journal entries flip to consumed AT INJECTION — the
-//! moment the prompt's PTY write SUCCEEDS. Not at click, not on session
-//! completion: a session abandoned mid-triage does NOT restore the
-//! undiscussed entries (user-accepted trade-off, issue #98). But the
-//! trade-off is consumed-at-injection, not consumed-on-queue: a prompt
-//! whose PTY write fails was never injected, so the entries stay
-//! unconsumed and the session stays disarmed — clicking "Harvest now"
-//! again re-arms cleanly (review F1).
+//! **Consumption — two-phase (issue #159):** at injection — the moment the
+//! prompt's PTY write SUCCEEDS — journal entries flip to PENDING, not
+//! consumed: a delivered brief is not a read brief (the file can be
+//! deleted, the session can die before its Read tool runs, the pointer can
+//! scroll past), and with #154's 120k brief cap one silent miss used to
+//! archive ~120k chars of journal unseen. The NEXT harvest settles the
+//! batch before delivering anything ([`JournalStore::resolve_pending`]):
+//! evidence that the run triaged it — the `/insights` report file the
+//! prompt names, written at or after the delivery
+//! ([`HarvestTriage::triage_evidence`]) — promotes it to consumed;
+//! no evidence returns it to UNCONSUMED and it is re-delivered with the
+//! new batch instead of being archived. A prompt whose PTY write fails was
+//! never injected, so the entries stay unconsumed and the session stays
+//! disarmed — clicking "Harvest now" again re-arms cleanly (review F1).
+//! The pre-#159 "abandoned session forfeits its entries" trade-off is
+//! superseded: an abandoned run leaves no report, so its batch comes back.
 //!
 //! Previously generated headless reports stay readable: the Second Brain
 //! inventory keeps listing `<app data>/harvest/*.md` and
@@ -39,7 +47,7 @@ use tauri::State;
 use super::ai_runner;
 use crate::core::samurai_brief;
 use crate::core::samurai_injector::SessionDirResolver;
-use crate::core::samurai_journal::{JournalEntry, JournalStore};
+use crate::core::samurai_journal::{HarvestMarker, JournalEntry, JournalEntryStatus, JournalStore};
 
 /// Artifact kind — also the directory name under the app data dir. Must
 /// match the `harvest_dir` root the Second Brain inventory scans
@@ -267,15 +275,6 @@ fn build_triage_prompt(date: &str, entries_block: &str, downloads_dir: &str) -> 
     )
 }
 
-/// The unconsumed entries, or the pinned nothing-to-harvest refusal.
-fn unconsumed_or_refuse(journal: &JournalStore) -> Result<Vec<JournalEntry>, String> {
-    let entries = journal.unconsumed()?;
-    if entries.is_empty() {
-        return Err(NOTHING_TO_HARVEST.to_string());
-    }
-    Ok(entries)
-}
-
 /// Delivery of the injected prompt into a session's PTY. `Ok` means the
 /// prompt BODY reached the PTY — the consumption gate (review F1): journal
 /// entries flip to consumed only on `Ok`. Production wires
@@ -377,6 +376,15 @@ pub struct HarvestTriage {
     /// inline gate (issue #144). `None` keeps every pre-#144 behaviour:
     /// the raw prompt is always typed inline.
     session_dirs: Option<SessionDirResolver>,
+    /// Serializes whole injections (issue #159). Two sessions armed at once
+    /// used to interleave harmlessly — the loser just found the journal
+    /// empty. With two-phase consume an interleaved list/commit pair could
+    /// commit a second pending marker over the first one's unresolved
+    /// batch, deriving that batch ARCHIVED with nobody's evidence — so one
+    /// injection (resolve → list → deliver → commit) runs at a time.
+    /// Blocking is fine here: lib.rs already invokes
+    /// [`HarvestTriage::on_session_started`] via `spawn_blocking`.
+    injection: Mutex<()>,
 }
 
 impl HarvestTriage {
@@ -389,6 +397,7 @@ impl HarvestTriage {
             notify: None,
             on_delivered: None,
             session_dirs: None,
+            injection: Mutex::new(()),
         }
     }
 
@@ -499,12 +508,71 @@ impl HarvestTriage {
         }
     }
 
+    /// Whether the run a pending marker stamps left evidence it actually
+    /// TRIAGED the delivered entries — the two-phase promotion gate (issue
+    /// #159). The signal: the `/insights` report file the injected prompt
+    /// names — `<downloads>/maestro-harvest-insights-<date>.md` for the
+    /// marker's report date — exists and was (re)written at or after the
+    /// delivery the marker timestamps. That path travels only INSIDE the
+    /// delivered prompt (on the brief route the PTY carries just a
+    /// pointer at the brief file), so the report appearing after delivery
+    /// proves the prompt was read and acted through step 2 of the triage.
+    /// The mtime bound is what keeps a same-day earlier session's report —
+    /// same date, same file name — from vouching for a later batch it
+    /// never saw.
+    ///
+    /// Degraded corners lean toward existence-only evidence, not toward
+    /// re-delivery: a report whose mtime the platform cannot answer, or a
+    /// marker whose (machine-written) timestamp no longer parses, still
+    /// counts — endlessly re-delivering a triaged batch would be the
+    /// noisier failure. A missing report is never evidence.
+    fn triage_evidence(&self, marker: &HarvestMarker) -> bool {
+        let path = Path::new(&self.downloads_dir).join(report_file_name(&marker.report));
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return false;
+        };
+        let Ok(mtime) = meta.modified() else {
+            return true;
+        };
+        let Ok(delivered_at) = chrono::DateTime::parse_from_rfc3339(&marker.ts) else {
+            return true;
+        };
+        chrono::DateTime::<chrono::Utc>::from(mtime) >= delivered_at
+    }
+
+    /// How many journal entries a harvest would deliver right now: the
+    /// unconsumed ones, plus a pending batch whose run shows no evidence of
+    /// triage yet (issue #159 — those come back rather than being archived).
+    /// Read-only: nothing is resolved or consumed here.
+    fn deliverable_count(&self) -> Result<usize, String> {
+        let entries = self.journal.list()?.entries;
+        let unconsumed = entries
+            .iter()
+            .filter(|e| e.status == JournalEntryStatus::Unconsumed)
+            .count();
+        let pending = entries
+            .iter()
+            .filter(|e| e.status == JournalEntryStatus::Pending)
+            .count();
+        if pending == 0 {
+            return Ok(unconsumed);
+        }
+        match self.journal.last_pending_marker()? {
+            Some(marker) if !self.triage_evidence(&marker) => Ok(unconsumed + pending),
+            _ => Ok(unconsumed),
+        }
+    }
+
     /// Stages `session_id` for injection on its first `SessionStarted`.
-    /// Refuses (pinned message) when the journal has nothing unconsumed —
-    /// defense in depth; the UI already refuses to open the terminal.
-    /// Arming consumes NOTHING: consumption is injection-time only.
+    /// Refuses (pinned message) when a harvest would deliver nothing:
+    /// nothing unconsumed AND no evidence-less pending batch to re-deliver
+    /// (issue #159) — defense in depth; the UI already refuses to open the
+    /// terminal on the same [`samurai_harvest_preview`] count. Arming
+    /// consumes NOTHING: consumption is injection-time only.
     pub fn arm(&self, session_id: u32) -> Result<(), String> {
-        unconsumed_or_refuse(&self.journal)?;
+        if self.deliverable_count()? == 0 {
+            return Err(NOTHING_TO_HARVEST.to_string());
+        }
         self.armed
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -532,6 +600,47 @@ impl HarvestTriage {
             .remove(&session_id)
         {
             return;
+        }
+        // One injection at a time (issue #159, see the field doc): a second
+        // armed session waits here until the first one's resolve → commit
+        // sequence is complete, so it can never commit over an unresolved
+        // pending marker.
+        let _injection_guard = self
+            .injection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Two-phase consume (issue #159): settle the PREVIOUS delivery
+        // before building this one. Its batch is promoted to consumed when
+        // the run left evidence of triage, and returned to UNCONSUMED — so
+        // the listing below re-delivers it — when it did not. A resolution
+        // failure aborts the harvest: delivering over an unresolved pending
+        // marker is exactly the state the two-phase machine forbids (the
+        // commit below would refuse anyway; failing here keeps the journal
+        // untouched and the message honest).
+        match self.journal.resolve_pending(|m| self.triage_evidence(m)) {
+            Ok(resolution) => {
+                if resolution.promoted > 0 || resolution.redelivered > 0 {
+                    log::info!(
+                        "samurai harvest: pending batch resolved — {} marker(s) promoted to consumed, {} entries returned for re-delivery",
+                        resolution.promoted,
+                        resolution.redelivered
+                    );
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "samurai harvest: resolving the previous pending batch failed: {e} — nothing injected"
+                );
+                self.report(HarvestInjectionOutcome {
+                    session_id,
+                    injected: 0,
+                    error: Some(format!(
+                        "the previous harvest's pending entries could not be resolved ({e}) — nothing was injected; click Harvest now again to retry"
+                    )),
+                    brief_downgrade: None,
+                });
+                return;
+            }
         }
         // Oversized entries are split on disk FIRST (issue #135), so the
         // lines listed, rendered and content-anchored below are already the
@@ -616,13 +725,14 @@ impl HarvestTriage {
         if let Some(on_delivered) = &self.on_delivered {
             on_delivered(session_id);
         }
-        // Consumption flips NOW — exactly the snapshot rendered above,
-        // anchored on the snapshotted raw lines so an interleaved per-entry
-        // delete (issue #100) can never shift the marker past a
-        // never-injected entry (review F4); cap-withheld entries stay
-        // unconsumed for the next harvest. A failed commit keeps them
-        // unconsumed (re-offered next harvest; the session already saw
-        // them — accepted over losing them).
+        // The batch flips to PENDING now (issue #159) — exactly the
+        // snapshot rendered above, anchored on the snapshotted raw lines so
+        // an interleaved per-entry delete (issue #100) can never shift the
+        // marker past a never-injected entry (review F4); cap-withheld
+        // entries stay unconsumed for the next harvest. Promotion to
+        // consumed waits for the NEXT harvest's evidence check. A failed
+        // commit keeps the batch unconsumed (re-offered next harvest; the
+        // session already saw it — accepted over losing it).
         let rendered: Vec<String> = listed
             .into_iter()
             .take(snapshot_len)
@@ -664,6 +774,17 @@ pub fn samurai_harvest_arm(
     session_id: u32,
 ) -> Result<(), String> {
     triage.arm(session_id)
+}
+
+/// How many journal entries a harvest would deliver right now (issue #159):
+/// the unconsumed ones plus a pending batch whose run shows no evidence of
+/// triage — the Journal panel's "Harvest now" pre-check, which can no
+/// longer count UNCONSUMED rows client-side because an evidence-less
+/// pending batch is deliverable too. Read-only; 0 means the pinned
+/// nothing-to-harvest refusal.
+#[tauri::command]
+pub fn samurai_harvest_preview(triage: State<'_, Arc<HarvestTriage>>) -> Result<usize, String> {
+    triage.deliverable_count()
 }
 
 /// `fs::canonicalize` + `\\?\` strip: the one true on-disk identity of a
@@ -853,6 +974,26 @@ mod tests {
             .into_iter()
             .map(|e| e.status)
             .collect()
+    }
+
+    /// Simulates the delivered run TRIAGING its batch (issue #159): writes
+    /// (or rewrites) today's `/insights` report into `downloads`, so its
+    /// mtime lands at/after the pending marker — the evidence
+    /// [`HarvestTriage::triage_evidence`] promotes on.
+    fn write_triage_report(downloads: &Path) {
+        let path = downloads.join(report_file_name(&ai_runner::today_local()));
+        std::fs::write(&path, "triaged").unwrap();
+        // Windows stamps file mtimes from a coarse (~15 ms) timer while the
+        // marker's chrono timestamp is precise, so a report written
+        // milliseconds after the commit can stamp BEFORE it. A real run
+        // writes its report minutes after delivery; the tests fast-forward
+        // that gap explicitly instead of sleeping.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
     }
 
     #[test]
@@ -1068,7 +1209,12 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let (triage, delivered) = triage_with_journal(journal.clone(), "/downloads");
+        // A real Downloads dir: each simulated run leaves its /insights
+        // report there, the issue-#159 evidence that lets the next harvest
+        // promote the previous part instead of re-delivering it.
+        let downloads = tempdir().unwrap();
+        let (triage, delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
 
         // The entries block is the prompt's tail, so the delivered part text
         // is everything after the rendered entry's ` — ` separator.
@@ -1103,13 +1249,18 @@ mod tests {
                 "parts are delivered oldest-first"
             );
             reassembled.push_str(&part_body(&prompt));
+            // The run triages its part before the next harvest looks.
+            write_triage_report(downloads.path());
         }
 
         assert!(harvests > 1, "an oversized entry spans several harvests");
         assert_eq!(reassembled, original, "every char reached a harvest");
+        // Every part was taken by a harvest: earlier parts are promoted (and
+        // archived), the final batch still awaits its next-harvest
+        // promotion — nothing is left undelivered.
         assert!(statuses(&journal)
             .iter()
-            .all(|s| *s == JournalEntryStatus::Consumed));
+            .all(|s| *s != JournalEntryStatus::Unconsumed));
     }
 
     #[test]
@@ -1125,7 +1276,10 @@ mod tests {
         triage.on_session_started(7);
         assert!(delivered.lock().unwrap().is_empty());
 
-        // Consumed-only journal refuses the same way.
+        // Consumed-only journal refuses the same way. Since issue #159 a
+        // commit only makes the batch PENDING; promoting it (evidence seen)
+        // is what makes it consumed — an evidence-less pending batch would
+        // be re-deliverable, which is its own test below.
         journal
             .append_entry(&JournalEntry::now(
                 JournalCategory::Error,
@@ -1141,13 +1295,16 @@ mod tests {
             .map(|e| e.raw)
             .collect();
         journal.commit_harvest("2026-08-07", &raws).unwrap();
+        journal.resolve_pending(|_| true).unwrap();
         assert_eq!(triage.arm(7).unwrap_err(), NOTHING_TO_HARVEST);
     }
 
     #[test]
     fn test_consumption_flips_exactly_at_injection() {
-        // THE pinned issue-#98 semantics: not at click/arm, not on session
-        // completion — at the moment the prompt is handed to the PTY.
+        // THE pinned issue-#98 timing: not at click/arm, not on session
+        // completion — at the moment the prompt is handed to the PTY. Since
+        // issue #159 what flips there is the PENDING phase; promotion to
+        // consumed is the next harvest's evidence check.
         let dir = tempdir().unwrap();
         let journal = Arc::new(JournalStore::new(dir.path().to_path_buf()));
         journal
@@ -1202,7 +1359,9 @@ mod tests {
             .all(|s| *s == JournalEntryStatus::Unconsumed));
 
         // The armed session's start IS the injection: prompt delivered with
-        // both entries, still-unconsumed at hand-over, consumed right after.
+        // both entries, still-unconsumed at hand-over, PENDING right after
+        // (issue #159 — promotion to consumed waits for the next harvest's
+        // evidence of triage).
         triage.on_session_started(42);
         {
             let delivered = prompts.lock().unwrap();
@@ -1219,7 +1378,7 @@ mod tests {
             .all(|s| *s == JournalEntryStatus::Unconsumed));
         assert!(statuses(&journal)
             .iter()
-            .all(|s| *s == JournalEntryStatus::Consumed));
+            .all(|s| *s == JournalEntryStatus::Pending));
 
         // Disarmed on delivery: a later SessionStarted (e.g. /clear) in the
         // same terminal never double-injects.
@@ -1319,6 +1478,7 @@ mod tests {
         // be injected there" at CLICK time. Failures that only reached the
         // log left the user believing the journal had been triaged.
         let dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
         let journal = Arc::new(JournalStore::new(dir.path().to_path_buf()));
         journal
             .append_entry(&JournalEntry::now(
@@ -1340,8 +1500,12 @@ mod tests {
             }
             Ok(())
         });
-        let triage = HarvestTriage::new(journal.clone(), "/downloads".to_string(), deliver)
-            .with_notify(notify);
+        let triage = HarvestTriage::new(
+            journal.clone(),
+            downloads.path().to_string_lossy().into_owned(),
+            deliver,
+        )
+        .with_notify(notify);
 
         // 1. The write fails: reported, nothing consumed.
         triage.arm(7).unwrap();
@@ -1371,7 +1535,11 @@ mod tests {
             "a plain success is not a downgrade"
         );
 
-        // 3. Nothing left to inject: also reported, not just logged.
+        // 3. Nothing left to inject: also reported, not just logged. The
+        // delivered run triaged its batch (issue #159 evidence), so the
+        // next session finds nothing — an evidence-LESS batch would be
+        // re-delivered instead, which is its own test.
+        write_triage_report(downloads.path());
         triage.arm(8).unwrap_err();
         triage
             .armed
@@ -1449,7 +1617,7 @@ mod tests {
         assert_eq!(
             after,
             vec![
-                ("injected two".to_string(), JournalEntryStatus::Consumed),
+                ("injected two".to_string(), JournalEntryStatus::Pending),
                 ("never injected".to_string(), JournalEntryStatus::Unconsumed),
             ]
         );
@@ -1487,14 +1655,17 @@ mod tests {
         assert!(prompts[0].1.contains("while booting"));
         assert!(statuses(&journal)
             .iter()
-            .all(|s| *s == JournalEntryStatus::Consumed));
+            .all(|s| *s == JournalEntryStatus::Pending));
     }
 
     #[test]
     fn test_injection_with_nothing_left_delivers_nothing() {
         // A second armed session that lost the race to the journal: no
-        // prompt, no commit, no panic.
+        // prompt, no commit, no panic. The winner's run triaged its batch
+        // (issue #159 evidence) — an evidence-less batch would instead be
+        // re-delivered to the second session, which is its own test.
         let dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
         let journal = Arc::new(JournalStore::new(dir.path().to_path_buf()));
         journal
             .append_entry(&JournalEntry::now(
@@ -1504,12 +1675,14 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let (triage, delivered) = triage_with_journal(journal.clone(), "/downloads");
+        let (triage, delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
         triage.arm(1).unwrap();
         triage.arm(2).unwrap();
 
         triage.on_session_started(1);
         assert_eq!(delivered.lock().unwrap().len(), 1);
+        write_triage_report(downloads.path());
         triage.on_session_started(2);
         assert_eq!(
             delivered.lock().unwrap().len(),
@@ -1853,6 +2026,224 @@ mod tests {
     }
 
     #[test]
+    fn test_an_unread_brief_is_redelivered_next_harvest_never_archived() {
+        // Issue #159, the motivating case: the brief file is written, the
+        // pointer is typed, and the agent NEVER reads it (session dies, file
+        // deleted, pointer scrolls past) — no /insights report ever appears
+        // in Downloads. Before the two-phase consume those entries were
+        // CONSUMED on the write succeeding and the next harvest archived
+        // them unseen; with #154's brief cap one silent miss could swallow
+        // ~120k chars. Now they sit PENDING, and with no evidence of triage
+        // the next harvest re-delivers them instead of archiving them.
+        let worktree = tempdir().unwrap();
+        let journal_dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
+        let journal = Arc::new(JournalStore::new(journal_dir.path().to_path_buf()));
+        // A batch only the brief route can carry in one pass — the #154
+        // blast radius (20 × ~3 KB ≈ 60k chars: over the 12k inline cap,
+        // under the 120k brief cap).
+        for i in 0..20u32 {
+            journal
+                .append_entry(&JournalEntry::now(
+                    JournalCategory::Error,
+                    format!("blast-{i} {}", "x".repeat(3_000)),
+                    None,
+                    None,
+                ))
+                .unwrap();
+        }
+        let (triage, delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
+        let triage = triage.with_session_dirs(resolver_for(worktree.path()));
+
+        triage.arm(7).unwrap();
+        triage.on_session_started(7);
+        assert_eq!(delivered.lock().unwrap().len(), 1, "brief pointer typed");
+
+        // No report file was ever written into Downloads: no evidence the
+        // agent read the brief. The next harvest must still have work…
+        triage.arm(8).expect(
+            "a pending batch with no evidence of triage must be re-harvestable, not refused",
+        );
+        triage.on_session_started(8);
+
+        // …and must re-deliver the SAME entries, in full, via its own brief.
+        let today = ai_runner::today_local();
+        let second_brief = std::fs::read_to_string(
+            worktree
+                .path()
+                .join(format!(".maestro/briefs/harvest-triage-{today}-s8.md")),
+        )
+        .unwrap();
+        assert!(
+            second_brief.contains("blast-0"),
+            "oldest entry re-delivered"
+        );
+        assert!(
+            second_brief.contains("blast-19"),
+            "newest entry re-delivered"
+        );
+        // Nothing was archived unseen.
+        assert!(
+            !journal_dir
+                .path()
+                .join(crate::core::samurai_journal::ARCHIVE_FILE)
+                .exists(),
+            "unread entries must never reach archive.jsonl"
+        );
+    }
+
+    #[test]
+    fn test_a_triaged_run_promotes_and_the_next_harvest_delivers_only_new_entries() {
+        // The promotion half of issue #159: the run left its /insights
+        // report (written after the delivery), so the batch is evidence-
+        // consumed — the next harvest neither re-delivers it nor refuses to
+        // archive it.
+        let dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
+        let journal = Arc::new(JournalStore::new(dir.path().to_path_buf()));
+        journal
+            .append_entry(&JournalEntry::now(
+                JournalCategory::Error,
+                "old-entry",
+                None,
+                None,
+            ))
+            .unwrap();
+        let (triage, delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
+
+        triage.arm(1).unwrap();
+        triage.on_session_started(1);
+        write_triage_report(downloads.path());
+
+        // Evidenced and nothing new: nothing to harvest.
+        assert_eq!(triage.arm(2).unwrap_err(), NOTHING_TO_HARVEST);
+
+        journal
+            .append_entry(&JournalEntry::now(
+                JournalCategory::Error,
+                "new-entry",
+                None,
+                None,
+            ))
+            .unwrap();
+        triage.arm(2).unwrap();
+        triage.on_session_started(2);
+
+        let second = delivered.lock().unwrap()[1].1.clone();
+        assert!(second.contains("new-entry"));
+        assert!(
+            !second.contains("old-entry"),
+            "a triaged batch is not re-delivered: {second}"
+        );
+        // The promoted batch is archived by this commit — the pre-#159
+        // cadence (consumed at harvest N, archived at harvest N+1).
+        let archive =
+            std::fs::read_to_string(dir.path().join(crate::core::samurai_journal::ARCHIVE_FILE))
+                .unwrap();
+        assert!(archive.contains("old-entry"));
+        let after: Vec<(String, JournalEntryStatus)> = journal
+            .list()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| (e.entry.text, e.status))
+            .collect();
+        assert_eq!(
+            after,
+            vec![("new-entry".to_string(), JournalEntryStatus::Pending)]
+        );
+    }
+
+    #[test]
+    fn test_a_stale_same_day_report_is_no_evidence_for_a_later_batch() {
+        // Two harvests can share a day — and therefore a report file name. A
+        // report saved BEFORE this batch's delivery proves nothing about it:
+        // only the mtime bound separates the two, and the batch must come
+        // back rather than be promoted on another session's report.
+        let dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
+        let journal = Arc::new(JournalStore::new(dir.path().to_path_buf()));
+        journal
+            .append_entry(&JournalEntry::now(
+                JournalCategory::Error,
+                "boom",
+                None,
+                None,
+            ))
+            .unwrap();
+        let (triage, delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
+
+        triage.arm(1).unwrap();
+        triage.on_session_started(1);
+        // A same-named report that PREDATES the delivery (an earlier
+        // session's, same day) — backdated explicitly.
+        let report = downloads
+            .path()
+            .join(report_file_name(&ai_runner::today_local()));
+        std::fs::write(&report, "an earlier session's report").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&report)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3_600))
+            .unwrap();
+
+        triage.arm(2).unwrap();
+        triage.on_session_started(2);
+        let prompts = delivered.lock().unwrap();
+        assert_eq!(prompts.len(), 2, "the batch is re-delivered");
+        assert!(prompts[1].1.contains("boom"), "{}", prompts[1].1);
+    }
+
+    #[test]
+    fn test_deliverable_count_counts_unconsumed_plus_evidence_less_pending() {
+        // The arm/preview arithmetic (issue #159): unconsumed entries plus a
+        // pending batch that shows no evidence of triage; an evidenced
+        // pending batch no longer counts.
+        let dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
+        let journal = Arc::new(JournalStore::new(dir.path().to_path_buf()));
+        let (triage, _delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
+        assert_eq!(triage.deliverable_count().unwrap(), 0, "empty journal");
+
+        for text in ["one", "two"] {
+            journal
+                .append_entry(&JournalEntry::now(JournalCategory::Error, text, None, None))
+                .unwrap();
+        }
+        assert_eq!(triage.deliverable_count().unwrap(), 2);
+
+        triage.arm(1).unwrap();
+        triage.on_session_started(1);
+        assert_eq!(
+            triage.deliverable_count().unwrap(),
+            2,
+            "delivered but unevidenced: the batch is still deliverable (re-delivery)"
+        );
+
+        write_triage_report(downloads.path());
+        assert_eq!(
+            triage.deliverable_count().unwrap(),
+            0,
+            "an evidenced pending batch is settled, not deliverable"
+        );
+
+        journal
+            .append_entry(&JournalEntry::now(
+                JournalCategory::Error,
+                "three",
+                None,
+                None,
+            ))
+            .unwrap();
+        assert_eq!(triage.deliverable_count().unwrap(), 1);
+    }
+
+    #[test]
     fn test_a_failed_brief_write_falls_back_to_the_full_prompt_with_a_warning() {
         let worktree = tempdir().unwrap();
         // `.maestro` occupied by a FILE: `write_brief` cannot create the
@@ -1901,10 +2292,17 @@ mod tests {
         journal
     }
 
-    fn consumed_count(journal: &JournalStore) -> usize {
+    /// Entries a harvest has taken: PENDING right after a delivery (issue
+    /// #159), Consumed once a later resolution promoted them.
+    fn taken_count(journal: &JournalStore) -> usize {
         statuses(journal)
             .iter()
-            .filter(|s| **s == JournalEntryStatus::Consumed)
+            .filter(|s| {
+                matches!(
+                    s,
+                    JournalEntryStatus::Pending | JournalEntryStatus::Consumed
+                )
+            })
             .count()
     }
 
@@ -1916,8 +2314,10 @@ mod tests {
         // to need three harvests must now drain in one.
         let worktree = tempdir().unwrap();
         let journal_dir = tempdir().unwrap();
+        let downloads = tempdir().unwrap();
         let journal = journal_of_five_big_entries(journal_dir.path());
-        let (triage, delivered) = triage_with_journal(journal.clone(), "/downloads");
+        let (triage, delivered) =
+            triage_with_journal(journal.clone(), &downloads.path().to_string_lossy());
         let triage = triage.with_session_dirs(resolver_for(worktree.path()));
 
         triage.arm(7).unwrap();
@@ -1937,9 +2337,11 @@ mod tests {
             !brief.contains("withheld to the next harvest"),
             "nothing held back"
         );
-        // ONE pass: the whole journal is consumed and there is no second
-        // harvest left to run.
-        assert_eq!(consumed_count(&journal), 5);
+        // ONE pass: the whole journal is taken, and once the run leaves its
+        // /insights report (issue #159 evidence) there is no second harvest
+        // left to run.
+        assert_eq!(taken_count(&journal), 5);
+        write_triage_report(downloads.path());
         assert_eq!(triage.arm(8).unwrap_err(), NOTHING_TO_HARVEST);
         // The PTY still only ever sees the one-frame pointer.
         let staged = delivered.lock().unwrap()[0].1.clone();
@@ -1975,7 +2377,7 @@ mod tests {
         );
         assert!(staged.contains("(+3 newest entries withheld to the next harvest)"));
         assert_eq!(
-            consumed_count(&journal),
+            taken_count(&journal),
             2,
             "consumption follows the render that was actually delivered"
         );
@@ -2052,7 +2454,7 @@ mod tests {
             build_triage_prompt(&ai_runner::today_local(), &block, "/downloads"),
             "byte for byte the pre-#154 typed prompt"
         );
-        assert_eq!(consumed_count(&journal), 2, "the other three stay for next");
+        assert_eq!(taken_count(&journal), 2, "the other three stay for next");
     }
 
     #[test]

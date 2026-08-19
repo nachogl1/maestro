@@ -66,17 +66,25 @@ function journalRow(
  * Routes the global invoke mock. `rows` is mutated by `samurai_journal_add`
  * (newest LAST, like the backend) so a post-add refresh shows the new entry,
  * and by `samurai_journal_delete` (removes the row whose `raw` matches,
- * rejecting like the backend when nothing matches). There is no harvest
- * command here on purpose (issue #98): the click only lists the journal and
- * queues a pending launch.
+ * rejecting like the backend when nothing matches). "Harvest now" only asks
+ * the backend for its deliverable count (`samurai_harvest_preview`, issue
+ * #159) and queues a pending launch — the injection itself happens in the
+ * terminal that opens.
  */
-function mockInvoke(rows: JournalRow[], opts: { fileSizeBytes?: number } = {}) {
+function mockInvoke(
+  rows: JournalRow[],
+  opts: { fileSizeBytes?: number; harvestPreview?: number } = {},
+) {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
     switch (cmd) {
       case "samurai_journal_list":
         return { entries: rows, file_size_bytes: opts.fileSizeBytes ?? 2048 };
       case "samurai_harvest_list":
         return [];
+      case "samurai_harvest_preview":
+        // The backend's deliverable count (issue #159): UNCONSUMED rows,
+        // plus an evidence-less PENDING batch when the override says so.
+        return opts.harvestPreview ?? rows.filter((r) => r.status === "UNCONSUMED").length;
       case "samurai_journal_add": {
         const { category, text, project } = args as SamuraiJournalEntry & { project?: string };
         const entry: SamuraiJournalEntry = {
@@ -233,7 +241,9 @@ describe("JournalSection (issue #71)", () => {
 
   it("refuses to open a session when nothing is unconsumed", async () => {
     // Issue #98: an empty (or fully consumed) journal shows the pinned
-    // refusal WITHOUT opening a terminal — no launch is queued.
+    // refusal WITHOUT opening a terminal — no launch is queued. The count
+    // is the backend's (samurai_harvest_preview, issue #159), which
+    // answers 0 here.
     mockInvoke([journalRow({}, "CONSUMED")]);
     render(<JournalSection />);
     expect(await screen.findByText("CI queue blocked for an hour")).toBeInTheDocument();
@@ -244,6 +254,25 @@ describe("JournalSection (issue #71)", () => {
     ).toBeInTheDocument();
     expect(usePendingLaunchStore.getState().pending).toHaveLength(0);
     expect(screen.queryByText(/Triage session opened/)).toBeNull();
+  });
+
+  it("opens a session for a PENDING batch the backend counts as re-deliverable", async () => {
+    // Issue #159: every row is PENDING — delivered once, but the run left
+    // no evidence of triage, so the backend's preview counts the batch
+    // deliverable again. The client-side UNCONSUMED filter this replaced
+    // would have refused a journal that still has work.
+    mockInvoke([journalRow({}, "PENDING")], { harvestPreview: 1 });
+    render(<JournalSection />);
+    expect(await screen.findByText("CI queue blocked for an hour")).toBeInTheDocument();
+    // The new status renders as a muted badge like CONSUMED/ARCHIVED do.
+    expect(screen.getByText("PENDING")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Harvest now" }));
+
+    await waitFor(() => expect(usePendingLaunchStore.getState().pending).toHaveLength(1));
+    expect(
+      await screen.findByText("Triage session opened — 1 entry will be injected there"),
+    ).toBeInTheDocument();
   });
 
   // Issue #100: per-entry delete with a guarded confirm.
