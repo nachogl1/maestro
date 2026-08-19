@@ -1043,7 +1043,19 @@ mod tests {
 
     /// Drives session `id` (gen `generation`) through the park ladder's
     /// happy path: the Stop hook injects, then ACK, then the written marker.
-    fn complete_park(h: &Harness, id: u32, generation: u32) {
+    ///
+    /// Waits until the park instruction is ARMED before firing the idle
+    /// signal (issue #151): the sweep's `advance()` commits the
+    /// PARK_REQUESTED transition first and only then runs `begin_park`, so
+    /// a caller that polled the supervisor state can arrive inside that
+    /// window — where the Stop hook finds no pending entry and nothing
+    /// injects. (Production absorbs that window: `note_idle` keeps the
+    /// session in `idle_now` and `begin_park` ends on `inject_if_idle`.)
+    async fn complete_park(h: &Harness, id: u32, generation: u32) {
+        // `pending_view`, not `has_pending`: a stuck-alerted entry (the #54
+        // long-turn cap) is still armed for the eventual Stop but reads as
+        // not-pending on purpose.
+        wait_until(|| h.injector.pending_view(id).is_some()).await;
         h.injector.observe_hook(&stop_event(id));
         assert!(
             h.injector
@@ -1208,7 +1220,7 @@ mod tests {
 
         // Complete the sweep: session 1 parks, its timer arms, engaged
         // clears. Session 2 was never touched.
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
         assert_eq!(
             state_of(&h.supervisor, 2),
@@ -1311,13 +1323,13 @@ mod tests {
         );
         assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::Working));
 
-        complete_park(&h, 2, 1);
+        complete_park(&h, 2, 1).await;
         wait_until(|| state_of(&h.supervisor, 2) == Some(SupervisorState::Parked)).await;
         // Teardown ran for session 2, then the sweep advanced to session 1.
         wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::ParkRequested)).await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![2]);
 
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Parked)).await;
         // Sweep completes: timers armed for BOTH epics, engaged cleared.
         wait_until(|| !h.parker.parking_engaged()).await;
@@ -1381,7 +1393,7 @@ mod tests {
             });
         assert_eq!(h.injector.pending_view(1), Some((0, false, false)));
 
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
 
         let timers = h.schedule.list();
@@ -1441,7 +1453,7 @@ mod tests {
             Some(SupervisorState::ParkRequested)
         );
 
-        complete_park(&h, 2, 1);
+        complete_park(&h, 2, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
 
         // Only the PARKED epic got a timer; the failed one has its ALERT.
@@ -1498,13 +1510,13 @@ mod tests {
             .backdate_waiting(1, MAX_TURN_WAIT + Duration::from_secs(1));
         h.injector.tick();
         wait_until(|| state_of(&h.supervisor, 2) == Some(SupervisorState::ParkRequested)).await;
-        complete_park(&h, 2, 1);
+        complete_park(&h, 2, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
         assert_eq!(h.schedule.list().len(), 1, "only epic #2 armed so far");
 
         // The long turn finally ends and session 1's park validates — after
         // the sweep already disengaged.
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
 
         wait_until(|| h.schedule.list().len() == 2).await;
         let mut epics: Vec<String> = h.schedule.list().into_iter().map(|e| e.epic).collect();
@@ -1581,7 +1593,7 @@ mod tests {
             .unwrap();
 
         h.parker.on_allowance_event(&hard_event(None));
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
 
         assert!(h.schedule.list().is_empty(), "no guessed timer");
@@ -1629,7 +1641,7 @@ mod tests {
             .unwrap();
 
         h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
 
         let timers = h.schedule.list();
@@ -1663,7 +1675,7 @@ mod tests {
             Some(SupervisorState::ParkRequested)
         );
 
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
 
@@ -1734,7 +1746,7 @@ mod tests {
         // story, so timer suppression lifts and its timer arms normally.
         h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
 
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1, "the allowance crossing's timer arms");
@@ -1763,7 +1775,7 @@ mod tests {
         h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
         h.parker.engage_external_park("gh_auth_lost");
 
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(|| !h.parker.parking_engaged()).await;
         let timers = h.schedule.list();
         assert_eq!(
@@ -1813,12 +1825,12 @@ mod tests {
             .register_session(3, project.into(), "#3".into(), 2)
             .unwrap();
 
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         // The sweep reaches the newcomer instead of completing around it.
         wait_until(|| state_of(&h.supervisor, 3) == Some(SupervisorState::ParkRequested)).await;
         assert!(h.parker.parking_engaged());
 
-        complete_park(&h, 3, 2);
+        complete_park(&h, 3, 2).await;
         wait_until(|| !h.parker.parking_engaged()).await;
         let mut epics: Vec<String> = h.schedule.list().into_iter().map(|e| e.epic).collect();
         epics.sort();
