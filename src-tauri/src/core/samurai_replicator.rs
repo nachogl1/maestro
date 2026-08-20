@@ -429,6 +429,18 @@ struct DeliveredWatch {
     /// full window.
     delivered_at: AgeableInstant,
     resends: u32,
+    /// Issue #171: the FULL delivered body, kept so a give-up can re-type it
+    /// once — the Enter-only resend is a no-op when the body itself was
+    /// swallowed at CLI startup (the Nido stranding, 2026-08-20). `Some`
+    /// only for the replicator's typed rituals/briefs: those are delivered
+    /// into a session that has never run a turn, so "watch still alive"
+    /// proves no activity was ever observed and a re-type can never paste
+    /// into a running turn. The injector types into sessions mid-run, and a
+    /// launch line has no typed body at all — both stay `None`.
+    instruction: Option<String>,
+    /// Issue #171: the one bounded re-delivery happened. The retyped watch
+    /// runs the full resend ladder again; its own give-up is final.
+    retyped: bool,
     /// How the watched instruction was delivered (issue #158). `Typed` is the
     /// #103 behaviour: the Enter may have been swallowed by the paste burst,
     /// so re-send it before giving up. `LaunchLine` has no unsubmitted Enter
@@ -2114,8 +2126,10 @@ impl SamuraiReplicator {
             let generation = p.generation;
             let launch = p.launch;
             // The body the writer types in. `p` keeps its own copy so a
-            // failed write can re-arm the entry verbatim (below).
+            // failed write can re-arm the entry verbatim (below); the watch
+            // keeps one too so a give-up can re-type it (issue #171).
             let instruction = p.instruction.clone();
+            let watch_instruction = instruction.clone();
             // Issue #109: the `delivered` audit row and the Enter-resend
             // watch (issue #103) both hang off the writer's verdict — the
             // row used to be written before the async PTY write completed,
@@ -2167,6 +2181,8 @@ impl SamuraiReplicator {
                                 source: "replicator",
                                 delivered_at: AgeableInstant::now(),
                                 resends: 0,
+                                instruction: Some(watch_instruction),
+                                retyped: false,
                                 route: DeliveryRoute::Typed,
                             });
                     }
@@ -2270,6 +2286,11 @@ impl SamuraiReplicator {
             source: "replicator",
             delivered_at: AgeableInstant::now(),
             resends: 0,
+            // No typed body exists to re-type (issue #171): the pointer went
+            // out as argv, and re-typing it into a CLI that ignored its
+            // positional prompt has no startup-race evidence behind it.
+            instruction: None,
+            retyped: false,
             route: DeliveryRoute::LaunchLine,
         });
     }
@@ -2325,6 +2346,10 @@ impl SamuraiReplicator {
             source: "injector",
             delivered_at: AgeableInstant::now(),
             resends: 0,
+            // Never re-typed (issue #171): the injector delivers into a
+            // session mid-run, where a re-type could paste into a turn.
+            instruction: None,
+            retyped: false,
             // The injector always types into a running PTY (issue #158).
             route: DeliveryRoute::Typed,
         });
@@ -2525,8 +2550,12 @@ impl SamuraiReplicator {
 
         // Issue #103: the post-delivery watch. A delivered instruction whose
         // session shows no turn activity within the window gets the lone
-        // Enter re-sent (NEVER the body — it already sits in the input box),
-        // bounded by MAX_ENTER_RESENDS, then a final ALERT.
+        // Enter re-sent (not the body — it normally sits in the input box),
+        // bounded by MAX_ENTER_RESENDS. Issue #171: when the ladder still
+        // gives up, a replicator-typed body is re-typed IN FULL exactly once
+        // (a CLI that was still initializing discarded the whole paste, so
+        // nothing sits in the input box at all); only the retyped watch's
+        // own give-up emits the final ALERT.
         let mut rows: Vec<(String, AuditEvent)> = Vec::new();
         {
             let mut delivered = self.lock_delivered();
@@ -2582,6 +2611,77 @@ impl SamuraiReplicator {
                         true
                     }
                     EnterResendVerdict::GiveUp => {
+                        // Issue #171: an Enter-only resend is a no-op when
+                        // the BODY itself was swallowed (a CLI still
+                        // initializing at delivery time discards the whole
+                        // paste — the Nido stranding). A replicator ritual
+                        // whose session never showed any turn activity gets
+                        // ONE full re-type instead of alert-and-strand; the
+                        // retyped delivery runs this same watch ladder again
+                        // and its own give-up is final. Decided and fired
+                        // under the lock, same atomicity as the Enter resend
+                        // (a released watch can never re-type); the outcome
+                        // callback only audits (a channel send), so no lock
+                        // re-entry. Idempotent at the agent level: the body
+                        // is a pointer to the brief file — worst case the
+                        // agent reads the brief twice.
+                        if !d.retyped && d.route == DeliveryRoute::Typed {
+                            if let Some(instruction) = d.instruction.clone() {
+                                d.retyped = true;
+                                d.resends = 0;
+                                d.delivered_at = AgeableInstant::now();
+                                log::warn!(
+                                    "samurai replicator: session {} never confirmed its typed instruction — re-typing the full body once (issue #171)",
+                                    d.session_id
+                                );
+                                rows.push((
+                                    d.project.clone(),
+                                    AuditEvent::now(
+                                        d.epic.clone(),
+                                        AuditEventKind::Alert,
+                                        d.generation,
+                                        d.session_id,
+                                        json!({
+                                            "kind": "delivery_retyped",
+                                            "launch": d.launch,
+                                            "source": d.source,
+                                            "route": route_label(d.route),
+                                        }),
+                                    ),
+                                ));
+                                let audit = self.audit.clone();
+                                let project = d.project.clone();
+                                let epic = d.epic.clone();
+                                let generation = d.generation;
+                                let session_id = d.session_id;
+                                let outcome: super::samurai_pty::DeliveryOutcome =
+                                    Box::new(move |result| {
+                                        if let Err(error) = result {
+                                            // The re-type never reached the
+                                            // PTY; the kept watch's own
+                                            // give-up still ends the story
+                                            // with submit_unconfirmed.
+                                            audit.append(
+                                                &project,
+                                                AuditEvent::now(
+                                                    epic,
+                                                    AuditEventKind::Alert,
+                                                    generation,
+                                                    session_id,
+                                                    json!({
+                                                        "kind": "delivery_failed",
+                                                        "source": "replicator",
+                                                        "retype": true,
+                                                        "error": error,
+                                                    }),
+                                                ),
+                                            );
+                                        }
+                                    });
+                                (self.write_stdin)(session_id, instruction, outcome);
+                                return true;
+                            }
+                        }
                         rows.push((
                             d.project.clone(),
                             AuditEvent::now(
@@ -2599,6 +2699,9 @@ impl SamuraiReplicator {
                                     // may have ignored reads very differently
                                     // from an Enter that never landed.
                                     "route": route_label(d.route),
+                                    // Issue #171: whether the body was
+                                    // re-typed before this final give-up.
+                                    "retyped": d.retyped,
                                 }),
                             ),
                         ));
@@ -2889,16 +2992,20 @@ mod tests {
             .unwrap()
     }
 
-    /// Polls until `cond` holds or ~2s pass (replicate runs on the tauri
-    /// runtime, not this test's).
+    /// Polls until `cond` holds or ~10s pass (replicate runs on the tauri
+    /// runtime, not this test's). The budget is deliberately generous: the
+    /// recovery/ritual decisions spawn git subprocesses on the blocking
+    /// pool, and under a fully loaded parallel suite those have been
+    /// observed to need >2s on Windows. A passing test never waits longer
+    /// than the condition takes.
     async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..200 {
+        for _ in 0..1000 {
             if cond() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("condition not reached within 2s");
+        panic!("condition not reached within 10s");
     }
 
     fn state_of(supervisor: &Supervisor, session_id: u32) -> Option<SupervisorState> {
@@ -5263,22 +5370,44 @@ mod tests {
         h.replicator.tick();
         assert_eq!(h.resends.lock().unwrap().clone(), vec![5, 5]);
 
-        // Third expiry: budget spent — final ALERT and the watch is gone;
-        // further ticks stay quiet.
+        // Third expiry: Enter budget spent — issue #171: the give-up now
+        // RE-TYPES the full body once instead of alert-and-strand (the
+        // Enter-only resends are no-ops when the body itself was swallowed
+        // at CLI startup). The watch survives with a fresh ladder.
+        h.replicator
+            .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+        h.replicator.tick();
+        assert_eq!(h.replicator.delivered_count(), 1, "watch kept for the retry");
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 2, "the full body is re-typed exactly once");
+        assert_eq!(writes[0], writes[1], "verbatim re-delivery");
+
+        // The retyped delivery runs the same ladder: two more Enter resends…
+        h.replicator
+            .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+        h.replicator.tick();
+        h.replicator
+            .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+        h.replicator.tick();
+        assert_eq!(h.resends.lock().unwrap().clone(), vec![5, 5, 5, 5]);
+
+        // …then ITS give-up is final: ALERT, watch gone, no second re-type.
         h.replicator
             .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
         h.replicator.tick();
         assert_eq!(h.replicator.delivered_count(), 0);
+        assert_eq!(h.writes.lock().unwrap().len(), 2, "one re-type, bounded");
         h.replicator.tick();
         assert_eq!(
             h.resends.lock().unwrap().len(),
-            2,
+            4,
             "no resend after give-up"
         );
 
-        // Audit trail: one submit_retry per resend, one final
-        // submit_unconfirmed, all naming the launch.
+        // Audit trail: one submit_retry per resend, one delivery_retyped,
+        // one final submit_unconfirmed, all naming the launch.
         let mut retries = Vec::new();
+        let mut retyped = Vec::new();
         let mut unconfirmed = Vec::new();
         for _ in 0..200 {
             let rows = h.audit.read(project, None, None).await.unwrap().events;
@@ -5287,25 +5416,145 @@ mod tests {
                 .filter(|r| r.details["kind"] == "submit_retry")
                 .cloned()
                 .collect();
+            retyped = rows
+                .iter()
+                .filter(|r| r.details["kind"] == "delivery_retyped")
+                .cloned()
+                .collect();
             unconfirmed = rows
                 .into_iter()
                 .filter(|r| r.details["kind"] == "submit_unconfirmed")
                 .collect();
-            if retries.len() == 2 && unconfirmed.len() == 1 {
+            if retries.len() == 4 && retyped.len() == 1 && unconfirmed.len() == 1 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(retries.len(), 2);
+        assert_eq!(retries.len(), 4);
         assert_eq!(retries[0].session_id, 5);
         assert_eq!(retries[0].generation, 1);
         assert_eq!(retries[0].details["attempt"], 1);
         assert_eq!(retries[0].details["launch"], true);
         assert_eq!(retries[1].details["attempt"], 2);
+        assert_eq!(retyped.len(), 1);
+        assert_eq!(retyped[0].session_id, 5);
+        assert_eq!(retyped[0].details["source"], "replicator");
         assert_eq!(unconfirmed.len(), 1);
         assert_eq!(unconfirmed[0].session_id, 5);
         assert_eq!(unconfirmed[0].details["resends"], 2);
         assert_eq!(unconfirmed[0].details["launch"], true);
+        assert_eq!(
+            unconfirmed[0].details["retyped"], true,
+            "the final ALERT says the body was re-delivered before giving up"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_turn_activity_after_the_retype_suppresses_everything_further() {
+        // Issue #171: evidence at ANY point releases the watch — including
+        // after the bounded re-type — so a session that finally consumed the
+        // body can never receive a second paste or a stray Enter.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-171-release";
+        deliver_launch_brief(&h, project);
+
+        // Straight to the give-up ladder: 2 resends, then the re-type.
+        for _ in 0..3 {
+            h.replicator
+                .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+            h.replicator.tick();
+        }
+        assert_eq!(h.writes.lock().unwrap().len(), 2, "body re-typed once");
+        assert_eq!(h.replicator.delivered_count(), 1);
+
+        // The retyped delivery lands: turn activity releases the watch, and
+        // further ticks resend and re-type nothing.
+        h.replicator.observe(&user_message(5));
+        assert_eq!(h.replicator.delivered_count(), 0);
+        h.replicator.tick();
+        assert_eq!(h.resends.lock().unwrap().len(), 2, "no further resends");
+        assert_eq!(h.writes.lock().unwrap().len(), 2, "no further re-types");
+    }
+
+    #[tokio::test]
+    async fn test_a_failed_retype_still_ends_on_the_final_alert() {
+        // Issue #171: the re-type write failing must not lose the story —
+        // it audits delivery_failed (retype: true), the watch stays with its
+        // budget marked spent, and its own give-up emits the terminal
+        // submit_unconfirmed for human attention.
+        let dir = tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(0u32));
+        let calls_rec = calls.clone();
+        let second_fails: StdinWriter = Arc::new(move |_id, _data, outcome| {
+            let mut n = calls_rec.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                outcome(Ok(()));
+            } else {
+                outcome(Err("pty wedged".to_string()));
+            }
+        });
+        let h = harness_with_writer(dir.path(), Some(second_fails));
+        let project = "C:/git/proj-171-retype-fail";
+        // deliver_launch_brief minus its recorder assertions — the injected
+        // writer here does not feed `h.writes`.
+        let brief = samurai_prompts::launch_instruction(
+            &samurai_prompts::RunRefs::epics_only("#38"),
+            Some("nachogl1/maestro"),
+            &samurai_workflow::compiled_for_run(None),
+        );
+        h.replicator
+            .spawn_first_generation(project, "#38", "C:/tmp/wt-171", brief);
+        let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(5, project.into(), "#38".into(), 1, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(5));
+        assert_eq!(h.replicator.delivered_count(), 1, "delivery arms the watch");
+
+        // 2 resends + the give-up that attempts the (failing) re-type.
+        for _ in 0..3 {
+            h.replicator
+                .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+            h.replicator.tick();
+        }
+        assert_eq!(*calls.lock().unwrap(), 2, "the re-type was attempted once");
+        assert_eq!(h.replicator.delivered_count(), 1, "watch kept, budget spent");
+
+        // The kept watch's own ladder ends with the terminal ALERT.
+        for _ in 0..3 {
+            h.replicator
+                .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+            h.replicator.tick();
+        }
+        assert_eq!(h.replicator.delivered_count(), 0);
+        assert_eq!(*calls.lock().unwrap(), 2, "never a second re-type");
+
+        let mut rows = Vec::new();
+        for _ in 0..200 {
+            rows = h.audit.read(project, None, None).await.unwrap().events;
+            if rows
+                .iter()
+                .any(|r| r.details["kind"] == "submit_unconfirmed")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let failed = rows
+            .iter()
+            .find(|r| r.details["kind"] == "delivery_failed")
+            .expect("the failed re-type is audited");
+        assert_eq!(failed.details["retype"], true);
+        assert_eq!(failed.details["error"], "pty wedged");
+        let unconfirmed = rows
+            .iter()
+            .find(|r| r.details["kind"] == "submit_unconfirmed")
+            .expect("terminal ALERT");
+        assert_eq!(unconfirmed.details["retyped"], true);
     }
 
     #[tokio::test]
