@@ -69,7 +69,8 @@ export function NotificationsSettingsSection() {
 
       <p className="px-2 pt-0.5 text-[10px] text-maestro-muted/70">
         Toasts for new review requests, assigned issues, health flags (memory, processes, Samurai
-        files), and run-fatal Samurai alerts. Badges stay on either way.
+        files), and run-fatal Samurai alerts — the latter also as system notifications, so a dead
+        run reaches you while Maestro is minimized. Badges stay on either way.
       </p>
 
       <p className="px-2 pt-1 text-[10px] text-maestro-muted">

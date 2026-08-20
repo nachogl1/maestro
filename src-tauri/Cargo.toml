@@ -30,6 +30,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 # preserve_order: edits to user-owned config files (~/.claude.json, .mcp.json)
 # must not reorder the untouched keys of those files

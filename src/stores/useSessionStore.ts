@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { notifyOs } from "@/lib/osNotification";
 import { normalizePath, samePath } from "@/lib/path";
 import {
   type SamuraiAuditEventPayload,
@@ -1189,12 +1190,15 @@ function applySamuraiAllowanceEvent(): void {
  * the terminal, so these events must come TO the human instead of waiting in
  * the sidebar audit list.
  *
- * Two surfaces, deliberately independent:
+ * Three surfaces, deliberately independent:
  * - a persistent attention badge (the existing yellow highlight, cleared
  *   when the user focuses the session) on the session the row names — set
  *   REGARDLESS of the notifications toggle, so nothing is silently missed;
  * - a toast, queued only while notifications are enabled (the same toggle
- *   the GitHub watchdog and health checker honour).
+ *   the GitHub watchdog and health checker honour);
+ * - a native OS notification (same toggle), which is the one surface that
+ *   reaches the user while Maestro is minimized — the situation the Nido
+ *   run actually died in. Best effort (`notifyOs` swallows failures).
  *
  * One notification per event by construction: each audit row is appended
  * (and therefore emitted on `samurai-audit-event`) exactly once — the
@@ -1204,6 +1208,9 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
   const label = samuraiRunFatalLabel(payload.event);
   if (label === null) return;
   const { session_id, epic, generation } = payload.event;
+  // Lazy require would be overkill: the watchdog store has no dependency
+  // back on this module, so the import is safe (see the module imports).
+  const notify = useGitHubWatchdogStore.getState().notificationsEnabled;
   useSessionStore.setState((state) => {
     // The badge: only when the row names a real, known session (a
     // successor_no_start for a never-registered spawn carries the 0
@@ -1214,9 +1221,6 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
         (s) => s.id === session_id && samePath(s.project_path, payload.project),
       ) &&
       !state.attentionSessionIds.includes(session_id);
-    // Lazy require would be overkill: the watchdog store has no dependency
-    // back on this module, so the import is safe (see the module imports).
-    const notify = useGitHubWatchdogStore.getState().notificationsEnabled;
     if (!flagSession && !notify) return state;
     samuraiToastSeq += 1;
     return {
@@ -1239,6 +1243,11 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
         : {}),
     };
   });
+  if (notify) {
+    // Same last-segment name the tab strip and the toast kicker use.
+    const project = payload.project.split(/[\\/]/).filter(Boolean).pop() ?? payload.project;
+    void notifyOs(`Samurai run needs you — ${project}`, `${label} (${epic} · gen-${generation})`);
+  }
 }
 
 /**

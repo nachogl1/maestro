@@ -17,6 +17,7 @@
     "clipboard-manager:allow-read-text",
     "updater:default",
     "cli:default",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "notification:default"
   ]
 }

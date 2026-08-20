@@ -19,8 +19,15 @@ vi.mock("@tauri-apps/plugin-store", () => ({
     async delete() {}
   },
 }));
+// The native OS mirror of a fatal toast — stubbed so tests can assert it
+// fires (and stays quiet) without a real notification backend.
+vi.mock("@/lib/osNotification", () => ({
+  notifyOs: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { listen } from "@tauri-apps/api/event";
+
+import { notifyOs } from "@/lib/osNotification";
 
 import type { SamuraiAuditEvent } from "@/lib/samurai";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
@@ -85,6 +92,7 @@ describe("run-fatal samurai audit events (issue #174)", () => {
       samuraiToasts: [],
     });
     useGitHubWatchdogStore.setState({ notificationsEnabled: true });
+    vi.mocked(notifyOs).mockClear();
   });
 
   it("replaying the Nido tail ends with toasts and an attention badge on the session", () => {
@@ -109,15 +117,25 @@ describe("run-fatal samurai audit events (issue #174)", () => {
       generation: 2,
     });
     expect(state.attentionSessionIds).toEqual([1]);
+    // Each fatal row also mirrors to a native OS notification, so the run
+    // reaches the user while Maestro is minimized.
+    expect(vi.mocked(notifyOs).mock.calls).toEqual([
+      [
+        "Samurai run needs you — proj",
+        "Brief delivery unconfirmed — the run may be stranded (nido · gen-2)",
+      ],
+      ["Samurai run needs you — proj", "Circuit breaker parked the run (nido · gen-2)"],
+    ]);
   });
 
-  it("notifications off suppresses the toast but never the badge", () => {
+  it("notifications off suppresses the toast and the OS pop-up but never the badge", () => {
     useGitHubWatchdogStore.setState({ notificationsEnabled: false });
 
     emitAuditEvent({ details: { kind: "submit_unconfirmed" } });
 
     const state = useSessionStore.getState();
     expect(state.samuraiToasts).toEqual([]);
+    expect(notifyOs).not.toHaveBeenCalled();
     expect(state.attentionSessionIds).toEqual([1]);
   });
 
@@ -146,6 +164,7 @@ describe("run-fatal samurai audit events (issue #174)", () => {
 
     const state = useSessionStore.getState();
     expect(state.samuraiToasts).toEqual([]);
+    expect(notifyOs).not.toHaveBeenCalled();
     expect(state.attentionSessionIds).toEqual([]);
   });
 
