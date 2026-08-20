@@ -1,6 +1,7 @@
 import { Bell } from "lucide-react";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 function formatTimeAgo(timestamp: number | null): string {
@@ -19,10 +20,11 @@ function formatTimeAgo(timestamp: number | null): string {
  * Sidebar settings card for every background notification Maestro raises
  * (follows the UpdateSettingsSection pattern).
  *
- * One toggle covers both notifying watchers — the GitHub watchdog and the
- * memory/process/Samurai-file health checker. It mutes toasts only: both keep
- * polling, and their badges (top-bar totals, panel attention counts) stay on
- * either way, so nothing is ever silently missed.
+ * One toggle covers every notifying watcher — the GitHub watchdog, the
+ * memory/process/Samurai-file health checker, and the run-fatal Samurai
+ * alerts (issue #174). It mutes toasts only: all keep watching, and their
+ * badges (top-bar totals, panel attention counts, session attention
+ * highlights) stay on either way, so nothing is ever silently missed.
  */
 export function NotificationsSettingsSection() {
   const notificationsEnabled = useGitHubWatchdogStore((s) => s.notificationsEnabled);
@@ -31,12 +33,16 @@ export function NotificationsSettingsSection() {
   const lastPolledAt = useGitHubWatchdogStore((s) => s.lastPolledAt);
   const lastCheckedAt = useHealthStore((s) => s.lastCheckedAt);
   const dismissHealthToasts = useHealthStore((s) => s.dismissAllToasts);
+  const dismissSamuraiToasts = useSessionStore((s) => s.dismissAllSamuraiToasts);
 
   const handleToggle = () => {
     const next = !notificationsEnabled;
     setNotificationsEnabled(next);
-    // Muting clears what is already on screen, for both queues.
-    if (!next) dismissHealthToasts();
+    // Muting clears what is already on screen, for every queue.
+    if (!next) {
+      dismissHealthToasts();
+      dismissSamuraiToasts();
+    }
   };
 
   return (
@@ -62,8 +68,8 @@ export function NotificationsSettingsSection() {
       </div>
 
       <p className="px-2 pt-0.5 text-[10px] text-maestro-muted/70">
-        Toasts for new review requests, assigned issues, and health flags (memory, processes,
-        Samurai files). Badges stay on either way.
+        Toasts for new review requests, assigned issues, health flags (memory, processes, Samurai
+        files), and run-fatal Samurai alerts. Badges stay on either way.
       </p>
 
       <p className="px-2 pt-1 text-[10px] text-maestro-muted">

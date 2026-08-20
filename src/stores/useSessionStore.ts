@@ -3,12 +3,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { normalizePath, samePath } from "@/lib/path";
 import {
+  type SamuraiAuditEventPayload,
   type SamuraiScheduleEntry,
   type SamuraiSupervisorState,
   samuraiListSessions,
+  samuraiRunFatalLabel,
   samuraiScheduleList,
 } from "@/lib/samurai";
 import { useAgentStore } from "@/stores/useAgentStore";
+import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import type { ClaudeEvent } from "@/types/claude-events";
 
 export type { SamuraiScheduleEntry, SamuraiSupervisorState };
@@ -240,6 +243,22 @@ export interface SamuraiSessionInfo {
   state: SamuraiSupervisorState;
 }
 
+/** A queued toast for one run-fatal samurai event (issue #174). */
+export interface SamuraiFatalToast {
+  id: string;
+  /** Canonical project path the audit row belongs to. */
+  project: string;
+  epic: string;
+  generation: number;
+  /** Human label from `samuraiRunFatalLabel` — what went fatally wrong. */
+  label: string;
+}
+
+/** Keep at most this many queued samurai toasts; oldest are dropped first. */
+const MAX_SAMURAI_TOASTS = 6;
+
+let samuraiToastSeq = 0;
+
 /**
  * Zustand store slice for session metadata (not PTY I/O -- that lives in terminal.ts).
  *
@@ -286,12 +305,22 @@ interface SessionState {
    * project-level "parked — resumes at HH:MM" chip.
    */
   samuraiSchedule: SamuraiScheduleEntry[];
+  /**
+   * Queued toasts for RUN-FATAL samurai events (issue #174) — a supervised
+   * run that died or stranded silently must come to the human. Transition-
+   * only by construction (each audit row is emitted once), queued only while
+   * notifications are enabled; the attention badge is set regardless.
+   */
+  samuraiToasts: SamuraiFatalToast[];
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
   unparkSession: (sessionId: number) => void;
   toggleSessionFlag: (sessionId: number) => void;
   clearSessionAttention: (sessionId: number) => void;
+  dismissSamuraiToast: (id: string) => void;
+  /** Clears the queue outright — used when notifications are switched off. */
+  dismissAllSamuraiToasts: () => void;
   fetchSessions: () => Promise<void>;
   fetchSessionsForProject: (projectPath: string) => Promise<void>;
   addSession: (session: SessionConfig) => void;
@@ -500,6 +529,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   attentionSessionIds: [],
   samuraiBySessionId: {},
   samuraiSchedule: [],
+  samuraiToasts: [],
   isLoading: false,
   error: null,
 
@@ -545,6 +575,16 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           }
         : state,
     );
+  },
+
+  dismissSamuraiToast: (id: string) => {
+    set((state) => ({
+      samuraiToasts: state.samuraiToasts.filter((t) => t.id !== id),
+    }));
+  },
+
+  dismissAllSamuraiToasts: () => {
+    set((state) => (state.samuraiToasts.length === 0 ? state : { samuraiToasts: [] }));
   },
 
   fetchSessions: async () => {
@@ -1144,6 +1184,64 @@ function applySamuraiAllowanceEvent(): void {
 }
 
 /**
+ * Run-fatal audit rows (issue #174): a supervised, autonomous run can die
+ * silently — the whole point of supervision is that the human does not watch
+ * the terminal, so these events must come TO the human instead of waiting in
+ * the sidebar audit list.
+ *
+ * Two surfaces, deliberately independent:
+ * - a persistent attention badge (the existing yellow highlight, cleared
+ *   when the user focuses the session) on the session the row names — set
+ *   REGARDLESS of the notifications toggle, so nothing is silently missed;
+ * - a toast, queued only while notifications are enabled (the same toggle
+ *   the GitHub watchdog and health checker honour).
+ *
+ * One notification per event by construction: each audit row is appended
+ * (and therefore emitted on `samurai-audit-event`) exactly once — the
+ * backend's give-up/trip paths already fire their ALERT once, not per tick.
+ */
+function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
+  const label = samuraiRunFatalLabel(payload.event);
+  if (label === null) return;
+  const { session_id, epic, generation } = payload.event;
+  useSessionStore.setState((state) => {
+    // The badge: only when the row names a real, known session (a
+    // successor_no_start for a never-registered spawn carries the 0
+    // sentinel — the toast still says which epic stranded).
+    const flagSession =
+      session_id > 0 &&
+      state.sessions.some(
+        (s) => s.id === session_id && samePath(s.project_path, payload.project),
+      ) &&
+      !state.attentionSessionIds.includes(session_id);
+    // Lazy require would be overkill: the watchdog store has no dependency
+    // back on this module, so the import is safe (see the module imports).
+    const notify = useGitHubWatchdogStore.getState().notificationsEnabled;
+    if (!flagSession && !notify) return state;
+    samuraiToastSeq += 1;
+    return {
+      ...(flagSession
+        ? { attentionSessionIds: [...state.attentionSessionIds, session_id] }
+        : {}),
+      ...(notify
+        ? {
+            samuraiToasts: [
+              ...state.samuraiToasts,
+              {
+                id: `samurai-${samuraiToastSeq}`,
+                project: payload.project,
+                epic,
+                generation,
+                label,
+              },
+            ].slice(-MAX_SAMURAI_TOASTS),
+          }
+        : {}),
+    };
+  });
+}
+
+/**
  * Review F8: whether a live `samurai-schedule-event` has been applied since
  * this listener lifetime started. The seed's IPC round-trip can resolve
  * AFTER a live event already delivered a newer list — applying the stale
@@ -1230,6 +1328,10 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
     }),
     listen<SamuraiScheduleEntry[]>("samurai-schedule-event", (event) => {
       applySamuraiScheduleEvent(event.payload);
+    }),
+    // Issue #174: run-fatal rows raise a toast + persistent attention badge.
+    listen<SamuraiAuditEventPayload>("samurai-audit-event", (event) => {
+      applySamuraiFatalAuditEvent(event.payload);
     }),
   ])
     .then((fns) => {

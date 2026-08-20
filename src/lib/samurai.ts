@@ -75,6 +75,47 @@ export interface SamuraiAuditEventPayload {
   event: SamuraiAuditEvent;
 }
 
+/**
+ * Issue #174: a human label for a RUN-FATAL audit row — one whose run has
+ * died or stranded and will not recover on its own — or `null` for every
+ * other row. The whole point of supervision is that the human does not watch
+ * the terminal, so exactly these rows must come TO the human (toast +
+ * persistent attention badge) instead of waiting in the sidebar audit list:
+ *
+ * - `submit_unconfirmed` — every delivery retry gave up; the agent may be
+ *   sitting at an empty prompt (the Nido stranding, 2026-08-20).
+ * - `circuit_breaker` — the breaker parked the run.
+ * - `successor_no_start` / `spawn_dropped` — a successor never appeared.
+ * - `delivery_failed` with `retype: true` — the #171 re-delivery itself
+ *   failed (a plain delivery_failed re-arms and can still recover, so it
+ *   does not notify).
+ * - the watchdog's silent-death `KILL` row (`details.kind: "dead"`).
+ *
+ * Deliberately NOT fatal: allowance parks (planned, resume timer armed),
+ * submit_retry (still recovering), ack_timeout (the injector re-arms).
+ */
+export function samuraiRunFatalLabel(event: SamuraiAuditEvent): string | null {
+  const details = (event.details ?? {}) as Record<string, unknown>;
+  if (event.event === "KILL") {
+    return details.kind === "dead" ? "Agent process died silently" : null;
+  }
+  if (event.event !== "ALERT") return null;
+  switch (details.kind) {
+    case "submit_unconfirmed":
+      return "Brief delivery unconfirmed — the run may be stranded";
+    case "circuit_breaker":
+      return "Circuit breaker parked the run";
+    case "successor_no_start":
+      return "Successor session never started";
+    case "spawn_dropped":
+      return "Successor spawn was dropped";
+    case "delivery_failed":
+      return details.retype === true ? "Brief re-delivery failed" : null;
+    default:
+      return null;
+  }
+}
+
 /** Mirrors the Rust `AuditReadResult`. */
 export interface SamuraiAuditReadResult {
   events: SamuraiAuditEvent[];
