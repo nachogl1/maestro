@@ -717,11 +717,21 @@ pub fn park_corrective_instruction(epic: &str, generation: u32, failure: &str) -
     )
 }
 
-/// Display name for a successor terminal session (issue #55), e.g.
-/// `samurai gen-3 37`. Built here so the backend event payload and any
-/// future surface naming successors can never drift.
-pub fn successor_session_name(epic: &str, generation: u32) -> String {
-    format!("samurai gen-{generation} {}", epic_slug(epic))
+/// Display name for a samurai terminal session — STILL the single naming
+/// source for every backend spawn payload (issue #55), so no surface can
+/// drift.
+///
+/// Issue #175: the run's stored display name (`Samurai-N` by default, or
+/// whatever the user renamed the run to) wins, for every generation — the
+/// epic detail lives in Active Runs/audit/tooltips, and the generation has
+/// its own badge, so neither belongs in the name. The old
+/// `samurai gen-N <slug>` shape survives only as the fallback for runs
+/// without a config (legacy runs, direct spawns in tests).
+pub fn successor_session_name(display_name: Option<&str>, epic: &str, generation: u32) -> String {
+    match display_name {
+        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => format!("samurai gen-{generation} {}", epic_slug(epic)),
+    }
 }
 
 /// Pulls the predecessor's HEAD SHA out of a §6 handoff file: the first
@@ -1875,9 +1885,19 @@ mod tests {
 
     #[test]
     fn test_successor_session_name_shape() {
-        assert_eq!(successor_session_name("#37", 3), "samurai gen-3 37");
+        // Issue #175: the run's stored display name wins, for any generation
+        // — default (Samurai-N) and user rename alike.
+        assert_eq!(successor_session_name(Some("Samurai-1"), "#37", 3), "Samurai-1");
         assert_eq!(
-            successor_session_name("Epic 12: Auth", 2),
+            successor_session_name(Some("nido-maps-batch"), "#37", 2),
+            "nido-maps-batch"
+        );
+        assert_eq!(successor_session_name(Some("  padded "), "#37", 2), "padded");
+        // No config / legacy runs keep the old epic-slug shape.
+        assert_eq!(successor_session_name(None, "#37", 3), "samurai gen-3 37");
+        assert_eq!(successor_session_name(Some("  "), "#37", 3), "samurai gen-3 37");
+        assert_eq!(
+            successor_session_name(None, "Epic 12: Auth", 2),
             "samurai gen-2 epic-12-auth"
         );
     }

@@ -161,7 +161,10 @@ pub struct SuccessorSpawn {
     /// Directory the predecessor worked in — the epic worktree is stable
     /// across generations (PRD §5.9), so the successor spawns right there.
     pub working_dir: String,
-    /// Display name for the new terminal, e.g. `samurai gen-3 37`.
+    /// Display name for the new terminal (issue #175): the run's stored
+    /// display name — `Samurai-N`, or the user's rename, carried across
+    /// generations — falling back to the legacy `samurai gen-3 37` shape
+    /// for runs without a config.
     pub session_name: String,
     /// Model preference from the epic's run config (review F4) — the
     /// frontend appends `--model <value>` to the successor's CLI launch.
@@ -948,6 +951,16 @@ impl SamuraiReplicator {
         self.run_configs.get()?.get(project, epic)?.launch_text
     }
 
+    /// The run's CURRENT display name (issue #175): `Samurai-N` by default,
+    /// or the user's rename — persisted on the run config so it survives
+    /// app restarts and rides into every generation's spawn. Resolved at
+    /// emit time like [`Self::model_for`]; `None` (no store/config/name)
+    /// falls back to the legacy `samurai gen-N <slug>` shape inside
+    /// [`samurai_prompts::successor_session_name`].
+    fn display_name_for(&self, project: &str, epic: &str) -> Option<String> {
+        self.run_configs.get()?.get(project, epic)?.display_name
+    }
+
     fn has_refs_for(&self, project: &str, epic: &str) -> bool {
         self.run_configs
             .get()
@@ -1214,7 +1227,12 @@ impl SamuraiReplicator {
             epic: snapshot.epic.clone(),
             generation,
             working_dir,
-            session_name: samurai_prompts::successor_session_name(&snapshot.epic, generation),
+            session_name: samurai_prompts::successor_session_name(
+                self.display_name_for(&snapshot.project, &snapshot.epic)
+                    .as_deref(),
+                &snapshot.epic,
+                generation,
+            ),
             model: self.model_for(&snapshot.project, &snapshot.epic),
             launch_prompt,
         };
@@ -1351,7 +1369,12 @@ impl SamuraiReplicator {
             epic: snapshot.epic.clone(),
             generation,
             working_dir: working_dir.clone(),
-            session_name: samurai_prompts::successor_session_name(&snapshot.epic, generation),
+            session_name: samurai_prompts::successor_session_name(
+                self.display_name_for(&snapshot.project, &snapshot.epic)
+                    .as_deref(),
+                &snapshot.epic,
+                generation,
+            ),
             model: self.model_for(&snapshot.project, &snapshot.epic),
             // Provisional: the launch-line offer (issue #170) is decided in
             // the async task below, once the final pointer instruction
@@ -1508,7 +1531,11 @@ impl SamuraiReplicator {
             epic: epic.to_string(),
             generation,
             working_dir: working_dir.clone(),
-            session_name: samurai_prompts::successor_session_name(epic, generation),
+            session_name: samurai_prompts::successor_session_name(
+                self.display_name_for(project, epic).as_deref(),
+                epic,
+                generation,
+            ),
             model: self.model_for(project, epic),
             // Provisional: the launch-line offer (issue #170) is decided in
             // finish_ritual_decision, once the ritual is final.
@@ -1803,7 +1830,11 @@ impl SamuraiReplicator {
             epic: epic.to_string(),
             generation,
             working_dir,
-            session_name: samurai_prompts::successor_session_name(epic, generation),
+            session_name: samurai_prompts::successor_session_name(
+                self.display_name_for(project, epic).as_deref(),
+                epic,
+                generation,
+            ),
             model: self.model_for(project, epic),
             launch_prompt,
         };
@@ -4543,6 +4574,61 @@ mod tests {
         );
         wait_until(|| h.spawns.lock().unwrap().len() >= 2).await;
         assert_eq!(h.spawns.lock().unwrap()[1].model, None);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_events_carry_the_run_display_name_across_generations() {
+        // Issue #175: every generation's spawn is named from the run
+        // config's CURRENT display name — default `Samurai-N` or a user
+        // rename — so the name survives handoffs instead of regenerating
+        // from the epic slug. No config → the legacy slug shape.
+        use crate::core::samurai_run_config::{RunConfigStore, SamuraiRunConfig};
+
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-175-name";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let head = read_repo_head(repo.path()).unwrap();
+        write_handoff(repo.path(), "epic-9", 3, &head);
+        let working_dir = repo.path().to_string_lossy().into_owned();
+        let mut config = SamuraiRunConfig::new(project, "epic-9", working_dir.clone());
+        config.run_number = 1;
+        config.display_name = Some("Samurai-1".to_string());
+        store.save(&config).unwrap();
+        h.replicator.set_run_configs(store.clone());
+
+        // A gen-4 successor spawn (resume path) carries the run name, not
+        // the epic-slug wall of text.
+        h.replicator
+            .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        assert_eq!(h.spawns.lock().unwrap()[0].session_name, "Samurai-1");
+
+        // A mid-run rename (persisted by the rename command) is what the
+        // NEXT spawn resolves — the name a user gave gen-N survives into
+        // gen-N+1. Resolved at emit time, so no restart is needed.
+        store
+            .set_display_name(project, "epic-9", Some("nido-maps-batch".to_string()))
+            .unwrap();
+        assert_eq!(
+            h.replicator.display_name_for(project, "epic-9").as_deref(),
+            Some("nido-maps-batch")
+        );
+
+        // An epic WITHOUT a config keeps the legacy epic-slug shape.
+        h.replicator.spawn_first_generation(
+            project,
+            "epic-77",
+            &working_dir,
+            "opening brief".to_string(),
+        );
+        wait_until(|| h.spawns.lock().unwrap().len() >= 2).await;
+        assert_eq!(
+            h.spawns.lock().unwrap()[1].session_name,
+            "samurai gen-1 epic-77"
+        );
     }
 
     #[tokio::test]

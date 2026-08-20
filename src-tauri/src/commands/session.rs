@@ -73,16 +73,40 @@ pub async fn assign_session_branch(
 
 /// Renames a session. Empty or whitespace-only names are treated as `None`,
 /// which resets the display name to the default `{provider} #{id}` format.
+///
+/// Issue #175: when the session is samurai-supervised, the name is ALSO
+/// persisted onto the run's config (`display_name`), so every later
+/// generation's spawn inherits it — a rename made on gen-1 survives into
+/// gen-2 instead of dying with the killed session. Best effort: a config
+/// that cannot be updated (legacy run, torn file) never fails the rename
+/// itself. A reset (`None`) restores the run's default `Samurai-N`.
 #[tauri::command]
 pub async fn rename_session(
     state: State<'_, SessionManager>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    run_configs: State<'_, Arc<crate::core::samurai_run_config::RunConfigStore>>,
     session_id: u32,
     name: Option<String>,
 ) -> Result<SessionConfig, String> {
     let normalized = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-    state
-        .rename_session(session_id, normalized)
-        .ok_or_else(|| format!("Session {} not found", session_id))
+    let renamed = state
+        .rename_session(session_id, normalized.clone())
+        .ok_or_else(|| format!("Session {} not found", session_id))?;
+    if let Some(supervised) = supervisor
+        .list_sessions()
+        .into_iter()
+        .find(|s| s.session_id == session_id)
+    {
+        if let Err(e) =
+            run_configs.set_display_name(&supervised.project, &supervised.epic, normalized)
+        {
+            log::warn!(
+                "rename: session {session_id} is supervised for epic {} but its run config could not store the name ({e}) — the rename will not survive a handoff",
+                supervised.epic
+            );
+        }
+    }
+    Ok(renamed)
 }
 
 /// Gets all sessions for a specific project.

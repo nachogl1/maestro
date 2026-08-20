@@ -419,6 +419,17 @@ export interface SamuraiRunConfig {
    */
   workflow: SamuraiWorkflowGraph | null;
   /**
+   * Short per-project run counter (issue #175) — the N in the default
+   * `Samurai-N` session name; 0 on configs written before the counter.
+   */
+  run_number: number;
+  /**
+   * The run's CURRENT display name (issue #175): `Samurai-N` by default, or
+   * the user's rename, carried into every generation's terminal. Display
+   * only — `epic` stays the run's identity. Null on legacy configs.
+   */
+  display_name: string | null;
+  /**
    * ACTIVE = live; COMPLETED = verified finished (issue #96 — the
    * orchestrator declared completion and the backend confirmed via gh that
    * every batch issue is closed and the batch PR is open), awaiting the

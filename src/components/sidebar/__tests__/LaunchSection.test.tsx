@@ -129,6 +129,8 @@ function run(overrides: Partial<SamuraiRunListEntry> = {}): SamuraiRunListEntry 
     model: null,
     thresholds: null,
     workflow: null,
+    run_number: 0,
+    display_name: null,
     status: "ACTIVE",
     created_at: "2026-08-06T10:00:00Z",
     orchestrator: orchestrator(),

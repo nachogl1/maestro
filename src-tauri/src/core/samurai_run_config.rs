@@ -144,6 +144,22 @@ pub struct SamuraiRunConfig {
     /// (`samurai_workflow::compiled_for_run`).
     #[serde(default)]
     pub workflow: Option<WorkflowGraph>,
+    /// Short per-project run counter (issue #175): the N in the default
+    /// `Samurai-N` display name, assigned at launch as max+1 over every
+    /// config of the project (any status — an archived Samurai-2 must not
+    /// let a new run reuse its number). `#[serde(default)]` = 0 on configs
+    /// written before the counter existed; 0 is never displayed.
+    #[serde(default)]
+    pub run_number: u32,
+    /// The run's CURRENT display name (issue #175) — `Samurai-N` by default,
+    /// replaced wholesale by a user rename of the run's live session. Every
+    /// generation's terminal is named from this, which is what makes a
+    /// rename survive handoffs. Display-only: the run's identity stays
+    /// [`epic`](Self::epic) everywhere (audit, Active Runs, cleanup).
+    /// `None` on legacy configs — spawns then fall back to the old
+    /// `samurai gen-N <slug>` shape.
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub status: RunConfigStatus,
     /// RFC 3339 UTC creation timestamp.
     pub created_at: String,
@@ -169,6 +185,8 @@ impl SamuraiRunConfig {
             model: None,
             thresholds: None,
             workflow: None,
+            run_number: 0,
+            display_name: None,
             status: RunConfigStatus::Active,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
@@ -352,6 +370,48 @@ impl RunConfigStore {
                 ConfigLookup::Unreadable(e)
             }
         }
+    }
+
+    /// The next per-project run number (issue #175): max over EVERY config
+    /// of the project — any status, so an archived `Samurai-2` never lets a
+    /// new run reuse its number — plus one; `1` for a project with no
+    /// numbered configs. Legacy configs read as 0 and never collide.
+    pub fn next_run_number(&self, project: &str) -> u32 {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let project = normalize_project(project);
+        self.load_all()
+            .into_iter()
+            .filter(|(_, c)| c.project_path == project)
+            .map(|(_, c)| c.run_number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    /// Stores the run's CURRENT display name (issue #175) — called by the
+    /// rename command when a supervised samurai session is renamed, so the
+    /// name survives into every later generation's spawn. `None` resets to
+    /// the default `Samurai-N` (when the config carries a number). An error
+    /// when no readable config exists — a rename of an unconfigured session
+    /// simply has nothing durable to update.
+    pub fn set_display_name(
+        &self,
+        project: &str,
+        epic: &str,
+        name: Option<String>,
+    ) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.config_path(&normalize_project(project), epic);
+        let mut config = read_config(&path).map_err(|e| match e {
+            ReadError::Missing => format!("no run config for epic {epic:?} at {path:?}"),
+            ReadError::Other(e) => e,
+        })?;
+        config.display_name = match name {
+            Some(name) => Some(name),
+            None if config.run_number > 0 => Some(format!("Samurai-{}", config.run_number)),
+            None => None,
+        };
+        atomic_write_json(&path, &config)
     }
 
     /// Flips the config to ARCHIVED, keeping the file (PRD §8 row 2 — the
@@ -545,6 +605,63 @@ mod tests {
         config.repo_pin = Some("nachogl1/maestro".to_string());
         config.model = Some("opus".to_string());
         config
+    }
+
+    #[test]
+    fn test_next_run_number_is_per_project_max_plus_one_any_status() {
+        // Issue #175: the counter spans EVERY status — an archived Samurai-2
+        // must not let a new run reuse its number — and is per project.
+        let dir = tempdir().unwrap();
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        assert_eq!(store.next_run_number("C:/git/a"), 1, "empty project starts at 1");
+
+        let mut first = sample("C:/git/a", "#1");
+        first.run_number = 1;
+        first.status = RunConfigStatus::Archived;
+        store.save(&first).unwrap();
+        let mut second = sample("C:/git/a", "#2");
+        second.run_number = 2;
+        store.save(&second).unwrap();
+        // A legacy config (run_number 0) never disturbs the max.
+        store.save(&sample("C:/git/a", "#legacy")).unwrap();
+
+        assert_eq!(store.next_run_number("C:/git/a"), 3);
+        assert_eq!(store.next_run_number("C:/git/b"), 1, "counters are per project");
+    }
+
+    #[test]
+    fn test_set_display_name_persists_and_reset_restores_the_default() {
+        let dir = tempdir().unwrap();
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        let mut config = sample("C:/git/a", "#38");
+        config.run_number = 2;
+        config.display_name = Some("Samurai-2".to_string());
+        store.save(&config).unwrap();
+
+        // A user rename replaces the name wholesale…
+        store
+            .set_display_name("C:/git/a", "#38", Some("nido-maps-batch".to_string()))
+            .unwrap();
+        assert_eq!(
+            store.get("C:/git/a", "#38").unwrap().display_name.as_deref(),
+            Some("nido-maps-batch")
+        );
+
+        // …and a reset restores the numbered default.
+        store.set_display_name("C:/git/a", "#38", None).unwrap();
+        assert_eq!(
+            store.get("C:/git/a", "#38").unwrap().display_name.as_deref(),
+            Some("Samurai-2")
+        );
+
+        // A legacy config (no number) resets to no name at all; a missing
+        // config is an error the caller downgrades to a warning.
+        store.save(&sample("C:/git/a", "#legacy")).unwrap();
+        store.set_display_name("C:/git/a", "#legacy", None).unwrap();
+        assert_eq!(store.get("C:/git/a", "#legacy").unwrap().display_name, None);
+        assert!(store
+            .set_display_name("C:/git/a", "#missing", Some("x".to_string()))
+            .is_err());
     }
 
     /// A config file laid out exactly as a pre-#161 save left it for a UNC

@@ -856,6 +856,11 @@ pub(crate) async fn launch_run_inner(
     config.workflow = Some(workflow.clone());
     // Issue #128: the verbatim request is part of the run's durable record.
     config.launch_text = Some(input.text().to_string());
+    // Issue #175: short per-project run counter → the default display name
+    // every generation's terminal is named from. Assigned before the save so
+    // gen-1's spawn (below) already resolves `Samurai-N`.
+    config.run_number = run_configs.next_run_number(project);
+    config.display_name = Some(format!("Samurai-{}", config.run_number));
     run_configs.save(&config)?;
 
     // Issue #141: best-effort GitHub title lookup for the run's refs, off
