@@ -8,10 +8,12 @@
 //! Two consumers of that signal:
 //!
 //! 1. **Circuit breaker (runaway burn):** per epic (key: project + epic),
-//!    count consecutive samurai audit events with HEAD unchanged. On each
-//!    appended event for a tracked epic, HEAD is re-read in the epic's
-//!    working dir: equal to the last observed → increment; different →
-//!    progress, reset the counter. The counter reaching the configurable
+//!    count consecutive AGENT-side audit events with HEAD unchanged —
+//!    Maestro's own supervision rows (SPAWN, supervision KILLs, INJECT,
+//!    PARK, delivery ALERTs) are filtered out, see [`is_self_event`]
+//!    (issue #172). On each appended event for a tracked epic, HEAD is
+//!    re-read in the epic's working dir: equal to the last observed →
+//!    increment; different → progress, reset the counter. The counter reaching the configurable
 //!    `breaker_events` trips ONCE: the epic's live WORKING session is parked
 //!    (`PARK_REQUESTED` → `PARKED`) and one ALERT audit row
 //!    (`details.kind = "circuit_breaker"`) fires. A session mid-handoff is
@@ -123,24 +125,49 @@ enum Job {
 // Pure decisions (table-tested)
 // ---------------------------------------------------------------------------
 
-/// Guard against self-amplification: events this module itself produces must
-/// NOT advance the breaker counter, or one trip (2 PARK rows + 1 ALERT)
-/// would immediately push the next epic's-worth of "events" and cascade.
-/// Filtered by event type / `details.kind`:
+/// Guard against self-amplification AND self-accounting (issue #172): events
+/// Maestro's own supervision machinery produces must NOT advance the breaker
+/// counter — the breaker's meaning is "the AGENT keeps doing things with
+/// HEAD unchanged", and a counter fed by supervision rows reads a delivery
+/// failure as agent stagnation (the live Nido trip of 2026-08-20: KILL →
+/// SPAWN → submit_retry ×2 → submit_unconfirmed parked a successor that
+/// never ran a turn under a "runaway burn" alert). Filtered by event type /
+/// `details`:
 /// - every `PARK` row — in Phase 2 a park is exactly what a trip produces
 ///   (and Phase 3's allowance parks are equally not evidence of burn);
-/// - this module's own ALERT kinds (`circuit_breaker`, `handoff_churn`).
+/// - every `SPAWN` row — the supervisor's own lifecycle;
+/// - `KILL` rows whose cause is a supervision action (`handoff` kill after a
+///   validated handoff, `user_kill` teardown, `run_complete` termination).
+///   A `process_died` KILL still counts: Maestro killed nothing there — it
+///   recorded the agent dying, which is agent-side evidence;
+/// - INJECT rows (issue #101) — Maestro's OWN typing, replay telemetry;
+/// - this module's own ALERT kinds (`circuit_breaker`, `handoff_churn`) and
+///   the delivery machinery's (`submit_retry`, `submit_unconfirmed`,
+///   `delivery_failed`, `delivery_retyped` — replicator and injector alike):
+///   a delivery that struggles surfaces as its own attention state, never as
+///   a burn trip.
+///
+/// Genuine agent-side events (handoff requests, ack/turn ALERTs, dead
+/// watchdog rows) keep counting, so real zero-commit churn still trips.
 fn is_self_event(event: &AuditEvent) -> bool {
     match event.event {
         AuditEventKind::Park => true,
-        // INJECT rows (issue #101) record Maestro's OWN typing — replay
-        // telemetry, not evidence of orchestrator burn. Counting them would
-        // add two rows per handoff cycle and trip the breaker faster for
-        // the same behavior.
+        AuditEventKind::Spawn => true,
+        AuditEventKind::Kill => matches!(
+            event.details["cause"].as_str(),
+            Some(super::supervisor::KILL_CAUSE_HANDOFF)
+                | Some(super::supervisor::KILL_CAUSE_USER_KILL)
+                | Some(super::supervisor::KILL_CAUSE_RUN_COMPLETE)
+        ),
         AuditEventKind::Inject => true,
         AuditEventKind::Alert => matches!(
             event.details["kind"].as_str(),
-            Some("circuit_breaker") | Some("handoff_churn")
+            Some("circuit_breaker")
+                | Some("handoff_churn")
+                | Some("submit_retry")
+                | Some("submit_unconfirmed")
+                | Some("delivery_failed")
+                | Some("delivery_retyped")
         ),
         _ => false,
     }
@@ -304,19 +331,27 @@ impl SamuraiProgress {
                     project: project.clone(),
                     epic: epic.clone(),
                     generation,
-                    baseline_head,
+                    baseline_head: baseline_head.clone(),
                 },
             );
             if let Some(dir) = working_dir {
                 // The epic worktree is stable across generations (PRD §5.9);
                 // a successor refreshes the dir but keeps the counter — zero
                 // progress across a handoff stays visible.
+                //
+                // Issue #172: SPAWN rows no longer feed the counter (they
+                // are the supervisor's own lifecycle), so the registration
+                // itself seeds the first HEAD observation from the baseline
+                // just read — the breaker still trips after exactly
+                // `breaker_events` AGENT events with HEAD unchanged, instead
+                // of needing one extra event to establish the observation.
+                let seed = baseline_head.clone();
                 let entry = state
                     .epics
                     .entry((project.clone(), epic.clone()))
                     .or_insert_with(|| EpicBreaker {
                         working_dir: dir.clone(),
-                        observed_head: None,
+                        observed_head: seed.clone(),
                         count: 0,
                         latched: false,
                     });
@@ -330,7 +365,7 @@ impl SamuraiProgress {
                 // previous run's count/latch would park a freshly launched
                 // orchestrator on sight (`evaluate_trip` below).
                 if generation == 1 {
-                    entry.observed_head = None;
+                    entry.observed_head = seed;
                     entry.count = 0;
                     entry.latched = false;
                 }
@@ -657,17 +692,40 @@ mod tests {
             1,
             json!({ "phase": "requested", "from": "WORKING" }),
         );
+        let kill = |cause: &str| {
+            AuditEvent::now(
+                "epic-1",
+                AuditEventKind::Kill,
+                1,
+                1,
+                json!({ "cause": cause, "from": "HANDOFF_WRITTEN" }),
+            )
+        };
         let table = [
             (park, true),                         // any PARK row
             (alert("circuit_breaker"), true),     // the breaker's own ALERT
             (alert("handoff_churn"), true),       // the churn ALERT
+            // Issue #172: the delivery machinery's ALERTs are Maestro's own
+            // struggles, not agent activity.
+            (alert("submit_retry"), true),
+            (alert("submit_unconfirmed"), true),
+            (alert("delivery_failed"), true),
+            (alert("delivery_retyped"), true),
             (alert("ack_timeout"), false),        // injector ALERTs count
             (alert("illegal_transition"), false), // rejections count
             (alert("dead"), false),               // watchdog ALERTs count
+            // Issue #172: SPAWN and supervision-caused KILLs are the
+            // supervisor's own lifecycle.
             (
                 AuditEvent::now("epic-1", AuditEventKind::Spawn, 1, 1, json!({})),
-                false,
+                true,
             ),
+            (kill(crate::core::supervisor::KILL_CAUSE_HANDOFF), true),
+            (kill(crate::core::supervisor::KILL_CAUSE_USER_KILL), true),
+            (kill(crate::core::supervisor::KILL_CAUSE_RUN_COMPLETE), true),
+            // A silent death is agent-side evidence — Maestro killed
+            // nothing, it recorded the agent dying.
+            (kill(crate::core::supervisor::KILL_CAUSE_PROCESS_DIED), false),
             (
                 AuditEvent::now(
                     "epic-1",
@@ -682,6 +740,54 @@ mod tests {
         for (event, expected) in table {
             assert_eq!(is_self_event(&event), expected, "{event:?}");
         }
+    }
+
+    #[test]
+    fn test_the_nido_row_sequence_advances_the_counter_by_zero() {
+        // Issue #172 acceptance: the exact audit sequence that parked the
+        // live Nido run (2026-08-20) — KILL(handoff) → SPAWN → INJECT →
+        // submit_retry ×2 → submit_unconfirmed — is ALL supervision, so
+        // every row is filtered and the breaker counter never advances.
+        let sequence = [
+            AuditEvent::now(
+                "nido",
+                AuditEventKind::Kill,
+                1,
+                1,
+                json!({ "phase": "killed", "cause": "handoff", "from": "HANDOFF_WRITTEN" }),
+            ),
+            AuditEvent::now("nido", AuditEventKind::Spawn, 2, 2, json!({})),
+            AuditEvent::now(
+                "nido",
+                AuditEventKind::Inject,
+                2,
+                2,
+                json!({ "phase": "delivered", "gate": "session_started" }),
+            ),
+            AuditEvent::now(
+                "nido",
+                AuditEventKind::Alert,
+                2,
+                2,
+                json!({ "kind": "submit_retry", "attempt": 1, "source": "replicator" }),
+            ),
+            AuditEvent::now(
+                "nido",
+                AuditEventKind::Alert,
+                2,
+                2,
+                json!({ "kind": "submit_retry", "attempt": 2, "source": "replicator" }),
+            ),
+            AuditEvent::now(
+                "nido",
+                AuditEventKind::Alert,
+                2,
+                2,
+                json!({ "kind": "submit_unconfirmed", "resends": 2, "source": "replicator" }),
+            ),
+        ];
+        let counted = sequence.iter().filter(|e| !is_self_event(e)).count();
+        assert_eq!(counted, 0, "the Nido sequence must advance the counter by 0");
     }
 
     #[test]
