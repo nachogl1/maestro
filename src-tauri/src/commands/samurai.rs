@@ -133,12 +133,12 @@ pub fn samurai_set_config(
 /// predecessor, and arms the verify-ritual delivery for the new session's
 /// first `SessionStarted` hook signal.
 ///
-/// Issue #158: `launch_line_prompt` is the frontend's report of HOW it INTENDS
-/// to deliver a gen-1 launch prompt the spawn event offered — `true` when the
-/// pointer is on the `claude` command line about to be typed, so nothing may
-/// be typed for it afterwards. Absent/`false` (every successor, and any
-/// launch whose prompt could not be quoted for the local shell) keeps the
-/// typed delivery.
+/// Issue #158/#170: `launch_line_prompt` is the frontend's report of HOW it
+/// INTENDS to deliver a launch prompt the spawn event offered (gen-1 launch
+/// or successor alike) — `true` when the pointer is on the `claude` command
+/// line about to be typed, so nothing may be typed for it afterwards.
+/// Absent/`false` (any spawn whose prompt could not be quoted for the local
+/// shell, or was never offered) keeps the typed delivery.
 ///
 /// The claim can be REFUSED: the replicator honours it only for an entry it
 /// actually offered a launch prompt. A refusal is not an error and does not

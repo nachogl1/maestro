@@ -145,12 +145,12 @@ pub type TranscriptPathResolver = Arc<dyn Fn(u32) -> Option<PathBuf> + Send + Sy
 pub type HandoffAbsorber = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 /// Payload of the `samurai-spawn-successor` event. Deliberately does NOT
-/// carry the ritual prompt: frontend write-timing is unreliable (claude may
-/// not be up yet), so the prompt stays queued here and is delivered on the
-/// successor's first `SessionStarted` hook signal.
+/// carry the ritual prompt as a typed payload: frontend write-timing is
+/// unreliable (claude may not be up yet), so the prompt stays queued here
+/// and is delivered on the successor's first `SessionStarted` hook signal.
 ///
-/// Issue #158 carves out the one exception the timing argument does not
-/// cover — see [`Self::launch_prompt`].
+/// Issue #158 carved out the exception the timing argument does not cover,
+/// and #170 extended it to every fresh spawn — see [`Self::launch_prompt`].
 #[derive(Debug, Clone, Serialize)]
 pub struct SuccessorSpawn {
     /// Canonical project path (`\\?\` prefix stripped).
@@ -168,12 +168,15 @@ pub struct SuccessorSpawn {
     /// `None` = the spawn flow's default model. Resolved at emit time via
     /// [`SamuraiReplicator::set_run_configs`].
     pub model: Option<String>,
-    /// Issue #158: the gen-1 brief POINTER, offered to the frontend to append
+    /// Issue #158/#170: the brief POINTER, offered to the frontend to append
     /// to the `claude` launch command as a positional initial-prompt
-    /// argument. Set by [`SamuraiReplicator::spawn_first_generation`] only,
-    /// and only for a payload [`samurai_brief::launch_line_safe`] clears —
-    /// every other ritual goes into an already-running PTY and has no launch
-    /// command left to ride.
+    /// argument. Every fresh spawn — gen-1 launches AND successors — composes
+    /// its own `claude` command in the grid, so all of them get the offer,
+    /// for any payload [`samurai_brief::launch_line_safe`] clears. (The Nido
+    /// run of 2026-08-20 proved typed delivery into a freshly started CLI is
+    /// lossy for successors exactly as #137/#103 proved it for gen-1.) Only
+    /// the INJECTOR's instructions, typed into an already-running PTY, have
+    /// no launch command left to ride.
     ///
     /// An OFFER, not an instruction: the frontend refuses it whenever the
     /// prompt cannot be quoted for the machine's shell (`lib/shellEscape`),
@@ -260,11 +263,11 @@ struct PendingRitual {
     /// heuristic would delete them instantly; they are pruned on delivery
     /// instead (bounded: one per (project, epic, generation)).
     respawn: Option<RespawnState>,
-    /// Issue #158: whether this entry's spawn event OFFERED its instruction
-    /// as a launch-line prompt ([`SuccessorSpawn::launch_prompt`]). Only a
-    /// gen-1 launch ever sets it, and only the offer makes
-    /// [`DeliveryRoute::LaunchLine`] acceptable at registration — the backend
-    /// honours no route it did not itself put on the wire.
+    /// Issue #158/#170: whether this entry's spawn event OFFERED its
+    /// instruction as a launch-line prompt ([`SuccessorSpawn::launch_prompt`]).
+    /// Any fresh spawn (launch or successor) may set it, and only the offer
+    /// makes [`DeliveryRoute::LaunchLine`] acceptable at registration — the
+    /// backend honours no route it did not itself put on the wire.
     launch_prompt_offered: bool,
     /// Issue #158: which route the instruction actually took. Decided by the
     /// frontend at registration (it is the side that knows whether the prompt
@@ -1185,6 +1188,15 @@ impl SamuraiReplicator {
             instruction,
         )
         .await;
+        // Issue #170: a successor spawn composes a fresh `claude` command in
+        // the grid exactly like a gen-1 launch, so the pointer rides that
+        // line whenever it fits — typed injection into a starting CLI is
+        // what lost the Nido gen-2 brief. Same offer contract as
+        // spawn_first_generation: the frontend may refuse, and the entry
+        // keeps its own copy either way.
+        let launch_prompt =
+            samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
+        let launch_prompt_offered = launch_prompt.is_some();
         let spawn = SuccessorSpawn {
             project: snapshot.project.clone(),
             epic: snapshot.epic.clone(),
@@ -1192,9 +1204,7 @@ impl SamuraiReplicator {
             working_dir,
             session_name: samurai_prompts::successor_session_name(&snapshot.epic, generation),
             model: self.model_for(&snapshot.project, &snapshot.epic),
-            // A successor is typed into a PTY that is already running claude
-            // — no launch command exists to carry it (issue #158).
-            launch_prompt: None,
+            launch_prompt,
         };
         self.lock_pending().push(PendingRitual {
             project: snapshot.project.clone(),
@@ -1210,7 +1220,7 @@ impl SamuraiReplicator {
             registered: None,
             alerted: false,
             respawn: None,
-            launch_prompt_offered: false,
+            launch_prompt_offered,
             route: DeliveryRoute::Typed,
         });
         (self.emit_spawn)(&spawn);
@@ -1331,13 +1341,15 @@ impl SamuraiReplicator {
             working_dir: working_dir.clone(),
             session_name: samurai_prompts::successor_session_name(&snapshot.epic, generation),
             model: self.model_for(&snapshot.project, &snapshot.epic),
-            // A successor is typed into a PTY that is already running claude
-            // — no launch command exists to carry it (issue #158).
+            // Provisional: the launch-line offer (issue #170) is decided in
+            // the async task below, once the final pointer instruction
+            // exists — this synchronous path only holds the placeholder.
             launch_prompt: None,
         };
         let this = self.clone();
         let snapshot = snapshot.clone();
         tauri::async_runtime::spawn(async move {
+            let mut spawn = spawn;
             // Finding D: derive the `--repo` pin (blocking git → blocking
             // pool) and re-stage the instruction — pinned when the remote
             // resolved, and (issue #137) as a brief FILE plus a one-line
@@ -1383,6 +1395,11 @@ impl SamuraiReplicator {
                     instruction,
                 )
                 .await;
+                // Issue #170: the recovery successor composes a fresh
+                // `claude` command too — offer the pointer on its launch
+                // line, same contract as replicate/spawn_first_generation.
+                let launch_prompt =
+                    samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
                 let mut pending = this.lock_pending();
                 if let Some(p) = pending.iter_mut().find(|p| {
                     p.generation == generation
@@ -1390,6 +1407,8 @@ impl SamuraiReplicator {
                         && p.project == snapshot.project
                 }) {
                     p.instruction = instruction;
+                    p.launch_prompt_offered = launch_prompt.is_some();
+                    spawn.launch_prompt = launch_prompt;
                 }
             }
             // The watchdog does not stop the transcript watcher, so the dead
@@ -1479,7 +1498,8 @@ impl SamuraiReplicator {
             working_dir: working_dir.clone(),
             session_name: samurai_prompts::successor_session_name(epic, generation),
             model: self.model_for(project, epic),
-            // Same as every other successor: nothing to ride (issue #158).
+            // Provisional: the launch-line offer (issue #170) is decided in
+            // finish_ritual_decision, once the ritual is final.
             launch_prompt: None,
         };
         // Stage synchronously, under the one lock, so a repeated fire (the
@@ -1661,7 +1681,7 @@ impl SamuraiReplicator {
                 instruction,
             )
             .await;
-            this.finish_ritual_decision(&project, &epic, generation, instruction, recovery, &spawn);
+            this.finish_ritual_decision(&project, &epic, generation, instruction, recovery, spawn);
         });
     }
 
@@ -1682,8 +1702,14 @@ impl SamuraiReplicator {
         generation: u32,
         instruction: String,
         recovery: bool,
-        spawn: &SuccessorSpawn,
+        mut spawn: SuccessorSpawn,
     ) {
+        // Issue #170: the fresh spawn composes its own `claude` command, so
+        // the decided pointer is offered on that launch line — recorded on
+        // the entry and the payload under the same lock, and mirrored into
+        // the respawn state so a re-emitted event carries the same offer.
+        let launch_prompt =
+            samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
         let staged = {
             let mut pending = self.lock_pending();
             match pending
@@ -1693,6 +1719,11 @@ impl SamuraiReplicator {
                 Some(p) => {
                     p.instruction = instruction;
                     p.recovery = recovery;
+                    p.launch_prompt_offered = launch_prompt.is_some();
+                    spawn.launch_prompt = launch_prompt;
+                    if let Some(r) = &mut p.respawn {
+                        r.spawn = spawn.clone();
+                    }
                     true
                 }
                 None => false,
@@ -1704,7 +1735,7 @@ impl SamuraiReplicator {
             );
             return;
         }
-        (self.emit_spawn)(spawn);
+        (self.emit_spawn)(&spawn);
     }
 
     /// Issue #63: the gen-1 LAUNCH entry point — the P3.5 launcher's seam.
@@ -2176,11 +2207,12 @@ impl SamuraiReplicator {
         }
     }
 
-    /// Records the INJECT row for a gen-1 pointer that rode the `claude`
-    /// launch line (issue #158). Same shape and same `phase: "delivered"` as
-    /// the typed path — the instruction DID reach the agent — with the gate
-    /// naming the route that carried it, so the audit trail stays readable
-    /// when a run shows no typed frame at all.
+    /// Records the INJECT row for a pointer that rode the `claude` launch
+    /// line (issue #158; #170 extends the route from gen-1 to every fresh
+    /// spawn). Same shape and same `phase: "delivered"` as the typed path —
+    /// the instruction DID reach the agent — with the gate naming the route
+    /// that carried it, so the audit trail stays readable when a run shows
+    /// no typed frame at all.
     ///
     /// No delivery-outcome callback: the write already happened, as part of
     /// the launch command the frontend typed into a fresh shell, and it
@@ -2202,9 +2234,16 @@ impl SamuraiReplicator {
     /// which is a larger change than this route warrants.
     fn audit_launch_line_delivery(&self, p: &PendingRitual, session_id: u32) {
         log::info!(
-            "samurai replicator: session {session_id} started with the gen-{} launch brief already on its command line — nothing typed",
+            "samurai replicator: session {session_id} started with the gen-{} brief already on its command line — nothing typed",
             p.generation
         );
+        let instruction_kind = if p.launch {
+            "launch_brief"
+        } else if p.recovery {
+            "recovery_ritual"
+        } else {
+            "successor_ritual"
+        };
         let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(&p.instruction);
         self.audit.append(
             &p.project,
@@ -2215,7 +2254,7 @@ impl SamuraiReplicator {
                 session_id,
                 json!({
                     "phase": "delivered",
-                    "instruction": "launch_brief",
+                    "instruction": instruction_kind,
                     "gate": "launch_line",
                     "excerpt": excerpt,
                     "total_chars": total_chars,
@@ -2227,7 +2266,7 @@ impl SamuraiReplicator {
             epic: p.epic.clone(),
             generation: p.generation,
             session_id,
-            launch: true,
+            launch: p.launch,
             source: "replicator",
             delivered_at: AgeableInstant::now(),
             resends: 0,
@@ -4830,15 +4869,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_successor_rituals_never_ride_the_launch_line() {
-        // Successor, recovery and injector instructions go into an ALREADY
-        // RUNNING PTY — there is no launch command left to carry them, so
-        // they are never offered the route and never suppressed by it.
+    async fn test_successor_rituals_ride_the_launch_line_when_offered() {
+        // Issue #170: a successor spawn composes a fresh `claude` command in
+        // the grid exactly like a gen-1 launch, and typed injection into a
+        // starting CLI is lossy (the Nido gen-2 brief vanished that way) —
+        // so the pointer is offered on the successor's launch line too.
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
-        let project = "C:/git/proj-158-successor";
+        let project = "C:/git/proj-170-successor";
         let _repo = stage_successor(&h, project).await;
-        assert_eq!(h.spawns.lock().unwrap()[0].launch_prompt, None);
+        let (_, pointer) = h.replicator.pending_view(3).unwrap();
+        assert_eq!(
+            h.spawns.lock().unwrap()[0].launch_prompt.as_deref(),
+            Some(pointer.as_str()),
+            "the successor spawn event offers its pointer for the launch line"
+        );
 
         let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
         let snapshot = h
@@ -4848,15 +4893,119 @@ mod tests {
         assert_eq!(
             h.replicator
                 .on_registered_with_route(&snapshot, DeliveryRoute::LaunchLine),
+            DeliveryRoute::LaunchLine,
+            "an offered successor claim is honoured for generation >= 2"
+        );
+
+        h.replicator.observe_hook(&session_started(2));
+        assert!(
+            h.writes.lock().unwrap().is_empty(),
+            "double delivery: the pointer already went out with the launch command"
+        );
+        assert_eq!(h.replicator.delivered_count(), 1, "activity-only watch armed");
+
+        // The INJECT row names the route AND the successor instruction kind.
+        let mut rows = Vec::new();
+        for _ in 0..200 {
+            rows = h
+                .audit
+                .read(project, None, None)
+                .await
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|r| r.event == AuditEventKind::Inject)
+                .collect();
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].details["gate"], "launch_line");
+        assert_eq!(rows[0].details["instruction"], "successor_ritual");
+    }
+
+    #[tokio::test]
+    async fn test_a_successor_that_was_not_offered_the_route_still_refuses_the_claim() {
+        // A successor whose brief write failed is staged as the full ritual
+        // text — far past LAUNCH_LINE_MAX_BYTES — so no offer goes out, and
+        // a frontend claiming the route anyway must not cost the run its
+        // brief. (`.maestro` occupied by a FILE → no handoff readable →
+        // recovery arm → brief write fails → full text staged inline.)
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-170-unoffered";
+        let worktree = tempdir().unwrap();
+        std::fs::write(worktree.path().join(".maestro"), "not a directory").unwrap();
+        h.replicator.spawn_generation(
+            project,
+            "epic-9",
+            &worktree.path().to_string_lossy(),
+            4,
+            Some(3),
+            "resume_timer",
+        );
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        assert_eq!(h.spawns.lock().unwrap()[0].launch_prompt, None);
+
+        let details = h.replicator.spawn_details(project, "epic-9", 4).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(2, project.into(), "epic-9".into(), 4, details)
+            .unwrap();
+        assert_eq!(
+            h.replicator
+                .on_registered_with_route(&snapshot, DeliveryRoute::LaunchLine),
             DeliveryRoute::Typed,
-            "a successor is never offered the route, so the claim is refused"
+            "an unoffered successor claim is refused, and says so"
         );
 
         h.replicator.observe_hook(&session_started(2));
         let writes = h.writes.lock().unwrap().clone();
-        assert_eq!(writes.len(), 1, "the successor ritual is still typed in");
-        assert_eq!(writes[0].0, 2);
-        assert_eq!(h.replicator.delivered_count(), 1, "and still watched");
+        assert_eq!(writes.len(), 1, "the ritual is still typed in");
+        assert!(writes[0].1.contains("RECOVERY"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_generation_re_emits_carry_the_same_launch_offer() {
+        // The offer is decided AFTER staging (finish_ritual_decision), so it
+        // must be mirrored into the respawn state — a re-emitted spawn event
+        // that lost it would register Typed and the pointer would be typed
+        // into the exact startup window #170 exists to avoid.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let head = read_repo_head(repo.path()).unwrap();
+        write_handoff(repo.path(), "epic-9", 3, &head);
+        let working_dir = repo.path().to_string_lossy().into_owned();
+
+        h.replicator.spawn_generation(
+            "C:/git/proj-170-reemit",
+            "epic-9",
+            &working_dir,
+            4,
+            Some(3),
+            "resume_timer",
+        );
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        let (_, pointer) = h.replicator.pending_view(4).unwrap();
+        assert_eq!(
+            h.spawns.lock().unwrap()[0].launch_prompt.as_deref(),
+            Some(pointer.as_str())
+        );
+
+        h.replicator
+            .backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        let spawns = h.spawns.lock().unwrap().clone();
+        assert_eq!(spawns.len(), 2, "unregistered fresh spawn re-emits");
+        assert_eq!(
+            spawns[1].launch_prompt.as_deref(),
+            Some(pointer.as_str()),
+            "the re-emitted event carries the same offer"
+        );
     }
 
     #[tokio::test]
@@ -5370,7 +5519,7 @@ mod tests {
             3,
             "decided".into(),
             false,
-            &spawn,
+            spawn.clone(),
         );
         assert!(
             cancelled.spawns.lock().unwrap().is_empty(),
@@ -5387,7 +5536,7 @@ mod tests {
             3,
             "decided".into(),
             false,
-            &spawn,
+            spawn,
         );
         assert_eq!(staged.replicator.pending_view(3).unwrap().1, "decided");
         assert_eq!(staged.spawns.lock().unwrap().len(), before + 1);

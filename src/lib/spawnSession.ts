@@ -15,12 +15,13 @@
  * session running in the right directory and register it under supervision
  * (which is what arms that delivery).
  *
- * One exception (issue #158): a gen-1 LAUNCH is the only spawn where the CLI
- * command itself is still being composed, so its short brief POINTER rides
- * along in `launch_prompt` and goes out as a positional argument on that
- * command — no typed frame at all. It stays an OFFER: whatever cannot be
- * quoted for the local shell is handed back to the queued-and-typed route
- * above, and registration reports which of the two actually happened.
+ * One exception (issue #158, widened by #170): EVERY spawn through this
+ * module — gen-1 launches and successors alike — composes a fresh `claude`
+ * command, so a short brief POINTER may ride along in `launch_prompt` and go
+ * out as a positional argument on that command — no typed frame at all. It
+ * stays an OFFER: whatever cannot be quoted for the local shell is handed
+ * back to the queued-and-typed route above, and registration reports which
+ * of the two actually happened.
  */
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -51,10 +52,11 @@ export interface SamuraiSpawnSuccessorEvent {
    */
   model?: string | null;
   /**
-   * Issue #158: the gen-1 brief pointer, offered for the `claude` launch
-   * line as a positional initial prompt. Present only for a gen-1 launch
-   * whose payload fits a command line; absent/null everywhere else, which
-   * leaves the backend typing the instruction as it always has.
+   * Issue #158/#170: the brief pointer, offered for the `claude` launch
+   * line as a positional initial prompt. Present for any spawn (gen-1
+   * launch or successor) whose payload fits a command line; absent/null
+   * otherwise, which leaves the backend typing the instruction as it
+   * always has.
    */
   launch_prompt?: string | null;
 }
