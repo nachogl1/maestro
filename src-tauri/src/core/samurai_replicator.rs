@@ -986,7 +986,7 @@ impl SamuraiReplicator {
 
     /// kill gen-N → `Killed` → queue ritual → emit spawn event.
     async fn replicate(self: Arc<Self>, snapshot: SessionSnapshot, dir: String) {
-        let working_dir = strip_extended_prefix(&dir).to_string();
+        let working_dir = strip_extended_prefix(&dir);
 
         // HEAD gate first (pure reads; the kill changes nothing git-side but
         // the session's metadata is guaranteed alive here). File I/O + git
@@ -1262,7 +1262,7 @@ impl SamuraiReplicator {
             self.alert_spawn_failed(snapshot, "the session's working directory is unknown");
             return;
         };
-        let working_dir = strip_extended_prefix(&dir).to_string();
+        let working_dir = strip_extended_prefix(&dir);
         let generation = snapshot.generation + 1;
         // Issue #91: resolved before the lock (one small JSON read, same
         // budget as model_for below) — never file I/O under the mutex.
@@ -1467,7 +1467,7 @@ impl SamuraiReplicator {
                 prior + 1,
             );
         }
-        let working_dir = strip_extended_prefix(working_dir).to_string();
+        let working_dir = strip_extended_prefix(working_dir);
         // Issue #91: the run's workflow, recompiled from the launch
         // snapshot — resolved once here (same JSON read budget as
         // model_for), used by the placeholder and the real ritual alike.
@@ -1727,7 +1727,7 @@ impl SamuraiReplicator {
         instruction: String,
     ) {
         let generation = 1;
-        let working_dir = strip_extended_prefix(working_dir).to_string();
+        let working_dir = strip_extended_prefix(working_dir);
         // Issue #137: the launch brief is the longest payload Maestro
         // delivers and the one observed arriving spliced mid-word — it goes
         // to a file in the worktree and gen-1 is handed a pointer at it. One
@@ -3019,7 +3019,7 @@ mod tests {
         assert_eq!(spawns[0].session_name, "samurai gen-3 epic-9");
         assert_eq!(
             spawns[0].working_dir,
-            strip_extended_prefix(&repo.path().to_string_lossy()).to_string()
+            strip_extended_prefix(&repo.path().to_string_lossy())
         );
 
         // HEAD matched → the staged ritual skips verify. (Issue #137: the

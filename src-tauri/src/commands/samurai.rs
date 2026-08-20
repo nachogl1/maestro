@@ -761,7 +761,7 @@ pub(crate) async fn launch_run_inner(
 
     let branch = epic_branch(project, &epic);
     let created = ensure_epic_worktree(worktrees, project, &branch, worktree_base).await?;
-    let worktree_path = strip_extended_prefix(&created.path.to_string_lossy()).to_string();
+    let worktree_path = strip_extended_prefix(&created.path.to_string_lossy());
 
     // Issue #90b: the test-suite gate — bootstrap the epic worktree, then
     // `cargo test --workspace` inside it; red = launch blocked (the skip
@@ -1078,7 +1078,7 @@ pub(crate) async fn recover_run_inner(
              let the live agent finish (or kill it) first",
         ));
     }
-    let working_dir = strip_extended_prefix(&config.worktree_path).to_string();
+    let working_dir = strip_extended_prefix(&config.worktree_path);
     let worktree = PathBuf::from(&working_dir);
     if !worktree.exists() {
         return Err(format!(

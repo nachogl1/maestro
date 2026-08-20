@@ -403,7 +403,8 @@ async fn reconcile_pass(
             // this crate's rule for that FS work is "never inline on the
             // runtime". A join failure (probe panic) reads as "no transcript".
             let probe = transcript_ages.clone();
-            let path = strip_extended_prefix(&config.worktree_path).to_string();
+            let worktree = strip_extended_prefix(&config.worktree_path);
+            let path = worktree.clone();
             let age = tokio::task::spawn_blocking(move || probe(&path))
                 .await
                 .unwrap_or(None);
@@ -413,7 +414,7 @@ async fn reconcile_pass(
                 orphan_age_secs: orphan_verdict(age, alive, TRANSCRIPT_STALE_AFTER),
                 prior_generation: prior_generation(
                     audit,
-                    Path::new(strip_extended_prefix(&config.worktree_path)),
+                    Path::new(&worktree),
                     &config.project_path,
                     &config.epic,
                 )

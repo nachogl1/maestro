@@ -1420,32 +1420,44 @@ pub(crate) fn strip_extended_length(path: &str) -> String {
     }
 }
 
+/// Any spelling of a Windows path a samurai store can hand back, mapped to
+/// the plain ABSOLUTE one. Two rules:
+///
+/// * [`strip_extended_length`]: the `\\?\` / `\\?\UNC\` verbatim prefix
+///   `fs::canonicalize` adds on Windows is dropped, keeping a
+///   `\\?\UNC\server\share\…` path ABSOLUTE (`\\server\share\…`) rather
+///   than stripping it to a relative-looking `UNC\server\share\…`.
+/// * Legacy repair: a string already mangled to that relative spelling — by
+///   the pre-#161 copies of this function, persisted in their stores, or
+///   arriving from `commands/ai_runner.rs::canonical_project_path`, which
+///   still strips only `\\?\` — is mapped back to `\\server\share\…`. A
+///   leading `UNC\` component cannot occur in a genuine absolute path, so
+///   the repair is unambiguous, and it is what lets every store accept its
+///   own pre-#161 records without a rewrite.
+///
+/// Both path families that reach the samurai machinery go through this:
+/// [`normalize_project`] for project identity (issue #161) and
+/// `samurai_injector::strip_extended_prefix` for the epic worktree that
+/// becomes a launch working directory (issue #165). They had drifted apart
+/// once already — the rule lives here so they cannot drift again.
+pub(crate) fn normalize_extended_path(path: &str) -> String {
+    let stripped = strip_extended_length(path);
+    match stripped.strip_prefix(r"UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => stripped,
+    }
+}
+
 /// The ONE project-identity normalization every samurai surface shares —
 /// audit file names, run-config placement, schedule timers, journal entries,
 /// PR-review records and the command boundary all key the same project on
 /// this string, so it lives in exactly one place (issue #161; the per-module
 /// copies it replaces had already drifted from [`strip_extended_length`]).
 ///
-/// Two rules:
-///
-/// * [`strip_extended_length`]: the `\\?\` / `\\?\UNC\` verbatim prefix
-///   `fs::canonicalize` adds on Windows is dropped, keeping a
-///   `\\?\UNC\server\share\…` checkout ABSOLUTE (`\\server\share\…`) rather
-///   than stripping it to a relative-looking `UNC\server\share\…`.
-/// * Legacy repair: a string already mangled to that relative spelling — by
-///   the pre-#161 copies of this function, persisted in their stores, or
-///   arriving from `commands/ai_runner.rs::canonical_project_path`, which
-///   still strips only `\\?\` — is mapped back to `\\server\share\…`. A
-///   leading `UNC\` component cannot occur in a genuine project path (those
-///   are absolute by construction), so the repair is unambiguous, and it is
-///   what lets every store accept its own pre-#161 records without a
-///   rewrite.
+/// The rules are [`normalize_extended_path`]'s; this name is the contract
+/// that says a string is a project KEY, not just any path.
 pub(crate) fn normalize_project(project: &str) -> String {
-    let stripped = strip_extended_length(project);
-    match stripped.strip_prefix(r"UNC\") {
-        Some(rest) => format!(r"\\{rest}"),
-        None => stripped,
-    }
+    normalize_extended_path(project)
 }
 
 /// Lossless `\\?\`-strip of a path for display/wire use (no canonicalize —

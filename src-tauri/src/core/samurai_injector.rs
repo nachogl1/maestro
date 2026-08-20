@@ -680,14 +680,23 @@ fn written_value(text: &str) -> Option<String> {
 }
 
 /// `fs::canonicalize` on Windows returns `\\?\`-prefixed extended-length
-/// paths (the SessionManager stores them verbatim); `CreateProcess` rejects
-/// that form as a working directory. Strip it, same as
-/// `commands/terminal.rs` / `commands/ai_runner.rs`. On other platforms the
-/// prefix never occurs and this is a no-op. `pub(crate)`: the replicator
+/// paths (the SessionManager and `WorktreeManager` store them verbatim);
+/// `CreateProcess` rejects that form as a working directory. Strip it, same
+/// as `commands/terminal.rs` / `commands/ai_runner.rs`. On other platforms
+/// the prefix never occurs and this is a no-op. `pub(crate)`: the replicator
 /// (issue #55) resolves session dirs through the same resolver and needs the
 /// identical stripping.
-pub(crate) fn strip_extended_prefix(path: &str) -> &str {
-    path.strip_prefix(r"\\?\").unwrap_or(path)
+///
+/// Issue #165: the strip is [`samurai_files::normalize_extended_path`]'s, not
+/// a bare `\\?\` chop. A worktree canonicalized on a share arrives as
+/// `\\?\UNC\server\share\…`, and dropping only `\\?\` left the RELATIVE
+/// `UNC\server\share\…` — which every consumer here (launch working
+/// directory, handoff resolution, HEAD reads, orphan probes) then resolved
+/// against the process cwd instead of the share. The same call also repairs a
+/// `worktree_path` already persisted in a run config under that mangled
+/// spelling, exactly as #161 did for `project_path`.
+pub(crate) fn strip_extended_prefix(path: &str) -> String {
+    super::samurai_files::normalize_extended_path(path)
 }
 
 /// Whether one `git status --porcelain` line blocks the handoff. Untracked
@@ -2830,6 +2839,29 @@ mod tests {
         assert_eq!(strip_extended_prefix(r"\\?\C:\git\proj"), r"C:\git\proj");
         assert_eq!(strip_extended_prefix(r"C:\git\proj"), r"C:\git\proj");
         assert_eq!(strip_extended_prefix("/home/x"), "/home/x");
+    }
+
+    /// Issue #165: a worktree canonicalized on a share must stay ABSOLUTE.
+    /// Dropping only `\\?\` yielded `UNC\server\share\…`, which resolves
+    /// against the process cwd — the launch working directory, the handoff
+    /// resolution and every HEAD read then pointed at the wrong tree.
+    #[test]
+    fn test_strip_extended_prefix_keeps_a_unc_worktree_absolute() {
+        assert_eq!(
+            strip_extended_prefix(r"\\?\UNC\build01\shares\epic-wt"),
+            r"\\build01\shares\epic-wt",
+        );
+        // Accept-on-read: a `worktree_path` already persisted under the
+        // mangled spelling repairs back, same as #161 gave `project_path`.
+        assert_eq!(
+            strip_extended_prefix(r"UNC\build01\shares\epic-wt"),
+            r"\\build01\shares\epic-wt",
+        );
+        // An already-plain UNC path is left alone (idempotent).
+        assert_eq!(
+            strip_extended_prefix(r"\\build01\shares\epic-wt"),
+            r"\\build01\shares\epic-wt",
+        );
     }
 
     // --- validation against real git repos in temp dirs ---

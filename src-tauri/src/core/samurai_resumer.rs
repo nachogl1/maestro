@@ -350,7 +350,7 @@ impl SamuraiResumer {
 
         // Always `\\?\`-stripped (fork convention); the gate above
         // guarantees the config exists, so no path is ever invented.
-        let working_dir = strip_extended_prefix(&config.worktree_path).to_string();
+        let working_dir = strip_extended_prefix(&config.worktree_path);
 
         let registry_max = sessions
             .iter()
