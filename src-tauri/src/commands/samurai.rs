@@ -2604,6 +2604,12 @@ mod tests {
         schedule: Arc<SamuraiSchedule>,
         replicator: Arc<SamuraiReplicator>,
         spawns: Arc<std::sync::Mutex<Vec<crate::core::samurai_replicator::SuccessorSpawn>>>,
+        /// Signalled by the spawn emitter on every push (issue #169). Only
+        /// the SUCCESSOR path needs it: `spawn_first_generation` emits
+        /// inline, so a launch's spawn is already there when `run_launch`
+        /// returns, while `spawn_generation` emits from a spawned task that
+        /// first shells out to git. See [`wait_for_spawns`].
+        spawn_signal: Arc<tokio::sync::Notify>,
         run_configs: Arc<RunConfigStore>,
         worktrees: WorktreeManager,
         audit: AuditLog,
@@ -2666,6 +2672,7 @@ mod tests {
     ) -> (
         Arc<SamuraiReplicator>,
         Arc<std::sync::Mutex<Vec<crate::core::samurai_replicator::SuccessorSpawn>>>,
+        Arc<tokio::sync::Notify>,
     ) {
         use crate::core::samurai_injector::SessionDirResolver;
         use crate::core::samurai_replicator::{
@@ -2676,8 +2683,15 @@ mod tests {
 
         let spawns: Arc<Mutex<Vec<SuccessorSpawn>>> = Arc::new(Mutex::new(Vec::new()));
         let spawns_rec = spawns.clone();
-        let emit_spawn: SuccessorEmitter =
-            Arc::new(move |s| spawns_rec.lock().unwrap().push(s.clone()));
+        let signal = Arc::new(tokio::sync::Notify::new());
+        let signal_rec = signal.clone();
+        let emit_spawn: SuccessorEmitter = Arc::new(move |s| {
+            spawns_rec.lock().unwrap().push(s.clone());
+            // `notify_one` stores a permit when nobody is waiting yet, so a
+            // spawn emitted before the test starts waiting is never lost
+            // (issue #169).
+            signal_rec.notify_one();
+        });
         let session_dirs: SessionDirResolver = Arc::new(|_| None);
         let transcript_paths: TranscriptPathResolver = Arc::new(|_| None);
         let teardown: SessionTeardown = Arc::new(|_| Box::pin(async {}));
@@ -2695,7 +2709,7 @@ mod tests {
             write_stdin,
             resend_enter,
         ));
-        (replicator, spawns)
+        (replicator, spawns, signal)
     }
 
     fn cleanup_harness() -> CleanupHarness {
@@ -2710,7 +2724,7 @@ mod tests {
             SamuraiSchedule::new(schedule_dir.path().to_path_buf(), Arc::new(|_| {}), None);
         let project = repo.path().to_string_lossy().into_owned();
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
-        let (replicator, spawns) = test_replicator(supervisor.clone(), audit.clone());
+        let (replicator, spawns, spawn_signal) = test_replicator(supervisor.clone(), audit.clone());
         let parker = test_parker(supervisor.clone(), schedule.clone(), audit.clone());
         let run_configs = Arc::new(RunConfigStore::new(runs_dir.path().to_path_buf()));
         let title_lookup = RefTitleLookup::new(
@@ -2724,6 +2738,7 @@ mod tests {
             schedule,
             replicator,
             spawns,
+            spawn_signal,
             run_configs,
             worktrees: WorktreeManager::new(),
             audit,
@@ -2734,6 +2749,43 @@ mod tests {
             _dirs: (audit_dir, schedule_dir, runs_dir),
             base: tempdir().unwrap(),
             repo,
+        }
+    }
+
+    /// Block until the spawn emitter has recorded `n` spawns.
+    ///
+    /// Issue #169: a SUCCESSOR spawn is emitted from a task
+    /// `SamuraiReplicator::spawn_generation` spawns, and that task first
+    /// reads the prior handoff and shells out to `git rev-parse HEAD` on the
+    /// blocking pool. A subprocess has no bounded wall-clock time — least of
+    /// all in a saturated `cargo test --workspace` run, where the whole
+    /// machine is contended — so a fixed poll budget is a guess about the
+    /// host, and this assertion failed roughly one full-suite run in N while
+    /// passing in isolation every time. Waiting on the emitter's own signal
+    /// observes the event instead of guessing how long it takes.
+    ///
+    /// The timeout is a deadlock backstop only: `cargo test` imposes no
+    /// per-test limit, so a real regression must fail with a message rather
+    /// than hang the job. Nothing about a PASSING run depends on its value.
+    async fn wait_for_spawns(h: &CleanupHarness, n: usize) {
+        let backstop = std::time::Duration::from_secs(60);
+        let wait = async {
+            loop {
+                // Built before the count is read: a spawn landing between
+                // the read and the await is not lost, because `notify_one`
+                // leaves a stored permit that the await consumes at once.
+                let signalled = h.spawn_signal.notified();
+                if h.spawns.lock().unwrap().len() >= n {
+                    return;
+                }
+                signalled.await;
+            }
+        };
+        if tokio::time::timeout(backstop, wait).await.is_err() {
+            panic!(
+                "only {} spawn(s) emitted after {backstop:?} — expected {n}",
+                h.spawns.lock().unwrap().len()
+            );
         }
     }
 
@@ -4043,14 +4095,10 @@ mod tests {
         // The stale timer is superseded by the manual recovery.
         assert!(result.timer_cancelled);
         assert!(h.schedule.list().is_empty());
-        // Gen-3 staged through the replicator (the spawn event is emitted
-        // from a spawned task — poll briefly rather than racing it).
-        for _ in 0..100 {
-            if h.spawns.lock().unwrap().len() >= 2 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        // Gen-3 staged through the replicator. The spawn event is emitted
+        // from a spawned task that shells out to git first, so wait on the
+        // emitter's signal rather than on a guessed duration (issue #169).
+        wait_for_spawns(&h, 2).await;
         assert_eq!(h.spawns.lock().unwrap().len(), 2);
         assert_eq!(h.spawns.lock().unwrap()[1].generation, 3);
         // The RESUME row records the recovery and the verified repo state.
