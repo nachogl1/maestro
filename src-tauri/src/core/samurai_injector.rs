@@ -458,6 +458,30 @@ fn idle_session_id(event: &ClaudeEvent) -> Option<u32> {
     }
 }
 
+/// Everything a delivery's audit rows say about the injection, copied off
+/// the pending entry on the caller's thread while that entry is still alive
+/// (issue #162).
+///
+/// The verdict callback fires after the staging hop and the PTY write, and
+/// a tick sweep or a `remove_session` can drop the entry in that window.
+/// Re-reading it there used to decide whether the trail said ANYTHING: a
+/// raced removal wrote no `delivered` row and no `delivery_failed` ALERT,
+/// so a real write left a silent gap in the run's delivery history. The
+/// row is now written from this snapshot, so it always describes the
+/// delivery that actually happened — and it describes OUR delivery, never
+/// a different entry re-created in the same slot meanwhile.
+#[derive(Clone)]
+struct DeliverySnapshot {
+    project: String,
+    epic: String,
+    generation: u32,
+    kind: PendingKind,
+    /// The attempt number as of arming — [`Injector::arm_injection_on_idle`]
+    /// has already incremented it when [`Injector::spawn_write`] snapshots.
+    attempts: u8,
+    corrective: bool,
+}
+
 /// Issue #54 bonus fix (P2.2's known limitation): what one event says about
 /// a session being idle *right now*. `Some((id, true))` — the Stop hook: the
 /// turn just finished and no future idle signal will fire on its own.
@@ -1655,9 +1679,16 @@ impl SamuraiInjector {
     /// agent, but the failed attempt still times out `ack_timeout_secs`
     /// later and walks the existing retry ladder, exactly as above.
     ///
-    /// Reads the entry back (and stamps it) under its own short lock (the
-    /// outcome fires right after the arm decision); a raced removal simply
-    /// skips the rows.
+    /// Issue #162: what the rows SAY comes from `snapshot`, taken on the
+    /// caller's thread while the entry was still alive, so a delivery that
+    /// really happened is always in the trail. The entry is still read back
+    /// under its own short lock, but only for the two things that act on
+    /// the LIVE entry — the `injected_at` stamp and the Enter-resend watch.
+    /// A raced removal therefore skips the stamp and the watch (there is no
+    /// entry left for either to serve), never the audit rows.
+    // The snapshot (issue #162) is the 8th argument; the repo convention for
+    // a wide internal fn is the allow, not a params struct nobody else uses.
+    #[allow(clippy::too_many_arguments)]
     fn record_delivery_outcome(
         pending: &Mutex<HashMap<u32, PendingInstruction>>,
         audit: &AuditLog,
@@ -1665,41 +1696,46 @@ impl SamuraiInjector {
         session_id: u32,
         gate: &'static str,
         instruction: &str,
+        snapshot: &DeliverySnapshot,
         result: Result<(), String>,
     ) {
-        let entry = {
+        // Whether an entry is still there to stamp and to watch. NOT what
+        // decides the rows (issue #162) — those come from `snapshot`.
+        let still_pending = {
             let mut pending = pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pending.get_mut(&session_id).map(|p| {
-                // The delivery attempt just resolved: the ACK window starts
-                // NOW (issue #160). Only for an ARMED entry — arming always
-                // precedes the outcome, so an attempts=0 occupant is a
-                // DIFFERENT entry re-created after ours vanished (e.g. an
-                // all-clear superseding an armed wind-down), and a stale
-                // stamp on it would suppress the never-idled wait cap until
-                // its own first arm.
-                if p.attempts > 0 {
-                    p.injected_at = Some(AgeableInstant::now());
+            match pending.get_mut(&session_id) {
+                Some(p) => {
+                    // The delivery attempt just resolved: the ACK window
+                    // starts NOW (issue #160). Only for an ARMED entry —
+                    // arming always precedes the outcome, so an attempts=0
+                    // occupant is a DIFFERENT entry re-created after ours
+                    // vanished (e.g. an all-clear superseding an armed
+                    // wind-down), and a stale stamp on it would suppress the
+                    // never-idled wait cap until its own first arm.
+                    if p.attempts > 0 {
+                        p.injected_at = Some(AgeableInstant::now());
+                    }
+                    true
                 }
-                (
-                    p.project.clone(),
-                    p.epic.clone(),
-                    p.generation,
-                    p.kind,
-                    p.attempts,
-                    p.corrective,
-                )
-            })
+                None => false,
+            }
         };
-        let Some((project, epic, generation, kind, attempts, corrective)) = entry else {
-            return;
-        };
+        let DeliverySnapshot {
+            project,
+            epic,
+            generation,
+            kind,
+            attempts,
+            corrective,
+        } = snapshot;
+        let (generation, kind, attempts, corrective) = (*generation, *kind, *attempts, *corrective);
         match result {
             Ok(()) => {
                 let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(instruction);
                 audit.append(
-                    &project,
+                    project,
                     AuditEvent::now(
                         epic.clone(),
                         AuditEventKind::Inject,
@@ -1716,8 +1752,13 @@ impl SamuraiInjector {
                         }),
                     ),
                 );
-                if let Some(replicator) = replicator {
-                    replicator.watch_delivery(&project, &epic, generation, session_id);
+                // The resend watch serves the LIVE entry — it re-sends the
+                // Enter so this pending instruction can still be ACKed. With
+                // the entry gone there is nothing left to ACK, so arming it
+                // would only type into a session that owes nothing (issue
+                // #162 keeps the row, not the watch).
+                if let (Some(replicator), true) = (replicator, still_pending) {
+                    replicator.watch_delivery(project, epic, generation, session_id);
                 }
             }
             Err(error) => {
@@ -1726,9 +1767,9 @@ impl SamuraiInjector {
                     kind.as_str()
                 );
                 audit.append(
-                    &project,
+                    project,
                     AuditEvent::now(
-                        epic,
+                        epic.clone(),
                         AuditEventKind::Alert,
                         generation,
                         session_id,
@@ -1814,14 +1855,38 @@ impl SamuraiInjector {
     /// brief's name, and a tick sweep or a `remove_session` can drop it while
     /// the staging task is still queued. A `None` resolved on the far side
     /// would paste the full multi-KB instruction into the PTY — undoing
-    /// #143 — and it would do so silently, since `record_delivery_outcome`
-    /// reads that same vanished entry and so raises nothing either.
+    /// #143. (Until issue #162 it did so silently too, because
+    /// `record_delivery_outcome` read that same vanished entry and so wrote
+    /// nothing either; [`Self::delivery_snapshot`] is the same
+    /// resolve-before-the-hop answer for the audit row.)
     fn brief_target(&self, session_id: u32) -> Option<(String, String)> {
         let name = self
             .lock_pending()
             .get(&session_id)
             .map(|p| injector_brief_name(&p.epic, p.kind, p.generation, p.corrective, p.episode))?;
         Some((name, (self.session_dirs)(session_id)?))
+    }
+
+    /// What `session_id`'s delivery audit row will say, read off the pending
+    /// entry while it is still alive (issue #162).
+    ///
+    /// ALWAYS resolved on the caller's thread, for the same reason
+    /// [`Self::brief_target`] is: the entry is the only thing that knows the
+    /// project, epic, generation, kind, attempt and corrective flag the row
+    /// carries, and it can be swept away before the writer's verdict comes
+    /// back. `None` only when the entry vanished between the arm decision
+    /// and this call.
+    fn delivery_snapshot(&self, session_id: u32) -> Option<DeliverySnapshot> {
+        self.lock_pending()
+            .get(&session_id)
+            .map(|p| DeliverySnapshot {
+                project: p.project.clone(),
+                epic: p.epic.clone(),
+                generation: p.generation,
+                kind: p.kind,
+                attempts: p.attempts,
+                corrective: p.corrective,
+            })
     }
 
     /// Stage `data` at an already-resolved [`Self::brief_target`], yielding
@@ -1886,7 +1951,24 @@ impl SamuraiInjector {
         // inline one for a payload that is multi-KB by definition.
         let instruction: Arc<str> = Arc::from(data.as_str());
         let audit_text = instruction.clone();
+        // Issue #162: what the delivery's audit row SAYS is resolved here,
+        // on the caller's thread, for exactly the reason [`Self::brief_target`]
+        // is — the pending entry is the only thing that knows it, and a tick
+        // sweep or a `remove_session` can drop that entry while the staging
+        // hop and the PTY write are still in flight. `None` means it vanished
+        // between the arm decision and this line — the same thread, so a
+        // microseconds-wide sliver rather than the whole delivery: nothing is
+        // left to describe, and the write still goes out.
+        let snapshot = self.delivery_snapshot(session_id);
+        if snapshot.is_none() {
+            log::warn!(
+                "samurai injector: session {session_id}'s pending entry vanished before its delivery could be described — the write goes out with no audit row"
+            );
+        }
         let outcome: DeliveryOutcome = Box::new(move |result| {
+            let Some(snapshot) = snapshot else {
+                return;
+            };
             Self::record_delivery_outcome(
                 &pending,
                 &audit,
@@ -1894,6 +1976,7 @@ impl SamuraiInjector {
                 session_id,
                 gate,
                 &audit_text,
+                &snapshot,
                 result,
             );
         });
@@ -3944,13 +4027,13 @@ mod tests {
     /// entry, and a tick sweep or a `remove_session` can drop that entry
     /// while the staging task is still queued. Resolving the name on the far
     /// side of the hop would find nothing and paste the full multi-KB
-    /// instruction into the PTY — silently undoing #143, because
-    /// `record_delivery_outcome` reads the same vanished entry and so raises
-    /// no ALERT either. The name and worktree are therefore resolved on the
-    /// caller's thread, before the hop: what lands is the POINTER the entry
-    /// described when it was still alive.
+    /// instruction into the PTY — silently undoing #143. The name and
+    /// worktree are therefore resolved on the caller's thread, before the
+    /// hop: what lands is the POINTER the entry described when it was still
+    /// alive. And since issue #162 the audit row survives the same race: it
+    /// is written from the arm-time snapshot, not from the vanished entry.
     #[tokio::test]
-    async fn test_a_pending_entry_dropped_mid_staging_still_delivers_the_pointer() {
+    async fn test_a_pending_entry_dropped_mid_staging_delivers_the_pointer_and_records_the_row() {
         let dir = tempdir().unwrap();
         let (injector, audit, supervisor, context, dirs, captured) =
             harness_capturing_delivery(dir.path());
@@ -3983,18 +4066,25 @@ mod tests {
             "the brief is still staged byte-identical"
         );
 
-        // The delivery outcome fires, but `record_delivery_outcome` reads the
-        // entry back and finds it gone, so it writes no row — its own
-        // pre-existing "a raced removal simply skips the rows" rule, which
-        // this fix deliberately leaves alone — tracked as #162. Pinned so a
-        // later change to it is a decision, not a drift.
-        let rows = audit.read(project, None, None).await.unwrap().events;
-        assert!(
-            !rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Inject && r.details["phase"] == "delivered"),
-            "no entry left to describe the delivery with"
-        );
+        // Issue #162: the delivery really happened, so the trail must say
+        // so. `record_delivery_outcome` writes the row from the snapshot
+        // taken while the entry was still alive — the raced removal skips
+        // only the stamp and the resend watch, never the audit rows.
+        let mut delivered = false;
+        for _ in 0..200 {
+            let rows = audit.read(project, None, None).await.unwrap().events;
+            if rows.iter().any(|r| {
+                r.event == AuditEventKind::Inject
+                    && r.details["phase"] == "delivered"
+                    && r.details["instruction"] == "handoff"
+                    && r.details["attempt"] == 1
+            }) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(delivered, "the delivered row landed despite the removal");
     }
 
     type OutcomeQueue = Arc<Mutex<std::collections::VecDeque<DeliveryOutcome>>>;
