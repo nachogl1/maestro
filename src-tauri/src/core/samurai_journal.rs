@@ -330,8 +330,17 @@ impl JournalStore {
         })
     }
 
-    /// The entries no harvest has consumed yet (after the last marker) —
-    /// what the harvest runner (next issue) feeds into a report.
+    /// [`JournalStore::unconsumed_with_raw`] with the raw lines dropped —
+    /// the entries alone.
+    ///
+    /// Test-only. Its doc used to promise this was "what the harvest runner
+    /// (next issue) feeds into a report"; that runner was since built and
+    /// needs the raw line as the content anchor for its consumption commit,
+    /// so every production caller goes to `unconsumed_with_raw` and this
+    /// wrapper had been dead code in the lib build ever since. Kept — behind
+    /// `cfg(test)` rather than deleted — because it lets this store's tests
+    /// assert about entries instead of about on-disk lines.
+    #[cfg(test)]
     pub fn unconsumed(&self) -> Result<Vec<JournalEntry>, String> {
         Ok(self
             .unconsumed_with_raw()?
@@ -340,9 +349,10 @@ impl JournalStore {
             .collect())
     }
 
-    /// [`JournalStore::unconsumed`] with each entry's exact on-disk raw line
-    /// attached — the identity the harvest triage snapshots so its
-    /// consumption commit can be content-anchored ([`commit_harvest`]).
+    /// The entries no harvest has consumed yet (after the last marker), each
+    /// with its exact on-disk raw line attached — the identity the harvest
+    /// triage snapshots so its consumption commit can be content-anchored
+    /// ([`commit_harvest`]).
     pub fn unconsumed_with_raw(&self) -> Result<Vec<JournalEntryWithStatus>, String> {
         Ok(self
             .list()?
