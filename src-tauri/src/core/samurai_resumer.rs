@@ -620,6 +620,11 @@ mod tests {
 
     // --- integration (real supervisor + replicator + schedule + parker) ---
 
+    /// Woken the moment the harness observes anything a test can wait on:
+    /// every audit append (the writer task's `on_append` hook) and every
+    /// successor spawn the replicator emits. See [`wait_until`].
+    type HarnessTick = Arc<tokio::sync::Notify>;
+
     struct Harness {
         resumer: Arc<SamuraiResumer>,
         supervisor: Arc<Supervisor>,
@@ -638,10 +643,19 @@ mod tests {
         /// checks. Empty for every test that never registers one, which is
         /// the previous `|_| None` behaviour unchanged.
         dirs: Arc<Mutex<HashMap<u32, String>>>,
+        /// Every waiter's wake-up source (see [`HarnessTick`]).
+        tick: HarnessTick,
     }
 
     fn harness(dir: &Path) -> Harness {
-        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        let tick: HarnessTick = Arc::new(tokio::sync::Notify::new());
+        // `notify_one` (not `notify_waiters`) so an event that lands while
+        // nobody is waiting still stores its permit — a waiter that arrives
+        // afterwards re-checks immediately instead of sleeping through it.
+        let tick_for_audit = tick.clone();
+        let on_append: crate::core::samurai_audit::AppendCallback =
+            Arc::new(move |_: &str, _: &AuditEvent| tick_for_audit.notify_one());
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), Some(on_append));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let config: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
@@ -657,8 +671,10 @@ mod tests {
         let teardown: SessionTeardown = Arc::new(|_| Box::pin(async {}));
         let spawns: Arc<Mutex<Vec<SuccessorSpawn>>> = Arc::new(Mutex::new(Vec::new()));
         let spawns_rec = spawns.clone();
+        let tick_for_spawn = tick.clone();
         let emit_spawn: SuccessorEmitter = Arc::new(move |s| {
             spawns_rec.lock().unwrap().push(s.clone());
+            tick_for_spawn.notify_one();
         });
         let write_stdin: StdinWriter = Arc::new(|_, _, outcome| outcome(Ok(())));
         let resend_enter: EnterResender = Arc::new(|_| {});
@@ -719,6 +735,7 @@ mod tests {
             context,
             parker,
             dirs,
+            tick,
         }
     }
 
@@ -763,33 +780,90 @@ mod tests {
         }
     }
 
-    /// Polls until `cond` holds or ~2s pass (spawn staging finishes on the
-    /// tauri runtime, not this test's).
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..200 {
+    /// Longest a wait may sit with its condition still false before the test
+    /// calls it a hang. **Not a race budget.** The waits below are woken by
+    /// the [`HarnessTick`] the instant their producer acts, so a healthy run
+    /// returns in milliseconds no matter how loaded the machine is; this
+    /// bound exists only so a genuine regression fails with a message
+    /// instead of hanging the suite forever.
+    const HANG_BACKSTOP: Duration = Duration::from_secs(60);
+
+    /// Longest a waiter sleeps between re-checks when no tick arrives. Covers
+    /// the one edge an event cannot: a condition that flips without a further
+    /// audit append or spawn (the parker disengaging after its last row).
+    const SETTLE: Duration = Duration::from_millis(50);
+
+    /// Waits until `cond` holds, woken by the harness tick.
+    ///
+    /// The waits here span `tauri::async_runtime` — the replicator decides a
+    /// successor's ritual on the GLOBAL runtime, behind `spawn_blocking` and
+    /// real `git` subprocesses — while the test body runs on its own,
+    /// otherwise idle, current-thread runtime. The old helper budgeted a
+    /// fixed 200 × 10 ms sleeps for that, which measured the wrong clock: on
+    /// a cold, loaded box the test's sleeps kept ticking at ~10 ms while the
+    /// global runtime and the process launches it queues behind slowed down
+    /// several-fold, so the budget ran out on a run that was merely slow.
+    /// Measured under a 3× loaded full suite the spawn waits burned 120-131
+    /// of those 200 iterations — a margin that closes on a colder machine.
+    /// Event-driven, the wait cannot lose that race at all.
+    async fn wait_until(h: &Harness, mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + HANG_BACKSTOP;
+        loop {
             if cond() {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition still false {HANG_BACKSTOP:?} after the last harness event",
+            );
+            let _ = tokio::time::timeout(SETTLE, h.tick.notified()).await;
         }
-        panic!("condition not reached within 2s");
     }
 
-    /// Polls the audit log until a row matches, returning all rows.
+    /// Reads the audit log until a row matches, returning all rows. Same
+    /// contract as [`wait_until`]: the audit writer's `on_append` hook ticks
+    /// the harness, so the re-read happens on the append, not on a timer.
     async fn wait_for_row(
-        audit: &AuditLog,
+        h: &Harness,
         project: &str,
         mut pred: impl FnMut(&AuditEvent) -> bool,
     ) -> Vec<AuditEvent> {
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = audit.read(project, None, None).await.unwrap().events;
+        let deadline = std::time::Instant::now() + HANG_BACKSTOP;
+        loop {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
             if rows.iter().any(&mut pred) {
                 return rows;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected audit row never landed; have: {rows:?}",
+            );
+            let _ = tokio::time::timeout(SETTLE, h.tick.notified()).await;
         }
-        panic!("expected audit row never landed; have: {rows:?}");
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_outlives_a_producer_slower_than_the_old_fixed_budget() {
+        // The contract the three spawn tests below depend on. The helper used
+        // to give up after 200 × 10 ms sleeps, so a producer that needed more
+        // than ~2 s of wall time failed the test even though nothing was
+        // wrong — exactly what a cold, loaded box does to the `git`
+        // subprocesses the replicator's ritual decision runs. A producer that
+        // takes 2.5 s (past the old budget, and deliberately silent so the
+        // settle re-check is what notices) must now simply cost time.
+        // 4 s because the old loop's real wall budget on Windows is ~3.4 s:
+        // its 200 sleeps of a nominal 10 ms each land on the ~15.6 ms system
+        // timer tick, so "2 s" was never 2 s either.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let setter = done.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(4000));
+            setter.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        wait_until(&h, || done.load(std::sync::atomic::Ordering::SeqCst)).await;
     }
 
     #[tokio::test]
@@ -810,7 +884,7 @@ mod tests {
 
         h.resumer.on_fire(entry(project, "#37"));
 
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h, || !h.spawns.lock().unwrap().is_empty()).await;
         let spawns = h.spawns.lock().unwrap().clone();
         assert_eq!(spawns[0].generation, 3, "latest handoff gen 2 + 1");
         assert_eq!(spawns[0].epic, "#37");
@@ -820,7 +894,7 @@ mod tests {
         );
 
         // The RESUME row (first producer of the kind) preceded the spawn.
-        let rows = wait_for_row(&h.audit, project, |r| r.event == AuditEventKind::Resume).await;
+        let rows = wait_for_row(&h, project, |r| r.event == AuditEventKind::Resume).await;
         let resume: Vec<_> = rows
             .iter()
             .filter(|r| r.event == AuditEventKind::Resume)
@@ -870,7 +944,7 @@ mod tests {
         h.resumer.mark_restored(std::slice::from_ref(&restored));
         h.resumer.on_fire(restored);
 
-        let rows = wait_for_row(&h.audit, project, |r| {
+        let rows = wait_for_row(&h, project, |r| {
             r.details["kind"] == RESUME_INTERRUPTED_KIND
         })
         .await;
@@ -897,7 +971,7 @@ mod tests {
             ..entry(project, "#37")
         };
         h.resumer.on_fire(armed_now);
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
     }
 
@@ -930,7 +1004,7 @@ mod tests {
         let fired = DateTime::parse_from_rfc3339("2026-08-06T12:00:00+00:00").unwrap();
         let deferred = DateTime::parse_from_rfc3339(&timers[0].fire_at).unwrap();
         assert!(deferred > fired, "deferred past the original fire time");
-        let rows = wait_for_row(&h.audit, project, |r| {
+        let rows = wait_for_row(&h, project, |r| {
             r.event == AuditEventKind::Park && r.details["phase"] == "resume_deferred"
         })
         .await;
@@ -970,7 +1044,7 @@ mod tests {
 
         h.resumer.on_fire(entry(project, "#37"));
 
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h, || !h.spawns.lock().unwrap().is_empty()).await;
         let spawns = h.spawns.lock().unwrap().clone();
         assert_eq!(spawns[0].generation, 5, "registry gen 4 + 1");
         assert_eq!(
@@ -998,7 +1072,7 @@ mod tests {
 
         h.resumer.on_fire(entry(project, "#37"));
 
-        let rows = wait_for_row(&h.audit, project, |r| {
+        let rows = wait_for_row(&h, project, |r| {
             r.details["kind"] == "resume_run_not_active"
         })
         .await;
@@ -1082,7 +1156,7 @@ mod tests {
 
         h.resumer.on_fire(entry(project, "#37"));
 
-        let rows = wait_for_row(&h.audit, project, |r| {
+        let rows = wait_for_row(&h, project, |r| {
             r.details["kind"] == "resume_config_unreadable"
         })
         .await;
@@ -1127,7 +1201,7 @@ mod tests {
 
         h.resumer.on_fire(entry(project, "#37"));
 
-        let rows = wait_for_row(&h.audit, project, |r| {
+        let rows = wait_for_row(&h, project, |r| {
             r.details["kind"] == "resume_handoffs_unreadable"
         })
         .await;
@@ -1165,10 +1239,7 @@ mod tests {
 
         h.resumer.on_fire(entry(project, "#37"));
 
-        let rows = wait_for_row(&h.audit, project, |r| {
-            r.details["kind"] == "resume_no_handoff"
-        })
-        .await;
+        let rows = wait_for_row(&h, project, |r| r.details["kind"] == "resume_no_handoff").await;
         assert!(h.schedule.list().is_empty(), "no re-arm");
         assert!(h.spawns.lock().unwrap().is_empty(), "no spawn");
         assert!(!rows.iter().any(|r| r.event == AuditEventKind::Resume));
@@ -1289,7 +1360,7 @@ mod tests {
             Some(SupervisorState::ParkRequested)
         );
         complete_park(&h, 1, 1);
-        wait_until(|| {
+        wait_until(&h, || {
             h.supervisor
                 .list_sessions()
                 .iter()
@@ -1297,14 +1368,14 @@ mod tests {
         })
         .await;
         // Sweep completion is what arms the timer — never the park itself.
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h, || !h.parker.parking_engaged()).await;
 
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1, "exactly one resume timer armed");
         assert_eq!(timers[0].epic, epic);
         assert_eq!(timers[0].project_path, project);
         assert_eq!(timers[0].reason, REASON_PARK);
-        wait_for_row(&h.audit, project, |r| {
+        wait_for_row(&h, project, |r| {
             r.event == AuditEventKind::Park && r.details["phase"] == "timer_armed"
         })
         .await;
@@ -1325,14 +1396,14 @@ mod tests {
 
         // --- resume half: the schedule's own due check drives it ---
         h.schedule.fire_due();
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h, || !h.spawns.lock().unwrap().is_empty()).await;
         let spawns = h.spawns.lock().unwrap().clone();
         assert_eq!(spawns.len(), 1);
         assert_eq!(spawns[0].epic, epic);
         assert_eq!(spawns[0].generation, 2, "gen-1 handoff on disk + 1");
         assert_eq!(spawns[0].working_dir, worktree);
 
-        let rows = wait_for_row(&h.audit, project, |r| r.event == AuditEventKind::Resume).await;
+        let rows = wait_for_row(&h, project, |r| r.event == AuditEventKind::Resume).await;
         let resume: Vec<_> = rows
             .iter()
             .filter(|r| r.event == AuditEventKind::Resume)
