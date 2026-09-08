@@ -345,10 +345,10 @@ interface TerminalGridProps {
   onSessionCountChange?: (slotCount: number, launchedCount: number) => void;
   onAllSessionsClosed?: () => void;
   /**
-   * Eagle view: this grid's launched panes become items of the global
-   * all-projects grid (via `display: contents` flattening) instead of using
-   * the local split-tree layout. Pre-launch cards are hidden, per-project
-   * zoom and pane drag/split are suspended.
+   * Eagle view: this grid's launched panes AND pre-launch cards become items
+   * of the global all-projects grid (via `display: contents` flattening)
+   * instead of using the local split-tree layout. Per-project zoom and pane
+   * drag/split are suspended.
    */
   eagleMode?: boolean;
   /** Project name shown on each pane header in eagle mode. */
@@ -2330,9 +2330,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           onSwap={handleSwapSlots}
           onCrossGridReorder={handleEagleCrossReorder}
           eagleMode={eagleMode}
-          eagleHidden={eagleMode}
+          eagleHidden={false}
           eagleZoomed={false}
-          eagleObscured={false}
+          eagleObscured={isEagleObscured}
+          eagleReserveShelf={parkedSessionIds.length > 0}
         >
           <PreLaunchCard
             key={slot.id}
@@ -2669,7 +2670,7 @@ function DraggablePane({
   children: ReactNode;
   /** Eagle view: this pane is a tile of the global all-projects grid. */
   eagleMode?: boolean;
-  /** Eagle view: pane has no live terminal (pre-launch) — not shown. */
+  /** Eagle view: pane is excluded from the grid entirely — not currently used by any caller. */
   eagleHidden?: boolean;
   /** Eagle view: pane is zoomed to fill the main content area (position: absolute). */
   eagleZoomed?: boolean;
@@ -2757,7 +2758,9 @@ function DraggablePane({
 
   // Eagle view restyles this container purely with CSS so the children
   // (the live xterm instance) never remount:
-  // - hidden:   pre-launch panes don't belong in a terminals-only overview
+  // - hidden:   reserved for panes that shouldn't render as a tile at all;
+  //             pre-launch panes now tile into the grid like launched ones,
+  //             so eagleHidden is currently unused but stays supported
   // - zoomed:   position:absolute overlays the main content area (resolves to
   //             App's <main>, the nearest positioned ancestor — every eagle
   //             wrapper in between is display:contents), so the sidebar and

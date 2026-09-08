@@ -179,7 +179,7 @@ export function TopBar({
           </button>
         )}
         {/* Eagle view: the plus becomes a project dropdown; picking a project
-            leaves eagle view and opens a normal pre-launch card there. */}
+            stays in eagle view and tiles a normal pre-launch card into the grid. */}
         {eagleView && onAddSessionToProject && eagleProjects.length > 0 && (
           <div className="relative" ref={addMenuRef}>
             <button
