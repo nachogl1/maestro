@@ -12,9 +12,19 @@
 //! interleaved/corrupt lines impossible and gives `clear` a well-defined
 //! position in the append stream, so post-clear appends are never lost.
 //!
-//! **No auto-trim:** audit records are deleted manually by the user only
-//! (PRD decision #15). The file size is reported on every read so later
-//! phases can warn when it grows.
+//! **Bounded, not trimmed:** audit records are still never aged out or
+//! selectively deleted (PRD decision #15) — the only thing that removes a
+//! chosen row is the user's `clear`. What the file does now is ROLL: once the
+//! live file passes [`ROTATE_AT_BYTES`] it becomes `<name>.1.jsonl` and a new
+//! live file starts, and exactly ONE previous generation is kept. Every
+//! reader here spans the pair, so the roll is invisible from the outside —
+//! including a tail read, which continues backwards into the rolled file when
+//! the live one is shorter than the tail asked for (the reconciler's
+//! `AUDIT_TAIL` read decides whether an interrupted run is resumable, and
+//! must not lose the SPAWN rows carrying its generation to a roll).
+//! Without the cap the file grew forever and a filtered read parsed every
+//! line of it inside the single writer task. The file size is reported on
+//! every read (both generations summed) so the panel can still warn on it.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -250,6 +260,40 @@ fn audit_file_path(base_dir: &Path, project: &str) -> PathBuf {
     base_dir.join(audit_file_name(project))
 }
 
+/// Roll the live audit file once it passes this many bytes, keeping exactly
+/// one previous generation.
+///
+/// Chosen against `SamuraiConfig::size_warn_bytes` (5 MiB — the point at
+/// which the Second Brain calls a file too big): two generations of 2 MiB
+/// keep a project's whole audit history just under that line, so a rolling
+/// log never trips the warning that only ever existed because the log could
+/// not stop growing. It is also the bound on the work a filtered read does
+/// inside the single writer task — at most ~4 MiB parsed, not "everything
+/// this run has ever written".
+pub(crate) const ROTATE_AT_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Suffix of a rolled generation: `<name>-<hash12>.jsonl` rolls to
+/// `<name>-<hash12>.1.jsonl`.
+pub(crate) const ROTATED_SUFFIX: &str = ".1.jsonl";
+
+/// The rolled generation's path for a live audit file.
+pub(crate) fn rotated_audit_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = name.strip_suffix(".jsonl").unwrap_or(&name);
+    path.with_file_name(format!("{stem}{ROTATED_SUFFIX}"))
+}
+
+/// Is this audit file name a rolled generation rather than a live log?
+/// The Second Brain's directory scan keys groups off the hash embedded in the
+/// live name, which a rolled name would parse wrong — it counts the rolled
+/// rows through its live sibling instead (`samurai_files::count_audit_rows`).
+pub(crate) fn is_rotated_audit_file(name: &str) -> bool {
+    name.ends_with(ROTATED_SUFFIX)
+}
+
 /// [`audit_file_path`] plus the one-shot #161 heal, called only from the
 /// writer task (the sole IO owner): a UNC project's log written before #161
 /// sits under the name its mangled relative spelling (`UNC\server\share\…`)
@@ -290,7 +334,7 @@ async fn writer_task(
         match op {
             AuditOp::Append { project, event } => {
                 let path = resolve_audit_file(&base_dir, &project).await;
-                match append_line(&path, &event).await {
+                match append_line(&path, &event, ROTATE_AT_BYTES).await {
                     Ok(()) => {
                         if let Some(cb) = &on_append {
                             cb(&project, &event);
@@ -310,18 +354,29 @@ async fn writer_task(
             }
             AuditOp::Clear { project, reply } => {
                 let path = resolve_audit_file(&base_dir, &project).await;
-                let result = match tokio::fs::remove_file(&path).await {
-                    Ok(()) => Ok(()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(e) => Err(format!("failed to clear audit log {:?}: {}", path, e)),
-                };
+                // Both generations: "clear the audit log" means the history
+                // is gone, and a surviving `.1.jsonl` would come straight
+                // back on the next read.
+                let mut result = Ok(());
+                for target in [rotated_audit_path(&path), path.clone()] {
+                    match tokio::fs::remove_file(&target).await {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            result = Err(format!("failed to clear audit log {:?}: {}", target, e))
+                        }
+                    }
+                }
                 let _ = reply.send(result);
             }
         }
     }
 }
 
-async fn append_line(path: &Path, event: &AuditEvent) -> Result<(), String> {
+/// Appends one whole line, then rolls the file if it has outgrown
+/// `rotate_at`. `rotate_at` is a parameter only so the tests can roll a
+/// two-line file; production always passes [`ROTATE_AT_BYTES`].
+async fn append_line(path: &Path, event: &AuditEvent, rotate_at: u64) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -342,6 +397,21 @@ async fn append_line(path: &Path, event: &AuditEvent) -> Result<(), String> {
     file.flush()
         .await
         .map_err(|e| format!("failed to flush audit file: {}", e))?;
+    // The roll happens AFTER a complete, flushed record and before the next
+    // append opens the file again — the rolled generation therefore always
+    // ends on a whole line, and no record can be torn by it. An unreadable
+    // size or a failed rename is not an error for the caller: the event IS
+    // written, the file just keeps its name and the next append retries the
+    // roll.
+    let size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    drop(file);
+    if size > rotate_at {
+        let rolled = rotated_audit_path(path);
+        match tokio::fs::rename(path, &rolled).await {
+            Ok(()) => log::info!("samurai audit: rolled {:?} to {:?}", path, rolled),
+            Err(e) => log::warn!("samurai audit: could not roll {:?}: {}", path, e),
+        }
+    }
     Ok(())
 }
 
@@ -350,19 +420,30 @@ async fn read_events(
     tail: Option<usize>,
     since_ts: Option<String>,
 ) -> Result<AuditReadResult, String> {
-    let metadata = match tokio::fs::metadata(path).await {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AuditReadResult {
-                events: Vec::new(),
-                file_size_bytes: 0,
-            });
-        }
+    let rolled = rotated_audit_path(path);
+    let live_size = match tokio::fs::metadata(path).await {
+        Ok(m) => Some(m.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("failed to stat audit file: {}", e)),
     };
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("failed to read audit file: {}", e))?;
+    // The rolled generation is history: a stat that fails for any reason is
+    // read as "no previous generation" rather than failing the whole read.
+    let rolled_size = tokio::fs::metadata(&rolled).await.ok().map(|m| m.len());
+    if live_size.is_none() && rolled_size.is_none() {
+        return Ok(AuditReadResult {
+            events: Vec::new(),
+            file_size_bytes: 0,
+        });
+    }
+    let content = match live_size {
+        Some(_) => tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| format!("failed to read audit file: {}", e))?,
+        None => String::new(),
+    };
+    // Read lazily: a tail the live file alone can satisfy never touches the
+    // rolled generation, which is the whole point of the tail fast path.
+    let mut rolled_content = String::new();
 
     let mut events: Vec<AuditEvent> = Vec::new();
     // A malformed line should never exist (single writer, whole-line appends)
@@ -372,26 +453,38 @@ async fn read_events(
             Ok(event) => out.push(event),
             Err(e) => log::warn!("skipping malformed audit line in {:?}: {}", path, e),
         };
-    let lines = content.lines().filter(|l| !l.trim().is_empty());
     match (tail, &since_ts) {
         // The panel's default read (a plain tail): parse only the last n
-        // lines. The log is never auto-trimmed (see the module docs), and
-        // this runs inside the single writer task, so parsing every row would
-        // hold up appends by an amount that grows with the run's lifetime.
+        // lines. This runs inside the single writer task, so parsing every
+        // row would hold up appends by an amount that grows with the run's
+        // lifetime. When the live file holds fewer than n rows the read
+        // continues BACKWARDS into the rolled generation, so a tail spans the
+        // roll transparently — `samurai_reconciler`'s `AUDIT_TAIL` read finds
+        // the SPAWN rows carrying a run's highest generation whether or not
+        // the file rolled since (without that, a rolled run would be
+        // downgraded to unstartable).
         (Some(n), None) => {
-            let mut last: VecDeque<&str> = VecDeque::with_capacity(n);
-            for line in lines {
-                last.push_back(line);
-                if last.len() > n {
-                    last.pop_front();
-                }
+            let mut last = tail_lines(&content, n);
+            if last.len() < n && rolled_size.is_some() {
+                rolled_content = read_rolled(&rolled).await;
+                let mut older = tail_lines(&rolled_content, n - last.len());
+                older.extend(last);
+                last = older;
             }
             for line in last {
                 parse(line, &mut events);
             }
         }
-        // since_ts filters on a parsed field, so it must parse everything.
+        // since_ts filters on a parsed field, so it must parse everything —
+        // bounded now at both generations, not at the run's whole lifetime.
         _ => {
+            if rolled_size.is_some() {
+                rolled_content = read_rolled(&rolled).await;
+            }
+            let lines = rolled_content
+                .lines()
+                .chain(content.lines())
+                .filter(|l| !l.trim().is_empty());
             for line in lines {
                 parse(line, &mut events);
             }
@@ -408,8 +501,35 @@ async fn read_events(
 
     Ok(AuditReadResult {
         events,
-        file_size_bytes: metadata.len(),
+        // Both generations: the panel's size figure is what this project's
+        // audit history costs on disk, and `clear` removes exactly that.
+        file_size_bytes: live_size.unwrap_or(0) + rolled_size.unwrap_or(0),
     })
+}
+
+/// The last `n` non-empty lines of `content`, in file order.
+fn tail_lines(content: &str, n: usize) -> VecDeque<&str> {
+    let mut last: VecDeque<&str> = VecDeque::new();
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        last.push_back(line);
+        if last.len() > n {
+            last.pop_front();
+        }
+    }
+    last
+}
+
+/// A rolled generation's content. History, so an unreadable file is logged
+/// and read as empty rather than failing the read of the live one.
+async fn read_rolled(path: &Path) -> String {
+    match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            log::warn!("skipping unreadable rolled audit file {:?}: {}", path, e);
+            String::new()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -618,8 +738,8 @@ mod tests {
     }
 
     /// The panel's default read is a plain tail, and it parses only the last
-    /// n lines (the log is never auto-trimmed and the read runs inside the
-    /// writer task). It must still return exactly what a full parse returns.
+    /// n lines (the read runs inside the writer task). It must still return
+    /// exactly what a full parse returns.
     #[tokio::test]
     async fn test_tail_only_read_matches_full_read_tail() {
         let dir = tempdir().unwrap();
@@ -816,6 +936,197 @@ mod tests {
         assert_eq!(read.events[0].details["seq"], 50);
         assert_eq!(read.events[49].details["seq"], 99);
         assert!(read.file_size_bytes > 0);
+    }
+
+    // ---- rotation (the log used to grow forever) --------------------------
+
+    /// `NEVER` is a cap no test row can reach, `NOW` one every row passes —
+    /// together they make a roll land on an exact, chosen append instead of
+    /// on whatever byte count the row serialization happens to produce.
+    const NEVER: u64 = u64::MAX;
+    const NOW: u64 = 0;
+
+    /// Appends `count` rows of `generation`, numbered from `from`, rolling
+    /// the file on the LAST of them when `roll` is set.
+    async fn append_rows(path: &Path, from: u32, count: u32, generation: u32, roll: bool) {
+        for i in from..from + count {
+            let mut e = event(AuditEventKind::Spawn, i, json!({"seq": i}));
+            e.generation = generation;
+            let last = i + 1 == from + count;
+            append_line(path, &e, if roll && last { NOW } else { NEVER })
+                .await
+                .unwrap();
+        }
+    }
+
+    fn seqs(result: &AuditReadResult) -> Vec<u64> {
+        result
+            .events
+            .iter()
+            .map(|e| e.details["seq"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_append_rolls_the_file_keeping_exactly_one_previous_generation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("rolls-0123456789ab.jsonl");
+        let rolled = rotated_audit_path(&path);
+        assert_eq!(
+            rolled.file_name().unwrap().to_string_lossy(),
+            "rolls-0123456789ab.1.jsonl"
+        );
+
+        // Under the cap: one file, no generations.
+        append_rows(&path, 0, 3, 1, false).await;
+        assert!(path.exists());
+        assert!(!rolled.exists());
+
+        // The append that crosses the cap rolls the whole file away, leaving
+        // the live name free for the next one.
+        append_rows(&path, 3, 1, 1, true).await;
+        assert!(!path.exists(), "the live file is rolled, not copied");
+        assert_eq!(std::fs::read_to_string(&rolled).unwrap().lines().count(), 4);
+
+        // A second roll keeps exactly ONE previous generation: the first
+        // one's rows go, the second one's take its place.
+        append_rows(&path, 4, 2, 1, true).await;
+        let kept = std::fs::read_to_string(&rolled).unwrap();
+        assert_eq!(kept.lines().count(), 2, "one previous generation, not two");
+        for line in kept.lines() {
+            let e: AuditEvent = serde_json::from_str(line)
+                .unwrap_or_else(|err| panic!("a roll tore a record: {line:?}: {err}"));
+            assert!(e.details["seq"].as_u64().unwrap() >= 4);
+        }
+    }
+
+    /// The constraint behind the whole rotation: `samurai_reconciler`'s
+    /// `audit_max_generation` reads `Some(AUDIT_TAIL)` rows and decides from
+    /// them whether an interrupted run is resumable or is downgraded to
+    /// unstartable. A roll must therefore be invisible to a tail read: when
+    /// the live file is shorter than the tail asked for, the read continues
+    /// backwards into the rolled generation.
+    #[tokio::test]
+    async fn test_a_tail_read_spans_the_rotation_boundary() {
+        const AUDIT_TAIL: usize = 500; // samurai_reconciler.rs
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spans-0123456789ab.jsonl");
+
+        // gen-3 SPAWNs land first and are rolled away; only gen-1 rows are
+        // left in the live file.
+        append_rows(&path, 0, 4, 3, false).await;
+        append_rows(&path, 4, 1, 3, true).await;
+        append_rows(&path, 5, 3, 1, false).await;
+
+        let tail = read_events(&path, Some(AUDIT_TAIL), None).await.unwrap();
+        assert_eq!(seqs(&tail), (0..8).collect::<Vec<u64>>());
+        assert_eq!(
+            tail.events
+                .iter()
+                .filter(|e| e.epic == "epic-12")
+                .map(|e| e.generation)
+                .max(),
+            Some(3),
+            "the run's highest generation must survive a roll, or an \
+             interrupted run is downgraded to unstartable"
+        );
+
+        // A tail the live file alone satisfies is unchanged, and one that
+        // crosses the boundary takes exactly as many older rows as it needs.
+        assert_eq!(
+            seqs(&read_events(&path, Some(2), None).await.unwrap()),
+            [6, 7]
+        );
+        assert_eq!(
+            seqs(&read_events(&path, Some(5), None).await.unwrap()),
+            [3, 4, 5, 6, 7]
+        );
+        // A tail longer than both generations keeps everything, and a zero
+        // tail still keeps none.
+        assert_eq!(
+            read_events(&path, Some(50), None)
+                .await
+                .unwrap()
+                .events
+                .len(),
+            8
+        );
+        assert!(read_events(&path, Some(0), None)
+            .await
+            .unwrap()
+            .events
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_full_and_since_reads_span_the_rotation_boundary() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("filtered-0123456789ab.jsonl");
+        for i in 0..6u32 {
+            let mut e = event(AuditEventKind::Alert, i, json!({"seq": i}));
+            e.ts = format!("2026-09-08T00:00:0{i}+00:00");
+            // Roll after the third row: 0,1,2 land in the rolled generation.
+            append_line(&path, &e, if i == 2 { NOW } else { NEVER })
+                .await
+                .unwrap();
+        }
+
+        let all = read_events(&path, None, None).await.unwrap();
+        assert_eq!(seqs(&all), (0..6).collect::<Vec<u64>>());
+        // The size is BOTH generations — what this history costs on disk.
+        let live = std::fs::metadata(&path).unwrap().len();
+        let rolled = std::fs::metadata(rotated_audit_path(&path)).unwrap().len();
+        assert_eq!(all.file_size_bytes, live + rolled);
+
+        // since_ts still filters across the boundary, tail included.
+        let since = read_events(&path, None, Some("2026-09-08T00:00:01+00:00".into()))
+            .await
+            .unwrap();
+        assert_eq!(seqs(&since), [2, 3, 4, 5]);
+        let both = read_events(&path, Some(2), Some("2026-09-08T00:00:00+00:00".into()))
+            .await
+            .unwrap();
+        assert_eq!(seqs(&both), [4, 5]);
+    }
+
+    #[tokio::test]
+    async fn test_clear_removes_the_rolled_generation_too() {
+        let dir = tempdir().unwrap();
+        let log = spawn_log(dir.path().to_path_buf());
+        let project = "C:/git/clear-rolled".to_string();
+        let path = audit_file_path(dir.path(), &project);
+
+        append_rows(&path, 0, 2, 1, true).await;
+        append_rows(&path, 2, 2, 1, false).await;
+        assert_eq!(
+            read_events(&path, None, None).await.unwrap().events.len(),
+            4
+        );
+
+        log.clear(&project).await.unwrap();
+        assert!(
+            !rotated_audit_path(&path).exists(),
+            "a cleared log leaves no history behind"
+        );
+        let after = log.read(&project, None, None).await.unwrap();
+        assert!(after.events.is_empty());
+        assert_eq!(after.file_size_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_a_roll_that_cannot_rename_degrades_to_a_plain_append() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("blocked-0123456789ab.jsonl");
+        // A directory squatting on the rolled name: the rename fails, and
+        // the event must still be written and readable.
+        std::fs::create_dir(rotated_audit_path(&path)).unwrap();
+
+        append_rows(&path, 0, 2, 1, true).await;
+        append_rows(&path, 2, 1, 1, false).await;
+
+        assert!(path.exists(), "the log keeps its name when the roll fails");
+        let read = read_events(&path, Some(500), None).await.unwrap();
+        assert_eq!(seqs(&read), [0, 1, 2], "no event is lost to a failed roll");
     }
 
     #[tokio::test]
