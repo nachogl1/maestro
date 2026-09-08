@@ -2481,6 +2481,7 @@ pub fn spawn_injector(injector: Arc<SamuraiInjector>) {
 mod tests {
     use super::*;
     use crate::core::samurai_config::SamuraiConfig;
+    use crate::core::samurai_test_wait::{new_tick, tick_on_append, wait_until, HarnessTick};
     use std::sync::RwLock;
     use tempfile::tempdir;
 
@@ -3029,8 +3030,10 @@ mod tests {
         Arc<Supervisor>,
         Arc<SamuraiContextStore>,
         DirMap,
+        HarnessTick,
     ) {
-        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        let tick: HarnessTick = new_tick();
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), Some(tick_on_append(&tick)));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let context = Arc::new(SamuraiContextStore::new());
@@ -3039,7 +3042,11 @@ mod tests {
         let dirs_for_resolver = dirs.clone();
         let resolver: SessionDirResolver =
             Arc::new(move |session_id| dirs_for_resolver.lock().unwrap().get(&session_id).cloned());
-        let deliver: StdinWriter = Arc::new(|_, _, outcome: DeliveryOutcome| outcome(Ok(())));
+        let tick_for_deliver = tick.clone();
+        let deliver: StdinWriter = Arc::new(move |_, _, outcome: DeliveryOutcome| {
+            outcome(Ok(()));
+            tick_for_deliver.notify_one();
+        });
         let injector = SamuraiInjector::new(
             supervisor.clone(),
             context.clone(),
@@ -3051,7 +3058,7 @@ mod tests {
             // integration test in `samurai_replicator`.
             None,
         );
-        (injector, audit, supervisor, context, dirs)
+        (injector, audit, supervisor, context, dirs, tick)
     }
 
     fn context_event(session_id: u32, percent: f64) -> ClaudeEvent {
@@ -3084,22 +3091,16 @@ mod tests {
         }
     }
 
-    /// Polls until `cond` holds or ~2s pass — validation runs on a separate
-    /// (tauri) runtime, so tests wait for its completion signal.
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..200 {
-            if cond() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("condition not reached within 2s");
-    }
+    // The waits here are the shared, event-driven ones — park validation and
+    // brief staging run on tauri's global runtime behind `spawn_blocking` and
+    // real `git` subprocesses, so a fixed sleep budget on the test's own
+    // runtime measured the wrong clock and expired on runs that were merely
+    // slow (issues #197, #198). See [`crate::core::samurai_test_wait`].
 
     #[tokio::test]
     async fn test_trigger_tick_requests_handoff_and_tracks_instruction() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-trigger";
         supervisor
             .register_session(1, project.into(), "epic-1".into(), 2)
@@ -3140,7 +3141,7 @@ mod tests {
     #[tokio::test]
     async fn test_transcript_append_drives_the_trigger_end_to_end() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, tick) = harness(dir.path());
 
         // The bus callback is the one `lib.rs` installs: the context store
         // observes every deduped event before anything else sees it.
@@ -3176,7 +3177,7 @@ mod tests {
             writeln!(f, "{line}").unwrap();
         }
 
-        wait_until(|| context.percent(13).is_some()).await;
+        wait_until(&tick, || context.percent(13).is_some()).await;
         assert_eq!(
             context.percent(13),
             Some(44.1),
@@ -3199,7 +3200,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_session_with_no_context_reading_alerts_once() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-blind";
         supervisor
             .register_session(1, project.into(), "epic-blind".into(), 1)
@@ -3254,7 +3255,7 @@ mod tests {
     #[tokio::test]
     async fn test_blindness_reattaches_the_watch_and_holds_the_alert() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-blind-heal";
         supervisor
             .register_session(1, project.into(), "epic-blind".into(), 1)
@@ -3318,7 +3319,7 @@ mod tests {
     #[tokio::test]
     async fn test_blindness_alerts_when_the_reattach_fails() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-blind-fail";
         supervisor
             .register_session(1, project.into(), "epic-blind".into(), 1)
@@ -3350,7 +3351,7 @@ mod tests {
     #[tokio::test]
     async fn test_below_threshold_or_unknown_percent_never_triggers() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-low".into(), "epic".into(), 1)
             .unwrap();
@@ -3378,7 +3379,7 @@ mod tests {
         use crate::core::samurai_run_config::{RunConfigStore, SamuraiRunConfig};
 
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-override";
         let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
         // epic-hi: override RAISES the trigger to 80% (global default 45%).
@@ -3427,7 +3428,7 @@ mod tests {
     #[tokio::test]
     async fn test_idle_injects_once_and_holds_until_timeout() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-idle".into(), "epic".into(), 3)
             .unwrap();
@@ -3455,7 +3456,7 @@ mod tests {
     #[tokio::test]
     async fn test_idle_without_pending_or_before_trigger_does_nothing() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         // Unsupervised session: nothing happens.
         assert!(injector.arm_injection_on_idle(9).is_none());
         // Supervised but WORKING (no trigger yet): nothing happens.
@@ -3468,7 +3469,7 @@ mod tests {
     #[tokio::test]
     async fn test_ack_resolves_instruction_and_stops_injection() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-ack".into(), "epic".into(), 4)
             .unwrap();
@@ -3504,7 +3505,7 @@ mod tests {
     #[tokio::test]
     async fn test_timeout_retry_then_alert_once_and_stay_for_human() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-timeout";
         supervisor
             .register_session(1, project.into(), "epic-t".into(), 5)
@@ -3561,7 +3562,7 @@ mod tests {
     #[tokio::test]
     async fn test_pending_dropped_when_session_leaves_handoff_requested() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-dead".into(), "epic".into(), 1)
             .unwrap();
@@ -3580,7 +3581,7 @@ mod tests {
     #[tokio::test]
     async fn test_observe_ignores_ack_with_no_pending_instruction() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-stray".into(), "epic".into(), 1)
             .unwrap();
@@ -3598,7 +3599,7 @@ mod tests {
     #[tokio::test]
     async fn test_injection_and_ack_land_inject_audit_rows() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-audit";
         supervisor
             .register_session(1, project.into(), "epic-7".into(), 3)
@@ -3777,7 +3778,7 @@ mod tests {
     async fn test_deliverable_stages_a_long_handoff_instruction_as_a_pointer_with_a_byte_identical_brief(
     ) {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-brief";
         let repo = tempdir().unwrap();
         dirs.lock()
@@ -3809,7 +3810,7 @@ mod tests {
     #[tokio::test]
     async fn test_deliverable_stages_long_park_and_corrective_instructions_as_pointers() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-brief-park";
         let repo = tempdir().unwrap();
         dirs.lock()
@@ -3886,7 +3887,7 @@ mod tests {
     #[tokio::test]
     async fn test_deliverable_keeps_a_short_instruction_inline_and_writes_no_file() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-brief-short";
         let repo = tempdir().unwrap();
         dirs.lock()
@@ -3913,7 +3914,7 @@ mod tests {
     #[tokio::test]
     async fn test_deliverable_falls_back_to_the_full_text_when_the_brief_write_fails() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-brief-fail";
         let repo = tempdir().unwrap();
         std::fs::write(repo.path().join(".maestro"), "not a directory").unwrap();
@@ -3940,7 +3941,7 @@ mod tests {
     #[tokio::test]
     async fn test_deliverable_with_no_recorded_working_directory_types_the_instruction_as_before() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-brief-nodir";
         let snap = supervisor
             .register_session(1, project.into(), "epic-1".into(), 1)
@@ -3959,7 +3960,7 @@ mod tests {
     #[tokio::test]
     async fn test_deliverable_with_no_pending_entry_types_the_data_unchanged() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, _supervisor, _context, dirs) = harness(dir.path());
+        let (injector, _audit, _supervisor, _context, dirs, _tick) = harness(dir.path());
         let repo = tempdir().unwrap();
         dirs.lock()
             .unwrap()
@@ -3990,8 +3991,10 @@ mod tests {
         Arc<SamuraiContextStore>,
         DirMap,
         DeliveryCapture,
+        HarnessTick,
     ) {
-        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        let tick: HarnessTick = new_tick();
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), Some(tick_on_append(&tick)));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let context = Arc::new(SamuraiContextStore::new());
@@ -4002,9 +4005,11 @@ mod tests {
             Arc::new(move |session_id| dirs_for_resolver.lock().unwrap().get(&session_id).cloned());
         let captured: DeliveryCapture = Arc::new(Mutex::new(None));
         let captured_for_deliver = captured.clone();
+        let tick_for_deliver = tick.clone();
         let deliver: StdinWriter = Arc::new(move |_, data, outcome: DeliveryOutcome| {
             *captured_for_deliver.lock().unwrap() = Some((data, std::thread::current().id()));
-            outcome(Ok(()))
+            outcome(Ok(()));
+            tick_for_deliver.notify_one();
         });
         let injector = SamuraiInjector::new(
             supervisor.clone(),
@@ -4015,13 +4020,13 @@ mod tests {
             resolver,
             None,
         );
-        (injector, audit, supervisor, context, dirs, captured)
+        (injector, audit, supervisor, context, dirs, captured, tick)
     }
 
     #[tokio::test]
     async fn test_handoff_trigger_delivers_a_pointer_through_the_full_harness() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, dirs, captured) =
+        let (injector, _audit, supervisor, context, dirs, captured, tick) =
             harness_capturing_delivery(dir.path());
         let project = "C:/git/proj-inj-brief-e2e";
         let repo = tempdir().unwrap();
@@ -4038,7 +4043,7 @@ mod tests {
 
         // Issue #153: the brief write runs on the blocking pool, so the
         // delivery lands after `observe_hook` returns — poll for it.
-        wait_until(|| captured.lock().unwrap().is_some()).await;
+        wait_until(&tick, || captured.lock().unwrap().is_some()).await;
         let (typed, _) = captured.lock().unwrap().clone().expect("delivery captured");
         let full = samurai_prompts::handoff_instruction("epic-7", 3);
         let relpath = format!("{}/epic-7-gen-3-handoff.md", samurai_brief::BRIEF_DIR);
@@ -4061,7 +4066,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_long_instruction_is_staged_off_the_callers_worker_thread() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, dirs, captured) =
+        let (injector, _audit, supervisor, context, dirs, captured, tick) =
             harness_capturing_delivery(dir.path());
         let repo = tempdir().unwrap();
         dirs.lock()
@@ -4086,7 +4091,7 @@ mod tests {
         let caller = std::thread::current().id();
         injector.observe_hook(&stop_event(1));
 
-        wait_until(|| captured.lock().unwrap().is_some()).await;
+        wait_until(&tick, || captured.lock().unwrap().is_some()).await;
         let (_, wrote_from) = captured.lock().unwrap().clone().expect("delivery captured");
         assert_ne!(
             wrote_from, caller,
@@ -4106,7 +4111,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_pending_entry_dropped_mid_staging_delivers_the_pointer_and_records_the_row() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, dirs, captured) =
+        let (injector, audit, supervisor, context, dirs, captured, tick) =
             harness_capturing_delivery(dir.path());
         let project = "C:/git/proj-inj-brief-dropped";
         let repo = tempdir().unwrap();
@@ -4125,7 +4130,7 @@ mod tests {
         injector.remove_session(1);
         assert!(injector.pending_view(1).is_none());
 
-        wait_until(|| captured.lock().unwrap().is_some()).await;
+        wait_until(&tick, || captured.lock().unwrap().is_some()).await;
         let (typed, _) = captured.lock().unwrap().clone().expect("delivery captured");
         let relpath = format!("{}/epic-7-gen-3-handoff.md", samurai_brief::BRIEF_DIR);
         let full = samurai_prompts::handoff_instruction("epic-7", 3);
@@ -4171,8 +4176,10 @@ mod tests {
         Arc<Supervisor>,
         Arc<SamuraiContextStore>,
         OutcomeQueue,
+        HarnessTick,
     ) {
-        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        let tick: HarnessTick = new_tick();
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), Some(tick_on_append(&tick)));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let context = Arc::new(SamuraiContextStore::new());
@@ -4183,8 +4190,10 @@ mod tests {
             Arc::new(move |session_id| dirs_for_resolver.lock().unwrap().get(&session_id).cloned());
         let outcomes: OutcomeQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let outcomes_for_deliver = outcomes.clone();
+        let tick_for_deliver = tick.clone();
         let deliver: StdinWriter = Arc::new(move |_, _, outcome: DeliveryOutcome| {
             outcomes_for_deliver.lock().unwrap().push_back(outcome);
+            tick_for_deliver.notify_one();
         });
         let injector = SamuraiInjector::new(
             supervisor.clone(),
@@ -4195,7 +4204,7 @@ mod tests {
             resolver,
             None,
         );
-        (injector, audit, supervisor, context, outcomes)
+        (injector, audit, supervisor, context, outcomes, tick)
     }
 
     /// Pops the oldest queued delivery verdict and resolves it — the stamp
@@ -4214,7 +4223,7 @@ mod tests {
     #[tokio::test]
     async fn test_ack_window_starts_at_delivery_not_arm() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, outcomes) =
+        let (injector, _audit, supervisor, context, outcomes, tick) =
             harness_deferred_delivery(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-delivstamp".into(), "epic".into(), 3)
@@ -4226,7 +4235,7 @@ mod tests {
         // plus the PTY write) and the writer's verdict has not fired yet.
         injector.observe_hook(&stop_event(1));
         assert_eq!(injector.pending_view(1), Some((1, false, false)));
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
 
         // The previously-unfair case (issue #160): a cold worktree makes the
         // staging hop slow exactly when an arm-time stamp had the ACK window
@@ -4251,7 +4260,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_delivery_starts_the_window_and_still_retries() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, outcomes) =
+        let (injector, audit, supervisor, context, outcomes, tick) =
             harness_deferred_delivery(dir.path());
         let project = "C:/git/proj-inj-delivfail";
         supervisor
@@ -4260,7 +4269,7 @@ mod tests {
         context.observe(&context_event(1, 50.0));
         injector.tick();
         injector.observe_hook(&stop_event(1));
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
 
         // A failed write stamps too: `record_delivery_outcome`'s documented
         // ladder ("the pending entry stays, so the ACK ladder still times
@@ -4291,7 +4300,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_arm_clears_the_previous_attempts_stamp() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, outcomes) =
+        let (injector, _audit, supervisor, context, outcomes, tick) =
             harness_deferred_delivery(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-restamp".into(), "epic".into(), 3)
@@ -4301,7 +4310,7 @@ mod tests {
 
         // Attempt 1 delivers, then times out → the retry is armed.
         injector.observe_hook(&stop_event(1));
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
         resolve_delivery(&outcomes, Ok(()));
         injector.backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         injector.tick();
@@ -4313,7 +4322,7 @@ mod tests {
         // final ALERT while the instruction is still being staged.
         injector.observe_hook(&stop_event(1));
         assert_eq!(injector.pending_view(1), Some((2, false, false)));
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
         assert!(!injector.delivery_stamped(1), "stale stamp cleared");
         injector.tick();
         assert_eq!(injector.pending_view(1), Some((2, false, false)));
@@ -4328,7 +4337,7 @@ mod tests {
     #[tokio::test]
     async fn test_stale_outcome_never_stamps_a_replacement_entry() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, outcomes) =
+        let (injector, _audit, supervisor, _context, outcomes, tick) =
             harness_deferred_delivery(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-staleout".into(), "epic-9".into(), 5)
@@ -4338,7 +4347,7 @@ mod tests {
         assert!(injector.begin_soft_winddown(&snapshot));
         injector.observe_hook(&stop_event(1));
         assert_eq!(injector.pending_view(1), Some((1, false, false)));
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
 
         // ...and the all-clear supersedes it while the write is still out:
         // the session slot now holds a DIFFERENT, never-armed entry.
@@ -4369,7 +4378,7 @@ mod tests {
         // could land, and re-armed a retry that re-types the same
         // instruction at the next idle.
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, outcomes) =
+        let (injector, audit, supervisor, context, outcomes, tick) =
             harness_deferred_delivery(dir.path());
         let project = "C:/git/proj-inj-armclock";
         supervisor
@@ -4384,7 +4393,7 @@ mod tests {
         injector.backdate_waiting(1, TURN_WAIT_OVER);
         injector.observe_hook(&stop_event(1));
         assert_eq!(injector.pending_view(1), Some((1, false, false)), "armed");
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
 
         // A tick landing in the arm → verdict window must simply KEEP: the
         // wait restarted at the arm, so nothing has aged out.
@@ -4398,7 +4407,7 @@ mod tests {
 
         // The verdict lands and the normal ACK ladder takes over.
         resolve_delivery(&outcomes, Ok(()));
-        wait_until(|| injector.delivery_stamped(1)).await;
+        wait_until(&tick, || injector.delivery_stamped(1)).await;
         let rows = audit.read(project, None, None).await.unwrap().events;
         assert!(
             !rows
@@ -4411,7 +4420,7 @@ mod tests {
     #[tokio::test]
     async fn test_unresolved_delivery_alerts_and_rearms_the_retry() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, outcomes) =
+        let (injector, audit, supervisor, context, outcomes, tick) =
             harness_deferred_delivery(dir.path());
         let project = "C:/git/proj-inj-noverdict";
         supervisor
@@ -4420,7 +4429,7 @@ mod tests {
         context.observe(&context_event(1, 50.0));
         injector.tick();
         injector.observe_hook(&stop_event(1));
-        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+        wait_until(&tick, || !outcomes.lock().unwrap().is_empty()).await;
 
         // The write's verdict NEVER comes back (a wedged blocking write).
         // Past the long-turn cap the tick alerts with the exact flavor and
@@ -4483,7 +4492,7 @@ mod tests {
         // file is missing" and burned its whole corrective round on a handoff
         // that was sitting right there.
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-dash";
         let repo = tempdir().unwrap();
         init_repo(repo.path());
@@ -4504,8 +4513,8 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
-        wait_until(|| injector.session_state(1) == Some(HandoffWritten)).await;
-        wait_until(|| injector.pending_view(1).is_none()).await;
+        wait_until(&tick, || injector.session_state(1) == Some(HandoffWritten)).await;
+        wait_until(&tick, || injector.pending_view(1).is_none()).await;
 
         let mut rows = Vec::new();
         for _ in 0..200 {
@@ -4534,7 +4543,7 @@ mod tests {
     #[tokio::test]
     async fn test_written_marker_with_valid_handoff_reaches_handoff_written() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-valid";
         let repo = tempdir().unwrap();
         init_repo(repo.path());
@@ -4557,8 +4566,8 @@ mod tests {
             1,
             "Handoff complete. <samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
-        wait_until(|| injector.session_state(1) == Some(HandoffWritten)).await;
-        wait_until(|| injector.pending_view(1).is_none()).await;
+        wait_until(&tick, || injector.session_state(1) == Some(HandoffWritten)).await;
+        wait_until(&tick, || injector.pending_view(1).is_none()).await;
 
         // The transition wrote the HANDOFF(phase=written) row; no ALERT.
         // The state flips before the row reaches the audit writer (separate
@@ -4593,7 +4602,7 @@ mod tests {
     #[tokio::test]
     async fn test_written_marker_before_ack_is_ignored() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-early".into(), "epic-9".into(), 2)
             .unwrap();
@@ -4613,7 +4622,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_handoff_arms_corrective_then_alerts() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-invalid";
         let repo = tempdir().unwrap();
         init_repo(repo.path());
@@ -4632,7 +4641,10 @@ mod tests {
 
         // Validation fails → the ONE corrective is armed on the retry
         // plumbing (attempts=1 + awaiting_retry) with the failure recorded.
-        wait_until(|| matches!(injector.pending_detail(1), Some((true, false, Some(_))))).await;
+        wait_until(&tick, || {
+            matches!(injector.pending_detail(1), Some((true, false, Some(_))))
+        })
+        .await;
         assert_eq!(injector.pending_view(1), Some((1, false, true)));
         let (_, _, failure) = injector.pending_detail(1).unwrap();
         assert!(failure.unwrap().contains("WIP is not committed"));
@@ -4677,7 +4689,7 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2 retry</samurai-handoff-written>",
         ));
-        wait_until(|| injector.pending_view(1).is_none()).await;
+        wait_until(&tick, || injector.pending_view(1).is_none()).await;
         assert_eq!(injector.session_state(1), Some(HandoffRequested));
 
         // The entry is removed just before the append reaches the audit
@@ -4708,7 +4720,7 @@ mod tests {
     #[tokio::test]
     async fn test_corrective_round_can_still_succeed() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, dirs, tick) = harness(dir.path());
         let repo = tempdir().unwrap();
         init_repo(repo.path());
         // First round: file missing entirely.
@@ -4720,7 +4732,10 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
-        wait_until(|| matches!(injector.pending_detail(1), Some((true, _, _)))).await;
+        wait_until(&tick, || {
+            matches!(injector.pending_detail(1), Some((true, _, _)))
+        })
+        .await;
         injector.arm_injection_on_idle(1).expect("corrective");
 
         // The orchestrator fixes it: writes the file, re-ACKs with the
@@ -4734,14 +4749,14 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2 retry</samurai-handoff-written>",
         ));
-        wait_until(|| injector.session_state(1) == Some(HandoffWritten)).await;
-        wait_until(|| injector.pending_view(1).is_none()).await;
+        wait_until(&tick, || injector.session_state(1) == Some(HandoffWritten)).await;
+        wait_until(&tick, || injector.pending_view(1).is_none()).await;
     }
 
     #[tokio::test]
     async fn test_written_window_timeout_arms_corrective_then_alerts() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-wtimeout";
         drive_to_acked(&injector, &supervisor, &context, project, 5);
 
@@ -4781,7 +4796,7 @@ mod tests {
     #[tokio::test]
     async fn test_corrective_never_acked_alerts_handoff_invalid() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-cack";
         drive_to_acked(&injector, &supervisor, &context, project, 3);
 
@@ -4814,7 +4829,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_working_dir_walks_the_failure_path() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, tick) = harness(dir.path());
         // No dir registered for session 1 → validation cannot run → treated
         // as a first-round failure (corrective armed), not a panic or a hang.
         drive_to_acked(&injector, &supervisor, &context, "C:/git/proj-inj-nodir", 2);
@@ -4822,7 +4837,10 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
-        wait_until(|| matches!(injector.pending_detail(1), Some((true, false, Some(_))))).await;
+        wait_until(&tick, || {
+            matches!(injector.pending_detail(1), Some((true, false, Some(_))))
+        })
+        .await;
         let (_, _, failure) = injector.pending_detail(1).unwrap();
         assert!(failure.unwrap().contains("working directory is unknown"));
     }
@@ -4832,7 +4850,7 @@ mod tests {
     #[tokio::test]
     async fn test_trigger_injects_immediately_when_session_already_idle() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-preidle".into(), "epic".into(), 3)
             .unwrap();
@@ -4854,7 +4872,7 @@ mod tests {
     #[tokio::test]
     async fn test_activity_after_stop_clears_the_idle_flag() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-active".into(), "epic".into(), 3)
             .unwrap();
@@ -4881,7 +4899,7 @@ mod tests {
     #[tokio::test]
     async fn test_tick_injects_armed_retry_when_already_idle() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-ridle".into(), "epic".into(), 3)
             .unwrap();
@@ -4901,7 +4919,7 @@ mod tests {
     #[tokio::test]
     async fn test_corrective_injects_at_tick_when_already_idle() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, dirs, tick) = harness(dir.path());
         let repo = tempdir().unwrap();
         init_repo(repo.path());
         // Repo registered but no handoff file written → check 1 will fail.
@@ -4920,7 +4938,10 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2</samurai-handoff-written>",
         ));
-        wait_until(|| matches!(injector.pending_detail(1), Some((true, false, Some(_))))).await;
+        wait_until(&tick, || {
+            matches!(injector.pending_detail(1), Some((true, false, Some(_))))
+        })
+        .await;
         assert_eq!(injector.pending_view(1), Some((1, false, true)));
 
         injector.tick();
@@ -4938,7 +4959,7 @@ mod tests {
     #[tokio::test]
     async fn test_never_idled_session_alerts_after_wait_cap() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-wedged";
         supervisor
             .register_session(1, project.into(), "epic-w".into(), 4)
@@ -5022,7 +5043,7 @@ mod tests {
     #[tokio::test]
     async fn test_armed_retry_that_never_injects_alerts_after_wait_cap() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-noidle";
         supervisor
             .register_session(1, project.into(), "epic-n".into(), 2)
@@ -5080,7 +5101,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_session_drops_pending_and_idle_state() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, context, _dirs, _tick) = harness(dir.path());
         supervisor
             .register_session(1, "C:/git/proj-inj-teardown".into(), "epic".into(), 1)
             .unwrap();
@@ -5123,7 +5144,7 @@ mod tests {
     #[tokio::test]
     async fn test_park_ladder_validates_and_reaches_parked() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-park";
         let repo = tempdir().unwrap();
         init_repo(repo.path());
@@ -5172,8 +5193,8 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2 park</samurai-handoff-written>",
         ));
-        wait_until(|| injector.session_state(1) == Some(Parked)).await;
-        wait_until(|| injector.pending_view(1).is_none()).await;
+        wait_until(&tick, || injector.session_state(1) == Some(Parked)).await;
+        wait_until(&tick, || injector.pending_view(1).is_none()).await;
 
         // The transitions wrote both PARK phases; no ALERT anywhere.
         let mut rows = Vec::new();
@@ -5211,7 +5232,7 @@ mod tests {
         use crate::core::samurai_schedule::SamuraiSchedule;
 
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, dirs) = harness(dir.path());
+        let (injector, audit, supervisor, context, dirs, tick) = harness(dir.path());
         let injector = Arc::new(injector);
         let repo = tempdir().unwrap();
         init_repo(repo.path());
@@ -5274,8 +5295,8 @@ mod tests {
             "<samurai-handoff-written>gen-2 park</samurai-handoff-written>",
         ));
 
-        wait_until(|| injector.session_state(1) == Some(Parked)).await;
-        wait_until(|| !parker.parking_engaged()).await;
+        wait_until(&tick, || injector.session_state(1) == Some(Parked)).await;
+        wait_until(&tick, || !parker.parking_engaged()).await;
         set_validation_gap_hook(None);
 
         assert_eq!(
@@ -5297,7 +5318,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_park_arms_corrective_then_alerts_park_invalid() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-park-bad";
         let repo = tempdir().unwrap();
         init_repo(repo.path());
@@ -5321,7 +5342,10 @@ mod tests {
 
         // Validation fails → the ONE corrective, with the park's wording and
         // round-scoped retry markers.
-        wait_until(|| matches!(injector.pending_detail(1), Some((true, false, Some(_))))).await;
+        wait_until(&tick, || {
+            matches!(injector.pending_detail(1), Some((true, false, Some(_))))
+        })
+        .await;
         let data = injector.arm_injection_on_idle(1).expect("corrective");
         assert!(data.contains("Park INVALID"));
         assert!(data.contains("WIP is not committed"));
@@ -5340,7 +5364,7 @@ mod tests {
             1,
             "<samurai-handoff-written>gen-2 park retry</samurai-handoff-written>",
         ));
-        wait_until(|| injector.pending_view(1).is_none()).await;
+        wait_until(&tick, || injector.pending_view(1).is_none()).await;
         assert_eq!(injector.session_state(1), Some(ParkRequested));
 
         let mut alerts: Vec<AuditEvent> = Vec::new();
@@ -5367,7 +5391,7 @@ mod tests {
     #[tokio::test]
     async fn test_soft_winddown_ack_completes_without_any_transition() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-soft";
         let snapshot = supervisor
             .register_session(1, project.into(), "epic-9".into(), 3)
@@ -5406,7 +5430,7 @@ mod tests {
     #[tokio::test]
     async fn test_soft_winddown_timeout_alerts_ack_timeout_and_stops() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-soft-to";
         let snapshot = supervisor
             .register_session(1, project.into(), "epic-9".into(), 3)
@@ -5448,7 +5472,7 @@ mod tests {
     #[tokio::test]
     async fn test_winddown_allclear_ack_completes_without_any_transition() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let project = "C:/git/proj-inj-allclear";
         let snapshot = supervisor
             .register_session(1, project.into(), "epic-9".into(), 3)
@@ -5491,7 +5515,7 @@ mod tests {
     #[tokio::test]
     async fn test_winddown_allclear_supersedes_only_a_delivered_winddown() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-allclear2".into(), "epic-9".into(), 2)
             .unwrap();
@@ -5522,7 +5546,7 @@ mod tests {
     #[tokio::test]
     async fn test_winddown_allclear_cancels_an_undelivered_winddown_silently() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-allclear3".into(), "epic-9".into(), 2)
             .unwrap();
@@ -5545,7 +5569,7 @@ mod tests {
         // episode — the stale all-clear is superseded outright, the same
         // way an all-clear supersedes a delivered wind-down.
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-super2".into(), "epic-9".into(), 2)
             .unwrap();
@@ -5588,7 +5612,7 @@ mod tests {
     #[tokio::test]
     async fn test_begin_park_supersedes_a_pending_soft_winddown() {
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-super".into(), "epic-9".into(), 2)
             .unwrap();
@@ -5614,7 +5638,7 @@ mod tests {
         // episode's identical text before THIS entry's own delivery) must
         // not complete it.
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-undelivered".into(), "epic-9".into(), 5)
             .unwrap();
@@ -5651,7 +5675,7 @@ mod tests {
         // line must never satisfy episode 2's still-pending, already-
         // delivered entry.
         let dir = tempdir().unwrap();
-        let (injector, _audit, supervisor, _context, _dirs) = harness(dir.path());
+        let (injector, _audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
         let snapshot = supervisor
             .register_session(1, "C:/git/proj-inj-replay".into(), "epic-9".into(), 5)
             .unwrap();

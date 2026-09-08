@@ -36,6 +36,9 @@ pub mod samurai_resumer;
 pub mod samurai_run_config;
 pub mod samurai_schedule;
 pub mod samurai_test_gate;
+/// Event-driven waits shared by the samurai integration test harnesses.
+#[cfg(test)]
+pub mod samurai_test_wait;
 pub mod samurai_watchdog;
 pub mod samurai_workflow;
 pub mod session_manager;

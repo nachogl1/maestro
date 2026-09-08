@@ -745,6 +745,7 @@ mod tests {
     use crate::core::claude_event::ClaudeEvent;
     use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
     use crate::core::samurai_injector::SessionDirResolver;
+    use crate::core::samurai_test_wait::{new_tick, tick_on_append, wait_until, HarnessTick};
     use crate::core::windows_process::StdCommandExt;
     use std::collections::HashMap;
     use std::path::Path;
@@ -887,10 +888,13 @@ mod tests {
         audit: AuditLog,
         dirs: Arc<Mutex<HashMap<u32, String>>>,
         torn_down: Arc<Mutex<Vec<u32>>>,
+        /// Every waiter's wake-up source (see [`HarnessTick`]).
+        tick: HarnessTick,
     }
 
     fn harness(dir: &Path) -> Harness {
-        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        let tick: HarnessTick = new_tick();
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), Some(tick_on_append(&tick)));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let context = Arc::new(SamuraiContextStore::new());
@@ -914,10 +918,13 @@ mod tests {
         let (schedule, _task) = SamuraiSchedule::new(dir.join("schedule"), Arc::new(|_| {}), None);
         let torn_down: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let torn_down_rec = torn_down.clone();
+        let tick_for_teardown = tick.clone();
         let teardown: SessionTeardown = Arc::new(move |id| {
             let rec = torn_down_rec.clone();
+            let tick = tick_for_teardown.clone();
             Box::pin(async move {
                 rec.lock().unwrap().push(id);
+                tick.notify_one();
             })
         });
         let parker = SamuraiParker::new(
@@ -938,6 +945,7 @@ mod tests {
             audit,
             dirs,
             torn_down,
+            tick,
         }
     }
 
@@ -1021,17 +1029,12 @@ mod tests {
         std::fs::write(path, "# Handoff\n").unwrap();
     }
 
-    /// Polls until `cond` holds or ~2s pass (teardown/advance run on the
-    /// tauri runtime, not this test's).
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..200 {
-            if cond() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("condition not reached within 2s");
-    }
+    // The waits here are the shared, event-driven ones — the park work
+    // (validation, teardown, the sweep's advance) runs on tauri's global
+    // runtime behind `spawn_blocking` and real `git` subprocesses, so a
+    // fixed sleep budget on the test's own runtime measured the wrong clock
+    // and expired on runs that were merely slow (issues #197, #198). See
+    // [`crate::core::samurai_test_wait`].
 
     fn state_of(supervisor: &Supervisor, session_id: u32) -> Option<SupervisorState> {
         supervisor
@@ -1055,7 +1058,7 @@ mod tests {
         // `pending_view`, not `has_pending`: a stuck-alerted entry (the #54
         // long-turn cap) is still armed for the eventual Stop but reads as
         // not-pending on purpose.
-        wait_until(|| h.injector.pending_view(id).is_some()).await;
+        wait_until(&h.tick, || h.injector.pending_view(id).is_some()).await;
         h.injector.observe_hook(&stop_event(id));
         assert!(
             h.injector
@@ -1221,7 +1224,7 @@ mod tests {
         // Complete the sweep: session 1 parks, its timer arms, engaged
         // clears. Session 2 was never touched.
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         assert_eq!(
             state_of(&h.supervisor, 2),
             Some(SupervisorState::Working),
@@ -1234,7 +1237,7 @@ mod tests {
         // (`allowance_watcher`: only when above_soft_5h goes true→false), so
         // a second event the real watcher can never emit must not be what
         // rescues the episode.
-        wait_until(|| h.injector.has_pending(2)).await;
+        wait_until(&h.tick, || h.injector.has_pending(2)).await;
         h.injector.observe_hook(&stop_event(2));
         h.injector.observe(&assistant_message(
             2,
@@ -1324,15 +1327,24 @@ mod tests {
         assert_eq!(state_of(&h.supervisor, 1), Some(SupervisorState::Working));
 
         complete_park(&h, 2, 1).await;
-        wait_until(|| state_of(&h.supervisor, 2) == Some(SupervisorState::Parked)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 2) == Some(SupervisorState::Parked)
+        })
+        .await;
         // Teardown ran for session 2, then the sweep advanced to session 1.
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::ParkRequested)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::ParkRequested)
+        })
+        .await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![2]);
 
         complete_park(&h, 1, 1).await;
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Parked)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::Parked)
+        })
+        .await;
         // Sweep completes: timers armed for BOTH epics, engaged cleared.
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![2, 1]);
 
         let mut timers = h.schedule.list();
@@ -1394,7 +1406,7 @@ mod tests {
         assert_eq!(h.injector.pending_view(1), Some((0, false, false)));
 
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
 
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1);
@@ -1446,7 +1458,10 @@ mod tests {
             .backdate_injection(1, TIMEOUT + Duration::from_secs(1));
         h.injector.tick(); // attempt 2 expired → ALERT → parker skips it
 
-        wait_until(|| state_of(&h.supervisor, 2) == Some(SupervisorState::ParkRequested)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 2) == Some(SupervisorState::ParkRequested)
+        })
+        .await;
         // The failed session stays in PARK_REQUESTED for a human.
         assert_eq!(
             state_of(&h.supervisor, 1),
@@ -1454,7 +1469,7 @@ mod tests {
         );
 
         complete_park(&h, 2, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
 
         // Only the PARKED epic got a timer; the failed one has its ALERT.
         let timers = h.schedule.list();
@@ -1509,20 +1524,23 @@ mod tests {
         h.injector
             .backdate_waiting(1, MAX_TURN_WAIT + Duration::from_secs(1));
         h.injector.tick();
-        wait_until(|| state_of(&h.supervisor, 2) == Some(SupervisorState::ParkRequested)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 2) == Some(SupervisorState::ParkRequested)
+        })
+        .await;
         complete_park(&h, 2, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         assert_eq!(h.schedule.list().len(), 1, "only epic #2 armed so far");
 
         // The long turn finally ends and session 1's park validates — after
         // the sweep already disengaged.
         complete_park(&h, 1, 1).await;
 
-        wait_until(|| h.schedule.list().len() == 2).await;
+        wait_until(&h.tick, || h.schedule.list().len() == 2).await;
         let mut epics: Vec<String> = h.schedule.list().into_iter().map(|e| e.epic).collect();
         epics.sort();
         assert_eq!(epics, vec!["#1".to_string(), "#2".to_string()]);
-        wait_until(|| h.torn_down.lock().unwrap().contains(&1)).await;
+        wait_until(&h.tick, || h.torn_down.lock().unwrap().contains(&1)).await;
     }
 
     #[tokio::test]
@@ -1567,7 +1585,7 @@ mod tests {
         );
 
         // Absorption completes the sweep: the epic still gets its timer.
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1);
         assert_eq!(timers[0].epic, "#1");
@@ -1594,7 +1612,7 @@ mod tests {
 
         h.parker.on_allowance_event(&hard_event(None));
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
 
         assert!(h.schedule.list().is_empty(), "no guessed timer");
         let mut alerted = false;
@@ -1642,7 +1660,7 @@ mod tests {
 
         h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
 
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1);
@@ -1676,7 +1694,7 @@ mod tests {
         );
 
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
 
         // No reset time BY DESIGN: no resume timer, and no per-epic
@@ -1710,7 +1728,7 @@ mod tests {
         // Nothing supervised: the ALERT still lands (ACCOUNT_PROJECT
         // fallback, the allowance watcher's placement policy) and the empty
         // sweep completes without arming anything.
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         assert!(h.schedule.list().is_empty());
         let rows = h
             .audit
@@ -1747,7 +1765,7 @@ mod tests {
         h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
 
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1, "the allowance crossing's timer arms");
         assert_eq!(timers[0].epic, "#1");
@@ -1776,7 +1794,7 @@ mod tests {
         h.parker.engage_external_park("gh_auth_lost");
 
         complete_park(&h, 1, 1).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         let timers = h.schedule.list();
         assert_eq!(
             timers.len(),
@@ -1827,11 +1845,14 @@ mod tests {
 
         complete_park(&h, 1, 1).await;
         // The sweep reaches the newcomer instead of completing around it.
-        wait_until(|| state_of(&h.supervisor, 3) == Some(SupervisorState::ParkRequested)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 3) == Some(SupervisorState::ParkRequested)
+        })
+        .await;
         assert!(h.parker.parking_engaged());
 
         complete_park(&h, 3, 2).await;
-        wait_until(|| !h.parker.parking_engaged()).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         let mut epics: Vec<String> = h.schedule.list().into_iter().map(|e| e.epic).collect();
         epics.sort();
         assert_eq!(epics, vec!["#1".to_string(), "#3".to_string()]);
