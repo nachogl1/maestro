@@ -554,6 +554,7 @@ fn persist(path: &PathBuf, entries: &[ScheduleEntry]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::samurai_test_wait::await_or_hang;
     use tempfile::tempdir;
 
     /// Collects fired entries synchronously — `fire_due` invokes the
@@ -797,9 +798,12 @@ mod tests {
         let (_schedule, task) = SamuraiSchedule::new(dir.path().to_path_buf(), notify, None);
         tokio::spawn(task);
 
-        let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        // Awaiting the channel IS the wake, so the wait costs a healthy run
+        // nothing; the backstop inside `await_or_hang` is a hang detector,
+        // not the 5s race budget this used to spend on a loaded box (the
+        // spawned loop's first tick queues behind the whole test binary).
+        let fired = await_or_hang("the past-due timer's first fire", rx.recv())
             .await
-            .expect("past-due timer must fire on the first tick")
             .expect("channel closed without a fire");
         assert_eq!(fired.epic, "#37");
         assert_eq!(fired.reason, "park");

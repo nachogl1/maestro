@@ -745,7 +745,9 @@ mod tests {
     use crate::core::claude_event::ClaudeEvent;
     use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
     use crate::core::samurai_injector::SessionDirResolver;
-    use crate::core::samurai_test_wait::{new_tick, tick_on_append, wait_until, HarnessTick};
+    use crate::core::samurai_test_wait::{
+        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
+    };
     use crate::core::windows_process::StdCommandExt;
     use std::collections::HashMap;
     use std::path::Path;
@@ -1615,20 +1617,14 @@ mod tests {
         wait_until(&h.tick, || !h.parker.parking_engaged()).await;
 
         assert!(h.schedule.list().is_empty(), "no guessed timer");
-        let mut alerted = false;
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerted = rows.iter().any(|r| {
-                r.event == AuditEventKind::Alert
-                    && r.details["kind"] == "park_no_reset_time"
-                    && r.details["epic"] == "#1"
-            });
-            if alerted {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(alerted, "park_no_reset_time ALERT must fire");
+        // The wait IS the assertion: `wait_for_row` returns only once the
+        // ALERT is on the trail, and its hang backstop names the failure.
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Alert
+                && r.details["kind"] == "park_no_reset_time"
+                && r.details["epic"] == "#1"
+        })
+        .await;
     }
 
     #[tokio::test]
