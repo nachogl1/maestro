@@ -65,7 +65,7 @@ use super::samurai_context::SamuraiContextStore;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts;
 use super::samurai_pty::DeliveryOutcome;
-use super::samurai_replicator::{SamuraiReplicator, StdinWriter};
+use super::samurai_replicator::{handoff_relpath_tolerant, SamuraiReplicator, StdinWriter};
 use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 use super::windows_process::StdCommandExt;
 
@@ -1818,6 +1818,17 @@ impl SamuraiInjector {
         // to the agent. Cleared here so attempt 2's in-flight gap can never
         // be timed against attempt 1's expired stamp.
         p.injected_at = None;
+        // ...and with no `injected_at`, `timeout_verdict` falls to the
+        // WAITING cap instead — so the wait has to restart here too, exactly
+        // as it does wherever a retry/corrective is armed (`arm_corrective`,
+        // the tick's ArmRetry). Left at trigger time, an entry whose turn ran
+        // longer than `max_turn_wait` before finally idling was already past
+        // the cap the instant it armed: the very next tick read
+        // `waiting_elapsed > max_turn_wait` with `elapsed = None`, raised
+        // `ack_timeout`/`delivery_unresolved` before the writer's verdict
+        // could land, and re-armed a retry that re-types the same instruction
+        // at the next idle.
+        p.waiting_since = AgeableInstant::now();
         p.awaiting_retry = false;
         // The long turn finally ended and the instruction went in: the entry
         // is live again, so it counts as pending once more and a later
@@ -2153,14 +2164,16 @@ impl SamuraiInjector {
         };
         // Phase 2, no lock: resolve the working dir, then validate off-thread.
         // The park validates the SAME file — it doubles as park state.
-        let relpath = samurai_prompts::handoff_file_relpath(&epic, generation);
+        // The handoff's SPELLING is resolved inside the blocking closure
+        // (`spawn_validation`), not here: the two `is_file` probes are FS work
+        // and this runs on the async runtime.
         match (self.session_dirs)(session_id) {
             Some(dir) => {
                 log::info!(
-                    "samurai injector: session {session_id} reported {} written — validating {relpath} in {dir}",
+                    "samurai injector: session {session_id} reported {} written — validating the gen-{generation} handoff in {dir}",
                     kind.as_str()
                 );
-                self.spawn_validation(session_id, dir, relpath);
+                self.spawn_validation(session_id, dir, epic.clone(), generation);
             }
             None => {
                 log::warn!(
@@ -2184,7 +2197,13 @@ impl SamuraiInjector {
     /// completion time (repo size, cold FS caches), so it goes through
     /// `spawn_blocking` — the same policy [`spawn_write`](Self::spawn_write)
     /// applies to a brief write since issue #153.
-    fn spawn_validation(&self, session_id: u32, working_dir: String, relpath: String) {
+    fn spawn_validation(
+        &self,
+        session_id: u32,
+        working_dir: String,
+        epic: String,
+        generation: u32,
+    ) {
         let pending = self.pending.clone();
         let supervisor = self.supervisor.clone();
         let audit = self.audit.clone();
@@ -2193,6 +2212,16 @@ impl SamuraiInjector {
         tauri::async_runtime::spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || {
                 let dir = PathBuf::from(strip_extended_prefix(&working_dir));
+                // Finding E2: validate whichever SPELLING is actually on
+                // disk. A real orchestrator writes `<slug>-gen-<N>.md` (the
+                // deviation issue #119 tolerates and the replicator's own
+                // read has handled since fix L1); checking only the canonical
+                // name failed such a run with "the handoff file is missing"
+                // and burned its whole corrective round on a handoff that was
+                // sitting right there. Neither spelling present → fall back
+                // to the canonical name so the error still names it.
+                let relpath = handoff_relpath_tolerant(&dir, &epic, generation)
+                    .unwrap_or_else(|| samurai_prompts::handoff_file_relpath(&epic, generation));
                 validate_handoff(&dir, &relpath).map(|wip_commit| ValidatedHandoff {
                     relpath,
                     wip_commit,
@@ -2892,6 +2921,16 @@ mod tests {
 
     fn write_handoff_file(dir: &Path, epic: &str, generation: u32) {
         let rel = samurai_prompts::handoff_file_relpath(epic, generation);
+        let path = dir.join(&rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# Handoff\n").unwrap();
+    }
+
+    /// The same fixture at the DASH-spelled path a deviating orchestrator
+    /// actually writes (issue #119) — `<slug>-gen-<N>.md`, with no canonical
+    /// sibling.
+    fn write_handoff_file_dash(dir: &Path, epic: &str, generation: u32) {
+        let rel = samurai_prompts::handoff_file_dash_relpath(epic, generation);
         let path = dir.join(&rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "# Handoff\n").unwrap();
@@ -4320,6 +4359,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_arming_an_injection_restarts_the_waiting_clock() {
+        // Finding E3: `waiting_since` is stamped at TRIGGER time and, until
+        // this fix, was not re-stamped when the idle finally armed the
+        // injection. A turn that outran `max_turn_wait` therefore armed an
+        // entry that was ALREADY past the cap: the very next tick saw
+        // `waiting_elapsed > max_turn_wait` with no `injected_at` yet, raised
+        // `ack_timeout`/`delivery_unresolved` before the writer's verdict
+        // could land, and re-armed a retry that re-types the same
+        // instruction at the next idle.
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, outcomes) =
+            harness_deferred_delivery(dir.path());
+        let project = "C:/git/proj-inj-armclock";
+        supervisor
+            .register_session(1, project.into(), "epic".into(), 3)
+            .unwrap();
+        context.observe(&context_event(1, 50.0));
+        injector.tick();
+        assert_eq!(injector.pending_view(1), Some((0, false, false)));
+
+        // A very long turn: the entry is past the long-turn cap when the
+        // agent finally goes idle and the injection arms.
+        injector.backdate_waiting(1, TURN_WAIT_OVER);
+        injector.observe_hook(&stop_event(1));
+        assert_eq!(injector.pending_view(1), Some((1, false, false)), "armed");
+        wait_until(|| !outcomes.lock().unwrap().is_empty()).await;
+
+        // A tick landing in the arm → verdict window must simply KEEP: the
+        // wait restarted at the arm, so nothing has aged out.
+        injector.tick();
+        assert_eq!(
+            injector.pending_view(1),
+            Some((1, false, false)),
+            "no spurious retry re-arm"
+        );
+        assert!(injector.has_pending(1), "no stuck ALERT was latched");
+
+        // The verdict lands and the normal ACK ladder takes over.
+        resolve_delivery(&outcomes, Ok(()));
+        wait_until(|| injector.delivery_stamped(1)).await;
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "ack_timeout"),
+            "no ack_timeout ALERT: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_unresolved_delivery_alerts_and_rearms_the_retry() {
         let dir = tempdir().unwrap();
         let (injector, audit, supervisor, context, outcomes) =
@@ -4384,6 +4473,62 @@ mod tests {
             1,
             &format!("<samurai-ack>handoff gen-{generation}</samurai-ack>"),
         ));
+    }
+
+    #[tokio::test]
+    async fn test_written_marker_accepts_a_dash_spelled_handoff() {
+        // Finding E2: the replicator has read BOTH spellings since fix L1,
+        // but validation resolved only the canonical name — so a run whose
+        // orchestrator wrote `<slug>-gen-<N>.md` failed with "the handoff
+        // file is missing" and burned its whole corrective round on a handoff
+        // that was sitting right there.
+        let dir = tempdir().unwrap();
+        let (injector, audit, supervisor, context, dirs) = harness(dir.path());
+        let project = "C:/git/proj-inj-dash";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff_file_dash(repo.path(), "epic-9", 2);
+        assert!(
+            !repo
+                .path()
+                .join(samurai_prompts::handoff_file_relpath("epic-9", 2))
+                .exists(),
+            "only the dash spelling is on disk"
+        );
+        dirs.lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        drive_to_acked(&injector, &supervisor, &context, project, 2);
+
+        injector.observe(&assistant_message(
+            1,
+            "<samurai-handoff-written>gen-2</samurai-handoff-written>",
+        ));
+        wait_until(|| injector.session_state(1) == Some(HandoffWritten)).await;
+        wait_until(|| injector.pending_view(1).is_none()).await;
+
+        let mut rows = Vec::new();
+        for _ in 0..200 {
+            rows = audit.read(project, None, None).await.unwrap().events;
+            if rows
+                .iter()
+                .any(|r| r.event == AuditEventKind::Handoff && r.details["phase"] == "written")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let written = rows
+            .iter()
+            .find(|r| r.event == AuditEventKind::Handoff && r.details["phase"] == "written")
+            .expect("HANDOFF phase=written row");
+        // The audit records the RESOLVED spelling, so the trail names the file
+        // that actually exists — and so does the successor's brief.
+        assert_eq!(
+            written.details["handoff_file"],
+            samurai_prompts::handoff_file_dash_relpath("epic-9", 2)
+        );
+        assert!(!rows.iter().any(|r| r.event == AuditEventKind::Alert));
     }
 
     #[tokio::test]
