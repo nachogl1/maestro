@@ -1842,6 +1842,101 @@ pub async fn samurai_cleanup_epic(
     .await
 }
 
+/// What abandoning a run did. Every field is something that was STOPPED, and
+/// the worktree path is there to say what was KEPT — the report is read out
+/// to the user verbatim, so "nothing was deleted" has to be visible in it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SamuraiAbandonReport {
+    /// The run config's own spelling of the epic.
+    pub epic: String,
+    /// The worktree left untouched on disk.
+    pub worktree_path: String,
+    pub timer_cancelled: bool,
+    pub spawn_cancelled: bool,
+}
+
+/// Abandons a run without destroying anything: archive the config, cancel
+/// what would respawn it, and stop.
+///
+/// [`RunConfigStore::archive`] had exactly ONE production caller —
+/// [`cleanup_epic_inner`], which also removes the worktree and deletes the
+/// branch. So the only route to a quiet, delisted run went through
+/// destroying its work, and a run nobody wanted to destroy simply stayed
+/// ACTIVE forever: the real Nido run alerted at every app start from
+/// 2026-08-20 to 2026-09-08 for exactly this reason. This is that missing
+/// half — the same archive step, alone.
+///
+/// The two cancels are not destruction, they are the rest of "abandoned": an
+/// armed resume timer or a staged successor spawn would put a live agent
+/// back on a run whose config is ARCHIVED, which nothing downstream expects.
+/// The worktree, the branch and every commit on it are untouched.
+///
+/// Refuses while a live supervised session exists — that is the one case
+/// where delisting loses information (the agent keeps working a run the user
+/// can no longer see or act on). Sync throughout: nothing here awaits.
+pub(crate) fn abandon_run_inner(
+    supervisor: &Supervisor,
+    schedule: &SamuraiSchedule,
+    run_configs: &RunConfigStore,
+    replicator: &SamuraiReplicator,
+    project: &str,
+    epic: &str,
+) -> Result<SamuraiAbandonReport, String> {
+    // The config's spelling is the identity every other surface registered
+    // under — same resolution `cleanup_epic_inner` does, and the same reason.
+    let config = run_configs.get(project, epic).ok_or_else(|| {
+        format!("no run config for epic {epic:?} in {project} — nothing to abandon")
+    })?;
+    let epic = config.epic.clone();
+
+    if let Some(live) = supervisor.list_sessions().into_iter().find(|s| {
+        s.project == project && epic_slug(&s.epic) == epic_slug(&epic) && !s.state.is_terminal()
+    }) {
+        return Err(format!(
+            "abandon refused: run {epic} still has a live supervised session (session {} is {}) — let it finish, or kill it first",
+            live.session_id,
+            live.state.as_str(),
+        ));
+    }
+
+    let spawn_cancelled = replicator.cancel_pending_for_epic(project, &epic);
+    let timer_cancelled = schedule.cancel(project, &epic)?;
+    run_configs.archive(project, &epic)?;
+    log::info!(
+        "samurai abandon: run {epic} in {project} archived — worktree {} and its branch KEPT (timer_cancelled={timer_cancelled} spawn_cancelled={spawn_cancelled})",
+        config.worktree_path,
+    );
+    Ok(SamuraiAbandonReport {
+        epic,
+        worktree_path: config.worktree_path,
+        timer_cancelled,
+        spawn_cancelled,
+    })
+}
+
+/// Abandons a run: archives its config so it leaves the runs list and stops
+/// alerting, and deletes nothing. The non-destructive twin of
+/// [`samurai_cleanup_epic`] — see [`abandon_run_inner`].
+#[tauri::command]
+pub fn samurai_abandon_run(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    replicator: State<'_, Arc<SamuraiReplicator>>,
+    project_path: String,
+    epic: String,
+) -> Result<SamuraiAbandonReport, String> {
+    let project = samurai_project(&project_path);
+    abandon_run_inner(
+        &supervisor,
+        &schedule,
+        &run_configs,
+        &replicator,
+        &project,
+        &epic,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Issue #65 (P4.1): Second Brain file inventory + guarded delete
 // ---------------------------------------------------------------------------
@@ -2118,6 +2213,7 @@ mod tests {
     use super::*;
     use crate::core::samurai_audit::AuditLog;
     use crate::core::samurai_files::{strip_extended_length, SamuraiFileKind};
+    use crate::core::samurai_run_config::InterruptedStamp;
     use crate::core::supervisor::SupervisorState;
     use crate::core::windows_process::StdCommandExt;
     use tempfile::tempdir;
@@ -2911,6 +3007,136 @@ mod tests {
         assert!(!again.worktree_removed);
         assert_eq!(again.worktree_path, None);
         assert!(!again.branch_deleted);
+    }
+
+    #[tokio::test]
+    async fn test_abandon_archives_the_run_but_keeps_the_worktree_and_branch() {
+        // The dead-Nido shape: an ACTIVE, interrupted run with a real
+        // worktree, a real branch and an armed resume timer. Abandoning it
+        // must take it OFF the runs list (and so out of the reconciler's
+        // alert loop) while leaving every byte of its work on disk — that is
+        // the whole difference from cleanup, which deletes both.
+        let h = cleanup_harness();
+        let worktree =
+            ensure_epic_worktree(&h.worktrees, &h.project, "samurai-38", Some(h.base.path()))
+                .await
+                .unwrap()
+                .path;
+        let mut config = SamuraiRunConfig::new(
+            h.project.clone(),
+            "#38",
+            worktree.to_string_lossy().into_owned(),
+        );
+        config.interrupted_at = Some(InterruptedStamp {
+            at: "2026-08-20T10:00:00+00:00".to_string(),
+            prior_generation: 2,
+        });
+        h.run_configs.save(&config).unwrap();
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "#38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+
+        // Spelled differently on purpose: the slug identity resolves it.
+        let report = abandon_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.run_configs,
+            &h.replicator,
+            &h.project,
+            "38",
+        )
+        .unwrap();
+        assert_eq!(report.epic, "#38");
+        assert_eq!(report.worktree_path, worktree.to_string_lossy());
+        assert!(
+            report.timer_cancelled,
+            "an armed resume timer would respawn an abandoned run"
+        );
+
+        // Delisted and quiet…
+        assert!(
+            h.run_configs.load_unarchived().is_empty(),
+            "config archived"
+        );
+        assert!(h.schedule.list().is_empty(), "timer cancelled");
+        // …but nothing destroyed.
+        assert!(worktree.exists(), "abandon must never remove the worktree");
+        let git = Git::new(h.repo.path());
+        assert!(
+            git.list_branches()
+                .await
+                .unwrap()
+                .iter()
+                .any(|b| b.name == "samurai-38"),
+            "abandon must never delete the branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_abandon_refuses_a_live_run_and_an_unknown_one() {
+        let h = cleanup_harness();
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                h.project.clone(),
+                "#38",
+                h.base.path().join("wt").to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        h.supervisor
+            .register_session(1, h.project.clone(), "#38".to_string(), 2)
+            .unwrap();
+
+        // A live agent is still working it — delisting would hide a run the
+        // user can no longer act on.
+        let err = abandon_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.run_configs,
+            &h.replicator,
+            &h.project,
+            "#38",
+        )
+        .unwrap_err();
+        assert!(err.contains("abandon refused"), "unexpected error: {err}");
+        assert_eq!(h.run_configs.load_unarchived().len(), 1, "still listed");
+
+        // A terminal session does not block it (the dead-run case).
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        abandon_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.run_configs,
+            &h.replicator,
+            &h.project,
+            "#38",
+        )
+        .unwrap();
+        assert!(h.run_configs.load_unarchived().is_empty());
+
+        // An epic with no config at all is an error, not a silent no-op.
+        let err = abandon_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.run_configs,
+            &h.replicator,
+            &h.project,
+            "#99",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("nothing to abandon"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

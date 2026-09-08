@@ -1342,6 +1342,7 @@ pub fn run() {
             commands::samurai::samurai_default_workflow,
             commands::samurai::samurai_list_runs,
             commands::samurai::samurai_cleanup_epic,
+            commands::samurai::samurai_abandon_run,
             // Samurai Second Brain file inventory (issue #65)
             commands::samurai::samurai_files_list,
             commands::samurai::samurai_file_delete,

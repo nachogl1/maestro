@@ -208,6 +208,35 @@ describe("run-fatal samurai audit events (issue #174)", () => {
     ]);
   });
 
+  /**
+   * The omission that let the real Nido run die unnoticed: the four
+   * cold-start reconciliation verdicts had no label, so the startup ALERT
+   * landed only as a passive audit row — 22 of them piled up between
+   * 2026-08-20 and 2026-09-08 while the user saw nothing.
+   */
+  it("cold-start reconciliation verdicts are fatal — all four toast", () => {
+    // Reconciler rows carry the 0 sentinel for session and generation: no
+    // session exists, which is precisely the finding.
+    const reconcile = (kind: string) =>
+      emitAuditEvent({ session_id: 0, generation: 0, details: { kind, epic: "nido" } });
+    reconcile("reconcile_interrupted");
+    reconcile("reconcile_orphan");
+    reconcile("reconcile_gh_auth");
+    reconcile("reconcile_unstartable");
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiToasts.map((t) => t.label)).toEqual([
+      "Run was interrupted — resume or abandon it",
+      "An orchestrator from before the restart may still be running",
+      "Run was interrupted and `gh` is logged out — fix auth, then resume",
+      "Run has no resume point — relaunch it from the launcher",
+    ]);
+    // The 0 sentinel means there is no session to badge — the toast and the
+    // OS notification are the whole surface.
+    expect(state.attentionSessionIds).toEqual([]);
+    expect(vi.mocked(notifyOs)).toHaveBeenCalledTimes(4);
+  });
+
   it("non-fatal rows never toast or badge", () => {
     emitAuditEvent({ details: { kind: "submit_retry" } });
     emitAuditEvent({ details: { kind: "ack_timeout" } });

@@ -132,6 +132,7 @@ function run(overrides: Partial<SamuraiRunListEntry> = {}): SamuraiRunListEntry 
     run_number: 0,
     display_name: null,
     status: "ACTIVE",
+    interrupted_at: null,
     created_at: "2026-08-06T10:00:00Z",
     orchestrator: orchestrator(),
     ...overrides,
@@ -173,6 +174,14 @@ function mockInvoke({
           worktree_path: "C:\\data\\worktrees\\maestro-abc\\maestro-epic-38",
           repo_pin: "nachogl1/maestro",
           stale_timer_cancelled: false,
+        };
+      // Abandon: archives the config and nothing else.
+      case "samurai_abandon_run":
+        return {
+          epic: "#38",
+          worktree_path: "C:\\data\\worktrees\\maestro-abc\\maestro-38",
+          timer_cancelled: true,
+          spawn_cancelled: false,
         };
       case "samurai_cleanup_epic":
         return {
@@ -971,6 +980,67 @@ describe("LaunchSection (issue #63)", () => {
     expect(callsOf("samurai_launch_run")).toHaveLength(0);
     // Still launchable once the user fixes the environment.
     expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled();
+  });
+
+  /**
+   * FIX 2: the row badged any non-COMPLETED config green "ACTIVE", so a run
+   * cold-start reconciliation had already declared dead read as healthy —
+   * for three weeks, in the ONE list that offers Recover and Cleanup.
+   */
+  it("badges an interrupted run INTERRUPTED, not ACTIVE", async () => {
+    mockInvoke({
+      runs: [
+        run({ interrupted_at: { at: "2026-08-20T10:00:00Z", prior_generation: 2 } }),
+        run({ epic: "#39" }),
+      ],
+    });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("INTERRUPTED")).toBeInTheDocument();
+    // The healthy run keeps its green ACTIVE badge — exactly one of each.
+    expect(screen.getAllByText("ACTIVE")).toHaveLength(1);
+    expect(screen.getAllByText("INTERRUPTED")).toHaveLength(1);
+    // Red = needs input (the fork's status-colour convention).
+    expect(screen.getByText("INTERRUPTED").className).toContain("text-maestro-red");
+    // The tooltip carries when it died and at which generation.
+    expect(screen.getByText("INTERRUPTED").getAttribute("title")).toContain("gen-2");
+  });
+
+  /**
+   * FIX 3: archiving a run config used to be reachable ONLY through cleanup,
+   * which also deletes the worktree and the branch — so quieting a dead run
+   * meant destroying its work. Abandon is the same archive, alone.
+   */
+  it("abandons a run without touching the worktree or the branch", async () => {
+    mockInvoke({ runs: [run()] });
+    askMock.mockResolvedValue(true);
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("#38")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Abandon run #38" }));
+
+    await waitFor(() => expect(callsOf("samurai_abandon_run")).toHaveLength(1));
+    expect(callsOf("samurai_abandon_run")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      epic: "#38",
+    });
+    // Nothing destructive was invoked alongside it.
+    expect(callsOf("samurai_cleanup_epic")).toHaveLength(0);
+    // The confirm and the result both have to say the work survives —
+    // otherwise this button is indistinguishable from the one beside it.
+    expect(String(askMock.mock.calls[0][0])).toContain("KEPT");
+    expect(await screen.findByText(/Abandoned run #38/)).toBeInTheDocument();
+    expect(screen.getByText(/Worktree kept at/)).toBeInTheDocument();
+  });
+
+  it("a declined abandon confirm invokes nothing", async () => {
+    mockInvoke({ runs: [run()] });
+    askMock.mockResolvedValue(false);
+    render(<LaunchSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Abandon run #38" }));
+    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
+    expect(callsOf("samurai_abandon_run")).toHaveLength(0);
   });
 
   it("lists active runs and cleans one up after the ask() confirm", async () => {
