@@ -1062,10 +1062,20 @@ pub fn run() {
                         .map_err(|e| e.to_string())
                 })
             });
+            // Both account-wide watchers are edge-triggered, so their
+            // latches must survive a restart: without this store, reopening
+            // the app while usage was still above a park threshold (or `gh`
+            // still logged out) replayed the edge — duplicate ALERT rows and
+            // a real park sweep, once per launch.
+            let samurai_latches = Arc::new(core::samurai_latches::LatchStore::new(
+                commands::ai_runner::artifact_base_dir("samurai"),
+            ));
+
             core::samurai_auth_watch::spawn_auth_watch(
                 run_configs.clone(),
                 samurai_parker.clone(),
                 auth_probe.clone(),
+                samurai_latches.clone(),
             );
 
             core::allowance_watcher::spawn_allowance_loop(
@@ -1074,6 +1084,7 @@ pub fn run() {
                 supervisor.clone(),
                 audit_log.clone(),
                 samurai_parker,
+                samurai_latches,
             );
 
             // Samurai (issue #62): cold-start reconciliation — PRD §5.6's

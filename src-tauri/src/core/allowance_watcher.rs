@@ -19,6 +19,17 @@
 //! resume timers from `resets_at`, and the original event's copy goes stale
 //! as soon as its window resets while another latch holds the sweep open.
 //!
+//! **Restart-durable:** the latches are persisted (`samurai_latches`) and
+//! seeded back at loop start. They used to live only in the spawned task,
+//! so every app start re-fired both thresholds while usage was still above
+//! the line — a duplicate ALERT row per supervised run AND a fresh hard
+//! crossing handed to the parker, i.e. a real park sweep once per launch
+//! (observed 2026-08-19: soft+hard pairs 2 minutes apart, one `soft` row
+//! carrying `value:90.0 threshold:78.0`, which only a cold latch produces).
+//! A window that genuinely reset still clears the latch on the first tick
+//! after the restart and announces the recovery, so a later crossing alerts
+//! exactly once.
+//!
 //! **No governing window** (enterprise-style accounts return the 5h/7d
 //! windows as null): a distinct event fires once — Phase 3's preflight will
 //! block on it. Never silence.
@@ -37,6 +48,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
+use super::samurai_latches::{LatchState, LatchStore};
 use super::samurai_parker::SamuraiParker;
 use super::supervisor::{Supervisor, SupervisorState};
 
@@ -140,6 +152,29 @@ pub struct AllowanceWatcher {
 }
 
 impl AllowanceWatcher {
+    /// Rebuilds the latches from the persisted record, so a restart while a
+    /// threshold is still crossed does not replay the edge.
+    pub fn from_state(state: &LatchState) -> Self {
+        Self {
+            above_soft_5h: state.above_soft_5h,
+            above_hard_5h: state.above_hard_5h,
+            above_hard_7d: state.above_hard_7d,
+            no_window_reported: state.no_window_reported,
+        }
+    }
+
+    /// The current latches, for persisting after a tick. Only the allowance
+    /// fields are set; the store keeps the auth loop's field untouched.
+    pub fn latch_state(&self) -> LatchState {
+        LatchState {
+            above_soft_5h: self.above_soft_5h,
+            above_hard_5h: self.above_hard_5h,
+            above_hard_7d: self.above_hard_7d,
+            no_window_reported: self.no_window_reported,
+            ..LatchState::default()
+        }
+    }
+
     /// Evaluates one reading against the current config, returning the
     /// events for exactly the edges crossed this tick (possibly several:
     /// a single jump from below-soft to above-hard fires both).
@@ -326,6 +361,13 @@ fn edge(
     }
 }
 
+/// The watcher the loop starts from: the persisted latches, not a cold
+/// `default()`. Factored out so the restart behaviour is testable without a
+/// tauri runtime — the loop and the test seed through the same call.
+pub(crate) fn seeded_watcher(latches: &LatchStore) -> AllowanceWatcher {
+    AllowanceWatcher::from_state(&latches.snapshot())
+}
+
 /// Spawns the evaluation loop (same shape as `github::watchdog`): every
 /// ~60s fetch usage, evaluate, and on events append ALERT audit rows,
 /// emit the frontend event, and hand the event to the parker (issue #60) —
@@ -336,15 +378,21 @@ fn edge(
 /// about); with none supervised they land in the [`ACCOUNT_PROJECT`] /
 /// [`ACCOUNT_RUN`] pseudo-entities instead — an account-wide condition is
 /// never silent (issue #45 acceptance) and never unattributed (issue #139).
+///
+/// The latches are seeded from `latches` before the first tick and written
+/// back after every evaluation, so the edges survive an app restart (module
+/// doc). Both directions matter: a still-crossed threshold must not re-fire,
+/// and a latch that re-armed must not come back set.
 pub fn spawn_allowance_loop(
     app: AppHandle,
     config: SharedSamuraiConfig,
     supervisor: Arc<Supervisor>,
     audit: AuditLog,
     parker: Arc<SamuraiParker>,
+    latches: Arc<LatchStore>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let mut watcher = AllowanceWatcher::default();
+        let mut watcher = seeded_watcher(&latches);
         let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -379,6 +427,10 @@ pub fn spawn_allowance_loop(
                 cfg.clone()
             };
             let events = watcher.evaluate(&reading, &snapshot);
+            // Unconditional: a latch also RE-ARMS silently (a hard threshold
+            // falling back below its line emits nothing), and a stale `true`
+            // left on disk would suppress the next genuine crossing.
+            latches.set_allowance(watcher.latch_state());
             if events.is_empty() {
                 if !parker.parking_engaged() {
                     // Still above a hard line with the sweep already
@@ -803,6 +855,107 @@ mod tests {
             w.latched_hard_event(&with_resets(Some(2.0), Some(4.0)), &cfg()),
             None
         );
+    }
+
+    /// The E5 bug: `spawn_allowance_loop` built the watcher with
+    /// `AllowanceWatcher::default()`, so every app start re-fired both
+    /// thresholds while usage was still above the line — a duplicate ALERT
+    /// pair per restart AND a fresh hard crossing handed to the parker, i.e.
+    /// a real park sweep over every supervised session. Drives the exact
+    /// path the loop takes ([`seeded_watcher`] + `set_allowance`).
+    #[test]
+    fn latched_thresholds_survive_a_restart_and_do_not_refire() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // Run 1: usage crosses soft AND hard; the latches are persisted.
+        let store = LatchStore::new(base.clone());
+        let mut w = seeded_watcher(&store);
+        assert_eq!(w.evaluate(&reading(Some(90.0), None), &cfg()).len(), 2);
+        store.set_allowance(w.latch_state());
+
+        // Restart while usage is STILL above the line: silence. Before the
+        // fix this fired the soft+hard pair again (the observed 10:48/10:50
+        // duplicates, including the `value:90.0 threshold:78.0` soft row).
+        let store = LatchStore::new(base.clone());
+        let mut w = seeded_watcher(&store);
+        assert!(
+            w.evaluate(&reading(Some(90.0), None), &cfg()).is_empty(),
+            "a restart must not replay a crossing that never stopped"
+        );
+        // …and the hard latch is still the latched state the parker's
+        // re-hand depends on, so a session registering now is still parked.
+        assert!(w.hard_latched());
+        store.set_allowance(w.latch_state());
+
+        // The window genuinely resets: the latches clear on the first tick
+        // after the restart and the recovery is announced exactly once.
+        let events = w.evaluate(&reading(Some(4.0), None), &cfg());
+        assert_eq!(
+            events,
+            vec![AllowanceEvent::SoftRecovered {
+                window: AllowanceWindow::FiveHour,
+                value: 4.0,
+                threshold: 78.0,
+            }]
+        );
+        assert!(!w.hard_latched());
+        store.set_allowance(w.latch_state());
+
+        // A restart after the reset must NOT come back latched, or the next
+        // genuine crossing would be silently swallowed.
+        let store = LatchStore::new(base);
+        let mut w = seeded_watcher(&store);
+        assert_eq!(
+            kinds(&w.evaluate(&reading(Some(90.0), None), &cfg())),
+            vec![
+                (AllowanceWindow::FiveHour, ThresholdKind::Soft),
+                (AllowanceWindow::FiveHour, ThresholdKind::Hard),
+            ],
+            "a real later crossing still alerts"
+        );
+    }
+
+    #[test]
+    fn the_no_window_condition_also_survives_a_restart() {
+        // Same edge, same duplicate-ALERT consequence: an enterprise-style
+        // account with no governing window announced it once per app start.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        let store = LatchStore::new(base.clone());
+        let mut w = seeded_watcher(&store);
+        assert_eq!(
+            w.evaluate(&reading(None, None), &cfg()),
+            vec![AllowanceEvent::NoGoverningWindow]
+        );
+        store.set_allowance(w.latch_state());
+
+        let store = LatchStore::new(base);
+        let mut w = seeded_watcher(&store);
+        assert!(
+            w.evaluate(&reading(None, None), &cfg()).is_empty(),
+            "still no window: the restart must stay silent"
+        );
+        // Windows return, then vanish again: a genuinely new condition.
+        assert!(w
+            .evaluate(&reading(Some(10.0), Some(10.0)), &cfg())
+            .is_empty());
+        assert_eq!(
+            w.evaluate(&reading(None, None), &cfg()),
+            vec![AllowanceEvent::NoGoverningWindow]
+        );
+    }
+
+    #[test]
+    fn a_missing_latch_file_seeds_an_un_latched_watcher() {
+        // Fresh install / first run / corrupt file: exactly the pre-fix
+        // behaviour, and never a panic.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("latches.json"), "not json").unwrap();
+        let store = LatchStore::new(dir.path().to_path_buf());
+        let mut w = seeded_watcher(&store);
+        assert_eq!(w.evaluate(&reading(Some(90.0), None), &cfg()).len(), 2);
     }
 
     #[test]
