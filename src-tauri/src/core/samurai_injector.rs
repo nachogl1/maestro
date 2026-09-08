@@ -1941,7 +1941,7 @@ impl SamuraiInjector {
     /// session — a slow or cold worktree would stall every other session's
     /// events behind one file write. So the staging *and* the writer call
     /// move onto the blocking pool, the same policy
-    /// [`SamuraiReplicator::brief_or_inline`](super::samurai_replicator) and
+    /// [`SamuraiReplicator::try_brief_or_inline`](super::samurai_replicator) and
     /// [`Self::spawn_validation`] already follow.
     ///
     /// The gate is [`samurai_brief::is_inline`] and nothing else: under it,

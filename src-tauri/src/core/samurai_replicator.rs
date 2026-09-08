@@ -363,38 +363,22 @@ pub(crate) fn handoff_relpath_tolerant(dir: &Path, epic: &str, generation: u32) 
 /// the existing inline transport.
 ///
 /// The file write is blocking, so it runs on the blocking pool like every
-/// other file write in this module; a join failure falls back to the full
-/// text, exactly like a failed write inside
-/// [`samurai_brief::deliverable_instruction`] — the brief file can only ever
-/// improve delivery, never block it.
-async fn brief_or_inline(working_dir: &str, name: String, instruction: String) -> String {
-    let worktree = PathBuf::from(working_dir);
-    let inline = instruction.clone();
-    tokio::task::spawn_blocking(move || {
-        samurai_brief::deliverable_instruction(&worktree, &name, instruction)
-    })
-    .await
-    .unwrap_or_else(|e| {
-        log::warn!(
-            "samurai replicator: the brief write task failed ({e}) — typing the full instruction inline instead"
-        );
-        inline
-    })
-}
-
-/// [`brief_or_inline`] without the swallowed failure: same routing — the
-/// instruction inline when it fits, a pointer at a written brief when it does
-/// not — but a failed write comes back as `Err` instead of degrading into
-/// "type the whole multi-KB ritual".
+/// other file write in this module.
 ///
-/// Finding E2 (the Nido gen-2 loss). A HANDOFF successor is the one staging
-/// path where the inline fallback has no rescue left: the full ritual text is
-/// several KB, so it also fails [`samurai_brief::launch_line_safe`], the
-/// pointer cannot ride argv either, and the entry stays on
-/// [`DeliveryRoute::Typed`] with several KB to type into a *starting* CLI —
-/// the exact issue #137/#103 failure mode. Its caller raises
-/// `successor_spawn_failed` instead of staging a delivery that is known to
-/// lose the brief.
+/// Routing is [`samurai_brief::try_deliverable_instruction`]'s: `Ok` is the
+/// pointer at a written brief, or the instruction itself when it was short
+/// enough that nothing needed writing. There is deliberately NO infallible
+/// sibling any more (the old `brief_or_inline`, removed with finding E2) —
+/// see below.
+///
+/// Finding E2 (the Nido gen-2 loss). Every ritual staging path shares one
+/// property: the full ritual text is several KB, so a swallowed write failure
+/// that hands the full text back ALSO fails
+/// [`samurai_brief::launch_line_safe`] — the pointer cannot ride argv
+/// either, and the entry stays on [`DeliveryRoute::Typed`] with several KB to
+/// type into a *starting* CLI, the exact issue #137/#103 failure mode. So
+/// every caller raises `successor_spawn_failed` instead of staging (or
+/// keeping staged) a delivery that is known to lose the brief.
 async fn try_brief_or_inline(
     working_dir: &str,
     name: String,
@@ -1041,23 +1025,64 @@ impl SamuraiReplicator {
     /// One `successor_spawn_failed` ALERT (P2.4 pattern): the successor for
     /// `snapshot` cannot be spawned, a human has to step in.
     fn alert_spawn_failed(&self, snapshot: &SessionSnapshot, failure: &str) {
+        self.alert_spawn_failed_for(
+            &snapshot.project,
+            &snapshot.epic,
+            snapshot.generation,
+            snapshot.session_id,
+            failure,
+        );
+    }
+
+    /// [`Self::alert_spawn_failed`] field-wise, for the callers that have no
+    /// live predecessor session to snapshot — the resume/reconcile fresh
+    /// spawn ([`Self::spawn_generation`]) passes the prior generation and the
+    /// 0 session-id sentinel, exactly like [`Self::write_recovery_digest`].
+    /// Same `successor_spawn_failed` kind: the row means "this generation
+    /// could not be spawned, a human has to step in", whatever staged it.
+    fn alert_spawn_failed_for(
+        &self,
+        project: &str,
+        epic: &str,
+        generation: u32,
+        session_id: u32,
+        failure: &str,
+    ) {
         log::error!(
-            "samurai replicator: cannot spawn successor for session {} ({failure}) — ALERT",
-            snapshot.session_id
+            "samurai replicator: cannot spawn successor for session {session_id} ({failure}) — ALERT"
         );
         self.audit.append(
-            &snapshot.project,
+            project,
             AuditEvent::now(
-                snapshot.epic.clone(),
+                epic.to_string(),
                 AuditEventKind::Alert,
-                snapshot.generation,
-                snapshot.session_id,
+                generation,
+                session_id,
                 json!({
                     "kind": "successor_spawn_failed",
                     "failure": failure,
                 }),
             ),
         );
+    }
+
+    /// Un-stages the pending entry for exactly one (project, epic,
+    /// generation) — the DEAD-recovery counterpart of `replicate`'s "never
+    /// staged in the first place".
+    ///
+    /// Finding E2, second half. Both recovery staging paths push their entry
+    /// BEFORE the brief file is written (the push is what makes a repeated
+    /// DEAD notification / re-fired schedule idempotent), so a failed write
+    /// cannot be answered by simply not staging: the entry is already there,
+    /// still holding the FULL multi-KB ritual the synchronous path staged
+    /// provisionally, and [`Self::tick`] would keep re-emitting its spawn
+    /// event until something typed that ritual into a starting CLI. Removing
+    /// it is the only way to stop the delivery — and removal (rather than
+    /// latching it `alerted`) also leaves the epic re-stageable, so a later
+    /// resume can try the generation again once the worktree is writable.
+    fn withdraw_pending(&self, project: &str, epic: &str, generation: u32) {
+        let mut pending = self.lock_pending();
+        pending.retain(|p| !(p.generation == generation && p.epic == epic && p.project == project));
     }
 
     /// Entry point, called by the injector right after its two-check
@@ -1515,12 +1540,33 @@ impl SamuraiReplicator {
                     && p.project == snapshot.project
             });
             if still_pending {
-                let instruction = brief_or_inline(
+                // Finding E2: NOT `brief_or_inline`, for the same reason
+                // `replicate` stopped using it — a swallowed write failure
+                // hands back the full multi-KB recovery ritual, which also
+                // fails `launch_line_safe`, so the entry stays on
+                // `DeliveryRoute::Typed` with several KB to type into a
+                // *starting* CLI (issue #137/#103). The difference here is
+                // that the entry is ALREADY staged, so refusing means
+                // withdrawing it (`withdraw_pending`) and then alerting.
+                let instruction = match try_brief_or_inline(
                     &working_dir,
                     ritual_brief_name(&snapshot.epic, generation, true),
                     instruction,
                 )
-                .await;
+                .await
+                {
+                    Ok(instruction) => instruction,
+                    Err(e) => {
+                        this.withdraw_pending(&snapshot.project, &snapshot.epic, generation);
+                        this.alert_spawn_failed(
+                            &snapshot,
+                            &format!(
+                                "the gen-{generation} recovery brief could not be written ({e}) — staged successor withdrawn rather than typing a multi-KB ritual into a starting CLI"
+                            ),
+                        );
+                        return;
+                    }
+                };
                 // Issue #170: the recovery successor composes a fresh
                 // `claude` command too — offer the pointer on its launch
                 // line, same contract as replicate/spawn_first_generation.
@@ -1806,12 +1852,34 @@ impl SamuraiReplicator {
             };
             // Issue #137: the decided ritual is delivered as a brief file
             // plus a pointer — the same treatment `replicate` gives its own.
-            let instruction = brief_or_inline(
+            // Finding E2: and the same REFUSAL too. A fresh spawn's ritual is
+            // several KB, so a swallowed write failure would leave the
+            // provisionally-staged entry holding the whole thing on the
+            // typed route into a starting CLI. There is no live predecessor
+            // here, so the ALERT is raised field-wise against the prior
+            // generation and the 0 session-id sentinel.
+            let instruction = match try_brief_or_inline(
                 &working_dir,
                 ritual_brief_name(&epic, generation, recovery),
                 instruction,
             )
-            .await;
+            .await
+            {
+                Ok(instruction) => instruction,
+                Err(e) => {
+                    this.withdraw_pending(&project, &epic, generation);
+                    this.alert_spawn_failed_for(
+                        &project,
+                        &epic,
+                        prior,
+                        0,
+                        &format!(
+                            "the gen-{generation} ritual brief could not be written ({e}) — staged successor withdrawn rather than typing a multi-KB ritual into a starting CLI"
+                        ),
+                    );
+                    return;
+                }
+            };
             this.finish_ritual_decision(&project, &epic, generation, instruction, recovery, spawn);
         });
     }
@@ -4515,6 +4583,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dead_recovery_unwritable_brief_withdraws_the_staged_successor() {
+        // Finding E2, second half. The DEAD-recovery path pushes its pending
+        // entry BEFORE the brief is written (that push is what makes a
+        // repeated DEAD notification idempotent), so a swallowed write
+        // failure left an entry STAGED holding the full multi-KB recovery
+        // ritual on `DeliveryRoute::Typed` — the exact #137/#103 loss
+        // `replicate` refuses, reached through a different control flow.
+        // Refusing here has to WITHDRAW the entry, not merely decline to add
+        // one, or `tick` keeps re-emitting its spawn until something types
+        // several KB into a starting CLI.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-dead-briefless";
+        let repo = tempdir().unwrap();
+        // `.maestro/briefs` occupied by a FILE: `create_dir_all` there fails
+        // while `.maestro/handoffs/` (the digest) stays writable.
+        std::fs::create_dir_all(repo.path().join(".maestro")).unwrap();
+        std::fs::write(repo.path().join(".maestro/briefs"), "not a directory").unwrap();
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snapshot = to_dead(&h.supervisor, project, "epic-9", 2);
+
+        h.replicator.on_dead(&snapshot);
+
+        let mut alert = None;
+        for _ in 0..300 {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
+            alert = rows
+                .into_iter()
+                .find(|r| r.details["kind"] == "successor_spawn_failed");
+            if alert.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let alert = alert.expect("an unwritable recovery brief raises successor_spawn_failed");
+        assert_eq!(alert.event, AuditEventKind::Alert);
+        // Keyed on the DEAD predecessor, like every other spawn failure.
+        assert_eq!(alert.generation, 2);
+        assert_eq!(alert.session_id, 1);
+        assert_eq!(
+            h.replicator.pending_count(3),
+            0,
+            "the staged entry is withdrawn: a multi-KB typed paste is not a delivery"
+        );
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "no terminal opened for a generation whose brief is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fresh_spawn_unwritable_brief_withdraws_the_staged_successor() {
+        // Finding E2 again, on the resume/reconcile fresh-spawn path: same
+        // stage-then-write ordering, same multi-KB ritual, same refusal —
+        // and, because there is no live predecessor here, the ALERT is
+        // raised field-wise against the prior generation and the 0
+        // session-id sentinel.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-fresh-briefless";
+        let repo = tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".maestro")).unwrap();
+        let blocker = repo.path().join(".maestro/briefs");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let working_dir = repo.path().to_string_lossy().into_owned();
+
+        h.replicator
+            .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
+
+        let mut alert = None;
+        for _ in 0..300 {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
+            alert = rows
+                .into_iter()
+                .find(|r| r.details["kind"] == "successor_spawn_failed");
+            if alert.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let alert = alert.expect("an unwritable ritual brief raises successor_spawn_failed");
+        assert_eq!(alert.event, AuditEventKind::Alert);
+        assert_eq!(alert.generation, 3, "keyed on the prior generation");
+        assert_eq!(alert.session_id, 0, "no predecessor session exists here");
+        assert_eq!(
+            h.replicator.pending_count(4),
+            0,
+            "the provisional entry is withdrawn, not left holding the full ritual"
+        );
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "no terminal opened for a generation whose brief is gone"
+        );
+
+        // Withdrawn, NOT latched: once the worktree is writable again the
+        // same generation can be staged afresh — an epic must never become
+        // permanently unresumable because one write failed.
+        std::fs::remove_file(&blocker).unwrap();
+        h.replicator
+            .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
+        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        let (_, staged) = h.replicator.pending_view(4).unwrap();
+        assert!(brief_text(repo.path(), &staged).contains("RECOVERY MODE"));
+    }
+
+    #[tokio::test]
     async fn test_dead_recovery_digest_uses_predecessor_transcript() {
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
@@ -5397,43 +5574,53 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_successor_that_was_not_offered_the_route_still_refuses_the_claim() {
-        // A successor whose brief write failed is staged as the full ritual
+        // A generation whose brief write failed is staged as the FULL brief
         // text — far past LAUNCH_LINE_MAX_BYTES — so no offer goes out, and
         // a frontend claiming the route anyway must not cost the run its
-        // brief. (`.maestro` occupied by a FILE → no handoff readable →
-        // recovery arm → brief write fails → full text staged inline.)
+        // brief.
+        //
+        // Finding E2 moved this scenario onto the gen-1 LAUNCH path. The two
+        // successor paths (`replicate`, `on_dead`) and the fresh-spawn path
+        // no longer REACH an unoffered entry: a failed brief write there
+        // withdraws the entry and alerts instead of staging the full ritual.
+        // `spawn_first_generation` keeps the infallible fallback on purpose —
+        // gen-1 has no predecessor whose work could be lost, and a human is
+        // sitting at the launch it just composed — so it is where an
+        // unoffered entry still legitimately exists.
+        // (`.maestro` occupied by a FILE → the brief write fails → the full
+        // text is staged inline.)
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
         let project = "C:/git/proj-170-unoffered";
         let worktree = tempdir().unwrap();
         std::fs::write(worktree.path().join(".maestro"), "not a directory").unwrap();
-        h.replicator.spawn_generation(
+        let brief = format!("[Maestro Samurai] LAUNCH {}", "do the work. ".repeat(60));
+        assert!(!samurai_brief::is_inline(&brief), "the file route is taken");
+        h.replicator.spawn_first_generation(
             project,
             "epic-9",
             &worktree.path().to_string_lossy(),
-            4,
-            Some(3),
-            "resume_timer",
+            brief.clone(),
         );
         wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(h.spawns.lock().unwrap()[0].launch_prompt, None);
 
-        let details = h.replicator.spawn_details(project, "epic-9", 4).unwrap();
+        let details = h.replicator.spawn_details(project, "epic-9", 1).unwrap();
         let snapshot = h
             .supervisor
-            .register_session_with_details(2, project.into(), "epic-9".into(), 4, details)
+            .register_session_with_details(2, project.into(), "epic-9".into(), 1, details)
             .unwrap();
         assert_eq!(
             h.replicator
                 .on_registered_with_route(&snapshot, DeliveryRoute::LaunchLine),
             DeliveryRoute::Typed,
-            "an unoffered successor claim is refused, and says so"
+            "an unoffered claim is refused, and says so"
         );
 
         h.replicator.observe_hook(&session_started(2));
         let writes = h.writes.lock().unwrap().clone();
-        assert_eq!(writes.len(), 1, "the ritual is still typed in");
-        assert!(writes[0].1.contains("RECOVERY"));
+        assert_eq!(writes.len(), 1, "the brief is still typed in");
+        assert!(writes[0].1.contains("LAUNCH"));
     }
 
     #[tokio::test]
