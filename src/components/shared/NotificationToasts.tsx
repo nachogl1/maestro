@@ -13,6 +13,9 @@ const HEALTH_ACCENT = "rgb(var(--maestro-orange))";
 /** Tint for run-fatal samurai toasts (issue #174) — the error red. */
 const SAMURAI_FATAL_ACCENT = "rgb(var(--maestro-red))";
 
+/** Tint for allowance-park toasts — amber, the colour every park surface uses. */
+const SAMURAI_PARK_ACCENT = "rgb(var(--maestro-orange))";
+
 /** Last path segment — the toast names the project like the tab strip does. */
 function projectName(projectPath: string): string {
   const segments = projectPath.split(/[\\/]/).filter(Boolean);
@@ -80,16 +83,29 @@ export function NotificationToasts() {
        * subject) is even read. Health toasts have no project, so "Health"
        * stands in for it.
        */}
-      {samuraiShown.map((toast) => (
-        <Toast
-          key={toast.id}
-          accentColor={SAMURAI_FATAL_ACCENT}
-          kicker={`${projectName(toast.project)} — Samurai run needs you`}
-          title={toast.label}
-          detail={`${toast.epic} · gen-${toast.generation}`}
-          onDismiss={() => dismissSamuraiToast(toast.id)}
-        />
-      ))}
+      {samuraiShown.map((toast) =>
+        toast.kind === "park" ? (
+          // A park is planned, not broken — amber, and the epic is the
+          // subject because "which run went away" is the first question.
+          <Toast
+            key={toast.id}
+            accentColor={SAMURAI_PARK_ACCENT}
+            kicker={`${projectName(toast.project)} — Samurai parked`}
+            title={`${toast.epic} parked on token allowance`}
+            detail={toast.label}
+            onDismiss={() => dismissSamuraiToast(toast.id)}
+          />
+        ) : (
+          <Toast
+            key={toast.id}
+            accentColor={SAMURAI_FATAL_ACCENT}
+            kicker={`${projectName(toast.project)} — Samurai run needs you`}
+            title={toast.label}
+            detail={`${toast.epic} · gen-${toast.generation}`}
+            onDismiss={() => dismissSamuraiToast(toast.id)}
+          />
+        ),
+      )}
       {watchdogShown.map((toast) => (
         <Toast
           key={toast.id}

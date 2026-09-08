@@ -452,6 +452,34 @@
   animation: parked-attention 1.6s ease-in-out infinite;
 }
 
+/* An allowance-parked Samurai run the user has not acknowledged yet. Louder
+   and slower than parked-attention above: a park is silent, lasts days, and
+   has to survive being walked away from — the ring keeps expanding so the
+   chip still catches the eye on a screen nobody has looked at since morning.
+   Amber (not the accent red) says "planned pause", not "broken". */
+@keyframes samurai-park-shine {
+  0% {
+    box-shadow:
+      0 0 0 0 rgb(var(--maestro-orange) / 0.55),
+      0 0 6px rgb(var(--maestro-orange) / 0.3);
+  }
+  70% {
+    box-shadow:
+      0 0 0 6px rgb(var(--maestro-orange) / 0),
+      0 0 16px rgb(var(--maestro-orange) / 0.55);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 rgb(var(--maestro-orange) / 0),
+      0 0 6px rgb(var(--maestro-orange) / 0.3);
+  }
+}
+
+.samurai-park-shine {
+  border-color: rgb(var(--maestro-orange));
+  animation: samurai-park-shine 2.2s ease-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
   .animate-edge-dash,
@@ -459,6 +487,7 @@
   .animate-pod-wake,
   .animate-thinking-dot,
   .parked-chip-attention,
+  .samurai-park-shine,
   .terminal-cell-starting {
     animation: none;
     transform: none;
@@ -496,7 +525,8 @@
 .platform-linux .animate-edge-dash,
 .platform-linux .animate-glow,
 .platform-linux .animate-thinking-dot,
-.platform-linux .parked-chip-attention {
+.platform-linux .parked-chip-attention,
+.platform-linux .samurai-park-shine {
   animation: none;
   box-shadow: none;
 }

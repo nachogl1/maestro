@@ -33,7 +33,12 @@ function session(
 
 describe("ParkedShelf", () => {
   beforeEach(() => {
-    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
+    useSessionStore.setState({
+      sessions: [],
+      parkedSessionIds: [],
+      samuraiBySessionId: {},
+      samuraiParkAlerts: [],
+    });
   });
 
   it("renders nothing when no session is parked", () => {
@@ -118,5 +123,89 @@ describe("ParkedShelf", () => {
     render(<ParkedShelf onUnpark={vi.fn()} />);
 
     expect(screen.getByText("Parked").className).toContain("text-maestro-muted");
+  });
+
+  describe("allowance-parked Samurai runs", () => {
+    function parkTheRun(sessionId: number, projectPath = "C:/proj") {
+      useSessionStore.setState({
+        samuraiBySessionId: {
+          [sessionId]: { project: projectPath, epic: "#37", generation: 2, state: "PARKED" },
+        },
+        samuraiParkAlerts: [
+          {
+            key: `${projectPath}|#37|2026-08-13T09:05:00+00:00`,
+            project: projectPath,
+            epic: "#37",
+            fireAt: "2026-08-13T09:05:00+00:00",
+            acknowledged: false,
+          },
+        ],
+      });
+    }
+
+    it("shines the chip and tints the shelf until the run is restored", () => {
+      useSessionStore.setState({
+        sessions: [session(1, "C:/proj", "Samurai-1"), session(2, "C:/proj", "Busy")],
+        parkedSessionIds: [1, 2],
+      });
+      parkTheRun(1);
+      const onUnpark = vi.fn();
+
+      render(<ParkedShelf onUnpark={onUnpark} />);
+
+      const chip = screen.getByText("Samurai-1").closest("button");
+      expect(chip?.className).toContain("samurai-park-shine");
+      expect(chip?.getAttribute("title")).toContain("Parked on token allowance");
+      expect(screen.getByText("Busy").closest("button")?.className).not.toContain(
+        "samurai-park-shine",
+      );
+      expect(screen.getByText("Parked").className).toContain("text-maestro-accent");
+
+      // Restoring the run IS the acknowledgement — the shine has done its job.
+      if (chip) fireEvent.click(chip);
+      expect(onUnpark).toHaveBeenCalledWith(1);
+      expect(useSessionStore.getState().samuraiParkAlerts[0].acknowledged).toBe(true);
+      expect(screen.getByText("Samurai-1").closest("button")?.className).not.toContain(
+        "samurai-park-shine",
+      );
+    });
+
+    it("does not shine a supervised session that is not parked", () => {
+      useSessionStore.setState({
+        sessions: [session(1, "C:/proj", "Samurai-1")],
+        parkedSessionIds: [1],
+      });
+      parkTheRun(1);
+      useSessionStore.setState({
+        samuraiBySessionId: {
+          1: { project: "C:/proj", epic: "#37", generation: 2, state: "WORKING" },
+        },
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+
+      expect(screen.getByText("Samurai-1").closest("button")?.className).not.toContain(
+        "samurai-park-shine",
+      );
+    });
+
+    it("does not shine when the park belongs to another project", () => {
+      useSessionStore.setState({
+        sessions: [session(1, "C:/proj", "Samurai-1")],
+        parkedSessionIds: [1],
+      });
+      parkTheRun(1, "C:/other");
+      useSessionStore.setState({
+        samuraiBySessionId: {
+          1: { project: "C:/proj", epic: "#37", generation: 2, state: "PARKED" },
+        },
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+
+      expect(screen.getByText("Samurai-1").closest("button")?.className).not.toContain(
+        "samurai-park-shine",
+      );
+    });
   });
 });

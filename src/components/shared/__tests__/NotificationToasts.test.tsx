@@ -23,6 +23,8 @@ import type { WatchdogToast } from "@/stores/useGitHubWatchdogStore";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import type { HealthToast } from "@/stores/useHealthStore";
 import { useHealthStore } from "@/stores/useHealthStore";
+import type { SamuraiToast } from "@/stores/useSessionStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 import { NotificationToasts } from "../NotificationToasts";
 
 function watchdogToast(overrides: Partial<WatchdogToast> = {}): WatchdogToast {
@@ -44,6 +46,18 @@ function healthToast(overrides: Partial<HealthToast> = {}): HealthToast {
     area: "memory",
     target: "maestro",
     reason: "12 stale files",
+    ...overrides,
+  };
+}
+
+function samuraiToast(overrides: Partial<SamuraiToast> = {}): SamuraiToast {
+  return {
+    id: "samurai-1",
+    kind: "fatal",
+    project: "C:/git/maestro",
+    epic: "#37",
+    generation: 2,
+    label: "Circuit breaker parked the run",
     ...overrides,
   };
 }
@@ -85,5 +99,40 @@ describe("NotificationToasts", () => {
     expect(screen.getByText("Health — Memory")).toBeInTheDocument();
     expect(screen.getByText("maestro")).toBeInTheDocument();
     expect(screen.getByText("12 stale files")).toBeInTheDocument();
+  });
+
+  it("keeps the run-fatal samurai kicker as '<Project> — Samurai run needs you'", () => {
+    useGitHubWatchdogStore.setState({ toasts: [] });
+    useHealthStore.setState({ toasts: [] });
+    useSessionStore.setState({ samuraiToasts: [samuraiToast()] });
+
+    render(<NotificationToasts />);
+
+    expect(screen.getByText("maestro — Samurai run needs you")).toBeInTheDocument();
+    expect(screen.getByText("Circuit breaker parked the run")).toBeInTheDocument();
+    expect(screen.getByText("#37 · gen-2")).toBeInTheDocument();
+  });
+
+  it("reads an allowance park as a planned pause, with the dated resume time", () => {
+    useGitHubWatchdogStore.setState({ toasts: [] });
+    useHealthStore.setState({ toasts: [] });
+    useSessionStore.setState({
+      samuraiToasts: [
+        samuraiToast({
+          kind: "park",
+          generation: 0,
+          label: "resumes 13/08/2026, 10:05 · in 6d 23h 5m",
+        }),
+      ],
+    });
+
+    render(<NotificationToasts />);
+
+    expect(screen.getByText("maestro — Samurai parked")).toBeInTheDocument();
+    expect(screen.getByText("#37 parked on token allowance")).toBeInTheDocument();
+    // The resume reading is dated, never a bare time-of-day.
+    expect(screen.getByText("resumes 13/08/2026, 10:05 · in 6d 23h 5m")).toBeInTheDocument();
+    // A park is not a death: it must not borrow the fatal wording.
+    expect(screen.queryByText(/needs you/)).not.toBeInTheDocument();
   });
 });
