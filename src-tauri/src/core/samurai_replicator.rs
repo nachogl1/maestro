@@ -3122,6 +3122,9 @@ mod tests {
     use crate::core::samurai_config::SamuraiConfig;
     use crate::core::samurai_context::SamuraiContextStore;
     use crate::core::samurai_injector::SamuraiInjector;
+    use crate::core::samurai_test_wait::{
+        new_tick, tick_on_append, wait_for_row, wait_for_rows, wait_until, HarnessTick,
+    };
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tempfile::tempdir;
@@ -3142,6 +3145,10 @@ mod tests {
         /// Issue #103: session ids the Enter-only resend fired for.
         resends: Arc<Mutex<Vec<u32>>>,
         config: SharedSamuraiConfig,
+        /// Woken by every observable side effect this harness records --
+        /// the audit writer's append, a spawn emit, a stdin write, an Enter
+        /// resend. See [`crate::core::samurai_test_wait`].
+        tick: HarnessTick,
     }
 
     fn harness(dir: &Path) -> Harness {
@@ -3151,7 +3158,8 @@ mod tests {
     /// `writer`: `None` = the default recorder that confirms every body
     /// write; `Some` = a failure-path writer (issue #109 tests).
     fn harness_with_writer(dir: &Path, writer: Option<StdinWriter>) -> Harness {
-        let (audit, task) = AuditLog::new(dir.to_path_buf(), None);
+        let tick = new_tick();
+        let (audit, task) = AuditLog::new(dir.to_path_buf(), Some(tick_on_append(&tick)));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let config: SharedSamuraiConfig = Arc::new(RwLock::new(SamuraiConfig::default()));
@@ -3166,17 +3174,22 @@ mod tests {
 
         let torn_down: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let torn_down_rec = torn_down.clone();
+        let teardown_tick = tick.clone();
         let teardown: SessionTeardown = Arc::new(move |id| {
             let rec = torn_down_rec.clone();
+            let tick = teardown_tick.clone();
             Box::pin(async move {
                 rec.lock().unwrap().push(id);
+                tick.notify_one();
             })
         });
 
         let spawns: Arc<Mutex<Vec<SuccessorSpawn>>> = Arc::new(Mutex::new(Vec::new()));
         let spawns_rec = spawns.clone();
+        let spawn_tick = tick.clone();
         let emit_spawn: SuccessorEmitter = Arc::new(move |s| {
             spawns_rec.lock().unwrap().push(s.clone());
+            spawn_tick.notify_one();
         });
 
         let writes: Arc<Mutex<Vec<(u32, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -3185,17 +3198,21 @@ mod tests {
         // the delivered row and the armed watch then behave exactly as
         // production's post-write verdict. Failure-path tests inject their
         // own writer.
+        let write_tick = tick.clone();
         let write_stdin: StdinWriter = writer.unwrap_or_else(|| {
             Arc::new(move |id, data, outcome| {
                 writes_rec.lock().unwrap().push((id, data));
+                write_tick.notify_one();
                 outcome(Ok(()));
             })
         });
 
         let resends: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let resends_rec = resends.clone();
+        let resend_tick = tick.clone();
         let resend_enter: EnterResender = Arc::new(move |id| {
             resends_rec.lock().unwrap().push(id);
+            resend_tick.notify_one();
         });
 
         let replicator = Arc::new(SamuraiReplicator::new(
@@ -3220,6 +3237,7 @@ mod tests {
             writes,
             resends,
             config,
+            tick,
         }
     }
 
@@ -3314,22 +3332,6 @@ mod tests {
         supervisor
             .transition(1, SupervisorState::HandoffWritten)
             .unwrap()
-    }
-
-    /// Polls until `cond` holds or ~10s pass (replicate runs on the tauri
-    /// runtime, not this test's). The budget is deliberately generous: the
-    /// recovery/ritual decisions spawn git subprocesses on the blocking
-    /// pool, and under a fully loaded parallel suite those have been
-    /// observed to need >2s on Windows. A passing test never waits longer
-    /// than the condition takes.
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..1000 {
-            if cond() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("condition not reached within 10s");
     }
 
     fn state_of(supervisor: &Supervisor, session_id: u32) -> Option<SupervisorState> {
@@ -3458,24 +3460,20 @@ mod tests {
         let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
 
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)
+        })
+        .await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         // Full teardown ran, once, before the transition.
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
 
         // The agent death is on the audit trail as a KILL row.
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Kill && r.details["phase"] == "killed")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Kill && r.details["phase"] == "killed"
+        })
+        .await;
         assert!(rows.iter().any(|r| r.event == AuditEventKind::Kill
             && r.details["phase"] == "killed"
             && r.details["cause"] == crate::core::supervisor::KILL_CAUSE_HANDOFF));
@@ -3526,7 +3524,7 @@ mod tests {
         let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
 
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let (registered, staged) = h.replicator.pending_view(3).unwrap();
         assert_eq!(registered, None);
@@ -3558,7 +3556,7 @@ mod tests {
         let snapshot = to_handoff_written(&h.supervisor, "C:/git/proj-rep-mismatch", "epic-9", 2);
 
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| h.replicator.pending_view(3).is_some()).await;
+        wait_until(&h.tick, || h.replicator.pending_view(3).is_some()).await;
 
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         let instruction = brief_text(repo.path(), &staged);
@@ -3582,8 +3580,11 @@ mod tests {
         let snapshot = to_handoff_written(&h.supervisor, "C:/git/proj-rep-broken", "epic-9", 2);
 
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
-        wait_until(|| h.replicator.pending_view(3).is_some()).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)
+        })
+        .await;
+        wait_until(&h.tick, || h.replicator.pending_view(3).is_some()).await;
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         let instruction = brief_text(not_a_repo.path(), &staged);
         assert!(instruction.contains("MUST run every command"));
@@ -3614,18 +3615,13 @@ mod tests {
 
         h.replicator.on_handoff_written(&snapshot);
 
-        let mut alerts = 0;
-        for _ in 0..300 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .iter()
-                .filter(|r| r.details["kind"] == "successor_spawn_failed")
-                .count();
-            if alerts > 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_spawn_failed"
+        })
+        .await
+        .iter()
+        .filter(|r| r.details["kind"] == "successor_spawn_failed")
+        .count();
         assert_eq!(alerts, 1, "one successor_spawn_failed ALERT");
         assert!(
             h.replicator.pending_view(3).is_none(),
@@ -3654,18 +3650,13 @@ mod tests {
             state_of(&h.supervisor, 1),
             Some(SupervisorState::HandoffWritten)
         );
-        let mut alerts = 0;
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .iter()
-                .filter(|r| r.details["kind"] == "successor_spawn_failed")
-                .count();
-            if alerts > 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_spawn_failed"
+        })
+        .await
+        .iter()
+        .filter(|r| r.details["kind"] == "successor_spawn_failed")
+        .count();
         assert_eq!(alerts, 1);
     }
 
@@ -3683,7 +3674,7 @@ mod tests {
             .insert(1, repo.path().to_string_lossy().into_owned());
         let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| h.replicator.pending_view(3).is_some()).await;
+        wait_until(&h.tick, || h.replicator.pending_view(3).is_some()).await;
         // Returned so callers that read the staged brief FILE (issue #137)
         // keep the worktree alive; dropping it deletes the worktree, which
         // is all the other callers ever needed.
@@ -3721,18 +3712,13 @@ mod tests {
         assert_eq!(h.replicator.pending_view(3).unwrap().0, Some(2));
 
         // The successor's SPAWN row links it to its predecessor.
-        let mut spawn_rows = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            spawn_rows = rows
-                .into_iter()
-                .filter(|r| r.event == AuditEventKind::Spawn && r.session_id == 2)
-                .collect();
-            if !spawn_rows.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let spawn_rows: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Spawn && r.session_id == 2
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Spawn && r.session_id == 2)
+        .collect();
         assert_eq!(spawn_rows.len(), 1);
         assert_eq!(spawn_rows[0].details["predecessor_session_id"], 1);
         assert_eq!(spawn_rows[0].details["predecessor_generation"], 2);
@@ -3761,18 +3747,13 @@ mod tests {
 
         // Issue #101: the delivered ritual lands an INJECT audit row with a
         // bounded excerpt of the exact text typed in.
-        let mut inject_rows = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            inject_rows = rows
-                .into_iter()
-                .filter(|r| r.event == AuditEventKind::Inject)
-                .collect();
-            if !inject_rows.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let inject_rows: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Inject
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Inject)
+        .collect();
         assert_eq!(inject_rows.len(), 1);
         let inject = &inject_rows[0];
         assert_eq!(inject.session_id, 2);
@@ -3840,18 +3821,13 @@ mod tests {
             h.replicator.pending_view(3).is_some(),
             "the latched entry survives its ALERT (finding G)"
         );
-        let mut alerts = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "successor_no_start")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_no_start"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "successor_no_start")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].session_id, 2);
         assert_eq!(alerts[0].generation, 3);
@@ -3888,18 +3864,13 @@ mod tests {
         h.replicator.tick();
         // Latched, not deleted (finding G).
         assert!(h.replicator.pending_view(3).is_some());
-        let mut alerts = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "successor_no_start")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_no_start"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "successor_no_start")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["registered"], false);
         // Finding F: no successor session id exists — the row carries the
@@ -4060,8 +4031,11 @@ mod tests {
 
         // Validation → HANDOFF_WRITTEN → replicator → teardown → KILLED →
         // successor staged + spawn event emitted.
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)
+        })
+        .await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
         assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
         let (_, staged) = h.replicator.pending_view(3).unwrap();
@@ -4142,7 +4116,7 @@ mod tests {
 
         // Below the threshold: the tick must leave the session alone.
         append_assistant_usage(&transcript, 300_000);
-        wait_until(|| context.percent(session) == Some(30.0)).await;
+        wait_until(&h.tick, || context.percent(session) == Some(30.0)).await;
         injector.tick();
         assert_eq!(
             state_of(&h.supervisor, session),
@@ -4153,7 +4127,7 @@ mod tests {
 
         // Crossing it: 441,033 tokens of a 1M window = 44.1%.
         append_assistant_usage(&transcript, 441_033);
-        wait_until(|| context.percent(session) == Some(44.1)).await;
+        wait_until(&h.tick, || context.percent(session) == Some(44.1)).await;
         injector.tick();
         assert_eq!(
             state_of(&h.supervisor, session),
@@ -4166,7 +4140,7 @@ mod tests {
         // Issue #153: staging that brief runs on the blocking pool, so the
         // text arrives after `tick()` returns.
         use crate::core::samurai_injector::{ACK_TAG, WRITTEN_TAG};
-        wait_until(|| !typed.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !typed.lock().unwrap().is_empty()).await;
         let typed_text = typed.lock().unwrap().join("");
         assert_eq!(
             typed_text,
@@ -4220,8 +4194,11 @@ mod tests {
         });
 
         // Validation → HANDOFF_WRITTEN → teardown → KILLED → successor staged.
-        wait_until(|| state_of(&h.supervisor, session) == Some(SupervisorState::Killed)).await;
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, session) == Some(SupervisorState::Killed)
+        })
+        .await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(
             *h.torn_down.lock().unwrap(),
             vec![session],
@@ -4440,8 +4417,11 @@ mod tests {
         let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
 
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
-        wait_until(|| h.replicator.pending_view(3).is_some()).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)
+        })
+        .await;
+        wait_until(&h.tick, || h.replicator.pending_view(3).is_some()).await;
 
         // The kill still happened (this is the killed path, not DEAD) …
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
@@ -4511,7 +4491,7 @@ mod tests {
         assert!(h.torn_down.lock().unwrap().is_empty());
 
         // One spawn event, emitted after the digest file is written.
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         // The staged brief is final once the spawn is out (issue #137: the
         // async task writes the brief file and stages the pointer at it).
         let (_, staged) = h.replicator.pending_view(3).unwrap();
@@ -4564,18 +4544,13 @@ mod tests {
         assert!(!writes[0].1.contains('\r'), "no submit key in the payload");
 
         // The successor's SPAWN audit row carries the recovery mark.
-        let mut spawn_rows = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            spawn_rows = rows
-                .into_iter()
-                .filter(|r| r.event == AuditEventKind::Spawn && r.session_id == 2)
-                .collect();
-            if !spawn_rows.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let spawn_rows: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Spawn && r.session_id == 2
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Spawn && r.session_id == 2)
+        .collect();
         assert_eq!(spawn_rows.len(), 1);
         assert_eq!(spawn_rows[0].details["recovery"], true);
         assert_eq!(spawn_rows[0].details["predecessor_session_id"], 1);
@@ -4609,17 +4584,12 @@ mod tests {
 
         h.replicator.on_dead(&snapshot);
 
-        let mut alert = None;
-        for _ in 0..300 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alert = rows
-                .into_iter()
-                .find(|r| r.details["kind"] == "successor_spawn_failed");
-            if alert.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alert = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_spawn_failed"
+        })
+        .await
+        .into_iter()
+        .find(|r| r.details["kind"] == "successor_spawn_failed");
         let alert = alert.expect("an unwritable recovery brief raises successor_spawn_failed");
         assert_eq!(alert.event, AuditEventKind::Alert);
         // Keyed on the DEAD predecessor, like every other spawn failure.
@@ -4655,17 +4625,12 @@ mod tests {
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
 
-        let mut alert = None;
-        for _ in 0..300 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alert = rows
-                .into_iter()
-                .find(|r| r.details["kind"] == "successor_spawn_failed");
-            if alert.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alert = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_spawn_failed"
+        })
+        .await
+        .into_iter()
+        .find(|r| r.details["kind"] == "successor_spawn_failed");
         let alert = alert.expect("an unwritable ritual brief raises successor_spawn_failed");
         assert_eq!(alert.event, AuditEventKind::Alert);
         assert_eq!(alert.generation, 3, "keyed on the prior generation");
@@ -4686,7 +4651,7 @@ mod tests {
         std::fs::remove_file(&blocker).unwrap();
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         let (_, staged) = h.replicator.pending_view(4).unwrap();
         assert!(brief_text(repo.path(), &staged).contains("RECOVERY MODE"));
     }
@@ -4715,7 +4680,7 @@ mod tests {
         let snapshot = to_dead(&h.supervisor, "C:/git/proj-rep-dead-t", "epic-9", 2);
 
         h.replicator.on_dead(&snapshot);
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let digest = std::fs::read_to_string(
             repo.path()
@@ -4760,7 +4725,7 @@ mod tests {
         h.replicator.on_dead(&snapshot);
         // The pin swap happens in the async task strictly before the spawn
         // event, so once the spawn is out the instruction is final.
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         let instruction = brief_text(repo.path(), &staged);
@@ -4791,7 +4756,7 @@ mod tests {
         let snapshot = to_dead(&h.supervisor, "C:/git/proj-rep-nopin", "epic-9", 2);
 
         h.replicator.on_dead(&snapshot);
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         let instruction = brief_text(repo.path(), &staged);
@@ -4824,18 +4789,13 @@ mod tests {
         h.replicator.on_dead(&dead);
         assert_eq!(h.replicator.pending_count(3), 0);
         assert!(h.spawns.lock().unwrap().is_empty());
-        let mut alerts = 0;
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .iter()
-                .filter(|r| r.details["kind"] == "successor_spawn_failed")
-                .count();
-            if alerts > 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_spawn_failed"
+        })
+        .await
+        .iter()
+        .filter(|r| r.details["kind"] == "successor_spawn_failed")
+        .count();
         assert_eq!(alerts, 1);
     }
 
@@ -4877,21 +4837,18 @@ mod tests {
         h.replicator.on_handoff_written(&snapshot);
 
         // The kill still happens in full (teardown + Killed transition) …
-        wait_until(|| state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)).await;
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 1) == Some(SupervisorState::Killed)
+        })
+        .await;
         assert_eq!(*h.torn_down.lock().unwrap(), vec![1]);
         // … and the trail explains the missing successor with a PARK row.
-        let mut absorbed = false;
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            absorbed = rows.iter().any(|r| {
-                r.event == AuditEventKind::Park && r.details["phase"] == "handoff_absorbed"
-            });
-            if absorbed {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(absorbed, "PARK handoff_absorbed row must land");
+        // `wait_for_row` returns only once the row is there, so the wait
+        // IS the assertion -- its hang backstop names the failure.
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Park && r.details["phase"] == "handoff_absorbed"
+        })
+        .await;
 
         // ONLY the staging + spawn emit were suppressed.
         assert!(h.spawns.lock().unwrap().is_empty(), "no spawn event");
@@ -4925,7 +4882,7 @@ mod tests {
 
         let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         // Not engaged: the Phase-2 behavior is untouched.
         assert_eq!(h.replicator.pending_count(3), 1);
@@ -4970,21 +4927,15 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(h.spawns.lock().unwrap().is_empty(), "no spawn event");
         // The PARK dead_absorbed row explains the missing successor.
-        let mut absorbed = false;
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            absorbed = rows.iter().any(|r| {
-                r.event == AuditEventKind::Park
-                    && r.details["phase"] == "dead_absorbed"
-                    && r.generation == 2
-                    && r.session_id == 1
-            });
-            if absorbed {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(absorbed, "PARK dead_absorbed row must land");
+        // The wait IS the assertion: `wait_for_row` returns only once the
+        // PARK dead_absorbed row is on the trail.
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Park
+                && r.details["phase"] == "dead_absorbed"
+                && r.generation == 2
+                && r.session_id == 1
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -5007,7 +4958,7 @@ mod tests {
         // A fresh spawn (resume/reconcile path) carries the config's model …
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(
             h.spawns.lock().unwrap()[0].model.as_deref(),
             Some("opus"),
@@ -5021,7 +4972,7 @@ mod tests {
             &working_dir,
             "opening brief".to_string(),
         );
-        wait_until(|| h.spawns.lock().unwrap().len() >= 2).await;
+        wait_until(&h.tick, || h.spawns.lock().unwrap().len() >= 2).await;
         assert_eq!(h.spawns.lock().unwrap()[1].model, None);
     }
 
@@ -5052,7 +5003,7 @@ mod tests {
         // the epic-slug wall of text.
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(h.spawns.lock().unwrap()[0].session_name, "Samurai-1");
 
         // A mid-run rename (persisted by the rename command) is what the
@@ -5073,7 +5024,7 @@ mod tests {
             &working_dir,
             "opening brief".to_string(),
         );
-        wait_until(|| h.spawns.lock().unwrap().len() >= 2).await;
+        wait_until(&h.tick, || h.spawns.lock().unwrap().len() >= 2).await;
         assert_eq!(
             h.spawns.lock().unwrap()[1].session_name,
             "samurai gen-1 epic-77"
@@ -5131,7 +5082,7 @@ mod tests {
         // The successor ritual (handoff present) carries the STORED graph.
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         let (_, staged) = h.replicator.pending_view(4).unwrap();
         let instruction = brief_text(repo.path(), &staged);
         assert!(
@@ -5152,7 +5103,7 @@ mod tests {
         // must carry the workflow too).
         h.replicator
             .spawn_generation(project, "epic-88", &working_dir, 6, Some(5), "resume_timer");
-        wait_until(|| h.spawns.lock().unwrap().len() >= 2).await;
+        wait_until(&h.tick, || h.spawns.lock().unwrap().len() >= 2).await;
         let (_, staged) = h.replicator.pending_view(6).unwrap();
         let instruction = brief_text(repo.path(), &staged);
         assert!(instruction.contains("RECOVERY MODE"), "{instruction}");
@@ -5183,7 +5134,7 @@ mod tests {
             Some(3),
             "resume_timer",
         );
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         // The spawn event names the fresh generation and its working dir.
         let spawns = h.spawns.lock().unwrap().clone();
@@ -5233,7 +5184,7 @@ mod tests {
             Some(3),
             "resume_timer",
         );
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let (_, staged) = h.replicator.pending_view(4).unwrap();
         let instruction = brief_text(repo.path(), &staged);
@@ -5280,7 +5231,7 @@ mod tests {
             Some(3),
             "resume_timer",
         );
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         // Give the (single) async prep task time to finish emitting.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -5448,22 +5399,13 @@ mod tests {
         assert_eq!(h.replicator.delivered_count(), 1);
 
         // The delivery is still audited, naming the route that carried it.
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h
-                .audit
-                .read(project, None, None)
-                .await
-                .unwrap()
-                .events
-                .into_iter()
-                .filter(|r| r.event == AuditEventKind::Inject)
-                .collect();
-            if !rows.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Inject
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Inject)
+        .collect();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].details["gate"], "launch_line");
         assert_eq!(rows[0].details["instruction"], "launch_brief");
@@ -5551,22 +5493,13 @@ mod tests {
         );
 
         // The INJECT row names the route AND the successor instruction kind.
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h
-                .audit
-                .read(project, None, None)
-                .await
-                .unwrap()
-                .events
-                .into_iter()
-                .filter(|r| r.event == AuditEventKind::Inject)
-                .collect();
-            if !rows.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Inject
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Inject)
+        .collect();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].details["gate"], "launch_line");
         assert_eq!(rows[0].details["instruction"], "successor_ritual");
@@ -5602,7 +5535,7 @@ mod tests {
             &worktree.path().to_string_lossy(),
             brief.clone(),
         );
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(h.spawns.lock().unwrap()[0].launch_prompt, None);
 
         let details = h.replicator.spawn_details(project, "epic-9", 1).unwrap();
@@ -5645,7 +5578,7 @@ mod tests {
             Some(3),
             "resume_timer",
         );
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         let (_, pointer) = h.replicator.pending_view(4).unwrap();
         assert_eq!(
             h.spawns.lock().unwrap()[0].launch_prompt.as_deref(),
@@ -5761,22 +5694,13 @@ mod tests {
         assert!(h.writes.lock().unwrap().is_empty(), "and nothing is typed");
         assert_eq!(h.replicator.delivered_count(), 0);
 
-        let mut alerts = Vec::new();
-        for _ in 0..200 {
-            alerts = h
-                .audit
-                .read(project, None, None)
-                .await
-                .unwrap()
-                .events
-                .into_iter()
-                .filter(|r| r.details["kind"] == "submit_unconfirmed")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "submit_unconfirmed"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "submit_unconfirmed")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["route"], "launch_line");
         assert_eq!(alerts[0].details["resends"], 0);
@@ -5959,30 +5883,23 @@ mod tests {
 
         // Audit trail: one submit_retry per resend, one delivery_retyped,
         // one final submit_unconfirmed, all naming the launch.
-        let mut retries = Vec::new();
-        let mut retyped = Vec::new();
-        let mut unconfirmed = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            retries = rows
-                .iter()
-                .filter(|r| r.details["kind"] == "submit_retry")
+        // A wait over a SET of rows, so `wait_for_rows` rather than the
+        // single-row shorthand.
+        let of_kind = |rows: &[AuditEvent], kind: &str| -> Vec<AuditEvent> {
+            rows.iter()
+                .filter(|r| r.details["kind"] == kind)
                 .cloned()
-                .collect();
-            retyped = rows
-                .iter()
-                .filter(|r| r.details["kind"] == "delivery_retyped")
-                .cloned()
-                .collect();
-            unconfirmed = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "submit_unconfirmed")
-                .collect();
-            if retries.len() == 4 && retyped.len() == 1 && unconfirmed.len() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+                .collect()
+        };
+        let rows = wait_for_rows(&h.tick, &h.audit, project, |rows| {
+            of_kind(rows, "submit_retry").len() == 4
+                && of_kind(rows, "delivery_retyped").len() == 1
+                && of_kind(rows, "submit_unconfirmed").len() == 1
+        })
+        .await;
+        let retries = of_kind(&rows, "submit_retry");
+        let retyped = of_kind(&rows, "delivery_retyped");
+        let unconfirmed = of_kind(&rows, "submit_unconfirmed");
         assert_eq!(retries.len(), 4);
         assert_eq!(retries[0].session_id, 5);
         assert_eq!(retries[0].generation, 1);
@@ -6061,22 +5978,13 @@ mod tests {
 
         // The give-up ALERT still records what happened, and says the run
         // was handed a new terminal rather than stranded.
-        let mut unconfirmed = Vec::new();
-        for _ in 0..200 {
-            unconfirmed = h
-                .audit
-                .read(project, None, None)
-                .await
-                .unwrap()
-                .events
-                .into_iter()
-                .filter(|r| r.details["kind"] == "submit_unconfirmed")
-                .collect();
-            if !unconfirmed.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let unconfirmed: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "submit_unconfirmed"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "submit_unconfirmed")
+        .collect();
         assert_eq!(unconfirmed.len(), 1);
         assert_eq!(unconfirmed[0].details["respawned"], true);
     }
@@ -6206,17 +6114,10 @@ mod tests {
         assert_eq!(h.replicator.delivered_count(), 0);
         assert_eq!(*calls.lock().unwrap(), 2, "never a second re-type");
 
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.details["kind"] == "submit_unconfirmed")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "submit_unconfirmed"
+        })
+        .await;
         let failed = rows
             .iter()
             .find(|r| r.details["kind"] == "delivery_failed")
@@ -6339,14 +6240,10 @@ mod tests {
             0,
             "no watch on a failed write"
         );
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows.iter().any(|r| r.details["kind"] == "delivery_failed") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "delivery_failed"
+        })
+        .await;
         let alert = rows
             .iter()
             .find(|r| r.details["kind"] == "delivery_failed")
@@ -6387,17 +6284,10 @@ mod tests {
             .replicate(snapshot, repo.path().to_string_lossy().into_owned())
             .await;
 
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.details["kind"] == "successor_spawn_failed")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_spawn_failed"
+        })
+        .await;
         let alert = rows
             .iter()
             .find(|r| r.details["kind"] == "successor_spawn_failed")
@@ -6611,7 +6501,7 @@ mod tests {
             timestamp: "t".into(),
         });
         injector.tick();
-        wait_until(|| *delivered.lock().unwrap()).await;
+        wait_until(&h.tick, || *delivered.lock().unwrap()).await;
         (injector, writes)
     }
 
@@ -6654,17 +6544,10 @@ mod tests {
         assert_eq!(h.replicator.delivered_count(), 0);
 
         // Audit trail: delivered row first, then injector-tagged retries.
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.details["kind"] == "submit_unconfirmed")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "submit_unconfirmed"
+        })
+        .await;
         let delivered: Vec<_> = rows
             .iter()
             .filter(|r| r.event == AuditEventKind::Inject && r.details["phase"] == "delivered")
@@ -6722,14 +6605,10 @@ mod tests {
             0,
             "no watch on a failed write"
         );
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = h.audit.read(project, None, None).await.unwrap().events;
-            if rows.iter().any(|r| r.details["kind"] == "delivery_failed") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "delivery_failed"
+        })
+        .await;
         let alert = rows
             .iter()
             .find(|r| r.details["kind"] == "delivery_failed")
@@ -6802,7 +6681,7 @@ mod tests {
 
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
         assert_eq!(h.spawns.lock().unwrap().len(), 1);
 
         // Inside the window: no re-emit.
@@ -6823,18 +6702,13 @@ mod tests {
             .backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
         h.replicator.tick();
         assert_eq!(h.spawns.lock().unwrap().len(), MAX_SPAWN_EMITS as usize);
-        let mut alerts = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "spawn_dropped")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "spawn_dropped"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "spawn_dropped")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].generation, 4);
         assert_eq!(alerts[0].session_id, 0, "0 sentinel — no session exists");
@@ -6891,7 +6765,7 @@ mod tests {
 
         h.replicator
             .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let details = h.replicator.spawn_details(project, "epic-9", 4).unwrap();
         let snapshot = h
@@ -6910,18 +6784,13 @@ mod tests {
             1,
             "no re-emit after registration"
         );
-        let mut alerts = Vec::new();
-        for _ in 0..200 {
-            let rows = h.audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "successor_no_start")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<_> = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "successor_no_start"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "successor_no_start")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].session_id, 9);
     }
@@ -7057,7 +6926,7 @@ mod tests {
         let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
 
         h.replicator.on_handoff_written(&snapshot);
-        wait_until(|| h.replicator.pending_view(3).is_some()).await;
+        wait_until(&h.tick, || h.replicator.pending_view(3).is_some()).await;
 
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         assert_eq!(
@@ -7087,7 +6956,7 @@ mod tests {
         h.replicator.on_dead(&snapshot);
         // The `--repo` pin swap runs on the async task; the brief is written
         // there too, before the spawn event the successor follows.
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         assert_eq!(
@@ -7118,7 +6987,7 @@ mod tests {
 
         h.replicator.on_dead(&snapshot);
         assert!(h.replicator.cancel_pending_for_epic(project, "epic-9"));
-        wait_until(|| !h.spawns.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
 
         assert!(
             !repo

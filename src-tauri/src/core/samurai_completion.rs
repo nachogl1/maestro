@@ -637,6 +637,9 @@ async fn apply_verdict(
 mod tests {
     use super::*;
     use crate::core::samurai_run_config::SamuraiRunConfig;
+    use crate::core::samurai_test_wait::{
+        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
+    };
     use std::collections::HashMap;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -793,6 +796,9 @@ mod tests {
         calls: ProbeCalls,
         /// Session ids the completion kill tore down, in order.
         killed: Arc<Mutex<Vec<u32>>>,
+        /// Woken by the audit writer's append and by the completion kill --
+        /// see [`crate::core::samurai_test_wait`].
+        tick: HarnessTick,
         _dir: tempfile::TempDir,
     }
 
@@ -808,16 +814,20 @@ mod tests {
         calls: ProbeCalls,
     ) -> Harness {
         let dir = tempdir().unwrap();
-        let (audit, task) = AuditLog::new(dir.path().join("audit"), None);
+        let tick = new_tick();
+        let (audit, task) = AuditLog::new(dir.path().join("audit"), Some(tick_on_append(&tick)));
         tokio::spawn(task);
         let supervisor = Arc::new(Supervisor::new(audit.clone(), None));
         let run_configs = Arc::new(RunConfigStore::new(dir.path().join("runs")));
         let killed: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let killed_rec = killed.clone();
+        let kill_tick = tick.clone();
         let kill: SessionTeardown = Arc::new(move |session_id| {
             let killed = killed_rec.clone();
+            let tick = kill_tick.clone();
             Box::pin(async move {
                 killed.lock().unwrap().push(session_id);
+                tick.notify_one();
             })
         });
         let watcher = SamuraiCompletionWatcher::new(
@@ -835,6 +845,7 @@ mod tests {
             audit,
             calls,
             killed,
+            tick,
             _dir: dir,
         }
     }
@@ -896,18 +907,6 @@ mod tests {
         }
     }
 
-    /// Polls until `cond` holds or ~2s pass (verification finishes on the
-    /// tauri runtime, not this test's — the reconciler suite's pattern).
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..200 {
-            if cond() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("condition not reached within 2s");
-    }
-
     async fn rows(audit: &AuditLog, kind: AuditEventKind) -> Vec<AuditEvent> {
         audit
             .read(PROJECT, None, None)
@@ -919,17 +918,17 @@ mod tests {
             .collect()
     }
 
-    /// Polls until at least one ALERT row lands (the async twin of
-    /// `wait_until` — the audit read is itself an await).
-    async fn wait_for_alerts(audit: &AuditLog) -> Vec<AuditEvent> {
-        for _ in 0..200 {
-            let alerts = rows(audit, AuditEventKind::Alert).await;
-            if !alerts.is_empty() {
-                return alerts;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("ALERT did not land within 2s");
+    /// Reads until at least one ALERT row lands. Event-driven: the audit
+    /// writer's `on_append` hook ticks the harness, so the re-read happens
+    /// on the append rather than on a fixed budget of sleeps (issue #202).
+    async fn wait_for_alerts(h: &Harness) -> Vec<AuditEvent> {
+        wait_for_row(&h.tick, &h.audit, PROJECT, |e| {
+            e.event == AuditEventKind::Alert
+        })
+        .await
+        .into_iter()
+        .filter(|e| e.event == AuditEventKind::Alert)
+        .collect()
     }
 
     fn status(h: &Harness, epic: &str) -> RunConfigStatus {
@@ -948,7 +947,7 @@ mod tests {
     /// kill is always observed by the next read ([`AuditLog::read`] queues
     /// on the same channel).
     async fn wait_for_completion(h: &Harness, epic: &str) {
-        wait_until(|| !h.killed.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.killed.lock().unwrap().is_empty()).await;
         assert_eq!(status(h, epic), RunConfigStatus::Completed);
     }
 
@@ -1001,9 +1000,9 @@ mod tests {
 
         h.watcher.observe(&reply(4, &declared("issues #77 pr #85")));
 
-        wait_until(|| !h.killed.lock().unwrap().is_empty()).await;
+        wait_until(&h.tick, || !h.killed.lock().unwrap().is_empty()).await;
         assert_eq!(*h.killed.lock().unwrap(), vec![4], "the PTY was torn down");
-        wait_until(|| h.supervisor.list_sessions().is_empty()).await;
+        wait_until(&h.tick, || h.supervisor.list_sessions().is_empty()).await;
 
         let rows = rows(&h.audit, AuditEventKind::Kill).await;
         assert_eq!(rows.len(), 1);
@@ -1038,7 +1037,7 @@ mod tests {
 
         h.watcher.observe(&reply(4, &declared("issues #77 pr #85")));
 
-        wait_for_alerts(&h.audit).await;
+        wait_for_alerts(&h).await;
         assert!(h.killed.lock().unwrap().is_empty());
         assert!(rows(&h.audit, AuditEventKind::Kill).await.is_empty());
         assert_eq!(h.supervisor.list_sessions().len(), 1);
@@ -1063,7 +1062,7 @@ mod tests {
 
         h.watcher.observe(&reply(4, &declared("issues #77 pr #85")));
 
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_until(&h.tick, || status(&h, "#38") == RunConfigStatus::Completed).await;
         let calls = h.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 2, "one issue probe + one PR probe");
         assert!(
@@ -1127,7 +1126,7 @@ mod tests {
         h.watcher
             .observe(&reply(4, &declared("issues #77 #78 pr #85")));
 
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts[0].details["kind"], VERIFICATION_FAILED_KIND);
         let failures = alerts[0].details["failures"].as_array().unwrap();
         assert_eq!(failures.len(), 1);
@@ -1147,7 +1146,7 @@ mod tests {
         h.watcher
             .observe(&reply(4, &declared("issues #77 #78 pr #85")));
 
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["kind"], VERIFICATION_FAILED_KIND);
         assert_eq!(alerts[0].details["issues"], json!([77, 78]));
@@ -1172,7 +1171,7 @@ mod tests {
 
         h.watcher.observe(&reply(4, &declared("issues #77 pr #85")));
 
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts[0].details["kind"], VERIFICATION_FAILED_KIND);
         let failures = alerts[0].details["failures"].as_array().unwrap();
         assert!(failures[0]
@@ -1210,7 +1209,7 @@ mod tests {
 
         h.watcher.observe(&reply(4, &declared("issues #77 #78")));
 
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts[0].details["kind"], DECLARATION_INVALID_KIND);
         assert!(alerts[0].details["error"]
             .as_str()
@@ -1292,7 +1291,7 @@ mod tests {
 
         launch_epic(&h, 4, "#38", 1);
         h.watcher.observe(&reply(4, &text));
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["kind"], ORDER_DEVIATION_KIND);
     }
@@ -1332,7 +1331,7 @@ mod tests {
         let text = declared("issues #77 pr #85");
 
         h.watcher.observe(&reply(4, &text));
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts[0].details["kind"], VERIFICATION_FAILED_KIND);
         assert_eq!(status(&h, "#38"), RunConfigStatus::Active);
 
@@ -1394,7 +1393,7 @@ mod tests {
         let value = "original: #76 #77; proposed: #77 #76; reasoning: #77 blocks #76";
         h.watcher.observe(&reply(4, &order_alert(value)));
 
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["kind"], ORDER_DEVIATION_KIND);
         assert_eq!(alerts[0].details["alert"], value);
@@ -1431,7 +1430,7 @@ mod tests {
         let text = order_alert("original: #1 #2; proposed: #2 #1; reasoning: deps");
         h.watcher.observe(&reply(4, &text));
         h.watcher.observe(&reply(4, &text));
-        let alerts = wait_for_alerts(&h.audit).await;
+        let alerts = wait_for_alerts(&h).await;
         assert_eq!(alerts.len(), 1);
         assert_eq!(status(&h, "#38"), RunConfigStatus::Active);
     }

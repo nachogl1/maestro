@@ -19,6 +19,17 @@
 //! producer acts, however loaded the machine is. The wall-clock bound that
 //! remains is a **hang detector, not a race budget**: it never participates
 //! in a passing run.
+//!
+//! # What is NOT in this class
+//!
+//! A fixed `sleep` before a **negative** assertion -- "wait a beat, then
+//! assert nothing spawned / no second row landed" -- is a quiet window, not
+//! a budget. Under load it makes the check weaker, never red, so it cannot
+//! flake and is deliberately left alone. Likewise a sleep that waits for
+//! *wall-clock time itself* to pass (an armed timer becoming due): overshoot
+//! only makes its assertion truer. The defect class is a bounded wait for
+//! async work whose expiry FAILS the test -- those, and only those, belong
+//! on the helpers here.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +96,51 @@ pub async fn await_or_hang<T>(what: &str, fut: impl std::future::Future<Output =
     }
 }
 
+/// The blocking twin of [`wait_until`], for a `#[cfg(test)]` helper that is
+/// itself synchronous and so has no runtime to await the work on.
+///
+/// It is the one shape that genuinely cannot be event-driven: a sync helper
+/// called from sync code has nothing to await, so it re-checks on a timer.
+/// What matters is that the timer is not a *budget* -- the loop only gives up
+/// at [`HANG_BACKSTOP`], so a merely slow producer costs wall time instead of
+/// failing the test. `what` names the awaited work in the panic.
+pub fn blocking_wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + HANG_BACKSTOP;
+    while !cond() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} still had not happened {HANG_BACKSTOP:?} later",
+        );
+        std::thread::sleep(SETTLE);
+    }
+}
+
+/// Reads the audit log until `cond` holds over the rows read, returning them.
+/// Same contract as [`wait_until`]: the audit writer's `on_append` hook ticks
+/// the harness, so the re-read happens on the append, not on a timer.
+///
+/// Use this when the wait is about a *set* of rows ("four retries and one
+/// give-up"); [`wait_for_row`] is the single-row shorthand.
+pub async fn wait_for_rows(
+    tick: &HarnessTick,
+    audit: &AuditLog,
+    project: &str,
+    mut cond: impl FnMut(&[AuditEvent]) -> bool,
+) -> Vec<AuditEvent> {
+    let deadline = std::time::Instant::now() + HANG_BACKSTOP;
+    loop {
+        let rows = audit.read(project, None, None).await.unwrap().events;
+        if cond(&rows) {
+            return rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected audit rows never landed; have: {rows:?}",
+        );
+        let _ = tokio::time::timeout(SETTLE, tick.notified()).await;
+    }
+}
+
 /// Reads the audit log until a row matches, returning all rows. Same contract
 /// as [`wait_until`]: the audit writer's `on_append` hook ticks the harness,
 /// so the re-read happens on the append, not on a timer.
@@ -94,18 +150,7 @@ pub async fn wait_for_row(
     project: &str,
     mut pred: impl FnMut(&AuditEvent) -> bool,
 ) -> Vec<AuditEvent> {
-    let deadline = std::time::Instant::now() + HANG_BACKSTOP;
-    loop {
-        let rows = audit.read(project, None, None).await.unwrap().events;
-        if rows.iter().any(&mut pred) {
-            return rows;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "expected audit row never landed; have: {rows:?}",
-        );
-        let _ = tokio::time::timeout(SETTLE, tick.notified()).await;
-    }
+    wait_for_rows(tick, audit, project, |rows| rows.iter().any(&mut pred)).await
 }
 
 #[cfg(test)]
@@ -143,6 +188,25 @@ mod tests {
             started.elapsed() < SETTLE,
             "a resolved future must not pay any of the backstop"
         );
+    }
+
+    /// The sync twin has the same contract: a `#[cfg(test)]` helper called
+    /// from sync code cannot await, but its re-check timer must still not be
+    /// a budget. The injector's `backdate_injection` gave up after 200 x 10ms
+    /// (issue #202's class), so a delivery outcome that took longer failed a
+    /// healthy run.
+    #[test]
+    fn test_blocking_wait_until_outlives_the_old_fixed_budget() {
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let setter = done.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(4000));
+            setter.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        blocking_wait_until("a deliberately slow producer", || {
+            done.load(std::sync::atomic::Ordering::SeqCst)
+        });
     }
 
     /// A tick that lands before anyone waits is not lost: `notify_one` stores

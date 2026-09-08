@@ -762,6 +762,7 @@ fn read_new_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::samurai_test_wait::{new_tick, wait_until, HarnessTick};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -770,12 +771,32 @@ mod tests {
 
     /// Create an EventBus that captures emitted events into a shared Vec.
     fn test_event_bus() -> (Arc<EventBus>, Arc<std::sync::Mutex<Vec<ClaudeEvent>>>) {
+        let (bus, collected, _tick) = ticked_event_bus();
+        (bus, collected)
+    }
+
+    /// The collector plus the tick it fires on every emitted event.
+    ///
+    /// The watcher's deliveries come from an OS notify thread, so the tests
+    /// below used to poll them on a fixed 10 s deadline — a race budget spent
+    /// on the test's own idle runtime while the filesystem notification
+    /// queued behind a fully loaded suite (issues #197-#202). Waiting on this
+    /// tick instead observes the emit itself; the bound that remains lives in
+    /// [`crate::core::samurai_test_wait`] and is a hang detector.
+    fn ticked_event_bus() -> (
+        Arc<EventBus>,
+        Arc<std::sync::Mutex<Vec<ClaudeEvent>>>,
+        HarnessTick,
+    ) {
         let collected = Arc::new(std::sync::Mutex::new(Vec::<ClaudeEvent>::new()));
         let collected_clone = Arc::clone(&collected);
+        let tick = new_tick();
+        let emit_tick = tick.clone();
         let bus = EventBus::new(Arc::new(move |event: ClaudeEvent| {
             collected_clone.lock().unwrap().push(event);
+            emit_tick.notify_one();
         }));
-        (Arc::new(bus), collected)
+        (Arc::new(bus), collected, tick)
     }
 
     #[test]
@@ -1434,43 +1455,28 @@ mod tests {
     /// nested agent live.
     #[tokio::test]
     async fn test_watcher_picks_up_nested_agents_live() {
-        use std::time::Duration;
-
-        let (event_bus, captured) = test_event_bus();
+        let (event_bus, captured, tick) = ticked_event_bus();
         let watcher = TranscriptWatcher::new(event_bus);
 
         let dir = tempfile::tempdir().unwrap();
         let main_path = dir.path().join("t.jsonl");
         std::fs::write(&main_path, "").unwrap();
         let main_path = main_path.canonicalize().unwrap();
+        // The recursive watch is registered synchronously, so the fixture
+        // below is seen however long the catch-up read takes.
         watcher.start_watching(1, main_path.clone());
-
-        // Give the initial catch-up a moment, then write the nested layout.
-        tokio::time::sleep(Duration::from_millis(300)).await;
         write_nested_fixture(main_path.parent().unwrap());
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            {
-                let events = captured.lock().unwrap();
-                if events.iter().any(|e| {
-                    matches!(
-                        e,
-                        ClaudeEvent::SubagentSpawned { agent_id, parent_agent_id: Some(parent), .. }
-                            if agent_id == "toolu_B" && parent == "toolu_A"
-                    )
-                }) {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    panic!(
-                        "nested agent never surfaced from the subagents folder. Got {:?}",
-                        *events
-                    );
-                }
-            }
-        }
+        wait_until(&tick, || {
+            captured.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    ClaudeEvent::SubagentSpawned { agent_id, parent_agent_id: Some(parent), .. }
+                        if agent_id == "toolu_B" && parent == "toolu_A"
+                )
+            })
+        })
+        .await;
 
         watcher.stop_watching(1);
     }
@@ -1483,9 +1489,7 @@ mod tests {
     /// before the directory exists must still surface the spawns written later.
     #[tokio::test]
     async fn test_watch_started_before_project_dir_exists_still_surfaces_spawns() {
-        use std::time::Duration;
-
-        let (event_bus, captured) = test_event_bus();
+        let (event_bus, captured, tick) = ticked_event_bus();
         let watcher = TranscriptWatcher::new(event_bus);
 
         let root = tempfile::tempdir().unwrap();
@@ -1514,27 +1518,15 @@ mod tests {
         let spawn = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_S","name":"Agent","input":{"description":"samurai subagent","subagent_type":"general-purpose","prompt":"do the thing"}}]},"uuid":"m1","timestamp":"2026-08-15T20:27:30Z"}"#;
         std::fs::write(&main_path, format!("{spawn}\n")).unwrap();
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            {
-                let events = captured.lock().unwrap();
-                if events.iter().any(|e| {
-                    matches!(
-                        e,
-                        ClaudeEvent::SubagentSpawned { agent_id, .. } if agent_id == "toolu_S"
-                    )
-                }) {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    panic!(
-                        "spawn written after the watch started never surfaced. Got {:?}",
-                        *events
-                    );
-                }
-            }
-        }
+        wait_until(&tick, || {
+            captured.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    ClaudeEvent::SubagentSpawned { agent_id, .. } if agent_id == "toolu_S"
+                )
+            })
+        })
+        .await;
 
         watcher.stop_watching(1);
     }
@@ -1597,10 +1589,8 @@ mod tests {
     /// asserting that events are parsed and emitted through the EventBus.
     #[tokio::test]
     async fn test_full_transcript_watcher_flow() {
-        use std::time::Duration;
-
         // 1. Set up EventBus with event capture
-        let (event_bus, captured) = test_event_bus();
+        let (event_bus, captured, tick) = ticked_event_bus();
 
         // 2. Create TranscriptWatcher
         let watcher = TranscriptWatcher::new(event_bus);
@@ -1623,21 +1613,18 @@ mod tests {
         let canonical_path = transcript_path.canonicalize().unwrap();
         watcher.start_watching(1, canonical_path.clone());
 
-        // 5. Wait for the initial catch-up read to process existing content
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // 6. Verify the initial UserMessage was parsed and emitted
-        {
-            let events = captured.lock().unwrap();
-            assert!(
-                events.iter().any(|e| matches!(
+        // 5+6. The initial catch-up read must emit the existing content.
+        //      Waiting on the emit itself replaces a fixed 500ms sleep that
+        //      was a guess about how fast the notify thread got scheduled.
+        wait_until(&tick, || {
+            captured.lock().unwrap().iter().any(|e| {
+                matches!(
                     e,
                     ClaudeEvent::UserMessage { text, .. } if text == "hello world"
-                )),
-                "Expected UserMessage with 'hello world', got {:?}",
-                *events
-            );
-        }
+                )
+            })
+        })
+        .await;
 
         // 7. Append an assistant message with an Edit tool_use.
         //    Open-append-close to produce a distinct filesystem event.
@@ -1651,26 +1638,17 @@ mod tests {
             f.flush().unwrap();
         }
 
-        // 8. Poll for the expected event with a generous timeout.
-        //    macOS FSEvents can have variable latency, so we poll rather than
-        //    doing a single fixed sleep.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let events = captured.lock().unwrap();
-            let has_file_edited = events.iter().any(|e| {
+        // 8. Wait on the emit. macOS FSEvents latency (and a loaded
+        //    Windows box) is exactly why this must not be a fixed budget.
+        wait_until(&tick, || {
+            captured.lock().unwrap().iter().any(|e| {
                 matches!(
                     e,
                     ClaudeEvent::FileEdited { file_path, .. } if file_path == "/src/main.rs"
                 )
-            });
-            if has_file_edited {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!("Timed out waiting for FileEdited event. Got {:?}", *events);
-            }
-        }
+            })
+        })
+        .await;
 
         // 9. Verify all expected events were emitted
         {
@@ -1706,9 +1684,7 @@ mod tests {
     /// last one leaving must release the watch cleanly rather than leak it.
     #[tokio::test]
     async fn test_sessions_sharing_a_directory_are_independent() {
-        use std::time::Duration;
-
-        let (event_bus, captured) = test_event_bus();
+        let (event_bus, captured, tick) = ticked_event_bus();
         let watcher = TranscriptWatcher::new(event_bus);
 
         // Both transcripts live in ONE directory, as Claude Code writes them.
@@ -1746,27 +1722,15 @@ mod tests {
             f.flush().unwrap();
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            {
-                let events = captured.lock().unwrap();
-                if events.iter().any(|e| {
-                    matches!(
-                        e,
-                        ClaudeEvent::UserMessage { text, .. } if text == "sibling lives"
-                    )
-                }) {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    panic!(
-                        "stopping session 1 killed session 2's notifications. Got {:?}",
-                        *events
-                    );
-                }
-            }
-        }
+        wait_until(&tick, || {
+            captured.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    ClaudeEvent::UserMessage { text, .. } if text == "sibling lives"
+                )
+            })
+        })
+        .await;
 
         // The last session leaving releases the OS watch…
         watcher.stop_watching(2);
@@ -1790,7 +1754,7 @@ mod tests {
     async fn test_restart_watching_attaches_a_fresh_reader_for_the_same_path() {
         use std::time::Duration;
 
-        let (event_bus, captured) = test_event_bus();
+        let (event_bus, captured, tick) = ticked_event_bus();
         let watcher = TranscriptWatcher::new(event_bus.clone());
 
         let dir = tempfile::tempdir().unwrap();
@@ -1807,14 +1771,7 @@ mod tests {
                 .filter(|e| matches!(e, ClaudeEvent::UserMessage { text, .. } if text == "hello"))
                 .count()
         };
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while count(&captured) < 1 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "initial catch-up never delivered"
-            );
-        }
+        wait_until(&tick, || count(&captured) >= 1).await;
 
         // The bus dedups replayed uuids for 5s; a real heal happens minutes
         // after the original read, so expire the window rather than sleep.
@@ -1833,14 +1790,7 @@ mod tests {
         // The forced restart attaches a fresh reader: byte 0 is re-read, so
         // the same line is delivered again — the stream is demonstrably live.
         watcher.restart_watching(1, path);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while count(&captured) < 2 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "restart_watching never delivered a fresh catch-up"
-            );
-        }
+        wait_until(&tick, || count(&captured) >= 2).await;
         assert_eq!(watcher.watched_sessions(), vec![1]);
         watcher.stop_watching(1);
     }
@@ -1851,9 +1801,7 @@ mod tests {
     /// permanently killing the activity feed for that terminal.
     #[tokio::test]
     async fn test_start_watching_replaces_watcher_on_new_transcript_path() {
-        use std::time::Duration;
-
-        let (event_bus, captured) = test_event_bus();
+        let (event_bus, captured, tick) = ticked_event_bus();
         let watcher = TranscriptWatcher::new(event_bus);
 
         let dir = tempfile::tempdir().unwrap();
@@ -1879,27 +1827,15 @@ mod tests {
         assert_eq!(watcher.watched_sessions(), vec![1]);
 
         // The catch-up read of the REPLACEMENT file must deliver its events.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            {
-                let events = captured.lock().unwrap();
-                if events.iter().any(|e| {
-                    matches!(
-                        e,
-                        ClaudeEvent::UserMessage { text, .. } if text == "after clear"
-                    )
-                }) {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    panic!(
-                        "Timed out waiting for event from replacement transcript. Got {:?}",
-                        *events
-                    );
-                }
-            }
-        }
+        wait_until(&tick, || {
+            captured.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    ClaudeEvent::UserMessage { text, .. } if text == "after clear"
+                )
+            })
+        })
+        .await;
 
         watcher.stop_watching(1);
     }

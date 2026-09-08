@@ -2864,25 +2864,9 @@ mod tests {
     /// per-test limit, so a real regression must fail with a message rather
     /// than hang the job. Nothing about a PASSING run depends on its value.
     async fn wait_for_spawns(h: &CleanupHarness, n: usize) {
-        let backstop = std::time::Duration::from_secs(60);
-        let wait = async {
-            loop {
-                // Built before the count is read: a spawn landing between
-                // the read and the await is not lost, because `notify_one`
-                // leaves a stored permit that the await consumes at once.
-                let signalled = h.spawn_signal.notified();
-                if h.spawns.lock().unwrap().len() >= n {
-                    return;
-                }
-                signalled.await;
-            }
-        };
-        if tokio::time::timeout(backstop, wait).await.is_err() {
-            panic!(
-                "only {} spawn(s) emitted after {backstop:?} — expected {n}",
-                h.spawns.lock().unwrap().len()
-            );
-        }
+        // The emitter's own `Notify` IS a harness tick, so this is the
+        // shared `wait_until` with nothing bespoke about it.
+        wait_until(&h.spawn_signal, || h.spawns.lock().unwrap().len() >= n).await;
     }
 
     /// Launch through the harness with an all-green preflight and the

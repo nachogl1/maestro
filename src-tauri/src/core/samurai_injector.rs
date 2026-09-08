@@ -2422,24 +2422,30 @@ impl SamuraiInjector {
     /// is shorter than `by` (issue #90), which made this flaky right after
     /// a reboot.
     /// The stamp rides the delivery outcome (issue #160), which lands on the
-    /// tauri runtime a moment after the arm — this waits for it (bounded),
-    /// so tests can keep backdating right after driving an idle signal.
+    /// tauri runtime a moment after the arm — this waits for it, under the
+    /// shared hang backstop rather than a fixed budget of sleeps (issue
+    /// #202): the outcome resolves on the tauri runtime / blocking pool, so
+    /// how long it takes is a property of the loaded machine, not of the
+    /// code under test.
+    ///
+    /// This is a SYNC helper called from sync code, so there is nothing to
+    /// await and nothing to be woken by — the honest shape here is
+    /// [`blocking_wait_until`], whose timer is a hang detector, not a budget.
     #[cfg(test)]
     pub(crate) fn backdate_injection(&self, session_id: u32, by: Duration) {
-        for _ in 0..200 {
-            {
+        let mut done = false;
+        crate::core::samurai_test_wait::blocking_wait_until(
+            "the delivery outcome that stamps `injected_at`",
+            || {
                 let mut pending = self.lock_pending();
                 let p = pending.get_mut(&session_id).expect("no pending entry");
                 if let Some(at) = p.injected_at.as_mut() {
                     at.backdate(by);
-                    return;
+                    done = true;
                 }
-            }
-            // The delivery resolves on the tauri runtime / blocking pool,
-            // not this test's runtime, so a thread sleep cannot deadlock it.
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("nothing injected within 2s");
+                done
+            },
+        );
     }
 
     /// Test-only: age the ACK so written-window paths run without waiting.
@@ -2481,7 +2487,9 @@ pub fn spawn_injector(injector: Arc<SamuraiInjector>) {
 mod tests {
     use super::*;
     use crate::core::samurai_config::SamuraiConfig;
-    use crate::core::samurai_test_wait::{new_tick, tick_on_append, wait_until, HarnessTick};
+    use crate::core::samurai_test_wait::{
+        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
+    };
     use std::sync::RwLock;
     use tempfile::tempdir;
 
@@ -3599,7 +3607,7 @@ mod tests {
     #[tokio::test]
     async fn test_injection_and_ack_land_inject_audit_rows() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-audit";
         supervisor
             .register_session(1, project.into(), "epic-7".into(), 3)
@@ -3612,17 +3620,10 @@ mod tests {
         // over-gate instruction is delivered from the blocking pool, so the
         // row lands after `observe_hook` returns — poll rather than read once.
         injector.observe_hook(&stop_event(1));
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Inject && r.details["phase"] == "delivered")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Inject && r.details["phase"] == "delivered"
+        })
+        .await;
         let delivered: Vec<_> = rows
             .iter()
             .filter(|r| r.event == AuditEventKind::Inject && r.details["phase"] == "delivered")
@@ -4146,21 +4147,15 @@ mod tests {
         // so. `record_delivery_outcome` writes the row from the snapshot
         // taken while the entry was still alive — the raced removal skips
         // only the stamp and the resend watch, never the audit rows.
-        let mut delivered = false;
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            if rows.iter().any(|r| {
-                r.event == AuditEventKind::Inject
-                    && r.details["phase"] == "delivered"
-                    && r.details["instruction"] == "handoff"
-                    && r.details["attempt"] == 1
-            }) {
-                delivered = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(delivered, "the delivered row landed despite the removal");
+        // The wait IS the assertion: `wait_for_row` returns only once the
+        // delivered row is on the trail.
+        wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Inject
+                && r.details["phase"] == "delivered"
+                && r.details["instruction"] == "handoff"
+                && r.details["attempt"] == 1
+        })
+        .await;
     }
 
     type OutcomeQueue = Arc<Mutex<std::collections::VecDeque<DeliveryOutcome>>>;
@@ -4282,19 +4277,12 @@ mod tests {
 
         // And the failure itself was reported (audit appends are async —
         // poll rather than read once).
-        let mut found = false;
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "delivery_failed")
-            {
-                found = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(found, "the delivery_failed ALERT row landed");
+        // The wait IS the assertion: `wait_for_row` returns only once the
+        // ALERT is on the trail.
+        wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == "delivery_failed"
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -4440,21 +4428,15 @@ mod tests {
         assert_eq!(injector.pending_view(1), Some((1, false, true)), "re-armed");
         assert!(!injector.has_pending(1), "stuck-alerted for the parker");
 
-        let mut found = false;
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            if rows.iter().any(|r| {
-                r.event == AuditEventKind::Alert
-                    && r.details["kind"] == "ack_timeout"
-                    && r.details["delivery_unresolved"] == true
-                    && r.details["still_tracked"] == true
-            }) {
-                found = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(found, "the delivery_unresolved ALERT row landed");
+        // The wait IS the assertion: `wait_for_row` returns only once the
+        // ALERT is on the trail.
+        wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Alert
+                && r.details["kind"] == "ack_timeout"
+                && r.details["delivery_unresolved"] == true
+                && r.details["still_tracked"] == true
+        })
+        .await;
 
         // The next idle delivers attempt 2 — the ladder is running again.
         injector.observe_hook(&stop_event(1));
@@ -4516,17 +4498,10 @@ mod tests {
         wait_until(&tick, || injector.session_state(1) == Some(HandoffWritten)).await;
         wait_until(&tick, || injector.pending_view(1).is_none()).await;
 
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Handoff && r.details["phase"] == "written")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Handoff && r.details["phase"] == "written"
+        })
+        .await;
         let written = rows
             .iter()
             .find(|r| r.event == AuditEventKind::Handoff && r.details["phase"] == "written")
@@ -4572,17 +4547,10 @@ mod tests {
         // The transition wrote the HANDOFF(phase=written) row; no ALERT.
         // The state flips before the row reaches the audit writer (separate
         // runtime), so poll the log rather than read once.
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Handoff && r.details["phase"] == "written")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Handoff && r.details["phase"] == "written"
+        })
+        .await;
         let written = rows
             .iter()
             .find(|r| r.event == AuditEventKind::Handoff && r.details["phase"] == "written")
@@ -4694,20 +4662,13 @@ mod tests {
 
         // The entry is removed just before the append reaches the audit
         // writer (different runtime), so poll the log rather than read once.
-        let mut alerts: Vec<AuditEvent> = Vec::new();
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| {
-                    r.event == AuditEventKind::Alert && r.details["kind"] == "handoff_invalid"
-                })
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<AuditEvent> = wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == "handoff_invalid"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "handoff_invalid")
+        .collect();
         assert_eq!(alerts.len(), 1, "the ALERT fires exactly once");
         assert!(alerts[0].details["failure"]
             .as_str()
@@ -4959,7 +4920,7 @@ mod tests {
     #[tokio::test]
     async fn test_never_idled_session_alerts_after_wait_cap() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-wedged";
         supervisor
             .register_session(1, project.into(), "epic-w".into(), 4)
@@ -4993,18 +4954,13 @@ mod tests {
         );
         assert_eq!(injector.session_state(1), Some(HandoffRequested));
 
-        let mut alerts: Vec<AuditEvent> = Vec::new();
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "ack_timeout")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<AuditEvent> = wait_for_row(&tick, &audit, project, |r| {
+            r.details["kind"] == "ack_timeout"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "ack_timeout")
+        .collect();
         assert_eq!(alerts.len(), 1, "the ALERT fires exactly once");
         assert_eq!(alerts[0].details["never_idled"], true);
         assert_eq!(alerts[0].details["attempts"], 0);
@@ -5043,7 +4999,7 @@ mod tests {
     #[tokio::test]
     async fn test_armed_retry_that_never_injects_alerts_after_wait_cap() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, context, _dirs, _tick) = harness(dir.path());
+        let (injector, audit, supervisor, context, _dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-noidle";
         supervisor
             .register_session(1, project.into(), "epic-n".into(), 2)
@@ -5067,18 +5023,13 @@ mod tests {
             "still tracked after the stuck ALERT"
         );
 
-        let mut alerts: Vec<AuditEvent> = Vec::new();
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "ack_timeout")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<AuditEvent> = wait_for_row(&tick, &audit, project, |r| {
+            r.details["kind"] == "ack_timeout"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "ack_timeout")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["retry_never_injected"], true);
         assert_eq!(alerts[0].details["attempts"], 1);
@@ -5197,17 +5148,10 @@ mod tests {
         wait_until(&tick, || injector.pending_view(1).is_none()).await;
 
         // The transitions wrote both PARK phases; no ALERT anywhere.
-        let mut rows = Vec::new();
-        for _ in 0..200 {
-            rows = audit.read(project, None, None).await.unwrap().events;
-            if rows
-                .iter()
-                .any(|r| r.event == AuditEventKind::Park && r.details["phase"] == "parked")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let rows = wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Park && r.details["phase"] == "parked"
+        })
+        .await;
         assert!(rows
             .iter()
             .any(|r| r.event == AuditEventKind::Park && r.details["phase"] == "requested"));
@@ -5367,18 +5311,13 @@ mod tests {
         wait_until(&tick, || injector.pending_view(1).is_none()).await;
         assert_eq!(injector.session_state(1), Some(ParkRequested));
 
-        let mut alerts: Vec<AuditEvent> = Vec::new();
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "park_invalid")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<AuditEvent> = wait_for_row(&tick, &audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == "park_invalid"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.event == AuditEventKind::Alert && r.details["kind"] == "park_invalid")
+        .collect();
         assert_eq!(alerts.len(), 1, "the ALERT fires exactly once");
         assert!(alerts[0].details["failure"]
             .as_str()
@@ -5430,7 +5369,7 @@ mod tests {
     #[tokio::test]
     async fn test_soft_winddown_timeout_alerts_ack_timeout_and_stops() {
         let dir = tempdir().unwrap();
-        let (injector, audit, supervisor, _context, _dirs, _tick) = harness(dir.path());
+        let (injector, audit, supervisor, _context, _dirs, tick) = harness(dir.path());
         let project = "C:/git/proj-inj-soft-to";
         let snapshot = supervisor
             .register_session(1, project.into(), "epic-9".into(), 3)
@@ -5451,18 +5390,13 @@ mod tests {
         assert!(injector.pending_view(1).is_none(), "tracking stopped");
         assert_eq!(injector.session_state(1), Some(Working));
 
-        let mut alerts: Vec<AuditEvent> = Vec::new();
-        for _ in 0..200 {
-            let rows = audit.read(project, None, None).await.unwrap().events;
-            alerts = rows
-                .into_iter()
-                .filter(|r| r.details["kind"] == "ack_timeout")
-                .collect();
-            if !alerts.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let alerts: Vec<AuditEvent> = wait_for_row(&tick, &audit, project, |r| {
+            r.details["kind"] == "ack_timeout"
+        })
+        .await
+        .into_iter()
+        .filter(|r| r.details["kind"] == "ack_timeout")
+        .collect();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["instruction"], "soft_winddown");
     }
