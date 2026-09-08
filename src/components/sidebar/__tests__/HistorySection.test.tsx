@@ -176,15 +176,16 @@ describe("HistorySection (issue #78)", () => {
       extraRoots: [REPO, WORKTREE],
     });
 
-    // Checkout and worktree are distinguished, not just listed.
-    expect(screen.getByText("CHECKOUT")).toBeInTheDocument();
-    expect(screen.getByText("WORKTREE")).toBeInTheDocument();
-
     const checkout = groupFor(REPO);
+    const branch = groupFor(WORKTREE);
+    // Checkout and worktree are distinguished, not just listed (scoped to the
+    // group's own badge — the filter chips above the list say the same word).
+    expect(within(checkout).getByText("CHECKOUT")).toBeInTheDocument();
+    expect(within(branch).getByText("WORKTREE")).toBeInTheDocument();
+
     expect(within(checkout).getByText("Fix the login bug")).toBeInTheDocument();
     expect(within(checkout).queryByText("Rebuild the history rows")).not.toBeInTheDocument();
 
-    const branch = groupFor(WORKTREE);
     expect(within(branch).getByText("Rebuild the history rows")).toBeInTheDocument();
     // Enough content to recognise the run: the closing summary and its length.
     expect(within(branch).getByText(/Opened the PR/)).toBeInTheDocument();
@@ -227,8 +228,11 @@ describe("HistorySection (issue #78)", () => {
     render(<HistorySection />);
     await expandProject();
 
-    // Visible on the row itself — a tooltip is not enough.
-    expect(screen.getByText("GONE")).toBeInTheDocument();
+    // Visible on the row itself — a tooltip is not enough. (Scoped to the
+    // group's own badge — the filter chips above the list say the same word.)
+    expect(
+      within(groupFor("C:\\git\\maestro\\gone-worktree")).getByText("GONE"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Not resumable — its directory no longer exists/)).toBeInTheDocument();
 
     // And the launch never points a shell at the missing directory: the row
@@ -347,5 +351,102 @@ describe("HistorySection (issue #78)", () => {
       projectPath: REPO,
       extraRoots: [],
     });
+  });
+
+  it("filters conversations by the search query, case-insensitively", async () => {
+    mockInvoke({
+      listing: buildListing([
+        conversation({ session_id: "conv-login", first_prompt: "Fix the login bug" }),
+        conversation({ session_id: "conv-payment", first_prompt: "Refactor the payment service" }),
+      ]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    expect(resumeRows()).toHaveLength(2);
+
+    fireEvent.change(screen.getByPlaceholderText("Search conversations..."), {
+      target: { value: "LOGIN" },
+    });
+
+    expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
+    expect(screen.queryByText("Refactor the payment service")).not.toBeInTheDocument();
+    expect(screen.getByText(/1 of 2 conversations/)).toBeInTheDocument();
+
+    // The clear ("X") button empties the box and restores every row.
+    fireEvent.click(screen.getByLabelText("Clear search"));
+    expect(resumeRows()).toHaveLength(2);
+  });
+
+  it("filters groups by kind via the toggle chips", async () => {
+    mockInvoke({
+      worktrees: [worktree({ path: REPO, is_main_worktree: true, branch: "main" }), worktree()],
+      listing: buildListing([
+        conversation(),
+        conversation({
+          session_id: "conv-wt",
+          first_prompt: "Rebuild the history rows",
+          cwd: WORKTREE,
+          git_branch: "maestro-78",
+        }),
+      ]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    // The chip and the group's own badge both say "WORKTREE" to start.
+    expect(screen.getAllByText("WORKTREE")).toHaveLength(2);
+    expect(screen.getByText("Rebuild the history rows")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "WORKTREE" }));
+
+    // The worktree group disappears entirely — only the (now inactive) chip remains.
+    expect(screen.getAllByText("WORKTREE")).toHaveLength(1);
+    expect(screen.queryByText("Rebuild the history rows")).not.toBeInTheDocument();
+    expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
+  });
+
+  it("lifts the display cap while a search query is active", async () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      conversation({
+        session_id: `conv-${i}`,
+        first_prompt: `Conversation ${i}`,
+        last_active: `2026-08-1${i < 10 ? "0" : "1"}T0${i % 10}:00:00Z`,
+      }),
+    );
+    mockInvoke({ listing: buildListing(many) });
+    render(<HistorySection />);
+    await expandProject();
+
+    expect(resumeRows()).toHaveLength(10);
+
+    fireEvent.change(screen.getByPlaceholderText("Search conversations..."), {
+      target: { value: "Conversation" },
+    });
+
+    // All 12 match — a search that hides its own matches behind the cap is useless.
+    expect(resumeRows()).toHaveLength(12);
+    expect(screen.queryByRole("button", { name: /show all/ })).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state with a one-click clear when filters hide everything", async () => {
+    mockInvoke({
+      listing: buildListing([conversation({ first_prompt: "Fix the login bug" })]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    fireEvent.change(screen.getByPlaceholderText("Search conversations..."), {
+      target: { value: "no such conversation anywhere" },
+    });
+
+    expect(screen.getByText("No conversations match your filters.")).toBeInTheDocument();
+    expect(screen.queryByText("Fix the login bug")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+
+    expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
+    expect(screen.queryByText("No conversations match your filters.")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search conversations...")).toHaveValue("");
   });
 });

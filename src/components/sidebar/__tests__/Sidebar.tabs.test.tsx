@@ -338,9 +338,11 @@ describe("Sidebar tab bar", () => {
     // The marker and its reason are visible on the row, not just a tooltip.
     expect(screen.getByText(/Not resumable — its directory no longer exists/)).toBeInTheDocument();
     // Where it ran is still shown: the group the row sits under is headed by
-    // the recorded cwd's folder name, badged GONE.
-    expect(screen.getByText("deleted")).toBeInTheDocument();
-    expect(screen.getByText("GONE")).toBeInTheDocument();
+    // the recorded cwd's folder name, badged GONE. Scoped to the group's own
+    // header — the filter chips above the list say the same word.
+    const groupHeader = screen.getByText("deleted").closest("div");
+    expect(groupHeader).not.toBeNull();
+    expect(within(groupHeader as HTMLElement).getByText("GONE")).toBeInTheDocument();
 
     // Resume is disabled: clicking must not queue a launch.
     expect(row).toBeDisabled();
