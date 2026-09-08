@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { isParkedPinned, type ParkedPin, parkedPinKey } from "@/lib/parkedPins";
 import { killSession } from "@/lib/terminal";
 import { useSessionStore } from "@/stores/useSessionStore";
 
@@ -37,6 +38,7 @@ export interface RepositoryInfo {
  * @property repositories - Detected repositories within this workspace (empty for single-repo).
  * @property selectedRepoPath - Currently selected repository path for git operations.
  * @property worktreeBasePath - Custom worktree base directory for this project (null = use default).
+ * @property pinned - Sorts to the front of the tab strip and stays there; persisted.
  */
 export type WorkspaceTab = {
   id: string;
@@ -49,11 +51,18 @@ export type WorkspaceTab = {
   repositories: RepositoryInfo[];
   selectedRepoPath: string | null;
   worktreeBasePath: string | null;
+  pinned: boolean;
 };
 
 /** Read-only slice of the workspace store; persisted to disk via Zustand `persist`. */
 type WorkspaceState = {
   tabs: WorkspaceTab[];
+  /**
+   * Parked items the user pinned to the always-visible rail. Persisted, and
+   * keyed by project + name/epic rather than by session id or fire time — see
+   * `lib/parkedPins` for why nothing else survives a restart.
+   */
+  pinnedParked: ParkedPin[];
   /**
    * Zoom tab strip display order per workspace tab id (values are slot ids).
    * Runtime-only: excluded from persistence (`partialize` only persists `tabs`)
@@ -85,6 +94,10 @@ type WorkspaceActions = {
   reorderTabs: (activeId: string, overId: string) => void;
   /** Move a tab one position left or right. Used by keyboard shortcut. */
   moveTab: (tabId: string, direction: "left" | "right") => void;
+  /** Pin/unpin a project tab; pinned tabs re-sort to the front of the strip. */
+  toggleTabPin: (tabId: string) => void;
+  /** Pin/unpin a parked terminal or Samurai run in the always-visible rail. */
+  togglePinnedParked: (pin: ParkedPin) => void;
   /** Set the zoom tab strip display order (slot ids) for a workspace tab. */
   setZoomTabOrder: (tabId: string, order: string[]) => void;
   /** Re-scan repositories for all multi-repo tabs after rehydration. */
@@ -179,6 +192,21 @@ export function withWorkspaceRoot(
   ];
 }
 
+/**
+ * Pinned tabs first, each group keeping its manual order.
+ *
+ * The invariant is maintained on the stored array rather than at render time,
+ * so every existing consumer — the tab strip, Ctrl+Tab cycling, the eagle
+ * project dropdown — sees one agreed order without knowing pins exist.
+ * `filter` twice is a stable partition, so a drag inside either group survives
+ * the re-sort untouched.
+ */
+export function sortPinnedFirst(tabs: WorkspaceTab[]): WorkspaceTab[] {
+  const pinned = tabs.filter((t) => t.pinned);
+  if (pinned.length === 0 || pinned.length === tabs.length) return tabs;
+  return [...pinned, ...tabs.filter((t) => !t.pinned)];
+}
+
 // --- Store ---
 
 /**
@@ -197,6 +225,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
   persist(
     (set, get) => ({
       tabs: [],
+      pinnedParked: [],
       zoomTabOrders: {},
 
       openProject: async (path: string) => {
@@ -264,6 +293,8 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
                 repositories,
                 selectedRepoPath,
                 worktreeBasePath: null,
+                // Appending an unpinned tab keeps the pinned-first invariant.
+                pinned: false,
               },
             ],
           };
@@ -378,12 +409,16 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
         });
       },
 
+      // A reorder across the pinned boundary is refused rather than silently
+      // re-sorted: dragging a tab past the last pinned one must never read as
+      // "you just pinned it", and snapping it back is the honest answer.
       reorderTabs: (activeId: string, overId: string) => {
         if (activeId === overId) return;
         const { tabs } = get();
         const oldIndex = tabs.findIndex((t) => t.id === activeId);
         const newIndex = tabs.findIndex((t) => t.id === overId);
         if (oldIndex === -1 || newIndex === -1) return;
+        if (tabs[oldIndex].pinned !== tabs[newIndex].pinned) return;
         set({ tabs: arrayMove(tabs, oldIndex, newIndex) });
       },
 
@@ -393,7 +428,29 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
         if (index === -1) return;
         const newIndex = direction === "left" ? index - 1 : index + 1;
         if (newIndex < 0 || newIndex >= tabs.length) return;
+        // Same boundary rule as the drag path (see reorderTabs).
+        if (tabs[index].pinned !== tabs[newIndex].pinned) return;
         set({ tabs: arrayMove(tabs, index, newIndex) });
+      },
+
+      toggleTabPin: (tabId: string) => {
+        const { tabs } = get();
+        if (!tabs.some((t) => t.id === tabId)) return;
+        set({
+          tabs: sortPinnedFirst(
+            tabs.map((t) => (t.id === tabId ? { ...t, pinned: !t.pinned } : t)),
+          ),
+        });
+      },
+
+      togglePinnedParked: (pin: ParkedPin) => {
+        const { pinnedParked } = get();
+        const key = parkedPinKey(pin);
+        set({
+          pinnedParked: isParkedPinned(pinnedParked, pin)
+            ? pinnedParked.filter((p) => parkedPinKey(p) !== key)
+            : [...pinnedParked, pin],
+        });
       },
 
       setZoomTabOrder: (tabId: string, order: string[]) => {
@@ -422,18 +479,23 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
     {
       name: "maestro-workspace",
       storage: createJSONStorage(() => tauriStorage),
-      partialize: (state) => ({ tabs: state.tabs }),
-      version: 4,
+      partialize: (state) => ({ tabs: state.tabs, pinnedParked: state.pinnedParked }),
+      version: 5,
       onRehydrateStorage: () => {
         return (state) => {
           if (state) {
             // Clear stale sessionIds - sessions don't survive app restarts
             // This prevents session ID collision between persisted tabs and new sessions
-            state.tabs = state.tabs.map((t) => ({
-              ...t,
-              sessionIds: [],
-              sessionsLaunched: false,
-            }));
+            state.tabs = sortPinnedFirst(
+              state.tabs.map((t) => ({
+                ...t,
+                sessionIds: [],
+                sessionsLaunched: false,
+              })),
+            );
+            // Persisted before pinnedParked existed, or written by a build
+            // that stored nothing: the rail must still have an array to read.
+            state.pinnedParked = state.pinnedParked ?? [];
           }
         };
       },
@@ -469,7 +531,16 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
           }));
         }
 
-        return { ...state, tabs: tabs as WorkspaceTab[] };
+        // v4 -> v5: Add tab pinning and the pinned-parked rail list
+        if (version < 5) {
+          tabs = tabs.map((t) => ({ ...t, pinned: t.pinned ?? false }));
+        }
+
+        return {
+          ...state,
+          tabs: sortPinnedFirst(tabs as WorkspaceTab[]),
+          pinnedParked: state.pinnedParked ?? [],
+        };
       },
     },
   ),
