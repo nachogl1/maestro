@@ -77,7 +77,7 @@ use super::claude_event::ClaudeEvent;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_prompts::{ORDER_ALERT_TAG, RUN_COMPLETE_TAG};
 use super::samurai_replicator::SessionTeardown;
-use super::samurai_run_config::{RunConfigStatus, RunConfigStore};
+use super::samurai_run_config::{ConfigLookup, RunConfigStatus, RunConfigStore};
 use super::supervisor::{SessionSnapshot, Supervisor, KILL_CAUSE_RUN_COMPLETE};
 
 /// `details.kind` of the ALERT row a failed verification lands.
@@ -432,10 +432,41 @@ impl SamuraiCompletionWatcher {
         let supervisor = self.supervisor.clone();
         let kill = self.kill.clone();
         tauri::async_runtime::spawn(async move {
-            let config = run_configs.get(&session.project, &session.epic);
-            match config.as_ref().map(|c| c.status) {
-                Some(RunConfigStatus::Active) => {}
-                Some(RunConfigStatus::Completed) => {
+            // `lookup`, not `get`: an UNREADABLE config (a torn write, a
+            // file the AV/indexer has open) is NOT evidence that the run is
+            // over. `get` collapses it into "no config", which took the
+            // ignore arm below — and because the claim is already in the
+            // seen set, the declaration was consumed for good, leaving a
+            // VERIFIED run ACTIVE forever with its agent still running and
+            // burning allowance. So the unreadable arm releases the claim
+            // and lets the transcript replay retry it, exactly as a FAILED
+            // verification does (review F5). A genuinely ABSENT config is
+            // still a plain ignore — there is no run to finish.
+            let config = match run_configs.lookup(&session.project, &session.epic) {
+                ConfigLookup::Found(config) => *config,
+                ConfigLookup::Unreadable(e) => {
+                    log::warn!(
+                        "samurai completion: declaration for epic {} in {} but its run config could not be read ({e}) — claim released for retry",
+                        session.epic,
+                        session.project
+                    );
+                    seen.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&(session.session_id, raw));
+                    return;
+                }
+                ConfigLookup::Missing => {
+                    log::warn!(
+                        "samurai completion: declaration for epic {} in {} but it has no run config — ignored",
+                        session.epic,
+                        session.project
+                    );
+                    return;
+                }
+            };
+            match config.status {
+                RunConfigStatus::Active => {}
+                RunConfigStatus::Completed => {
                     log::info!(
                         "samurai completion: epic {} in {} is already COMPLETED — duplicate declaration ignored",
                         session.epic,
@@ -443,12 +474,12 @@ impl SamuraiCompletionWatcher {
                     );
                     return;
                 }
-                other => {
+                status => {
                     log::warn!(
                         "samurai completion: declaration for epic {} in {} but its run config is {:?} — ignored",
                         session.epic,
                         session.project,
-                        other
+                        status
                     );
                     return;
                 }
@@ -458,7 +489,7 @@ impl SamuraiCompletionWatcher {
             // WRONG repo from the cwd on a fork-with-upstream checkout. No
             // pin stored → cwd resolution stands, logged so a mis-resolved
             // probe is explainable.
-            let repo_pin = config.and_then(|c| c.repo_pin);
+            let repo_pin = config.repo_pin;
             if repo_pin.is_none() {
                 log::warn!(
                     "samurai completion: run config for epic {} in {} stores no --repo pin — gh probes fall back to cwd repo resolution",
@@ -905,6 +936,22 @@ mod tests {
         h.run_configs.get(PROJECT, epic).unwrap().status
     }
 
+    /// Waits for the WHOLE success path, not just its first step.
+    /// `apply_verdict` flips the config, THEN queues the COMPLETE row, THEN
+    /// tears the session down. A wait that stops at the config flip races
+    /// the audit append that immediately follows it, so asserting on audit
+    /// rows straight afterwards fails whenever the verification thread is
+    /// preempted between those two statements — which is exactly what
+    /// full-suite parallelism does (the `_releases_the_claim_for_retry`
+    /// flake). The teardown is the LAST step, so waiting on it is a real
+    /// happens-before for every assertion below: an append SENT before the
+    /// kill is always observed by the next read ([`AuditLog::read`] queues
+    /// on the same channel).
+    async fn wait_for_completion(h: &Harness, epic: &str) {
+        wait_until(|| !h.killed.lock().unwrap().is_empty()).await;
+        assert_eq!(status(h, epic), RunConfigStatus::Completed);
+    }
+
     #[tokio::test]
     async fn test_verified_declaration_flips_config_and_lands_complete_row() {
         let h = harness(
@@ -919,7 +966,7 @@ mod tests {
         h.watcher
             .observe(&reply(4, &declared("issues #77 #78 pr #85")));
 
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_for_completion(&h, "#38").await;
         let complete = rows(&h.audit, AuditEventKind::Complete).await;
         assert_eq!(complete.len(), 1);
         assert_eq!(complete[0].epic, "#38");
@@ -1041,7 +1088,7 @@ mod tests {
         h.watcher
             .observe(&reply(4, &declared("issues #77 #78 pr #85")));
 
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_for_completion(&h, "#38").await;
         assert_eq!(rows(&h.audit, AuditEventKind::Complete).await.len(), 1);
         assert!(rows(&h.audit, AuditEventKind::Alert).await.is_empty());
     }
@@ -1062,7 +1109,7 @@ mod tests {
         h.watcher
             .observe(&reply(4, &declared("issues #77 #78 pr #85")));
 
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_for_completion(&h, "#38").await;
         assert!(rows(&h.audit, AuditEventKind::Alert).await.is_empty());
     }
 
@@ -1188,7 +1235,7 @@ mod tests {
         h.watcher.observe(&reply(4, &text));
         h.watcher.observe(&reply(4, &text));
 
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_for_completion(&h, "#38").await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             h.calls.lock().unwrap().len(),
@@ -1227,7 +1274,7 @@ mod tests {
             .register_session(4, PROJECT.into(), "#38".into(), 1)
             .unwrap();
         h.watcher.observe(&reply(4, &text));
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_for_completion(&h, "#38").await;
         assert_eq!(rows(&h.audit, AuditEventKind::Complete).await.len(), 1);
     }
 
@@ -1292,9 +1339,45 @@ mod tests {
         // The IDENTICAL text again — the failed claim was released, so this
         // verifies (and now succeeds).
         h.watcher.observe(&reply(4, &text));
-        wait_until(|| status(&h, "#38") == RunConfigStatus::Completed).await;
+        wait_for_completion(&h, "#38").await;
         assert_eq!(rows(&h.audit, AuditEventKind::Complete).await.len(), 1);
         assert_eq!(h.calls.lock().unwrap().len(), 4, "two full verifications");
+    }
+
+    #[tokio::test]
+    async fn test_unreadable_run_config_releases_the_claim_for_retry() {
+        // A torn or locked config file at declaration time must not swallow
+        // a VERIFIED completion for good: `get` collapsed "unreadable" into
+        // "no config", the ignore arm returned, and the claim stayed in the
+        // seen set — leaving the run ACTIVE forever with its agent still
+        // running and burning allowance. `lookup` keeps the two apart and
+        // the unreadable arm releases the claim for the replay to retry.
+        let h = harness(
+            HashMap::from([(77, Ok("CLOSED".to_string()))]),
+            HashMap::from([(85, pr_probe("OPEN", &[]))]),
+        );
+        launch_epic(&h, 4, "#38", 1);
+        // Capture the path first — an unreadable config is skipped by every
+        // listing, exactly like the corrupt file this simulates.
+        let (path, config) = h.run_configs.list_with_paths().pop().unwrap();
+        std::fs::write(&path, "{ torn write").unwrap();
+
+        let text = declared("issues #77 pr #85");
+        h.watcher.observe(&reply(4, &text));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            h.calls.lock().unwrap().is_empty(),
+            "no gh probe may run against an unreadable config"
+        );
+        assert!(rows(&h.audit, AuditEventKind::Complete).await.is_empty());
+        assert!(h.killed.lock().unwrap().is_empty());
+
+        // The IDENTICAL declaration once the file reads again: the claim was
+        // released, not consumed, so the replay verifies and the run flips.
+        h.run_configs.save(&config).unwrap();
+        h.watcher.observe(&reply(4, &text));
+        wait_for_completion(&h, "#38").await;
+        assert_eq!(rows(&h.audit, AuditEventKind::Complete).await.len(), 1);
     }
 
     // --- issue #93: execution-order deviation alerts ---
