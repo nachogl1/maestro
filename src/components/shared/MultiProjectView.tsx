@@ -99,6 +99,14 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // global zoom tab bar can be built purely from the stores.
     const [eagleZoom, setEagleZoom] = useState<number | null>(null);
 
+    // Pending (unlaunched) slot count per tab, kept in sync from each grid's
+    // onSessionCountChange. A visible pre-launch tile needs a grid column same
+    // as a launched session, so eagleTileCount below adds this to
+    // liveSessionCount. Stale tabs aren't deleted here — eagleTileCount only
+    // sums over the current `tabs`, so a closed project's leftover entry is
+    // simply never counted.
+    const [pendingCounts, setPendingCounts] = useState<Map<string, number>>(new Map());
+
     // Live session count drives the eagle grid's column count. Gated on
     // eagleView so session launches/kills don't re-render every project's grid
     // while the eagle grid isn't even showing. Parked tiles are display:none,
@@ -274,6 +282,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           }
         },
         addSessionInProject: (tabId: string) => {
+          // Drop any eagle zoom first — otherwise the new pre-launch tile
+          // mounts behind the zoomed pane's opaque overlay, invisible to the
+          // user until they exit zoom themselves.
+          if (eagleView) setEagleZoom(null);
           const gridRef = gridRefs.current.get(tabId);
           if (gridRef) {
             gridRef.addSession();
@@ -364,6 +376,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       for (const tab of tabs) {
         callbacks.set(tab.id, (slotCount: number, launchedCount: number) => {
           onSessionCountChange?.(tab.id, slotCount, launchedCount);
+          // Track this tab's pending (not-yet-launched) slots for eagleTileCount.
+          // Bail out with the SAME map when the value didn't change so React
+          // skips the re-render instead of looping on every report.
+          const pending = slotCount - launchedCount;
+          setPendingCounts((prev) => {
+            if (prev.get(tab.id) === pending) return prev;
+            const next = new Map(prev);
+            next.set(tab.id, pending);
+            return next;
+          });
         });
       }
       return callbacks;
@@ -428,11 +450,18 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       );
     }
 
-    // Eagle view lays every launched pane of every project into one flat grid.
-    // The per-project wrappers and split trees flatten out via `display:contents`
-    // (className "contents"), so the SAME mounted xterm elements become direct
-    // grid items — no remount, scrollback and PTY wiring survive the toggle.
-    const eagleColumns = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, liveSessionCount))));
+    // Sum of each tab's pending slots, but only over tabs that still exist —
+    // this is what keeps a closed project's leftover pendingCounts entry from
+    // being counted (see the state comment above).
+    const pendingTileCount = tabs.reduce((sum, tab) => sum + (pendingCounts.get(tab.id) ?? 0), 0);
+
+    // Eagle view lays every launched pane AND every visible pre-launch card of
+    // every project into one flat grid. The per-project wrappers and split
+    // trees flatten out via `display:contents` (className "contents"), so the
+    // SAME mounted xterm elements become direct grid items — no remount,
+    // scrollback and PTY wiring survive the toggle.
+    const eagleTileCount = liveSessionCount + pendingTileCount;
+    const eagleColumns = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, eagleTileCount))));
 
     // The outer column wrapper is permanent (both modes) so toggling eagle view
     // never changes the tree shape around the grids — that would remount every
@@ -532,9 +561,9 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
               );
             })()}
 
-          {/* Eagle view with nothing running: every tile is hidden, so give the
-          empty grid a hint instead of a blank screen. */}
-          {eagleView && liveSessionCount === 0 && (
+          {/* Eagle view with nothing running or pending: every tile is hidden,
+          so give the empty grid a hint instead of a blank screen. */}
+          {eagleView && eagleTileCount === 0 && (
             <div
               className="flex h-full items-center justify-center"
               style={{ gridColumn: "1 / -1" }}
@@ -600,7 +629,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   eagleZoomedSessionId={eagleZoom}
                   eagleAnyZoomed={eagleView && eagleZoom !== null}
                   onEagleZoomToggle={handleEagleZoomToggle}
-                  eagleTileCount={liveSessionCount}
+                  eagleTileCount={eagleTileCount}
                 />
               ) : (
                 <IdleLandingView onAdd={mustCallback(launchCallbacks, tab.id)} />

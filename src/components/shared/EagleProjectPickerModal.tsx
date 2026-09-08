@@ -3,7 +3,7 @@ import type { EagleProjectOption } from "./TopBar";
 
 interface EagleProjectPickerModalProps {
   projects: EagleProjectOption[];
-  /** Add a terminal to the picked project (leaves eagle view, opens its pre-launch card). */
+  /** Add a terminal to the picked project (stays in eagle view; the pre-launch card tiles into the grid). */
   onPick: (tabId: string) => void;
   onClose: () => void;
 }

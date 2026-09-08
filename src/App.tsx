@@ -605,9 +605,10 @@ function App() {
   }, []);
 
   // Eagle view add-terminal dropdown: every open project tab is offered.
-  // Picking one leaves eagle view and opens a normal pre-launch card in that
-  // project, so the terminal is configured (name/branch/worktree/…) before
-  // launching — the same flow as adding a session outside eagle view.
+  // Picking one stays in eagle view: a pre-launch card tiles into the eagle
+  // grid for that project, so the terminal is configured (name/branch/worktree/…)
+  // and launched right there — the same flow as adding a session outside eagle
+  // view, just rendered as a tile among the other projects' panes.
   const eagleProjects: EagleProjectOption[] = tabs.map((t) => ({
     tabId: t.id,
     name: t.name,
@@ -617,7 +618,8 @@ function App() {
 
   const handleAddSessionToProject = useCallback(
     (tabId: string) => {
-      setEagleView(false);
+      // Stays in eagle view — selectTab keeps the tab tracked as active so
+      // leaving eagle view later lands on this project.
       selectTab(tabId);
       multiProjectRef.current?.addSessionInProject(tabId);
     },
