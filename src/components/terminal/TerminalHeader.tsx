@@ -8,6 +8,8 @@ import {
   GitPullRequest,
   Minimize,
   ParkingSquare,
+  Pin,
+  PinOff,
   Sparkles,
   Terminal,
   X,
@@ -50,6 +52,14 @@ interface TerminalHeaderProps {
   onToggleZoom?: () => void;
   /** Park this terminal: hide its pane without stopping the session. */
   onPark?: () => void;
+  /**
+   * Pin this terminal so it keeps showing from every project. Undefined hides
+   * the control entirely — it is only offered where the terminal is big enough
+   * to act on: zoomed in, in eagle view, or already pinned.
+   */
+  onTogglePin?: () => void;
+  /** This terminal is pinned — the button unpins instead. */
+  isPinned?: boolean;
   zoomLevel?: number;
   onSetZoomLevel?: (level: number) => void;
   /** Project name shown in bold before the session label (eagle view). */
@@ -132,6 +142,8 @@ export const TerminalHeader = memo(function TerminalHeader({
   isZoomed = false,
   onToggleZoom,
   onPark,
+  onTogglePin,
+  isPinned = false,
   zoomLevel = 100,
   onSetZoomLevel,
   projectLabel,
@@ -452,6 +464,29 @@ export const TerminalHeader = memo(function TerminalHeader({
             aria-label={`Park session ${sessionId}`}
           >
             <ParkingSquare size={terminalCount <= 4 ? 14 : 12} />
+          </button>
+        )}
+
+        {/* Pin toggle — keeps this terminal visible from other projects */}
+        {onTogglePin && (
+          <button
+            type="button"
+            onClick={() => onTogglePin()}
+            className={`rounded p-0.5 transition-colors hover:bg-maestro-card hover:text-maestro-accent ${
+              isPinned ? "text-maestro-accent" : "text-maestro-muted"
+            }`}
+            title={
+              isPinned
+                ? "Unpin — stop showing this terminal while other projects are open"
+                : "Pin — keep this terminal visible while other projects are open"
+            }
+            aria-label={`${isPinned ? "Unpin" : "Pin"} session ${sessionId}`}
+          >
+            {isPinned ? (
+              <PinOff size={terminalCount <= 4 ? 14 : 12} />
+            ) : (
+              <Pin size={terminalCount <= 4 ? 14 : 12} />
+            )}
           </button>
         )}
 

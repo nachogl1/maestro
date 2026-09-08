@@ -18,7 +18,6 @@ vi.mock("@/lib/terminal", () => ({
   killSession: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { isParkedPinned, type ParkedPin, parkedPinKey, terminalPinLabel } from "@/lib/parkedPins";
 import { sortPinnedFirst, useWorkspaceStore, type WorkspaceTab } from "../useWorkspaceStore";
 
 function setTabs(tabs: Array<{ id: string; name: string; active?: boolean; pinned?: boolean }>) {
@@ -45,7 +44,7 @@ const ids = () => useWorkspaceStore.getState().tabs.map((t) => t.id);
 
 describe("pinned project tabs", () => {
   beforeEach(() => {
-    useWorkspaceStore.setState({ tabs: [], pinnedParked: [], zoomTabOrders: {} });
+    useWorkspaceStore.setState({ tabs: [], zoomTabOrders: {} });
   });
 
   describe("toggleTabPin", () => {
@@ -201,92 +200,5 @@ describe("pinned project tabs", () => {
 
       expect(sorted.map((t) => t.id)).toEqual(["p1", "p2", "a", "b"]);
     });
-  });
-});
-
-describe("pinned parked items", () => {
-  const terminalPin: ParkedPin = { kind: "terminal", project: "C:\\git\\alpha", label: "Scout" };
-  const samuraiPin: ParkedPin = { kind: "samurai", project: "C:\\git\\alpha", label: "#37" };
-
-  beforeEach(() => {
-    useWorkspaceStore.setState({ tabs: [], pinnedParked: [], zoomTabOrders: {} });
-  });
-
-  it("adds a pin and reports it as pinned", () => {
-    useWorkspaceStore.getState().togglePinnedParked(terminalPin);
-
-    expect(useWorkspaceStore.getState().pinnedParked).toEqual([terminalPin]);
-    expect(isParkedPinned(useWorkspaceStore.getState().pinnedParked, terminalPin)).toBe(true);
-  });
-
-  it("removes the pin on a second toggle", () => {
-    useWorkspaceStore.getState().togglePinnedParked(terminalPin);
-    useWorkspaceStore.getState().togglePinnedParked(terminalPin);
-
-    expect(useWorkspaceStore.getState().pinnedParked).toEqual([]);
-  });
-
-  it("keeps a terminal pin and a Samurai pin of the same project apart", () => {
-    useWorkspaceStore.getState().togglePinnedParked(terminalPin);
-    useWorkspaceStore.getState().togglePinnedParked(samuraiPin);
-
-    expect(useWorkspaceStore.getState().pinnedParked).toHaveLength(2);
-  });
-
-  it("unpins through a differently spelled path (the same directory is one pin)", () => {
-    useWorkspaceStore.getState().togglePinnedParked(terminalPin);
-
-    useWorkspaceStore
-      .getState()
-      .togglePinnedParked({ ...terminalPin, project: "\\\\?\\C:\\git\\ALPHA\\" });
-
-    expect(useWorkspaceStore.getState().pinnedParked).toEqual([]);
-  });
-});
-
-describe("parkedPinKey stability", () => {
-  it("does not change when the session id is reassigned across app launches", () => {
-    // The same named terminal in the same project, spawned twice — session
-    // ids are handed out fresh each launch, and the pin must not care.
-    const beforeRestart = parkedPinKey({
-      kind: "terminal",
-      project: "C:/git/alpha",
-      label: terminalPinLabel("Scout", 4),
-    });
-    const afterRestart = parkedPinKey({
-      kind: "terminal",
-      project: "C:/git/alpha",
-      label: terminalPinLabel("Scout", 91),
-    });
-
-    expect(afterRestart).toBe(beforeRestart);
-  });
-
-  it("gives an unnamed session an id-derived label that does NOT survive a restart", () => {
-    // Deliberate: with no name there is nothing stable to persist, so the pin
-    // must fail to match rather than resolve to whichever terminal inherits
-    // the number.
-    expect(terminalPinLabel(null, 4)).toBe("Session #4");
-    expect(
-      parkedPinKey({ kind: "terminal", project: "p", label: terminalPinLabel(null, 4) }),
-    ).not.toBe(parkedPinKey({ kind: "terminal", project: "p", label: terminalPinLabel(null, 91) }));
-  });
-
-  it("matches the same epic spelled by the run config and by the resume timer", () => {
-    expect(parkedPinKey({ kind: "samurai", project: "C:/git/a", label: "Epic #37" })).toBe(
-      parkedPinKey({ kind: "samurai", project: "C:/git/a", label: "epic-37" }),
-    );
-  });
-
-  it("does not fold two different epics of one project together", () => {
-    expect(parkedPinKey({ kind: "samurai", project: "C:/git/a", label: "#37" })).not.toBe(
-      parkedPinKey({ kind: "samurai", project: "C:/git/a", label: "#38" }),
-    );
-  });
-
-  it("does not fold the same epic in two projects together", () => {
-    expect(parkedPinKey({ kind: "samurai", project: "C:/git/a", label: "#37" })).not.toBe(
-      parkedPinKey({ kind: "samurai", project: "C:/git/b", label: "#37" }),
-    );
   });
 });

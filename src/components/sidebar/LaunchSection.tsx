@@ -6,8 +6,6 @@ import {
   ChevronDown,
   FolderGit2,
   Loader2,
-  Pin,
-  PinOff,
   RefreshCw,
   Rocket,
   TerminalSquare,
@@ -16,7 +14,6 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isParkedPinned, type ParkedPin } from "@/lib/parkedPins";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
@@ -321,17 +318,6 @@ function findScheduleEntry(
 }
 
 /**
- * The rail pin for a parked run — keyed on the TIMER's project and epic, not
- * the run config's. The rail resolves pins against the live park alerts, which
- * are built from these same timer entries, and the two sources spell the epic
- * differently often enough that using the run's own label would pin something
- * the rail could never find.
- */
-function parkPinFor(entry: SamuraiScheduleEntry): ParkedPin {
-  return { kind: "samurai", project: entry.project_path, label: entry.epic };
-}
-
-/**
  * A successor generation for this run is already queued in the frontend's
  * launch store (issue #55): the replicator emitted `samurai-spawn-successor`
  * and no grid has spawned it yet. The predecessor sits KILLED for that whole
@@ -418,8 +404,6 @@ function RunRow({
   onCleanup,
   onRecover,
   onAbandon,
-  onTogglePin,
-  pinnedInRail,
   successorPending,
   pending,
   recovering,
@@ -438,10 +422,6 @@ function RunRow({
   onRecover: (run: SamuraiRunListEntry) => void;
   /** Archive the run config and NOTHING else — worktree and branch kept. */
   onAbandon: (run: SamuraiRunListEntry) => void;
-  /** Pin/unpin this run's park in the always-visible rail. */
-  onTogglePin: (entry: SamuraiScheduleEntry) => void;
-  /** This run's park is already pinned to the rail. */
-  pinnedInRail: boolean;
   /** A successor generation for this run is already queued in the frontend's
    *  launch store (issue #55) — recovering on top of it would double-spawn. */
   successorPending: boolean;
@@ -593,7 +573,7 @@ function RunRow({
           that does not parse still badges the run PARKED, just without a
           resume reading — a broken stamp must never hide the parked state. */}
       {parked && (
-        <div className="flex items-center gap-1 pl-1 pt-0.5">
+        <div className="flex pl-1 pt-0.5">
           <span
             className="min-w-0 rounded bg-maestro-purple/20 px-1 py-px text-[9px] font-bold leading-tight tracking-wide text-maestro-purple"
             title={`Parked — this run has no live agent on purpose. It resumes automatically${
@@ -602,24 +582,6 @@ function RunRow({
           >
             {resume ? `PARKED · resumes ${resume}` : "PARKED"}
           </span>
-          {/* Pinning the run is pinning THE PARK, so the pin is keyed on the
-              timer's own project + epic — that is the pair the rail resolves
-              against, and the run config's epic can be spelled differently. */}
-          <button
-            type="button"
-            onClick={() => onTogglePin(parked)}
-            className={`shrink-0 rounded p-0.5 transition-colors hover:text-maestro-accent ${
-              pinnedInRail ? "text-maestro-accent" : "text-maestro-muted"
-            }`}
-            aria-label={`${pinnedInRail ? "Unpin" : "Pin"} parked run ${run.epic}`}
-            title={
-              pinnedInRail
-                ? "Unpin — drops it from the always-visible parked rail"
-                : "Pin — keeps this park visible in every view, not just the sidebar"
-            }
-          >
-            {pinnedInRail ? <PinOff size={10} /> : <Pin size={10} />}
-          </button>
         </div>
       )}
       {/* Issue #102: the orchestrator's live details — a COMPLETED run's
@@ -696,8 +658,6 @@ export function LaunchSection({
   onNavigate?: (tabId: string, sessionId: number) => void;
 }) {
   const tabs = useWorkspaceStore((s) => s.tabs);
-  const pinnedParked = useWorkspaceStore((s) => s.pinnedParked);
-  const togglePinnedParked = useWorkspaceStore((s) => s.togglePinnedParked);
   const activeTab = tabs.find((t) => t.active);
   const projectPath = activeTab?.projectPath ?? "";
   const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
@@ -1414,8 +1374,6 @@ export function LaunchSection({
                   onCleanup={handleCleanup}
                   onRecover={handleRecover}
                   onAbandon={handleAbandon}
-                  onTogglePin={(entry) => togglePinnedParked(parkPinFor(entry))}
-                  pinnedInRail={parked !== null && isParkedPinned(pinnedParked, parkPinFor(parked))}
                   successorPending={hasPendingSuccessor(run, pendingLaunches)}
                   pending={deletingKey === key}
                   recovering={recoveringKey === key}

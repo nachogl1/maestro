@@ -1,7 +1,5 @@
-import { Pin, PinOff } from "lucide-react";
 import { useMemo } from "react";
 
-import { isParkedPinned, terminalPinLabel } from "@/lib/parkedPins";
 import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
@@ -12,7 +10,6 @@ import {
   type SessionConfig,
   useSessionStore,
 } from "@/stores/useSessionStore";
-import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 
 /** Chip status dot colors — mirrors the sidebar's SESSION_STATUS_BADGES palette. */
@@ -104,8 +101,6 @@ export function ParkedShelf({
   // an ordinary user-initiated park.
   const runFatalIds = useSessionStore((s) => s.runFatalSessionIds);
   const acknowledgeParks = useSessionStore((s) => s.acknowledgeSamuraiParks);
-  const pinnedParked = useWorkspaceStore((s) => s.pinnedParked);
-  const togglePinnedParked = useWorkspaceStore((s) => s.togglePinnedParked);
   // Clash-resolved colors, so a parked chip matches the project's terminals
   // rather than showing that project's raw (possibly re-seated) hash color.
   const projectColors = useProjectColors();
@@ -158,67 +153,41 @@ export function ParkedShelf({
           : parked
             ? "samurai-park-shine"
             : chipAttentionClass(sess.status);
-        const pin = {
-          kind: "terminal" as const,
-          project: sess.project_path,
-          label: terminalPinLabel(sess.name, sess.id),
-        };
-        const pinned = isParkedPinned(pinnedParked, pin);
         return (
-          // The pin control rides ON the chip (absolute) rather than beside it,
-          // so a pinned, shining, project-colored chip still reads as one thing.
-          <div key={sess.id} className="group relative flex shrink-0 items-center">
-            <button
-              type="button"
-              onClick={() => {
-                // Restoring the run IS the acknowledgement.
-                if (parked) acknowledgeParks(sess.project_path);
-                onUnpark(sess.id);
-              }}
-              // The chip's border is its project's color, matching that project's
-              // terminals in the grid; the attention classes above override it
-              // for the few states the dots can't show.
-              style={attention ? undefined : { borderColor: projectColor }}
-              className={`flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card py-0.5 pl-2.5 pr-7 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
-              title={
-                runFatal
-                  ? "Samurai run died — restore terminal"
-                  : parked
-                    ? "Parked on token allowance — restore terminal"
-                    : "Restore terminal"
-              }
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[sess.status] ?? STATUS_DOT.Idle}`}
-              />
-              <ThinkingIndicator sessionId={sess.id} size={3} />
-              {showProjectLabels && (
-                <span className="font-bold" style={{ color: projectColor }}>
-                  {project}
-                </span>
-              )}
-              <span className="max-w-[140px] truncate">
-                {sess.name?.trim() || `Session #${sess.id}`}
+          <button
+            key={sess.id}
+            type="button"
+            onClick={() => {
+              // Restoring the run IS the acknowledgement.
+              if (parked) acknowledgeParks(sess.project_path);
+              onUnpark(sess.id);
+            }}
+            // The chip's border is its project's color, matching that project's
+            // terminals in the grid; the attention classes above override it
+            // for the few states the dots can't show.
+            style={attention ? undefined : { borderColor: projectColor }}
+            className={`flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card px-2.5 py-0.5 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
+            title={
+              runFatal
+                ? "Samurai run died — restore terminal"
+                : parked
+                  ? "Parked on token allowance — restore terminal"
+                  : "Restore terminal"
+            }
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[sess.status] ?? STATUS_DOT.Idle}`}
+            />
+            <ThinkingIndicator sessionId={sess.id} size={3} />
+            {showProjectLabels && (
+              <span className="font-bold" style={{ color: projectColor }}>
+                {project}
               </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => togglePinnedParked(pin)}
-              className={`absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 transition-opacity hover:text-maestro-accent ${
-                pinned
-                  ? "text-maestro-accent"
-                  : "text-maestro-muted opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
-              }`}
-              aria-label={`${pinned ? "Unpin" : "Pin"} ${pin.label}`}
-              title={
-                pinned
-                  ? "Unpin — drops it from the always-visible parked rail"
-                  : "Pin — keeps it visible in every view, not just this one"
-              }
-            >
-              {pinned ? <PinOff size={10} /> : <Pin size={10} />}
-            </button>
-          </div>
+            )}
+            <span className="max-w-[140px] truncate">
+              {sess.name?.trim() || `Session #${sess.id}`}
+            </span>
+          </button>
         );
       })}
     </div>

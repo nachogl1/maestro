@@ -355,6 +355,16 @@ interface SessionState {
    */
   runFatalSessionIds: number[];
   /**
+   * Terminals the user pinned. A pinned terminal keeps showing in the pinned
+   * strip under the grid even while ANOTHER project is the active one — the
+   * only way to watch project A's agent while working in project B.
+   *
+   * In-memory only, same rationale as parkedSessionIds: session IDs are
+   * reassigned each app launch, so a persisted pin would come back pointing
+   * at an unrelated new terminal.
+   */
+  pinnedSessionIds: number[];
+  /**
    * Samurai-supervised sessions, keyed by session id — fed by
    * `samurai-supervisor-event` and seeded from `samurai_list_sessions` on
    * listener init. Sessions absent from this map are not supervised and
@@ -386,6 +396,8 @@ interface SessionState {
   parkSession: (sessionId: number) => void;
   unparkSession: (sessionId: number) => void;
   toggleSessionFlag: (sessionId: number) => void;
+  /** Pin/unpin a terminal so it stays visible from every project. */
+  toggleSessionPin: (sessionId: number) => void;
   clearSessionAttention: (sessionId: number) => void;
   dismissSamuraiToast: (id: string) => void;
   /** Clears the queue outright — used when notifications are switched off. */
@@ -599,6 +611,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   flaggedSessionIds: [],
   attentionSessionIds: [],
   runFatalSessionIds: [],
+  pinnedSessionIds: [],
   samuraiBySessionId: {},
   samuraiSchedule: [],
   samuraiToasts: [],
@@ -643,6 +656,14 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       flaggedSessionIds: state.flaggedSessionIds.includes(sessionId)
         ? state.flaggedSessionIds.filter((id) => id !== sessionId)
         : [...state.flaggedSessionIds, sessionId],
+    }));
+  },
+
+  toggleSessionPin: (sessionId: number) => {
+    set((state) => ({
+      pinnedSessionIds: state.pinnedSessionIds.includes(sessionId)
+        ? state.pinnedSessionIds.filter((id) => id !== sessionId)
+        : [...state.pinnedSessionIds, sessionId],
     }));
   },
 
@@ -707,6 +728,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           runFatalSessionIds: state.runFatalSessionIds.filter((id) =>
             sessions.some((s) => s.id === id),
           ),
+          pinnedSessionIds: state.pinnedSessionIds.filter((id) =>
+            sessions.some((s) => s.id === id),
+          ),
         };
       });
     } catch (err) {
@@ -739,6 +763,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             sessions.some((s) => s.id === id),
           ),
           runFatalSessionIds: state.runFatalSessionIds.filter((id) =>
+            sessions.some((s) => s.id === id),
+          ),
+          pinnedSessionIds: state.pinnedSessionIds.filter((id) =>
             sessions.some((s) => s.id === id),
           ),
         };
@@ -884,6 +911,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         flaggedSessionIds: state.flaggedSessionIds.filter((id) => id !== sessionId),
         attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
         runFatalSessionIds: state.runFatalSessionIds.filter((id) => id !== sessionId),
+        pinnedSessionIds: state.pinnedSessionIds.filter((id) => id !== sessionId),
         samuraiBySessionId,
       };
     });
@@ -920,6 +948,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           runFatalSessionIds: state.runFatalSessionIds.filter(
             (id) => !removed.some((r) => r.id === id),
           ),
+          pinnedSessionIds: state.pinnedSessionIds.filter(
+            (id) => !removed.some((r) => r.id === id),
+          ),
           samuraiBySessionId,
         };
       });
@@ -953,6 +984,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           flaggedSessionIds: state.flaggedSessionIds.filter((id) => !isOrphan(id)),
           attentionSessionIds: state.attentionSessionIds.filter((id) => !isOrphan(id)),
           runFatalSessionIds: state.runFatalSessionIds.filter((id) => !isOrphan(id)),
+          pinnedSessionIds: state.pinnedSessionIds.filter((id) => !isOrphan(id)),
           samuraiBySessionId,
         };
       });

@@ -38,7 +38,6 @@ import {
   loadRightPanelWidth,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "./components/shared/PanelResizeHandle";
-import { PinnedParkedRail } from "./components/shared/PinnedParkedRail";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
 import { type EagleProjectOption, TopBar } from "./components/shared/TopBar";
 import { UtilityPanel, type UtilityPanelKind } from "./components/shared/UtilityPanel";
@@ -697,27 +696,6 @@ function App() {
     [selectTab],
   );
 
-  // Pinned-rail click: the same project landing as the park badge, plus the
-  // terminal restore a parked *terminal* pin implies — unpark it and zoom it
-  // in its project's grid, matching how the agent navigator opens a session.
-  const handlePinnedParkedNavigate = useCallback(
-    (projectPath: string, sessionId?: number) => {
-      const target = useWorkspaceStore
-        .getState()
-        .tabs.find((t) => samePath(t.projectPath, projectPath));
-      if (!target) return;
-      setEagleView(false);
-      setLandscapeView(false);
-      selectTab(target.id);
-      if (sessionId === undefined) return;
-      useSessionStore.getState().unparkSession(sessionId);
-      requestAnimationFrame(() => {
-        multiProjectRef.current?.zoomSessionInProject(target.id, sessionId);
-      });
-    },
-    [selectTab],
-  );
-
   const handleSelectSidebarTab = useCallback((tab: SidebarTabId) => {
     setSidebarTab(tab);
     saveSidebarTab(tab);
@@ -865,11 +843,6 @@ function App() {
         onMoveTab={moveTab}
         onTogglePinTab={toggleTabPin}
       />
-
-      {/* Pinned parked items — mounted here (outside the view switch) so a
-          pinned park stays visible in the grid, eagle and landscape alike.
-          Hides itself when nothing pinned is currently parked. */}
-      <PinnedParkedRail onNavigate={handlePinnedParkedNavigate} />
 
       {/* Main area: sidebar + content */}
       <div className="flex flex-1 overflow-hidden">

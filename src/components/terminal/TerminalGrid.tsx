@@ -373,6 +373,16 @@ interface TerminalGridProps {
    * per-project count hid it in the common 1-terminal-per-project layout.
    */
   eagleTileCount?: number;
+  /**
+   * Pinned-strip placement for THIS grid's pinned terminals, keyed by session
+   * id (owned by MultiProjectView, non-eagle only). A non-empty map puts the
+   * grid in "spotlight" mode: it flattens exactly like eagle view
+   * (`display: contents`), every tile that is not in the map is hidden, and
+   * each listed one is absolutely positioned into the strip under the active
+   * project's grid. The active project's own grid never gets one — its pinned
+   * terminals are already on screen.
+   */
+  pinnedTileStyles?: ReadonlyMap<number, React.CSSProperties> | null;
 }
 
 /**
@@ -420,6 +430,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     eagleAnyZoomed = false,
     onEagleZoomToggle,
     eagleTileCount = 0,
+    pinnedTileStyles = null,
   },
   ref,
 ) {
@@ -481,6 +492,26 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       ),
     [slots, parkedSet],
   );
+
+  // Pinned terminals (see `pinnedSessionIds` in the session store). The set
+  // only drives the header's pin button here — WHERE a pinned tile lands is
+  // decided by MultiProjectView and arrives as `pinnedTileStyles`.
+  const pinnedSessionIds = useSessionStore((s) => s.pinnedSessionIds);
+  const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds]);
+
+  /**
+   * Spotlight: this grid belongs to an inactive project that owns a pinned
+   * terminal, so it renders nothing but that terminal, in the pinned strip.
+   */
+  const pinnedSpotlight = !eagleMode && !!pinnedTileStyles && pinnedTileStyles.size > 0;
+
+  /**
+   * "Flat" = the grid gives up its own layout (`display: contents`) and lets an
+   * ancestor place the tiles: eagle view tiles them, spotlight absolutely
+   * positions them. Everything layout-shaped keys off this; everything that is
+   * genuinely about eagle view (project labels aside) keeps using `eagleMode`.
+   */
+  const flatLayout = eagleMode || pinnedSpotlight;
 
   // Binary split tree layout (drives pane arrangement)
   const [layoutTree, setLayoutTree] = useState<TreeNode>(() => createLeaf(slots[0].id));
@@ -2268,13 +2299,21 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // 1-terminal-per-project layout must still be reorderable; while
       // eagle-zoomed all other tiles are visibility:hidden, so handles are moot.
       // Same while per-project zoomed: only the zoomed pane is visible.
-      const showReorderHandle = eagleMode
-        ? eagleTileCount > 1 && !eagleAnyZoomed
-        : slots.length > 1 && zoomedSlotId === null;
+      const showReorderHandle = pinnedSpotlight
+        ? false
+        : eagleMode
+          ? eagleTileCount > 1 && !eagleAnyZoomed
+          : slots.length > 1 && zoomedSlotId === null;
       const isEagleZoomed =
         eagleMode && slot.sessionId !== null && eagleZoomedSessionId === slot.sessionId;
       const isEagleObscured = eagleMode && eagleAnyZoomed && !isEagleZoomed;
-      const isSlotZoomed = eagleMode ? isEagleZoomed : zoomedSlotId === slot.id;
+      const isSlotZoomed = eagleMode ? isEagleZoomed : !pinnedSpotlight && zoomedSlotId === slot.id;
+      // Spotlight: only the pinned tiles paint, each into its strip cell.
+      const pinnedStyle =
+        pinnedSpotlight && slot.sessionId !== null
+          ? (pinnedTileStyles?.get(slot.sessionId) ?? null)
+          : null;
+      const spotlightHidden = pinnedSpotlight && pinnedStyle === null;
 
       if (slot.sessionId !== null) {
         // TS narrowing on slot.sessionId doesn't survive into the closure below.
@@ -2286,11 +2325,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             showHandle={showReorderHandle}
             onSwap={handleSwapSlots}
             onCrossGridReorder={handleEagleCrossReorder}
-            eagleMode={eagleMode}
-            eagleHidden={false}
+            eagleMode={flatLayout}
+            eagleHidden={spotlightHidden}
             eagleZoomed={isEagleZoomed}
             eagleObscured={isEagleObscured}
             eagleReserveShelf={parkedSessionIds.length > 0}
+            pinnedStyle={pinnedStyle}
           >
             <TerminalView
               key={slot.id}
@@ -2301,10 +2341,21 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
               onKill={handleKill}
               terminalCount={slots.length}
               isZoomed={isSlotZoomed}
-              onToggleZoom={() =>
-                eagleMode ? onEagleZoomToggle?.(sessionId) : handleToggleZoom(slot.id)
+              onToggleZoom={
+                pinnedSpotlight
+                  ? undefined
+                  : () => (eagleMode ? onEagleZoomToggle?.(sessionId) : handleToggleZoom(slot.id))
               }
               onPark={() => handlePark(slot.id)}
+              // The pin is offered where the terminal is big enough to act on:
+              // zoomed in, in eagle view, or already pinned (so the strip tile
+              // carries its own way back out).
+              isPinned={pinnedSet.has(sessionId)}
+              onTogglePin={
+                eagleMode || isSlotZoomed || pinnedSet.has(sessionId)
+                  ? () => useSessionStore.getState().toggleSessionPin(sessionId)
+                  : undefined
+              }
               onAttachFiles={() => {
                 handleAttachFiles(sessionId, slot.id).catch(console.error);
               }}
@@ -2312,10 +2363,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
               // project it belongs to in every view, not just eagle. The written
               // label stays eagle-only — inside a single project's grid every
               // tile would repeat the same name.
-              projectLabel={eagleMode ? projectName : undefined}
+              projectLabel={flatLayout ? projectName : undefined}
               projectColor={eagleColor}
               hasMoveHandle={showReorderHandle}
-              showShortcutHints={!eagleMode}
+              showShortcutHints={!flatLayout}
             />
             {dropOverlay}
           </DraggablePane>
@@ -2329,8 +2380,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           showHandle={showReorderHandle}
           onSwap={handleSwapSlots}
           onCrossGridReorder={handleEagleCrossReorder}
-          eagleMode={eagleMode}
-          eagleHidden={false}
+          eagleMode={flatLayout}
+          eagleHidden={spotlightHidden}
           eagleZoomed={false}
           eagleObscured={isEagleObscured}
           eagleReserveShelf={parkedSessionIds.length > 0}
@@ -2425,6 +2476,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       eagleTileCount,
       parkedSessionIds,
       zoomedSlotId,
+      pinnedSpotlight,
+      pinnedTileStyles,
+      pinnedSet,
+      flatLayout,
     ],
   );
 
@@ -2489,18 +2544,18 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // zooming in/out never remounts an xterm. Only the navigation strip mounts
   // and unmounts — it holds no terminal state.
   const zoomActive =
-    !eagleMode && zoomedSlotId !== null && slots.some((s) => s.id === zoomedSlotId);
+    !flatLayout && zoomedSlotId !== null && slots.some((s) => s.id === zoomedSlotId);
 
   // Both wrappers exist in BOTH modes (display:contents in eagle) so toggling
   // eagle view never changes the element tree shape — a structural difference
   // would remount every xterm and lose all scrollback. The shelf only ever
   // appends/removes as a trailing sibling, which leaves the split tree alone.
   const allParked =
-    !eagleMode && slots.every((s) => s.sessionId !== null && parkedSet.has(s.sessionId));
+    !flatLayout && slots.every((s) => s.sessionId !== null && parkedSet.has(s.sessionId));
   return (
     <div
       className={
-        eagleMode
+        flatLayout
           ? "contents"
           : `flex h-full flex-col bg-maestro-bg ${zoomActive ? "" : "p-2"} ${isDragging ? "split-dragging" : ""}`
       }
@@ -2594,7 +2649,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         })()}
       <div
         className={
-          eagleMode ? "contents" : `relative flex min-h-0 flex-1 ${zoomActive ? "p-2" : ""}`
+          flatLayout ? "contents" : `relative flex min-h-0 flex-1 ${zoomActive ? "p-2" : ""}`
         }
       >
         <SplitPaneView
@@ -2602,7 +2657,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           renderLeaf={renderLeaf}
           onRatioChange={handleRatioChange}
           onDragStateChange={setIsDragging}
-          eagleMode={eagleMode}
+          eagleMode={flatLayout}
           hiddenSlotIds={parkedSlotIds}
           zoomedSlotId={zoomActive ? zoomedSlotId : null}
         />
@@ -2614,7 +2669,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       </div>
       {/* Parked terminals stay reachable from the zoom-in view too (unpark
           makes the restored terminal the zoomed one — the user stays in zoom) */}
-      {!eagleMode && <ParkedShelf projectPath={projectPath} onUnpark={handleUnpark} />}
+      {!flatLayout && <ParkedShelf projectPath={projectPath} onUnpark={handleUnpark} />}
       {/* Launch errors while sessions run: fixed-position toast (works under
           the eagle display:contents wrapper too) instead of the full-screen
           card, so the running terminals stay mounted. */}
@@ -2659,6 +2714,7 @@ function DraggablePane({
   eagleZoomed = false,
   eagleObscured = false,
   eagleReserveShelf = false,
+  pinnedStyle = null,
 }: {
   slotId: string;
   /** Owning grid (tab) id — identifies the source project for eagle drops. */
@@ -2678,6 +2734,12 @@ function DraggablePane({
   eagleObscured?: boolean;
   /** Eagle view while zoomed: leave room for the parked shelf (h-8) below. */
   eagleReserveShelf?: boolean;
+  /**
+   * Pinned strip: absolute placement for this tile, computed by
+   * MultiProjectView. Set only in spotlight mode, and it wins over the eagle
+   * tile class — the tile is positioned against the content area, not tiled.
+   */
+  pinnedStyle?: React.CSSProperties | null;
 }) {
   const [isDragging, setIsDragging] = useState(false);
 
@@ -2771,22 +2833,32 @@ function DraggablePane({
   //             terminal cell itself (TerminalView's projectColor override)
   const eagleClass = eagleHidden
     ? "hidden"
-    : eagleZoomed
-      ? // top-8 leaves room for MultiProjectView's global tab bar (h-8, z-50);
-        // bottom-8 leaves the parked shelf (h-8) visible when chips exist.
-        `absolute inset-x-0 top-8 z-40 bg-maestro-bg p-2 min-h-0 min-w-0 ${
-          eagleReserveShelf ? "bottom-8" : "bottom-0"
-        }`
-      : "relative h-full w-full min-h-0 min-w-0 overflow-hidden rounded-md";
+    : pinnedStyle
+      ? "absolute z-30 min-h-0 min-w-0 overflow-hidden rounded-md"
+      : eagleZoomed
+        ? // top-8 leaves room for MultiProjectView's global tab bar (h-8, z-50);
+          // bottom-8 leaves the parked shelf (h-8) visible when chips exist.
+          `absolute inset-x-0 top-8 z-40 bg-maestro-bg p-2 min-h-0 min-w-0 ${
+            eagleReserveShelf ? "bottom-8" : "bottom-0"
+          }`
+        : "relative h-full w-full min-h-0 min-w-0 overflow-hidden rounded-md";
   return (
     <div
       className={eagleMode ? eagleClass : "relative h-full w-full min-h-0 min-w-0"}
       // In eagle mode the normal [data-slot-id] wrapper (SplitPaneView's leaf)
       // is display:contents, whose rect is 0x0 — carrying the id here keeps
       // file drag-and-drop hit-testing working on the visible tile box.
-      data-slot-id={eagleMode && !eagleHidden ? slotId : undefined}
-      data-grid-id={eagleMode && !eagleHidden ? gridId : undefined}
-      style={eagleMode && !eagleHidden && eagleObscured ? { visibility: "hidden" } : undefined}
+      // A spotlight (pinned-strip) tile deliberately carries neither: it is
+      // not a drop target of the active project's grid, whose pane-swap drag
+      // hit-tests every [data-slot-id] and would otherwise "swap" with a slot
+      // that does not exist in it.
+      data-slot-id={eagleMode && !eagleHidden && !pinnedStyle ? slotId : undefined}
+      data-grid-id={eagleMode && !eagleHidden && !pinnedStyle ? gridId : undefined}
+      style={
+        eagleMode && !eagleHidden
+          ? (pinnedStyle ?? (eagleObscured ? { visibility: "hidden" } : undefined))
+          : undefined
+      }
     >
       {children}
       {showHandle && (

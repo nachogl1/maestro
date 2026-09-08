@@ -59,6 +59,10 @@ interface TerminalViewProps {
   onToggleZoom?: () => void;
   /** Park this terminal: hide its pane without stopping the session (owned by TerminalGrid). */
   onPark?: () => void;
+  /** Pin this terminal so it keeps showing from every project (owned by TerminalGrid). */
+  onTogglePin?: () => void;
+  /** This terminal is pinned. */
+  isPinned?: boolean;
   /** Opens a native file picker and inserts the chosen paths like a drag-drop (owned by TerminalGrid). */
   onAttachFiles?: () => void;
   /** Project name shown in bold before the session label (eagle view). */
@@ -180,6 +184,8 @@ export const TerminalView = memo(function TerminalView({
   isZoomed = false,
   onToggleZoom,
   onPark,
+  onTogglePin,
+  isPinned = false,
   onAttachFiles,
   projectLabel,
   projectColor,
@@ -984,6 +990,8 @@ export const TerminalView = memo(function TerminalView({
         isZoomed={isZoomed}
         onToggleZoom={onToggleZoom}
         onPark={onPark}
+        onTogglePin={onTogglePin}
+        isPinned={isPinned}
         zoomLevel={zoomLevel}
         onSetZoomLevel={setZoomLevel}
         projectLabel={projectLabel}

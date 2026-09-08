@@ -14,6 +14,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { Pin } from "lucide-react";
 import {
   forwardRef,
   useCallback,
@@ -24,6 +25,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
 import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -115,9 +117,14 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       eagleView ? s.sessions.filter((x) => !s.parkedSessionIds.includes(x.id)).length : 0,
     );
 
+    // Pinned terminals — the ones that follow the user across projects.
+    const pinnedSessionIds = useSessionStore((s) => s.pinnedSessionIds);
+
     // Parked sessions feed the eagle shelf and are skipped by the zoom tab bar.
+    // Also needed outside eagle view once anything is pinned: a parked pane is
+    // hidden, so it must not claim a cell in the pinned strip.
     const parkedSessionIds = useSessionStore((s) =>
-      eagleView ? s.parkedSessionIds : EMPTY_PARKED,
+      eagleView || s.pinnedSessionIds.length > 0 ? s.parkedSessionIds : EMPTY_PARKED,
     );
 
     // Leaving eagle view always drops the zoom.
@@ -199,6 +206,13 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       }
       prevEagleOrderRef.current = orderedEagleSessions.map((s) => s.sessionId);
     }, [eagleZoom, eagleSessions, orderedEagleSessions]);
+
+    // Pinned terminals of the OTHER projects, placed into the strip. `null`
+    // means no strip: eagle view already shows every project at once.
+    const pinnedStrip = useMemo(
+      () => (eagleView ? null : pinnedStripLayout(tabs, pinnedSessionIds, parkedSessionIds)),
+      [eagleView, tabs, pinnedSessionIds, parkedSessionIds],
+    );
 
     const eagleTabSensors = useSensors(
       useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -574,6 +588,24 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
             </div>
           )}
 
+          {/* Pinned strip backdrop. Sits above the active project's stack
+          (z-10) and below the pinned tiles themselves (z-30), which the owning
+          grids position into it. */}
+          {pinnedStrip && (
+            <div
+              className="absolute inset-x-0 bottom-0 z-20 border-t border-maestro-border bg-maestro-bg"
+              style={{ height: PIN_STRIP_HEIGHT }}
+            >
+              <div
+                className="flex items-center gap-1 px-2 text-[10px] font-medium uppercase tracking-wider text-maestro-muted"
+                style={{ height: PIN_STRIP_LABEL }}
+              >
+                <Pin size={10} />
+                <span>Pinned</span>
+              </div>
+            </div>
+          )}
+
           {/* Render ALL project views in a stacked container (ZStack equivalent).
           In eagle view the stack flattens: launched projects become transparent
           (display:contents) so their panes tile into the grid above; idle
@@ -581,34 +613,44 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           {tabs.map((tab) => (
             <div
               key={tab.id}
+              // The active project gives up the strip's height so its own grid
+              // (and parked shelf) never sit underneath the pinned tiles.
+              style={
+                !eagleView && pinnedStrip && tab.active ? { bottom: PIN_STRIP_HEIGHT } : undefined
+              }
               className={
                 eagleView
                   ? tab.sessionsLaunched
                     ? "contents"
                     : "hidden"
-                  : // Inactive projects are `display:none`, NOT `visibility:hidden`.
-                    // xterm.js pauses its render loop from an IntersectionObserver,
-                    // which never fires for visibility:hidden — every background
-                    // terminal would keep a live WebGL render loop burning GPU and
-                    // main-thread time for zero visible pixels, and the terminal the
-                    // user is typing in competes with all of them. display:none is
-                    // the only thing that makes the element non-intersecting.
-                    //
-                    // Cost: the crossfade is gone in BOTH directions — display isn't
-                    // animatable, and an element flipped from display:none has no
-                    // before-change style, so the opacity transition never starts.
-                    // Switching projects is an instant cut. Deliberate trade.
-                    //
-                    // Re-showing still refits: a display:none pane reports a 0x0
-                    // content box, so the pane's ResizeObserver fires on the
-                    // none → block transition — including at a new size after a
-                    // window resize that happened while the project was hidden
-                    // (see TerminalView's runFit).
-                    `absolute inset-0 transition-opacity duration-150 ${
-                      tab.active
-                        ? "opacity-100 pointer-events-auto z-10"
-                        : "hidden opacity-0 pointer-events-none z-0"
-                    }`
+                  : pinnedStrip?.has(tab.id)
+                    ? // Owns a pinned terminal: flatten the wrapper so the grid
+                      // can position that one tile into the strip. Every other
+                      // pane of this project stays hidden.
+                      "contents"
+                    : // Inactive projects are `display:none`, NOT `visibility:hidden`.
+                      // xterm.js pauses its render loop from an IntersectionObserver,
+                      // which never fires for visibility:hidden — every background
+                      // terminal would keep a live WebGL render loop burning GPU and
+                      // main-thread time for zero visible pixels, and the terminal the
+                      // user is typing in competes with all of them. display:none is
+                      // the only thing that makes the element non-intersecting.
+                      //
+                      // Cost: the crossfade is gone in BOTH directions — display isn't
+                      // animatable, and an element flipped from display:none has no
+                      // before-change style, so the opacity transition never starts.
+                      // Switching projects is an instant cut. Deliberate trade.
+                      //
+                      // Re-showing still refits: a display:none pane reports a 0x0
+                      // content box, so the pane's ResizeObserver fires on the
+                      // none → block transition — including at a new size after a
+                      // window resize that happened while the project was hidden
+                      // (see TerminalView's runFit).
+                      `absolute inset-0 transition-opacity duration-150 ${
+                        tab.active
+                          ? "opacity-100 pointer-events-auto z-10"
+                          : "hidden opacity-0 pointer-events-none z-0"
+                      }`
               }
             >
               {tab.sessionsLaunched ? (
@@ -630,6 +672,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   eagleAnyZoomed={eagleView && eagleZoom !== null}
                   onEagleZoomToggle={handleEagleZoomToggle}
                   eagleTileCount={eagleTileCount}
+                  pinnedTileStyles={pinnedStrip?.get(tab.id) ?? null}
                 />
               ) : (
                 <IdleLandingView onAdd={mustCallback(launchCallbacks, tab.id)} />
