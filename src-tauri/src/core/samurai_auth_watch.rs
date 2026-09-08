@@ -26,6 +26,13 @@
 //! - **`logged_in == true`** → clear the latch, so a future loss alerts
 //!   again.
 //!
+//! The latch is PERSISTED (`samurai_latches`) and seeded back at loop
+//! start. It used to be a local in the spawned task, so an app restart
+//! while `gh` was still broken took the lost EDGE again — a fresh ALERT row
+//! per supervised run and another `engage_external_park` sweep (every
+//! session parked with `suppress_timers`, i.e. no resume timer) once per app
+//! start, for as long as auth stayed broken.
+//!
 //! Shape: the tick decision is a pure function ([`tick_action`], table-
 //! tested); the loop is a thin IO shell with the probe injected (the
 //! reconciler's closure pattern), so the module never touches `gh` in tests.
@@ -35,6 +42,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::samurai_latches::LatchStore;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_run_config::RunConfigStore;
 
@@ -74,16 +82,27 @@ pub(crate) fn tick_action(probe: Result<bool, &str>, latched: bool) -> TickActio
     }
 }
 
+/// The latch the loop starts from: the persisted one, not a cold `false`.
+/// Factored out so the restart behaviour is testable without a tauri
+/// runtime — the loop and the test seed through the same call.
+pub(crate) fn seeded_latch(latches: &LatchStore) -> bool {
+    latches.snapshot().gh_auth_lost
+}
+
 /// Spawns the re-check loop. Called once from app setup; runs for the app's
 /// lifetime (idle ticks with no active runs cost one store scan, no
 /// subprocess).
+///
+/// `latches` seeds the loss latch before the first tick and records every
+/// change, so one loss episode parks once across restarts (module doc).
 pub fn spawn_auth_watch(
     run_configs: Arc<RunConfigStore>,
     parker: Arc<SamuraiParker>,
     probe: AuthProbe,
+    latches: Arc<LatchStore>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let mut latched = false;
+        let mut latched = seeded_latch(&latches);
         let mut interval = tokio::time::interval(POLL_INTERVAL);
         // After a laptop sleep, one catch-up tick, not a burst (the
         // samurai_schedule discipline).
@@ -101,6 +120,7 @@ pub fn spawn_auth_watch(
                         "samurai auth watch: gh is no longer authenticated — engaging external park ({GH_AUTH_LOST})"
                     );
                     latched = true;
+                    latches.set_gh_auth_lost(true);
                     parker.engage_external_park(GH_AUTH_LOST);
                 }
                 TickAction::ClearLatch => {
@@ -110,6 +130,7 @@ pub fn spawn_auth_watch(
                         );
                     }
                     latched = false;
+                    latches.set_gh_auth_lost(false);
                 }
                 TickAction::Noop => {
                     if let Err(e) = &result {
@@ -171,5 +192,52 @@ mod tests {
         }
         assert_eq!(engages, 2, "one engage per loss episode, no park-spam");
         assert!(latched, "still latched after the second loss");
+    }
+
+    /// The bug: the latch was a local in the spawned task, so restarting the
+    /// app while `gh` was still logged out took the lost EDGE again — an
+    /// ALERT row per supervised run and another `suppress_timers` park sweep
+    /// per launch. Drives the loop's own seeding call.
+    #[test]
+    fn test_the_loss_latch_survives_a_restart_and_parks_once_per_episode() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // Run 1: auth is lost → engage once, latch persisted.
+        let store = LatchStore::new(base.clone());
+        let mut latched = seeded_latch(&store);
+        assert_eq!(tick_action(Ok(false), latched), TickAction::EngagePark);
+        latched = true;
+        store.set_gh_auth_lost(latched);
+
+        // Restart with auth STILL broken: no second park, no second ALERT.
+        let store = LatchStore::new(base.clone());
+        let latched = seeded_latch(&store);
+        assert!(latched, "the loss latch must survive the restart");
+        assert_eq!(
+            tick_action(Ok(false), latched),
+            TickAction::Noop,
+            "a restart must not re-park an unresolved auth loss"
+        );
+
+        // The human fixes auth: the clear is persisted too …
+        assert_eq!(tick_action(Ok(true), latched), TickAction::ClearLatch);
+        store.set_gh_auth_lost(false);
+
+        // … so a genuinely NEW loss after a later restart alerts again.
+        let store = LatchStore::new(base);
+        let latched = seeded_latch(&store);
+        assert!(!latched, "a restored auth must not come back latched");
+        assert_eq!(tick_action(Ok(false), latched), TickAction::EngagePark);
+    }
+
+    #[test]
+    fn test_a_missing_latch_file_seeds_un_latched() {
+        // Fresh install, or a corrupt file: the pre-fix behaviour, never a
+        // panic — the worst case is the one duplicate park this fix removes.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!seeded_latch(&LatchStore::new(dir.path().to_path_buf())));
+        std::fs::write(dir.path().join("latches.json"), "{{{").unwrap();
+        assert!(!seeded_latch(&LatchStore::new(dir.path().to_path_buf())));
     }
 }
