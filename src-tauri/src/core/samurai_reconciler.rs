@@ -68,6 +68,15 @@
 //!    gen-1 spawn) has nothing on disk to resume from at all — the human
 //!    relaunches it from scratch.
 //!
+//! Before any of that, every run-config file the store could not READ gets
+//! `ALERT (reconcile_unreadable_config)`. A torn or locked record used to be
+//! dropped inside `load_all` with a `log::warn!` and nothing else, so a
+//! single unreadable ACTIVE run made the launch report "no active run
+//! configs — nothing to reconcile" while the run sat on disk unowned and
+//! unmentioned — the one failure mode where reconciliation says the world
+//! is fine because it cannot see it. Its latch is IN MEMORY for the app run
+//! ([`UNREADABLE_ALERTED`]): the config is exactly what cannot be written.
+//!
 //! Shape: the `allowance_watcher` split — pure decision functions
 //! ([`decide`], [`orphan_verdict`]) over pre-gathered facts, table-tested
 //! without processes or files, and a thin IO shell ([`reconcile`]) around
@@ -77,17 +86,18 @@
 //! `samurai_watchdog::scan_claude_ancestor_pids`.
 
 use std::collections::HashSet;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use serde_json::json;
 
+use super::allowance_watcher::{ACCOUNT_PROJECT, ACCOUNT_RUN};
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_auth_watch::AuthProbe;
 use super::samurai_injector::strip_extended_prefix;
 use super::samurai_resumer::latest_handoff_generation;
-use super::samurai_run_config::{RunConfigStore, SamuraiRunConfig};
+use super::samurai_run_config::{RunConfigStore, SamuraiRunConfig, UnreadableConfig};
 use super::samurai_schedule::ScheduleEntry;
 use super::samurai_watchdog::TRANSCRIPT_STALE_AFTER;
 use super::supervisor::Supervisor;
@@ -113,6 +123,86 @@ const AUDIT_TAIL: usize = 500;
 /// `details.kind` of the ALERT an ownerless ACTIVE run lands at startup —
 /// the row that replaced the old cold-start auto-spawn.
 pub const RECONCILE_INTERRUPTED_KIND: &str = "reconcile_interrupted";
+
+/// `details.kind` of the ALERT a run-config file that could not be READ
+/// lands at startup. Distinct from every other `reconcile_*` kind on
+/// purpose: those describe a run whose record was understood, this one says
+/// the record itself is unreadable, so nothing about the run — not even
+/// whether it is ACTIVE — is known.
+pub const RECONCILE_UNREADABLE_CONFIG_KIND: &str = "reconcile_unreadable_config";
+
+/// Config files already alerted on during THIS app run.
+///
+/// The `reconcile_interrupted` latch lives in the config itself (PR #185),
+/// which is precisely what is not available here: the file cannot be read,
+/// so it cannot be written either, and inventing a sidecar file to remember
+/// a fact about an unreadable file would only add a second thing to go
+/// wrong. So the latch is process-global and keyed by path. It dedupes the
+/// retry pass ([`reconcile_gated`] runs [`reconcile_pass`] twice) and any
+/// re-entry within one app run, and it deliberately re-arms on restart — a
+/// file that is STILL unreadable at the next launch is still an unowned run
+/// nobody has dealt with, and one row per launch (rather than the two per
+/// launch a missing latch gives) is the honest report.
+///
+/// Tests are isolated by construction: every harness roots its store in its
+/// own tempdir, so no two tests can ever key the same path.
+static UNREADABLE_ALERTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// `true` the FIRST time `path` is seen this app run, `false` afterwards.
+fn latch_unreadable(path: &Path) -> bool {
+    UNREADABLE_ALERTED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path.to_path_buf())
+}
+
+/// Appends one `reconcile_unreadable_config` ALERT per file this app run has
+/// not already reported.
+///
+/// The row is stamped with the [`ACCOUNT_PROJECT`]/[`ACCOUNT_RUN`]
+/// pseudo-entities the allowance watcher established for exactly this
+/// situation — an alert whose owner is not knowable. Deriving a project
+/// from the file's own directory would fabricate a path that matches no real
+/// project (the directory name carries a hash of the project path, which
+/// cannot be inverted) and would file the row in an audit log nothing ever
+/// opens; the account scope is a real, named, viewable bucket. The path and
+/// the reason travel in `details`, which is what a human needs in order to
+/// go and look at the file.
+fn alert_unreadable(audit: &AuditLog, unreadable: &[UnreadableConfig]) {
+    for entry in unreadable {
+        if !latch_unreadable(&entry.path) {
+            log::info!(
+                "samurai reconciler: run config {:?} is still unreadable — already reported this app run",
+                entry.path,
+            );
+            continue;
+        }
+        log::error!(
+            "samurai reconciler: run config {:?} could not be read ({}) — if it is an ACTIVE run, nothing here can see it, own it or resume it (ALERT, human decides)",
+            entry.path,
+            entry.error,
+        );
+        audit.append(
+            ACCOUNT_PROJECT,
+            AuditEvent::now(
+                ACCOUNT_RUN.to_string(),
+                AuditEventKind::Alert,
+                0,
+                0,
+                json!({
+                    "kind": RECONCILE_UNREADABLE_CONFIG_KIND,
+                    "path": entry.path.to_string_lossy(),
+                    "error": entry.error,
+                    "message": format!(
+                        "a samurai run config could not be read ({}) — if it is an active run it stays invisible to Maestro until the file is fixed or removed",
+                        entry.error
+                    ),
+                }),
+            ),
+        );
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pure decisions (table-tested)
@@ -334,11 +424,18 @@ async fn reconcile_pass(
     already_handled: &HashSet<(String, String)>,
 ) -> (bool, HashSet<(String, String)>) {
     let mut handled: HashSet<(String, String)> = HashSet::new();
-    let configs = run_configs.load_active();
+    let scan = run_configs.load_active_scan();
+    // Before the parsed configs, and unconditionally: a file that could not
+    // be read is the ONE case where "nothing to reconcile" would be a lie.
+    alert_unreadable(audit, &scan.unreadable);
+    let configs = scan.configs;
     if configs.is_empty() {
         // The normal state until the P3.5 launcher exists, and afterwards
         // whenever no epic is live. No process scan, no audit noise.
-        log::info!("samurai reconciler: no active run configs — nothing to reconcile");
+        log::info!(
+            "samurai reconciler: no readable active run configs — nothing to reconcile ({} unreadable file(s))",
+            scan.unreadable.len(),
+        );
         return (false, handled);
     }
     log::info!(
@@ -929,6 +1026,35 @@ mod tests {
             .into_iter()
             .filter(|r| r.details["kind"] == RECONCILE_INTERRUPTED_KIND)
             .collect()
+    }
+
+    /// The unreadable-config alerts, which land on the account scope
+    /// (`alert_unreadable`: the owning project is exactly what is unknown).
+    async fn unreadable(audit: &AuditLog) -> Vec<AuditEvent> {
+        rows(audit, ACCOUNT_PROJECT)
+            .await
+            .into_iter()
+            .filter(|r| r.details["kind"] == RECONCILE_UNREADABLE_CONFIG_KIND)
+            .collect()
+    }
+
+    /// Tears every run-config JSON under `runs_dir`, returning the single
+    /// path it wrecked. A torn write and a file the OS will not hand over
+    /// (an editor, a backup agent or the app itself holding it — routine on
+    /// Windows) reach `read_config` as the same `ReadError::Other`.
+    fn tear_the_only_config(runs_dir: &Path) -> PathBuf {
+        let mut torn = Vec::new();
+        for project in std::fs::read_dir(runs_dir).unwrap().flatten() {
+            for file in std::fs::read_dir(project.path()).unwrap().flatten() {
+                let path = file.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                    std::fs::write(&path, "{ \"project_path\": ").unwrap();
+                    torn.push(path);
+                }
+            }
+        }
+        assert_eq!(torn.len(), 1, "the harness writes exactly one config");
+        torn.pop().unwrap()
     }
 
     #[tokio::test]
@@ -1534,5 +1660,91 @@ mod tests {
         assert_eq!(alert.details["epic"], "#37");
         assert_eq!(alert.generation, 0);
         assert!(!rows.iter().any(|r| r.event == AuditEventKind::Resume));
+    }
+
+    #[tokio::test]
+    async fn test_an_unreadable_config_alerts_instead_of_vanishing() {
+        // The blind spot: a torn or locked record was dropped inside
+        // `load_all` with a log line, so the ONLY run on disk disappeared
+        // from the scan and the launch reported "nothing to reconcile" while
+        // an interrupted run sat there unowned and unmentioned.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-unreadable";
+        let repo = tempdir().unwrap();
+        write_handoff(repo.path(), "#38", 2);
+        save_config(&h, project, "#38", repo.path());
+        let torn = tear_the_only_config(&dir.path().join("runs"));
+
+        run(&h, Vec::new(), None, false).await;
+
+        let alerts = unreadable(&h.audit).await;
+        assert_eq!(alerts.len(), 1, "the unreadable record must be reported");
+        assert_eq!(alerts[0].event, AuditEventKind::Alert);
+        assert_eq!(alerts[0].epic, ACCOUNT_RUN);
+        assert_eq!(alerts[0].generation, 0);
+        assert_eq!(alerts[0].session_id, 0);
+        assert_eq!(
+            alerts[0].details["path"].as_str().unwrap(),
+            torn.to_string_lossy(),
+            "the row names the file a human has to go and look at"
+        );
+        assert!(
+            alerts[0].details["error"]
+                .as_str()
+                .unwrap()
+                .contains("parse failed"),
+            "the row carries the reason: {:?}",
+            alerts[0].details["error"],
+        );
+        // Nothing may be claimed about the run itself — its status, its
+        // generation and even its epic are what could not be read.
+        assert!(
+            interrupted(&h.audit, project).await.is_empty(),
+            "an unreadable record is not evidence of an interruption"
+        );
+
+        // Latched in memory for the app run: a second pass over the same
+        // file says nothing more (`UNREADABLE_ALERTED`).
+        run(&h, Vec::new(), None, false).await;
+        assert_eq!(
+            unreadable(&h.audit).await.len(),
+            1,
+            "the alert must not repeat within one app run"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_torn_config_does_not_take_down_its_healthy_neighbour() {
+        // One torn file must cost exactly itself: the readable ACTIVE run
+        // beside it still reaches its own verdict in the same pass.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let healthy = "C:/git/proj-recon-healthy";
+        let repo = tempdir().unwrap();
+        write_handoff(repo.path(), "#41", 3);
+        save_config(&h, healthy, "#41", repo.path());
+
+        // A second project whose only record is torn.
+        let broken_dir = dir.path().join("runs").join("proj-recon-torn-0123456789ab");
+        std::fs::create_dir_all(&broken_dir).unwrap();
+        let torn = broken_dir.join("epic-99.json");
+        std::fs::write(&torn, "not json at all").unwrap();
+
+        run(&h, Vec::new(), None, false).await;
+
+        let alerts = unreadable(&h.audit).await;
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(
+            alerts[0].details["path"].as_str().unwrap(),
+            torn.to_string_lossy()
+        );
+        let healthy_alerts = interrupted(&h.audit, healthy).await;
+        assert_eq!(
+            healthy_alerts.len(),
+            1,
+            "the readable run must still be reconciled"
+        );
+        assert_eq!(healthy_alerts[0].details["prior_generation"], 3);
     }
 }
