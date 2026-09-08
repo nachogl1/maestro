@@ -1,6 +1,7 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
   ChevronDown,
   FolderGit2,
@@ -26,6 +27,7 @@ import {
   type SamuraiRunOrchestrator,
   type SamuraiTestGateProgress,
   SCHEDULED_LAUNCH_REASON,
+  samuraiAbandonRun,
   samuraiCleanupEpic,
   samuraiLaunchRun,
   samuraiListRuns,
@@ -415,6 +417,7 @@ function RunRow({
   onOpen,
   onCleanup,
   onRecover,
+  onAbandon,
   onTogglePin,
   pinnedInRail,
   successorPending,
@@ -433,6 +436,8 @@ function RunRow({
   onCleanup: (run: SamuraiRunListEntry) => void;
   /** Issue #124: explicit crash-recovery relaunch of a non-completed run. */
   onRecover: (run: SamuraiRunListEntry) => void;
+  /** Archive the run config and NOTHING else — worktree and branch kept. */
+  onAbandon: (run: SamuraiRunListEntry) => void;
   /** Pin/unpin this run's park in the always-visible rail. */
   onTogglePin: (entry: SamuraiScheduleEntry) => void;
   /** This run's park is already pinned to the rail. */
@@ -454,6 +459,12 @@ function RunRow({
   error: string | null;
 }) {
   const isCompleted = run.status === "COMPLETED";
+  // A run cold-start reconciliation found ownerless (PR #185's stamp) is
+  // DEAD: no resume timer, no live supervised session, and startup
+  // deliberately spawns nothing. The row used to badge it green ACTIVE —
+  // which is how the real Nido run read as healthy from 2026-08-20 to
+  // 2026-09-08, in the one list that offers the actions to fix it.
+  const interrupted = !isCompleted && run.interrupted_at !== null;
   const open = target.kind === "open" ? target : null;
   const openHint = target.kind === "open" ? OPEN_HINT : target.reason;
   // Issue #124 × #122: an openable target no longer implies a live agent —
@@ -494,6 +505,22 @@ function RunRow({
             title="Run verified complete — every issue closed, PR open. Awaiting cleanup."
           >
             FINISHED
+          </span>
+        ) : interrupted ? (
+          // Red = needs input, the fork's status-colour convention (blue =
+          // working). The tooltip carries the two facts the badge cannot:
+          // when it died, and at which generation.
+          <span
+            className="shrink-0 rounded bg-maestro-red/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-red"
+            title={`Interrupted — this run has NO live agent and nothing will restart it. Reported ${
+              run.interrupted_at?.at ?? "at startup"
+            }${
+              run.interrupted_at && run.interrupted_at.prior_generation > 0
+                ? ` at gen-${run.interrupted_at.prior_generation}`
+                : ""
+            }. Recover it, or abandon it to stop the alerts (abandon keeps the worktree and branch).`}
+          >
+            INTERRUPTED
           </span>
         ) : (
           <span className="shrink-0 rounded bg-maestro-green/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-green">
@@ -536,13 +563,27 @@ function RunRow({
             {recovering ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           </button>
         )}
+        {/* The non-destructive way out of the runs list. Before it existed,
+            archiving a config was reachable only through Clean up — so
+            quieting a dead run meant destroying its branch and worktree, and
+            the dead Nido run was simply left alerting instead. */}
+        <button
+          type="button"
+          onClick={() => onAbandon(run)}
+          disabled={pending || recovering || otherBusy}
+          className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
+          aria-label={`Abandon run ${run.epic}`}
+          title="Abandon: drop this run from the list and stop its alerts. KEEPS the worktree, the branch and every commit on it — nothing is deleted (asks first)."
+        >
+          <Archive size={12} />
+        </button>
         <button
           type="button"
           onClick={() => onCleanup(run)}
           disabled={pending || recovering || otherBusy}
           className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:opacity-40"
           aria-label={`Clean up run ${run.epic}`}
-          title="Delete this run's worktree and branch, cancel its timer, archive its run config (asks first)"
+          title="Clean up: DELETES this run's worktree and branch, cancels its timer, archives its run config. To keep the work, use Abandon instead (asks first)"
         >
           {pending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
         </button>
@@ -993,6 +1034,38 @@ export function LaunchSection({
     }
   };
 
+  /**
+   * Abandon: archive the run config and nothing else. The confirm spells out
+   * what is KEPT, because the neighbouring button deletes exactly that.
+   */
+  const handleAbandon = async (run: SamuraiRunListEntry) => {
+    const confirmed = await ask(
+      `Abandon run ${run.epic}? It leaves the runs list and stops alerting. Its worktree, branch and commits are KEPT — nothing is deleted. (Use Clean up to delete them.)`,
+      { title: "Abandon Run", kind: "warning" },
+    ).catch(() => false);
+    if (!confirmed) return;
+    const key = runKey(run);
+    setDeletingKey(key);
+    setRowError(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const report = await samuraiAbandonRun(run.project_path, run.epic);
+      const stopped = [
+        report.timer_cancelled ? "resume timer" : null,
+        report.spawn_cancelled ? "staged successor spawn" : null,
+      ].filter(Boolean);
+      setNotice(
+        `Abandoned run ${report.epic}${stopped.length > 0 ? ` (cancelled its ${stopped.join(" and ")})` : ""}. Worktree kept at ${report.worktree_path}.`,
+      );
+      await refreshRuns();
+    } catch (err) {
+      setRowError({ key, message: String(err) });
+    } finally {
+      setDeletingKey(null);
+    }
+  };
+
   const handleCleanup = async (run: SamuraiRunListEntry) => {
     // Destructive, never silent (PRD §5.9) — same ask() confirm pattern as
     // the audit clear.
@@ -1340,6 +1413,7 @@ export function LaunchSection({
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}
                   onRecover={handleRecover}
+                  onAbandon={handleAbandon}
                   onTogglePin={(entry) => togglePinnedParked(parkPinFor(entry))}
                   pinnedInRail={parked !== null && isParkedPinned(pinnedParked, parkPinFor(parked))}
                   successorPending={hasPendingSuccessor(run, pendingLaunches)}

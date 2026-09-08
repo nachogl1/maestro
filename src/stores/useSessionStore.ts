@@ -7,8 +7,10 @@ import { normalizePath, samePath } from "@/lib/path";
 import {
   isParkEntry,
   type SamuraiAuditEventPayload,
+  type SamuraiRunListEntry,
   type SamuraiScheduleEntry,
   type SamuraiSupervisorState,
+  samuraiListRuns,
   samuraiListSessions,
   samuraiRunFatalLabel,
   samuraiScheduleList,
@@ -271,6 +273,11 @@ export interface SamuraiToast {
 
 /** Keep at most this many queued samurai toasts; oldest are dropped first. */
 const MAX_SAMURAI_TOASTS = 6;
+
+/** What the startup seed calls an already-interrupted run — the same wording
+ *  `samuraiRunFatalLabel` gives the live `reconcile_interrupted` row, so the
+ *  two paths never describe the same state two ways. */
+const INTERRUPTED_RUN_LABEL = "Run was interrupted — resume or abandon it";
 
 let samuraiToastSeq = 0;
 
@@ -1565,6 +1572,68 @@ async function seedSamuraiSchedule(): Promise<void> {
 }
 
 /**
+ * Raises the loud surfaces for runs that are ALREADY interrupted when this
+ * listener starts.
+ *
+ * Cold-start reconciliation runs in the Tauri setup closure, with no delay,
+ * long before App mounts this listener — and Tauri buffers no events. So the
+ * `reconcile_interrupted` ALERT it emits is delivered to nobody: the toast
+ * that `applySamuraiFatalAuditEvent` would raise for it can never fire on
+ * the one path that matters, a cold start. That is not a race to widen; the
+ * fix is to stop depending on catching the event at all.
+ *
+ * The reconciler also LATCHES its verdict onto the run config
+ * (`interrupted_at`, PR #185), and that is durable state this seed can just
+ * read. Every ACTIVE run carrying the stamp is a run with no owner and no
+ * timer, so it gets the same toast + OS notification a live fatal row would
+ * have raised — from the run list, whenever the app happens to start.
+ *
+ * It repeats on every launch, deliberately: an interrupted run stays dead
+ * until a human recovers or abandons it, and the alert that fired once and
+ * was missed is exactly how the real Nido run went unnoticed for three
+ * weeks. Both actions are one click away in Active Runs, and both clear the
+ * stamp.
+ *
+ * No attention badge: an interrupted run has no live session to badge — the
+ * red INTERRUPTED row in Active Runs is its persistent surface.
+ */
+async function seedSamuraiInterruptedRuns(): Promise<void> {
+  try {
+    const runs = await samuraiListRuns();
+    // Defensive: a mocked/failed IPC layer may hand back a non-array.
+    if (!Array.isArray(runs)) return;
+    const dead = runs.filter(
+      (run: SamuraiRunListEntry) => run.status === "ACTIVE" && run.interrupted_at != null,
+    );
+    if (dead.length === 0) return;
+    const notify = useGitHubWatchdogStore.getState().notificationsEnabled;
+    if (!notify) return;
+    useSessionStore.setState((state) => {
+      const toasts = dead.map((run) => {
+        samuraiToastSeq += 1;
+        return {
+          id: `samurai-${samuraiToastSeq}`,
+          kind: "fatal" as const,
+          project: run.project_path,
+          epic: run.epic,
+          generation: run.interrupted_at?.prior_generation ?? 0,
+          label: INTERRUPTED_RUN_LABEL,
+        };
+      });
+      return { samuraiToasts: [...state.samuraiToasts, ...toasts].slice(-MAX_SAMURAI_TOASTS) };
+    });
+    for (const run of dead) {
+      void notifyOs(
+        `Samurai run needs you — ${projectLabel(run.project_path)}`,
+        `${INTERRUPTED_RUN_LABEL} (${run.epic})`,
+      );
+    }
+  } catch (err) {
+    console.error("Failed to seed interrupted samurai runs:", err);
+  }
+}
+
+/**
  * Seeds `samuraiBySessionId` from the supervisor's current snapshots, so
  * sessions registered before this frontend mounted (dev reload, late mount)
  * still get badges. Live events won the race for any id already present.
@@ -1636,6 +1705,7 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
   await samuraiStarting;
   void seedSamuraiSessions();
   void seedSamuraiSchedule();
+  void seedSamuraiInterruptedRuns();
 }
 
 export function stopSamuraiSupervisorListener(): void {

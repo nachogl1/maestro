@@ -90,6 +90,11 @@ export interface SamuraiAuditEventPayload {
  *   failed (a plain delivery_failed re-arms and can still recover, so it
  *   does not notify).
  * - the watchdog's silent-death `KILL` row (`details.kind: "dead"`).
+ * - every cold-start reconciliation verdict (`reconcile_*`): each one says a
+ *   persisted ACTIVE run has NO owner and startup deliberately spawned
+ *   nothing, so only a human can move it. These were the omission that let
+ *   the real Nido run sit dead from 2026-08-20 to 2026-09-08 while 22
+ *   `reconcile_interrupted` rows piled up unread in the audit list.
  *
  * Deliberately NOT fatal: allowance parks (planned, resume timer armed),
  * submit_retry (still recovering), ack_timeout (the injector re-arms).
@@ -111,6 +116,17 @@ export function samuraiRunFatalLabel(event: SamuraiAuditEvent): string | null {
       return "Successor spawn was dropped";
     case "delivery_failed":
       return details.retype === true ? "Brief re-delivery failed" : null;
+    // The four cold-start reconciliation verdicts. They carry the 0 sentinel
+    // for session/generation (no session exists — that IS the finding), so
+    // they raise the toast + OS notification and badge nothing.
+    case "reconcile_interrupted":
+      return "Run was interrupted — resume or abandon it";
+    case "reconcile_orphan":
+      return "An orchestrator from before the restart may still be running";
+    case "reconcile_gh_auth":
+      return "Run was interrupted and `gh` is logged out — fix auth, then resume";
+    case "reconcile_unstartable":
+      return "Run has no resume point — relaunch it from the launcher";
     default:
       return null;
   }
@@ -399,6 +415,21 @@ export interface SamuraiWorkflowGraph {
   start: string;
 }
 
+/**
+ * Mirrors the Rust `InterruptedStamp` (PR #185): cold-start reconciliation
+ * found this run ACTIVE with no owner — no resume timer, no live supervised
+ * session — and told the human so. The stamp latches that alert (so it is
+ * not repeated every launch) and, because it survives on disk, it is ALSO
+ * the durable "this run is dead" fact the UI reads: the run stays stamped
+ * until it is resumed (recovered), relaunched, or abandoned.
+ */
+export interface SamuraiInterruptedStamp {
+  /** RFC 3339 UTC time the interruption was first reported. */
+  at: string;
+  /** The generation the run died at — `0` when nothing knew one. */
+  prior_generation: number;
+}
+
 /** One epic's run config — mirrors the Rust `SamuraiRunConfig` (P3.1). */
 export interface SamuraiRunConfig {
   /** Canonical project path (Windows `\\?\` prefix already stripped). */
@@ -450,6 +481,13 @@ export interface SamuraiRunConfig {
    * manual cleanup; ARCHIVED = cleaned up.
    */
   status: "ACTIVE" | "COMPLETED" | "ARCHIVED";
+  /**
+   * Set once cold-start reconciliation reported this run interrupted (PR
+   * #185); null while the run is healthy, and cleared again the moment it
+   * has an owner. A stamped ACTIVE run is a DEAD run — badge it, never let
+   * it read as live.
+   */
+  interrupted_at: SamuraiInterruptedStamp | null;
   /** RFC 3339 UTC creation timestamp. */
   created_at: string;
 }
@@ -598,6 +636,38 @@ export function samuraiCleanupEpic(
   epic: string,
 ): Promise<SamuraiCleanupReport> {
   return invoke("samurai_cleanup_epic", { projectPath, epic });
+}
+
+/** What abandoning a run did — mirrors the Rust `SamuraiAbandonReport`. */
+export interface SamuraiAbandonReport {
+  /** The run config's own spelling of the epic. */
+  epic: string;
+  /** The worktree that was KEPT — abandoning deletes nothing on disk. */
+  worktree_path: string;
+  /** A pending resume timer was cancelled (it would respawn the run). */
+  timer_cancelled: boolean;
+  /** A staged-but-unregistered successor spawn was cancelled. */
+  spawn_cancelled: boolean;
+}
+
+/**
+ * Abandons a run: archives its config so it leaves the runs list and stops
+ * alerting, and NOTHING else — the worktree, the branch and every commit on
+ * it stay exactly where they are.
+ *
+ * This is the non-destructive twin of {@link samuraiCleanupEpic}. Before it
+ * existed, archiving a config was reachable only through cleanup, so the
+ * only way to quiet a dead run was to destroy its work — which is why the
+ * dead Nido run was left alerting for three weeks instead.
+ *
+ * Refuses while a live supervised session exists (delisting a run somebody's
+ * agent is still working is the one way this can lose information).
+ */
+export function samuraiAbandonRun(
+  projectPath: string,
+  epic: string,
+): Promise<SamuraiAbandonReport> {
+  return invoke("samurai_abandon_run", { projectPath, epic });
 }
 
 // ---------------------------------------------------------------------------
