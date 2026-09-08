@@ -311,25 +311,50 @@ fn head_matches(handoff_sha: Option<&str>, current_head: Option<&str>) -> bool {
 /// a file that does not exist, and the HEAD-matched arm waives the Verify
 /// section on top of it.
 fn read_handoff_tolerant(dir: &Path, epic: &str, generation: u32) -> Option<(String, String)> {
-    let canonical = samurai_prompts::handoff_file_relpath(epic, generation);
-    match std::fs::read_to_string(dir.join(&canonical)) {
-        Ok(contents) => Some((contents, canonical)),
+    let relpath = handoff_relpath_tolerant(dir, epic, generation)?;
+    match std::fs::read_to_string(dir.join(&relpath)) {
+        Ok(contents) => Some((contents, relpath)),
         Err(e) => {
             log::info!(
-                "samurai replicator: no gen-{generation} handoff at {canonical} ({e}) — trying the dash spelling"
+                "samurai replicator: the gen-{generation} handoff at {relpath} exists but could not be read ({e}) — recovery mode"
             );
-            let dash = samurai_prompts::handoff_file_dash_relpath(epic, generation);
-            match std::fs::read_to_string(dir.join(&dash)) {
-                Ok(contents) => Some((contents, dash)),
-                Err(e) => {
-                    log::info!(
-                        "samurai replicator: no gen-{generation} handoff at {dash} either ({e}) — recovery mode"
-                    );
-                    None
-                }
-            }
+            None
         }
     }
+}
+
+/// Where gen-`generation`'s handoff ACTUALLY is under `dir`: the canonical
+/// spelling ([`samurai_prompts::handoff_file_relpath`]) when that file is on
+/// disk, otherwise the DASH spelling
+/// ([`samurai_prompts::handoff_file_dash_relpath`]) issue #119 tolerates,
+/// otherwise `None`.
+///
+/// THE single place the two spellings are tried, so every consumer agrees on
+/// which file a generation's handoff is. [`read_handoff_tolerant`] resolves
+/// through it, and so does the injector's own written-marker validation
+/// (`validate_handoff`) — that one used to check only the canonical name, so
+/// a run whose orchestrator wrote the dash variant failed validation with
+/// "the handoff file is missing" and burned its whole corrective round on a
+/// handoff that was sitting right there.
+///
+/// `pub(crate)` for that injector reuse; the check is two `is_file` stats, so
+/// callers run it on the blocking pool like every other FS probe here.
+pub(crate) fn handoff_relpath_tolerant(dir: &Path, epic: &str, generation: u32) -> Option<String> {
+    let canonical = samurai_prompts::handoff_file_relpath(epic, generation);
+    if dir.join(&canonical).is_file() {
+        return Some(canonical);
+    }
+    let dash = samurai_prompts::handoff_file_dash_relpath(epic, generation);
+    if dir.join(&dash).is_file() {
+        log::info!(
+            "samurai replicator: no gen-{generation} handoff at {canonical} — resolved to the dash spelling {dash}"
+        );
+        return Some(dash);
+    }
+    log::info!(
+        "samurai replicator: no gen-{generation} handoff under either spelling ({canonical} / {dash})"
+    );
+    None
 }
 
 /// Issue #137: what a decided instruction is actually DELIVERED as — a brief
@@ -355,6 +380,33 @@ async fn brief_or_inline(working_dir: &str, name: String, instruction: String) -
         );
         inline
     })
+}
+
+/// [`brief_or_inline`] without the swallowed failure: same routing — the
+/// instruction inline when it fits, a pointer at a written brief when it does
+/// not — but a failed write comes back as `Err` instead of degrading into
+/// "type the whole multi-KB ritual".
+///
+/// Finding E2 (the Nido gen-2 loss). A HANDOFF successor is the one staging
+/// path where the inline fallback has no rescue left: the full ritual text is
+/// several KB, so it also fails [`samurai_brief::launch_line_safe`], the
+/// pointer cannot ride argv either, and the entry stays on
+/// [`DeliveryRoute::Typed`] with several KB to type into a *starting* CLI —
+/// the exact issue #137/#103 failure mode. Its caller raises
+/// `successor_spawn_failed` instead of staging a delivery that is known to
+/// lose the brief.
+async fn try_brief_or_inline(
+    working_dir: &str,
+    name: String,
+    instruction: String,
+) -> Result<String, String> {
+    let worktree = PathBuf::from(working_dir);
+    tokio::task::spawn_blocking(move || {
+        let routed = samurai_brief::try_deliverable_instruction(&worktree, &name, &instruction);
+        routed.map(|pointer| pointer.unwrap_or(instruction))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("the brief write task failed ({e})")))
 }
 
 /// The brief file name for one staged ritual (issue #137):
@@ -1224,12 +1276,29 @@ impl SamuraiReplicator {
         // Issue #137: a ritual is several KB — far past what the PTY can be
         // trusted to carry — so it is written into the worktree and the
         // successor is handed a one-line pointer at it.
-        let instruction = brief_or_inline(
+        // Finding E2: NOT `brief_or_inline` — a swallowed write failure here
+        // hands back the full multi-KB ritual, which then fails
+        // `launch_line_safe` too, so the successor gets the known-lossy typed
+        // paste into a starting CLI. Better to stop the chain with an ALERT a
+        // human can act on than to spawn a generation whose brief is gone.
+        let instruction = match try_brief_or_inline(
             &working_dir,
             ritual_brief_name(&snapshot.epic, generation, recovery),
             instruction,
         )
-        .await;
+        .await
+        {
+            Ok(instruction) => instruction,
+            Err(e) => {
+                self.alert_spawn_failed(
+                    &snapshot,
+                    &format!(
+                        "the gen-{generation} ritual brief could not be written ({e}) — successor not staged rather than typing a multi-KB ritual into a starting CLI"
+                    ),
+                );
+                return;
+            }
+        };
         // Issue #170: a successor spawn composes a fresh `claude` command in
         // the grid exactly like a gen-1 launch, so the pointer rides that
         // line whenever it fits — typed injection into a starting CLI is
@@ -3451,6 +3520,53 @@ mod tests {
         let instruction = brief_text(not_a_repo.path(), &staged);
         assert!(instruction.contains("MUST run every command"));
         assert!(!instruction.contains("RECOVERY"));
+    }
+
+    #[tokio::test]
+    async fn test_unwritable_ritual_brief_alerts_instead_of_typing_the_full_ritual() {
+        // Finding E2 (the Nido gen-2 loss): a swallowed brief-write failure
+        // used to hand `replicate` the FULL multi-KB ritual, which also fails
+        // `launch_line_safe`, so the successor was staged on the known-lossy
+        // typed route with several KB to type into a starting CLI. Now the
+        // chain stops with `successor_spawn_failed` instead.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-rep-briefless";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff(repo.path(), "epic-9", 2, &"a".repeat(40));
+        // `.maestro/briefs` occupied by a FILE: `create_dir_all` there fails,
+        // while `.maestro/handoffs/` above is untouched.
+        std::fs::write(repo.path().join(".maestro/briefs"), "not a directory").unwrap();
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        let snapshot = to_handoff_written(&h.supervisor, project, "epic-9", 2);
+
+        h.replicator.on_handoff_written(&snapshot);
+
+        let mut alerts = 0;
+        for _ in 0..300 {
+            let rows = h.audit.read(project, None, None).await.unwrap().events;
+            alerts = rows
+                .iter()
+                .filter(|r| r.details["kind"] == "successor_spawn_failed")
+                .count();
+            if alerts > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(alerts, 1, "one successor_spawn_failed ALERT");
+        assert!(
+            h.replicator.pending_view(3).is_none(),
+            "nothing staged: a multi-KB typed paste is not a delivery"
+        );
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "no terminal opened for a generation whose brief is gone"
+        );
     }
 
     #[tokio::test]
