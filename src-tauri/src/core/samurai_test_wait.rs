@@ -67,6 +67,24 @@ pub async fn wait_until(tick: &HarnessTick, mut cond: impl FnMut() -> bool) {
     }
 }
 
+/// Awaits `fut` under the [`HANG_BACKSTOP`] hang detector, for the case where
+/// the test can await the work directly rather than observe it through a
+/// harness hook.
+///
+/// Awaiting a future *is* the maximally event-driven wait — the future's own
+/// completion is the wake, so a healthy run returns the instant it resolves,
+/// however loaded the machine is. The bound exists only because `cargo test`
+/// has no per-test timeout: without it, a regression that awaits something
+/// which never resolves would wedge the whole test binary instead of naming
+/// itself. It is **not** a race budget and never participates in a passing
+/// run — see the module doc. `what` names the awaited work in the panic.
+pub async fn await_or_hang<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(HANG_BACKSTOP, fut).await {
+        Ok(value) => value,
+        Err(_) => panic!("{what} never completed within {HANG_BACKSTOP:?} — it hung"),
+    }
+}
+
 /// Reads the audit log until a row matches, returning all rows. Same contract
 /// as [`wait_until`]: the audit writer's `on_append` hook ticks the harness,
 /// so the re-read happens on the append, not on a timer.
@@ -112,6 +130,19 @@ mod tests {
         });
 
         wait_until(&tick, || done.load(std::sync::atomic::Ordering::SeqCst)).await;
+    }
+
+    /// `await_or_hang` hands back the future's value the moment it resolves —
+    /// the backstop is a hang detector, so it must cost a passing run nothing.
+    #[tokio::test]
+    async fn test_await_or_hang_returns_the_moment_the_future_resolves() {
+        let started = std::time::Instant::now();
+        let value = await_or_hang("a future that resolves at once", async { 7 }).await;
+        assert_eq!(value, 7);
+        assert!(
+            started.elapsed() < SETTLE,
+            "a resolved future must not pay any of the backstop"
+        );
     }
 
     /// A tick that lands before anyone waits is not lost: `notify_one` stores
