@@ -137,6 +137,20 @@ export function isParkEntry(entry: SamuraiScheduleEntry): boolean {
 }
 
 /**
+ * Comparison form of an epic label. A resume timer's epic and the run
+ * config's epic are the same epic written by two different producers
+ * (`#38`, `epic-38`, `Epic #38 · issues #7, #9`), so the two only line up
+ * once punctuation, casing and padding are out of the way — the same
+ * normalisation the branch slug uses.
+ */
+export function epicSlug(epic: string): string {
+  return epic
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
  * One pending resume timer — mirrors the Rust `ScheduleEntry`
  * (`core/samurai_schedule.rs`). Also the element type of the
  * `samurai-schedule-event` payload, which carries the FULL current list on

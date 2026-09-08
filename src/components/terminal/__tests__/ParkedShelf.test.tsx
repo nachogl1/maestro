@@ -7,11 +7,22 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+// The chips' pin control reads the persisted workspace store.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: vi.fn().mockImplementation(() => ({
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue(undefined),
+    save: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+
 import {
   type BackendSessionStatus,
   type SessionConfig,
   useSessionStore,
 } from "@/stores/useSessionStore";
+import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ParkedShelf } from "../ParkedShelf";
 
 function session(
@@ -39,6 +50,7 @@ describe("ParkedShelf", () => {
       samuraiBySessionId: {},
       samuraiParkAlerts: [],
     });
+    useWorkspaceStore.setState({ tabs: [], pinnedParked: [], zoomTabOrders: {} });
   });
 
   it("renders nothing when no session is parked", () => {
@@ -123,6 +135,48 @@ describe("ParkedShelf", () => {
     render(<ParkedShelf onUnpark={vi.fn()} />);
 
     expect(screen.getByText("Parked").className).toContain("text-maestro-muted");
+  });
+
+  describe("pinning a parked chip", () => {
+    it("pins the chip by project and terminal name, never by session id", () => {
+      useSessionStore.setState({
+        sessions: [session(7, "C:gitalpha", "Scout")],
+        parkedSessionIds: [7],
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+      fireEvent.click(screen.getByLabelText("Pin Scout"));
+
+      expect(useWorkspaceStore.getState().pinnedParked).toEqual([
+        { kind: "terminal", project: "C:gitalpha", label: "Scout" },
+      ]);
+    });
+
+    it("unpins on a second click", () => {
+      useSessionStore.setState({
+        sessions: [session(7, "C:/git/alpha", "Scout")],
+        parkedSessionIds: [7],
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+      fireEvent.click(screen.getByLabelText("Pin Scout"));
+      fireEvent.click(screen.getByLabelText("Unpin Scout"));
+
+      expect(useWorkspaceStore.getState().pinnedParked).toEqual([]);
+    });
+
+    it("does not restore the terminal when the pin is clicked", () => {
+      useSessionStore.setState({
+        sessions: [session(7, "C:/git/alpha", "Scout")],
+        parkedSessionIds: [7],
+      });
+      const onUnpark = vi.fn();
+
+      render(<ParkedShelf onUnpark={onUnpark} />);
+      fireEvent.click(screen.getByLabelText("Pin Scout"));
+
+      expect(onUnpark).not.toHaveBeenCalled();
+    });
   });
 
   describe("allowance-parked Samurai runs", () => {

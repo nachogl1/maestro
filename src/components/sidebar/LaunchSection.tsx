@@ -5,6 +5,8 @@ import {
   ChevronDown,
   FolderGit2,
   Loader2,
+  Pin,
+  PinOff,
   RefreshCw,
   Rocket,
   TerminalSquare,
@@ -13,9 +15,11 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isParkedPinned, type ParkedPin } from "@/lib/parkedPins";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
+  epicSlug,
   isParkEntry,
   type SamuraiPreflight,
   type SamuraiRunListEntry,
@@ -294,20 +298,6 @@ function runKey(run: SamuraiRunListEntry): string {
 }
 
 /**
- * Comparable form of a run identity: lower-cased, every run of non-alphanumeric
- * characters collapsed to a single dash. A run config stores a readable label
- * (`epic #5 · issues #7, #9`) while its resume timer was armed under whatever
- * string the supervisor held, so the two only line up once punctuation, casing
- * and padding are out of the way — the same normalisation the branch slug uses.
- */
-function epicSlug(epic: string): string {
-  return epic
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-/**
  * The pending resume timer for one run, or null when it is not parked.
  * Project paths go through `samePath`, never `===`: the same directory has
  * several spellings on Windows, and matching on the epic alone would badge a
@@ -326,6 +316,17 @@ function findScheduleEntry(
         isParkEntry(e) && samePath(e.project_path, run.project_path) && epicSlug(e.epic) === slug,
     ) ?? null
   );
+}
+
+/**
+ * The rail pin for a parked run — keyed on the TIMER's project and epic, not
+ * the run config's. The rail resolves pins against the live park alerts, which
+ * are built from these same timer entries, and the two sources spell the epic
+ * differently often enough that using the run's own label would pin something
+ * the rail could never find.
+ */
+function parkPinFor(entry: SamuraiScheduleEntry): ParkedPin {
+  return { kind: "samurai", project: entry.project_path, label: entry.epic };
 }
 
 /**
@@ -414,6 +415,8 @@ function RunRow({
   onOpen,
   onCleanup,
   onRecover,
+  onTogglePin,
+  pinnedInRail,
   successorPending,
   pending,
   recovering,
@@ -430,6 +433,10 @@ function RunRow({
   onCleanup: (run: SamuraiRunListEntry) => void;
   /** Issue #124: explicit crash-recovery relaunch of a non-completed run. */
   onRecover: (run: SamuraiRunListEntry) => void;
+  /** Pin/unpin this run's park in the always-visible rail. */
+  onTogglePin: (entry: SamuraiScheduleEntry) => void;
+  /** This run's park is already pinned to the rail. */
+  pinnedInRail: boolean;
   /** A successor generation for this run is already queued in the frontend's
    *  launch store (issue #55) — recovering on top of it would double-spawn. */
   successorPending: boolean;
@@ -545,7 +552,7 @@ function RunRow({
           that does not parse still badges the run PARKED, just without a
           resume reading — a broken stamp must never hide the parked state. */}
       {parked && (
-        <div className="flex pl-1 pt-0.5">
+        <div className="flex items-center gap-1 pl-1 pt-0.5">
           <span
             className="min-w-0 rounded bg-maestro-purple/20 px-1 py-px text-[9px] font-bold leading-tight tracking-wide text-maestro-purple"
             title={`Parked — this run has no live agent on purpose. It resumes automatically${
@@ -554,6 +561,24 @@ function RunRow({
           >
             {resume ? `PARKED · resumes ${resume}` : "PARKED"}
           </span>
+          {/* Pinning the run is pinning THE PARK, so the pin is keyed on the
+              timer's own project + epic — that is the pair the rail resolves
+              against, and the run config's epic can be spelled differently. */}
+          <button
+            type="button"
+            onClick={() => onTogglePin(parked)}
+            className={`shrink-0 rounded p-0.5 transition-colors hover:text-maestro-accent ${
+              pinnedInRail ? "text-maestro-accent" : "text-maestro-muted"
+            }`}
+            aria-label={`${pinnedInRail ? "Unpin" : "Pin"} parked run ${run.epic}`}
+            title={
+              pinnedInRail
+                ? "Unpin — drops it from the always-visible parked rail"
+                : "Pin — keeps this park visible in every view, not just the sidebar"
+            }
+          >
+            {pinnedInRail ? <PinOff size={10} /> : <Pin size={10} />}
+          </button>
         </div>
       )}
       {/* Issue #102: the orchestrator's live details — a COMPLETED run's
@@ -630,6 +655,8 @@ export function LaunchSection({
   onNavigate?: (tabId: string, sessionId: number) => void;
 }) {
   const tabs = useWorkspaceStore((s) => s.tabs);
+  const pinnedParked = useWorkspaceStore((s) => s.pinnedParked);
+  const togglePinnedParked = useWorkspaceStore((s) => s.togglePinnedParked);
   const activeTab = tabs.find((t) => t.active);
   const projectPath = activeTab?.projectPath ?? "";
   const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
@@ -1294,6 +1321,7 @@ export function LaunchSection({
           <div className="space-y-0.5">
             {runs.map((run) => {
               const key = runKey(run);
+              const parked = findScheduleEntry(run, samuraiSchedule);
               return (
                 <RunRow
                   key={key}
@@ -1307,11 +1335,13 @@ export function LaunchSection({
                       ? findOpenTarget(run, samuraiBySessionId, tabs)
                       : { kind: "blocked", reason: NO_SESSION_REASON }
                   }
-                  parked={findScheduleEntry(run, samuraiSchedule)}
+                  parked={parked}
                   now={now}
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}
                   onRecover={handleRecover}
+                  onTogglePin={(entry) => togglePinnedParked(parkPinFor(entry))}
+                  pinnedInRail={parked !== null && isParkedPinned(pinnedParked, parkPinFor(parked))}
                   successorPending={hasPendingSuccessor(run, pendingLaunches)}
                   pending={deletingKey === key}
                   recovering={recoveringKey === key}

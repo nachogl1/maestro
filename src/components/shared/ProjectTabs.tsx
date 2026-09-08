@@ -10,7 +10,7 @@ import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
+import { Minus, PanelLeft, Pin, PinOff, Plus, Square, X } from "lucide-react";
 import { useCallback, useMemo, useRef } from "react";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
 import { isMac } from "@/lib/platform";
@@ -21,6 +21,8 @@ export type ProjectTab = {
   active: boolean;
   /** Project accent color (name-derived, matches the eagle view's tile borders). */
   color?: string;
+  /** Pinned tabs sort to the front of the strip and show a persistent marker. */
+  pinned?: boolean;
 };
 
 interface ProjectTabsProps {
@@ -32,6 +34,7 @@ interface ProjectTabsProps {
   sidebarOpen: boolean;
   onReorderTab: (activeId: string, overId: string) => void;
   onMoveTab: (tabId: string, direction: "left" | "right") => void;
+  onTogglePinTab: (id: string) => void;
 }
 
 /**
@@ -41,12 +44,14 @@ function TabItem({
   tab,
   onSelect,
   onClose,
+  onTogglePin,
   onKeyDown,
   tabRefCallback,
 }: {
   tab: ProjectTab;
   onSelect: () => void;
   onClose: () => void;
+  onTogglePin: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   tabRefCallback: (node: HTMLElement | null) => void;
 }) {
@@ -92,7 +97,8 @@ function TabItem({
       tabIndex={tab.active ? 0 : -1}
       onClick={onSelect}
       onKeyDown={onKeyDown}
-      className={`flex items-center gap-1.5 rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
+      // `group` drives the hover-revealed pin button below.
+      className={`group flex items-center gap-1.5 rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
         tab.active
           ? "bg-maestro-bg text-maestro-text"
           : "text-maestro-muted hover:text-maestro-text"
@@ -104,6 +110,9 @@ function TabItem({
             shouldPulse ? "animate-pulse" : ""
           }`}
         />
+        {/* Persistent at-a-glance marker — the hover button below is the
+            control, this is the state. */}
+        {tab.pinned && <Pin size={9} className="shrink-0 text-maestro-accent" aria-hidden="true" />}
         <span>{tab.name}</span>
         {sessionCount > 0 && (
           <span
@@ -119,6 +128,29 @@ function TabItem({
           </span>
         )}
       </span>
+      {/* Both controls stop pointerdown so dnd-kit's PointerSensor never
+          claims the press — a click on them must not start a tab drag. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onTogglePin();
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        className={`ml-1 rounded p-0.5 hover:bg-maestro-border ${
+          tab.pinned
+            ? "text-maestro-accent"
+            : "opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
+        }`}
+        aria-label={tab.pinned ? `Unpin ${tab.name}` : `Pin ${tab.name}`}
+        title={
+          tab.pinned
+            ? "Unpin — the tab returns to the unpinned group"
+            : "Pin — keeps the tab at the front of the strip"
+        }
+      >
+        {tab.pinned ? <PinOff size={10} /> : <Pin size={10} />}
+      </button>
       <button
         type="button"
         onClick={(e) => {
@@ -126,7 +158,7 @@ function TabItem({
           onClose();
         }}
         onPointerDown={(e) => e.stopPropagation()}
-        className="ml-1 rounded p-0.5 hover:bg-maestro-border"
+        className="rounded p-0.5 hover:bg-maestro-border"
         aria-label={`Close ${tab.name}`}
       >
         <X size={10} />
@@ -144,6 +176,7 @@ export function ProjectTabs({
   sidebarOpen,
   onReorderTab,
   onMoveTab,
+  onTogglePinTab,
 }: ProjectTabsProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
 
@@ -252,6 +285,7 @@ export function ProjectTabs({
                     tab={tab}
                     onSelect={() => onSelectTab(tab.id)}
                     onClose={() => onCloseTab(tab.id)}
+                    onTogglePin={() => onTogglePinTab(tab.id)}
                     onKeyDown={(e) => handleTabKeyDown(e, tab)}
                     tabRefCallback={setTabRef(tab.id)}
                   />
