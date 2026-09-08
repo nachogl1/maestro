@@ -244,6 +244,7 @@ export function PreLaunchCard({
 
   // Resume session state
   const [claudeSessions, setClaudeSessions] = useState<ClaudeSessionInfo[]>([]);
+  const [resumeSearchQuery, setResumeSearchQuery] = useState("");
 
   // Fetch Claude sessions when mode is Claude. Guard against races where
   // selectedRepoPath changes mid-flight so a stale response can't clobber the
@@ -251,6 +252,7 @@ export function PreLaunchCard({
   useEffect(() => {
     if (slot.mode !== "Claude") {
       setClaudeSessions([]);
+      setResumeSearchQuery("");
       return;
     }
     let ignore = false;
@@ -269,6 +271,18 @@ export function PreLaunchCard({
 
   const modeConfig = getModeConfig(slot.mode);
   const ModeIcon = modeConfig.icon;
+
+  // Filter resumable sessions by prompt/branch/id — only surfaced once the
+  // strip is long enough that the search input renders (see JSX below).
+  const resumeQuery = resumeSearchQuery.trim().toLowerCase();
+  const filteredClaudeSessions = resumeQuery
+    ? claudeSessions.filter(
+        (session) =>
+          (session.first_prompt ?? "").toLowerCase().includes(resumeQuery) ||
+          (session.git_branch ?? "").toLowerCase().includes(resumeQuery) ||
+          session.session_id.toLowerCase().includes(resumeQuery),
+      )
+    : claudeSessions;
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -1740,76 +1754,119 @@ export function PreLaunchCard({
           {slot.mode === "Claude" && claudeSessions.length > 0 && (
             <div>
               {/* Group heading for the session cards below — not a control label. */}
-              <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-maestro-muted">
-                Resume Previous Session
-              </span>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {claudeSessions.map((session) => {
-                  const isSelected = slot.resumeSessionId === session.session_id;
-                  return (
-                    <div
-                      key={session.session_id}
-                      className={`relative flex w-44 shrink-0 flex-col gap-1 rounded-lg border px-3 py-2 text-left transition-colors ${
-                        isSelected
-                          ? "border-violet-500/50 bg-violet-500/10"
-                          : "border-maestro-border bg-maestro-card hover:border-maestro-accent/50"
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onResumeSessionChange(isSelected ? null : session.session_id)
-                        }
-                        className="flex flex-1 flex-col gap-1 text-left"
-                      >
-                        <span className="line-clamp-2 pr-4 text-xs leading-snug text-maestro-text">
-                          {session.first_prompt ?? "No prompt recorded"}
-                        </span>
-                        <div className="flex items-center gap-1.5 text-[10px] text-maestro-muted">
-                          {session.git_branch && (
-                            <span className="flex items-center gap-0.5 truncate">
-                              <GitBranch size={9} />
-                              {session.git_branch}
-                            </span>
-                          )}
-                          <span className="shrink-0">
-                            {formatRelativeTime(session.last_active)}
-                          </span>
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        title="Delete session"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const preview =
-                            session.first_prompt?.trim().slice(0, 80) ?? "this session";
-                          if (
-                            !window.confirm(
-                              `Delete \u201C${preview}\u201D? The transcript cannot be recovered.`,
-                            )
-                          ) {
-                            return;
-                          }
-                          if (isSelected) onResumeSessionChange(null);
-                          deleteClaudeSession(selectedRepoPath || projectPath, session.session_id)
-                            .then(() => {
-                              setClaudeSessions((prev) =>
-                                prev.filter((s) => s.session_id !== session.session_id),
-                              );
-                            })
-                            .catch((err) => {
-                              console.error("Failed to delete Claude session:", err);
-                            });
-                        }}
-                        className="absolute right-1.5 top-1.5 rounded p-0.5 text-maestro-muted opacity-0 transition-opacity hover:text-maestro-red [div:hover>&]:opacity-100"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  );
-                })}
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="block text-[10px] font-medium uppercase tracking-wide text-maestro-muted">
+                  Resume Previous Session
+                </span>
+                {resumeSearchQuery && (
+                  <span className="shrink-0 text-[10px] text-maestro-muted">
+                    {filteredClaudeSessions.length} of {claudeSessions.length}
+                  </span>
+                )}
               </div>
+
+              {/* Search input — only shown once there are enough sessions to need it */}
+              {claudeSessions.length > 4 && (
+                <div className="relative mb-1.5">
+                  <Search
+                    size={12}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 text-maestro-muted"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Search sessions..."
+                    value={resumeSearchQuery}
+                    onChange={(e) => setResumeSearchQuery(e.target.value)}
+                    className="w-full rounded border border-maestro-border bg-maestro-surface py-1.5 pl-7 pr-7 text-xs text-maestro-text placeholder:text-maestro-muted focus:border-maestro-accent focus:outline-none"
+                  />
+                  {resumeSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setResumeSearchQuery("")}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-maestro-muted transition-colors hover:text-maestro-text"
+                      aria-label="Clear search"
+                      title="Clear search"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {filteredClaudeSessions.length === 0 ? (
+                <div className="px-3 py-2 text-center text-xs text-maestro-muted">
+                  No sessions match "{resumeSearchQuery}"
+                </div>
+              ) : (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {filteredClaudeSessions.map((session) => {
+                    const isSelected = slot.resumeSessionId === session.session_id;
+                    return (
+                      <div
+                        key={session.session_id}
+                        className={`relative flex w-44 shrink-0 flex-col gap-1 rounded-lg border px-3 py-2 text-left transition-colors ${
+                          isSelected
+                            ? "border-violet-500/50 bg-violet-500/10"
+                            : "border-maestro-border bg-maestro-card hover:border-maestro-accent/50"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onResumeSessionChange(isSelected ? null : session.session_id);
+                            setResumeSearchQuery("");
+                          }}
+                          className="flex flex-1 flex-col gap-1 text-left"
+                        >
+                          <span className="line-clamp-2 pr-4 text-xs leading-snug text-maestro-text">
+                            {session.first_prompt ?? "No prompt recorded"}
+                          </span>
+                          <div className="flex items-center gap-1.5 text-[10px] text-maestro-muted">
+                            {session.git_branch && (
+                              <span className="flex items-center gap-0.5 truncate">
+                                <GitBranch size={9} />
+                                {session.git_branch}
+                              </span>
+                            )}
+                            <span className="shrink-0">
+                              {formatRelativeTime(session.last_active)}
+                            </span>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete session"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const preview =
+                              session.first_prompt?.trim().slice(0, 80) ?? "this session";
+                            if (
+                              !window.confirm(
+                                `Delete \u201C${preview}\u201D? The transcript cannot be recovered.`,
+                              )
+                            ) {
+                              return;
+                            }
+                            if (isSelected) onResumeSessionChange(null);
+                            deleteClaudeSession(selectedRepoPath || projectPath, session.session_id)
+                              .then(() => {
+                                setClaudeSessions((prev) =>
+                                  prev.filter((s) => s.session_id !== session.session_id),
+                                );
+                              })
+                              .catch((err) => {
+                                console.error("Failed to delete Claude session:", err);
+                              });
+                          }}
+                          className="absolute right-1.5 top-1.5 rounded p-0.5 text-maestro-muted opacity-0 transition-opacity hover:text-maestro-red [div:hover>&]:opacity-100"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
