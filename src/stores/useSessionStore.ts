@@ -1224,9 +1224,7 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
     if (!flagSession && !notify) return state;
     samuraiToastSeq += 1;
     return {
-      ...(flagSession
-        ? { attentionSessionIds: [...state.attentionSessionIds, session_id] }
-        : {}),
+      ...(flagSession ? { attentionSessionIds: [...state.attentionSessionIds, session_id] } : {}),
       ...(notify
         ? {
             samuraiToasts: [
