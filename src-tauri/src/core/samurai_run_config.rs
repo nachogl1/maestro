@@ -76,6 +76,24 @@ pub struct RefTitle {
     pub title: String,
 }
 
+/// The cold-start "this run was interrupted" ALERT that has ALREADY been
+/// raised for a run — the latch that stops reconciliation appending an
+/// identical `reconcile_interrupted` row on every single app launch. A real
+/// parked run collected 22 of them over three weeks because the alert wrote
+/// nothing back and nothing else ever aged the rows out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedStamp {
+    /// RFC 3339 UTC time the alert was appended.
+    pub at: String,
+    /// The generation the run was interrupted at — exactly the number the
+    /// alert reported as `prior_generation`. Storing it is what makes the
+    /// latch SELF-CLEARING: a resume always spawns generation prior+1 (the
+    /// resumer's contract), so a later launch that finds a HIGHER generation
+    /// knows the run was resumed and interrupted again and alerts afresh,
+    /// without every recovery path having to remember to clear a flag.
+    pub prior_generation: u32,
+}
+
 /// One epic's run config (PRD §5.8: "repo, epic ref, model prefs,
 /// thresholds, worktree path, `--repo` pin"). Fields are snake_case on the
 /// wire like every samurai sibling.
@@ -161,6 +179,16 @@ pub struct SamuraiRunConfig {
     #[serde(default)]
     pub display_name: Option<String>,
     pub status: RunConfigStatus,
+    /// Set when cold-start reconciliation told the human this run was
+    /// interrupted, so the next launch does not tell them the same thing
+    /// again. `#[serde(default)]`: a config written before the latch existed
+    /// has no such key and loads as `None` — "never alerted yet", which is
+    /// the safe direction (the human still gets one row). Cleared by a
+    /// relaunch (which writes a fresh config) and by reconciliation itself
+    /// once the run has an owner again; see [`InterruptedStamp`] for the
+    /// generation-advance case.
+    #[serde(default)]
+    pub interrupted_at: Option<InterruptedStamp>,
     /// RFC 3339 UTC creation timestamp.
     pub created_at: String,
 }
@@ -188,6 +216,7 @@ impl SamuraiRunConfig {
             run_number: 0,
             display_name: None,
             status: RunConfigStatus::Active,
+            interrupted_at: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
@@ -482,6 +511,51 @@ impl RunConfigStore {
         atomic_write_json(&path, &config)
     }
 
+    /// Latches the cold-start interrupted-run ALERT onto the config
+    /// (`samurai_reconciler`), so the next launch sees that this run was
+    /// already reported at `prior_generation` and stays quiet. No status
+    /// guard, like [`Self::set_ref_titles`]: the only caller already holds
+    /// an ACTIVE config it just alerted on. `Err` on a missing/unreadable
+    /// config is a normal outcome the caller logs and drops — an unlatched
+    /// alert repeats, which is the pre-existing behaviour, never a crash.
+    pub fn mark_interrupted(
+        &self,
+        project: &str,
+        epic: &str,
+        prior_generation: u32,
+    ) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.config_path(&normalize_project(project), epic);
+        let mut config = read_config(&path).map_err(|e| match e {
+            ReadError::Missing => format!("no run config for epic {epic:?} at {path:?}"),
+            ReadError::Other(e) => e,
+        })?;
+        config.interrupted_at = Some(InterruptedStamp {
+            at: chrono::Utc::now().to_rfc3339(),
+            prior_generation,
+        });
+        atomic_write_json(&path, &config)
+    }
+
+    /// Drops the latch [`Self::mark_interrupted`] set — the run is owned
+    /// again (resumed, or recovered by a live session), so a LATER
+    /// interruption must alert even if it happens at the same generation.
+    /// Writes nothing when the latch is already clear, so the common case
+    /// (every healthy run, every launch) costs one read.
+    pub fn clear_interrupted(&self, project: &str, epic: &str) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.config_path(&normalize_project(project), epic);
+        let mut config = read_config(&path).map_err(|e| match e {
+            ReadError::Missing => format!("no run config for epic {epic:?} at {path:?}"),
+            ReadError::Other(e) => e,
+        })?;
+        if config.interrupted_at.is_none() {
+            return Ok(());
+        }
+        config.interrupted_at = None;
+        atomic_write_json(&path, &config)
+    }
+
     fn config_path(&self, normalized_project: &str, epic: &str) -> PathBuf {
         self.base_dir
             .join(project_dir_name(normalized_project))
@@ -613,7 +687,11 @@ mod tests {
         // must not let a new run reuse its number — and is per project.
         let dir = tempdir().unwrap();
         let store = RunConfigStore::new(dir.path().to_path_buf());
-        assert_eq!(store.next_run_number("C:/git/a"), 1, "empty project starts at 1");
+        assert_eq!(
+            store.next_run_number("C:/git/a"),
+            1,
+            "empty project starts at 1"
+        );
 
         let mut first = sample("C:/git/a", "#1");
         first.run_number = 1;
@@ -626,7 +704,11 @@ mod tests {
         store.save(&sample("C:/git/a", "#legacy")).unwrap();
 
         assert_eq!(store.next_run_number("C:/git/a"), 3);
-        assert_eq!(store.next_run_number("C:/git/b"), 1, "counters are per project");
+        assert_eq!(
+            store.next_run_number("C:/git/b"),
+            1,
+            "counters are per project"
+        );
     }
 
     #[test]
@@ -643,14 +725,22 @@ mod tests {
             .set_display_name("C:/git/a", "#38", Some("nido-maps-batch".to_string()))
             .unwrap();
         assert_eq!(
-            store.get("C:/git/a", "#38").unwrap().display_name.as_deref(),
+            store
+                .get("C:/git/a", "#38")
+                .unwrap()
+                .display_name
+                .as_deref(),
             Some("nido-maps-batch")
         );
 
         // …and a reset restores the numbered default.
         store.set_display_name("C:/git/a", "#38", None).unwrap();
         assert_eq!(
-            store.get("C:/git/a", "#38").unwrap().display_name.as_deref(),
+            store
+                .get("C:/git/a", "#38")
+                .unwrap()
+                .display_name
+                .as_deref(),
             Some("Samurai-2")
         );
 

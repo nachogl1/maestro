@@ -48,8 +48,15 @@
 //!    handoff files are missing) → `ALERT (reconcile_interrupted)`: the run
 //!    was interrupted at gen-`prior` and is waiting for the human to resume
 //!    it from the Launch panel. Nothing is spawned, nothing is written to
-//!    the worktree, and the run config stays ACTIVE, so the same alert
-//!    reappears at the next launch until the human acts. Refined by
+//!    the worktree, and the run config stays ACTIVE. The alert is raised
+//!    ONCE per interruption, not once per launch: the config is latched
+//!    with `interrupted_at` (`SamuraiRunConfig::interrupted_at`) as the row
+//!    is appended, and a later launch that finds the same generation stays
+//!    quiet. The latch drops itself when the run moves on — a resume spawns
+//!    a HIGHER generation (which alerts afresh), a relaunch writes a whole
+//!    new config, and an owned run is cleared explicitly below. Without it a
+//!    run nobody ever resumed collected one identical row per app start
+//!    forever (22 of them over three weeks for a real parked run). Refined by
 //!    `gh auth status` when the probe is wired ([`reconcile_with_auth`]):
 //!    with `gh` logged out the epic gets `ALERT (reconcile_gh_auth)` instead
 //!    — a manual resume would fail its preflight anyway, and an epic parked
@@ -344,16 +351,21 @@ async fn reconcile_pass(
         .map(|t| (t.project_path.clone(), t.epic.clone()))
         .collect();
     let sessions = supervisor.list_sessions();
-    let guards = |config: &SamuraiRunConfig| -> (bool, bool) {
-        let timer_pending = timered.contains(&(config.project_path.clone(), config.epic.clone()));
+    // `(timer_pending, live_session, owned)`. The third element is the
+    // REAL-owner half of the first two — a pending timer or a live supervised
+    // session — with `already_handled` deliberately excluded: that is this
+    // launch's own earlier verdict, not evidence anybody owns the run, and
+    // treating it as ownership would undo the latch pass 1 just wrote.
+    let guards = |config: &SamuraiRunConfig| -> (bool, bool, bool) {
+        let key = (config.project_path.clone(), config.epic.clone());
+        let timer_pending = timered.contains(&key);
+        let session_live = sessions.iter().any(|s| {
+            s.project == config.project_path && s.epic == config.epic && !s.state.is_terminal()
+        });
         // An epic an earlier pass already decided is treated as settled —
         // see `already_handled`.
-        let live_session = already_handled
-            .contains(&(config.project_path.clone(), config.epic.clone()))
-            || sessions.iter().any(|s| {
-                s.project == config.project_path && s.epic == config.epic && !s.state.is_terminal()
-            });
-        (timer_pending, live_session)
+        let live_session = already_handled.contains(&key) || session_live;
+        (timer_pending, live_session, timer_pending || session_live)
     };
 
     // One machine-wide process scan per pass, and only when at least one
@@ -362,7 +374,7 @@ async fn reconcile_pass(
     // scan walks the whole process table. A join failure (probe panic) reads
     // as "not alive" — same default direction as the watchdog's tick.
     let needs_scan = configs.iter().any(|config| {
-        let (timer_pending, live_session) = guards(config);
+        let (timer_pending, live_session, _) = guards(config);
         !timer_pending && !live_session
     });
     let alive = if needs_scan {
@@ -382,7 +394,19 @@ async fn reconcile_pass(
     let mut orphaned = false;
 
     for config in &configs {
-        let (timer_pending, live_session) = guards(config);
+        let (timer_pending, live_session, owned) = guards(config);
+        // The run has an owner again, so the interruption we alerted about is
+        // over: drop the latch, or a LATER interruption at the SAME generation
+        // would be swallowed as a repeat of the old one.
+        if owned && config.interrupted_at.is_some() {
+            if let Err(e) = run_configs.clear_interrupted(&config.project_path, &config.epic) {
+                log::warn!(
+                    "samurai reconciler: could not clear the interrupted latch on {} in {}: {e}",
+                    config.epic,
+                    config.project_path,
+                );
+            }
+        }
         let facts = if timer_pending || live_session {
             EpicFacts {
                 timer_pending,
@@ -444,13 +468,16 @@ async fn reconcile_pass(
                 action = ReconcileAction::AlertNoGhAuth;
             }
         }
-        // Exactly the verdict the retry pass must not repeat. AlertOrphan is
-        // deliberately NOT recorded — re-deciding those epics IS the retry's
-        // purpose (see `reconcile_gated`).
-        if matches!(action, ReconcileAction::AlertInterrupted { .. }) {
+        // EVERY verdict the retry pass must not repeat — which is all of them
+        // except AlertOrphan, whose re-decision IS the retry's purpose (see
+        // `reconcile_gated`). Recording only `AlertInterrupted` here left the
+        // gh-auth and unstartable rows to be appended a second time in a
+        // single launch, and it had to be read AFTER the `AlertNoGhAuth`
+        // reassignment above, which rewrote the very variant it matched on.
+        if !matches!(action, ReconcileAction::AlertOrphan { .. }) {
             handled.insert((config.project_path.clone(), config.epic.clone()));
         }
-        apply(audit, config, action);
+        apply(audit, run_configs, config, action);
     }
     (orphaned, handled)
 }
@@ -495,8 +522,14 @@ async fn audit_max_generation(audit: &AuditLog, project: &str, epic: &str) -> Op
 }
 
 /// Acts on one decision: one structured log line each (the spec's per-epic
-/// trail); the audit rows carry the user-facing story.
-fn apply(audit: &AuditLog, config: &SamuraiRunConfig, action: ReconcileAction) {
+/// trail); the audit rows carry the user-facing story. `run_configs` is
+/// written by exactly one arm — the interrupted-run latch (module doc).
+fn apply(
+    audit: &AuditLog,
+    run_configs: &RunConfigStore,
+    config: &SamuraiRunConfig,
+    action: ReconcileAction,
+) {
     match action {
         ReconcileAction::SkipTimer => {
             log::info!(
@@ -536,6 +569,20 @@ fn apply(audit: &AuditLog, config: &SamuraiRunConfig, action: ReconcileAction) {
             );
         }
         ReconcileAction::AlertInterrupted { prior } => {
+            // Already reported, and the run has not moved on since (a resume
+            // spawns gen prior+1, which is a NEW interruption worth a row).
+            // Without this the same row landed on every app start forever.
+            if let Some(stamp) = &config.interrupted_at {
+                if stamp.prior_generation >= prior {
+                    log::info!(
+                        "samurai reconciler: run {} in {} is still interrupted at gen-{prior} — already alerted at {}, not repeating the row",
+                        config.epic,
+                        config.project_path,
+                        stamp.at,
+                    );
+                    return;
+                }
+            }
             log::warn!(
                 "samurai reconciler: run {} in {} was interrupted at gen-{prior} and has no owner — resume it manually (startup never spawns an agent); worktree {}",
                 config.epic,
@@ -560,6 +607,17 @@ fn apply(audit: &AuditLog, config: &SamuraiRunConfig, action: ReconcileAction) {
                     }),
                 ),
             );
+            // Latch it so the next launch does not say the same thing again.
+            // A failure here only costs a repeated row next time — never the
+            // alert the human just got.
+            if let Err(e) = run_configs.mark_interrupted(&config.project_path, &config.epic, prior)
+            {
+                log::warn!(
+                    "samurai reconciler: could not latch the interrupted alert for {} in {}: {e} — it will repeat next launch",
+                    config.epic,
+                    config.project_path,
+                );
+            }
         }
         ReconcileAction::AlertNoGhAuth => {
             log::error!(
@@ -1109,6 +1167,172 @@ mod tests {
         assert_eq!(alerts.len(), 1, "epic #78 alerts exactly once, not twice");
         assert_eq!(alerts[0].epic, "#78");
         assert_eq!(alerts[0].details["prior_generation"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_interrupted_alert_is_latched_and_rearms_on_a_new_generation() {
+        // A run nobody ever resumes stays ACTIVE forever, and every launch
+        // used to append an identical "resume it manually" row — a real
+        // parked run collected 22 of them over three weeks. The alert is now
+        // latched onto the config, and the latch re-arms itself when the run
+        // moves on: a resume spawns a HIGHER generation, which is a NEW
+        // interruption worth telling the human about.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-latch";
+        let repo = tempdir().unwrap();
+        write_handoff(repo.path(), "#37", 2);
+        save_config(&h, project, "#37", repo.path());
+
+        // Launch 1: the human is told once, and the config remembers it.
+        run(&h, Vec::new(), None, false).await;
+        let alerts = interrupted(&h.audit, project).await;
+        assert_eq!(alerts.len(), 1);
+        let stamp = h
+            .run_configs
+            .get(project, "#37")
+            .unwrap()
+            .interrupted_at
+            .expect("the alert must latch onto the run config");
+        assert_eq!(stamp.prior_generation, 2);
+        assert!(!stamp.at.is_empty());
+
+        // Launches 2 and 3: nothing changed, so nothing is said again.
+        run(&h, Vec::new(), None, false).await;
+        run(&h, Vec::new(), None, false).await;
+        assert_eq!(
+            interrupted(&h.audit, project).await.len(),
+            1,
+            "an unresumed run must not append one identical row per launch"
+        );
+        // The run itself is untouched — still ACTIVE, still resumable.
+        assert_eq!(
+            h.run_configs.get(project, "#37").unwrap().status,
+            crate::core::samurai_run_config::RunConfigStatus::Active
+        );
+
+        // The human resumes it (the resumer's RESUME row at gen prior+1) and
+        // the app is closed mid-run: the NEXT launch alerts afresh.
+        h.audit
+            .append(project, audit_row("#37", AuditEventKind::Resume, 3));
+        run(&h, Vec::new(), None, false).await;
+        let alerts = interrupted(&h.audit, project).await;
+        assert_eq!(alerts.len(), 2, "a later interruption must alert again");
+        assert_eq!(alerts[1].details["prior_generation"], 3);
+        assert_eq!(
+            h.run_configs
+                .get(project, "#37")
+                .unwrap()
+                .interrupted_at
+                .unwrap()
+                .prior_generation,
+            3,
+            "the latch moves with the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_owned_run_drops_the_interrupted_latch() {
+        // Generation advance is not the only way a run comes back: a
+        // survivor already registered at the SAME generation owns it too.
+        // The latch must drop then, or the next real interruption — still at
+        // gen-2 — would be swallowed as a repeat of the old one.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-latch-owned";
+        let repo = tempdir().unwrap();
+        write_handoff(repo.path(), "#37", 2);
+        save_config(&h, project, "#37", repo.path());
+
+        run(&h, Vec::new(), None, false).await;
+        assert_eq!(interrupted(&h.audit, project).await.len(), 1);
+        assert!(h
+            .run_configs
+            .get(project, "#37")
+            .unwrap()
+            .interrupted_at
+            .is_some());
+
+        // A live supervised session at gen-2 owns the epic: skipped, and the
+        // latch is dropped.
+        h.supervisor
+            .register_session(1, project.into(), "#37".into(), 2)
+            .unwrap();
+        run(&h, Vec::new(), None, false).await;
+        assert_eq!(interrupted(&h.audit, project).await.len(), 1, "still owned");
+        assert!(
+            h.run_configs
+                .get(project, "#37")
+                .unwrap()
+                .interrupted_at
+                .is_none(),
+            "an owned run must not stay latched as interrupted"
+        );
+
+        // That session ends without ever leaving gen-2: the interruption is
+        // new, so the human hears about it.
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        run(&h, Vec::new(), None, false).await;
+        let alerts = interrupted(&h.audit, project).await;
+        assert_eq!(alerts.len(), 2);
+        assert_eq!(alerts[1].details["prior_generation"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_retry_pass_does_not_realert_gh_auth_or_unstartable_epics() {
+        // Only `AlertInterrupted` used to be recorded as handled — and that
+        // check ran AFTER the gh-auth reassignment rewrote the very variant
+        // it matched on, so a logged-out epic (and every unstartable one) was
+        // re-decided by the retry pass and landed a DUPLICATE row in a single
+        // launch. Epic A is the probable orphan that arms the retry at all.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-retry-dupes";
+        let repo_a = tempdir().unwrap();
+        let repo_b = tempdir().unwrap();
+        let repo_c = tempdir().unwrap();
+        write_handoff(repo_b.path(), "#78", 3); // interrupted → gh-auth row
+        save_config(&h, project, "#77", repo_a.path()); // orphan
+        save_config(&h, project, "#78", repo_b.path());
+        save_config(&h, project, "#79", repo_c.path()); // no evidence at all
+
+        // Only epic A's transcript stays fresh, so only A reads as an orphan.
+        let a_path = repo_a.path().to_string_lossy().into_owned();
+        let probe: TranscriptAgeProbe = Arc::new(move |path: &str| {
+            Some(Duration::from_secs(if path == a_path { 5 } else { 600 }))
+        });
+
+        reconcile_gated(
+            h.run_configs.clone(),
+            Vec::new(),
+            h.supervisor.clone(),
+            h.audit.clone(),
+            probe,
+            alive(true),
+            Some(auth(Ok(false))),
+            TEST_RETRY,
+        )
+        .await;
+
+        let rows = rows(&h.audit, project).await;
+        let count = |kind: &str| {
+            rows.iter()
+                .filter(|r| r.details["kind"] == kind)
+                .collect::<Vec<_>>()
+        };
+        let gh = count("reconcile_gh_auth");
+        assert_eq!(gh.len(), 1, "epic #78 gets ONE gh-auth row, not two");
+        assert_eq!(gh[0].epic, "#78");
+        let unstartable = count("reconcile_unstartable");
+        assert_eq!(
+            unstartable.len(),
+            1,
+            "epic #79 gets ONE unstartable row, not two"
+        );
+        assert_eq!(unstartable[0].epic, "#79");
     }
 
     #[tokio::test]
