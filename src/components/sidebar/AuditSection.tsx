@@ -10,6 +10,7 @@ import {
   samuraiAuditClear,
   samuraiAuditRead,
 } from "@/lib/samurai";
+import { SAMURAI_ACCOUNT_PROJECT, SAMURAI_ACCOUNT_RUN } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
@@ -417,13 +418,15 @@ function AuditRow({ event }: { event: SamuraiAuditEvent }) {
 }
 
 /**
- * The run id account-wide rows carry (allowance crossings, dropped scheduled
- * launches) when nothing is supervised — mirrors `ACCOUNT_RUN` in
- * `src-tauri/src/core/allowance_watcher.rs`. Since issue #139 no audit row is
- * ever written with an empty `epic`; rows predating that still are, and both
- * spellings cluster under the same header.
+ * The account-wide pseudo-project and pseudo-run (allowance crossings,
+ * dropped scheduled launches, written when nothing is supervised) — mirrors
+ * `ACCOUNT_PROJECT` / `ACCOUNT_RUN` in
+ * `src-tauri/src/core/allowance_watcher.rs`, defined once in the session
+ * store and re-exported here, where the audit surfaces consume them. Since
+ * issue #139 no audit row is ever written with an empty `epic`; rows
+ * predating that still are, and both spellings cluster under the same header.
  */
-export const SAMURAI_ACCOUNT_RUN = "account";
+export { SAMURAI_ACCOUNT_PROJECT, SAMURAI_ACCOUNT_RUN };
 
 /* ── The backend's audit grouping key, mirrored (issue #136 review C5) ── */
 
@@ -547,6 +550,19 @@ function mergeAuditRows(
 }
 
 /**
+ * Whether a row belongs to the focused group. Rows carry that identity in
+ * their `epic`, in whatever spelling their writer used, so both sides go
+ * through the backend's own key (finding C5) — except the pre-#139 rows that
+ * carry an EMPTY epic and name nothing: those are account-wide by definition
+ * (the account log's oldest allowance ALERTs are exactly that shape), and
+ * `groupByRun` already headers both spellings as "Account-wide".
+ */
+function matchesFilter(row: SamuraiAuditEvent, filter: AuditRunFilter): boolean {
+  if (row.epic === "") return filter.runId === SAMURAI_ACCOUNT_RUN;
+  return samuraiAuditKey(row.epic) === filter.runId;
+}
+
+/**
  * A group's slice of the audit stream (issue #140): the Second Brain's per-run
  * / per-PR-review audit row focuses this view instead of opening a second one.
  * `runId` is the group's `audit_key` — the exact key the backend counted its
@@ -559,6 +575,18 @@ export interface AuditRunFilter {
   runId: string;
   /** The group's label, for the "showing … only" line. */
   label: string;
+  /**
+   * Which project's audit log holds the group's rows; omitted (the default)
+   * reads the active tab's, as this view always did.
+   *
+   * The override exists because not every group's rows live in the active
+   * project's file: the account-wide scope
+   * ({@link SAMURAI_ACCOUNT_PROJECT}) has its own, and the allowance ALERTs
+   * written there while nothing is supervised had no viewer anywhere — the
+   * stream read the active project and dropped every streamed row whose
+   * project did not match it, so the rows sat on disk unreachable.
+   */
+  projectPath?: string;
 }
 
 export function AuditSection({
@@ -571,7 +599,11 @@ export function AuditSection({
 } = {}) {
   const tabs = useWorkspaceStore((s) => s.tabs);
   const activeTab = tabs.find((t) => t.active);
-  const projectPath = activeTab?.projectPath ?? "";
+  // The filter's project wins when it names one — the account-wide scope
+  // reads its own file, not the active tab's. Reads, the live stream filter
+  // and the clear action all key off this one value, so the view can never
+  // show one project's rows while clearing another's.
+  const projectPath = filter?.projectPath ?? activeTab?.projectPath ?? "";
 
   // null = loading; rows are kept newest-first.
   const [events, setEvents] = useState<SamuraiAuditEvent[] | null>(null);
@@ -634,7 +666,7 @@ export function AuditSection({
 
   const handleClear = async () => {
     const confirmed = await ask(
-      "Delete this project's Samurai audit log? It is your oversight record of supervised runs and cannot be recovered.",
+      `Delete the Samurai audit log for ${filter?.projectPath ? filter.label : "this project"}? It is your oversight record of supervised runs and cannot be recovered.`,
       { title: "Clear Audit Log", kind: "warning" },
     ).catch(() => false);
     if (!confirmed) return;
@@ -649,13 +681,10 @@ export function AuditSection({
   };
 
   // Issue #140: the Second Brain's per-group audit row focuses this stream on
-  // one run / PR review rather than opening a second audit surface. The rows
-  // carry that identity in their `epic`, in whatever spelling their writer
-  // used — so both sides go through the backend's own key (finding C5).
+  // one run / PR review rather than opening a second audit surface
+  // (`matchesFilter` decides what belongs to the group).
   const visible =
-    events === null || filter === null
-      ? events
-      : events.filter((e) => e.epic !== "" && samuraiAuditKey(e.epic) === filter.runId);
+    events === null || filter === null ? events : events.filter((e) => matchesFilter(e, filter));
 
   return (
     <div className={cardClass}>
@@ -695,7 +724,9 @@ export function AuditSection({
         }
       />
       <p className="mb-2 text-[11px] text-maestro-muted">
-        Supervisor events for this project, newest first.
+        {filter?.projectPath
+          ? `Supervisor events for ${filter.label}, newest first.`
+          : "Supervisor events for this project, newest first."}
         {fileSizeBytes > 0 ? ` ${Math.max(1, Math.round(fileSizeBytes / 1024))} KB on disk.` : ""}
       </p>
       {error && <p className="mb-2 text-[11px] text-maestro-red">{error}</p>}

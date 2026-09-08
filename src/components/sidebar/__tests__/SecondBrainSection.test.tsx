@@ -502,13 +502,74 @@ describe("SecondBrainSection (issue #66)", () => {
     expect(
       await screen.findByRole("button", { name: `Show audit rows for ${mine.label}` }),
     ).toBeInTheDocument();
-    for (const group of [other, account, cleaned]) {
+    for (const group of [other, cleaned]) {
       expect(
         screen.queryByRole("button", { name: `Show audit rows for ${group.label}` }),
       ).toBeNull();
     }
+    // The account-wide scope is the exception: its rows live in its OWN audit
+    // file, which the stream can be pointed at — and until it was, every
+    // allowance-threshold ALERT written while nothing was supervised had no
+    // viewer anywhere in the app.
+    expect(
+      screen.getByRole("button", { name: `Show audit rows for ${account.label}` }),
+    ).toBeInTheDocument();
     // Every card still renders — only the action that would lie is gone.
     expect(screen.getAllByTestId("file-group")).toHaveLength(4);
+  });
+
+  it("points the audit stream at the account-wide log when that card is focused", async () => {
+    // The read must name the pseudo-project, not the active tab's project:
+    // that is the file the account-wide ALERT rows are actually in.
+    const account = fileGroup({
+      id: "run:account:account",
+      label: "Account-wide",
+      project_path: "samurai-account",
+      audit_key: "account",
+      audit_rows: 2,
+    });
+    mockInvoke(
+      [
+        fileEntry({
+          group_id: account.id,
+          kind: "AUDIT_LOG",
+          path: "C:\\appdata\\samurai\\audit\\samurai-account.jsonl",
+          epic: null,
+        }),
+      ],
+      {},
+      undefined,
+      {},
+      [account],
+      [
+        {
+          ts: "2026-08-19T10:48:13Z",
+          epic: "account",
+          event: "ALERT",
+          generation: 0,
+          session_id: 0,
+          details: {
+            kind: "allowance_threshold",
+            window: "5h",
+            threshold_kind: "hard",
+            value: 90,
+          },
+        },
+      ],
+    );
+    render(<SecondBrainSection />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: `Show audit rows for ${account.label}` }),
+    );
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "samurai_audit_read",
+        expect.objectContaining({ projectPath: "samurai-account" }),
+      ),
+    );
+    expect(await screen.findByText(/5h usage hit 90%/)).toBeInTheDocument();
   });
 
   it("never offers plain delete on the shared audit and journal slices", async () => {
