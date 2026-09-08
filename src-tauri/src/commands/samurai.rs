@@ -3030,6 +3030,7 @@ mod tests {
         config.interrupted_at = Some(InterruptedStamp {
             at: "2026-08-20T10:00:00+00:00".to_string(),
             prior_generation: 2,
+            kind: "reconcile_interrupted".to_string(),
         });
         h.run_configs.save(&config).unwrap();
         h.schedule

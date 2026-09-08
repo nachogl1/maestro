@@ -68,6 +68,18 @@
 //!    gen-1 spawn) has nothing on disk to resume from at all — the human
 //!    relaunches it from scratch.
 //!
+//! **All three dead-run verdicts share one latch.** PR #185 latched only
+//! `reconcile_interrupted`, so the other two kept the forever-loop it fixed:
+//! `gh` staying logged out, or a config that never produced a generation,
+//! are conditions that hold for weeks, and each app start appended another
+//! identical ALERT. The stamp therefore records the KIND alongside the
+//! generation ([`InterruptedStamp::kind`]) and [`already_reported`] demands
+//! both match. That is what keeps a CHANGE loud while a repeat stays quiet:
+//! `gh` coming back turns a `reconcile_gh_auth` run into a
+//! `reconcile_interrupted` one (a row the human should see), and `gh`
+//! breaking again flips it back (another row) — where a kind-blind latch
+//! would have swallowed everything after the first.
+//!
 //! Before any of that, every run-config file the store could not READ gets
 //! `ALERT (reconcile_unreadable_config)`. A torn or locked record used to be
 //! dropped inside `load_all` with a `log::warn!` and nothing else, so a
@@ -123,6 +135,14 @@ const AUDIT_TAIL: usize = 500;
 /// `details.kind` of the ALERT an ownerless ACTIVE run lands at startup —
 /// the row that replaced the old cold-start auto-spawn.
 pub const RECONCILE_INTERRUPTED_KIND: &str = "reconcile_interrupted";
+
+/// `details.kind` of the interrupted-run ALERT refined by a logged-out `gh`
+/// (a manual resume would fail its preflight first).
+pub const RECONCILE_GH_AUTH_KIND: &str = "reconcile_gh_auth";
+
+/// `details.kind` of the ALERT an ACTIVE run with no generation evidence
+/// anywhere lands — there is nothing on disk to resume FROM.
+pub const RECONCILE_UNSTARTABLE_KIND: &str = "reconcile_unstartable";
 
 /// `details.kind` of the ALERT a run-config file that could not be READ
 /// lands at startup. Distinct from every other `reconcile_*` kind on
@@ -221,8 +241,9 @@ enum ReconcileAction {
     /// the human resumes it. Startup NEVER spawns (module doc).
     AlertInterrupted { prior: u32 },
     /// Same as [`Self::AlertInterrupted`], but `gh` is not authenticated —
-    /// a manual resume needs that fixed first.
-    AlertNoGhAuth,
+    /// a manual resume needs that fixed first. Carries the same generation
+    /// so it can latch onto the config exactly like its unrefined twin.
+    AlertNoGhAuth { prior: u32 },
     /// Active config but no generation evidence anywhere — human relaunches.
     AlertUnstartable,
 }
@@ -544,7 +565,7 @@ async fn reconcile_pass(
         };
         let mut action = decide(&facts);
         orphaned |= matches!(action, ReconcileAction::AlertOrphan { .. });
-        if matches!(action, ReconcileAction::AlertInterrupted { .. }) {
+        if let ReconcileAction::AlertInterrupted { prior } = action {
             let ok = match gh_ok {
                 Some(ok) => ok,
                 None => {
@@ -562,7 +583,7 @@ async fn reconcile_pass(
                 }
             };
             if !ok {
-                action = ReconcileAction::AlertNoGhAuth;
+                action = ReconcileAction::AlertNoGhAuth { prior };
             }
         }
         // EVERY verdict the retry pass must not repeat — which is all of them
@@ -618,9 +639,47 @@ async fn audit_max_generation(audit: &AuditLog, project: &str, epic: &str) -> Op
     }
 }
 
+/// `true` when this exact verdict has ALREADY been reported for the run and
+/// nothing has moved since — the cross-launch latch (module doc).
+///
+/// Two things must both match. The GENERATION, because a resume spawns
+/// gen prior+1, so a HIGHER one is a fresh interruption; `>=` (not `==`)
+/// keeps a config whose generation somehow went backwards quiet rather than
+/// chatty. And the KIND, because the three verdicts that share this latch
+/// tell the human three different things to do: a run latched as
+/// "`gh` is logged out" whose `gh` is now fine has genuinely changed state,
+/// and so has one that breaks again afterwards. Without the kind check the
+/// first row of an episode would silence every later one forever.
+fn already_reported(config: &SamuraiRunConfig, kind: &str, generation: u32) -> bool {
+    match &config.interrupted_at {
+        Some(stamp) => stamp.kind == kind && stamp.prior_generation >= generation,
+        None => false,
+    }
+}
+
+/// Stamps the verdict just appended onto the run config, so the next launch
+/// stays quiet. A failure here only costs a repeated row next time — never
+/// the alert the human just got — so it is logged and dropped.
+fn latch_reported(
+    run_configs: &RunConfigStore,
+    config: &SamuraiRunConfig,
+    kind: &str,
+    generation: u32,
+) {
+    if let Err(e) =
+        run_configs.mark_interrupted(&config.project_path, &config.epic, generation, kind)
+    {
+        log::warn!(
+            "samurai reconciler: could not latch the {kind} alert for {} in {}: {e} — it will repeat next launch",
+            config.epic,
+            config.project_path,
+        );
+    }
+}
+
 /// Acts on one decision: one structured log line each (the spec's per-epic
 /// trail); the audit rows carry the user-facing story. `run_configs` is
-/// written by exactly one arm — the interrupted-run latch (module doc).
+/// written by the three dead-run arms — the cross-launch latch (module doc).
 fn apply(
     audit: &AuditLog,
     run_configs: &RunConfigStore,
@@ -669,16 +728,13 @@ fn apply(
             // Already reported, and the run has not moved on since (a resume
             // spawns gen prior+1, which is a NEW interruption worth a row).
             // Without this the same row landed on every app start forever.
-            if let Some(stamp) = &config.interrupted_at {
-                if stamp.prior_generation >= prior {
-                    log::info!(
-                        "samurai reconciler: run {} in {} is still interrupted at gen-{prior} — already alerted at {}, not repeating the row",
-                        config.epic,
-                        config.project_path,
-                        stamp.at,
-                    );
-                    return;
-                }
+            if already_reported(config, RECONCILE_INTERRUPTED_KIND, prior) {
+                log::info!(
+                    "samurai reconciler: run {} in {} is still interrupted at gen-{prior} — already alerted, not repeating the row",
+                    config.epic,
+                    config.project_path,
+                );
+                return;
             }
             log::warn!(
                 "samurai reconciler: run {} in {} was interrupted at gen-{prior} and has no owner — resume it manually (startup never spawns an agent); worktree {}",
@@ -705,18 +761,22 @@ fn apply(
                 ),
             );
             // Latch it so the next launch does not say the same thing again.
-            // A failure here only costs a repeated row next time — never the
-            // alert the human just got.
-            if let Err(e) = run_configs.mark_interrupted(&config.project_path, &config.epic, prior)
-            {
-                log::warn!(
-                    "samurai reconciler: could not latch the interrupted alert for {} in {}: {e} — it will repeat next launch",
+            latch_reported(run_configs, config, RECONCILE_INTERRUPTED_KIND, prior);
+        }
+        ReconcileAction::AlertNoGhAuth { prior } => {
+            // Same forever-loop as the interrupted row: `gh` staying logged
+            // out is a condition that can hold for weeks, and every launch
+            // in between used to append an identical ALERT. Latched by KIND
+            // as well as generation, so auth coming back (and later breaking
+            // again) still reaches the human.
+            if already_reported(config, RECONCILE_GH_AUTH_KIND, prior) {
+                log::info!(
+                    "samurai reconciler: run {} in {} is still interrupted at gen-{prior} with `gh` logged out — already alerted, not repeating the row",
                     config.epic,
                     config.project_path,
                 );
+                return;
             }
-        }
-        ReconcileAction::AlertNoGhAuth => {
             log::error!(
                 "samurai reconciler: run {} in {} was interrupted AND `gh` is not authenticated — fix auth before resuming it manually (a successor could not read issues, comment, or open PRs)",
                 config.epic,
@@ -730,8 +790,9 @@ fn apply(
                     0,
                     0,
                     json!({
-                        "kind": "reconcile_gh_auth",
+                        "kind": RECONCILE_GH_AUTH_KIND,
                         "epic": config.epic,
+                        "prior_generation": prior,
                         "message": format!(
                             "run {} was interrupted — fix `gh` auth, then resume it manually",
                             config.epic
@@ -739,8 +800,21 @@ fn apply(
                     }),
                 ),
             );
+            latch_reported(run_configs, config, RECONCILE_GH_AUTH_KIND, prior);
         }
         ReconcileAction::AlertUnstartable => {
+            // No generation exists anywhere, so the latch stamps 0 — the
+            // sentinel the UI already reads as "died before gen-1". If
+            // evidence for a generation ever turns up the verdict becomes
+            // AlertInterrupted, a different kind, and alerts afresh.
+            if already_reported(config, RECONCILE_UNSTARTABLE_KIND, 0) {
+                log::info!(
+                    "samurai reconciler: epic {} in {} is still unstartable — already alerted, not repeating the row",
+                    config.epic,
+                    config.project_path,
+                );
+                return;
+            }
             log::error!(
                 "samurai reconciler: epic {} in {} is ACTIVE but no handoff file, audit row, or registration knows any generation — nothing to resume from, ALERT (relaunch via the launcher)",
                 config.epic,
@@ -753,9 +827,10 @@ fn apply(
                     AuditEventKind::Alert,
                     0,
                     0,
-                    json!({ "kind": "reconcile_unstartable", "epic": config.epic }),
+                    json!({ "kind": RECONCILE_UNSTARTABLE_KIND, "epic": config.epic }),
                 ),
             );
+            latch_reported(run_configs, config, RECONCILE_UNSTARTABLE_KIND, 0);
         }
     }
 }
@@ -1525,6 +1600,148 @@ mod tests {
         let alerts = interrupted(&h2.audit, project2).await;
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].details["prior_generation"], 2);
+    }
+
+    /// Every row of one `reconcile_*` kind for the project, in order.
+    async fn of_kind(audit: &AuditLog, project: &str, kind: &str) -> Vec<AuditEvent> {
+        rows(audit, project)
+            .await
+            .into_iter()
+            .filter(|r| r.details["kind"] == kind)
+            .collect()
+    }
+
+    /// One reconciliation pass with the `gh auth status` verdict forced.
+    async fn run_auth(h: &Harness, logged_in: bool) {
+        reconcile_gated(
+            h.run_configs.clone(),
+            Vec::new(),
+            h.supervisor.clone(),
+            h.audit.clone(),
+            ages(None),
+            alive(false),
+            Some(auth(Ok(logged_in))),
+            TEST_RETRY,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_gh_auth_alert_is_latched_and_rearms_when_auth_flips() {
+        // PR #185 latched ONLY the plain interrupted row, so a run whose `gh`
+        // stayed logged out kept the exact forever-loop that fix was for: one
+        // identical ALERT per app start, for as long as auth stayed broken.
+        // It now latches the same way — but by KIND as well as generation, so
+        // auth coming back, and breaking again later, still reaches the human.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-ghauth-latch";
+        let repo = tempdir().unwrap();
+        write_handoff(repo.path(), "#37", 2);
+        save_config(&h, project, "#37", repo.path());
+
+        // Launch 1: logged out — told once, and the config remembers WHICH
+        // verdict it was told about.
+        run_auth(&h, false).await;
+        assert_eq!(
+            of_kind(&h.audit, project, RECONCILE_GH_AUTH_KIND)
+                .await
+                .len(),
+            1
+        );
+        let stamp = h
+            .run_configs
+            .get(project, "#37")
+            .unwrap()
+            .interrupted_at
+            .expect("the gh-auth alert must latch onto the run config");
+        assert_eq!(stamp.kind, RECONCILE_GH_AUTH_KIND);
+        assert_eq!(stamp.prior_generation, 2);
+
+        // Launches 2 and 3: nothing changed, so nothing is said again.
+        run_auth(&h, false).await;
+        run_auth(&h, false).await;
+        assert_eq!(
+            of_kind(&h.audit, project, RECONCILE_GH_AUTH_KIND)
+                .await
+                .len(),
+            1,
+            "a still-logged-out run must not append one identical row per launch"
+        );
+
+        // Launch 4: auth is back. The run is STILL dead, and what the human
+        // has to do about it changed — so the plain interrupted row lands.
+        run_auth(&h, true).await;
+        assert_eq!(interrupted(&h.audit, project).await.len(), 1);
+        assert_eq!(
+            h.run_configs
+                .get(project, "#37")
+                .unwrap()
+                .interrupted_at
+                .unwrap()
+                .kind,
+            RECONCILE_INTERRUPTED_KIND,
+            "the latch follows the verdict, not just the generation"
+        );
+
+        // Launch 5: auth breaks again — a new episode, a new row.
+        run_auth(&h, false).await;
+        assert_eq!(
+            of_kind(&h.audit, project, RECONCILE_GH_AUTH_KIND)
+                .await
+                .len(),
+            2,
+            "a restored-then-broken `gh` must alert again"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unstartable_alert_is_latched_and_rearms_on_evidence() {
+        // The same forever-loop for the other unlatched verdict: an ACTIVE
+        // config with no handoff, no audit row and no registration keeps that
+        // shape until a human relaunches it, and every launch used to append
+        // another identical row. There is no generation to key on, so the
+        // latch stamps the 0 sentinel and leans on the kind.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-recon-unstartable-latch";
+        let repo = tempdir().unwrap();
+        save_config(&h, project, "#37", repo.path()); // no evidence anywhere
+
+        run(&h, Vec::new(), None, false).await;
+        assert_eq!(
+            of_kind(&h.audit, project, RECONCILE_UNSTARTABLE_KIND)
+                .await
+                .len(),
+            1
+        );
+        let stamp = h
+            .run_configs
+            .get(project, "#37")
+            .unwrap()
+            .interrupted_at
+            .expect("the unstartable alert must latch onto the run config");
+        assert_eq!(stamp.kind, RECONCILE_UNSTARTABLE_KIND);
+        assert_eq!(stamp.prior_generation, 0);
+
+        run(&h, Vec::new(), None, false).await;
+        run(&h, Vec::new(), None, false).await;
+        assert_eq!(
+            of_kind(&h.audit, project, RECONCILE_UNSTARTABLE_KIND)
+                .await
+                .len(),
+            1,
+            "an unstartable run must not append one identical row per launch"
+        );
+
+        // A relaunch that DID reach gen-1 and then died leaves evidence: the
+        // verdict changes, so the human hears the new (and actionable) story.
+        h.audit
+            .append(project, audit_row("#37", AuditEventKind::Spawn, 1));
+        run(&h, Vec::new(), None, false).await;
+        let alerts = interrupted(&h.audit, project).await;
+        assert_eq!(alerts.len(), 1, "the run is now resumable, not unstartable");
+        assert_eq!(alerts[0].details["prior_generation"], 1);
     }
 
     #[tokio::test]

@@ -116,7 +116,7 @@ export function samuraiRunFatalLabel(event: SamuraiAuditEvent): string | null {
       return "Successor spawn was dropped";
     case "delivery_failed":
       return details.retype === true ? "Brief re-delivery failed" : null;
-    // The four cold-start reconciliation verdicts. They carry the 0 sentinel
+    // The cold-start reconciliation verdicts. They carry the 0 sentinel
     // for session/generation (no session exists — that IS the finding), so
     // they raise the toast + OS notification and badge nothing.
     case "reconcile_interrupted":
@@ -127,6 +127,13 @@ export function samuraiRunFatalLabel(event: SamuraiAuditEvent): string | null {
       return "Run was interrupted and `gh` is logged out — fix auth, then resume";
     case "reconcile_unstartable":
       return "Run has no resume point — relaunch it from the launcher";
+    // PR #193 added this row but no label, so the one verdict that says
+    // "there is a run here Maestro cannot see at all" reached nothing but
+    // the passive audit list — the same silence that let the Nido run rot.
+    // It is not in the Active Runs list either (the file is unreadable), so
+    // the toast is the ONLY place it can surface.
+    case "reconcile_unreadable_config":
+      return "A run's saved file could not be read — that run is invisible to Maestro";
     default:
       return null;
   }
@@ -428,6 +435,14 @@ export interface SamuraiInterruptedStamp {
   at: string;
   /** The generation the run died at — `0` when nothing knew one. */
   prior_generation: number;
+  /**
+   * Which cold-start verdict raised the row — one of
+   * `reconcile_interrupted`, `reconcile_gh_auth`, `reconcile_unstartable`.
+   * The backend latches all three onto this one stamp and re-alerts when the
+   * kind changes (a logged-out `gh` coming back, say). Optional here: it is
+   * backend bookkeeping, and stamps written before it existed have no key.
+   */
+  kind?: string;
 }
 
 /** One epic's run config — mirrors the Rust `SamuraiRunConfig` (P3.1). */

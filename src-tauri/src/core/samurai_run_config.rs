@@ -76,11 +76,11 @@ pub struct RefTitle {
     pub title: String,
 }
 
-/// The cold-start "this run was interrupted" ALERT that has ALREADY been
+/// The cold-start "this ACTIVE run is dead" ALERT that has ALREADY been
 /// raised for a run — the latch that stops reconciliation appending an
-/// identical `reconcile_interrupted` row on every single app launch. A real
-/// parked run collected 22 of them over three weeks because the alert wrote
-/// nothing back and nothing else ever aged the rows out.
+/// identical row on every single app launch. A real parked run collected 22
+/// of them over three weeks because the alert wrote nothing back and nothing
+/// else ever aged the rows out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptedStamp {
     /// RFC 3339 UTC time the alert was appended.
@@ -91,7 +91,26 @@ pub struct InterruptedStamp {
     /// resumer's contract), so a later launch that finds a HIGHER generation
     /// knows the run was resumed and interrupted again and alerts afresh,
     /// without every recovery path having to remember to clear a flag.
+    /// `0` when nothing on disk knew a generation at all (the
+    /// `reconcile_unstartable` verdict).
     pub prior_generation: u32,
+    /// WHICH cold-start verdict raised the row (`samurai_reconciler`'s
+    /// `reconcile_*` `details.kind`). Three verdicts share this latch —
+    /// interrupted, interrupted-with-`gh`-logged-out, and unstartable — and
+    /// they say different things to the human, so the kind is what makes a
+    /// CHANGE of condition alert afresh: `gh` auth coming back (and breaking
+    /// again later) is a new fact, not a repeat of the row already on file.
+    /// `#[serde(default)]`: a stamp written by PR #185 has no such key and
+    /// loads as `reconcile_interrupted`, which is the only verdict that
+    /// latched back then.
+    #[serde(default = "default_stamp_kind")]
+    pub kind: String,
+}
+
+/// The verdict a pre-#185-kind stamp must have come from — the only one that
+/// latched before the other two joined it.
+fn default_stamp_kind() -> String {
+    "reconcile_interrupted".to_string()
 }
 
 /// One epic's run config (PRD §5.8: "repo, epic ref, model prefs,
@@ -179,9 +198,10 @@ pub struct SamuraiRunConfig {
     #[serde(default)]
     pub display_name: Option<String>,
     pub status: RunConfigStatus,
-    /// Set when cold-start reconciliation told the human this run was
-    /// interrupted, so the next launch does not tell them the same thing
-    /// again. `#[serde(default)]`: a config written before the latch existed
+    /// Set when cold-start reconciliation told the human this ACTIVE run is
+    /// dead — interrupted, interrupted with `gh` logged out, or with no
+    /// resume point at all — so the next launch does not tell them the same
+    /// thing again. `#[serde(default)]`: a config written before the latch existed
     /// has no such key and loads as `None` — "never alerted yet", which is
     /// the safe direction (the human still gets one row). Cleared by a
     /// relaunch (which writes a fresh config) and by reconciliation itself
@@ -556,18 +576,20 @@ impl RunConfigStore {
         atomic_write_json(&path, &config)
     }
 
-    /// Latches the cold-start interrupted-run ALERT onto the config
+    /// Latches a cold-start dead-run ALERT onto the config
     /// (`samurai_reconciler`), so the next launch sees that this run was
-    /// already reported at `prior_generation` and stays quiet. No status
-    /// guard, like [`Self::set_ref_titles`]: the only caller already holds
-    /// an ACTIVE config it just alerted on. `Err` on a missing/unreadable
-    /// config is a normal outcome the caller logs and drops — an unlatched
-    /// alert repeats, which is the pre-existing behaviour, never a crash.
+    /// already reported — as `kind`, at `prior_generation` — and stays quiet.
+    /// No status guard, like [`Self::set_ref_titles`]: the only caller
+    /// already holds an ACTIVE config it just alerted on. `Err` on a
+    /// missing/unreadable config is a normal outcome the caller logs and
+    /// drops — an unlatched alert repeats, which is the pre-existing
+    /// behaviour, never a crash.
     pub fn mark_interrupted(
         &self,
         project: &str,
         epic: &str,
         prior_generation: u32,
+        kind: &str,
     ) -> Result<(), String> {
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let path = self.config_path(&normalize_project(project), epic);
@@ -578,6 +600,7 @@ impl RunConfigStore {
         config.interrupted_at = Some(InterruptedStamp {
             at: chrono::Utc::now().to_rfc3339(),
             prior_generation,
+            kind: kind.to_string(),
         });
         atomic_write_json(&path, &config)
     }
