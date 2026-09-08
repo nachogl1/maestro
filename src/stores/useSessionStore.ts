@@ -332,6 +332,16 @@ interface SessionState {
    */
   attentionSessionIds: number[];
   /**
+   * Subset of `attentionSessionIds` that was set by a run-fatal audit row
+   * (issue #174) rather than the auto-unpark-while-parked flow above.
+   * Tracked separately so `parkSession` can tell the two attention flavors
+   * apart: the auto-unpark highlight is stale once the session is hidden
+   * again by a fresh park, but a run-fatal highlight IS the point of that
+   * park (the session was just auto-parked because the run died) and must
+   * survive it so the parked shelf can still show it.
+   */
+  runFatalSessionIds: number[];
+  /**
    * Samurai-supervised sessions, keyed by session id — fed by
    * `samurai-supervisor-event` and seeded from `samurai_list_sessions` on
    * listener init. Sessions absent from this map are not supervised and
@@ -575,6 +585,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   parkedSessionIds: [],
   flaggedSessionIds: [],
   attentionSessionIds: [],
+  runFatalSessionIds: [],
   samuraiBySessionId: {},
   samuraiSchedule: [],
   samuraiToasts: [],
@@ -586,6 +597,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     set((state) => {
       const alreadyParked = state.parkedSessionIds.includes(sessionId);
       const hasAttention = state.attentionSessionIds.includes(sessionId);
+      const isRunFatal = state.runFatalSessionIds.includes(sessionId);
       // No-op guard: don't replace arrays (and re-render subscribers)
       // when nothing changes.
       if (alreadyParked && !hasAttention) return state;
@@ -594,10 +606,15 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           ? state.parkedSessionIds
           : [...state.parkedSessionIds, sessionId],
         // Parking is a deliberate act on the session — an auto-unpark
-        // attention highlight would be stale once it's hidden again.
-        attentionSessionIds: hasAttention
-          ? state.attentionSessionIds.filter((id) => id !== sessionId)
-          : state.attentionSessionIds,
+        // attention highlight would be stale once it's hidden again. A
+        // run-fatal highlight (issue #174) is the opposite: TerminalGrid's
+        // auto-park effect IS the fatal event playing out, so wiping the
+        // badge here erased it milliseconds after it was set — keep it so
+        // the parked shelf can still show it.
+        attentionSessionIds:
+          hasAttention && !isRunFatal
+            ? state.attentionSessionIds.filter((id) => id !== sessionId)
+            : state.attentionSessionIds,
       };
     });
   },
@@ -621,6 +638,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       state.attentionSessionIds.includes(sessionId)
         ? {
             attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
+            runFatalSessionIds: state.runFatalSessionIds.includes(sessionId)
+              ? state.runFatalSessionIds.filter((id) => id !== sessionId)
+              : state.runFatalSessionIds,
           }
         : state,
     );
@@ -671,6 +691,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           attentionSessionIds: state.attentionSessionIds.filter((id) =>
             sessions.some((s) => s.id === id),
           ),
+          runFatalSessionIds: state.runFatalSessionIds.filter((id) =>
+            sessions.some((s) => s.id === id),
+          ),
         };
       });
     } catch (err) {
@@ -700,6 +723,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             sessions.some((s) => s.id === id),
           ),
           attentionSessionIds: state.attentionSessionIds.filter((id) =>
+            sessions.some((s) => s.id === id),
+          ),
+          runFatalSessionIds: state.runFatalSessionIds.filter((id) =>
             sessions.some((s) => s.id === id),
           ),
         };
@@ -844,6 +870,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
         flaggedSessionIds: state.flaggedSessionIds.filter((id) => id !== sessionId),
         attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
+        runFatalSessionIds: state.runFatalSessionIds.filter((id) => id !== sessionId),
         samuraiBySessionId,
       };
     });
@@ -875,6 +902,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             (id) => !removed.some((r) => r.id === id),
           ),
           attentionSessionIds: state.attentionSessionIds.filter(
+            (id) => !removed.some((r) => r.id === id),
+          ),
+          runFatalSessionIds: state.runFatalSessionIds.filter(
             (id) => !removed.some((r) => r.id === id),
           ),
           samuraiBySessionId,
@@ -909,6 +939,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           parkedSessionIds: state.parkedSessionIds.filter((id) => !isOrphan(id)),
           flaggedSessionIds: state.flaggedSessionIds.filter((id) => !isOrphan(id)),
           attentionSessionIds: state.attentionSessionIds.filter((id) => !isOrphan(id)),
+          runFatalSessionIds: state.runFatalSessionIds.filter((id) => !isOrphan(id)),
           samuraiBySessionId,
         };
       });
@@ -1286,7 +1317,17 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
     if (!flagSession && !notify) return state;
     samuraiToastSeq += 1;
     return {
-      ...(flagSession ? { attentionSessionIds: [...state.attentionSessionIds, session_id] } : {}),
+      ...(flagSession
+        ? {
+            attentionSessionIds: [...state.attentionSessionIds, session_id],
+            // Marks this badge as run-fatal (issue #174) so `parkSession`
+            // preserves it instead of wiping it when the auto-park effect
+            // parks the session moments later.
+            runFatalSessionIds: state.runFatalSessionIds.includes(session_id)
+              ? state.runFatalSessionIds
+              : [...state.runFatalSessionIds, session_id],
+          }
+        : {}),
       ...(notify
         ? {
             samuraiToasts: [
