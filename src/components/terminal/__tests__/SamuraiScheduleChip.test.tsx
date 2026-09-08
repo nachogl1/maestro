@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -6,7 +6,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { formatCountdown, formatFireDateTime } from "@/lib/parkTime";
-import { type SamuraiScheduleEntry, useSessionStore } from "@/stores/useSessionStore";
+import {
+  type SamuraiParkAlert,
+  type SamuraiScheduleEntry,
+  useSessionStore,
+} from "@/stores/useSessionStore";
 import { earliestEntry, SamuraiScheduleChip } from "../SamuraiScheduleChip";
 
 /** Fixed clock, so every countdown assertion below is exact. */
@@ -26,7 +30,7 @@ describe("SamuraiScheduleChip (issue #61)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
-    useSessionStore.setState({ samuraiSchedule: [] });
+    useSessionStore.setState({ samuraiSchedule: [], samuraiParkAlerts: [] });
   });
 
   afterEach(() => {
@@ -145,6 +149,58 @@ describe("SamuraiScheduleChip (issue #61)", () => {
       useSessionStore.setState({ samuraiSchedule: [] });
     });
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("SamuraiScheduleChip — unacknowledged park shine", () => {
+  function alert(overrides: Partial<SamuraiParkAlert> = {}): SamuraiParkAlert {
+    return {
+      key: "c:/proj|#37|2026-08-06T14:32:00+00:00",
+      project: "C:/proj",
+      epic: "#37",
+      fireAt: "2026-08-06T14:32:00+00:00",
+      acknowledged: false,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    useSessionStore.setState({ samuraiSchedule: [entry()], samuraiParkAlerts: [] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shines while the project holds a park the user has not seen", () => {
+    useSessionStore.setState({ samuraiParkAlerts: [alert()] });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    const chip = screen.getByRole("button");
+    expect(chip.className).toContain("samurai-park-shine");
+    expect(chip.getAttribute("title")).toContain("Click to acknowledge");
+  });
+
+  it("stops shining once acknowledged but keeps counting down", () => {
+    useSessionStore.setState({ samuraiParkAlerts: [alert()] });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    fireEvent.click(screen.getByRole("button"));
+
+    const chip = screen.getByRole("button");
+    expect(chip.className).not.toContain("samurai-park-shine");
+    // The park itself stays legible — only the shouting stops.
+    expect(chip.textContent).toContain("parked · resumes ");
+    expect(useSessionStore.getState().samuraiParkAlerts[0].acknowledged).toBe(true);
+  });
+
+  it("does not shine for another project's park", () => {
+    useSessionStore.setState({ samuraiParkAlerts: [alert({ project: "C:/other" })] });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    expect(screen.getByRole("button").className).not.toContain("samurai-park-shine");
   });
 });
 

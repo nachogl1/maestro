@@ -6,6 +6,7 @@ import { GitFork, RefreshCw, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
+import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
 import { initSamuraiSpawnListener, stopSamuraiSpawnListener } from "@/lib/spawnSession";
@@ -677,6 +678,23 @@ function App() {
     [selectTab],
   );
 
+  // Top-bar parked-runs badge: land on the project whose Samurai run is
+  // parked. Leaves eagle/landscape for the same reason the landscape node
+  // route does — the project's own grid is where the park's chip and shelf
+  // chip live.
+  const handleParkNavigate = useCallback(
+    (projectPath: string) => {
+      const target = useWorkspaceStore
+        .getState()
+        .tabs.find((t) => samePath(t.projectPath, projectPath));
+      if (!target) return;
+      setEagleView(false);
+      setLandscapeView(false);
+      selectTab(target.id);
+    },
+    [selectTab],
+  );
+
   const handleSelectSidebarTab = useCallback((tab: SidebarTabId) => {
     setSidebarTab(tab);
     saveSidebarTab(tab);
@@ -876,6 +894,7 @@ function App() {
               launchPanelOpen={utilityPanel === "launch"}
               onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
               onWatchdogNavigate={handleWatchdogNavigate}
+              onParkNavigate={handleParkNavigate}
             />
 
             {/* Git panel header - inline at same level as TopBar.

@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { notifyOs } from "@/lib/osNotification";
+import { formatResumeAt } from "@/lib/parkTime";
 import { normalizePath, samePath } from "@/lib/path";
 import {
+  isParkEntry,
   type SamuraiAuditEventPayload,
   type SamuraiScheduleEntry,
   type SamuraiSupervisorState,
@@ -244,14 +246,20 @@ export interface SamuraiSessionInfo {
   state: SamuraiSupervisorState;
 }
 
-/** A queued toast for one run-fatal samurai event (issue #174). */
-export interface SamuraiFatalToast {
+/**
+ * A queued samurai toast — a run-fatal event (issue #174) or an allowance
+ * park. Both queue through the same slice so the stack has one cap, one
+ * dismiss path and one priority order; only the tint and the wording differ.
+ */
+export interface SamuraiToast {
   id: string;
-  /** Canonical project path the audit row belongs to. */
+  kind: "fatal" | "park";
+  /** Canonical project path the event belongs to. */
   project: string;
   epic: string;
+  /** Orchestrator generation; 0 on park toasts (a resume timer has none). */
   generation: number;
-  /** Human label from `samuraiRunFatalLabel` — what went fatally wrong. */
+  /** What happened: the fatal label, or the park's resume reading. */
   label: string;
 }
 
@@ -259,6 +267,37 @@ export interface SamuraiFatalToast {
 const MAX_SAMURAI_TOASTS = 6;
 
 let samuraiToastSeq = 0;
+
+/**
+ * One allowance-parked Samurai run the user has not looked at yet.
+ *
+ * A park is not fatal — it resumes on its own — so it deliberately raises no
+ * error chrome. But it can last a week, and the user is away for most of it:
+ * this marker is what makes a park still visible when they come back, long
+ * after the toast is gone. It is derived from (and pruned to) the live
+ * resume-timer list, so a fired or cancelled timer takes its marker with it.
+ */
+export interface SamuraiParkAlert {
+  /** Dedupe + acknowledge key: normalized project, epic and fire time. */
+  key: string;
+  /** Canonical project path of the parked run. */
+  project: string;
+  epic: string;
+  /** RFC 3339 resume time — every reading goes through `lib/parkTime`. */
+  fireAt: string;
+  /** Seen by the user: the surfaces stay legible but stop shining. */
+  acknowledged: boolean;
+}
+
+/** Identity of a park across schedule events (the list re-emits in full). */
+function parkAlertKey(entry: SamuraiScheduleEntry): string {
+  return `${normalizePath(entry.project_path)}|${entry.epic}|${entry.fire_at}`;
+}
+
+/** Last path segment — the name the tab strip and the toast kicker use. */
+function projectLabel(projectPath: string): string {
+  return projectPath.split(/[\\/]/).filter(Boolean).pop() ?? projectPath;
+}
 
 /**
  * Zustand store slice for session metadata (not PTY I/O -- that lives in terminal.ts).
@@ -312,7 +351,13 @@ interface SessionState {
    * only by construction (each audit row is emitted once), queued only while
    * notifications are enabled; the attention badge is set regardless.
    */
-  samuraiToasts: SamuraiFatalToast[];
+  samuraiToasts: SamuraiToast[];
+  /**
+   * Allowance parks awaiting the user's eye (see {@link SamuraiParkAlert}) —
+   * derived from `samuraiSchedule`, and the one park surface that survives an
+   * app restart's worth of absence.
+   */
+  samuraiParkAlerts: SamuraiParkAlert[];
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
@@ -322,6 +367,8 @@ interface SessionState {
   dismissSamuraiToast: (id: string) => void;
   /** Clears the queue outright — used when notifications are switched off. */
   dismissAllSamuraiToasts: () => void;
+  /** Marks parks seen — one project's, or every project's when omitted. */
+  acknowledgeSamuraiParks: (projectPath?: string) => void;
   fetchSessions: () => Promise<void>;
   fetchSessionsForProject: (projectPath: string) => Promise<void>;
   addSession: (session: SessionConfig) => void;
@@ -531,6 +578,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   samuraiBySessionId: {},
   samuraiSchedule: [],
   samuraiToasts: [],
+  samuraiParkAlerts: [],
   isLoading: false,
   error: null,
 
@@ -586,6 +634,20 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
 
   dismissAllSamuraiToasts: () => {
     set((state) => (state.samuraiToasts.length === 0 ? state : { samuraiToasts: [] }));
+  },
+
+  acknowledgeSamuraiParks: (projectPath?: string) => {
+    set((state) => {
+      let changed = false;
+      const samuraiParkAlerts = state.samuraiParkAlerts.map((alert) => {
+        if (alert.acknowledged) return alert;
+        if (projectPath !== undefined && !samePath(alert.project, projectPath)) return alert;
+        changed = true;
+        return { ...alert, acknowledged: true };
+      });
+      // No-op guard: nothing left to acknowledge — don't re-render the chips.
+      return changed ? { samuraiParkAlerts } : state;
+    });
   },
 
   fetchSessions: async () => {
@@ -1231,6 +1293,7 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
               ...state.samuraiToasts,
               {
                 id: `samurai-${samuraiToastSeq}`,
+                kind: "fatal" as const,
                 project: payload.project,
                 epic,
                 generation,
@@ -1242,8 +1305,7 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
     };
   });
   if (notify) {
-    // Same last-segment name the tab strip and the toast kicker use.
-    const project = payload.project.split(/[\\/]/).filter(Boolean).pop() ?? payload.project;
+    const project = projectLabel(payload.project);
     void notifyOs(`Samurai run needs you — ${project}`, `${label} (${epic} · gen-${generation})`);
   }
 }
@@ -1258,6 +1320,82 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
 let samuraiScheduleEventApplied = false;
 
 /**
+ * Whether a timer list has been folded into `samuraiParkAlerts` yet in this
+ * listener lifetime. The FIRST one — the seed, or a live event that beat it —
+ * is the startup baseline: those parks already existed when the app opened,
+ * so they get their persistent marker (coming back to them is the whole
+ * point) but no toast, which would otherwise fire on every launch for a park
+ * the user has known about for days.
+ */
+let samuraiParkBaselineApplied = false;
+
+/**
+ * Folds a full timer list into the park alerts: new parks raise the loud
+ * surfaces, known ones keep their acknowledged flag, and vanished ones are
+ * dropped — a fired or cancelled timer must not leave a "parked" marker.
+ *
+ * The alerts ride the SCHEDULE rather than the `PARKED` supervisor event
+ * because only the timer carries the resume time, and a park announced
+ * without one is exactly the unreadable "parked, back at 09:05" the
+ * park-time formatters exist to prevent. A park that arms no timer at all is
+ * a circuit-breaker trip, which already comes through the run-fatal path.
+ *
+ * `isParkEntry` gates the list: scheduled launches (issue #129) share it and
+ * would otherwise announce a park for a run that does not exist yet.
+ */
+function applySamuraiParkAlerts(entries: SamuraiScheduleEntry[]): void {
+  const announce = samuraiParkBaselineApplied;
+  samuraiParkBaselineApplied = true;
+
+  const known = new Map(useSessionStore.getState().samuraiParkAlerts.map((a) => [a.key, a]));
+  const fresh: SamuraiParkAlert[] = [];
+  const samuraiParkAlerts = entries.filter(isParkEntry).map((entry) => {
+    const key = parkAlertKey(entry);
+    const existing = known.get(key);
+    if (existing) return existing;
+    const alert: SamuraiParkAlert = {
+      key,
+      project: entry.project_path,
+      epic: entry.epic,
+      fireAt: entry.fire_at,
+      acknowledged: false,
+    };
+    fresh.push(alert);
+    return alert;
+  });
+
+  const notify =
+    announce && fresh.length > 0 && useGitHubWatchdogStore.getState().notificationsEnabled;
+  useSessionStore.setState((state) => ({
+    samuraiParkAlerts,
+    samuraiToasts: notify
+      ? [
+          ...state.samuraiToasts,
+          ...fresh.map((alert): SamuraiToast => {
+            samuraiToastSeq += 1;
+            return {
+              id: `samurai-${samuraiToastSeq}`,
+              kind: "park",
+              project: alert.project,
+              epic: alert.epic,
+              generation: 0,
+              label: `resumes ${formatResumeAt(alert.fireAt) ?? alert.fireAt}`,
+            };
+          }),
+        ].slice(-MAX_SAMURAI_TOASTS)
+      : state.samuraiToasts,
+  }));
+
+  if (!notify) return;
+  for (const alert of fresh) {
+    void notifyOs(
+      `Samurai parked — ${projectLabel(alert.project)}`,
+      `${alert.epic} · resumes ${formatResumeAt(alert.fireAt) ?? alert.fireAt}`,
+    );
+  }
+}
+
+/**
  * Replaces the pending-timer list (issue #61). The backend sends the FULL
  * current list on every arm/cancel/fire, so this is a plain replace — no
  * merging, no ordering assumptions.
@@ -1267,6 +1405,7 @@ function applySamuraiScheduleEvent(payload: SamuraiScheduleEntry[]): void {
   if (!Array.isArray(payload)) return;
   samuraiScheduleEventApplied = true;
   useSessionStore.setState({ samuraiSchedule: payload });
+  applySamuraiParkAlerts(payload);
 }
 
 /**
@@ -1280,7 +1419,11 @@ async function seedSamuraiSchedule(): Promise<void> {
   try {
     const entries = await samuraiScheduleList();
     if (samuraiScheduleEventApplied) return;
-    if (!Array.isArray(entries) || entries.length === 0) return;
+    if (!Array.isArray(entries)) return;
+    // Baselined even when empty: otherwise this session's first real park
+    // would be mistaken for the startup snapshot and announce nothing.
+    applySamuraiParkAlerts(entries);
+    if (entries.length === 0) return;
     useSessionStore.setState({ samuraiSchedule: entries });
   } catch (err) {
     console.error("Failed to seed samurai resume timers:", err);
@@ -1326,6 +1469,7 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
   // Review F8: fresh listener lifetime — the seed may apply until the first
   // live schedule event of THIS lifetime lands.
   samuraiScheduleEventApplied = false;
+  samuraiParkBaselineApplied = false;
   samuraiStarting = Promise.all([
     listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
       applySamuraiSupervisorEvent(event.payload);

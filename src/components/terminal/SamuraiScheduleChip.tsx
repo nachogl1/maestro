@@ -33,6 +33,11 @@ export function earliestEntry(entries: SamuraiScheduleEntry[]): SamuraiScheduleE
  * badge. Renders nothing when no timer is pending, so every existing view
  * stays visually unchanged. Reads the store directly by project path (same
  * pattern as SamuraiBadge).
+ *
+ * Shines (amber pulse ring) while the project holds a park the user has not
+ * acknowledged: a park raises no error chrome and can last a week, so the
+ * quiet flat chip was routinely walked past. Clicking acknowledges it — the
+ * chip stays and keeps counting down, it just stops shouting.
  */
 export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
   projectPath,
@@ -49,6 +54,10 @@ export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
       s.samuraiSchedule.filter((e) => isParkEntry(e) && samePath(e.project_path, projectPath)),
     ),
   );
+  const unacknowledged = useSessionStore((s) =>
+    s.samuraiParkAlerts.some((a) => !a.acknowledged && samePath(a.project, projectPath)),
+  );
+  const acknowledgeParks = useSessionStore((s) => s.acknowledgeSamuraiParks);
   const soonest = earliestEntry(entries);
   // Hooks run unconditionally; the tick only arms while something is parked.
   const now = useCountdownNow(soonest !== null);
@@ -60,14 +69,22 @@ export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
     .map((e) => `${e.epic}: ${formatResumeAt(e.fire_at, now) ?? e.fire_at}`)
     .join(", ");
   return (
-    <span
-      title={`Samurai park countdown — work resumes automatically (${detail})`}
+    <button
+      type="button"
+      onClick={() => acknowledgeParks(projectPath)}
+      title={
+        unacknowledged
+          ? `Samurai park countdown — work resumes automatically (${detail}). Click to acknowledge.`
+          : `Samurai park countdown — work resumes automatically (${detail})`
+      }
       // Wraps rather than clipping: the full date + countdown is the whole
       // point of the chip, so a narrow sidebar takes a second line instead of
       // truncating the reading away.
-      className={`min-w-0 rounded px-1 py-px text-[9px] font-bold leading-tight tracking-wide bg-maestro-purple/20 text-maestro-purple ${className}`}
+      className={`min-w-0 rounded border px-1 py-px text-[9px] font-bold leading-tight tracking-wide bg-maestro-orange/15 text-maestro-orange ${
+        unacknowledged ? "samurai-park-shine" : "border-maestro-orange/40"
+      } ${className}`}
     >
       {label}
-    </span>
+    </button>
   );
 });

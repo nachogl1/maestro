@@ -21,6 +21,7 @@ import { isMac } from "@/lib/platform";
 import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
+import { ParkedRunsBadge } from "./ParkedRunsBadge";
 
 /** One entry of the eagle-view "add terminal" project dropdown. */
 export interface EagleProjectOption {
@@ -78,6 +79,8 @@ interface TopBarProps {
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
+  /** Parked-runs badge: select the project whose Samurai run is parked. */
+  onParkNavigate?: (projectPath: string) => void;
 }
 
 export function TopBar({
@@ -110,6 +113,7 @@ export function TopBar({
   launchPanelOpen = false,
   onToggleLaunchPanel,
   onWatchdogNavigate,
+  onParkNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
 
@@ -163,6 +167,9 @@ export function TopBar({
 
       {/* Right: action icons */}
       <div className="flex items-center gap-0.5 mr-1">
+        {/* Allowance-parked Samurai runs — the one park surface that shows in
+            every view. Hides itself when nothing is parked. */}
+        <ParkedRunsBadge onNavigate={onParkNavigate} />
         {/* GitHub watchdog totals (review requests / assigned issues) */}
         {onWatchdogNavigate && <GitHubWatchdogBadge onNavigate={onWatchdogNavigate} />}
         {/* Active project: adds a pre-launch slot to its grid. */}
