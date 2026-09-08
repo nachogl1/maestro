@@ -148,7 +148,8 @@ enum Job {
 ///   a burn trip;
 /// - account/system ALERTs the allowance watcher, parker and reconciler
 ///   write (`allowance_threshold`, `allowance_recovered`, `gh_auth_lost`,
-///   `park_no_reset_time`, `park_timer_arm_failed`, `reconcile_interrupted`):
+///   `park_no_reset_time`, `park_timer_arm_failed`, `reconcile_interrupted`,
+///   `reconcile_unreadable_config`):
 ///   since issue #139 these are stamped with the run's own (project, epic),
 ///   so they land inside a tracked epic's counter instead of being dropped
 ///   as unregistered — they say nothing about what the agent did;
@@ -192,6 +193,7 @@ fn is_self_event(event: &AuditEvent) -> bool {
             | Some("park_timer_arm_failed")
             | Some(super::samurai_auth_watch::GH_AUTH_LOST)
             | Some(super::samurai_reconciler::RECONCILE_INTERRUPTED_KIND)
+            | Some(super::samurai_reconciler::RECONCILE_UNREADABLE_CONFIG_KIND)
             | Some("context_blind")
             | Some("spawn_dropped")
             | Some("successor_no_start") => true,

@@ -247,6 +247,31 @@ pub enum ConfigLookup {
     Unreadable(String),
 }
 
+/// A config FILE that exists but could NOT be read — the whole-store
+/// equivalent of [`ConfigLookup::Unreadable`], carried out of the scan
+/// instead of dropped in a log line. A torn or locked file could be an
+/// ACTIVE run: its status is exactly what is unreadable, so the only honest
+/// report is "there is a record here and I cannot tell you what it says".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableConfig {
+    /// The file that could not be read.
+    pub path: PathBuf,
+    /// Why — the same string [`ConfigLookup::Unreadable`] carries
+    /// (`parse failed: …` / `read failed: …`).
+    pub error: String,
+}
+
+/// What a scan for ACTIVE runs found: the configs that parsed, plus every
+/// file that did not. See [`RunConfigStore::load_active_scan`].
+#[derive(Debug, Default)]
+pub struct ActiveScan {
+    /// Every config that parsed AND is ACTIVE.
+    pub configs: Vec<SamuraiRunConfig>,
+    /// Every file that could not be read at all. NOT filtered by status —
+    /// an unreadable file has no readable status.
+    pub unreadable: Vec<UnreadableConfig>,
+}
+
 /// The on-disk store. Constructed once at app setup (rooted at
 /// `artifact_base_dir("runs")`) and managed as `Arc<RunConfigStore>`; tests
 /// root it at a tempdir.
@@ -337,17 +362,37 @@ impl RunConfigStore {
         atomic_write_json(&path, &config)
     }
 
-    /// Every ACTIVE config across all projects — what cold-start
-    /// reconciliation (PRD §5.6) scans on launch. Corrupt or unreadable
-    /// files are skipped with a warning, never a panic: one torn config must
-    /// not take down the scan for every other epic.
+    /// Every ACTIVE config across all projects. Corrupt or unreadable files
+    /// are skipped, never a panic: one torn config must not take down the
+    /// scan for every other epic.
+    ///
+    /// Callers that must not treat "unreadable" as "absent" — cold-start
+    /// reconciliation above all — use [`Self::load_active_scan`] instead,
+    /// for the same reason [`Self::lookup`] exists beside [`Self::get`].
     pub fn load_active(&self) -> Vec<SamuraiRunConfig> {
+        self.load_active_scan().configs
+    }
+
+    /// [`Self::load_active`] with the files that could NOT be read reported
+    /// alongside the ones that could — what cold-start reconciliation (PRD
+    /// §5.6) scans on launch.
+    ///
+    /// Dropping them was silent data loss with a real cost: a torn or locked
+    /// ACTIVE record (the app itself, a backup agent or an editor holding
+    /// the file is routine on Windows) vanished from the scan entirely, so
+    /// an interrupted run got NO alert and the launch logged "no active run
+    /// configs — nothing to reconcile" while the run sat on disk unowned.
+    pub fn load_active_scan(&self) -> ActiveScan {
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        self.load_all()
-            .into_iter()
-            .filter(|(_, c)| c.status == RunConfigStatus::Active)
-            .map(|(_, c)| c)
-            .collect()
+        let (configs, unreadable) = self.scan();
+        ActiveScan {
+            configs: configs
+                .into_iter()
+                .filter(|(_, c)| c.status == RunConfigStatus::Active)
+                .map(|(_, c)| c)
+                .collect(),
+            unreadable,
+        }
     }
 
     /// Every config that still represents a run — ACTIVE plus COMPLETED
@@ -563,14 +608,23 @@ impl RunConfigStore {
     }
 
     /// Reads every parseable config under `base_dir` (all project subdirs),
-    /// paired with the file it was read from.
+    /// paired with the file it was read from. Unreadable files are dropped —
+    /// [`Self::scan`] is the variant that reports them.
     fn load_all(&self) -> Vec<(PathBuf, SamuraiRunConfig)> {
+        self.scan().0
+    }
+
+    /// [`Self::load_all`] plus every file that could not be read. Split out
+    /// so the one caller that must SEE the failures gets them while every
+    /// other listing keeps its "skip and carry on" shape.
+    fn scan(&self) -> (Vec<(PathBuf, SamuraiRunConfig)>, Vec<UnreadableConfig>) {
         let mut configs = Vec::new();
+        let mut unreadable = Vec::new();
         let projects = match std::fs::read_dir(&self.base_dir) {
             Ok(entries) => entries,
             // Nothing saved yet — a missing base dir is the normal
             // first-launch state, not an error.
-            Err(_) => return configs,
+            Err(_) => return (configs, unreadable),
         };
         for project in projects.flatten() {
             let dir = project.path();
@@ -602,12 +656,13 @@ impl RunConfigStore {
                     Ok(config) => configs.push((path, config)),
                     Err(ReadError::Missing) => {}
                     Err(ReadError::Other(e)) => {
-                        log::warn!("samurai run-config: skipping corrupt config {path:?}: {e}");
+                        log::warn!("samurai run-config: corrupt config {path:?}: {e}");
+                        unreadable.push(UnreadableConfig { path, error: e });
                     }
                 }
             }
         }
-        configs
+        (configs, unreadable)
     }
 }
 
@@ -1277,5 +1332,42 @@ mod tests {
             project_dir_name("C:/git/maestro"),
             project_dir_name("C:/other/maestro")
         );
+    }
+
+    #[test]
+    fn test_load_active_scan_reports_the_files_it_could_not_read() {
+        // `load_active` drops an unreadable record entirely, which is how a
+        // torn or locked ACTIVE run became invisible to cold-start
+        // reconciliation. The scan variant hands the failure back instead.
+        let dir = tempdir().unwrap();
+        let store = RunConfigStore::new(dir.path().to_path_buf());
+        store.save(&sample("C:/git/readable", "#1")).unwrap();
+        store.save(&sample("C:/git/torn", "#2")).unwrap();
+
+        // Tear the second record where it actually lives.
+        let torn = dir
+            .path()
+            .join(project_dir_name("C:/git/torn"))
+            .join(format!("{}.json", epic_slug("#2")));
+        assert!(torn.exists(), "the store wrote it here");
+        std::fs::write(&torn, "{ \"project_path\": ").unwrap();
+
+        let scan = store.load_active_scan();
+        assert_eq!(
+            scan.configs.len(),
+            1,
+            "the readable ACTIVE config still loads"
+        );
+        assert_eq!(scan.configs[0].epic, "#1");
+        assert_eq!(scan.unreadable.len(), 1, "the torn file must be reported");
+        assert_eq!(scan.unreadable[0].path, torn);
+        assert!(
+            scan.unreadable[0].error.contains("parse failed"),
+            "carries the reason: {}",
+            scan.unreadable[0].error
+        );
+        // The convenience wrapper keeps its old, lossy shape on purpose —
+        // every listing caller wants "skip and carry on".
+        assert_eq!(store.load_active().len(), 1);
     }
 }
