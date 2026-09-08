@@ -253,7 +253,13 @@ export interface SamuraiSessionInfo {
  */
 export interface SamuraiToast {
   id: string;
-  kind: "fatal" | "park";
+  /**
+   * `allowance` is the account-wide crossing raised when NOTHING is
+   * supervised (see {@link applySamuraiAllowanceEvent}) — it carries no run,
+   * so it renders with the fatal chrome rather than the park chrome, which
+   * would claim a run went away.
+   */
+  kind: "fatal" | "park" | "allowance";
   /** Canonical project path the event belongs to. */
   project: string;
   epic: string;
@@ -1251,13 +1257,72 @@ function applySamuraiSupervisorEvent(payload: SamuraiSupervisorEvent): void {
 }
 
 /**
+ * The `samurai-allowance-event` payload — the TS mirror of the backend's
+ * `AllowanceEvent` (`core/allowance_watcher.rs`), which is serialized tagged
+ * by `kind`. Every field is optional here: only `allowance_threshold` carries
+ * the reading, and `allowance_recovered` / `no_governing_window` carry none.
+ */
+interface SamuraiAllowanceEventPayload {
+  kind?: string;
+  window?: string;
+  threshold_kind?: string;
+  value?: number;
+  threshold?: number;
+}
+
+/**
+ * The pseudo-project the backend writes account-wide ALERT rows to when
+ * nothing is supervised — the TS mirror of `allowance_watcher::ACCOUNT_PROJECT`.
+ * It is a real key for `samurai_audit_read`, not a path: the Second Brain's
+ * "Account-wide" card and the audit stream both read it with this exact
+ * string, and an account-wide toast names it so the user knows which card
+ * holds the rows.
+ */
+export const SAMURAI_ACCOUNT_PROJECT = "samurai-account";
+
+/**
+ * The run id those account-wide rows carry — the TS mirror of
+ * `allowance_watcher::ACCOUNT_RUN`, the pseudo-run paired with
+ * {@link SAMURAI_ACCOUNT_PROJECT}. `AuditSection` re-exports it, which is
+ * where audit-row grouping consumes it.
+ */
+export const SAMURAI_ACCOUNT_RUN = "account";
+
+/** One plain-language line for a crossing, for the toast title / OS body. */
+function allowanceCrossingLabel(payload: SamuraiAllowanceEventPayload): string {
+  const subject = typeof payload.window === "string" ? `${payload.window} usage` : "Usage";
+  const reading =
+    typeof payload.value === "number" ? `hit ${payload.value}%` : "crossed a threshold";
+  const threshold =
+    payload.threshold_kind === "hard"
+      ? " — hard (park) threshold"
+      : payload.threshold_kind === "soft"
+        ? " — soft (wind-down) threshold"
+        : "";
+  return `${subject} ${reading}${threshold}`;
+}
+
+/**
  * Allowance threshold crossed (issue #45, edge-triggered ~once per window):
  * flag every live supervised session with the existing attention highlight —
  * those are the runs the crossing is about (issue #46: existing attention
  * mechanism, no new alert UI). Details land as ALERT rows in the audit
  * stream; non-supervised sessions stay untouched.
+ *
+ * With NOTHING supervised the badge has nowhere to land — the state the last
+ * real crossing happened in (the run had already died), where the whole event
+ * used to vanish: no toast, no OS notification, and its ALERT rows filed under
+ * the account-wide pseudo-project. So a crossing with no live run raises the
+ * loud surfaces itself — the same toast + OS pair the run-fatal path uses, on
+ * the same notifications toggle — naming {@link SAMURAI_ACCOUNT_PROJECT}, the
+ * card whose audit rows carry the detail. Only an `allowance_threshold`
+ * crossing announces: a recovery or a missing window is not news.
  */
-function applySamuraiAllowanceEvent(): void {
+function applySamuraiAllowanceEvent(payload: SamuraiAllowanceEventPayload): void {
+  const crossing = payload?.kind === "allowance_threshold";
+  const notify = crossing && useGitHubWatchdogStore.getState().notificationsEnabled;
+  const label = crossing ? allowanceCrossingLabel(payload) : "";
+  let announced = false;
   useSessionStore.setState((state) => {
     const flagged = state.sessions
       .filter((s) => {
@@ -1270,11 +1335,32 @@ function applySamuraiAllowanceEvent(): void {
       })
       .map((s) => s.id)
       .filter((id) => !state.attentionSessionIds.includes(id));
+    if (flagged.length > 0) {
+      return { attentionSessionIds: [...state.attentionSessionIds, ...flagged] };
+    }
     // No-op guard: nothing supervised (or all already flagged) — don't
-    // replace the array and re-render subscribers.
-    if (flagged.length === 0) return state;
-    return { attentionSessionIds: [...state.attentionSessionIds, ...flagged] };
+    // replace the array and re-render subscribers. The account-wide
+    // announcement below is the one thing that still has to happen.
+    if (!notify) return state;
+    announced = true;
+    samuraiToastSeq += 1;
+    return {
+      samuraiToasts: [
+        ...state.samuraiToasts,
+        {
+          id: `samurai-${samuraiToastSeq}`,
+          kind: "allowance" as const,
+          project: SAMURAI_ACCOUNT_PROJECT,
+          epic: SAMURAI_ACCOUNT_RUN,
+          generation: 0,
+          label,
+        },
+      ].slice(-MAX_SAMURAI_TOASTS),
+    };
   });
+  if (announced) {
+    void notifyOs("Samurai — token allowance", label);
+  }
 }
 
 /**
@@ -1308,24 +1394,31 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
     // The badge: only when the row names a real, known session (a
     // successor_no_start for a never-registered spawn carries the 0
     // sentinel — the toast still says which epic stranded).
-    const flagSession =
+    const knownSession =
       session_id > 0 &&
-      state.sessions.some(
-        (s) => s.id === session_id && samePath(s.project_path, payload.project),
-      ) &&
-      !state.attentionSessionIds.includes(session_id);
-    if (!flagSession && !notify) return state;
+      state.sessions.some((s) => s.id === session_id && samePath(s.project_path, payload.project));
+    // A fatal event must UPGRADE an existing non-fatal attention flag. The
+    // guard used to skip the whole branch whenever the session already
+    // carried attention — an allowance crossing flags exactly that way — so
+    // a genuinely fatal row on such a session never reached
+    // `runFatalSessionIds`, and `parkSession` wiped its badge on the auto-park
+    // that follows: a dead run looked like an ordinary parked terminal.
+    const needsAttention = knownSession && !state.attentionSessionIds.includes(session_id);
+    const needsFatal = knownSession && !state.runFatalSessionIds.includes(session_id);
+    if (!needsAttention && !needsFatal && !notify) return state;
     samuraiToastSeq += 1;
     return {
-      ...(flagSession
+      ...(knownSession
         ? {
-            attentionSessionIds: [...state.attentionSessionIds, session_id],
+            attentionSessionIds: needsAttention
+              ? [...state.attentionSessionIds, session_id]
+              : state.attentionSessionIds,
             // Marks this badge as run-fatal (issue #174) so `parkSession`
             // preserves it instead of wiping it when the auto-park effect
             // parks the session moments later.
-            runFatalSessionIds: state.runFatalSessionIds.includes(session_id)
-              ? state.runFatalSessionIds
-              : [...state.runFatalSessionIds, session_id],
+            runFatalSessionIds: needsFatal
+              ? [...state.runFatalSessionIds, session_id]
+              : state.runFatalSessionIds,
           }
         : {}),
       ...(notify
@@ -1515,8 +1608,8 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
     listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
       applySamuraiSupervisorEvent(event.payload);
     }),
-    listen("samurai-allowance-event", () => {
-      applySamuraiAllowanceEvent();
+    listen<SamuraiAllowanceEventPayload>("samurai-allowance-event", (event) => {
+      applySamuraiAllowanceEvent(event.payload ?? {});
     }),
     listen<SamuraiScheduleEntry[]>("samurai-schedule-event", (event) => {
       applySamuraiScheduleEvent(event.payload);

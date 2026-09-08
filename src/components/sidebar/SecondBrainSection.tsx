@@ -33,7 +33,7 @@ import {
 } from "@/lib/samurai";
 import { flagsByRow, useHealthStore } from "@/stores/useHealthStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { type AuditRunFilter, AuditSection } from "./AuditSection";
+import { type AuditRunFilter, AuditSection, SAMURAI_ACCOUNT_PROJECT } from "./AuditSection";
 import { JournalSection } from "./JournalSection";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
@@ -595,22 +595,40 @@ export function SecondBrainSection() {
    * instead let a card claim N rows and then show none (review finding C5).
    */
   const showGroupAudit = (group: SamuraiFileGroup) =>
-    setAuditFilter({ runId: group.audit_key, label: group.label });
+    setAuditFilter({
+      runId: group.audit_key,
+      label: group.label,
+      // The account-wide scope's rows live in their OWN audit file, not the
+      // active project's — so the stream is pointed at that pseudo-project.
+      // Every other group's rows are in the file the view already reads
+      // (`groupAuditIsReadable` gates on exactly that), so no override.
+      projectPath: isAccountGroup(group) ? SAMURAI_ACCOUNT_PROJECT : undefined,
+    });
 
   /**
-   * Whether this group's rows are the ones `AuditSection` is reading. That
-   * view loads the ACTIVE tab's project audit log and nothing else, while the
-   * Files panel lists groups from every project — including the account-wide
-   * scope, which lives on its own pseudo-path with its own file, and a cleaned
-   * project's run, which has no project path left at all. Offering the audit
-   * action on any of those focused a stream that could never hold their rows
-   * ("No audit rows for X" under a header claiming N of them), so it is
-   * offered only where it can tell the truth (review finding C1).
+   * Whether this group's rows are ones `AuditSection` can read. That view
+   * loads the ACTIVE tab's project audit log by default, while the Files
+   * panel lists groups from every project — including a cleaned project's
+   * run, which has no project path left at all. Offering the audit action on
+   * such a group focused a stream that could never hold its rows ("No audit
+   * rows for X" under a header claiming N of them), so it is offered only
+   * where it can tell the truth (review finding C1).
+   *
+   * The account-wide scope is the one group that lives on its own
+   * pseudo-path with its own file, and it was refused here for that reason —
+   * which left the allowance-threshold ALERTs written there (every crossing
+   * that happened with nothing supervised) with no viewer in the app at all.
+   * It is offered now: the filter carries the pseudo-project and the stream
+   * reads THAT file.
    */
+  const isAccountGroup = (group: SamuraiFileGroup) =>
+    group.project_path === SAMURAI_ACCOUNT_PROJECT;
+
   const groupAuditIsReadable = (group: SamuraiFileGroup) =>
-    group.project_path !== null &&
-    activeProjectPath !== "" &&
-    samePath(group.project_path, activeProjectPath);
+    isAccountGroup(group) ||
+    (group.project_path !== null &&
+      activeProjectPath !== "" &&
+      samePath(group.project_path, activeProjectPath));
 
   // TIMER rows all share schedule.json as their path — a file's health
   // reasons render only under the FIRST row bearing that path (the badge

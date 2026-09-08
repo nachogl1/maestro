@@ -29,6 +29,7 @@ import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore
 import {
   ALERT_SENTENCES,
   AuditSection,
+  SAMURAI_ACCOUNT_PROJECT,
   SAMURAI_ACCOUNT_RUN,
   samuraiAuditKey,
 } from "../AuditSection";
@@ -366,6 +367,95 @@ describe("AuditSection (issue #46)", () => {
 
     expect(await screen.findByText("Run completed")).toBeInTheDocument();
     expect(screen.queryByText(/Session spawned/)).toBeNull();
+  });
+
+  /**
+   * The account-wide ALERTs (every allowance crossing that happened with
+   * nothing supervised) are written to their own pseudo-project's log. This
+   * view read the ACTIVE tab's project and dropped every streamed row whose
+   * project did not match it, so those rows existed on disk with no viewer
+   * anywhere in the app. A filter naming the pseudo-project points the whole
+   * view — read, live stream and clear — at that file instead.
+   */
+  it("reads and streams the account-wide log when the filter names that project", async () => {
+    mockInvoke([
+      auditEvent({
+        event: "ALERT",
+        epic: SAMURAI_ACCOUNT_RUN,
+        generation: 0,
+        session_id: 0,
+        details: { kind: "allowance_threshold", window: "5h", threshold_kind: "hard", value: 90 },
+      }),
+      // A pre-#139 row from the same file: no epic at all, but account-wide
+      // by definition — the account filter must not hide it.
+      auditEvent({
+        event: "ALERT",
+        epic: "",
+        generation: 0,
+        session_id: 0,
+        details: { kind: "no_governing_window" },
+      }),
+    ]);
+    render(
+      <AuditSection
+        filter={{
+          runId: SAMURAI_ACCOUNT_RUN,
+          label: "Account-wide",
+          projectPath: SAMURAI_ACCOUNT_PROJECT,
+        }}
+      />,
+    );
+
+    expect(await screen.findByText(/5h usage hit 90%/)).toBeInTheDocument();
+    expect(screen.getByText(/No 5h\/7d usage window is reported/)).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "samurai_audit_read",
+      expect.objectContaining({ projectPath: SAMURAI_ACCOUNT_PROJECT }),
+    );
+
+    // The live stream follows the same project — an account row appended
+    // while the view is open lands, and the active project's rows do not.
+    act(() => {
+      emitAuditEvent({
+        project: SAMURAI_ACCOUNT_PROJECT,
+        event: auditEvent({
+          event: "ALERT",
+          epic: SAMURAI_ACCOUNT_RUN,
+          generation: 0,
+          session_id: 0,
+          details: { kind: "allowance_threshold", window: "7d", threshold_kind: "hard", value: 96 },
+        }),
+      });
+      emitAuditEvent({
+        project: "C:\\git\\maestro",
+        event: auditEvent({ event: "SPAWN" }),
+      });
+    });
+
+    expect(await screen.findByText(/7d usage hit 96%/)).toBeInTheDocument();
+    expect(screen.queryByText("SPAWN")).toBeNull();
+  });
+
+  it("clears the account-wide log, not the active project's, while it is focused", async () => {
+    mockInvoke([auditEvent({ epic: SAMURAI_ACCOUNT_RUN, event: "ALERT", details: {} })], 1024);
+    askMock.mockResolvedValue(true);
+    render(
+      <AuditSection
+        filter={{
+          runId: SAMURAI_ACCOUNT_RUN,
+          label: "Account-wide",
+          projectPath: SAMURAI_ACCOUNT_PROJECT,
+        }}
+      />,
+    );
+    expect(await screen.findByText("ALERT")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear audit log" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("samurai_audit_clear", {
+        projectPath: SAMURAI_ACCOUNT_PROJECT,
+      }),
+    );
   });
 
   it("clears the log only after the user confirms", async () => {

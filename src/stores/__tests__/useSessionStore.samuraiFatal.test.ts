@@ -149,6 +149,40 @@ describe("run-fatal samurai audit events (issue #174)", () => {
     expect(state.attentionSessionIds).toEqual([1]);
   });
 
+  /**
+   * The dedupe guard used to skip the whole badge branch whenever the session
+   * already carried attention — and attention is set by NON-fatal things too,
+   * an allowance crossing most of all. A fatal row on such a session therefore
+   * never reached `runFatalSessionIds`, so `parkSession` wiped the badge on
+   * the auto-park that follows and the dead run's parked chip showed nothing.
+   * A fatal event must UPGRADE the existing flag.
+   */
+  it("upgrades a non-fatal attention flag the session already carries", () => {
+    // The allowance crossing's badge: attention, but not run-fatal.
+    useSessionStore.setState({ attentionSessionIds: [1], runFatalSessionIds: [] });
+
+    emitAuditEvent({ details: { kind: "circuit_breaker", events: 5 } });
+
+    let state = useSessionStore.getState();
+    expect(state.attentionSessionIds).toEqual([1]);
+    expect(state.runFatalSessionIds).toEqual([1]);
+
+    // …and it now survives the auto-park, which is the point of the flag.
+    useSessionStore.getState().parkSession(1);
+    state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("never duplicates the fatal flag when a second fatal row lands", () => {
+    emitAuditEvent({ details: { kind: "circuit_breaker" } });
+    emitAuditEvent({ details: { kind: "submit_unconfirmed" } });
+
+    const state = useSessionStore.getState();
+    expect(state.attentionSessionIds).toEqual([1]);
+    expect(state.runFatalSessionIds).toEqual([1]);
+  });
+
   it("notifications off suppresses the toast and the OS pop-up but never the badge", () => {
     useGitHubWatchdogStore.setState({ notificationsEnabled: false });
 
