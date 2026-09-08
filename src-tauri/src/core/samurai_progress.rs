@@ -145,10 +145,29 @@ enum Job {
 ///   the delivery machinery's (`submit_retry`, `submit_unconfirmed`,
 ///   `delivery_failed`, `delivery_retyped` — replicator and injector alike):
 ///   a delivery that struggles surfaces as its own attention state, never as
-///   a burn trip.
+///   a burn trip;
+/// - account/system ALERTs the allowance watcher, parker and reconciler
+///   write (`allowance_threshold`, `allowance_recovered`, `gh_auth_lost`,
+///   `park_no_reset_time`, `park_timer_arm_failed`, `reconcile_interrupted`):
+///   since issue #139 these are stamped with the run's own (project, epic),
+///   so they land inside a tracked epic's counter instead of being dropped
+///   as unregistered — they say nothing about what the agent did;
+/// - injector/replicator supervision ALERTs that are Maestro's own
+///   machinery struggling, not the agent: `context_blind` (the transcript
+///   watch lost the context signal), `spawn_dropped` (the SPAWN event
+///   itself never delivered) and `successor_no_start` (a successor process
+///   never launched);
+/// - the `ack_timeout` flavor that carries `"still_tracked": true`
+///   (`samurai_injector.rs`'s `AlertStuck` path): the entry is still being
+///   chased — the turn never ended, a retry re-armed, or a verdict never
+///   resolved — a delivery struggle, not agent stagnation (the live
+///   evidence: `attempts:0`/`never_idled:true` fired while the agent was
+///   mid-turn, and the run completed 10 minutes later).
 ///
-/// Genuine agent-side events (handoff requests, ack/turn ALERTs, dead
-/// watchdog rows) keep counting, so real zero-commit churn still trips.
+/// Genuine agent-side events keep counting, so real zero-commit churn still
+/// trips: handoff requests, `illegal_transition` rejections, `dead` watchdog
+/// rows, and the OTHER `ack_timeout` flavor — the one fired only once the
+/// ack ladder ran its course with no reply, i.e. no `still_tracked` flag.
 fn is_self_event(event: &AuditEvent) -> bool {
     match event.event {
         AuditEventKind::Park => true,
@@ -160,15 +179,28 @@ fn is_self_event(event: &AuditEvent) -> bool {
                 | Some(super::supervisor::KILL_CAUSE_RUN_COMPLETE)
         ),
         AuditEventKind::Inject => true,
-        AuditEventKind::Alert => matches!(
-            event.details["kind"].as_str(),
+        AuditEventKind::Alert => match event.details["kind"].as_str() {
             Some("circuit_breaker")
-                | Some("handoff_churn")
-                | Some("submit_retry")
-                | Some("submit_unconfirmed")
-                | Some("delivery_failed")
-                | Some("delivery_retyped")
-        ),
+            | Some("handoff_churn")
+            | Some("submit_retry")
+            | Some("submit_unconfirmed")
+            | Some("delivery_failed")
+            | Some("delivery_retyped")
+            | Some("allowance_threshold")
+            | Some("allowance_recovered")
+            | Some("park_no_reset_time")
+            | Some("park_timer_arm_failed")
+            | Some(super::samurai_auth_watch::GH_AUTH_LOST)
+            | Some(super::samurai_reconciler::RECONCILE_INTERRUPTED_KIND)
+            | Some("context_blind")
+            | Some("spawn_dropped")
+            | Some("successor_no_start") => true,
+            // Only the still-tracked flavor is Maestro's own delivery
+            // bookkeeping; the ladder-exhausted flavor (no `still_tracked`
+            // field) is genuine agent-side unresponsiveness and counts.
+            Some("ack_timeout") => event.details["still_tracked"] == true,
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -426,8 +458,12 @@ impl SamuraiProgress {
             };
             (dir, churn_baseline)
         };
-        // No epic entry: the event's epic was never registered here (e.g.
-        // the allowance watcher's account-wide rows) — nothing to count.
+        // No epic entry: the event's epic was never registered here —
+        // nothing to count. (Account/system rows such as the allowance
+        // watcher's are NOT reliably caught by this fallback: issue #139
+        // stamped them with the run's own (project, epic), so a tracked
+        // epic now has an entry for them too — `is_self_event` is what
+        // actually filters those, not this guard.)
         // Baselines and epic entries are written by the same Register job,
         // so a baseline without an epic entry cannot exist.
         let Some(dir) = dir else {
@@ -702,18 +738,45 @@ mod tests {
             )
         };
         let table = [
-            (park, true),                         // any PARK row
-            (alert("circuit_breaker"), true),     // the breaker's own ALERT
-            (alert("handoff_churn"), true),       // the churn ALERT
+            (park, true),                     // any PARK row
+            (alert("circuit_breaker"), true), // the breaker's own ALERT
+            (alert("handoff_churn"), true),   // the churn ALERT
             // Issue #172: the delivery machinery's ALERTs are Maestro's own
             // struggles, not agent activity.
             (alert("submit_retry"), true),
             (alert("submit_unconfirmed"), true),
             (alert("delivery_failed"), true),
             (alert("delivery_retyped"), true),
-            (alert("ack_timeout"), false),        // injector ALERTs count
+            (alert("ack_timeout"), false), // ladder-exhausted flavor counts
             (alert("illegal_transition"), false), // rejections count
-            (alert("dead"), false),               // watchdog ALERTs count
+            (alert("dead"), false),        // watchdog ALERTs count
+            // Account/system rows now stamped with the run's own
+            // (project, epic) since #139 — Maestro's own bookkeeping,
+            // never agent activity.
+            (alert("allowance_threshold"), true),
+            (alert("allowance_recovered"), true),
+            (alert("gh_auth_lost"), true),
+            (alert("park_no_reset_time"), true),
+            (alert("park_timer_arm_failed"), true),
+            (alert("reconcile_interrupted"), true),
+            // Injector/replicator supervision bookkeeping — also not agent
+            // activity.
+            (alert("context_blind"), true),
+            (alert("spawn_dropped"), true),
+            (alert("successor_no_start"), true),
+            // The `still_tracked` ack_timeout flavor is a delivery struggle
+            // (the turn never even ended) and must NOT count, unlike the
+            // bare ack_timeout row above.
+            (
+                AuditEvent::now(
+                    "epic-1",
+                    AuditEventKind::Alert,
+                    1,
+                    1,
+                    json!({ "kind": "ack_timeout", "attempts": 0, "still_tracked": true, "never_idled": true }),
+                ),
+                true,
+            ),
             // Issue #172: SPAWN and supervision-caused KILLs are the
             // supervisor's own lifecycle.
             (
@@ -725,7 +788,10 @@ mod tests {
             (kill(crate::core::supervisor::KILL_CAUSE_RUN_COMPLETE), true),
             // A silent death is agent-side evidence — Maestro killed
             // nothing, it recorded the agent dying.
-            (kill(crate::core::supervisor::KILL_CAUSE_PROCESS_DIED), false),
+            (
+                kill(crate::core::supervisor::KILL_CAUSE_PROCESS_DIED),
+                false,
+            ),
             (
                 AuditEvent::now(
                     "epic-1",
@@ -787,7 +853,10 @@ mod tests {
             ),
         ];
         let counted = sequence.iter().filter(|e| !is_self_event(e)).count();
-        assert_eq!(counted, 0, "the Nido sequence must advance the counter by 0");
+        assert_eq!(
+            counted, 0,
+            "the Nido sequence must advance the counter by 0"
+        );
     }
 
     #[test]
