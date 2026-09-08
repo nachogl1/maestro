@@ -98,6 +98,11 @@ export function ParkedShelf({
   const parkedIds = useSessionStore((s) => s.parkedSessionIds);
   const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
   const parkAlerts = useSessionStore((s) => s.samuraiParkAlerts);
+  // Run-fatal badges (issue #174) that survived the auto-park — see
+  // `parkSession` in useSessionStore.ts. Read separately from the general
+  // `attentionSessionIds` so this chip only shines for a dead run, never for
+  // an ordinary user-initiated park.
+  const runFatalIds = useSessionStore((s) => s.runFatalSessionIds);
   const acknowledgeParks = useSessionStore((s) => s.acknowledgeSamuraiParks);
   const pinnedParked = useWorkspaceStore((s) => s.pinnedParked);
   const togglePinnedParked = useWorkspaceStore((s) => s.togglePinnedParked);
@@ -120,7 +125,8 @@ export function ParkedShelf({
   const hasAttention = parkedSessions.some(
     (sess) =>
       ATTENTION_STATUSES.includes(sess.status) ||
-      isUnacknowledgedPark(sess, samuraiBySessionId[sess.id]?.state, parkAlerts),
+      isUnacknowledgedPark(sess, samuraiBySessionId[sess.id]?.state, parkAlerts) ||
+      runFatalIds.includes(sess.id),
   );
 
   return (
@@ -143,7 +149,15 @@ export function ParkedShelf({
         // tile is done running (every wake-up is a fresh spawn), so its last
         // status has nothing left to say, while the park does.
         const parked = isUnacknowledgedPark(sess, samuraiBySessionId[sess.id]?.state, parkAlerts);
-        const attention = parked ? "samurai-park-shine" : chipAttentionClass(sess.status);
+        // A run-fatal badge outranks even the allowance shine: "resumes at
+        // HH:MM" is simply wrong for a run the circuit breaker killed, and
+        // the existing NeedsInput treatment already reads as "come look now".
+        const runFatal = runFatalIds.includes(sess.id);
+        const attention = runFatal
+          ? "parked-chip-attention"
+          : parked
+            ? "samurai-park-shine"
+            : chipAttentionClass(sess.status);
         const pin = {
           kind: "terminal" as const,
           project: sess.project_path,
@@ -166,7 +180,13 @@ export function ParkedShelf({
               // for the few states the dots can't show.
               style={attention ? undefined : { borderColor: projectColor }}
               className={`flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card py-0.5 pl-2.5 pr-7 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
-              title={parked ? "Parked on token allowance — restore terminal" : "Restore terminal"}
+              title={
+                runFatal
+                  ? "Samurai run died — restore terminal"
+                  : parked
+                    ? "Parked on token allowance — restore terminal"
+                    : "Restore terminal"
+              }
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[sess.status] ?? STATUS_DOT.Idle}`}

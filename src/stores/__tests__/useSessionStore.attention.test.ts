@@ -59,6 +59,7 @@ describe("useSessionStore auto-unpark attention", () => {
       sessions: [],
       parkedSessionIds: [],
       attentionSessionIds: [],
+      runFatalSessionIds: [],
     });
   });
 
@@ -183,6 +184,41 @@ describe("useSessionStore auto-unpark attention", () => {
     useSessionStore.getState().parkSession(1);
 
     expect(useSessionStore.getState().attentionSessionIds).toEqual([]);
+  });
+
+  /**
+   * Issue #174 regression: TerminalGrid's auto-park effect calls
+   * `parkSession` right after a run-fatal audit row (circuit_breaker,
+   * submit_unconfirmed, ...) flags the session, so the badge used to be
+   * wiped milliseconds after it was set — the parked shelf then looked
+   * exactly like an ordinary parked terminal.
+   */
+  it("parkSession preserves a run-fatal attention highlight instead of wiping it", () => {
+    useSessionStore.setState({
+      sessions: [session(1, "Working")],
+      attentionSessionIds: [1],
+      runFatalSessionIds: [1],
+    });
+
+    useSessionStore.getState().parkSession(1);
+
+    const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("clearSessionAttention also drops the run-fatal marker so it can't outlive the badge", () => {
+    useSessionStore.setState({
+      sessions: [session(1, "NeedsInput")],
+      attentionSessionIds: [1],
+      runFatalSessionIds: [1],
+    });
+
+    useSessionStore.getState().clearSessionAttention(1);
+
+    const state = useSessionStore.getState();
+    expect(state.attentionSessionIds).toEqual([]);
+    expect(state.runFatalSessionIds).toEqual([]);
   });
 
   it("clearSessionAttention removes only the given id and ignores unknown ids", () => {

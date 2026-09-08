@@ -88,6 +88,7 @@ describe("run-fatal samurai audit events (issue #174)", () => {
       sessions: [session(1)],
       parkedSessionIds: [],
       attentionSessionIds: [],
+      runFatalSessionIds: [],
       samuraiBySessionId: {},
       samuraiToasts: [],
     });
@@ -126,6 +127,26 @@ describe("run-fatal samurai audit events (issue #174)", () => {
       ],
       ["Samurai run needs you — proj", "Circuit breaker parked the run (nido · gen-2)"],
     ]);
+  });
+
+  /**
+   * Issue #174 regression: TerminalGrid's auto-park effect calls
+   * `parkSession` on the session right after a fatal row lands (that's how
+   * a supervised run's dead PARKED state actually reaches the UI) — it used
+   * to wipe the badge it had just set, so the shelf never showed anything
+   * distinguishing a dead run from an ordinary parked terminal.
+   */
+  it("the attention badge survives the auto-park that follows a fatal event", () => {
+    emitAuditEvent({ details: { kind: "circuit_breaker", events: 5 } });
+    expect(useSessionStore.getState().attentionSessionIds).toEqual([1]);
+
+    // The same park TerminalGrid's auto-park effect performs once the
+    // supervisor state lands on PARKED/DEAD/KILLED.
+    useSessionStore.getState().parkSession(1);
+
+    const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([1]);
   });
 
   it("notifications off suppresses the toast and the OS pop-up but never the badge", () => {

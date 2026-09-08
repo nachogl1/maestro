@@ -49,6 +49,7 @@ describe("ParkedShelf", () => {
       parkedSessionIds: [],
       samuraiBySessionId: {},
       samuraiParkAlerts: [],
+      runFatalSessionIds: [],
     });
     useWorkspaceStore.setState({ tabs: [], pinnedParked: [], zoomTabOrders: {} });
   });
@@ -124,6 +125,47 @@ describe("ParkedShelf", () => {
     expect(waitingChip?.className).toContain("parked-chip-attention");
     expect(busyChip?.className).not.toContain("parked-chip-attention");
     expect(screen.getByText("Parked").className).toContain("text-maestro-accent");
+  });
+
+  /**
+   * Issue #174 regression: a run-fatal park (circuit breaker, unconfirmed
+   * handoff, ...) used to look exactly like any other parked terminal — the
+   * only warning was an ephemeral toast. `runFatalSessionIds` is what
+   * survives `parkSession`'s attention wipe (see useSessionStore.ts); the
+   * shelf must actually render it.
+   */
+  it("marks a run-fatal parked chip with the existing attention treatment", () => {
+    useSessionStore.setState({
+      sessions: [session(1, "C:/proj", "Dead-run", "Working"), session(2, "C:/proj", "Busy")],
+      parkedSessionIds: [1, 2],
+      runFatalSessionIds: [1],
+    });
+
+    render(<ParkedShelf onUnpark={vi.fn()} />);
+
+    const deadChip = screen.getByText("Dead-run").closest("button");
+    const busyChip = screen.getByText("Busy").closest("button");
+    expect(deadChip?.className).toContain("parked-chip-attention");
+    expect(deadChip?.getAttribute("title")).toBe("Samurai run died — restore terminal");
+    expect(busyChip?.className).not.toContain("parked-chip-attention");
+    expect(screen.getByText("Parked").className).toContain("text-maestro-accent");
+  });
+
+  it("does not mark an ordinary parked chip just because it once had attention", () => {
+    // Only the run-fatal marker earns the treatment — an id merely present
+    // in the general attention set (e.g. a stale auto-unpark highlight)
+    // must not leak into the shelf.
+    useSessionStore.setState({
+      sessions: [session(1, "C:/proj", "Plain", "Working")],
+      parkedSessionIds: [1],
+      runFatalSessionIds: [],
+    });
+
+    render(<ParkedShelf onUnpark={vi.fn()} />);
+
+    expect(screen.getByText("Plain").closest("button")?.className).not.toContain(
+      "parked-chip-attention",
+    );
   });
 
   it("keeps the shelf neutral while parked agents are only working", () => {
