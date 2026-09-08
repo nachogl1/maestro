@@ -212,10 +212,11 @@ pub enum DeliveryRoute {
 /// project alerts the same day it parked.
 const MAX_SPAWN_EMITS: u32 = 5;
 
-/// Retry state for a fresh-spawn entry (issue #61): the payload to re-emit
-/// and how many emits happened so far.
+/// Retry state for a fresh-spawn entry (issue #61): how many spawn emits
+/// happened so far. The payload itself lives on the entry
+/// ([`PendingRitual::spawn`]), because a delivery failure re-emits it for
+/// entries that carry no respawn state of their own.
 struct RespawnState {
-    spawn: SuccessorSpawn,
     attempts: u32,
 }
 
@@ -277,6 +278,12 @@ struct PendingRitual {
     /// survived quoting) and read on `SessionStarted`: `LaunchLine` means the
     /// agent already has it and typing it again would deliver it TWICE.
     route: DeliveryRoute,
+    /// The spawn event that opens this generation's terminal, recorded by
+    /// EVERY staging path (not just the fresh-spawn ones) so a delivery
+    /// failure can re-emit it — see [`SamuraiReplicator::rearm_pending`]. The
+    /// tick's own unregistered re-emit ladder reads it too; `respawn` stays
+    /// the marker for which entries that ladder applies to.
+    spawn: SuccessorSpawn,
 }
 
 /// HEAD gate (PRD §5.4/§5.6): verify is skippable only when both the
@@ -453,6 +460,16 @@ struct DeliveredWatch {
     /// silently behind a `delivered` audit row. A prompt that arrived mangled
     /// is out of its reach — see [`SamuraiReplicator::audit_launch_line_delivery`].
     route: DeliveryRoute,
+    /// The staged entry this watch delivered, carried so the FINAL give-up
+    /// can put it back and respawn ([`SamuraiReplicator::rearm_pending`]).
+    /// The claim consumed it, so without this a `submit_unconfirmed` leaves
+    /// the successor at an idle prompt with nothing left to deliver — the
+    /// Nido stranding of 2026-08-20, which only a human could restart.
+    /// `Some` only where a re-arm is meaningful: the replicator's own typed
+    /// rituals. A launch-line delivery already reached the agent, and the
+    /// injector's watches belong to a session that is mid-run rather than to
+    /// a staged entry at all — both stay `None`.
+    ritual: Option<Box<PendingRitual>>,
 }
 
 /// What the tick concluded about one delivered-but-unconfirmed instruction.
@@ -1252,6 +1269,7 @@ impl SamuraiReplicator {
             respawn: None,
             launch_prompt_offered,
             route: DeliveryRoute::Typed,
+            spawn: spawn.clone(),
         });
         (self.emit_spawn)(&spawn);
     }
@@ -1307,6 +1325,26 @@ impl SamuraiReplicator {
         // Issue #91: resolved before the lock (one small JSON read, same
         // budget as model_for below) — never file I/O under the mutex.
         let workflow = self.workflow_for(&snapshot.project, &snapshot.epic);
+        // Built BEFORE the staging block so the entry can keep its own copy:
+        // a delivery failure re-emits it (`rearm_pending`), and the async
+        // task below refreshes the launch-line offer on both copies.
+        let spawn = SuccessorSpawn {
+            project: snapshot.project.clone(),
+            epic: snapshot.epic.clone(),
+            generation,
+            working_dir: working_dir.clone(),
+            session_name: samurai_prompts::successor_session_name(
+                self.display_name_for(&snapshot.project, &snapshot.epic)
+                    .as_deref(),
+                &snapshot.epic,
+                generation,
+            ),
+            model: self.model_for(&snapshot.project, &snapshot.epic),
+            // Provisional: the launch-line offer (issue #170) is decided in
+            // the async task below, once the final pointer instruction
+            // exists — this synchronous path only holds the placeholder.
+            launch_prompt: None,
+        };
         // Stage synchronously, under the one lock, so a second DEAD
         // notification for the same generation can never double-stage.
         {
@@ -1362,25 +1400,9 @@ impl SamuraiReplicator {
                 respawn: None,
                 launch_prompt_offered: false,
                 route: DeliveryRoute::Typed,
+                spawn: spawn.clone(),
             });
         }
-        let spawn = SuccessorSpawn {
-            project: snapshot.project.clone(),
-            epic: snapshot.epic.clone(),
-            generation,
-            working_dir: working_dir.clone(),
-            session_name: samurai_prompts::successor_session_name(
-                self.display_name_for(&snapshot.project, &snapshot.epic)
-                    .as_deref(),
-                &snapshot.epic,
-                generation,
-            ),
-            model: self.model_for(&snapshot.project, &snapshot.epic),
-            // Provisional: the launch-line offer (issue #170) is decided in
-            // the async task below, once the final pointer instruction
-            // exists — this synchronous path only holds the placeholder.
-            launch_prompt: None,
-        };
         let this = self.clone();
         let snapshot = snapshot.clone();
         tauri::async_runtime::spawn(async move {
@@ -1444,6 +1466,9 @@ impl SamuraiReplicator {
                     p.instruction = instruction;
                     p.launch_prompt_offered = launch_prompt.is_some();
                     spawn.launch_prompt = launch_prompt;
+                    // The entry's copy is the one a re-arm re-emits, so it
+                    // must carry the same offer as the event going out now.
+                    p.spawn = spawn.clone();
                 }
             }
             // The watchdog does not stop the transcript watcher, so the dead
@@ -1617,12 +1642,10 @@ impl SamuraiReplicator {
                 queued_at: AgeableInstant::now(),
                 registered: None,
                 alerted: false,
-                respawn: Some(RespawnState {
-                    spawn: spawn.clone(),
-                    attempts: 1,
-                }),
+                respawn: Some(RespawnState { attempts: 1 }),
                 launch_prompt_offered: false,
                 route: DeliveryRoute::Typed,
+                spawn: spawn.clone(),
             });
         }
         let this = self.clone();
@@ -1760,9 +1783,9 @@ impl SamuraiReplicator {
                     p.recovery = recovery;
                     p.launch_prompt_offered = launch_prompt.is_some();
                     spawn.launch_prompt = launch_prompt;
-                    if let Some(r) = &mut p.respawn {
-                        r.spawn = spawn.clone();
-                    }
+                    // Mirrored onto the entry: both the tick's re-emit ladder
+                    // and a delivery re-arm send THIS copy.
+                    p.spawn = spawn.clone();
                     true
                 }
                 None => false,
@@ -1880,15 +1903,13 @@ impl SamuraiReplicator {
                 queued_at: AgeableInstant::now(),
                 registered: None,
                 alerted: false,
-                respawn: Some(RespawnState {
-                    spawn: spawn.clone(),
-                    attempts: 1,
-                }),
+                respawn: Some(RespawnState { attempts: 1 }),
                 launch_prompt_offered,
                 // Typed until the frontend reports otherwise (issue #158):
                 // the offer above may be refused, and the fallback must be
                 // what happens when nothing says it was taken.
                 route: DeliveryRoute::Typed,
+                spawn: spawn.clone(),
             });
         }
         (self.emit_spawn)(&spawn);
@@ -2171,9 +2192,11 @@ impl SamuraiReplicator {
             let delivered = self.delivered.clone();
             // A failed write must not destroy the only copy of the brief:
             // the claim above already removed the entry, so the failure arm
-            // puts it back and the successor's next SessionStarted
-            // re-delivers it.
+            // puts it back — unregistered, with a fresh spawn event, because
+            // an already-started session emits no second SessionStarted to
+            // re-deliver on ([`Self::rearm_pending`]).
             let pending = self.pending.clone();
+            let emit_spawn = self.emit_spawn.clone();
             let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(&instruction);
             let outcome: super::samurai_pty::DeliveryOutcome = Box::new(move |result| {
                 match result {
@@ -2215,6 +2238,10 @@ impl SamuraiReplicator {
                                 instruction: Some(watch_instruction),
                                 retyped: false,
                                 route: DeliveryRoute::Typed,
+                                // Kept for the final give-up: a submit that is
+                                // never confirmed re-arms and respawns this
+                                // entry instead of stranding the run.
+                                ritual: Some(Box::new(p)),
                             });
                     }
                     Err(error) => {
@@ -2222,10 +2249,17 @@ impl SamuraiReplicator {
                         // instead of a false 'delivered' row, and no watch —
                         // there is nothing in the input box to re-submit.
                         // The entry itself goes back on the pending list so
-                        // the brief is not lost with the failed write.
+                        // the brief is not lost with the failed write —
+                        // UNREGISTERED, with its spawn event re-emitted.
+                        // Re-pushing it registered only looked like recovery:
+                        // delivery runs from a SessionStarted, and the
+                        // session that just failed has already started, so
+                        // the entry would age into a misleading
+                        // successor_no_start with the brief never typed.
                         log::error!(
                             "samurai replicator: {instruction_kind} for session {session_id} never reached the PTY ({error}) — re-armed, ALERT"
                         );
+                        let respawn = Self::rearm_pending(&pending, p, "the body write failed");
                         audit.append(
                             &project,
                             AuditEvent::now(
@@ -2238,14 +2272,13 @@ impl SamuraiReplicator {
                                     "instruction": instruction_kind,
                                     "source": "replicator",
                                     "error": error,
-                                    "rearmed": true,
+                                    "rearmed": respawn.is_some(),
                                 }),
                             ),
                         );
-                        pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(p);
+                        if let Some(spawn) = respawn {
+                            emit_spawn(&spawn);
+                        }
                     }
                 }
             });
@@ -2323,6 +2356,10 @@ impl SamuraiReplicator {
             instruction: None,
             retyped: false,
             route: DeliveryRoute::LaunchLine,
+            // Nothing to re-arm: the pointer rode the launch line, so it
+            // already reached the agent — a respawn would only re-open a
+            // terminal for a generation that has its brief.
+            ritual: None,
         });
     }
 
@@ -2383,6 +2420,9 @@ impl SamuraiReplicator {
             retyped: false,
             // The injector always types into a running PTY (issue #158).
             route: DeliveryRoute::Typed,
+            // No staged entry behind this watch: the injector delivers into
+            // a session that is already running its own generation.
+            ritual: None,
         });
     }
 
@@ -2479,7 +2519,7 @@ impl SamuraiReplicator {
                                 // Restart the window so each emit gets a
                                 // full ack_timeout to land.
                                 p.queued_at = AgeableInstant::now();
-                                re_emits.push(respawn.spawn.clone());
+                                re_emits.push(p.spawn.clone());
                             }
                         }
                         return true;
@@ -2588,6 +2628,9 @@ impl SamuraiReplicator {
         // nothing sits in the input box at all); only the retyped watch's
         // own give-up emits the final ALERT.
         let mut rows: Vec<(String, AuditEvent)> = Vec::new();
+        // The spawn events a final give-up re-armed (below): emitted after
+        // the lock, the same discipline as the re-emits above.
+        let mut rearm_emits: Vec<SuccessorSpawn> = Vec::new();
         {
             let mut delivered = self.lock_delivered();
             delivered.retain_mut(|d| {
@@ -2713,6 +2756,31 @@ impl SamuraiReplicator {
                                 return true;
                             }
                         }
+                        // Issue #171's re-type is spent and the session
+                        // still shows no turn activity: the CLI swallowed
+                        // the paste for good. The entry was consumed at
+                        // claim time, so alerting and dropping the watch
+                        // here left the successor at an idle prompt with
+                        // nothing left to deliver — how the Nido run died
+                        // on 2026-08-20, recoverable only by a human. Put
+                        // it back UNREGISTERED and respawn instead; the
+                        // ALERT below still records the give-up.
+                        let respawned = match d.ritual.take() {
+                            Some(ritual) => {
+                                match Self::rearm_pending(
+                                    &self.pending,
+                                    *ritual,
+                                    "the submit was never confirmed",
+                                ) {
+                                    Some(spawn) => {
+                                        rearm_emits.push(spawn);
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            }
+                            None => false,
+                        };
                         rows.push((
                             d.project.clone(),
                             AuditEvent::now(
@@ -2722,6 +2790,9 @@ impl SamuraiReplicator {
                                 d.session_id,
                                 json!({
                                     "kind": "submit_unconfirmed",
+                                    // Whether the ritual went back on the
+                                    // queue with a fresh spawn behind it.
+                                    "respawned": respawned,
                                     "resends": d.resends,
                                     "launch": d.launch,
                                     "source": d.source,
@@ -2745,6 +2816,91 @@ impl SamuraiReplicator {
         for (project, row) in rows {
             self.audit.append(&project, row);
         }
+        // Same for the re-armed spawns: a stranded ritual gets a new
+        // terminal to be delivered into (bounded by MAX_SPAWN_EMITS in
+        // `rearm_pending`), instead of an ALERT nobody can act on.
+        for spawn in rearm_emits {
+            (self.emit_spawn)(&spawn);
+        }
+    }
+
+    /// Puts a claimed-but-undelivered ritual back on `pending` and hands
+    /// back the spawn event that has to go out for it, or `None` when the
+    /// entry must not be re-armed.
+    ///
+    /// Both delivery failures end here. The ritual is consumed at claim time
+    /// ([`Self::observe_hook`]), so an entry that is not put back leaves the
+    /// successor sitting at an idle prompt with nothing left to deliver and
+    /// only an ALERT row to show for it — the Nido stranding of 2026-08-20,
+    /// which no timer recovers and only a human could restart.
+    ///
+    /// `registered` is CLEARED, which is the whole point: delivery only ever
+    /// runs from a `SessionStarted`, and a session that already started does
+    /// not emit a second one, so an entry re-pushed with its old
+    /// registration can never be delivered — it just ages into a misleading
+    /// `successor_no_start`. A fresh spawn is what produces the next
+    /// `SessionStarted`, so the entry goes back UNREGISTERED and its spawn
+    /// event is re-emitted.
+    ///
+    /// Bounded by the same [`MAX_SPAWN_EMITS`] ladder every fresh spawn uses:
+    /// entries staged without a respawn state (handoff and watchdog
+    /// successors) get one on their first re-arm, so a delivery that keeps
+    /// failing respawns at most [`MAX_SPAWN_EMITS`] times and then stops with
+    /// the caller's ALERT as the end of the story. Static (no `&self`) so the
+    /// delivery-outcome callback, which owns Arcs rather than the controller,
+    /// can call it too.
+    fn rearm_pending(
+        pending: &Arc<Mutex<Vec<PendingRitual>>>,
+        mut p: PendingRitual,
+        reason: &str,
+    ) -> Option<SuccessorSpawn> {
+        let attempts = p.respawn.as_ref().map_or(1, |r| r.attempts);
+        if attempts >= MAX_SPAWN_EMITS {
+            log::error!(
+                "samurai replicator: gen-{} of epic {} has spent its {MAX_SPAWN_EMITS} spawn emits ({reason}) — not respawning again",
+                p.generation,
+                p.epic,
+            );
+            return None;
+        }
+        let mut guard = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Something re-staged this generation while the delivery was in
+        // flight (a resume, a repeated DEAD notification): that entry owns
+        // the generation now — same idempotence rule as every staging path.
+        if guard
+            .iter()
+            .any(|q| q.project == p.project && q.epic == p.epic && q.generation == p.generation)
+        {
+            log::warn!(
+                "samurai replicator: gen-{} of epic {} is staged again already ({reason}) — not re-arming the claimed entry",
+                p.generation,
+                p.epic,
+            );
+            return None;
+        }
+        log::warn!(
+            "samurai replicator: re-arming gen-{} of epic {} unregistered and re-emitting its spawn ({reason}, attempt {}/{MAX_SPAWN_EMITS})",
+            p.generation,
+            p.epic,
+            attempts + 1,
+        );
+        p.registered = None;
+        // A latched no-start ALERT belongs to the session that just failed;
+        // the re-armed entry starts its timeout story over.
+        p.alerted = false;
+        p.queued_at = AgeableInstant::now();
+        p.respawn = Some(RespawnState {
+            attempts: attempts + 1,
+        });
+        // The route is re-decided by whoever registers the new session; the
+        // offer on the event is unchanged, so a launch-line claim is still
+        // available to it.
+        p.route = DeliveryRoute::Typed;
+        let spawn = p.spawn.clone();
+        guard.push(p);
+        Some(spawn)
     }
 
     /// Recover from a poisoned lock rather than panicking — event-path
@@ -5095,7 +5251,11 @@ mod tests {
             h.writes.lock().unwrap().is_empty(),
             "double delivery: the pointer already went out with the launch command"
         );
-        assert_eq!(h.replicator.delivered_count(), 1, "activity-only watch armed");
+        assert_eq!(
+            h.replicator.delivered_count(),
+            1,
+            "activity-only watch armed"
+        );
 
         // The INJECT row names the route AND the successor instruction kind.
         let mut rows = Vec::new();
@@ -5463,7 +5623,11 @@ mod tests {
         h.replicator
             .backdate_delivered(5, ENTER_RESEND_WINDOW + Duration::from_secs(1));
         h.replicator.tick();
-        assert_eq!(h.replicator.delivered_count(), 1, "watch kept for the retry");
+        assert_eq!(
+            h.replicator.delivered_count(),
+            1,
+            "watch kept for the retry"
+        );
         let writes = h.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 2, "the full body is re-typed exactly once");
         assert_eq!(writes[0], writes[1], "verbatim re-delivery");
@@ -5532,6 +5696,122 @@ mod tests {
         assert_eq!(
             unconfirmed[0].details["retyped"], true,
             "the final ALERT says the body was re-delivered before giving up"
+        );
+    }
+
+    /// Drives one delivery watch all the way to its FINAL give-up: two Enter
+    /// resends, the issue-#171 full re-type, two more resends, then the
+    /// verdict that ends the watch.
+    fn run_delivery_ladder_to_give_up(h: &Harness, session_id: u32) {
+        for _ in 0..6 {
+            h.replicator
+                .backdate_delivered(session_id, ENTER_RESEND_WINDOW + Duration::from_secs(1));
+            h.replicator.tick();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_never_confirmed_submit_respawns_instead_of_stranding_the_run() {
+        // The failure that KILLED the Nido run (2026-08-20): the ritual is
+        // consumed at claim time, so the give-up left a successor sitting at
+        // an idle prompt with an ALERT row and nothing left to deliver —
+        // only a human could restart it. The entry now goes back on the
+        // queue UNREGISTERED with a fresh spawn behind it.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-respawn-giveup";
+        deliver_launch_brief(&h, project);
+        assert_eq!(h.spawns.lock().unwrap().len(), 1);
+        assert!(
+            h.replicator.pending_view(1).is_none(),
+            "delivery consumed the staged entry"
+        );
+
+        run_delivery_ladder_to_give_up(&h, 5);
+
+        assert_eq!(h.replicator.delivered_count(), 0, "the watch is spent");
+        let (registered, brief) = h
+            .replicator
+            .pending_view(1)
+            .expect("the stranded ritual goes back on the queue");
+        assert_eq!(
+            registered, None,
+            "unregistered: session 5 already started, so no second SessionStarted can deliver"
+        );
+        let spawns = h.spawns.lock().unwrap().clone();
+        assert_eq!(spawns.len(), 2, "and a fresh terminal is spawned for it");
+        assert_eq!(spawns[1].generation, 1);
+        assert_eq!(spawns[1].epic, "#38");
+
+        // The respawned session delivers the SAME brief.
+        let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(6, project.into(), "#38".into(), 1, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(6));
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 3, "brief, the #171 re-type, the respawn");
+        assert_eq!(writes[2].0, 6);
+        assert_eq!(writes[2].1, brief, "verbatim re-delivery");
+
+        // The give-up ALERT still records what happened, and says the run
+        // was handed a new terminal rather than stranded.
+        let mut unconfirmed = Vec::new();
+        for _ in 0..200 {
+            unconfirmed = h
+                .audit
+                .read(project, None, None)
+                .await
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|r| r.details["kind"] == "submit_unconfirmed")
+                .collect();
+            if !unconfirmed.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(unconfirmed.len(), 1);
+        assert_eq!(unconfirmed[0].details["respawned"], true);
+    }
+
+    #[tokio::test]
+    async fn test_the_give_up_respawn_is_bounded_by_the_spawn_emit_cap() {
+        // The re-arm rides the same MAX_SPAWN_EMITS ladder as every fresh
+        // spawn, so a CLI that swallows every paste cannot make Maestro open
+        // terminals for ever: five emits in total, then the ALERT stands
+        // alone.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-respawn-bounded";
+        deliver_launch_brief(&h, project);
+        let mut session = 5;
+        for _ in 0..MAX_SPAWN_EMITS + 3 {
+            run_delivery_ladder_to_give_up(&h, session);
+            if h.replicator.pending_view(1).is_none() {
+                break;
+            }
+            // The respawned terminal registers and swallows the paste again.
+            session += 1;
+            let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
+            let snapshot = h
+                .supervisor
+                .register_session_with_details(session, project.into(), "#38".into(), 1, details)
+                .unwrap();
+            h.replicator.on_registered(&snapshot);
+            h.replicator.observe_hook(&session_started(session));
+        }
+        assert_eq!(
+            h.spawns.lock().unwrap().len(),
+            MAX_SPAWN_EMITS as usize,
+            "the initial spawn plus its re-arms, capped"
+        );
+        assert!(
+            h.replicator.pending_view(1).is_none(),
+            "the last give-up stops instead of re-arming again"
         );
     }
 
@@ -5608,7 +5888,11 @@ mod tests {
             h.replicator.tick();
         }
         assert_eq!(*calls.lock().unwrap(), 2, "the re-type was attempted once");
-        assert_eq!(h.replicator.delivered_count(), 1, "watch kept, budget spent");
+        assert_eq!(
+            h.replicator.delivered_count(),
+            1,
+            "watch kept, budget spent"
+        );
 
         // The kept watch's own ladder ends with the terminal ALERT.
         for _ in 0..3 {
@@ -5878,12 +6162,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_failed_body_write_rearms_the_ritual_for_the_next_start() {
+    async fn test_failed_body_write_rearms_and_respawns_the_ritual() {
         // A failed body write must not DESTROY the staged brief: the entry
         // is claimed out of `pending` before the write is attempted, so
         // dropping it on failure left a registered, supervised orchestrator
         // sitting at an empty prompt with nothing to re-deliver. The entry
-        // is re-armed instead — the next SessionStarted delivers it.
+        // is re-armed instead — UNREGISTERED, with its spawn re-emitted.
+        // Re-arming it registered only looked like recovery: delivery runs
+        // from a SessionStarted, and the session that failed has already
+        // started, so the entry just aged into a successor_no_start with the
+        // brief never typed.
         let dir = tempdir().unwrap();
         let attempts: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let attempts_rec = attempts.clone();
@@ -5913,17 +6201,42 @@ mod tests {
 
         h.replicator.observe_hook(&session_started(2));
         assert_eq!(*attempts.lock().unwrap(), vec![2]);
-        assert!(
-            h.replicator.pending_view(3).is_some(),
-            "a failed delivery re-arms the entry instead of dropping the brief"
+        let (registered, _) = h
+            .replicator
+            .pending_view(3)
+            .expect("a failed delivery re-arms the entry instead of dropping the brief");
+        assert_eq!(
+            registered, None,
+            "unregistered: session 2 has already started and emits no second SessionStarted"
+        );
+        let spawns = h.spawns.lock().unwrap().clone();
+        assert_eq!(
+            spawns.len(),
+            2,
+            "a fresh terminal is spawned to deliver into"
+        );
+        assert_eq!(spawns[1].generation, 3);
+
+        // The failed session's own SessionStarted no longer delivers…
+        h.replicator.observe_hook(&session_started(2));
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![2],
+            "nothing is typed into the session that already started"
         );
 
-        // The next SessionStarted re-delivers the SAME brief.
-        h.replicator.observe_hook(&session_started(2));
-        assert_eq!(*attempts.lock().unwrap(), vec![2, 2]);
+        // …the respawned one does, with the SAME brief.
+        let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(7, project.into(), "epic-9".into(), 3, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(7));
+        assert_eq!(*attempts.lock().unwrap(), vec![2, 7]);
         let delivered = writes.lock().unwrap().clone();
         assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].0, 2);
+        assert_eq!(delivered[0].0, 7);
         assert!(brief_text(repo.path(), &delivered[0].1).contains("generation 3"));
         assert!(
             h.replicator.pending_view(3).is_none(),
