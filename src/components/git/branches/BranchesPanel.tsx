@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   X,
   XCircle,
@@ -44,6 +45,25 @@ import { useGitStore } from "../../../stores/useGitStore";
  * refresh via `git fetch --all --prune`. Worktree deletion goes through
  * `git worktree remove`, with the same "not clean — force?" fallback.
  */
+type SectionKey = "local" | "remote" | "worktrees";
+
+const SECTION_CHIPS: Array<{ key: SectionKey; label: string }> = [
+  { key: "local", label: "Local" },
+  { key: "remote", label: "Remote" },
+  { key: "worktrees", label: "Worktrees" },
+];
+
+const DEFAULT_VISIBLE_SECTIONS: Record<SectionKey, boolean> = {
+  local: true,
+  remote: true,
+  worktrees: true,
+};
+
+/** "4 of 31" once a filter narrows a section, otherwise just "31". */
+function sectionCountLabel(filtered: number, total: number): string {
+  return filtered === total ? `${total}` : `${filtered} of ${total}`;
+}
+
 export function BranchesPanel({ repoPath }: { repoPath: string }) {
   const {
     branches,
@@ -83,6 +103,12 @@ export function BranchesPanel({ repoPath }: { repoPath: string }) {
   /** Worktree path with a delete in flight. */
   const [busyWorktree, setBusyWorktree] = useState<string | null>(null);
   const [worktreeError, setWorktreeError] = useState<string | null>(null);
+
+  // Search + filters — component-local only, nothing persisted.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [visibleSections, setVisibleSections] =
+    useState<Record<SectionKey, boolean>>(DEFAULT_VISIBLE_SECTIONS);
+  const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false);
 
   const refresh = useCallback(() => {
     fetchBranches(repoPath);
@@ -132,6 +158,43 @@ export function BranchesPanel({ repoPath }: { repoPath: string }) {
 
   const localBranches = typedBranches.filter((b) => !b.is_remote);
   const remoteBranches = typedBranches.filter((b) => b.is_remote);
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+
+  const filteredLocalBranches = normalizedQuery
+    ? localBranches.filter((b) => b.name.toLowerCase().includes(normalizedQuery))
+    : localBranches;
+  const filteredRemoteBranches = normalizedQuery
+    ? remoteBranches.filter((b) => b.name.toLowerCase().includes(normalizedQuery))
+    : remoteBranches;
+
+  const attentionFilteredWorktrees = needsAttentionOnly
+    ? worktrees.filter((wt) => isWorktreeAtRisk(wt))
+    : worktrees;
+  const filteredWorktrees = normalizedQuery
+    ? attentionFilteredWorktrees.filter(
+        (wt) =>
+          (wt.branch ?? "").toLowerCase().includes(normalizedQuery) ||
+          wt.path.toLowerCase().includes(normalizedQuery),
+      )
+    : attentionFilteredWorktrees;
+
+  const hasActiveFilters =
+    normalizedQuery.length > 0 ||
+    needsAttentionOnly ||
+    !visibleSections.local ||
+    !visibleSections.remote ||
+    !visibleSections.worktrees;
+
+  const toggleSection = (key: SectionKey) => {
+    setVisibleSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setVisibleSections(DEFAULT_VISIBLE_SECTIONS);
+    setNeedsAttentionOnly(false);
+  };
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -403,6 +466,74 @@ export function BranchesPanel({ repoPath }: { repoPath: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {/* Search + filters */}
+      <div className="flex shrink-0 flex-col gap-1.5 border-b border-maestro-border/60 px-2 py-2">
+        <div className="relative">
+          <Search
+            size={12}
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-maestro-muted"
+          />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search branches and worktrees..."
+            spellCheck={false}
+            className="w-full rounded border border-maestro-border bg-maestro-surface py-1.5 pl-7 pr-7 text-xs text-maestro-text placeholder:text-maestro-muted focus:border-maestro-accent focus:outline-none"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-maestro-muted hover:bg-maestro-border/60 hover:text-maestro-text"
+              aria-label="Clear search"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1">
+          {SECTION_CHIPS.map((chip) => (
+            <button
+              key={chip.key}
+              type="button"
+              onClick={() => toggleSection(chip.key)}
+              className={`rounded-full px-2 py-0.5 text-[10px] transition-colors ${
+                visibleSections[chip.key]
+                  ? "bg-maestro-accent/20 text-maestro-accent"
+                  : "bg-maestro-card/60 text-maestro-muted hover:bg-maestro-surface hover:text-maestro-text"
+              }`}
+            >
+              {chip.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setNeedsAttentionOnly((prev) => !prev)}
+            className={`rounded-full px-2 py-0.5 text-[10px] transition-colors ${
+              needsAttentionOnly
+                ? "bg-maestro-red/15 text-maestro-red"
+                : "bg-maestro-card/60 text-maestro-muted hover:bg-maestro-surface hover:text-maestro-text"
+            }`}
+          >
+            Needs attention
+          </button>
+          <button
+            type="button"
+            onClick={clearFilters}
+            disabled={!hasActiveFilters}
+            className={`ml-auto rounded-full px-2 py-0.5 text-[10px] transition-colors ${
+              hasActiveFilters
+                ? "text-maestro-muted hover:text-maestro-text hover:underline"
+                : "cursor-not-allowed text-maestro-muted/40"
+            }`}
+          >
+            Clear filters
+          </button>
+        </div>
+      </div>
+
       {/* Create + sync toolbar */}
       <div className="flex shrink-0 items-center gap-1.5 border-b border-maestro-border/60 px-2 py-2">
         <input
@@ -444,47 +575,69 @@ export function BranchesPanel({ repoPath }: { repoPath: string }) {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 py-2">
         {/* Local branches */}
-        <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-maestro-muted">
-          Local ({localBranches.length})
-        </p>
-        {localBranches.length === 0 ? (
-          <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">No local branches</p>
-        ) : (
-          localBranches.map((b) =>
-            renderBranchRow(b, false, b.is_current || b.name === currentBranch),
-          )
+        {visibleSections.local && (
+          <>
+            <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-maestro-muted">
+              Local ({sectionCountLabel(filteredLocalBranches.length, localBranches.length)})
+            </p>
+            {localBranches.length === 0 ? (
+              <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">No local branches</p>
+            ) : filteredLocalBranches.length === 0 ? (
+              <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">
+                No local branches match
+              </p>
+            ) : (
+              filteredLocalBranches.map((b) =>
+                renderBranchRow(b, false, b.is_current || b.name === currentBranch),
+              )
+            )}
+          </>
         )}
 
         {/* Remote branches */}
-        <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-maestro-muted">
-          Remote ({remoteBranches.length})
-        </p>
-        {remoteBranches.length === 0 ? (
-          <p className="px-2 text-[11px] italic text-maestro-muted">
-            No remote branches — try fetching
-          </p>
-        ) : (
-          remoteBranches.map((b) => renderBranchRow(b, true, false))
+        {visibleSections.remote && (
+          <>
+            <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-maestro-muted">
+              Remote ({sectionCountLabel(filteredRemoteBranches.length, remoteBranches.length)})
+            </p>
+            {remoteBranches.length === 0 ? (
+              <p className="px-2 text-[11px] italic text-maestro-muted">
+                No remote branches — try fetching
+              </p>
+            ) : filteredRemoteBranches.length === 0 ? (
+              <p className="px-2 text-[11px] italic text-maestro-muted">No remote branches match</p>
+            ) : (
+              filteredRemoteBranches.map((b) => renderBranchRow(b, true, false))
+            )}
+          </>
         )}
 
         {/* Worktrees */}
-        <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-maestro-muted">
-          Worktrees ({worktrees.length})
-        </p>
-        {worktreeError && <p className="px-2 pb-1 text-[10px] text-maestro-red">{worktreeError}</p>}
-        {worktreesLoading && worktrees.length === 0 ? (
-          <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">Loading worktrees…</p>
-        ) : worktrees.length === 0 ? (
-          <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">No worktrees</p>
-        ) : (
-          worktrees.map((wt) => (
-            <WorktreeRow
-              key={wt.path}
-              status={wt}
-              busy={busyWorktree === wt.path}
-              onDelete={() => void handleDeleteWorktree(wt)}
-            />
-          ))
+        {visibleSections.worktrees && (
+          <>
+            <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-maestro-muted">
+              Worktrees ({sectionCountLabel(filteredWorktrees.length, worktrees.length)})
+            </p>
+            {worktreeError && (
+              <p className="px-2 pb-1 text-[10px] text-maestro-red">{worktreeError}</p>
+            )}
+            {worktreesLoading && worktrees.length === 0 ? (
+              <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">Loading worktrees…</p>
+            ) : worktrees.length === 0 ? (
+              <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">No worktrees</p>
+            ) : filteredWorktrees.length === 0 ? (
+              <p className="px-2 pb-2 text-[11px] italic text-maestro-muted">No worktrees match</p>
+            ) : (
+              filteredWorktrees.map((wt) => (
+                <WorktreeRow
+                  key={wt.path}
+                  status={wt}
+                  busy={busyWorktree === wt.path}
+                  onDelete={() => void handleDeleteWorktree(wt)}
+                />
+              ))
+            )}
+          </>
         )}
       </div>
     </div>

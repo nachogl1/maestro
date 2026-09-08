@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useGitHubStore } from "../../../../stores/useGitHubStore";
 import { useGitStore } from "../../../../stores/useGitStore";
@@ -191,5 +191,129 @@ describe("BranchesPanel", () => {
 
     expect(await screen.findByText("/repo")).toBeInTheDocument();
     expect(screen.queryByTitle("Delete worktree")).not.toBeInTheDocument();
+  });
+
+  it("filters local, remote, and worktree lists by the search query", async () => {
+    mockInvoke({
+      branches: [
+        branch({ name: "feature-x", is_remote: false }),
+        branch({ name: "bugfix-y", is_remote: false }),
+        branch({ name: "origin/feature-z", is_remote: true }),
+      ],
+      worktrees: [
+        [
+          worktree({ path: "/repo/wt-feature-x", branch: "feature-x" }),
+          worktree({ path: "/repo/wt-bugfix-y", branch: "bugfix-y" }),
+        ],
+      ],
+    });
+
+    render(<BranchesPanel repoPath="/repo" />);
+
+    expect(await screen.findByText("feature-x")).toBeInTheDocument();
+    expect(screen.getByText("Local (2)")).toBeInTheDocument();
+    expect(screen.getByText("Remote (1)")).toBeInTheDocument();
+    expect(screen.getByText("Worktrees (2)")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search branches and worktrees..."), {
+      target: { value: "feature" },
+    });
+
+    expect(screen.getByText("Local (1 of 2)")).toBeInTheDocument();
+    expect(screen.getByText("Remote (1)")).toBeInTheDocument();
+    expect(screen.getByText("Worktrees (1 of 2)")).toBeInTheDocument();
+    expect(screen.queryByText("bugfix-y")).not.toBeInTheDocument();
+    expect(screen.queryByText("/repo/wt-bugfix-y")).not.toBeInTheDocument();
+  });
+
+  it("matches a worktree by path even when the branch name doesn't match", async () => {
+    mockInvoke({
+      branches: [],
+      worktrees: [
+        [
+          worktree({ path: "/repo/wt-alpha", branch: "alpha" }),
+          worktree({ path: "/repo/wt-standalone", branch: null }),
+        ],
+      ],
+    });
+
+    render(<BranchesPanel repoPath="/repo" />);
+
+    expect(await screen.findByText("/repo/wt-alpha")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search branches and worktrees..."), {
+      target: { value: "standalone" },
+    });
+
+    expect(screen.getByText("/repo/wt-standalone")).toBeInTheDocument();
+    expect(screen.queryByText("/repo/wt-alpha")).not.toBeInTheDocument();
+  });
+
+  it("hides a section's branches when its chip is toggled off", async () => {
+    mockInvoke({
+      branches: [
+        branch({ name: "feature-x", is_remote: false }),
+        branch({ name: "origin/feature-x", is_remote: true }),
+      ],
+    });
+
+    render(<BranchesPanel repoPath="/repo" />);
+
+    expect(await screen.findByText("Remote (1)")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remote" }));
+
+    expect(screen.queryByText(/^Remote \(/)).not.toBeInTheDocument();
+    expect(screen.queryByText("origin/feature-x")).not.toBeInTheDocument();
+    // Local section is untouched.
+    expect(screen.getByText("Local (1)")).toBeInTheDocument();
+    expect(screen.getByText("feature-x")).toBeInTheDocument();
+  });
+
+  it("restricts the worktree list to at-risk worktrees when Needs attention is on", async () => {
+    mockInvoke({
+      branches: [],
+      worktrees: [
+        [
+          worktree({ path: "/repo/wt-clean", branch: "clean-branch" }),
+          worktree({ path: "/repo/wt-risky", branch: "risky-branch", ahead: 1 }),
+        ],
+      ],
+    });
+
+    render(<BranchesPanel repoPath="/repo" />);
+
+    expect(await screen.findByText("Worktrees (2)")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Needs attention" }));
+
+    expect(screen.getByText("Worktrees (1 of 2)")).toBeInTheDocument();
+    expect(screen.getByText("/repo/wt-risky")).toBeInTheDocument();
+    expect(screen.queryByText("/repo/wt-clean")).not.toBeInTheDocument();
+  });
+
+  it("shows a per-section empty state when nothing matches, and Clear filters restores the lists", async () => {
+    mockInvoke({
+      branches: [branch({ name: "feature-x", is_remote: false })],
+      worktrees: [[worktree({ path: "/repo/wt-feature-x", branch: "feature-x" })]],
+    });
+
+    render(<BranchesPanel repoPath="/repo" />);
+
+    expect(await screen.findByText("feature-x")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search branches and worktrees..."), {
+      target: { value: "zzz-does-not-match-anything" },
+    });
+
+    expect(screen.getByText("No local branches match")).toBeInTheDocument();
+    expect(screen.getByText("No worktrees match")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+
+    expect(screen.getByPlaceholderText("Search branches and worktrees...")).toHaveValue("");
+    expect(screen.getByText("Local (1)")).toBeInTheDocument();
+    expect(screen.queryByText("No local branches match")).not.toBeInTheDocument();
+    expect(screen.queryByText("No worktrees match")).not.toBeInTheDocument();
   });
 });
