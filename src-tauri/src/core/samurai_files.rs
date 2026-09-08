@@ -41,7 +41,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::allowance_watcher::{ACCOUNT_PROJECT, ACCOUNT_RUN};
-use super::samurai_audit::audit_file_name;
+use super::samurai_audit::{audit_file_name, is_rotated_audit_file, rotated_audit_path};
 use super::samurai_brief::BRIEF_DIR;
 use super::samurai_journal::JOURNAL_FILE;
 use super::samurai_pr_runs::{self, PrReviewRun};
@@ -691,6 +691,13 @@ pub fn list_files(
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
+            // A rolled generation (`<name>.1.jsonl`) is not a file of its
+            // own: its rows are counted, sized and deleted through its live
+            // sibling. Listed separately it would parse as a project whose
+            // hash is `<hash>.1` — a phantom group holding the same rows.
+            if is_rotated_audit_file(name) {
+                continue;
+            }
             audit_counts
                 .entry(name.to_string())
                 .or_insert_with(|| count_audit_rows(&path));
@@ -748,7 +755,7 @@ pub fn list_files(
             .unwrap_or(0);
         groups.groups[index].audit_rows = rows;
         if rows > 0 {
-            if let Some((size_bytes, modified_at)) = stat(&audit_path) {
+            if let Some((audit_path, size_bytes, modified_at)) = audit_stat(&audit_path) {
                 entries.push(SamuraiFileEntry {
                     group_id: groups.groups[index].id.clone(),
                     kind: SamuraiFileKind::AuditLog,
@@ -985,7 +992,9 @@ impl Groups {
             return;
         }
         // The account-wide pseudo-run: allowance crossings and dropped
-        // scheduled launches, written while nothing is supervised.
+        // scheduled launches, written while nothing is supervised — plus the
+        // legacy rows that name NO run, which `count_audit_rows` counts here
+        // exactly as the audit view's filter matches them (#189).
         if key == ACCOUNT_RUN && file == audit_file_name(ACCOUNT_PROJECT) {
             self.upsert_run(ACCOUNT_PROJECT, ACCOUNT_RUN, None, false);
             return;
@@ -1001,12 +1010,26 @@ impl Groups {
         if self.index.contains_key(&id) {
             return;
         }
-        let refs = vec![ref_label(key)];
+        // The account-wide rows of a PROJECT's log — the pre-#139 allowance
+        // ALERTs, written under whatever project was active. Same scope, same
+        // words the audit panel already puts on them; keyed to the file that
+        // holds them, because the view a click opens reads the group's own
+        // project and a card must never claim rows that view cannot show.
+        let account = key == ACCOUNT_RUN;
+        let refs = if account {
+            Vec::new()
+        } else {
+            vec![ref_label(key)]
+        };
         self.push(
             SamuraiFileGroup {
                 id,
                 kind: SamuraiGroupKind::Run,
-                label: run_label(&refs, &[], true),
+                label: if account {
+                    ACCOUNT_LABEL.to_string()
+                } else {
+                    run_label(&refs, &[], true)
+                },
                 refs,
                 project_path: project.map(str::to_string),
                 created_at: None,
@@ -1096,30 +1119,49 @@ fn pr_label(number: u32, title: &str) -> String {
 /// `details` object the count never looks at.
 #[derive(Deserialize)]
 struct AuditRowEpic {
+    /// `Option` to keep the two cases apart. A row that CARRIES the field
+    /// empty (`"epic":""`) is a real audit row whose writer named no run —
+    /// account-wide by definition. A line with no `epic` at all is not an
+    /// audit row: every [`super::samurai_audit::AuditEvent`] serializes the
+    /// field, so the real parser would reject that line too, and this count
+    /// skips it exactly as every other audit reader skips a malformed line.
     #[serde(default)]
-    epic: String,
+    epic: Option<String>,
 }
 
-/// Rows per run id in one project's audit JSONL. Streamed line by line: the
-/// log is never auto-trimmed (PRD decision #15), so it must never be read into
-/// memory whole just to be counted. A malformed line is skipped, like every
-/// other audit reader.
+/// Rows per run id in one project's audit JSONL — the ROLLED generation
+/// included, so a roll never makes rows that are still on disk vanish from
+/// their group's count. Streamed line by line rather than read whole: the log
+/// only shrinks when the user clears it (PRD decision #15). A malformed line
+/// is skipped, like every other audit reader.
+///
+/// A row with an EMPTY `epic` is counted on the account-wide run, not
+/// dropped: the pre-#139 allowance ALERTs are written exactly that way, and
+/// skipping them left rows that exist on disk in no group and no count. The
+/// audit view's filter maps the same empty spelling to the same run (#189).
 fn count_audit_rows(path: &Path) -> HashMap<String, u32> {
     let mut counts: HashMap<String, u32> = HashMap::new();
-    let Ok(file) = std::fs::File::open(path) else {
-        return counts;
-    };
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(row) = serde_json::from_str::<AuditRowEpic>(&line) else {
+    for generation in [rotated_audit_path(path), path.to_path_buf()] {
+        let Ok(file) = std::fs::File::open(&generation) else {
             continue;
         };
-        if row.epic.is_empty() {
-            continue;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(row) = serde_json::from_str::<AuditRowEpic>(&line) else {
+                continue;
+            };
+            let Some(epic) = row.epic else {
+                continue;
+            };
+            let epic = if epic.is_empty() {
+                ACCOUNT_RUN
+            } else {
+                epic.as_str()
+            };
+            *counts.entry(audit_key(epic)).or_insert(0) += 1;
         }
-        *counts.entry(audit_key(&row.epic)).or_insert(0) += 1;
     }
     counts
 }
@@ -1308,7 +1350,34 @@ pub fn delete_file(
         }
     }
 
-    std::fs::remove_file(&target).map_err(|e| format!("failed to delete {}: {e}", target.display()))
+    std::fs::remove_file(&target)
+        .map_err(|e| format!("failed to delete {}: {e}", target.display()))?;
+
+    // An audit log is ONE artifact to the panel — both generations counted
+    // and sized on a single row — so deleting it takes the rolled generation
+    // with it. Left behind, a `.1.jsonl` no listing shows and no row can
+    // select would be undeletable from the UI. Best effort: the file the user
+    // asked to delete is already gone, and a failure here is not that delete
+    // failing.
+    let is_live_audit = canonical_stripped(&roots.audit_dir)
+        .is_some_and(|root| target != root && target.starts_with(&root))
+        && target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| name.ends_with(".jsonl") && !is_rotated_audit_file(name));
+    if is_live_audit {
+        let rolled = rotated_audit_path(&target);
+        if let Err(e) = std::fs::remove_file(&rolled) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "samurai files: deleted {} but could not delete its rolled generation {}: {e}",
+                    target.display(),
+                    rolled.display()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The liveness index behind `in_use`: (project, epic-slug) pairs and
@@ -1378,6 +1447,22 @@ impl Liveness {
 
 /// Size + RFC 3339 modified time; `None` when the file cannot be stat'ed
 /// (deleted between listing and stat — skip the row rather than lie).
+/// Stat of an audit log as ONE artifact: both generations' bytes summed under
+/// the path a delete must target. Right after a roll the live file does not
+/// exist until the next append and the rolled generation IS the whole log, so
+/// the row points at that rather than disappearing from the panel.
+fn audit_stat(path: &Path) -> Option<(PathBuf, u64, Option<String>)> {
+    let rolled = rotated_audit_path(path);
+    let live = stat(path);
+    let previous = stat(&rolled);
+    let size = live.as_ref().map_or(0, |(s, _)| *s) + previous.as_ref().map_or(0, |(s, _)| *s);
+    match (live, previous) {
+        (Some((_, modified)), _) => Some((path.to_path_buf(), size, modified)),
+        (None, Some((_, modified))) => Some((rolled, size, modified)),
+        (None, None) => None,
+    }
+}
+
 fn stat(path: &Path) -> Option<(u64, Option<String>)> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta
@@ -1846,8 +1931,11 @@ mod tests {
                 run_group_id(&f.project, "issues #77, #78"),
                 PR_GROUP.to_string(),
                 // The scopes the shared logs are sliced under when no config
-                // or record names them (review B3).
+                // or record names them (review B3) — including the legacy
+                // rows that name no run at all, which are account-wide by
+                // definition and counted under the log that holds them.
                 run_group_id(ACCOUNT_PROJECT, ACCOUNT_RUN),
+                run_group_id(&f.project, ACCOUNT_RUN),
                 run_group_id(CLEANED_PROJECT, "#5"),
                 run_group_id("C:/git/elsewhere", "#9"),
             ])
@@ -1991,15 +2079,22 @@ mod tests {
             .filter(|e| e.group_id == quiet.id)
             .all(|e| e.kind != SamuraiFileKind::AuditLog && e.kind != SamuraiFileKind::Journal));
 
-        // The row written with an EMPTY run id is counted nowhere: it names
-        // no scope at all, and #139 admits no bucket to hide it in. (The
-        // sweep in `samurai_audit` is what keeps writers from making more.)
+        // The legacy row written with an EMPTY run id is counted on the
+        // account-wide scope — the only scope such a row can name — instead
+        // of being dropped from every group and every count. It is still not
+        // a bucket (#139): the account-wide scope has real writers, and the
+        // audit view matches the same empty spelling to the same run (#189).
+        // (The sweep in `samurai_audit` is what keeps writers from making
+        // more of them.)
+        let account_here = group(&groups, &run_group_id(&f.project, ACCOUNT_RUN));
+        assert_eq!(account_here.label, "Account-wide");
+        assert_eq!(account_here.audit_rows, 1);
         let this_project: u32 = groups
             .iter()
             .filter(|g| g.project_path.as_deref() == Some(f.project.as_str()))
             .map(|g| g.audit_rows)
             .sum();
-        assert_eq!(this_project, 6);
+        assert_eq!(this_project, 7, "every row on disk is counted somewhere");
 
         // The physical files are unchanged and shared: one audit row entry
         // per counting group, all pointing at their project's one JSONL.
@@ -2007,7 +2102,7 @@ mod tests {
             .into_iter()
             .filter(|e| e.project_path.as_deref() == Some(f.project.as_str()))
             .collect();
-        assert_eq!(audits.len(), 3);
+        assert_eq!(audits.len(), 4, "one row per counting group");
         assert!(audits.iter().all(|e| e.path.ends_with(".jsonl")));
         assert_eq!(
             audits.iter().map(|e| &e.path).collect::<HashSet<_>>().len(),
@@ -2788,6 +2883,61 @@ mod tests {
         )
         .unwrap();
         assert!(!Path::new(&archived.path).exists());
+    }
+
+    /// A rolled audit generation (`samurai_audit::ROTATE_AT_BYTES`) is part
+    /// of the log, not a file of its own: its rows keep counting on their
+    /// group, it never becomes a phantom group of its own (the rolled name
+    /// parses as a project whose hash is `<hash>.1`), and deleting the log
+    /// takes it along — nothing else in the panel can select it.
+    #[test]
+    fn test_a_rolled_audit_generation_counts_and_deletes_with_its_live_file() {
+        let f = fixture();
+        let live = f.roots.audit_dir.join(audit_file_name(&f.project));
+        let rolled = rotated_audit_path(&live);
+        // Roll what the fixture wrote: two more #9 rows arrive in a new live
+        // file, so #9's three rows now straddle the boundary.
+        std::fs::rename(&live, &rolled).unwrap();
+        std::fs::write(&live, format!("{}{}", audit_line("#9"), audit_line("#9"))).unwrap();
+
+        let (groups, entries) = list(&f, &[], &[]);
+        assert_eq!(
+            group(&groups, &run_group_id(&f.project, "#9")).audit_rows,
+            5,
+            "rolled rows are still on disk, so they must still be counted"
+        );
+        for g in &groups {
+            assert!(
+                !g.id.contains(".1"),
+                "the rolled file became a group: {g:?}"
+            );
+        }
+
+        // One row for the log, sized as both generations, pointing at the
+        // live file — and deleting it removes the rolled generation too.
+        let audit = entries
+            .iter()
+            .find(|e| {
+                e.kind == SamuraiFileKind::AuditLog
+                    && e.project_path.as_deref() == Some(f.project.as_str())
+            })
+            .expect("the audit log is listed");
+        assert!(audit.path.ends_with(&audit_file_name(&f.project)));
+        assert_eq!(
+            audit.size_bytes,
+            std::fs::metadata(&live).unwrap().len() + std::fs::metadata(&rolled).unwrap().len()
+        );
+        delete_file(
+            &f.roots,
+            &f.store.list_with_paths(),
+            &f.pr_runs,
+            &entries,
+            &audit.path,
+            true,
+        )
+        .unwrap();
+        assert!(!live.exists());
+        assert!(!rolled.exists(), "the rolled generation would be orphaned");
     }
 
     /// Pins Q3/R2 (issue #142): a legacy harvest report carries no group and
