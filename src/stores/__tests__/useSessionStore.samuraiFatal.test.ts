@@ -237,6 +237,30 @@ describe("run-fatal samurai audit events (issue #174)", () => {
     expect(vi.mocked(notifyOs)).toHaveBeenCalledTimes(4);
   });
 
+  /**
+   * PR #193 added the `reconcile_unreadable_config` ALERT but no label, so
+   * the one verdict meaning "there is a run on disk Maestro cannot read at
+   * all" was invisible everywhere a human looks: not in Active Runs (the
+   * file cannot be parsed into a row), not as a toast, only in the passive
+   * audit list.
+   */
+  it("an unreadable run config toasts — it is the only surface that row has", () => {
+    // The row lands on the account pseudo-scope with the 0 sentinels: the
+    // owning project is exactly what cannot be known.
+    emitAuditEvent({
+      session_id: 0,
+      generation: 0,
+      details: { kind: "reconcile_unreadable_config", path: "C:/runs/proj/epic.json" },
+    });
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiToasts.map((t) => t.label)).toEqual([
+      "A run's saved file could not be read — that run is invisible to Maestro",
+    ]);
+    expect(vi.mocked(notifyOs)).toHaveBeenCalledTimes(1);
+    expect(state.attentionSessionIds).toEqual([]);
+  });
+
   it("non-fatal rows never toast or badge", () => {
     emitAuditEvent({ details: { kind: "submit_retry" } });
     emitAuditEvent({ details: { kind: "ack_timeout" } });
