@@ -2214,6 +2214,14 @@ mod tests {
     use crate::core::samurai_audit::AuditLog;
     use crate::core::samurai_files::{strip_extended_length, SamuraiFileKind};
     use crate::core::samurai_run_config::InterruptedStamp;
+    // Issue #141's title lookup finishes on a background task the caller
+    // never awaits, so the tests below observe it through a harness tick
+    // rather than a fixed budget of sleeps. The local poll loop that used to
+    // live here gave up after 200 x 10ms sleeps on the test's own, otherwise
+    // idle, runtime — a race budget that expires on a merely-slow run
+    // (issues #197, #198, #199). This is the shared version: the wall-clock
+    // bound it keeps is a hang detector, never a budget.
+    use crate::core::samurai_test_wait::{await_or_hang, new_tick, wait_until};
     use crate::core::supervisor::SupervisorState;
     use crate::core::windows_process::StdCommandExt;
     use tempfile::tempdir;
@@ -2654,19 +2662,6 @@ mod tests {
             })
         });
         (SamuraiTestGate::new(runner, Arc::new(|_| {})), calls)
-    }
-
-    /// Polls until `cond` holds or ~2s pass — the `samurai_completion`
-    /// suite's pattern, needed here because issue #141's title lookup
-    /// finishes on a background task the caller never awaits.
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..200 {
-            if cond() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("condition not reached within 2s");
     }
 
     #[tokio::test]
@@ -3476,11 +3471,23 @@ mod tests {
         // as `Epic #38 — Samurai supervision`.
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
+        // The probe ticks the harness as it resolves — the last event this
+        // test can observe before the lookup task writes the titles onto the
+        // run config, so a healthy run re-checks the store immediately
+        // instead of sitting out a fixed budget of sleeps.
+        let tick = new_tick();
+        let tick_probe = tick.clone();
         let title_lookup = RefTitleLookup::new(
             h.run_configs.clone(),
-            Arc::new(|_project: String, _repo_pin: Option<String>, _r: String| {
-                Box::pin(async move { Ok("Samurai supervision".to_string()) })
-            }),
+            Arc::new(
+                move |_project: String, _repo_pin: Option<String>, _r: String| {
+                    let tick = tick_probe.clone();
+                    Box::pin(async move {
+                        tick.notify_one();
+                        Ok("Samurai supervision".to_string())
+                    })
+                },
+            ),
         );
         let result = launch_run_inner(
             &h.supervisor,
@@ -3505,7 +3512,7 @@ mod tests {
         .await
         .unwrap();
 
-        wait_until(|| {
+        wait_until(&tick, || {
             h.run_configs
                 .get(&h.project, &result.epic)
                 .is_some_and(|c| !c.ref_titles.is_empty())
@@ -3527,6 +3534,8 @@ mod tests {
         // dropped — the run config still ends up saved, just refs-only.
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
+        let tick = new_tick();
+        let tick_probe = tick.clone();
         let probed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let probed_rec = probed.clone();
         let title_lookup = RefTitleLookup::new(
@@ -3534,6 +3543,7 @@ mod tests {
             Arc::new(
                 move |_project: String, _repo_pin: Option<String>, r: String| {
                     probed_rec.store(true, std::sync::atomic::Ordering::SeqCst);
+                    tick_probe.notify_one();
                     Box::pin(async move { Err(format!("gh not authenticated for ref {r}")) })
                 },
             ),
@@ -3563,8 +3573,9 @@ mod tests {
 
         // Wait for the probe to have actually RUN before asserting the
         // absence — a bare sleep would pass just as well if the lookup had
-        // never been spawned at all.
-        wait_until(|| probed.load(std::sync::atomic::Ordering::SeqCst)).await;
+        // never been spawned at all. The probe ticks the harness as it is
+        // entered, so this returns on that event, not on a timer.
+        wait_until(&tick, || probed.load(std::sync::atomic::Ordering::SeqCst)).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         let config = h.run_configs.get(&h.project, &result.epic).unwrap();
         assert!(
@@ -3579,6 +3590,8 @@ mod tests {
         // short one here, so the test doesn't wait out the real 10s ceiling.
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
+        let tick = new_tick();
+        let tick_probe = tick.clone();
         let probed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let probed_rec = probed.clone();
         let title_lookup = RefTitleLookup::with_timeout(
@@ -3586,6 +3599,7 @@ mod tests {
             Arc::new(
                 move |_project: String, _repo_pin: Option<String>, _r: String| {
                     probed_rec.store(true, std::sync::atomic::Ordering::SeqCst);
+                    tick_probe.notify_one();
                     Box::pin(std::future::pending::<Result<String, String>>())
                 },
             ),
@@ -3617,7 +3631,7 @@ mod tests {
         // The probe really was entered (so the absence below is the timeout
         // firing, not a lookup that never spawned), then well past the 30ms
         // ceiling — still no ref_titles.
-        wait_until(|| probed.load(std::sync::atomic::Ordering::SeqCst)).await;
+        wait_until(&tick, || probed.load(std::sync::atomic::Ordering::SeqCst)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let config = h.run_configs.get(&h.project, &result.epic).unwrap();
         assert!(
@@ -3634,22 +3648,32 @@ mod tests {
         // succeeds".
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
+        let tick = new_tick();
+        let tick_probe = tick.clone();
+        let probed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probed_rec = probed.clone();
         let title_lookup = RefTitleLookup::new(
             h.run_configs.clone(),
-            Arc::new(|_project: String, _repo_pin: Option<String>, _r: String| {
-                Box::pin(std::future::pending::<Result<String, String>>())
-            }),
+            Arc::new(
+                move |_project: String, _repo_pin: Option<String>, _r: String| {
+                    probed_rec.store(true, std::sync::atomic::Ordering::SeqCst);
+                    tick_probe.notify_one();
+                    Box::pin(std::future::pending::<Result<String, String>>())
+                },
+            ),
         );
-        // Wrapped in a bounded timeout rather than a tight wall-clock
-        // assertion: real worktree creation (a fresh git repo + branch +
-        // checkout) already costs a few seconds on its own in this test
-        // environment, so a tight ceiling would be flaky. What actually
-        // proves "never blocks" is that the call returns at all — the probe
-        // above NEVER resolves, so if `launch_run_inner` awaited it instead
-        // of spawning it, this would hang forever and the timeout below
-        // would fire.
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(15),
+        // The claim here is structural and binary, so nothing is timed. The
+        // probe future NEVER resolves: an implementation that awaited it
+        // instead of spawning it would hang forever, so the launch merely
+        // has to RETURN. Awaiting it is already the event-driven wait — the
+        // future's own completion is the wake — and `await_or_hang`'s bound
+        // is the shared 60s hang detector, there only because `cargo test`
+        // has no per-test timeout. It replaces a 15s ceiling that was a race
+        // budget in disguise: real worktree creation shells out to `git`, so
+        // under a loaded suite those subprocesses stretch several-fold and
+        // the bound expired on a launch that was merely queued (issue #199).
+        await_or_hang(
+            "launch_run_inner — it must return without waiting on the title probe",
             launch_run_inner(
                 &h.supervisor,
                 &h.schedule,
@@ -3671,12 +3695,14 @@ mod tests {
                 Some(h.base.path()),
             ),
         )
-        .await;
-        outcome
-            .expect(
-                "launch_run_inner must return without waiting on the title probe — it hung past the 15s bound",
-            )
-            .unwrap();
+        .await
+        .unwrap();
+
+        // …and the other half of "spawned, never awaited": the probe really
+        // was entered, and was still pending (it can never be anything else)
+        // when the launch above returned. Without this a lookup that never
+        // spawned at all would pass the return assertion too.
+        wait_until(&tick, || probed.load(std::sync::atomic::Ordering::SeqCst)).await;
     }
 
     #[tokio::test]
@@ -3688,12 +3714,18 @@ mod tests {
         let (gate, _calls) = recording_gate(vec![]);
         let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_rec = seen.clone();
+        let tick = new_tick();
+        let tick_probe = tick.clone();
         let title_lookup = RefTitleLookup::new(
             h.run_configs.clone(),
             Arc::new(
                 move |_project: String, _repo_pin: Option<String>, r: String| {
                     seen_rec.lock().unwrap().push(r.clone());
-                    Box::pin(async move { Ok(format!("title for {r}")) })
+                    let tick = tick_probe.clone();
+                    Box::pin(async move {
+                        tick.notify_one();
+                        Ok(format!("title for {r}"))
+                    })
                 },
             ),
         );
@@ -3720,7 +3752,7 @@ mod tests {
         .await
         .unwrap();
 
-        wait_until(|| {
+        wait_until(&tick, || {
             h.run_configs
                 .get(&h.project, &result.epic)
                 .is_some_and(|c| c.ref_titles.len() == 2)
