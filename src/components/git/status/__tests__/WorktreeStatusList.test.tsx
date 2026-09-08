@@ -170,3 +170,166 @@ describe("WorktreeStatusList file actions", () => {
     expect(screen.getByText("src/foo.ts")).toBeInTheDocument();
   });
 });
+
+describe("WorktreeStatusList search and filters", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  function altWorktrees(): WorktreeStatus[] {
+    return [
+      buildStatus({
+        path: "/repo/wt-alpha",
+        branch: "feature/alpha",
+        is_main_worktree: false,
+        staged: [],
+        unstaged: [{ path: "src/foo.ts", status: "modified", old_path: null }],
+        untracked: ["junk.txt"],
+      }),
+      buildStatus({
+        path: "/repo/wt-beta",
+        branch: "feature/beta",
+        is_main_worktree: false,
+        staged: [],
+        unstaged: [],
+        untracked: ["src/other.ts"],
+      }),
+    ];
+  }
+
+  it("matches a worktree by branch name and hides the rest", async () => {
+    mockInvoke([altWorktrees()]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    await screen.findByText("feature/alpha");
+    expect(screen.getByText("feature/beta")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search worktrees or files..."), {
+      target: { value: "alpha" },
+    });
+
+    expect(screen.getByText("feature/alpha")).toBeInTheDocument();
+    expect(screen.queryByText("feature/beta")).not.toBeInTheDocument();
+    expect(screen.getByText("1 of 2 worktrees")).toBeInTheDocument();
+  });
+
+  it("matches by file path and shows only the matching file inside the worktree", async () => {
+    mockInvoke([
+      [
+        buildStatus({
+          path: "/repo/wt-alpha",
+          branch: "feature/alpha",
+          is_main_worktree: false,
+          staged: [],
+          unstaged: [{ path: "src/foo.ts", status: "modified", old_path: null }],
+          untracked: ["src/bar.ts"],
+        }),
+      ],
+    ]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    await screen.findByText("src/foo.ts");
+    expect(screen.getByText("src/bar.ts")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search worktrees or files..."), {
+      target: { value: "bar.ts" },
+    });
+
+    // The worktree's own branch/path don't match "bar.ts", but one of its
+    // files does, so it stays visible with only that file shown.
+    expect(screen.getByText("feature/alpha")).toBeInTheDocument();
+    expect(screen.getByText("src/bar.ts")).toBeInTheDocument();
+    expect(screen.queryByText("src/foo.ts")).not.toBeInTheDocument();
+  });
+
+  it("'Only with changes' hides worktrees with zero changed files", async () => {
+    mockInvoke([
+      [
+        buildStatus({
+          path: "/repo/wt-alpha",
+          branch: "feature/alpha",
+          is_main_worktree: false,
+          staged: [],
+          unstaged: [{ path: "src/foo.ts", status: "modified", old_path: null }],
+          untracked: [],
+        }),
+        buildStatus({
+          path: "/repo/wt-clean",
+          branch: "feature/clean",
+          is_main_worktree: false,
+          staged: [],
+          unstaged: [],
+          untracked: [],
+          unpushed_commits: [],
+          stashes: [],
+          ahead: 0,
+        }),
+      ],
+    ]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    await screen.findByText("feature/alpha");
+    expect(screen.getByText("feature/clean")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Only with changes" }));
+
+    expect(screen.getByText("feature/alpha")).toBeInTheDocument();
+    expect(screen.queryByText("feature/clean")).not.toBeInTheDocument();
+  });
+
+  it("'Needs attention' restricts the list to at-risk worktrees", async () => {
+    mockInvoke([
+      [
+        buildStatus({
+          path: "/repo/wt-risk",
+          branch: "feature/risk",
+          is_main_worktree: false,
+          ahead: 1,
+          staged: [],
+          unstaged: [],
+          untracked: [],
+        }),
+        buildStatus({
+          path: "/repo/wt-safe",
+          branch: "feature/safe",
+          is_main_worktree: false,
+          ahead: 0,
+          staged: [],
+          unstaged: [],
+          untracked: [],
+          unpushed_commits: [],
+          stashes: [],
+        }),
+      ],
+    ]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    await screen.findByText("feature/risk");
+    expect(screen.getByText("feature/safe")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Needs attention" }));
+
+    expect(screen.getByText("feature/risk")).toBeInTheDocument();
+    expect(screen.queryByText("feature/safe")).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state when filters match nothing, and Clear filters resets", async () => {
+    mockInvoke([altWorktrees()]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    await screen.findByText("feature/alpha");
+
+    fireEvent.change(screen.getByPlaceholderText("Search worktrees or files..."), {
+      target: { value: "nonexistent-xyz" },
+    });
+
+    expect(await screen.findByText("No worktrees match your filters.")).toBeInTheDocument();
+    expect(screen.queryByText("feature/alpha")).not.toBeInTheDocument();
+    expect(screen.queryByText("feature/beta")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+
+    expect(await screen.findByText("feature/alpha")).toBeInTheDocument();
+    expect(screen.getByText("feature/beta")).toBeInTheDocument();
+  });
+});

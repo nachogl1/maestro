@@ -12,10 +12,12 @@ import {
   Loader2,
   Package,
   RefreshCw,
+  Search,
   Trash2,
   Undo2,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   discardFile,
   type FileDiffMode,
@@ -47,11 +49,48 @@ interface SelectedFile {
 
 const POLL_INTERVAL_MS = 15_000;
 
+/** Case-insensitive substring match, used for both the worktree-level and
+ *  file-level search. */
+function textMatches(haystack: string, query: string): boolean {
+  return haystack.toLowerCase().includes(query);
+}
+
+/** `true` when the search query matches the worktree's own branch or path,
+ *  i.e. independently of any of its files. */
+function worktreeSelfMatches(status: WorktreeStatus, query: string): boolean {
+  const branch = status.branch ?? "(detached)";
+  return textMatches(branch, query) || textMatches(status.path, query);
+}
+
+function fileEntryMatches(entry: FileStatusEntry, query: string): boolean {
+  return (
+    textMatches(entry.path, query) ||
+    (entry.old_path !== null && textMatches(entry.old_path, query))
+  );
+}
+
+/** `true` when any of the worktree's staged/unstaged/untracked file paths
+ *  match the search query. */
+function worktreeHasMatchingFile(status: WorktreeStatus, query: string): boolean {
+  return (
+    status.staged.some((f) => fileEntryMatches(f, query)) ||
+    status.unstaged.some((f) => fileEntryMatches(f, query)) ||
+    status.untracked.some((p) => textMatches(p, query))
+  );
+}
+
+function hasChangedFiles(status: WorktreeStatus): boolean {
+  return status.staged.length + status.unstaged.length + status.untracked.length > 0;
+}
+
 export function WorktreeStatusList({ repoPath, active = true }: WorktreeStatusListProps) {
   const [worktrees, setWorktrees] = useState<WorktreeStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [onlyChanged, setOnlyChanged] = useState(false);
+  const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false);
   // Guards the interval only. Manual refreshes and post-file-action refreshes
   // must never be swallowed, so this is deliberately not inside `refresh`.
   const inFlight = useRef(false);
@@ -87,6 +126,26 @@ export function WorktreeStatusList({ repoPath, active = true }: WorktreeStatusLi
     return () => clearInterval(id);
   }, [active, refresh]);
 
+  const query = searchQuery.trim().toLowerCase();
+  const filtersActive = query.length > 0 || onlyChanged || needsAttentionOnly;
+
+  // Presentational only — `worktrees` (the polled state) is never touched
+  // here, so a poll landing mid-filter never loses data.
+  const filteredWorktrees = useMemo(() => {
+    return worktrees.filter((wt) => {
+      if (onlyChanged && !hasChangedFiles(wt)) return false;
+      if (needsAttentionOnly && !isWorktreeAtRisk(wt)) return false;
+      if (!query) return true;
+      return worktreeSelfMatches(wt, query) || worktreeHasMatchingFile(wt, query);
+    });
+  }, [worktrees, query, onlyChanged, needsAttentionOnly]);
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setOnlyChanged(false);
+    setNeedsAttentionOnly(false);
+  };
+
   if (isLoading && worktrees.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -113,28 +172,104 @@ export function WorktreeStatusList({ repoPath, active = true }: WorktreeStatusLi
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b border-maestro-border/60 px-3 py-1.5">
-        <span className="text-[11px] font-medium text-maestro-muted">
-          {worktrees.length} worktree{worktrees.length === 1 ? "" : "s"}
-        </span>
-        <button
-          type="button"
-          onClick={refresh}
-          className="rounded p-1 text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-          title="Refresh"
-        >
-          <RefreshCw size={12} className={isLoading ? "animate-spin" : undefined} />
-        </button>
+      <div className="flex flex-col gap-1.5 border-b border-maestro-border/60 px-3 py-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-medium text-maestro-muted">
+            {filtersActive
+              ? `${filteredWorktrees.length} of ${worktrees.length} worktree${
+                  worktrees.length === 1 ? "" : "s"
+                }`
+              : `${worktrees.length} worktree${worktrees.length === 1 ? "" : "s"}`}
+          </span>
+          <button
+            type="button"
+            onClick={refresh}
+            className="rounded p-1 text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+            title="Refresh"
+          >
+            <RefreshCw size={12} className={isLoading ? "animate-spin" : undefined} />
+          </button>
+        </div>
+
+        <div className="relative">
+          <Search
+            size={11}
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-maestro-muted/60"
+          />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search worktrees or files..."
+            className="w-full rounded-md border border-maestro-border bg-maestro-card py-1 pl-6 pr-6 text-[11px] text-maestro-text placeholder:text-maestro-muted/50 focus:border-maestro-accent focus:outline-none"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-maestro-muted hover:bg-maestro-border/40 hover:text-maestro-text"
+              aria-label="Clear search"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setOnlyChanged((v) => !v)}
+            className={`rounded-full px-2 py-0.5 text-[10px] transition-colors ${
+              onlyChanged
+                ? "bg-maestro-accent/20 text-maestro-accent"
+                : "bg-maestro-card/60 text-maestro-muted hover:bg-maestro-surface hover:text-maestro-text"
+            }`}
+          >
+            Only with changes
+          </button>
+          <button
+            type="button"
+            onClick={() => setNeedsAttentionOnly((v) => !v)}
+            className={`rounded-full px-2 py-0.5 text-[10px] transition-colors ${
+              needsAttentionOnly
+                ? "bg-maestro-red/20 text-maestro-red"
+                : "bg-maestro-card/60 text-maestro-muted hover:bg-maestro-surface hover:text-maestro-text"
+            }`}
+          >
+            Needs attention
+          </button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {worktrees.map((wt) => (
-          <WorktreeCard
-            key={wt.path}
-            status={wt}
-            onChanged={refresh}
-            onSelectFile={setSelectedFile}
-          />
-        ))}
+        {filteredWorktrees.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-6 text-center">
+            <p className="text-xs text-maestro-muted">
+              {worktrees.length === 0 ? "No worktrees found." : "No worktrees match your filters."}
+            </p>
+            {filtersActive && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded bg-maestro-card px-3 py-1 text-xs hover:bg-maestro-border"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        ) : (
+          filteredWorktrees.map((wt) => {
+            const selfMatch = !query || worktreeSelfMatches(wt, query);
+            return (
+              <WorktreeCard
+                key={wt.path}
+                status={wt}
+                fileQuery={selfMatch ? null : query}
+                onChanged={refresh}
+                onSelectFile={setSelectedFile}
+              />
+            );
+          })
+        )}
       </div>
       {selectedFile && (
         <FileDiffModal
@@ -151,16 +286,31 @@ export function WorktreeStatusList({ repoPath, active = true }: WorktreeStatusLi
 
 function WorktreeCard({
   status,
+  fileQuery,
   onChanged,
   onSelectFile,
 }: {
   status: WorktreeStatus;
+  /** When set, only staged/unstaged/untracked entries matching this
+   *  (already-lowercased) query are shown — used when the worktree itself
+   *  didn't match the search but one of its files did. `null` shows all
+   *  files, unfiltered. */
+  fileQuery: string | null;
   onChanged: () => void;
   onSelectFile: (file: SelectedFile) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const atRisk = isWorktreeAtRisk(status);
   const branchLabel = status.branch ?? "(detached)";
+  const visibleStaged = fileQuery
+    ? status.staged.filter((f) => fileEntryMatches(f, fileQuery))
+    : status.staged;
+  const visibleUnstaged = fileQuery
+    ? status.unstaged.filter((f) => fileEntryMatches(f, fileQuery))
+    : status.unstaged;
+  const visibleUntracked = fileQuery
+    ? status.untracked.filter((p) => textMatches(p, fileQuery))
+    : status.untracked;
 
   return (
     <div className="border-b border-maestro-border/60">
@@ -227,11 +377,11 @@ function WorktreeCard({
 
           <Section
             label="Staged"
-            count={status.staged.length}
+            count={visibleStaged.length}
             icon={<FilePlus size={11} />}
             color="text-maestro-green"
           >
-            {status.staged.map((f) => (
+            {visibleStaged.map((f) => (
               <FileRow
                 key={`s-${f.path}`}
                 entry={f}
@@ -251,11 +401,11 @@ function WorktreeCard({
 
           <Section
             label="Unstaged"
-            count={status.unstaged.length}
+            count={visibleUnstaged.length}
             icon={<FileCode size={11} />}
             color="text-maestro-yellow"
           >
-            {status.unstaged.map((f) => (
+            {visibleUnstaged.map((f) => (
               <FileRow
                 key={`u-${f.path}`}
                 entry={f}
@@ -275,11 +425,11 @@ function WorktreeCard({
 
           <Section
             label="Untracked"
-            count={status.untracked.length}
+            count={visibleUntracked.length}
             icon={<FileX size={11} />}
             color="text-maestro-muted"
           >
-            {status.untracked.map((path) => (
+            {visibleUntracked.map((path) => (
               <UntrackedRow
                 key={`n-${path}`}
                 path={path}
