@@ -171,6 +171,16 @@ function run(overrides: Partial<SamuraiRunListEntry> = {}): SamuraiRunListEntry 
   };
 }
 
+/** The stamp a circuit-breaker trip writes on the run config (issue #209). */
+function breakerStamp() {
+  return {
+    reason: "circuit_breaker",
+    at: "2026-09-01T08:00:00Z",
+    generation: 4,
+    head: "abc1234",
+  };
+}
+
 /** A minimal workflow graph, for the editor fallback and edited-graph cases. */
 function workflowGraph(): SamuraiWorkflowGraph {
   return {
@@ -1154,31 +1164,59 @@ describe("LaunchSection (issue #63)", () => {
     });
   });
 
-  it("drops the breaker park chips when the run list refresh fails", async () => {
-    // Review finding: the catch cleared `runs` but left the chip list alone,
-    // so a refresh that failed right after an abandon or a cleanup left a
-    // chip offering Resume for a run that no longer exists.
-    mockInvoke({
-      runs: [
-        run({
-          parked: {
-            reason: "circuit_breaker",
-            at: "2026-09-01T08:00:00Z",
-            generation: 4,
-            head: null,
-          },
-        }),
-      ],
-    });
+  /**
+   * A breaker park's chip is the only resume surface outside this panel, and
+   * the startup seed runs once per listener lifetime — so a transient IPC
+   * failure must not take it away, and nothing would put it back. Entries go
+   * only where something PROVES the park is gone.
+   */
+  it("keeps the breaker park chip when the run list refresh fails", async () => {
+    mockInvoke({ runs: [run({ parked: breakerStamp() })] });
     render(<LaunchSection />);
     await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
 
-    // The next refresh fails outright.
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "samurai_list_runs") throw new Error("backend gone");
       return undefined;
     });
     fireEvent.click(screen.getByRole("button", { name: "Refresh active runs" }));
+
+    await screen.findByText(/backend gone/);
+    expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1);
+  });
+
+  it("drops the chip when a successful refresh no longer lists the run", async () => {
+    mockInvoke({ runs: [run({ parked: breakerStamp() })] });
+    render(<LaunchSection />);
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
+
+    // The run is gone (abandoned elsewhere, cleaned up, archived).
+    mockInvoke({ runs: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh active runs" }));
+
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toEqual([]));
+  });
+
+  it("drops the chip on abandon even when the follow-up refresh fails", async () => {
+    // The hazard the clear-on-failure attempt was aiming at, closed where the
+    // evidence actually is: this client just archived the run.
+    mockInvoke({ runs: [run({ parked: breakerStamp() })] });
+    askMock.mockResolvedValue(true);
+    render(<LaunchSection />);
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
+
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "samurai_abandon_run")
+        return {
+          epic: "#38",
+          worktree_path: "C:/wt",
+          timer_cancelled: false,
+          spawn_cancelled: false,
+        };
+      if (cmd === "samurai_list_runs") throw new Error("backend gone");
+      return undefined;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Abandon run #38" }));
 
     await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toEqual([]));
   });

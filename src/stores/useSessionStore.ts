@@ -285,6 +285,11 @@ const INTERRUPTED_RUN_LABEL = "Run was interrupted — resume or abandon it";
  *  crashed, supervision stopped it on purpose and only a human restarts it. */
 const BREAKER_PARK_LABEL = "Circuit breaker parked this run — resume or abandon it";
 
+/** Shared identity of one run across the surfaces that can resume it. */
+export function samuraiRunKey(project: string, epic: string): string {
+  return `${normalizePath(project)}|${epic.trim()}`;
+}
+
 /**
  * One run the circuit breaker parked (issue #209), as the chips read it.
  *
@@ -294,11 +299,6 @@ const BREAKER_PARK_LABEL = "Circuit breaker parked this run — resume or abando
  * about it. Seeded from the run list at startup and refreshed by the Active
  * Runs panel, so a resume or an abandon takes the chip with it.
  */
-/** Shared identity of one run across the surfaces that can resume it. */
-export function samuraiRunKey(project: string, epic: string): string {
-  return `${normalizePath(project)}|${epic.trim()}`;
-}
-
 export interface SamuraiBreakerPark {
   /** Canonical project path of the parked run. */
   project: string;

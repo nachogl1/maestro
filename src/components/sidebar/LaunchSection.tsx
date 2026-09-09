@@ -811,14 +811,29 @@ export function LaunchSection({
       );
     } catch (err) {
       setRuns([]);
-      // The list is gone, so nothing here can still vouch for a park. Left
-      // standing, a refresh that failed right after an abandon or a cleanup
-      // would leave a chip offering Resume for a run that no longer exists;
-      // a real park comes straight back on the next successful refresh.
-      setBreakerParks([]);
+      // The park chips are deliberately NOT cleared here. A failed refresh is
+      // no evidence about any run — and this list is the ONLY surface the
+      // resume click lives on outside this panel, while the startup seed runs
+      // once per listener lifetime and would not put it back. Dropping it on
+      // a transient IPC error would hide the one way out of a breaker park
+      // until a manual refresh. Entries are removed only where something
+      // PROVES the park is gone: a successful refresh (above) replaces the
+      // whole list, and abandon/cleanup/recover drop their own run below.
       setError(String(err));
     }
   }, [setBreakerParks]);
+
+  /** Drops one run's park chip because THIS client just cleared its park —
+   *  independent of whether the follow-up refresh succeeds. */
+  const dropBreakerPark = useCallback(
+    (run: SamuraiRunListEntry) => {
+      const key = samuraiRunKey(run.project_path, run.epic);
+      const parks = useSessionStore.getState().samuraiBreakerParks;
+      const kept = parks.filter((p) => samuraiRunKey(p.project, p.epic) !== key);
+      if (kept.length !== parks.length) setBreakerParks(kept);
+    },
+    [setBreakerParks],
+  );
 
   useEffect(() => {
     refreshRuns();
@@ -1107,6 +1122,8 @@ export function LaunchSection({
     setNotice(null);
     try {
       const result = await samuraiRecoverRun(run.project_path, run.epic);
+      // The run has an owner again; its park is cleared backend-side.
+      dropBreakerPark(run);
       setNotice(
         `Recovery started: gen-${result.generation} for ${result.epic} on ${result.branch} @ ${result.head} (${
           result.from_handoff
@@ -1141,6 +1158,9 @@ export function LaunchSection({
     setNotice(null);
     try {
       const report = await samuraiAbandonRun(run.project_path, run.epic);
+      // Archived: the run has left the list, so its chip must go with it even
+      // if the refresh below fails.
+      dropBreakerPark(run);
       const stopped = [
         report.timer_cancelled ? "resume timer" : null,
         report.spawn_cancelled ? "staged successor spawn" : null,
@@ -1174,6 +1194,7 @@ export function LaunchSection({
     setNotice(null);
     try {
       const report = await samuraiCleanupEpic(run.project_path, run.epic);
+      dropBreakerPark(run);
       const removed = [
         report.worktree_removed ? "worktree" : null,
         report.branch_deleted ? `branch ${report.branch}` : null,
