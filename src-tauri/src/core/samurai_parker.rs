@@ -340,6 +340,14 @@ pub struct SamuraiParker {
     /// poll — because before this both failures were terminal: the session
     /// was parked and torn down, nothing ever re-armed, and the next app
     /// start could only tell the human to resume it by hand.
+    ///
+    /// In-memory only, like `park_reasons`, and NOTHING rehydrates it: a
+    /// restart inside the pending window (up to a whole 7-day window for a
+    /// `NoResetTime` arm) drops the retry. That is why deferring such an arm
+    /// stamps `interrupted_at` straight away — a dropped retry then still
+    /// surfaces as an INTERRUPTED run with Recover/Abandon instead of a
+    /// silently timerless ACTIVE one, which is the outcome issue #210 exists
+    /// to remove. Durable, restart-surviving resume is epic #216's job.
     pending_arms: Mutex<BTreeMap<(String, String), PendingArm>>,
 }
 
@@ -1076,6 +1084,13 @@ impl SamuraiParker {
                     since: Utc::now(),
                 },
             );
+            // Review of #210: the deferral lives in memory only, and the
+            // wait can be a whole window long — so until it settles the run
+            // must not read as a healthy ACTIVE one. The stamp is what makes
+            // a restart inside that window show INTERRUPTED with
+            // Recover/Abandon; [`Self::retry_pending_arms`] clears it the
+            // moment the timer is actually armed.
+            self.latch_interrupted(project, epic, "park_no_reset_time");
             return;
         };
         self.settle_arm(project, epic, fire_at_for(resets_at, epic), None, 0);
@@ -1090,12 +1105,25 @@ impl SamuraiParker {
     /// Pass an empty [`AllowanceReading`] when there is no fresh usage data:
     /// a deferred `resets_at` simply stays deferred, while the write retries
     /// and the outer bound still make progress.
+    ///
+    /// The pending map is CLAIMED (taken whole) under its lock rather than
+    /// copied: the two edges run on different tasks, and a copy let both
+    /// pick up the same `WriteFailed` entry on its last attempt and each
+    /// spend it — two `park_timer_arm_failed` ALERTs and two interrupted
+    /// stamps for one run. Whatever this pass does not settle is put back.
     pub fn retry_pending_arms(&self, reading: &AllowanceReading) {
-        let pending: Vec<((String, String), PendingArm)> = {
-            let map = self.lock_pending_arms();
-            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        let claimed: BTreeMap<(String, String), PendingArm> = {
+            let mut map = self.lock_pending_arms();
+            std::mem::take(&mut *map)
         };
-        for ((project, epic), arm) in pending {
+        for ((project, epic), arm) in claimed {
+            // Hours can pass before a deferred arm settles, so the two
+            // guards `release_external_park` applies for the same reason
+            // apply here too — and only here: a same-sweep arm has neither
+            // window to go wrong in.
+            if !self.deferred_arm_still_wanted(&project, &epic) {
+                continue;
+            }
             match arm {
                 PendingArm::NoResetTime { window, since } => {
                     let reported = window
@@ -1106,7 +1134,10 @@ impl SamuraiParker {
                         log::info!(
                             "samurai parker: reset time for epic {epic} arrived ({resets_at}) — arming the resume timer its park was denied"
                         );
-                        self.settle_arm(&project, &epic, fire_at_for(resets_at, &epic), None, 0);
+                        if self.settle_arm(&project, &epic, fire_at_for(resets_at, &epic), None, 0)
+                        {
+                            self.clear_arm_interrupted(&project, &epic);
+                        }
                         continue;
                     }
                     // Still nothing. Once a whole window has passed the
@@ -1114,32 +1145,85 @@ impl SamuraiParker {
                     // and not the guess issue #60 refused to make.
                     let bound = since + window.length();
                     if Utc::now() < bound {
+                        self.defer_arm(project, epic, PendingArm::NoResetTime { window, since });
                         continue;
                     }
                     log::warn!(
                         "samurai parker: still no reset time for epic {epic} a full {window:?} window after its park — arming at the window bound instead"
                     );
-                    self.settle_arm(
+                    if self.settle_arm(
                         &project,
                         &epic,
                         fire_at_for(bound, &epic),
                         Some(SOURCE_WINDOW_BOUND),
                         0,
-                    );
+                    ) {
+                        self.clear_arm_interrupted(&project, &epic);
+                    }
                 }
                 PendingArm::WriteFailed {
                     fire_at,
                     source,
                     attempts,
-                } => self.settle_arm(&project, &epic, fire_at, source.as_deref(), attempts),
+                } => {
+                    if self.settle_arm(&project, &epic, fire_at, source.as_deref(), attempts) {
+                        self.clear_arm_interrupted(&project, &epic);
+                    }
+                }
             }
         }
+    }
+
+    /// Whether a DEFERRED arm is still worth completing — the two guards
+    /// [`Self::release_external_park`] applies, for exactly the same reasons:
+    ///
+    /// - the run's config is no longer ACTIVE (completed, archived, deleted)
+    ///   — nothing left to resume, so the arm is dropped silently;
+    /// - the run already has an armed timer — a scheduled launch or a live
+    ///   resume is a plan this must not clobber. [`SamuraiSchedule::arm`]
+    ///   replaces by `(project, epic)` alone, so overwriting a scheduled
+    ///   launch would also drop its `launch` spec.
+    ///
+    /// `false` drops the pending entry: both outcomes are settled, not
+    /// failures, so nothing is retried and nothing ALERTs.
+    fn deferred_arm_still_wanted(&self, project: &str, epic: &str) -> bool {
+        if !self.run_is_resumable(project, epic) {
+            log::info!(
+                "samurai parker: run {epic} in {project} is no longer active — its deferred resume timer is dropped"
+            );
+            return false;
+        }
+        if self
+            .schedule
+            .list()
+            .iter()
+            .any(|e| e.project_path == project && e.epic == epic)
+        {
+            log::info!(
+                "samurai parker: run {epic} in {project} already has an armed timer — its deferred arm is dropped, the existing plan stands"
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Puts an unsettled arm back after a claim. `or_insert`, never a plain
+    /// overwrite: a fresh park for the same run may have registered its own
+    /// arm while this pass held the claim, and that one is the newer truth.
+    fn defer_arm(&self, project: String, epic: String, arm: PendingArm) {
+        self.lock_pending_arms()
+            .entry((project, epic))
+            .or_insert(arm);
     }
 
     /// Arms `(project, epic)` at `fire_at` and books the outcome: a settled
     /// arm clears any pending entry, a failed write counts an attempt and —
     /// once [`ARM_WRITE_ATTEMPTS`] are spent — ALERTs once and latches the
     /// run INTERRUPTED. `spent` is how many attempts this arm already used.
+    ///
+    /// Returns whether the run now HAS its timer (armed here, or an existing
+    /// later one kept) — what tells the retry path an interrupted stamp can
+    /// come off again.
     fn settle_arm(
         &self,
         project: &str,
@@ -1147,12 +1231,12 @@ impl SamuraiParker {
         fire_at: DateTime<Utc>,
         source: Option<&str>,
         spent: u32,
-    ) {
+    ) -> bool {
         let key = (project.to_string(), epic.to_string());
         let error = match self.write_timer(project, epic, fire_at, source) {
             Ok(()) => {
                 self.lock_pending_arms().remove(&key);
-                return;
+                return true;
             }
             Err(e) => e,
         };
@@ -1161,15 +1245,16 @@ impl SamuraiParker {
             log::warn!(
                 "samurai parker: resume timer write for epic {epic} failed ({error}) — attempt {attempts}/{ARM_WRITE_ATTEMPTS}, retrying next tick"
             );
-            self.lock_pending_arms().insert(
-                key,
+            self.defer_arm(
+                key.0,
+                key.1,
                 PendingArm::WriteFailed {
                     fire_at,
                     source: source.map(str::to_string),
                     attempts,
                 },
             );
-            return;
+            return false;
         }
         // Retries spent. The epic is parked and torn down; without a timer it
         // never resumes. A log line alone made that read as a clean park, so
@@ -1194,7 +1279,8 @@ impl SamuraiParker {
                 }),
             ),
         );
-        self.latch_interrupted(project, epic);
+        self.latch_interrupted(project, epic, ARM_FAILED_KIND);
+        false
     }
 
     /// The write itself: keeps a LATER existing timer (that is a settled
@@ -1255,18 +1341,42 @@ impl SamuraiParker {
     /// per session, and 0 is already that field's documented "no generation
     /// known" sentinel, which keeps the reconciler's cross-launch latch from
     /// ever suppressing a real cold-start row for this run.
-    fn latch_interrupted(&self, project: &str, epic: &str) {
+    fn latch_interrupted(&self, project: &str, epic: &str, kind: &str) {
         let Some(store) = self.run_configs.get() else {
             log::warn!(
                 "samurai parker: no run-config store bound — {epic} in {project} stays ACTIVE with no resume timer"
             );
             return;
         };
-        if let Err(e) = store.mark_interrupted(project, epic, 0, ARM_FAILED_KIND) {
+        if let Err(e) = store.mark_interrupted(project, epic, 0, kind) {
             log::warn!(
                 "samurai parker: could not latch {epic} in {project} as interrupted: {e} — the ALERT still stands"
             );
         }
+    }
+
+    /// The other half of [`Self::latch_interrupted`]: the deferred arm
+    /// settled, so the run has a resume timer again and must stop reading
+    /// INTERRUPTED. A failure here only leaves a stale stamp the next launch
+    /// or reconciliation clears, never a lost timer.
+    fn clear_arm_interrupted(&self, project: &str, epic: &str) {
+        let Some(store) = self.run_configs.get() else {
+            return;
+        };
+        if let Err(e) = store.clear_interrupted(project, epic) {
+            log::warn!(
+                "samurai parker: could not clear the interrupted stamp for {epic} in {project}: {e} — the resume timer is armed regardless"
+            );
+        }
+    }
+
+    /// Seeds a pending arm directly. Tests only: reaching a spent write
+    /// ladder or an expired outer bound the honest way would mean three real
+    /// ticks or a whole allowance window.
+    #[cfg(test)]
+    fn seed_pending_arm(&self, project: &str, epic: &str, arm: PendingArm) {
+        self.lock_pending_arms()
+            .insert((project.to_string(), epic.to_string()), arm);
     }
 
     fn lock_pending_arms(
@@ -1292,6 +1402,7 @@ mod tests {
     use crate::core::claude_event::ClaudeEvent;
     use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
     use crate::core::samurai_injector::SessionDirResolver;
+    use crate::core::samurai_schedule::{ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH};
     use crate::core::samurai_test_wait::{
         new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
     };
@@ -2651,15 +2762,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
         let project = "C:/git/proj-arm-defer";
-        let repo = tempdir().unwrap();
-        init_parkable_repo(repo.path(), "#1", 1);
-        h.dirs
-            .lock()
-            .unwrap()
-            .insert(1, repo.path().to_string_lossy().into_owned());
-        h.supervisor
-            .register_session(1, project.into(), "#1".into(), 1)
-            .unwrap();
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo = parkable_run(&h, &store, project, 1, "#1");
 
         h.parker.on_allowance_event(&hard_event(None));
         complete_park(&h, 1, 1).await;
@@ -2669,6 +2774,17 @@ mod tests {
         })
         .await;
         assert!(h.schedule.list().is_empty(), "still no guessed timer");
+        // The deferral lives in memory only, so until it settles the run
+        // must not read as a healthy ACTIVE one: a restart inside the window
+        // then still shows INTERRUPTED with Recover/Abandon.
+        assert_eq!(
+            store
+                .get(project, "#1")
+                .and_then(|c| c.interrupted_at)
+                .map(|s| s.kind),
+            Some("park_no_reset_time".to_string()),
+            "a timerless park is stamped INTERRUPTED while the arm is pending"
+        );
 
         // A tick with no usage data at all leaves the arm deferred.
         h.parker.tick();
@@ -2716,6 +2832,14 @@ mod tests {
                 .filter(|r| r.details["phase"] == "timer_armed")
                 .count(),
             1,
+        );
+        // Armed again, so the run is no longer interrupted.
+        assert!(
+            store
+                .get(project, "#1")
+                .and_then(|c| c.interrupted_at)
+                .is_none(),
+            "the stamp comes off once the timer is actually armed"
         );
     }
 
@@ -2820,6 +2944,209 @@ mod tests {
                 .count(),
             1,
             "the give-up ALERT is raised once"
+        );
+    }
+
+    /// Review of #210 finding 2: the outer bound. With no reset time
+    /// reported for a whole window, the window it crossed on HAS reset — so
+    /// the arm lands at that bound and the row says where the time came from
+    /// instead of passing a computed time off as a reported one.
+    #[tokio::test]
+    async fn test_outer_bound_arms_a_window_after_the_park_and_says_so() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-bound";
+        // A park a full 5h window ago that never learned its reset time.
+        let since = Utc::now() - ChronoDuration::hours(6);
+        h.parker.seed_pending_arm(
+            project,
+            "#1",
+            PendingArm::NoResetTime {
+                window: AllowanceWindow::FiveHour,
+                since,
+            },
+        );
+
+        // Still no reset time in the reading — the bound is what arms it.
+        h.parker.retry_pending_arms(&AllowanceReading::default());
+
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "the outer bound armed the timer");
+        assert_eq!(timers[0].reason, "park");
+        assert_eq!(
+            DateTime::parse_from_rfc3339(&timers[0].fire_at)
+                .unwrap()
+                .with_timezone(&Utc),
+            fire_at_for(since + AllowanceWindow::FiveHour.length(), "#1"),
+            "the fire time is the park plus one window, not a guess from now"
+        );
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Park
+                && r.details["phase"] == "timer_armed"
+                && r.details["source"] == SOURCE_WINDOW_BOUND
+        })
+        .await;
+
+        // Settled: the bound fires once, not on every later tick.
+        h.parker.retry_pending_arms(&AllowanceReading::default());
+        assert_eq!(h.schedule.list().len(), 1);
+    }
+
+    /// Review of #210 finding 1: the 60 s allowance poll and the 30 s parker
+    /// tick run on different tasks. Copying the pending map let both pick up
+    /// the same entry on its LAST attempt and each spend it — two ALERTs and
+    /// two interrupted stamps for one run. Claiming the map fixes it; this
+    /// drives eight callers at once through one barrier to prove it.
+    #[tokio::test]
+    async fn test_concurrent_retries_spend_the_last_attempt_exactly_once() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-race";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        store
+            .save(&crate::core::samurai_run_config::SamuraiRunConfig::new(
+                project,
+                "#1",
+                "C:/git/wt-race",
+            ))
+            .unwrap();
+        block_schedule_writes(dir.path());
+        // One attempt left in the ladder.
+        h.parker.seed_pending_arm(
+            project,
+            "#1",
+            PendingArm::WriteFailed {
+                fire_at: Utc::now() + ChronoDuration::hours(1),
+                source: None,
+                attempts: ARM_WRITE_ATTEMPTS - 1,
+            },
+        );
+
+        const CALLERS: usize = 8;
+        let barrier = std::sync::Barrier::new(CALLERS);
+        let parker = &h.parker;
+        std::thread::scope(|scope| {
+            for _ in 0..CALLERS {
+                scope.spawn(|| {
+                    // The barrier IS the wait: every caller is released in
+                    // the same instant, no sleep budget involved.
+                    barrier.wait();
+                    parker.retry_pending_arms(&AllowanceReading::default());
+                });
+            }
+        });
+
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == ARM_FAILED_KIND
+        })
+        .await;
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == ARM_FAILED_KIND)
+                .count(),
+            1,
+            "the last attempt is spent by exactly one caller"
+        );
+        let config = store.get(project, "#1").expect("run config still on disk");
+        assert_eq!(
+            config.interrupted_at.map(|s| s.kind),
+            Some(ARM_FAILED_KIND.to_string()),
+            "one give-up, one stamp"
+        );
+    }
+
+    /// Review of #210 finding 3a: hours can pass before a deferred arm
+    /// settles, so the run may have been abandoned meanwhile. An archived
+    /// run is dropped silently — and DROPPED, not merely skipped: it is not
+    /// armed even once the config is ACTIVE again.
+    #[tokio::test]
+    async fn test_a_deferred_arm_for_an_archived_run_is_dropped() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-archived";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let config = crate::core::samurai_run_config::SamuraiRunConfig::new(
+            project,
+            "#1",
+            "C:/git/wt-archived",
+        );
+        store.save(&config).unwrap();
+        store.archive(project, "#1").unwrap();
+        h.parker.seed_pending_arm(
+            project,
+            "#1",
+            PendingArm::NoResetTime {
+                window: AllowanceWindow::FiveHour,
+                since: Utc::now(),
+            },
+        );
+
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+        assert!(
+            h.schedule.list().is_empty(),
+            "an abandoned run is never armed"
+        );
+
+        // The entry is gone: an ACTIVE config again does not revive it.
+        store.save(&config).unwrap();
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+        assert!(h.schedule.list().is_empty(), "the deferred arm was dropped");
+    }
+
+    /// Review of #210 finding 3b: `SamuraiSchedule::arm` replaces by
+    /// (project, epic) alone, so a deferred arm settling later would
+    /// overwrite a scheduled launch armed in the meantime — silently
+    /// dropping its launch spec. Any armed timer is a plan this leaves alone.
+    #[tokio::test]
+    async fn test_a_deferred_arm_never_clobbers_an_armed_scheduled_launch() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-launch";
+        // EARLIER than the park's fire time, so the fire-time comparison
+        // alone would happily replace it.
+        let launch = ScheduleEntry {
+            project_path: project.to_string(),
+            epic: "#1".to_string(),
+            fire_at: "2029-01-01T00:00:00+00:00".to_string(),
+            reason: REASON_SCHEDULED_LAUNCH.to_string(),
+            launch: Some(ScheduledLaunchSpec {
+                text: "ship the thing".to_string(),
+                model: None,
+                handoff_context_pct: None,
+                skip_test_gate: false,
+                attempts: 0,
+                workflow: None,
+            }),
+            held: false,
+        };
+        h.schedule.arm(launch).unwrap();
+        h.parker.seed_pending_arm(
+            project,
+            "#1",
+            PendingArm::NoResetTime {
+                window: AllowanceWindow::FiveHour,
+                since: Utc::now(),
+            },
+        );
+
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1);
+        assert_eq!(
+            timers[0].reason, REASON_SCHEDULED_LAUNCH,
+            "the scheduled launch still owns the slot"
+        );
+        assert_eq!(timers[0].fire_at, "2029-01-01T00:00:00+00:00");
+        assert!(
+            timers[0].launch.is_some(),
+            "the launch spec must survive the deferred arm"
         );
     }
 }
