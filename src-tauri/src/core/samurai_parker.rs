@@ -29,6 +29,16 @@
 //!   timer with a LATER fire time is kept; no `resets_at` at all → an
 //!   `ALERT (park_no_reset_time)` instead of a guessed timer. The
 //!   "parking engaged" flag clears only after the timers are armed.
+//! - **Arm retries** (issue #210): a park that ends with NO timer is a run
+//!   stranded forever — nothing else re-arms it, and the next app start can
+//!   only say "resume it manually". So both ways that happens are now
+//!   DEFERRED rather than final ([`PendingArm`]): a missing `resets_at`
+//!   waits for a usage poll that reports one (or, after a whole window has
+//!   passed, arms at that bound and says so in the row), and a failed
+//!   `schedule.json` write is retried on the tick. Only when the write
+//!   retries are spent does `park_timer_arm_failed` ALERT — once — and the
+//!   run is latched INTERRUPTED (#185) so the UI offers Recover/Abandon
+//!   instead of showing it ACTIVE with nothing behind it.
 //!
 //! Resume itself — the fresh spawn when a timer fires — is P3.3 (issue #61);
 //! this module only arms the timers. The circuit breaker's park
@@ -46,7 +56,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::json;
 
-use super::allowance_watcher::{AllowanceEvent, ThresholdKind, ACCOUNT_PROJECT, ACCOUNT_RUN};
+use super::allowance_watcher::{
+    AllowanceEvent, AllowanceReading, AllowanceWindow, ThresholdKind, ACCOUNT_PROJECT, ACCOUNT_RUN,
+};
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_auth_watch::{GH_AUTH_LOST, GH_AUTH_RESTORED};
 use super::samurai_context::SamuraiContextStore;
@@ -63,6 +75,48 @@ const RESUME_DELAY_SECS: i64 = 300;
 /// the runs an external release must NEVER touch: they already carry a
 /// resume timer of their own.
 const PARK_REASON_ALLOWANCE: &str = "allowance";
+
+/// Issue #210: how many times a failing `schedule.json` write is retried
+/// before the run is given up on. One attempt per parker tick
+/// ([`samurai_injector::TICK_INTERVAL`], 30 s), so three of them span about
+/// the minute the issue asks for.
+const ARM_WRITE_ATTEMPTS: u32 = 3;
+
+/// The ALERT kind — and the `interrupted_at` kind — for a resume timer whose
+/// write never succeeded (issue #210).
+const ARM_FAILED_KIND: &str = "park_timer_arm_failed";
+
+/// The `source` an audit `timer_armed` row carries when the fire time came
+/// from the window's own length rather than a reported reset (issue #210).
+const SOURCE_WINDOW_BOUND: &str = "window_bound";
+
+/// A park that completed with NO resume timer — the two ways issue #210
+/// found a run stranded, and what each retry needs. Retried on every parker
+/// tick and every allowance poll until it settles; a settled arm is dropped
+/// from the map, so nothing here repeats forever.
+#[derive(Debug, Clone)]
+enum PendingArm {
+    /// The usage payload carried no `resets_at`, so nothing could be armed.
+    /// Waits for a poll that reports one; failing that, for the window it
+    /// crossed on to have run its full length.
+    NoResetTime {
+        /// The hard window the park was for — its length is the outer bound.
+        window: AllowanceWindow,
+        /// When the park's arm was denied; the outer bound counts from here.
+        since: DateTime<Utc>,
+    },
+    /// The fire time is known and the `schedule.json` write failed. Retried
+    /// with the very same fire time — recomputing it would move the timer
+    /// every attempt.
+    WriteFailed {
+        fire_at: DateTime<Utc>,
+        /// Carried so a retry's audit row still says where the time came
+        /// from (an outer-bound arm stays an outer-bound arm).
+        source: Option<String>,
+        /// Attempts already spent, out of [`ARM_WRITE_ATTEMPTS`].
+        attempts: u32,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // Pure decisions (table-tested)
@@ -131,6 +185,19 @@ fn merge_resets_at(
     }
 }
 
+/// Folds one hard event's window into the sweep's: the LONGER window wins,
+/// because that is the one the parked runs must actually wait out. Issue
+/// #210 uses it as the outer bound when no `resets_at` ever arrives.
+fn merge_window(
+    current: Option<AllowanceWindow>,
+    event_window: AllowanceWindow,
+) -> Option<AllowanceWindow> {
+    match current {
+        Some(AllowanceWindow::SevenDay) => current,
+        _ => Some(event_window),
+    }
+}
+
 /// `resets_at + 5 min + per-epic jitter` (PRD §7).
 fn fire_at_for(resets_at: DateTime<Utc>, epic: &str) -> DateTime<Utc> {
     resets_at + ChronoDuration::seconds(RESUME_DELAY_SECS + jitter_secs(epic) as i64)
@@ -192,6 +259,12 @@ struct SweepState {
     /// skipped as stuck, then its Stop finally landed — can still arm the
     /// timer it would otherwise never get.
     last_resets_at: Option<DateTime<Utc>>,
+    /// Issue #210: the LONGEST hard window that engaged this sweep, and the
+    /// one the last completed sweep armed from. A park whose `resets_at`
+    /// never arrives is armed at the window's own length instead, so the
+    /// arm has to remember WHICH window it is waiting out.
+    window: Option<AllowanceWindow>,
+    last_window: Option<AllowanceWindow>,
     /// Issue #63: this sweep was engaged EXTERNALLY (e.g. gh auth loss) — a
     /// condition with no reset time by design, so completion arms NO resume
     /// timers and emits NO per-epic `park_no_reset_time` noise (a human
@@ -261,6 +334,13 @@ pub struct SamuraiParker {
     /// archived or completed while parked. Unset (tests that never bind it)
     /// means "cannot check" — the resumer's own ACTIVE gate still backstops.
     run_configs: OnceLock<Arc<RunConfigStore>>,
+    /// Issue #210: parks that completed with NO resume timer, `(project,
+    /// epic) → what the retry needs`. Drained by
+    /// [`Self::retry_pending_arms`] — the parker tick and every allowance
+    /// poll — because before this both failures were terminal: the session
+    /// was parked and torn down, nothing ever re-armed, and the next app
+    /// start could only tell the human to resume it by hand.
+    pending_arms: Mutex<BTreeMap<(String, String), PendingArm>>,
 }
 
 impl SamuraiParker {
@@ -284,6 +364,7 @@ impl SamuraiParker {
             wound_down: Mutex::new(HashSet::new()),
             park_reasons: Mutex::new(BTreeMap::new()),
             run_configs: OnceLock::new(),
+            pending_arms: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -310,7 +391,7 @@ impl SamuraiParker {
                 log::warn!(
                     "samurai parker: hard allowance threshold crossed ({window:?}) — engaging sequential park sweep"
                 );
-                self.engage_hard(resets_at.as_deref());
+                self.engage_hard(*window, resets_at.as_deref());
             }
             // Issue #120: the soft falling edge — window reset or usage
             // decay, whichever came first — lifts the wind-down.
@@ -639,13 +720,14 @@ impl SamuraiParker {
             self.advance();
             return;
         }
-        let (late, resets_at) = {
+        let (late, resets_at, window) = {
             let mut state = self.lock_state();
             (
                 state
                     .parked_epics
                     .remove(&(project.to_string(), epic.to_string())),
                 state.last_resets_at,
+                state.last_window,
             )
         };
         if !late {
@@ -654,7 +736,7 @@ impl SamuraiParker {
         log::warn!(
             "samurai parker: epic {epic} parked AFTER its sweep completed — arming its resume timer now"
         );
-        self.arm_resume_timer(project, epic, resets_at);
+        self.arm_resume_timer(project, epic, resets_at, window);
     }
 
     /// Chained from the injector when a park ladder exhausted its retries
@@ -671,6 +753,10 @@ impl SamuraiParker {
     /// the sweep after races (mid-sweep registrations, raced transitions,
     /// handoffs resolving between notifications).
     pub fn tick(&self) {
+        // Issue #210: the deferred arms ride it too. The allowance poll is
+        // where a missing `resets_at` arrives, but a usage fetch that keeps
+        // failing must not be the only thing that can finish a write retry.
+        self.retry_pending_arms(&AllowanceReading::default());
         self.advance();
     }
 
@@ -763,13 +849,16 @@ impl SamuraiParker {
 
     /// Hard crossing: engage (idempotent — a second event mid-sweep only
     /// merges its reset time) and advance.
-    fn engage_hard(&self, resets_at: Option<&str>) {
+    fn engage_hard(&self, window: AllowanceWindow, resets_at: Option<&str>) {
         // One critical section (see `engage_external_park`): the swap must
         // not be observable before this sweep's reset story is written.
         let was_engaged = {
             let mut state = self.lock_state();
             let was = self.engaged.swap(true, Ordering::SeqCst);
             state.resets_at = merge_resets_at(state.resets_at, resets_at);
+            // Issue #210: the window this crossing is about, so a park that
+            // never learns its reset time still knows what to wait out.
+            state.window = merge_window(state.window, window);
             // A real allowance crossing brings a reset story — even when it
             // joins an externally engaged sweep (issue #63), its timers must
             // arm normally. It also owns the park REASON from here on (issue
@@ -898,6 +987,10 @@ impl SamuraiParker {
         if resets_at.is_some() {
             state.last_resets_at = resets_at;
         }
+        let window = state.window.take();
+        if window.is_some() {
+            state.last_window = window;
+        }
         let suppress_timers = std::mem::take(&mut state.suppress_timers);
         let external_reason = std::mem::take(&mut state.external_reason);
         let pending_allclear = std::mem::take(&mut state.pending_allclear);
@@ -933,7 +1026,7 @@ impl SamuraiParker {
             parked_epics.len()
         );
         for (project, epic) in parked_epics {
-            self.arm_resume_timer(&project, &epic, resets_at);
+            self.arm_resume_timer(&project, &epic, resets_at, window);
         }
         self.engaged.store(false, Ordering::SeqCst);
         SweepFollowUp {
@@ -946,12 +1039,18 @@ impl SamuraiParker {
     /// none exists. Shared by sweep completion and the late-park path
     /// ([`Self::on_parked`]), so a park that lands after the sweep already
     /// disengaged gets exactly the same treatment.
-    fn arm_resume_timer(&self, project: &str, epic: &str, resets_at: Option<DateTime<Utc>>) {
+    fn arm_resume_timer(
+        &self,
+        project: &str,
+        epic: &str,
+        resets_at: Option<DateTime<Utc>>,
+        window: Option<AllowanceWindow>,
+    ) {
         let Some(resets_at) = resets_at else {
             // A guessed timer is worse than a human look (issue #60
             // point 4): ALERT instead of arming.
             log::error!(
-                "samurai parker: no reset time known for epic {epic} — resume timer NOT armed (park_no_reset_time)"
+                "samurai parker: no reset time known for epic {epic} — resume timer NOT armed (park_no_reset_time), retrying on every tick"
             );
             self.audit.append(
                 project,
@@ -963,9 +1062,152 @@ impl SamuraiParker {
                     json!({ "kind": "park_no_reset_time", "epic": epic }),
                 ),
             );
+            // Issue #210: the park STANDS, but the arm is only DEFERRED —
+            // the next usage poll that reports a reset time finishes it.
+            // Without a window (a late park from a sweep nothing recorded)
+            // the SHORTER bound is the safe default: an outer-bound resume
+            // that turns out to be early is re-parked by the next crossing,
+            // with a real reset time that time round, whereas a seven-day
+            // wait would strand the run for a week.
+            self.lock_pending_arms().insert(
+                (project.to_string(), epic.to_string()),
+                PendingArm::NoResetTime {
+                    window: window.unwrap_or(AllowanceWindow::FiveHour),
+                    since: Utc::now(),
+                },
+            );
             return;
         };
-        let fire_at = fire_at_for(resets_at, epic);
+        self.settle_arm(project, epic, fire_at_for(resets_at, epic), None, 0);
+    }
+
+    /// Issue #210: one retry pass over the parks that completed with NO
+    /// resume timer. Driven from two edges, because either alone has a gap:
+    /// the allowance poll is the only place a missing `resets_at` can turn
+    /// up, and the parker's own 30 s tick is the only one that still runs
+    /// when the usage fetch keeps failing.
+    ///
+    /// Pass an empty [`AllowanceReading`] when there is no fresh usage data:
+    /// a deferred `resets_at` simply stays deferred, while the write retries
+    /// and the outer bound still make progress.
+    pub fn retry_pending_arms(&self, reading: &AllowanceReading) {
+        let pending: Vec<((String, String), PendingArm)> = {
+            let map = self.lock_pending_arms();
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        for ((project, epic), arm) in pending {
+            match arm {
+                PendingArm::NoResetTime { window, since } => {
+                    let reported = window
+                        .resets_at(reading)
+                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                        .map(|d| d.with_timezone(&Utc));
+                    if let Some(resets_at) = reported {
+                        log::info!(
+                            "samurai parker: reset time for epic {epic} arrived ({resets_at}) — arming the resume timer its park was denied"
+                        );
+                        self.settle_arm(&project, &epic, fire_at_for(resets_at, &epic), None, 0);
+                        continue;
+                    }
+                    // Still nothing. Once a whole window has passed the
+                    // window it crossed on HAS reset, so the bound is a fact
+                    // and not the guess issue #60 refused to make.
+                    let bound = since + window.length();
+                    if Utc::now() < bound {
+                        continue;
+                    }
+                    log::warn!(
+                        "samurai parker: still no reset time for epic {epic} a full {window:?} window after its park — arming at the window bound instead"
+                    );
+                    self.settle_arm(
+                        &project,
+                        &epic,
+                        fire_at_for(bound, &epic),
+                        Some(SOURCE_WINDOW_BOUND),
+                        0,
+                    );
+                }
+                PendingArm::WriteFailed {
+                    fire_at,
+                    source,
+                    attempts,
+                } => self.settle_arm(&project, &epic, fire_at, source.as_deref(), attempts),
+            }
+        }
+    }
+
+    /// Arms `(project, epic)` at `fire_at` and books the outcome: a settled
+    /// arm clears any pending entry, a failed write counts an attempt and —
+    /// once [`ARM_WRITE_ATTEMPTS`] are spent — ALERTs once and latches the
+    /// run INTERRUPTED. `spent` is how many attempts this arm already used.
+    fn settle_arm(
+        &self,
+        project: &str,
+        epic: &str,
+        fire_at: DateTime<Utc>,
+        source: Option<&str>,
+        spent: u32,
+    ) {
+        let key = (project.to_string(), epic.to_string());
+        let error = match self.write_timer(project, epic, fire_at, source) {
+            Ok(()) => {
+                self.lock_pending_arms().remove(&key);
+                return;
+            }
+            Err(e) => e,
+        };
+        let attempts = spent + 1;
+        if attempts < ARM_WRITE_ATTEMPTS {
+            log::warn!(
+                "samurai parker: resume timer write for epic {epic} failed ({error}) — attempt {attempts}/{ARM_WRITE_ATTEMPTS}, retrying next tick"
+            );
+            self.lock_pending_arms().insert(
+                key,
+                PendingArm::WriteFailed {
+                    fire_at,
+                    source: source.map(str::to_string),
+                    attempts,
+                },
+            );
+            return;
+        }
+        // Retries spent. The epic is parked and torn down; without a timer it
+        // never resumes. A log line alone made that read as a clean park, so
+        // this gets the same ALERT weight as a missing reset time — once,
+        // and then the entry goes so the next tick stays quiet.
+        self.lock_pending_arms().remove(&key);
+        log::error!(
+            "samurai parker: failed to arm the resume timer for epic {epic} after {attempts} attempts: {error} — ALERT"
+        );
+        self.audit.append(
+            project,
+            AuditEvent::now(
+                epic.to_string(),
+                AuditEventKind::Alert,
+                0,
+                0,
+                json!({
+                    "kind": ARM_FAILED_KIND,
+                    "epic": epic,
+                    "error": error,
+                    "attempts": attempts,
+                }),
+            ),
+        );
+        self.latch_interrupted(project, epic);
+    }
+
+    /// The write itself: keeps a LATER existing timer (that is a settled
+    /// outcome, not a failure), otherwise persists the entry and appends the
+    /// `timer_armed` PARK row. `Err` is only ever a failed `schedule.json`
+    /// write, which is what [`Self::settle_arm`] retries.
+    fn write_timer(
+        &self,
+        project: &str,
+        epic: &str,
+        fire_at: DateTime<Utc>,
+        source: Option<&str>,
+    ) -> Result<(), String> {
         let armed = self.schedule.list();
         let existing = armed
             .iter()
@@ -976,7 +1218,7 @@ impl SamuraiParker {
                 "samurai parker: epic {epic} already has a later resume timer ({}) — kept",
                 existing.unwrap_or_default()
             );
-            return;
+            return Ok(());
         }
         let fire_at = fire_at.to_rfc3339();
         let entry = ScheduleEntry {
@@ -987,46 +1229,52 @@ impl SamuraiParker {
             launch: None,
             held: false,
         };
-        match self.schedule.arm(entry) {
-            Ok(()) => {
-                log::info!("samurai parker: resume timer armed for epic {epic} at {fire_at}");
-                // Epic-level row (generation/session 0, like the
-                // allowance ALERTs): the trail shows WHEN work
-                // resumes without opening schedule.json.
-                self.audit.append(
-                    project,
-                    AuditEvent::now(
-                        epic.to_string(),
-                        AuditEventKind::Park,
-                        0,
-                        0,
-                        json!({ "phase": "timer_armed", "fire_at": fire_at }),
-                    ),
-                );
-            }
-            Err(e) => {
-                // The epic is parked and torn down; without a timer it never
-                // resumes. A log line alone made that read as a clean park,
-                // so this gets the same ALERT weight as a missing reset time.
-                log::error!(
-                    "samurai parker: failed to arm the resume timer for epic {epic}: {e} — ALERT"
-                );
-                self.audit.append(
-                    project,
-                    AuditEvent::now(
-                        epic.to_string(),
-                        AuditEventKind::Alert,
-                        0,
-                        0,
-                        json!({
-                            "kind": "park_timer_arm_failed",
-                            "epic": epic,
-                            "error": e,
-                        }),
-                    ),
-                );
-            }
+        self.schedule.arm(entry)?;
+        log::info!("samurai parker: resume timer armed for epic {epic} at {fire_at}");
+        // Epic-level row (generation/session 0, like the allowance ALERTs):
+        // the trail shows WHEN work resumes without opening schedule.json —
+        // and, for a retried arm, that the recovery happened at all.
+        let mut details = json!({ "phase": "timer_armed", "fire_at": fire_at });
+        if let Some(source) = source {
+            details["source"] = json!(source);
         }
+        self.audit.append(
+            project,
+            AuditEvent::now(epic.to_string(), AuditEventKind::Park, 0, 0, details),
+        );
+        Ok(())
+    }
+
+    /// Issue #210: a parked run whose resume timer could never be written is
+    /// stranded — no timer, yet ACTIVE on disk, so the next launch treats it
+    /// as a live run and offers the human nothing. Stamping `interrupted_at`
+    /// (#185) is exactly what makes it show INTERRUPTED with Recover /
+    /// Abandon instead.
+    ///
+    /// `prior_generation` is 0 — the parker arms per (project, epic), not
+    /// per session, and 0 is already that field's documented "no generation
+    /// known" sentinel, which keeps the reconciler's cross-launch latch from
+    /// ever suppressing a real cold-start row for this run.
+    fn latch_interrupted(&self, project: &str, epic: &str) {
+        let Some(store) = self.run_configs.get() else {
+            log::warn!(
+                "samurai parker: no run-config store bound — {epic} in {project} stays ACTIVE with no resume timer"
+            );
+            return;
+        };
+        if let Err(e) = store.mark_interrupted(project, epic, 0, ARM_FAILED_KIND) {
+            log::warn!(
+                "samurai parker: could not latch {epic} in {project} as interrupted: {e} — the ALERT still stands"
+            );
+        }
+    }
+
+    fn lock_pending_arms(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<(String, String), PendingArm>> {
+        self.pending_arms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Recover from a poisoned lock rather than panicking — event-path
@@ -2364,5 +2612,214 @@ mod tests {
         let mut epics: Vec<String> = h.schedule.list().into_iter().map(|e| e.epic).collect();
         epics.sort();
         assert_eq!(epics, vec!["#1".to_string(), "#3".to_string()]);
+    }
+
+    // --- issue #210: an arm that fails is retried, never terminal ---
+
+    #[test]
+    fn test_merge_window_keeps_the_longer_window() {
+        use AllowanceWindow::*;
+        // Nothing yet: the event's own window.
+        assert_eq!(merge_window(None, FiveHour), Some(FiveHour));
+        assert_eq!(merge_window(None, SevenDay), Some(SevenDay));
+        // The LONGER window is the one the parked runs must wait out.
+        assert_eq!(merge_window(Some(FiveHour), SevenDay), Some(SevenDay));
+        assert_eq!(merge_window(Some(SevenDay), FiveHour), Some(SevenDay));
+        assert_eq!(merge_window(Some(FiveHour), FiveHour), Some(FiveHour));
+    }
+
+    #[test]
+    fn test_window_length_is_the_outer_bound() {
+        assert_eq!(AllowanceWindow::FiveHour.length(), ChronoDuration::hours(5));
+        assert_eq!(AllowanceWindow::SevenDay.length(), ChronoDuration::days(7));
+    }
+
+    /// One usage reading reporting only the 5h window's reset.
+    fn reading_with_session_reset(resets_at: &str) -> AllowanceReading {
+        AllowanceReading {
+            session_resets_at: Some(resets_at.to_string()),
+            ..AllowanceReading::default()
+        }
+    }
+
+    /// The bug (issue #210): a park whose usage payload carried no
+    /// `resets_at` ALERTed and stopped there — parked, torn down, no timer,
+    /// and nothing in the app that ever re-armed it. The park still stands;
+    /// the ARM is only deferred until a poll brings the reset time.
+    #[tokio::test]
+    async fn test_deferred_arm_completes_when_the_reset_time_arrives() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-defer";
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#1", 1);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        h.supervisor
+            .register_session(1, project.into(), "#1".into(), 1)
+            .unwrap();
+
+        h.parker.on_allowance_event(&hard_event(None));
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == "park_no_reset_time"
+        })
+        .await;
+        assert!(h.schedule.list().is_empty(), "still no guessed timer");
+
+        // A tick with no usage data at all leaves the arm deferred.
+        h.parker.tick();
+        assert!(
+            h.schedule.list().is_empty(),
+            "an empty reading arms nothing"
+        );
+
+        // The next poll reports the 5h reset: the arm finishes.
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "the deferred timer is on disk");
+        assert_eq!(timers[0].epic, "#1");
+        assert_eq!(timers[0].reason, "park");
+        let resets = DateTime::parse_from_rfc3339(RESETS_AT)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            DateTime::parse_from_rfc3339(&timers[0].fire_at)
+                .unwrap()
+                .with_timezone(&Utc),
+            fire_at_for(resets, "#1"),
+        );
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Park && r.details["phase"] == "timer_armed"
+        })
+        .await;
+
+        // Settled: a later poll neither re-arms nor re-alerts.
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+        assert_eq!(h.schedule.list().len(), 1);
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "park_no_reset_time")
+                .count(),
+            1,
+            "the ALERT is raised once, not once per retry"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["phase"] == "timer_armed")
+                .count(),
+            1,
+        );
+    }
+
+    /// A DIRECTORY where `schedule.json` belongs: every atomic write's final
+    /// rename fails (both platforms) until it is removed — the failing
+    /// schedule store issue #210's write retries exist for.
+    fn block_schedule_writes(dir: &Path) -> std::path::PathBuf {
+        let blocker = dir.join("schedule").join("schedule.json");
+        std::fs::create_dir_all(&blocker).unwrap();
+        blocker
+    }
+
+    /// The bug: ONE failed `schedule.json` write ALERTed and gave up, so a
+    /// transient write failure stranded the run for good.
+    #[tokio::test]
+    async fn test_failed_timer_write_retries_until_it_succeeds() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-write";
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#1", 1);
+        h.dirs
+            .lock()
+            .unwrap()
+            .insert(1, repo.path().to_string_lossy().into_owned());
+        h.supervisor
+            .register_session(1, project.into(), "#1".into(), 1)
+            .unwrap();
+        let blocker = block_schedule_writes(dir.path());
+
+        h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+        assert!(h.schedule.list().is_empty(), "attempt 1 could not write");
+
+        h.parker.tick();
+        assert!(h.schedule.list().is_empty(), "attempt 2 could not write");
+
+        // The write path recovers before the retries run out.
+        std::fs::remove_dir(&blocker).unwrap();
+        h.parker.tick();
+
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "attempt 3 armed the timer");
+        assert_eq!(timers[0].epic, "#1");
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Park && r.details["phase"] == "timer_armed"
+        })
+        .await;
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.details["kind"] == "park_timer_arm_failed"),
+            "a write that recovered inside its retries never ALERTs"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["phase"] == "timer_armed")
+                .count(),
+            1,
+        );
+    }
+
+    /// Retries spent: ONE ALERT, and the run is latched INTERRUPTED (#185)
+    /// so the launch surface offers Recover/Abandon instead of showing a
+    /// timerless run as ACTIVE. Nothing repeats on the next tick.
+    #[tokio::test]
+    async fn test_permanently_failed_timer_write_alerts_once_and_latches_interrupted() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-stuck";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo = parkable_run(&h, &store, project, 1, "#1");
+        block_schedule_writes(dir.path());
+
+        h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+        h.parker.tick();
+        h.parker.tick();
+
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == "park_timer_arm_failed"
+        })
+        .await;
+        let config = store.get(project, "#1").expect("run config still on disk");
+        assert_eq!(config.status, RunConfigStatus::Active);
+        assert!(
+            config.interrupted_at.is_some(),
+            "a parked run with no timer must read INTERRUPTED, not ACTIVE"
+        );
+
+        // The pending arm is gone: no second ALERT, ever.
+        h.parker.tick();
+        assert!(h.schedule.list().is_empty());
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "park_timer_arm_failed")
+                .count(),
+            1,
+            "the give-up ALERT is raised once"
+        );
     }
 }
