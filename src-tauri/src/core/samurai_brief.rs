@@ -260,6 +260,28 @@ pub fn pointer_instruction(relpath: &str) -> String {
     )
 }
 
+/// The single-line CORRECTIVE for a brief that was delivered but never read
+/// (issue #205): the agent started a turn on something else, so the pointer
+/// itself is repeated as a correction rather than as an opening instruction.
+///
+/// Takes the brief's file NAME — the only thing the receipt store keeps
+/// ([`pointer_brief_file_name`]) — and re-derives the worktree-relative path
+/// from [`BRIEF_DIR`], so the two spellings can never drift apart. Single
+/// line for the same reason as [`pointer_instruction`]: a newline inside the
+/// payload submits the prompt half-typed.
+///
+/// Deliberately re-parseable by [`pointer_brief_file_name`] (the brief path
+/// is its first backquoted span), so the corrective reads as the same
+/// pointer everything else in the trail already matches on.
+pub fn unread_corrective_instruction(file_name: &str) -> String {
+    let file_name = file_name.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "[Maestro Samurai] You have not read your brief. Read `{BRIEF_DIR}/{file_name}` in \
+         FULL with the Read tool now, before anything else, then follow it verbatim as your \
+         operating instructions for this run. Do not skim it and do not summarise it."
+    )
+}
+
 /// The last segment of [`BRIEF_DIR`] — the directory name that sits directly
 /// above every brief file.
 ///
@@ -681,6 +703,39 @@ mod tests {
         ] {
             assert_eq!(pointer_brief_file_name(&other), None, "{other}");
         }
+    }
+
+    /// Issue #205: the corrective repeats the pointer, so it must name the
+    /// same path, stay a single line, and read back as a brief pointer.
+    #[test]
+    fn test_the_unread_corrective_repeats_the_pointer_at_the_same_brief() {
+        let corrective = unread_corrective_instruction("epic-9-gen-3-ritual.md");
+        assert!(
+            corrective.contains(&format!("`{BRIEF_DIR}/epic-9-gen-3-ritual.md`")),
+            "{corrective}"
+        );
+        assert!(
+            corrective.contains("not read your brief"),
+            "it must say what is wrong: {corrective}"
+        );
+        assert!(corrective.contains("FULL"), "{corrective}");
+        // Single line, like every instruction typed into a PTY.
+        assert!(!corrective.contains('\n'), "{corrective}");
+        assert!(!corrective.contains('\r'), "{corrective}");
+        // The same brief comes back out of it.
+        assert_eq!(
+            pointer_brief_file_name(&corrective),
+            Some("epic-9-gen-3-ritual.md".to_string())
+        );
+        // It names the brief the delivered pointer named, whatever that was.
+        let dir = tempdir().unwrap();
+        let pointer =
+            deliverable_instruction(dir.path(), "epic-9-gen-1-launch", long_instruction());
+        let brief = pointer_brief_file_name(&pointer).unwrap();
+        assert_eq!(
+            pointer_brief_file_name(&unread_corrective_instruction(&brief)),
+            Some(brief)
+        );
     }
 
     #[test]

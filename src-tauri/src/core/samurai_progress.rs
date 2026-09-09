@@ -187,6 +187,10 @@ fn is_self_event(event: &AuditEvent) -> bool {
             | Some("submit_unconfirmed")
             | Some("delivery_failed")
             | Some("delivery_retyped")
+            // Issue #205: the unread-brief nudge and its escalation are
+            // Maestro's own supervision of its own delivery, not agent burn
+            // (the class fixed in #184) — both rungs share the one kind.
+            | Some("brief_unread")
             | Some("allowance_threshold")
             | Some("allowance_recovered")
             | Some("park_no_reset_time")
@@ -754,6 +758,8 @@ mod tests {
             (alert("submit_unconfirmed"), true),
             (alert("delivery_failed"), true),
             (alert("delivery_retyped"), true),
+            // Issue #205: the unread-brief rungs are supervision too.
+            (alert("brief_unread"), true),
             (alert("ack_timeout"), false), // ladder-exhausted flavor counts
             (alert("illegal_transition"), false), // rejections count
             (alert("dead"), false),        // watchdog ALERTs count
@@ -876,6 +882,69 @@ mod tests {
         assert_eq!(
             counted, 0,
             "the Nido sequence must advance the counter by 0"
+        );
+    }
+
+    #[test]
+    fn test_the_unread_brief_sequence_advances_the_counter_by_zero() {
+        // Issue #205 acceptance: the whole unread-brief ladder — the brief
+        // DELIVERED, the `brief_unread` ALERT when the window closes with no
+        // receipt, the corrective INJECT, then the escalation ALERT — is
+        // Maestro correcting its own delivery, so the breaker's counted total
+        // is unchanged by it (the #184 class: a supervision row that counted
+        // as agent burn tripped the breaker on Maestro's own struggle).
+        let unread = |escalated: bool| {
+            AuditEvent::now(
+                "epic-9",
+                AuditEventKind::Alert,
+                3,
+                2,
+                json!({
+                    "kind": "brief_unread",
+                    "instruction": "successor_ritual",
+                    "gate": "session_started",
+                    "brief": "epic-9-gen-3-ritual.md",
+                    "escalated": escalated,
+                }),
+            )
+        };
+        let sequence = [
+            AuditEvent::now(
+                "epic-9",
+                AuditEventKind::Inject,
+                3,
+                2,
+                json!({ "phase": "delivered", "gate": "session_started" }),
+            ),
+            unread(false),
+            AuditEvent::now(
+                "epic-9",
+                AuditEventKind::Inject,
+                3,
+                2,
+                json!({ "phase": "corrective", "gate": "idle_at_tick" }),
+            ),
+            unread(true),
+        ];
+        let counted = sequence.iter().filter(|e| !is_self_event(e)).count();
+        assert_eq!(counted, 0, "the unread-brief ladder must count for 0");
+
+        // And the filter is not a blanket one: a genuine agent row in the
+        // same stream still counts, so the breaker keeps working.
+        let agent = AuditEvent::now(
+            "epic-9",
+            AuditEventKind::Alert,
+            3,
+            2,
+            json!({ "kind": "dead" }),
+        );
+        assert_eq!(
+            sequence
+                .iter()
+                .chain(std::iter::once(&agent))
+                .filter(|e| !is_self_event(e))
+                .count(),
+            1,
         );
     }
 

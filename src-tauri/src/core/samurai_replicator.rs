@@ -84,7 +84,9 @@ use super::claude_event::ClaudeEvent;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_brief;
 use super::samurai_config::SharedSamuraiConfig;
-use super::samurai_injector::{strip_extended_prefix, AgeableInstant, SessionDirResolver};
+use super::samurai_injector::{
+    idle_effect, strip_extended_prefix, AgeableInstant, SessionDirResolver,
+};
 use super::samurai_journal::default_journal_file;
 use super::samurai_prompts;
 use super::samurai_workflow;
@@ -692,9 +694,9 @@ fn tool_use_reads_brief(tool_name: &str, summary: &str, file_name: &str) -> bool
 /// receipt hung off it would be missed in every ordinary run. This entry
 /// outlives the watch and is pruned when the session ends.
 ///
-/// Pure observation: nothing reads `seen` to make a decision yet. It is the
-/// state issue #205 enforces on, and the `receipt` audit row is what a human
-/// reads today.
+/// Issue #205 enforces on `seen`: turn activity that releases the
+/// [`DeliveredWatch`] while the brief is still unread arms `deadline`, and the
+/// tick then walks one corrective and one escalation off it.
 struct BriefReceipt {
     project: String,
     epic: String,
@@ -713,6 +715,33 @@ struct BriefReceipt {
     /// same tool call seen on both channels (transcript and PreToolUse hook)
     /// cannot double it.
     seen: bool,
+    /// Issue #205: when the agent started a turn WITHOUT having read the
+    /// brief, i.e. when the delivery watch was released with `seen == false`.
+    /// `None` = no turn activity yet, so nothing is late: the delivery watch
+    /// itself still owns that session (it is the #103/#171 ladder that runs
+    /// while no turn has started at all). Re-stamped when the corrective is
+    /// delivered, so the escalation window measures silence AFTER the nudge.
+    deadline: Option<AgeableInstant>,
+    /// Issue #205: the `brief_unread` ALERT for the first expiry was
+    /// appended. Latched separately from `nudged` because the ALERT is the
+    /// OBSERVATION (it fires the moment the window is up) while the
+    /// corrective waits for a turn boundary — a mid-turn expiry must not
+    /// re-alert on every later tick.
+    alerted: bool,
+    /// Issue #205: the ONE corrective was delivered. The next expiry is the
+    /// run-fatal rung, never a second nudge.
+    nudged: bool,
+    /// Issue #205: the session's last signal was a turn boundary — the
+    /// injector's idle gate ([`idle_effect`]), tracked here so the corrective
+    /// is typed between turns and never into a running one.
+    idle: bool,
+    /// Issue #205: the staged entry this brief was delivered for, MOVED off
+    /// the delivery watch when that watch was released unread, so the second
+    /// expiry can re-arm and respawn it on the existing #187 ladder (bounded
+    /// by [`MAX_SPAWN_EMITS`]). `None` where #187 has nothing to re-arm
+    /// either — a launch-line delivery (the entry was dropped once the shell
+    /// had carried it) and the injector's own deliveries.
+    ritual: Option<Box<PendingRitual>>,
 }
 
 /// `git rev-parse HEAD` in `dir` — fixed argv, no shell, hidden console.
@@ -2533,6 +2562,13 @@ impl SamuraiReplicator {
                                     instruction: instruction_kind,
                                     gate: "session_started",
                                     seen: false,
+                                    // Issue #205: armed when the first turn
+                                    // activity releases the watch unread.
+                                    deadline: None,
+                                    alerted: false,
+                                    nudged: false,
+                                    idle: false,
+                                    ritual: None,
                                 },
                             );
                         }
@@ -2674,6 +2710,13 @@ impl SamuraiReplicator {
                     instruction: instruction_kind,
                     gate: "launch_line",
                     seen: false,
+                    // Issue #205: same, and with no ritual to re-arm — the
+                    // shell already carried this entry (see `BriefReceipt`).
+                    deadline: None,
+                    alerted: false,
+                    nudged: false,
+                    idle: false,
+                    ritual: None,
                 },
             );
         }
@@ -2773,22 +2816,76 @@ impl SamuraiReplicator {
 
     /// Releases the delivery watch for a session that shows turn activity
     /// (or is gone) — see [`turn_activity_session`] for the evidence table.
+    ///
+    /// Issue #205: the release is also the moment a brief can first be
+    /// PROVABLY unread. Turn activity is the right signal for "the CLI is
+    /// alive", and it stays the release condition, but a successor that
+    /// started a turn on something else — a stale prompt, a hook echo, the
+    /// wrong file — used to look identical to one that read its brief. The
+    /// released watch therefore hands its receipt entry a deadline (and the
+    /// staged ritual it was carrying), so the tick can nudge once and then
+    /// escalate.
     fn note_turn_activity(&self, event: &ClaudeEvent) {
         // Issue #204: the same tap carries the tool calls a read receipt is
         // made of. Before the release below, because releasing the watch is
-        // not what ends the receipt's own life — the session ending is.
+        // not what ends the receipt's own life — the session ending is. And
+        // because a Read that IS this very activity must record its receipt
+        // BEFORE the release below asks whether the brief is unread.
         self.note_brief_receipt(event);
         let Some(session_id) = turn_activity_session(event) else {
             return;
         };
-        let mut delivered = self.lock_delivered();
-        let before = delivered.len();
-        delivered.retain(|d| d.session_id != session_id);
-        if delivered.len() != before {
-            log::info!(
-                "samurai replicator: session {session_id} shows turn activity — delivered instruction confirmed submitted"
-            );
+        // Taken out by value (not `retain`ed away): a released watch owns the
+        // staged ritual the #205 escalation re-arms, and dropping it here
+        // would leave that rung with nothing to respawn.
+        let released = {
+            let mut delivered = self.lock_delivered();
+            let (mine, rest) = std::mem::take(&mut *delivered)
+                .into_iter()
+                .partition::<Vec<_>, _>(|d| d.session_id == session_id);
+            *delivered = rest;
+            mine
+        };
+        if released.is_empty() {
+            return;
         }
+        log::info!(
+            "samurai replicator: session {session_id} shows turn activity — delivered instruction confirmed submitted"
+        );
+        self.arm_receipt_deadline(session_id, released.into_iter().find_map(|d| d.ritual));
+    }
+
+    /// Issue #205: starts the receipt clock for a session whose delivery watch
+    /// has just been released while its brief is still UNREAD.
+    ///
+    /// Armed on the release rather than on the delivery, because a brief is
+    /// not late until the agent has actually started working: before any turn
+    /// activity the #103/#171 delivery ladder owns the session (it is still
+    /// deciding whether the instruction was even submitted), and charging the
+    /// agent for not having read a brief it may never have received would
+    /// double up on that ladder.
+    ///
+    /// Nothing to arm — no receipt for the session (an inline instruction), or
+    /// one that is already `seen` (the Read WAS the releasing activity) — is
+    /// the healthy case and is silent. An already-armed deadline is left
+    /// alone: the first release owns the clock, and a corrective already
+    /// delivered must not have its escalation window restarted by ordinary
+    /// turn traffic.
+    fn arm_receipt_deadline(&self, session_id: u32, ritual: Option<Box<PendingRitual>>) {
+        let mut receipts = self.lock_brief_receipts();
+        let Some(r) = receipts
+            .iter_mut()
+            .find(|r| r.session_id == session_id && !r.seen && r.deadline.is_none())
+        else {
+            return;
+        };
+        log::warn!(
+            "samurai replicator: session {session_id} started a turn without reading its gen-{} brief {} — arming the receipt deadline (issue #205)",
+            r.generation,
+            r.brief,
+        );
+        r.deadline = Some(AgeableInstant::now());
+        r.ritual = ritual;
     }
 
     /// Arms the issue-#204 read receipt for a brief pointer that has just been
@@ -2826,8 +2923,23 @@ impl SamuraiReplicator {
     ///
     /// Exactly one row per delivered brief: the latched `seen` flag absorbs
     /// the same tool call arriving on both channels, and every re-read
-    /// afterwards. Pure observation — nothing is gated on it (issue #205).
+    /// afterwards. Issue #205 is what acts on the ABSENCE of that row.
     fn note_brief_receipt(&self, event: &ClaudeEvent) {
+        // Issue #205: the same stream carries the injector's idle gate, so the
+        // corrective can be typed at a turn boundary instead of into a running
+        // turn. Tracked here rather than re-derived, and read from the
+        // injector's own table so the two can never disagree. Before the match
+        // below: a non-stop `SessionEnded` prunes the entry there, and an entry
+        // that is gone needs no idle flag.
+        if let Some((session_id, idle)) = idle_effect(event) {
+            if let Some(r) = self
+                .lock_brief_receipts()
+                .iter_mut()
+                .find(|r| r.session_id == session_id)
+            {
+                r.idle = idle;
+            }
+        }
         match event {
             ClaudeEvent::ToolUseStarted {
                 session_id,
@@ -3273,6 +3385,196 @@ impl SamuraiReplicator {
                 }
             });
         }
+        // Issue #205: the receipt deadline. A brief that reached the agent and
+        // was then released by turn activity while still UNREAD (the Nido
+        // gen-2 failure of 2026-08-20: `delivered` → a turn on something else
+        // → nothing) gets ONE corrective at the next turn boundary, and the
+        // existing run-fatal rung if that second window closes silently too.
+        // Same `ack_timeout_secs` window as every other wait in the chain —
+        // the agent's own budget for showing a sign of life, spent here on the
+        // one act the pointer commanded.
+        {
+            let mut receipts = self.lock_brief_receipts();
+            receipts.retain_mut(|r| {
+                // The receipt closed the timer: nothing more is owed, whatever
+                // stage this entry had reached (a Read that lands AFTER the
+                // corrective ends the story exactly as one before it does).
+                if r.seen {
+                    return true;
+                }
+                // No turn activity yet, so the brief is not late: the #103/#171
+                // delivery ladder still owns this session.
+                let Some(elapsed) = r.deadline.as_ref().map(|d| d.elapsed()) else {
+                    return true;
+                };
+                if !sessions.iter().any(|s| s.session_id == r.session_id) {
+                    // Torn down / unregistered outside the samurai pipeline —
+                    // the delivery watch's own rule: never write into a
+                    // session that is no longer ours.
+                    return false;
+                }
+                if elapsed <= timeout {
+                    return true;
+                }
+                // The ALERT is the OBSERVATION and fires the moment the window
+                // is up, even mid-turn: a human reading the trail must see the
+                // unread brief at the time it became a fact, not whenever the
+                // agent next stops. Latched — one row per window.
+                if !r.alerted {
+                    r.alerted = true;
+                    log::error!(
+                        "samurai replicator: session {} never read its gen-{} brief {} within the window — ALERT (issue #205)",
+                        r.session_id,
+                        r.generation,
+                        r.brief,
+                    );
+                    rows.push((
+                        r.project.clone(),
+                        AuditEvent::now(
+                            r.epic.clone(),
+                            AuditEventKind::Alert,
+                            r.generation,
+                            r.session_id,
+                            json!({
+                                "kind": "brief_unread",
+                                "instruction": r.instruction,
+                                "gate": r.gate,
+                                "brief": r.brief,
+                                // Whether this is the first window (a
+                                // corrective follows) or the second (the run
+                                // went fatal). One kind, so the progress
+                                // breaker's whitelist covers both rungs.
+                                "escalated": false,
+                            }),
+                        ),
+                    ));
+                }
+                if !r.nudged {
+                    // The idle gate: typed at a turn boundary, never into a
+                    // running turn (a paste mid-turn is read as input to
+                    // whatever the agent is doing). A session that is busy
+                    // right now is re-checked on the next tick — the ALERT
+                    // above already stands either way.
+                    if !r.idle {
+                        return true;
+                    }
+                    r.nudged = true;
+                    // The escalation window measures silence AFTER the nudge,
+                    // so an agent is never failed for a corrective it has not
+                    // had time to act on.
+                    r.deadline = Some(AgeableInstant::now());
+                    let instruction = samurai_brief::unread_corrective_instruction(&r.brief);
+                    log::warn!(
+                        "samurai replicator: pointing session {} back at its unread gen-{} brief {} — one corrective (issue #205)",
+                        r.session_id,
+                        r.generation,
+                        r.brief,
+                    );
+                    let (excerpt, total_chars) =
+                        super::samurai_audit::instruction_excerpt(&instruction);
+                    let audit = self.audit.clone();
+                    let project = r.project.clone();
+                    let epic = r.epic.clone();
+                    let generation = r.generation;
+                    let session_id = r.session_id;
+                    let instruction_kind = r.instruction;
+                    let brief = r.brief.clone();
+                    // Only the rows, so the callback takes no lock this tick
+                    // holds (the #171 re-type's contract exactly).
+                    let outcome: super::samurai_pty::DeliveryOutcome =
+                        Box::new(move |result| match result {
+                            Ok(()) => audit.append(
+                                &project,
+                                AuditEvent::now(
+                                    epic,
+                                    AuditEventKind::Inject,
+                                    generation,
+                                    session_id,
+                                    json!({
+                                        "phase": "corrective",
+                                        "instruction": instruction_kind,
+                                        "gate": "idle_at_tick",
+                                        "brief": brief,
+                                        "excerpt": excerpt,
+                                        "total_chars": total_chars,
+                                    }),
+                                ),
+                            ),
+                            Err(error) => audit.append(
+                                &project,
+                                AuditEvent::now(
+                                    epic,
+                                    AuditEventKind::Alert,
+                                    generation,
+                                    session_id,
+                                    json!({
+                                        "kind": "delivery_failed",
+                                        "instruction": instruction_kind,
+                                        "source": "replicator",
+                                        "corrective": "brief_unread",
+                                        "error": error,
+                                    }),
+                                ),
+                            ),
+                        });
+                    // Fired WHILE HOLDING the lock, the #106 review F4
+                    // discipline the Enter resend follows: deciding under the
+                    // lock and writing after it left a gap where the receipt
+                    // could land (`note_brief_receipt` takes this same lock)
+                    // and the corrective still went out. Safe to hold — the
+                    // writer is fire-and-forget and never re-enters here.
+                    (self.write_stdin)(session_id, instruction, outcome);
+                    return true;
+                }
+                // The one corrective is spent and the brief is STILL unread:
+                // the agent is working off something other than its
+                // instructions, which is the run being wrong rather than slow.
+                // Same rung as a submit that was never confirmed (#187) — put
+                // the staged entry back UNREGISTERED and respawn it, bounded
+                // by the same MAX_SPAWN_EMITS ladder — so the generation is
+                // re-delivered into a fresh terminal instead of the run
+                // continuing on a brief nobody read.
+                let respawned = match r.ritual.take() {
+                    Some(ritual) => Self::rearm_pending(
+                        &self.pending,
+                        *ritual,
+                        "the delivered brief was never read",
+                    )
+                    .map(|spawn| rearm_emits.push(spawn))
+                    .is_some(),
+                    None => false,
+                };
+                log::error!(
+                    "samurai replicator: session {} still had not read its gen-{} brief {} one corrective later - run-fatal (respawned: {respawned})",
+                    r.session_id,
+                    r.generation,
+                    r.brief,
+                );
+                rows.push((
+                    r.project.clone(),
+                    AuditEvent::now(
+                        r.epic.clone(),
+                        AuditEventKind::Alert,
+                        r.generation,
+                        r.session_id,
+                        json!({
+                            "kind": "brief_unread",
+                            "instruction": r.instruction,
+                            "gate": r.gate,
+                            "brief": r.brief,
+                            "escalated": true,
+                            // Whether the generation went back on the queue
+                            // with a fresh spawn behind it, as in
+                            // `submit_unconfirmed`.
+                            "respawned": respawned,
+                        }),
+                    ),
+                ));
+                // The story ends here: a respawn arms its own receipt for the
+                // new session, and nothing more is owed on this one.
+                false
+            });
+        }
         // Audit I/O outside the lock, like every other tick pass.
         for (project, row) in rows {
             self.audit.append(&project, row);
@@ -3401,6 +3703,33 @@ impl SamuraiReplicator {
             .iter()
             .find(|r| r.session_id == session_id)
             .map(|r| (r.brief.clone(), r.seen))
+    }
+
+    /// Test-only view of one session's issue-#205 receipt clock:
+    /// `(deadline armed, alerted, corrective delivered)`, or `None` when no
+    /// brief pointer is being watched for that session at all.
+    #[cfg(test)]
+    fn brief_receipt_stage(&self, session_id: u32) -> Option<(bool, bool, bool)> {
+        self.lock_brief_receipts()
+            .iter()
+            .find(|r| r.session_id == session_id)
+            .map(|r| (r.deadline.is_some(), r.alerted, r.nudged))
+    }
+
+    /// Test-only: age one session's issue-#205 receipt deadline so the
+    /// corrective and the escalation run without real waiting (same
+    /// `AgeableInstant` discipline as [`Self::backdate_delivered`]).
+    #[cfg(test)]
+    fn backdate_brief_receipt(&self, session_id: u32, by: Duration) {
+        let mut receipts = self.lock_brief_receipts();
+        let r = receipts
+            .iter_mut()
+            .find(|r| r.session_id == session_id)
+            .expect("no brief receipt for the session");
+        r.deadline
+            .as_mut()
+            .expect("the receipt deadline is not armed")
+            .backdate(by);
     }
 
     /// Test-only: age one session's delivery watch so the resend path runs
@@ -6455,6 +6784,448 @@ mod tests {
         h.replicator
             .observe(&tool_use(5, "Read", ".maestro/briefs/anything.md"));
         assert_eq!(h.replicator.brief_receipt_view(5), None);
+    }
+
+    // --- issue #205: a delivered-but-unread brief is corrected, then fatal ---
+
+    /// Drives the typed route to a DELIVERED gen-3 brief pointer in session 2.
+    /// Hands back the worktree (kept alive so the brief FILE survives) and the
+    /// brief file name the pointer named.
+    async fn deliver_typed_brief(h: &Harness, project: &str) -> (tempfile::TempDir, String) {
+        let repo = stage_successor(h, project).await;
+        let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(2, project.to_string(), "epic-9".into(), 3, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(2));
+        let pointer = h.writes.lock().unwrap()[0].1.clone();
+        let brief = samurai_brief::pointer_brief_file_name(&pointer)
+            .expect("a several-KB ritual takes the brief-file route");
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((false, false, false)),
+            "nothing is late until the agent starts a turn"
+        );
+        (repo, brief)
+    }
+
+    /// The first rung, end to end: the agent starts a turn on something that
+    /// is not the brief, the window closes mid-turn (ALERT only), the turn
+    /// ends, and the corrective is typed at that boundary.
+    fn run_to_the_corrective(h: &Harness) {
+        // The prompt submission that releases the delivery watch is not a
+        // receipt — from here the brief can be provably unread.
+        h.replicator.observe(&user_message(2));
+        assert_eq!(
+            h.replicator.delivered_count(),
+            0,
+            "turn activity released the watch, as before"
+        );
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((true, false, false)),
+            "released unread — the receipt deadline is armed"
+        );
+        // An unrelated turn: activity, but no receipt.
+        h.replicator
+            .observe(&tool_use(2, "Read", "src-tauri/src/main.rs"));
+        h.replicator
+            .backdate_brief_receipt(2, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((true, true, false)),
+            "alerted at expiry; the corrective still owes a turn boundary"
+        );
+        assert_eq!(
+            h.writes.lock().unwrap().len(),
+            1,
+            "nothing is ever typed into a running turn"
+        );
+        // The turn ends (the Stop hook's idle gate) — now it lands.
+        h.replicator.observe(&session_ended(2, "stop"));
+        h.replicator.tick();
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((true, true, true)),
+            "the one corrective went out"
+        );
+    }
+
+    /// Issue #205 acceptance: delivered → an unrelated turn → no receipt →
+    /// after the window, exactly ONE `brief_unread` ALERT and ONE corrective
+    /// INJECT, and the corrective is the pointer itself.
+    #[tokio::test]
+    async fn test_an_unread_brief_alerts_once_and_gets_exactly_one_corrective() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-corrective";
+        let (_repo, brief) = deliver_typed_brief(&h, project).await;
+        run_to_the_corrective(&h);
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "corrective"
+        })
+        .await;
+        let alerts: Vec<_> = rows
+            .iter()
+            .filter(|r| r.details["kind"] == "brief_unread")
+            .collect();
+        assert_eq!(alerts.len(), 1, "one ALERT per window, not one per tick");
+        assert_eq!(alerts[0].event, AuditEventKind::Alert);
+        assert_eq!(alerts[0].session_id, 2);
+        assert_eq!(alerts[0].generation, 3);
+        assert_eq!(alerts[0].epic, "epic-9");
+        assert_eq!(alerts[0].details["instruction"], "successor_ritual");
+        assert_eq!(alerts[0].details["gate"], "session_started");
+        assert_eq!(alerts[0].details["brief"], brief);
+        assert_eq!(alerts[0].details["escalated"], false);
+
+        let correctives: Vec<_> = rows
+            .iter()
+            .filter(|r| r.details["phase"] == "corrective")
+            .collect();
+        assert_eq!(correctives.len(), 1, "exactly one corrective");
+        assert_eq!(correctives[0].event, AuditEventKind::Inject);
+        assert_eq!(correctives[0].session_id, 2);
+        assert_eq!(correctives[0].generation, 3);
+        assert_eq!(correctives[0].details["instruction"], "successor_ritual");
+        assert_eq!(correctives[0].details["brief"], brief);
+        assert_eq!(
+            correctives[0].details["gate"], "idle_at_tick",
+            "it went out at a turn boundary"
+        );
+
+        // What was actually typed: the same pointer, as a correction.
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 2, "the pointer, then the one corrective");
+        assert_eq!(writes[1].0, 2);
+        assert!(
+            writes[1].1.contains("not read your brief"),
+            "{}",
+            writes[1].1
+        );
+        assert_eq!(
+            samurai_brief::pointer_brief_file_name(&writes[1].1).as_deref(),
+            Some(brief.as_str()),
+            "the corrective points at the SAME brief: {}",
+            writes[1].1
+        );
+
+        // Further ticks inside the escalation window add nothing at all.
+        h.replicator.tick();
+        h.replicator.tick();
+        assert_eq!(h.writes.lock().unwrap().len(), 2);
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "no respawn on this rung");
+    }
+
+    /// A receipt inside the window closes the timer: no ALERT, no corrective.
+    /// Both orderings — the Read that IS the releasing activity (so no
+    /// deadline is ever armed) and one that follows the release.
+    #[tokio::test]
+    async fn test_a_brief_read_in_time_never_alerts_or_corrects() {
+        // (i) the Read is the first turn activity: #204 records the receipt
+        // before the release, so nothing is ever armed.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-read-first";
+        let (_repo, brief) = deliver_typed_brief(&h, project).await;
+        h.replicator
+            .observe(&tool_use(2, "Read", &format!(".maestro/briefs/{brief}")));
+        assert_eq!(h.replicator.delivered_count(), 0);
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((false, false, false)),
+            "a read brief has no deadline to miss"
+        );
+        h.replicator.tick();
+        assert_eq!(h.writes.lock().unwrap().len(), 1);
+
+        // (ii) the release armed the deadline, and the Read lands inside it.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-read-in-time";
+        let (_repo, brief) = deliver_typed_brief(&h, project).await;
+        h.replicator.observe(&user_message(2));
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((true, false, false))
+        );
+        h.replicator
+            .observe(&tool_use(2, "Read", &format!(".maestro/briefs/{brief}")));
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), true))
+        );
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "receipt"
+        })
+        .await;
+        // The window closing over a READ brief owes nothing.
+        h.replicator
+            .backdate_brief_receipt(2, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        h.replicator.tick();
+        assert_eq!(
+            h.writes.lock().unwrap().len(),
+            1,
+            "no corrective for a brief that was read"
+        );
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "and no respawn");
+        assert!(
+            !rows.iter().any(|r| r.details["kind"] == "brief_unread"),
+            "no ALERT either: {rows:?}"
+        );
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert!(
+            !rows.iter().any(|r| r.details["kind"] == "brief_unread"),
+            "{rows:?}"
+        );
+    }
+
+    /// A receipt AFTER the corrective closes the timer just as one before it
+    /// does: no second corrective, and no escalation when that window closes.
+    #[tokio::test]
+    async fn test_a_receipt_after_the_corrective_ends_the_ladder() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-late-receipt";
+        let (_repo, brief) = deliver_typed_brief(&h, project).await;
+        run_to_the_corrective(&h);
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "corrective"
+        })
+        .await;
+
+        // The agent does what the corrective asked.
+        h.replicator
+            .observe(&tool_use(2, "Read", &format!(".maestro/briefs/{brief}")));
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), true))
+        );
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "receipt"
+        })
+        .await;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["phase"] == "receipt")
+                .count(),
+            1
+        );
+
+        // The escalation window closes with nothing owed.
+        h.replicator
+            .backdate_brief_receipt(2, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        h.replicator.tick();
+        assert_eq!(h.writes.lock().unwrap().len(), 2, "no second corrective");
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "no respawn");
+        assert_eq!(
+            h.replicator.pending_view(3),
+            None,
+            "the generation was never put back"
+        );
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert!(
+            !rows.iter().any(|r| r.details["escalated"] == true),
+            "{rows:?}"
+        );
+    }
+
+    /// A second expiry — the corrective went out and the brief is STILL
+    /// unread — escalates onto the existing #187 rung: the generation goes
+    /// back on the queue UNREGISTERED with a fresh spawn behind it, bounded by
+    /// the same `MAX_SPAWN_EMITS` ladder every re-arm uses.
+    #[tokio::test]
+    async fn test_a_second_expiry_escalates_to_a_respawn() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-escalate";
+        let (_repo, brief) = deliver_typed_brief(&h, project).await;
+        run_to_the_corrective(&h);
+        wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "corrective"
+        })
+        .await;
+
+        // The corrective changed nothing: another turn, still no receipt.
+        h.replicator
+            .observe(&tool_use(2, "Read", "src-tauri/src/main.rs"));
+        h.replicator.observe(&session_ended(2, "stop"));
+        h.replicator
+            .backdate_brief_receipt(2, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["escalated"] == true
+        })
+        .await;
+        let escalations: Vec<_> = rows
+            .iter()
+            .filter(|r| r.details["escalated"] == true)
+            .collect();
+        assert_eq!(escalations.len(), 1, "the run goes fatal once");
+        assert_eq!(escalations[0].event, AuditEventKind::Alert);
+        assert_eq!(escalations[0].details["kind"], "brief_unread");
+        assert_eq!(escalations[0].details["brief"], brief);
+        assert_eq!(escalations[0].details["respawned"], true);
+        assert_eq!(escalations[0].generation, 3);
+        assert_eq!(escalations[0].session_id, 2);
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == "brief_unread")
+                .count(),
+            2,
+            "one ALERT per rung: the nudge and the escalation"
+        );
+
+        assert_eq!(
+            h.writes.lock().unwrap().len(),
+            2,
+            "the escalation is a respawn, not a third paste"
+        );
+        let (registered, staged) = h.replicator.pending_view(3).expect("re-armed");
+        assert_eq!(registered, None, "unregistered, as every re-arm is");
+        assert_eq!(
+            samurai_brief::pointer_brief_file_name(&staged).as_deref(),
+            Some(brief.as_str()),
+            "the same brief is staged again"
+        );
+        let spawns = h.spawns.lock().unwrap().clone();
+        assert_eq!(spawns.len(), 2, "a fresh terminal to deliver into");
+        assert_eq!(spawns[1].generation, 3);
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            None,
+            "the old session's receipt is spent; the respawn arms its own"
+        );
+
+        // Nothing further for the dead session, however many ticks run.
+        h.replicator.tick();
+        assert_eq!(h.writes.lock().unwrap().len(), 2);
+        assert_eq!(h.spawns.lock().unwrap().len(), 2);
+    }
+
+    /// The launch-line route — the one the Nido run died on — walks the same
+    /// two rungs, and records `respawned: false` on the second: the shell
+    /// carried the entry, so there is nothing staged left to re-arm, exactly
+    /// as `submit_unconfirmed` reports for that route.
+    #[tokio::test]
+    async fn test_a_launch_line_brief_is_corrected_then_escalates_without_a_rearm() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-launch";
+        let worktree = tempdir().unwrap();
+        let pointer = stage_launch_with_pointer(&h, project, worktree.path());
+        let brief = samurai_brief::pointer_brief_file_name(&pointer).unwrap();
+        let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(5, project.into(), "#38".into(), 1, details)
+            .unwrap();
+        h.replicator
+            .on_registered_with_route(&snapshot, DeliveryRoute::LaunchLine);
+        h.replicator.observe_hook(&session_started(5));
+        assert!(h.writes.lock().unwrap().is_empty(), "nothing was typed");
+
+        // A turn on the wrong thing, ended: the corrective lands.
+        h.replicator.observe(&user_message(5));
+        assert_eq!(
+            h.replicator.brief_receipt_stage(5),
+            Some((true, false, false))
+        );
+        h.replicator.observe(&session_ended(5, "stop"));
+        h.replicator
+            .backdate_brief_receipt(5, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "corrective"
+        })
+        .await;
+        let alerts: Vec<_> = rows
+            .iter()
+            .filter(|r| r.details["kind"] == "brief_unread")
+            .collect();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(
+            alerts[0].details["gate"], "launch_line",
+            "the ALERT names the route that delivered the brief"
+        );
+        assert_eq!(alerts[0].details["instruction"], "launch_brief");
+        let writes = h.writes.lock().unwrap().clone();
+        assert_eq!(writes.len(), 1, "the corrective is typed, not shell-borne");
+        assert_eq!(writes[0].0, 5);
+        assert_eq!(
+            samurai_brief::pointer_brief_file_name(&writes[0].1).as_deref(),
+            Some(brief.as_str())
+        );
+
+        // Second expiry: fatal, with nothing to re-arm.
+        h.replicator.observe(&session_ended(5, "stop"));
+        h.replicator
+            .backdate_brief_receipt(5, SHA_TIMEOUT + Duration::from_secs(1));
+        h.replicator.tick();
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["escalated"] == true
+        })
+        .await;
+        let escalations: Vec<_> = rows
+            .iter()
+            .filter(|r| r.details["escalated"] == true)
+            .collect();
+        assert_eq!(escalations.len(), 1);
+        assert_eq!(
+            escalations[0].details["respawned"], false,
+            "the launch-line entry was consumed by the shell"
+        );
+        assert_eq!(h.replicator.brief_receipt_view(5), None);
+    }
+
+    /// The existing delivery ladder is untouched by all of this: a session
+    /// that shows NO turn activity at all still walks
+    /// `submit_retry` → `delivery_retyped` → `submit_unconfirmed`, and no
+    /// receipt deadline is ever armed for it (the brief is not late while the
+    /// submit itself is still in doubt).
+    #[tokio::test]
+    async fn test_a_never_submitted_brief_stays_on_the_delivery_ladder() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-205-ladder";
+        let (_repo, _brief) = deliver_typed_brief(&h, project).await;
+        assert_eq!(
+            h.replicator.brief_receipt_stage(2),
+            Some((false, false, false))
+        );
+        run_delivery_ladder_to_give_up(&h, 2);
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "submit_unconfirmed"
+        })
+        .await;
+        let kinds: Vec<_> = rows
+            .iter()
+            .filter(|r| r.event == AuditEventKind::Alert)
+            .filter_map(|r| r.details["kind"].as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "submit_retry",
+                "submit_retry",
+                "delivery_retyped",
+                "submit_retry",
+                "submit_retry",
+                "submit_unconfirmed",
+            ],
+            "the #103/#171/#187 ladder is unchanged"
+        );
+        assert!(
+            !rows.iter().any(|r| r.details["kind"] == "brief_unread"),
+            "an unsubmitted brief is the delivery ladder's business, not #205's"
+        );
     }
 
     // --- issue #103: post-delivery watch (swallowed-Enter recovery) ---

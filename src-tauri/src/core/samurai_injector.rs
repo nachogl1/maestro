@@ -498,7 +498,10 @@ struct DeliverySnapshot {
 /// including the corrective re-instruction, which is always armed right
 /// after such a late-arriving marker message. `UserMessage` is safe: it is
 /// written at prompt submission, a genuine turn restart.
-fn idle_effect(event: &ClaudeEvent) -> Option<(u32, bool)> {
+///
+/// `pub(crate)` since issue #205: the replicator gates its unread-brief
+/// corrective on this same table, and a second copy of it would drift.
+pub(crate) fn idle_effect(event: &ClaudeEvent) -> Option<(u32, bool)> {
     match event {
         ClaudeEvent::SessionEnded {
             session_id, reason, ..
