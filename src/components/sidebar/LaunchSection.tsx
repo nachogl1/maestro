@@ -14,6 +14,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
@@ -51,6 +52,7 @@ import {
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
   type SamuraiSupervisorState,
+  samuraiRunKey,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { useUsageStore } from "@/stores/useUsageStore";
@@ -789,6 +791,8 @@ export function LaunchSection({
   const pendingLaunches = usePendingLaunchStore((s) => s.pending);
 
   const setBreakerParks = useSessionStore((s) => s.setSamuraiBreakerParks);
+  const setRunResuming = useSessionStore((s) => s.setSamuraiRunResuming);
+  const resumingRuns = useSessionStore(useShallow((s) => s.samuraiResumingRuns));
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -807,6 +811,11 @@ export function LaunchSection({
       );
     } catch (err) {
       setRuns([]);
+      // The list is gone, so nothing here can still vouch for a park. Left
+      // standing, a refresh that failed right after an abandon or a cleanup
+      // would leave a chip offering Resume for a run that no longer exists;
+      // a real park comes straight back on the next successful refresh.
+      setBreakerParks([]);
       setError(String(err));
     }
   }, [setBreakerParks]);
@@ -1084,9 +1093,15 @@ export function LaunchSection({
    */
   const handleRecover = async (run: SamuraiRunListEntry) => {
     if (recoveringKeyRef.current !== null) return;
+    if (resumingRuns.includes(samuraiRunKey(run.project_path, run.epic))) return;
     const key = runKey(run);
     recoveringKeyRef.current = key;
     setRecoveringKey(key);
+    // Shared with the park chip's Resume (issue #209): the same command, no
+    // backend lock, and its "no live session" check cannot bite until the
+    // successor registers — so without this the two surfaces could stage two
+    // gen-N+1 orchestrators into one worktree.
+    setRunResuming(run.project_path, run.epic, true);
     setRowError(null);
     setError(null);
     setNotice(null);
@@ -1105,6 +1120,7 @@ export function LaunchSection({
     } finally {
       recoveringKeyRef.current = null;
       setRecoveringKey(null);
+      setRunResuming(run.project_path, run.epic, false);
     }
   };
 
@@ -1501,7 +1517,13 @@ export function LaunchSection({
                   onAbandon={handleAbandon}
                   successorPending={hasPendingSuccessor(run, pendingLaunches)}
                   pending={deletingKey === key}
-                  recovering={recoveringKey === key}
+                  recovering={
+                    recoveringKey === key ||
+                    // A resume started from the park chip counts too — same
+                    // command, same run, and the row must not offer a second
+                    // one while it is in flight.
+                    resumingRuns.includes(samuraiRunKey(run.project_path, run.epic))
+                  }
                   otherBusy={
                     (deletingKey !== null && deletingKey !== key) ||
                     (recoveringKey !== null && recoveringKey !== key)

@@ -58,6 +58,7 @@ use tokio::sync::mpsc;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_injector::{strip_extended_prefix, SessionDirResolver};
+use super::samurai_prompts::epic_slug;
 use super::samurai_replicator::read_repo_head;
 use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 
@@ -364,11 +365,23 @@ impl SamuraiProgress {
     /// the resumed generation would be parked again on its first event.
     /// Synchronous on purpose: the resume path must see the reset before it
     /// spawns, not eventually.
+    ///
+    /// Matched by [`epic_slug`], NOT by string equality: this map is keyed by
+    /// the string the SESSION registered under (`handle_register`, from
+    /// `SessionSnapshot::epic`), while the caller holds the RUN CONFIG's
+    /// identity string — and the two can differ by spelling or padding,
+    /// which is exactly why every other identity match in
+    /// `recover_run_inner` (the live-session check, the registry's highest
+    /// generation) already goes through the slug. An exact-match lookup
+    /// would silently no-op on a `"#38"` / `"38"` pair and hand the
+    /// successor the latched counter it was supposed to be spared.
     pub fn reset_breaker(&self, project: &str, epic: &str) {
+        let slug = epic_slug(epic);
         let mut state = self.lock_state();
-        if let Some(entry) = state
+        for (_, entry) in state
             .epics
-            .get_mut(&(project.to_string(), epic.to_string()))
+            .iter_mut()
+            .filter(|((p, e), _)| p == project && epic_slug(e) == slug)
         {
             entry.observed_head = None;
             entry.count = 0;
@@ -1310,7 +1323,14 @@ mod tests {
             "expected a latched epic, got {count}/{latched}"
         );
 
-        h.progress.reset_breaker(&project, "epic-r");
+        // Reset by a DIFFERENTLY SPELLED but slug-equal identity: this map
+        // is keyed by the string the SESSION registered under, while the
+        // resume path holds the RUN CONFIG's — the same divergence every
+        // identity match in `recover_run_inner` already goes through
+        // `epic_slug` for. An exact-match lookup would silently no-op here
+        // and hand the successor the latched counter.
+        assert_eq!(epic_slug(" Epic R "), epic_slug("epic-r"));
+        h.progress.reset_breaker(&project, " Epic R ");
         assert_eq!(
             h.progress.breaker_view(&project, "epic-r").unwrap(),
             (None, 0, false),

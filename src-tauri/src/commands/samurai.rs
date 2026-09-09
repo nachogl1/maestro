@@ -3498,11 +3498,20 @@ mod tests {
         let (replicator, spawns, spawn_signal) = test_replicator(supervisor.clone(), audit.clone());
         let parker = test_parker(supervisor.clone(), schedule.clone(), audit.clone());
         let run_configs = Arc::new(RunConfigStore::new(runs_dir.path().to_path_buf()));
+        // The tracker resolves every session to the harness's own git repo:
+        // without a working dir `handle_register` records no epic entry at
+        // all, so a breaker assertion against it would pass vacuously.
+        // `breaker_events: 2` keeps the HEAD-stalled stream a test has to
+        // feed short.
+        let progress_dir = project.clone();
         let (progress, progress_task) = SamuraiProgress::new(
             supervisor.clone(),
-            Arc::new(std::sync::RwLock::new(SamuraiConfig::default())),
+            Arc::new(std::sync::RwLock::new(SamuraiConfig {
+                breaker_events: 2,
+                ..SamuraiConfig::default()
+            })),
             audit.clone(),
-            Arc::new(|_| None),
+            Arc::new(move |_| Some(progress_dir.clone())),
         );
         tokio::spawn(progress_task);
         progress.set_run_configs(run_configs.clone());
@@ -5171,19 +5180,46 @@ mod tests {
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
         let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let registered = launched.epic.clone();
         let snapshot = h
             .supervisor
-            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .register_session(1, h.project.clone(), registered.clone(), 1)
             .unwrap();
         h.replicator.on_registered(&snapshot);
+        // The two tees `lib.rs` wires into the tracker, driven by hand: the
+        // registration records the epic's baseline HEAD…
+        h.progress.on_state_change(&snapshot);
         h.progress.flush().await;
-        // What the breaker leaves behind: the session PARKED, the run config
-        // stamped, and the epic's counter still standing (the trip that
-        // latched, or the events that kept coming after the park).
+        // …and the session parks, which is what a breaker trip leaves behind.
         h.supervisor
             .transition(1, SupervisorState::ParkRequested)
             .unwrap();
         h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        // Zero progress keeps coming with nobody left to park, so the epic
+        // ends LATCHED with a live count — the shape that would park the
+        // resumed generation on its first event, since a successor keeps the
+        // counter by design (only gen-1 resets it).
+        for _ in 0..3 {
+            h.progress.observe_audit(
+                &h.project,
+                &AuditEvent::now(
+                    &registered,
+                    AuditEventKind::Alert,
+                    1,
+                    1,
+                    json!({ "kind": "ack_timeout" }),
+                ),
+            );
+        }
+        h.progress.flush().await;
+        let (_, count, latched) = h
+            .progress
+            .breaker_view(&h.project, &registered)
+            .expect("the epic must have a breaker entry to reset");
+        assert!(
+            latched && count > 0,
+            "the fixture must leave a live breaker to reset, got {count}/{latched}"
+        );
         h.run_configs
             .mark_parked(
                 &h.project,
@@ -5214,11 +5250,13 @@ mod tests {
                 .is_none(),
             "the resume must clear the park stamp — the successor owns the run now"
         );
-        // The epic has no breaker entry left standing against it.
-        assert!(
-            h.progress
-                .breaker_view(&h.project, "issue #38")
-                .is_none_or(|(_, count, latched)| count == 0 && !latched),
+        // The epic's breaker is explicitly back to zero — observed HEAD,
+        // count and latch. (The cross-spelling case that makes
+        // `reset_breaker` match by slug is pinned in `samurai_progress`,
+        // where the map key can be controlled directly.)
+        assert_eq!(
+            h.progress.breaker_view(&h.project, &registered),
+            Some((None, 0, false)),
             "the resume must reset the epic's breaker counter"
         );
         // The audit says WHICH way in this was.

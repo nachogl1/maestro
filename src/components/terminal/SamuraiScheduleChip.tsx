@@ -6,6 +6,7 @@ import { isParkEntry, samuraiRecoverRun } from "@/lib/samurai";
 import {
   type SamuraiBreakerPark,
   type SamuraiScheduleEntry,
+  samuraiRunKey,
   useSessionStore,
 } from "@/stores/useSessionStore";
 
@@ -20,13 +21,19 @@ import {
  * Acknowledging it would just hide a run that nothing will ever restart.
  */
 function BreakerParkChip({ park }: { park: SamuraiBreakerPark }) {
-  const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setParks = useSessionStore((s) => s.setSamuraiBreakerParks);
+  const setResuming = useSessionStore((s) => s.setSamuraiRunResuming);
+  // Shared with the Active Runs row's Resume: both call the same command,
+  // which takes no lock and cannot see a successor until it registers, so a
+  // per-component flag let the two surfaces double-spawn between them.
+  const resuming = useSessionStore((s) =>
+    s.samuraiResumingRuns.includes(samuraiRunKey(park.project, park.epic)),
+  );
 
   const resume = async () => {
     if (resuming) return;
-    setResuming(true);
+    setResuming(park.project, park.epic, true);
     setError(null);
     try {
       await samuraiRecoverRun(park.project, park.epic);
@@ -45,7 +52,7 @@ function BreakerParkChip({ park }: { park: SamuraiBreakerPark }) {
       // that did nothing.
       setError(String(err));
     } finally {
-      setResuming(false);
+      setResuming(park.project, park.epic, false);
     }
   };
 

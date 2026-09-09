@@ -303,7 +303,12 @@ describe("LaunchSection (issue #63)", () => {
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     // Untouched workflow editor by default — launches send workflow: null.
     useSamuraiWorkflowStore.setState({ graph: null });
-    useSessionStore.setState({ samuraiBySessionId: {}, samuraiSchedule: [] });
+    useSessionStore.setState({
+      samuraiBySessionId: {},
+      samuraiSchedule: [],
+      samuraiBreakerParks: [],
+      samuraiResumingRuns: [],
+    });
     usePendingLaunchStore.setState({ pending: [] });
     // Issue #109: the gate listener + store are module-level (they outlive
     // mounts on purpose) — detach and drain them between tests so each test
@@ -1147,6 +1152,68 @@ describe("LaunchSection (issue #63)", () => {
       projectPath: "C:\\git\\maestro",
       epic: "#38",
     });
+  });
+
+  it("drops the breaker park chips when the run list refresh fails", async () => {
+    // Review finding: the catch cleared `runs` but left the chip list alone,
+    // so a refresh that failed right after an abandon or a cleanup left a
+    // chip offering Resume for a run that no longer exists.
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "circuit_breaker",
+            at: "2026-09-01T08:00:00Z",
+            generation: 4,
+            head: null,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
+
+    // The next refresh fails outright.
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "samurai_list_runs") throw new Error("backend gone");
+      return undefined;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh active runs" }));
+
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toEqual([]));
+  });
+
+  it("disables the row's Resume while a chip resume for the same run is in flight", async () => {
+    // Review finding: the two surfaces that offer this one click shared no
+    // in-flight guard, and `recover_run_inner` takes no lock — its "no live
+    // session" check cannot bite until the successor registers, so the second
+    // click staged a duplicate gen-N+1 into the same worktree.
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "circuit_breaker",
+            at: "2026-09-01T08:00:00Z",
+            generation: 4,
+            head: null,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+    const button = await screen.findByRole("button", { name: "Resume run #38" });
+    expect(button).toBeEnabled();
+
+    // The chip claims the run.
+    act(() => {
+      useSessionStore.getState().setSamuraiRunResuming("C:\\git\\maestro", "#38", true);
+    });
+    expect(screen.getByRole("button", { name: "Resume run #38" })).toBeDisabled();
+
+    act(() => {
+      useSessionStore.getState().setSamuraiRunResuming("C:\\git\\maestro", "#38", false);
+    });
+    expect(screen.getByRole("button", { name: "Resume run #38" })).toBeEnabled();
   });
 
   /**

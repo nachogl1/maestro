@@ -37,6 +37,7 @@ describe("SamuraiScheduleChip (issue #61)", () => {
       samuraiSchedule: [],
       samuraiParkAlerts: [],
       samuraiBreakerParks: [],
+      samuraiResumingRuns: [],
     });
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
@@ -181,8 +182,24 @@ describe("SamuraiScheduleChip (issue #61)", () => {
       projectPath: "C:/proj",
       epic: "#37",
     });
-    // The run has an owner again — its chip goes with it.
+    // The run has an owner again — its chip goes with it, and the shared
+    // in-flight claim is released.
     expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(0);
+    expect(useSessionStore.getState().samuraiResumingRuns).toEqual([]);
+  });
+
+  it("disables its Resume while the Active Runs row is already resuming the run", () => {
+    // The guard is shared with LaunchSection's row: the same command, no
+    // backend lock, and no live session to refuse against until the successor
+    // registers — so a per-component flag let the two surfaces double-spawn.
+    useSessionStore.setState({
+      samuraiBreakerParks: [{ project: "C:/proj", epic: "#37", at: "2026-08-06T09:00:00+00:00" }],
+    });
+    useSessionStore.getState().setSamuraiRunResuming("C:/proj", "#37", true);
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    expect(screen.getByRole("button", { name: "Resume run #37" })).toBeDisabled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("leaves the allowance park chip acknowledge-only", () => {

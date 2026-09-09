@@ -294,6 +294,11 @@ const BREAKER_PARK_LABEL = "Circuit breaker parked this run — resume or abando
  * about it. Seeded from the run list at startup and refreshed by the Active
  * Runs panel, so a resume or an abandon takes the chip with it.
  */
+/** Shared identity of one run across the surfaces that can resume it. */
+export function samuraiRunKey(project: string, epic: string): string {
+  return `${normalizePath(project)}|${epic.trim()}`;
+}
+
 export interface SamuraiBreakerPark {
   /** Canonical project path of the parked run. */
   project: string;
@@ -421,6 +426,17 @@ interface SessionState {
    * `samuraiSchedule` and needs its own list.
    */
   samuraiBreakerParks: SamuraiBreakerPark[];
+  /**
+   * Runs whose resume is in flight right now, as {@link samuraiRunKey}s.
+   *
+   * SHARED, because two surfaces offer the same one-click resume — the
+   * Active Runs row and the park chip — and each only knew about its own
+   * click. `recover_run_inner` takes no lock and its "no live session" check
+   * cannot bite until the successor registers, so the second click staged a
+   * duplicate gen-N+1 into the same worktree (the hazard PR #131 review F2
+   * closed for two clicks on ONE surface).
+   */
+  samuraiResumingRuns: string[];
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
@@ -437,6 +453,9 @@ interface SessionState {
   /** Replaces the breaker-park list wholesale — the run list is the truth,
    *  and a resumed or abandoned run must lose its chip. */
   setSamuraiBreakerParks: (parks: SamuraiBreakerPark[]) => void;
+  /** Marks one run's resume as in flight, or done — see
+   *  {@link SessionStore.samuraiResumingRuns}. */
+  setSamuraiRunResuming: (project: string, epic: string, resuming: boolean) => void;
   fetchSessions: () => Promise<void>;
   fetchSessionsForProject: (projectPath: string) => Promise<void>;
   addSession: (session: SessionConfig) => void;
@@ -650,6 +669,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   samuraiToasts: [],
   samuraiParkAlerts: [],
   samuraiBreakerParks: [],
+  samuraiResumingRuns: [],
   isLoading: false,
   error: null,
 
@@ -748,6 +768,19 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           (p, i) => samePath(p.project, parks[i].project) && p.epic === parks[i].epic,
         );
       return same ? state : { samuraiBreakerParks: parks };
+    });
+  },
+
+  setSamuraiRunResuming: (project: string, epic: string, resuming: boolean) => {
+    set((state) => {
+      const key = samuraiRunKey(project, epic);
+      const present = state.samuraiResumingRuns.includes(key);
+      if (present === resuming) return state;
+      return {
+        samuraiResumingRuns: resuming
+          ? [...state.samuraiResumingRuns, key]
+          : state.samuraiResumingRuns.filter((k) => k !== key),
+      };
     });
   },
 
