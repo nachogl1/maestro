@@ -12,12 +12,18 @@
 //!   self-cleans) with an `ALERT (resume_run_not_active)` audit note
 //!   instead of spawning into a finished worktree, mirroring the guarantee
 //!   cold-start reconciliation gets from `RunConfigStore::load_active`.
-//! - **Restored-timer gate:** a timer that was already in `schedule.json`
-//!   when the app started never spawns — it lands an
-//!   `ALERT (resume_interrupted_restart)` and dies. Reopening Maestro must
-//!   not start work nobody asked for (the same rule cold-start
-//!   reconciliation follows). Timers armed during THIS session are
-//!   untouched. See [`SamuraiResumer::mark_restored`].
+//! - **Restored timers resume too (issue #207):** a timer that was already
+//!   in `schedule.json` when the app started takes the SAME path as one
+//!   armed this session — the run config gate, the guard rails, then the
+//!   spawn — and its `RESUME` row carries `restored: true`. It used to
+//!   alert `resume_interrupted_restart` and die, which turned every
+//!   allowance park that outlived an app restart (the window is 5 h, so
+//!   nearly all of them) into a manual chore: the fired entry self-cleaned
+//!   even though the callback only alerted, and the next launch's
+//!   reconciler — which had been deferring to the timer — downgraded the run
+//!   to "resume it manually". The restart was DISABLING the resume, not
+//!   requiring it. The restart flag now only decides which ALERT an
+//!   unrecoverable run gets: see [`SamuraiResumer::mark_restored`].
 //! - **Guard rails next:** while a hard park sweep is still engaged, or a
 //!   non-terminal supervised session already exists for the (project, epic),
 //!   spawning would fight the parker or duplicate a live orchestrator — the
@@ -68,7 +74,7 @@ use super::samurai_injector::strip_extended_prefix;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts::{epic_slug, parse_handoff_generation};
 use super::samurai_replicator::SamuraiReplicator;
-use super::samurai_run_config::{ConfigLookup, RunConfigStatus, RunConfigStore};
+use super::samurai_run_config::{ConfigLookup, RunConfigStatus, RunConfigStore, SamuraiRunConfig};
 use super::samurai_schedule::{SamuraiSchedule, ScheduleEntry};
 use super::supervisor::{SessionSnapshot, Supervisor};
 
@@ -82,8 +88,9 @@ const DEFER_DELAY_SECS: i64 = 600;
 /// fire currently means anything.
 const REASON_PARK: &str = "park";
 
-/// `details.kind` of the ALERT a timer RESTORED FROM DISK lands instead of
-/// spawning (see [`SamuraiResumer::mark_restored`]).
+/// `details.kind` of the ALERT a timer RESTORED FROM DISK lands when its run
+/// is UNRECOVERABLE — the only case left after issue #207 (see
+/// [`SamuraiResumer::mark_restored`]).
 pub const RESUME_INTERRUPTED_KIND: &str = "resume_interrupted_restart";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +112,19 @@ fn should_defer(
         || sessions
             .iter()
             .any(|s| s.project == project && s.epic == epic && !s.state.is_terminal())
+}
+
+/// Whether this run already carries the restart ALERT's latch (#185/#196's
+/// `interrupted_at` stamp, the reconciler's `already_reported` shape). Kind
+/// only, no generation: an unrecoverable restored timer says nothing about a
+/// generation — the run either has a config to resume or it does not — and
+/// the next launch's reconciler clears the stamp as soon as the run has an
+/// owner again, so a run that recovers can alert again later.
+fn restart_alert_latched(config: &SamuraiRunConfig) -> bool {
+    config
+        .interrupted_at
+        .as_ref()
+        .is_some_and(|stamp| stamp.kind == RESUME_INTERRUPTED_KIND)
 }
 
 /// `(prior, next)` generation for a fresh spawn: the highest generation
@@ -197,14 +217,19 @@ impl SamuraiResumer {
     /// so [`on_fire`](Self::on_fire) can tell them apart from the ones this
     /// session armed.
     ///
-    /// **Nothing auto-starts on app reopen.** A park timer is persisted, and
-    /// the schedule's first tick fires every entry whose `fire_at` passed
-    /// during downtime — which meant simply reopening Maestro could spawn
-    /// agents nobody asked for, hours or days later. A RESTORED timer now
-    /// lands an `ALERT` and dies instead; the human resumes the run when
-    /// they want it running. Timers armed DURING this session (a park, a
-    /// deferral re-arm) are untouched and still resume normally: `arm`
-    /// always writes a fresh `fire_at`, which is not in this set.
+    /// **A restored timer resumes (issue #207).** A park timer is persisted,
+    /// and the schedule's first tick fires every entry whose `fire_at`
+    /// passed during downtime — that is the feature, not a hazard: the run
+    /// asked to be resumed at that time and the app simply was not running
+    /// then. The flag is still recorded because it changes what an
+    /// UNRECOVERABLE run gets told: a restored timer whose run config is
+    /// gone/finished, or whose worktree names no generation to resume from,
+    /// lands one latched `ALERT (resume_interrupted_restart)`
+    /// ([`Self::alert_interrupted_restart`]) instead of the same-process
+    /// `resume_run_not_active` / `resume_no_handoff` notes, because a
+    /// restart is the reason a human is being asked to step in. Timers armed
+    /// DURING this session (a park, a deferral re-arm) are not in this set:
+    /// `arm` always writes a fresh `fire_at`.
     ///
     /// Called from the setup closure with the same pre-fire-loop snapshot
     /// cold-start reconciliation gets, and before the fire loop is spawned.
@@ -256,6 +281,11 @@ impl SamuraiResumer {
             return;
         };
 
+        // Issue #207: whether this exact timer was already on disk when the
+        // app started. It no longer decides WHETHER to resume — only which
+        // ALERT an unrecoverable run gets, and how the RESUME row reads.
+        let restored = self.is_restored(&entry);
+
         // Review F2 (the #96 regression, timer edition): a resume timer can
         // outlive its run — completion verification can flip the config
         // COMPLETED, or the manual cleanup can archive/remove it, between
@@ -288,11 +318,27 @@ impl SamuraiResumer {
             }
         };
         let status = config.as_ref().map(|c| c.status);
+        // Read BEFORE the filter moves the config: the latch that keeps a
+        // permanently unrecoverable run from alerting once per app launch.
+        let already_alerted = config.as_ref().is_some_and(restart_alert_latched);
         let Some(config) = config.filter(|c| c.status == RunConfigStatus::Active) else {
             let status_value = match status {
                 Some(s) => serde_json::to_value(s).unwrap_or_else(|_| json!("UNKNOWN")),
                 None => json!("MISSING"),
             };
+            // Issue #207: a run whose config is finished, archived or gone
+            // cannot be resumed by anyone but a human, and for a RESTORED
+            // timer the restart is the story worth telling — one latched
+            // `resume_interrupted_restart` instead of the same-process note.
+            if restored {
+                self.alert_interrupted_restart(
+                    &entry,
+                    already_alerted,
+                    "run_not_active",
+                    Some(status_value),
+                );
+                return;
+            }
             log::warn!(
                 "samurai resumer: timer for epic {} in {} fired but its run config is {status_value} — timer dropped, no successor spawned",
                 entry.epic,
@@ -308,34 +354,6 @@ impl SamuraiResumer {
             );
             return;
         };
-
-        // Nothing auto-starts on app reopen (see `mark_restored`): a timer
-        // that was already on disk at startup ALERTS instead of spawning.
-        // Placed after the run-config gate so a stale timer for a finished
-        // run still gets its accurate `resume_run_not_active` note, and
-        // before the defer/spawn path so a restored timer can never become a
-        // deferred one and spawn ten minutes later.
-        if self.is_restored(&entry) {
-            log::warn!(
-                "samurai resumer: run {} in {} had a resume timer ({}) from before this app launch — NOT spawning, the run waits for a manual resume",
-                entry.epic,
-                entry.project_path,
-                entry.fire_at,
-            );
-            self.append_alert(
-                &entry,
-                json!({
-                    "kind": RESUME_INTERRUPTED_KIND,
-                    "epic": entry.epic,
-                    "fire_at": entry.fire_at,
-                    "message": format!(
-                        "run {} was interrupted — resume it manually",
-                        entry.epic
-                    ),
-                }),
-            );
-            return;
-        }
 
         let sessions = self.supervisor.list_sessions();
         if should_defer(
@@ -385,6 +403,13 @@ impl SamuraiResumer {
             }
         };
         let Some((prior, generation)) = next_generation(registry_max, files_max) else {
+            // Issue #207: nothing on disk names a generation, so a restored
+            // timer's run really is unrecoverable — the second and last case
+            // that still ALERTs about the restart, latched like the first.
+            if restored {
+                self.alert_interrupted_restart(&entry, already_alerted, "no_handoff", None);
+                return;
+            }
             log::error!(
                 "samurai resumer: epic {} in {working_dir} has no handoff files and no registry generations — nothing to resume from, ALERT",
                 entry.epic,
@@ -418,6 +443,8 @@ impl SamuraiResumer {
                     "trigger": "resume_timer",
                     "fire_at": entry.fire_at,
                     "predecessor_generation": prior,
+                    // Issue #207: a resume the app restart used to kill.
+                    "restored": restored,
                 }),
             ),
         );
@@ -462,12 +489,70 @@ impl SamuraiResumer {
         );
     }
 
+    /// The one ALERT a RESTORED timer can still land (issue #207): the run
+    /// is unrecoverable without a human — its run config is finished,
+    /// archived or gone, or nothing on disk names a generation to resume
+    /// from. LATCHED on the run config's `interrupted_at` stamp
+    /// (#185/#196), so a run that stays unrecoverable says it once instead
+    /// of once per app launch; the reconciler drops that stamp the moment
+    /// the run has an owner again. A config that cannot be stamped (the
+    /// MISSING case) costs at most a repeat — the fired entry self-cleans,
+    /// so nothing re-fires it in this app run anyway.
+    fn alert_interrupted_restart(
+        &self,
+        entry: &ScheduleEntry,
+        already_alerted: bool,
+        reason: &str,
+        status: Option<serde_json::Value>,
+    ) {
+        if already_alerted {
+            log::info!(
+                "samurai resumer: run {} in {} is still unrecoverable after the restart ({reason}) — already alerted, not repeating the row",
+                entry.epic,
+                entry.project_path,
+            );
+            return;
+        }
+        log::warn!(
+            "samurai resumer: run {} in {} had a resume timer ({}) from before this app launch and cannot be resumed ({reason}) — resume it manually",
+            entry.epic,
+            entry.project_path,
+            entry.fire_at,
+        );
+        let mut details = json!({
+            "kind": RESUME_INTERRUPTED_KIND,
+            "epic": entry.epic,
+            "fire_at": entry.fire_at,
+            "reason": reason,
+            "message": format!("run {} was interrupted — resume it manually", entry.epic),
+        });
+        if let Some(status) = status {
+            details["status"] = status;
+        }
+        self.append_alert(entry, details);
+        // Generation 0: this alert is about the run being unresumable at
+        // all, not about a generation (see `restart_alert_latched`).
+        if let Err(e) = self.run_configs.mark_interrupted(
+            &entry.project_path,
+            &entry.epic,
+            0,
+            RESUME_INTERRUPTED_KIND,
+        ) {
+            log::warn!(
+                "samurai resumer: could not latch the {RESUME_INTERRUPTED_KIND} alert for {} in {}: {e} — it may repeat",
+                entry.epic,
+                entry.project_path,
+            );
+        }
+    }
+
     /// Epic-level ALERT row (generation/session 0, like the parker's
     /// `park_no_reset_time`). Deliberately NOT re-armed: every alert path
     /// here either needs a human (`resume_no_handoff`,
     /// `resume_interrupted_restart`) or documents a stale timer for a run
     /// that is over (`resume_run_not_active`) — a rearmed timer would alert
-    /// again forever.
+    /// again forever. Everything RECOVERABLE defers instead (see
+    /// [`Self::defer`]), which re-arms and leaves the entry on disk.
     fn append_alert(&self, entry: &ScheduleEntry, details: serde_json::Value) {
         self.audit.append(
             &entry.project_path,
@@ -821,6 +906,8 @@ mod tests {
         // timer id) and the generation it resumes from.
         assert_eq!(resume[0].details["trigger"], "resume_timer");
         assert_eq!(resume[0].details["predecessor_generation"], 2);
+        // Issue #207: a same-session timer is not a restored one.
+        assert_eq!(resume[0].details["restored"], false);
 
         // The handoff exists → the staged ritual is the normal successor
         // one (verify required — the fixture handoff has no SHA), never
@@ -835,10 +922,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_restored_timer_alerts_instead_of_spawning() {
-        // Nothing auto-starts on app reopen: a timer that was already in
-        // schedule.json at startup ALERTS and dies. A timer armed during the
-        // session (a fresh fire_at) still resumes exactly as before.
+    async fn test_restored_timer_resumes_the_run_instead_of_alerting() {
+        // Issue #207: an allowance park's timer outlives the app (the window
+        // is 5 h). The restored gate used to ALERT and die here, and because
+        // the fired entry self-cleaned anyway the run was left for a human.
+        // A restored timer now takes the ordinary path: spawn, with the
+        // RESUME row saying it came back from disk.
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
         let project = "C:/git/proj-res-restored";
@@ -857,6 +946,98 @@ mod tests {
         h.resumer.mark_restored(std::slice::from_ref(&restored));
         h.resumer.on_fire(restored);
 
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
+        assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Resume
+        })
+        .await;
+        let resume = rows
+            .iter()
+            .find(|r| r.event == AuditEventKind::Resume)
+            .unwrap();
+        assert_eq!(resume.details["restored"], true);
+        assert_eq!(resume.details["predecessor_generation"], 2);
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.details["kind"] == RESUME_INTERRUPTED_KIND),
+            "a resumable restored run must not be reported as interrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restored_timer_defers_and_stays_on_disk_when_the_run_is_busy() {
+        // The recoverable half of #207, driven through the SCHEDULE so the
+        // fired entry's self-clean is part of the test: a deferred fire
+        // re-arms (+DEFER_DELAY_SECS) and the entry is still on disk
+        // afterwards, because the self-clean matches on the OLD fire_at.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-restored-busy";
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                format!("{project}-wt"),
+            ))
+            .unwrap();
+        // A live orchestrator for the epic — the guard rail that defers.
+        h.supervisor
+            .register_session(1, project.into(), "#37".into(), 3)
+            .unwrap();
+        h.schedule.arm(entry(project, "#37")).unwrap();
+        h.resumer.mark_restored(&h.schedule.list());
+
+        h.schedule.fire_due();
+
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "the deferred entry must stay on disk");
+        let deferred = DateTime::parse_from_rfc3339(&timers[0].fire_at).unwrap();
+        assert!(
+            deferred > DateTime::parse_from_rfc3339("2026-08-06T12:00:00+00:00").unwrap(),
+            "re-armed past the original fire time"
+        );
+        let persisted: Vec<ScheduleEntry> = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("schedule").join("schedule.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted, timers, "the re-arm reached schedule.json");
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Park && r.details["phase"] == "resume_deferred"
+        })
+        .await;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == RESUME_INTERRUPTED_KIND)
+                .count(),
+            0,
+            "a deferral is not an interruption"
+        );
+        assert!(h.spawns.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_restored_timer_for_an_archived_run_alerts_once_and_latches() {
+        // The unrecoverable case #207 keeps: the run config is archived, so
+        // no resume is possible. Exactly ONE resume_interrupted_restart, and
+        // the `interrupted_at` stamp (#185/#196) keeps a repeat quiet.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-restored-archived";
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                format!("{project}-wt"),
+            ))
+            .unwrap();
+        h.run_configs.archive(project, "#37").unwrap();
+
+        let restored = entry(project, "#37");
+        h.resumer.mark_restored(std::slice::from_ref(&restored));
+        h.resumer.on_fire(restored.clone());
+
         let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
             r.details["kind"] == RESUME_INTERRUPTED_KIND
         })
@@ -866,26 +1047,39 @@ mod tests {
             .find(|r| r.details["kind"] == RESUME_INTERRUPTED_KIND)
             .unwrap();
         assert_eq!(alert.event, AuditEventKind::Alert);
-        assert_eq!(alert.epic, "#37");
-        assert_eq!(alert.generation, 0);
+        assert_eq!(alert.details["reason"], "run_not_active");
+        assert_eq!(alert.details["status"], "ARCHIVED");
         assert_eq!(
             alert.details["message"],
             "run #37 was interrupted — resume it manually"
         );
-        assert!(
-            h.spawns.lock().unwrap().is_empty(),
-            "reopening the app must never spawn an agent"
-        );
-        assert!(!rows.iter().any(|r| r.event == AuditEventKind::Resume));
+        // Latched onto the config, by this module's own kind.
+        let stamp = h
+            .run_configs
+            .get(project, "#37")
+            .unwrap()
+            .interrupted_at
+            .expect("the restart alert must latch onto the run config");
+        assert_eq!(stamp.kind, RESUME_INTERRUPTED_KIND);
 
-        // Same epic, a fire_at this session armed → normal resume.
-        let armed_now = ScheduleEntry {
-            fire_at: "2026-08-06T13:00:00+00:00".to_string(),
-            ..entry(project, "#37")
-        };
-        h.resumer.on_fire(armed_now);
-        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
-        assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
+        // A second fire (the next app launch's restored entry) stays quiet.
+        // The barrier below is what makes "quiet" observable: a row appended
+        // AFTER it would still be counted, because the audit writer is FIFO
+        // per project — so waiting for the barrier waits out the second fire.
+        h.resumer.on_fire(restored);
+        h.resumer.on_fire(entry(project, "#barrier"));
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "resume_run_not_active" && r.epic == "#barrier"
+        })
+        .await;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == RESUME_INTERRUPTED_KIND)
+                .count(),
+            1,
+            "the restart alert is latched — one row, not one per launch"
+        );
+        assert!(h.spawns.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
