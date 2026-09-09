@@ -64,7 +64,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use chrono::Utc;
 use serde_json::json;
@@ -88,10 +88,34 @@ const DEFER_DELAY_SECS: i64 = 600;
 /// fire currently means anything.
 const REASON_PARK: &str = "park";
 
+/// The `trigger` this module hands the replicator — and the one it claims
+/// back in [`SamuraiResumer::on_spawn_dropped`].
+const RESUME_TRIGGER: &str = "resume_timer";
+
+/// "A pre-restart orchestrator is PROBABLY still alive in this worktree":
+/// `Some(transcript_age_secs)`, for the worktree path handed in. Injected
+/// (issue #207) so the restored path gets the same survivor check every
+/// other startup spawn goes through — `lib.rs` composes it from the
+/// reconciler's `orphan_verdict` over the watchdog's two real probes, and
+/// tests supply a closure. Unset = no check (the pre-#207 behaviour, which
+/// every same-process fire keeps).
+pub type OrphanProbe = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
+
 /// `details.kind` of the ALERT a timer RESTORED FROM DISK lands when its run
 /// is UNRECOVERABLE — the only case left after issue #207 (see
 /// [`SamuraiResumer::mark_restored`]).
 pub const RESUME_INTERRUPTED_KIND: &str = "resume_interrupted_restart";
+
+/// `details.kind` of the ALERT a RESTORED resume lands when the worktree
+/// still looks owned by a claude that predates this launch (issue #207,
+/// finding 3): the resume defers instead of putting a second orchestrator
+/// in one worktree.
+pub const RESUME_ORPHAN_KIND: &str = "resume_orphan";
+
+/// The replicator's give-up ALERT kind, latched here so a resume that keeps
+/// being dropped (a project the user left closed) says it once per app run
+/// instead of once per defer interval.
+const SPAWN_DROPPED_KIND: &str = "spawn_dropped";
 
 // ---------------------------------------------------------------------------
 // Pure decisions (table-tested)
@@ -189,10 +213,26 @@ pub struct SamuraiResumer {
     /// before setup finishes — a fire that early is dropped with an error.
     schedule: OnceLock<Arc<SamuraiSchedule>>,
     parker: OnceLock<Arc<SamuraiParker>>,
-    /// `(project, epic, fire_at)` of the timers `schedule.json` held at
+    /// `(project, epic)` of the runs whose timers `schedule.json` held at
     /// startup — see [`Self::mark_restored`]. Unset in tests that never call
     /// it, which reads as "every timer was armed this session".
-    restored: OnceLock<HashSet<(String, String, String)>>,
+    ///
+    /// Keyed WITHOUT `fire_at` (review finding 2): restoredness is a
+    /// property of the RUN for this app run, not of one countdown. A
+    /// deferral re-arms with a fresh `fire_at`, so a fire_at-keyed set lost
+    /// the flag the first time a restored resume deferred — the eventual
+    /// RESUME row then said `restored: false` and an unrecoverable run got
+    /// the unlatched same-process note instead of the latched restart one.
+    restored: OnceLock<HashSet<(String, String)>>,
+    /// Issue #207: the survivor check a restored resume runs before
+    /// spawning. Unset = no check (see [`OrphanProbe`]).
+    orphan_probe: OnceLock<OrphanProbe>,
+    /// `(project, epic, kind)` of the ALERTs already said once this app run
+    /// — the in-memory latch for the two repeatable restored-path alerts
+    /// (a suspected orphan, a spawn the frontend never took). The
+    /// unrecoverable-run alert latches on disk instead, where it has to
+    /// survive a restart.
+    alerted_once: Mutex<HashSet<(String, String, &'static str)>>,
 }
 
 impl SamuraiResumer {
@@ -210,6 +250,8 @@ impl SamuraiResumer {
             schedule: OnceLock::new(),
             parker: OnceLock::new(),
             restored: OnceLock::new(),
+            orphan_probe: OnceLock::new(),
+            alerted_once: Mutex::new(HashSet::new()),
         })
     }
 
@@ -236,20 +278,31 @@ impl SamuraiResumer {
     pub fn mark_restored(&self, entries: &[ScheduleEntry]) {
         let set = entries
             .iter()
-            .map(|e| (e.project_path.clone(), e.epic.clone(), e.fire_at.clone()))
+            .map(|e| (e.project_path.clone(), e.epic.clone()))
             .collect();
         let _ = self.restored.set(set);
     }
 
-    /// Whether this exact timer was already on disk when the app started.
-    fn is_restored(&self, entry: &ScheduleEntry) -> bool {
-        self.restored.get().is_some_and(|set| {
-            set.contains(&(
-                entry.project_path.clone(),
-                entry.epic.clone(),
-                entry.fire_at.clone(),
-            ))
-        })
+    /// Whether this run's timer was already on disk when the app started —
+    /// including after a deferral re-armed it under a new `fire_at`.
+    fn is_restored(&self, project: &str, epic: &str) -> bool {
+        self.restored
+            .get()
+            .is_some_and(|set| set.contains(&(project.to_string(), epic.to_string())))
+    }
+
+    /// Late-binds the survivor check (issue #207), the `bind` pattern.
+    pub fn set_orphan_probe(&self, probe: OrphanProbe) {
+        let _ = self.orphan_probe.set(probe);
+    }
+
+    /// `true` the FIRST time `(project, epic, kind)` is asked about in this
+    /// app run — the in-memory alert latch (see [`Self::alerted_once`]).
+    fn first_alert_this_run(&self, project: &str, epic: &str, kind: &'static str) -> bool {
+        self.alerted_once
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((project.to_string(), epic.to_string(), kind))
     }
 
     /// Late-binds the schedule (for deferral re-arms) and the parker (for
@@ -284,7 +337,7 @@ impl SamuraiResumer {
         // Issue #207: whether this exact timer was already on disk when the
         // app started. It no longer decides WHETHER to resume — only which
         // ALERT an unrecoverable run gets, and how the RESUME row reads.
-        let restored = self.is_restored(&entry);
+        let restored = self.is_restored(&entry.project_path, &entry.epic);
 
         // Review F2 (the #96 regression, timer edition): a resume timer can
         // outlive its run — completion verification can flip the config
@@ -370,6 +423,39 @@ impl SamuraiResumer {
         // guarantees the config exists, so no path is ever invented.
         let working_dir = strip_extended_prefix(&config.worktree_path);
 
+        // Review finding 3: a RESTORED resume is the one spawn path with no
+        // startup survivor check. The reconciler defers to any pending timer
+        // (`SkipTimer`) and never reaches its own orphan arm, while the
+        // guards above read a session registry that is EMPTY right after a
+        // restart — so a claude that outlived the app could be joined by a
+        // second orchestrator in the same worktree. Ask the reconciler's
+        // question through the injected probe instead: a false defer costs
+        // one interval, a false spawn costs the worktree.
+        if restored {
+            if let Some(age_secs) = self
+                .orphan_probe
+                .get()
+                .and_then(|probe| probe(&working_dir))
+            {
+                log::warn!(
+                    "samurai resumer: epic {} in {working_dir} — transcript written {age_secs}s ago and a claude process is alive: a pre-restart orchestrator probably survived, deferring instead of spawning",
+                    entry.epic,
+                );
+                if self.first_alert_this_run(&entry.project_path, &entry.epic, RESUME_ORPHAN_KIND) {
+                    self.append_alert(
+                        &entry,
+                        json!({
+                            "kind": RESUME_ORPHAN_KIND,
+                            "epic": entry.epic,
+                            "transcript_age_secs": age_secs,
+                        }),
+                    );
+                }
+                self.defer(schedule, &entry);
+                return;
+            }
+        }
+
         let registry_max = sessions
             .iter()
             .filter(|s| s.project == entry.project_path && s.epic == entry.epic)
@@ -454,8 +540,55 @@ impl SamuraiResumer {
             &working_dir,
             generation,
             Some(prior),
-            "resume_timer",
+            RESUME_TRIGGER,
         );
+    }
+
+    /// The replicator's `spawn_dropped` veto (issue #207, review finding 1).
+    ///
+    /// A resume spawn the frontend never took — the user has the project
+    /// closed — used to end as an ALERT with NO timer left on disk: exactly
+    /// the manual chore this issue exists to remove, just 15 minutes later
+    /// than the old restored gate produced it. The schedule entry is
+    /// re-armed [`DEFER_DELAY_SECS`] out instead, so the resume keeps
+    /// offering itself until a tab for the project is open.
+    ///
+    /// Returns whether the replicator should SKIP its own ALERT: the first
+    /// drop per (project, epic) this app run keeps it (it is the accurate
+    /// description of what happened), every later one is suppressed — the
+    /// run is not stuck, it is waiting on a re-armed timer, and one ALERT
+    /// per interval would be noise. Only `resume_timer` spawns are claimed;
+    /// a gen-1 launch's drop is not this module's business.
+    pub fn on_spawn_dropped(
+        &self,
+        project: &str,
+        epic: &str,
+        generation: u32,
+        trigger: &str,
+    ) -> bool {
+        if trigger != RESUME_TRIGGER {
+            return false;
+        }
+        let Some(schedule) = self.schedule.get() else {
+            return false;
+        };
+        log::warn!(
+            "samurai resumer: the gen-{generation} resume spawn for epic {epic} in {project} was never taken (no project tab open?) — re-arming the resume timer instead of dropping the run",
+        );
+        self.defer(
+            schedule,
+            &ScheduleEntry {
+                project_path: project.to_string(),
+                epic: epic.to_string(),
+                // `defer` writes the real one; the fired entry's own
+                // fire_at self-cleaned when it fired.
+                fire_at: String::new(),
+                reason: REASON_PARK.to_string(),
+                launch: None,
+                held: false,
+            },
+        );
+        !self.first_alert_this_run(project, epic, SPAWN_DROPPED_KIND)
     }
 
     /// Re-arms the entry [`DEFER_DELAY_SECS`] out and records why. The new
@@ -577,7 +710,7 @@ mod tests {
     use crate::core::samurai_run_config::SamuraiRunConfig;
     use crate::core::samurai_schedule::jitter_secs;
     use crate::core::samurai_test_wait::{
-        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
+        new_tick, tick_on_append, wait_for_row, wait_for_rows, wait_until, HarnessTick,
     };
     use crate::core::supervisor::SupervisorState;
     use crate::core::windows_process::StdCommandExt;
@@ -800,6 +933,14 @@ mod tests {
         );
         injector.set_parker(parker.clone());
         resumer.bind(schedule.clone(), parker.clone());
+        // Issue #207: the same veto lib.rs wires, so the drop path is
+        // exercised end to end here.
+        let resumer_for_drop = resumer.clone();
+        replicator.set_spawn_dropped_hook(Arc::new(
+            move |project: &str, epic: &str, generation: u32, trigger: &'static str| {
+                resumer_for_drop.on_spawn_dropped(project, epic, generation, trigger)
+            },
+        ));
         Harness {
             resumer,
             supervisor,
@@ -1013,6 +1154,144 @@ mod tests {
                 .count(),
             0,
             "a deferral is not an interruption"
+        );
+        assert!(h.spawns.lock().unwrap().is_empty());
+
+        // Review finding 2: the re-armed entry carries a FRESH fire_at, so a
+        // fire_at-keyed restored set lost the flag right here. The eventual
+        // resume must still know it came back from disk.
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        h.resumer.on_fire(timers[0].clone());
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Resume
+        })
+        .await;
+        let resume = rows
+            .iter()
+            .find(|r| r.event == AuditEventKind::Resume)
+            .unwrap();
+        assert_eq!(
+            resume.details["restored"], true,
+            "the restored flag must survive a deferral re-arm"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dropped_resume_spawn_rearms_the_timer_and_alerts_once() {
+        // Review finding 1: the frontend drops a spawn event when no tab for
+        // the project is open, and the replicator's ladder used to end that
+        // with a `spawn_dropped` ALERT and NO timer on disk — the same manual
+        // chore #207 removes, 15 minutes later. The resume timer is re-armed
+        // instead, and only the FIRST drop this app run keeps the ALERT.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-dropped";
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                format!("{project}-wt"),
+            ))
+            .unwrap();
+
+        assert!(
+            !h.resumer
+                .on_spawn_dropped(project, "#37", 4, "resume_timer"),
+            "the first drop keeps the replicator's own ALERT"
+        );
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "the resume timer is back on disk");
+        assert_eq!(timers[0].reason, REASON_PARK);
+        assert!(
+            DateTime::parse_from_rfc3339(&timers[0].fire_at).unwrap() > Utc::now(),
+            "re-armed into the future"
+        );
+
+        assert!(
+            h.resumer
+                .on_spawn_dropped(project, "#37", 5, "resume_timer"),
+            "a repeat drop is handled quietly — the run is waiting on a timer"
+        );
+        assert_eq!(h.schedule.list().len(), 1, "still exactly one timer");
+        // A gen-1 launch's drop is not this module's business.
+        assert!(!h.resumer.on_spawn_dropped(project, "#37", 1, "launch"));
+
+        wait_for_rows(&h.tick, &h.audit, project, |rows| {
+            rows.iter()
+                .filter(|r| {
+                    r.event == AuditEventKind::Park && r.details["phase"] == "resume_deferred"
+                })
+                .count()
+                == 2
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_restored_timer_defers_when_an_orphan_probably_survived() {
+        // Review finding 3: the reconciler defers to a pending timer
+        // (`SkipTimer`) and the resumer's registry is empty right after a
+        // restart, so a restored resume was the one spawn path with no
+        // survivor check. A probable survivor defers instead of putting a
+        // second orchestrator in the worktree — and says so once.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-orphan";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff(repo.path(), "#37", 2);
+        let worktree = repo.path().to_string_lossy().into_owned();
+        h.run_configs
+            .save(&SamuraiRunConfig::new(project, "#37", worktree.clone()))
+            .unwrap();
+        let asked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let asked_rec = asked.clone();
+        h.resumer.set_orphan_probe(Arc::new(move |dir: &str| {
+            asked_rec.lock().unwrap().push(dir.to_string());
+            Some(42)
+        }));
+
+        let restored = entry(project, "#37");
+        h.resumer.mark_restored(std::slice::from_ref(&restored));
+        h.resumer.on_fire(restored.clone());
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == RESUME_ORPHAN_KIND
+        })
+        .await;
+        assert_eq!(*asked.lock().unwrap(), vec![worktree]);
+        let alert = rows
+            .iter()
+            .find(|r| r.details["kind"] == RESUME_ORPHAN_KIND)
+            .unwrap();
+        assert_eq!(alert.event, AuditEventKind::Alert);
+        assert_eq!(alert.details["transcript_age_secs"], 42);
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "no second orchestrator"
+        );
+        assert_eq!(h.schedule.list().len(), 1, "deferred, not dropped");
+
+        // Said once per app run, not once per defer interval: the second
+        // deferral row is the barrier that proves the second fire finished.
+        h.resumer.on_fire(restored);
+        let rows = wait_for_rows(&h.tick, &h.audit, project, |rows| {
+            rows.iter()
+                .filter(|r| r.details["phase"] == "resume_deferred")
+                .count()
+                == 2
+        })
+        .await;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["kind"] == RESUME_ORPHAN_KIND)
+                .count(),
+            1,
+            "the orphan alert is latched in memory for the app run"
         );
         assert!(h.spawns.lock().unwrap().is_empty());
     }
