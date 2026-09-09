@@ -310,6 +310,21 @@ impl SamuraiResumer {
                 Some(s) => serde_json::to_value(s).unwrap_or_else(|_| json!("UNKNOWN")),
                 None => json!("MISSING"),
             };
+            // Issue #208: an auth-restore resume that finds its run finished
+            // is not news. The parker skips exactly this run SILENTLY when
+            // it arms the release; a run archived during the stagger's own
+            // few seconds is the same run a moment later, and an ALERT there
+            // would ask a human to look at a run they themselves ended.
+            // A park timer keeps its ALERT: that one waited out a whole
+            // allowance window, so a status change is worth the note.
+            if entry.reason == GH_AUTH_RESTORED {
+                log::info!(
+                    "samurai resumer: {GH_AUTH_RESTORED} resume for epic {} in {} found its run {status_value} — dropped silently",
+                    entry.epic,
+                    entry.project_path,
+                );
+                return;
+            }
             log::warn!(
                 "samurai resumer: timer for epic {} in {} fired but its run config is {status_value} — timer dropped, no successor spawned",
                 entry.epic,
@@ -1356,6 +1371,55 @@ mod tests {
         );
     }
 
+    /// Review finding 3: the parker skips a finished run SILENTLY when it
+    /// arms a release, but the run can also end during the stagger's own few
+    /// seconds — and the fire-time gate used to ALERT for it, asking a human
+    /// to look at a run they themselves archived. A PARK timer keeps that
+    /// ALERT: it waited out a whole allowance window.
+    #[tokio::test]
+    async fn test_an_auth_restore_whose_run_ended_during_the_wait_drops_silently() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-auth-late-archive";
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#180", 1);
+        let mut config =
+            SamuraiRunConfig::new(project, "#180", repo.path().to_string_lossy().into_owned());
+        config.status = RunConfigStatus::Archived;
+        h.run_configs.save(&config).unwrap();
+
+        let mut released = entry(project, "#180");
+        released.reason = GH_AUTH_RESTORED.to_string();
+        h.resumer.on_fire(released);
+
+        // A PARK timer for an equally-finished run DOES alert — and the
+        // audit is append-ordered, so once its row is readable any row the
+        // release would have written is already there too. That ordering is
+        // the negative assertion: no sleep, no quiet window.
+        let mut archived_park = entry(project, "#180");
+        archived_park.fire_at = "2026-08-06T13:00:00+00:00".to_string();
+        h.resumer.on_fire(archived_park);
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "resume_run_not_active"
+        })
+        .await;
+        let alerts: Vec<_> = rows
+            .iter()
+            .filter(|r| r.event == AuditEventKind::Alert)
+            .collect();
+        assert_eq!(
+            alerts.len(),
+            1,
+            "only the park timer may alert; the release drops silently: {alerts:?}"
+        );
+        assert_eq!(alerts[0].details["status"], "ARCHIVED");
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "neither timer may spawn into an archived run"
+        );
+    }
+
     /// Issue #208, the other half of that seam: an EXTERNAL park (gh auth
     /// loss) arms nothing by design, so before this the runs it stopped sat
     /// parked until a human found them. The restored edge releases them —
@@ -1363,8 +1427,10 @@ mod tests {
     /// park → park ladder → release → the schedule's own due check → two
     /// fresh spawns.
     ///
-    /// The two epics are picked for their real per-epic jitter (1s and 3s):
-    /// the stagger arithmetic is production's, only the wait is compressed.
+    /// The two epics are picked because their real per-epic jitter COLLIDES
+    /// (both hash to 1s, so the de-duplication spaces them 1s and 2s): the
+    /// stagger arithmetic is production's, and the wait is short enough to
+    /// drive from a test.
     #[tokio::test]
     async fn test_an_auth_restore_resumes_both_parked_runs_through_the_schedule() {
         use crate::core::samurai_auth_watch::GH_AUTH_LOST;
@@ -1376,7 +1442,7 @@ mod tests {
         // wiring `lib.rs` does at startup.
         h.parker.set_run_configs(h.run_configs.clone());
 
-        let runs = [(1u32, "#180"), (2u32, "#5")];
+        let runs = [(1u32, "#180"), (2u32, "#532")];
         let mut repos = Vec::new();
         for (id, epic) in runs {
             let repo = tempdir().unwrap();
@@ -1427,7 +1493,11 @@ mod tests {
             "a future resume must not fire early"
         );
 
-        // --- the wait, compressed: 3s jitter is the later of the two ---
+        // The armed times are seconds out (the epics' real jitter), so the
+        // schedule's own due check is re-driven until both have passed. No
+        // budget: `wait_until` only gives up at the hang backstop, so a
+        // loaded box costs wall time instead of a red test (issues
+        // #197/#198, and the fixed sleep this replaced).
         let latest = timers
             .iter()
             .map(|t| {
@@ -1437,11 +1507,12 @@ mod tests {
             })
             .max()
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(3500)).await;
-        assert!(Utc::now() >= latest, "both fire times must have passed");
-
-        h.schedule.fire_due();
-        wait_until(&h.tick, || h.spawns.lock().unwrap().len() == 2).await;
+        wait_until(&h.tick, || {
+            h.schedule.fire_due();
+            h.spawns.lock().unwrap().len() == 2
+        })
+        .await;
+        assert!(Utc::now() >= latest, "both armed fire times had to pass");
         let mut spawned: Vec<(String, u32)> = h
             .spawns
             .lock()
@@ -1452,7 +1523,7 @@ mod tests {
         spawned.sort();
         assert_eq!(
             spawned,
-            vec![("#180".to_string(), 2), ("#5".to_string(), 2)],
+            vec![("#180".to_string(), 2), ("#532".to_string(), 2)],
             "each parked run spawns its own next generation"
         );
 

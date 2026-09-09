@@ -159,6 +159,18 @@ fn should_arm(existing_fire_at: Option<&str>, new_fire_at: DateTime<Utc>) -> boo
     }
 }
 
+/// What a completed sweep left for [`SamuraiParker::advance`] to do once the
+/// state guard is gone. Both re-enter the parker and take the same lock, so
+/// neither may run under it.
+#[derive(Default)]
+struct SweepFollowUp {
+    /// Fix C1: an all-clear this sweep held back (`pending_allclear`).
+    allclear: bool,
+    /// Issue #208: an external release that arrived mid-sweep
+    /// (`pending_release`) — now safe to run, the runs are recorded.
+    release: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
@@ -193,6 +205,16 @@ struct SweepState {
     /// allowance park must not be woken by an auth restore, or vice-versa.
     /// Cleared with `suppress_timers` when an allowance crossing joins.
     external_reason: Option<String>,
+    /// Issue #208 (review 1): a release for this sweep's `external_reason`
+    /// arrived while the sweep was still parking sessions. The runs are not
+    /// in `park_reasons` yet — that map is written at completion — so a
+    /// release handled there and then would drain nothing, and the auth
+    /// watch's latch is a one-shot EDGE with no second chance to re-drive
+    /// it: those runs would be stranded parked with no timer, exactly the
+    /// bug #208 fixes. Deferred here and consumed by
+    /// [`SamuraiParker::complete_sweep`], which hands it back to
+    /// [`SamuraiParker::advance`] to run once the state guard is gone.
+    pending_release: Option<String>,
     /// Fix C1 (issue #131 review 2): a `SoftRecovered` edge arrived while
     /// this sweep held the all-clear back. That edge is a strict ONE-SHOT
     /// falling edge (`allowance_watcher`: fired only when `above_soft_5h`
@@ -395,9 +417,25 @@ impl SamuraiParker {
     /// still-ACTIVE re-check all happen in `SamuraiResumer::on_fire`, so
     /// this path inherits every guard a park timer has.
     ///
-    /// Returns how many resumes were armed (0 when nothing was parked for
-    /// `reason`, the normal case on every auth-good tick).
+    /// A release that lands MID-SWEEP — the condition cleared while the
+    /// parker was still working through the sessions — is deferred to sweep
+    /// completion rather than dropped: `park_reasons` is written at
+    /// completion, so draining it now would find nothing, and the auth
+    /// watch's restored edge is one-shot (no second tick re-drives it).
+    ///
+    /// Returns how many resumes were armed IMMEDIATELY (0 when nothing was
+    /// parked for `reason` — the normal case on every auth-good tick — and
+    /// also when the whole release was deferred to a sweep in flight).
     pub fn release_external_park(&self, reason: &str) -> usize {
+        {
+            let mut state = self.lock_state();
+            if state.external_reason.as_deref() == Some(reason) {
+                log::info!(
+                    "samurai parker: {reason} released while its park sweep is still running — the resumes are deferred to sweep completion"
+                );
+                state.pending_release = Some(reason.to_string());
+            }
+        }
         let released: Vec<(String, String)> = {
             let mut reasons = self.lock_park_reasons();
             let matching: Vec<(String, String)> = reasons
@@ -421,6 +459,12 @@ impl SamuraiParker {
         let sessions = self.supervisor.list_sessions();
         let armed_timers = self.schedule.list();
         let now = Utc::now();
+        // The stagger is a deterministic hash into a fixed number of buckets
+        // (`jitter_secs`), so two epics CAN land on the same second — and
+        // with one shared `now`, on the same instant. Offsets taken here are
+        // kept distinct (the colliding run slides one second later), which
+        // is the whole point of staggering at all.
+        let mut taken_offsets: HashSet<i64> = HashSet::new();
         let mut armed = 0;
         for (project, epic) in released {
             if sessions
@@ -444,7 +488,11 @@ impl SamuraiParker {
                 );
                 continue;
             }
-            let fire_at = (now + ChronoDuration::seconds(jitter_secs(&epic) as i64)).to_rfc3339();
+            let mut offset = jitter_secs(&epic) as i64;
+            while !taken_offsets.insert(offset) {
+                offset += 1;
+            }
+            let fire_at = (now + ChronoDuration::seconds(offset)).to_rfc3339();
             let entry = ScheduleEntry {
                 project_path: project.clone(),
                 epic: epic.clone(),
@@ -811,16 +859,21 @@ impl SamuraiParker {
             )
         });
         if !blocked {
-            let deferred_allclear = self.complete_sweep(&mut state);
-            // The state guard must be gone before the all-clear runs: it
-            // re-enters `winddown_allclear`, which takes this same lock when
-            // it has to defer again (a fresh sweep engaged in between).
+            let follow_up = self.complete_sweep(&mut state);
+            // The state guard must be gone before either follow-up runs:
+            // both re-enter the parker and take this same lock.
             drop(state);
-            if deferred_allclear {
+            if follow_up.allclear {
                 log::info!(
                     "samurai parker: park sweep disengaged — re-driving the all-clear it deferred"
                 );
                 self.winddown_allclear();
+            }
+            if let Some(reason) = follow_up.release {
+                log::info!(
+                    "samurai parker: {reason} was released while the sweep was still parking — resuming its runs now"
+                );
+                self.release_external_park(&reason);
             }
         }
     }
@@ -836,10 +889,10 @@ impl SamuraiParker {
     /// that gate here would only add a run-config dependency for noise
     /// reduction.
     ///
-    /// Returns whether an all-clear was DEFERRED by this sweep and must now
-    /// be re-driven (fix C1) — the caller does that after dropping the state
-    /// guard.
-    fn complete_sweep(&self, state: &mut SweepState) -> bool {
+    /// Returns what the caller must run after dropping the state guard: an
+    /// all-clear this sweep deferred (fix C1), and an external release that
+    /// arrived while it was still parking (issue #208).
+    fn complete_sweep(&self, state: &mut SweepState) -> SweepFollowUp {
         let parked_epics = std::mem::take(&mut state.parked_epics);
         let resets_at = state.resets_at.take();
         if resets_at.is_some() {
@@ -848,6 +901,7 @@ impl SamuraiParker {
         let suppress_timers = std::mem::take(&mut state.suppress_timers);
         let external_reason = std::mem::take(&mut state.external_reason);
         let pending_allclear = std::mem::take(&mut state.pending_allclear);
+        let pending_release = std::mem::take(&mut state.pending_release);
         state.failed.clear();
 
         // Issue #208: remember WHY each run is parked before the set is
@@ -868,7 +922,10 @@ impl SamuraiParker {
                 parked_epics.len()
             );
             self.engaged.store(false, Ordering::SeqCst);
-            return pending_allclear;
+            return SweepFollowUp {
+                allclear: pending_allclear,
+                release: pending_release,
+            };
         }
 
         log::info!(
@@ -879,7 +936,10 @@ impl SamuraiParker {
             self.arm_resume_timer(&project, &epic, resets_at);
         }
         self.engaged.store(false, Ordering::SeqCst);
-        pending_allclear
+        SweepFollowUp {
+            allclear: pending_allclear,
+            release: pending_release,
+        }
     }
 
     /// Arms one epic's resume timer, or leaves the ALERT that explains why
@@ -2046,6 +2106,11 @@ mod tests {
     /// The bug: an external park arms nothing BY DESIGN, and #188 made the
     /// watch detect the restore without acting on it — so runs parked for a
     /// `gh` auth loss stayed parked until a human went looking for them.
+    ///
+    /// The two epics are picked because their per-epic jitter COLLIDES (both
+    /// hash to the same second): with one shared `now` that produced two
+    /// identical `fire_at` strings, i.e. no stagger at all — the thundering
+    /// herd the jitter exists to prevent.
     #[tokio::test]
     async fn test_auth_restore_resumes_every_externally_parked_run_staggered() {
         let dir = tempdir().unwrap();
@@ -2053,8 +2118,10 @@ mod tests {
         let project = "C:/git/proj-auth-release";
         let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
         h.parker.set_run_configs(store.clone());
-        let _repo1 = parkable_run(&h, &store, project, 1, "#1");
-        let _repo2 = parkable_run(&h, &store, project, 2, "#2");
+        // Same jitter bucket — the collision the de-duplication breaks.
+        assert_eq!(jitter_secs("#180"), jitter_secs("#532"));
+        let _repo1 = parkable_run(&h, &store, project, 1, "#180");
+        let _repo2 = parkable_run(&h, &store, project, 2, "#532");
 
         h.parker.engage_external_park(GH_AUTH_LOST);
         complete_park(&h, 1, 1).await;
@@ -2066,40 +2133,85 @@ mod tests {
         );
 
         // `gh auth` comes back (the watch's Ok(true) edge).
+        let before = Utc::now();
         assert_eq!(h.parker.release_external_park(GH_AUTH_LOST), 2);
+        let after = Utc::now();
 
         let mut timers = h.schedule.list();
         timers.sort_by(|a, b| a.epic.cmp(&b.epic));
         assert_eq!(timers.len(), 2, "both parked runs are armed to resume");
-        assert_eq!(timers[0].epic, "#1");
-        assert_eq!(timers[1].epic, "#2");
+        assert_eq!(timers[0].epic, "#180");
+        assert_eq!(timers[1].epic, "#532");
         for timer in &timers {
             assert_eq!(timer.reason, GH_AUTH_RESTORED);
             assert!(!timer.held);
         }
-        // Staggered by the SAME per-epic jitter park timers use, so N runs
-        // released by one restore never spawn in the same second.
+
+        let fires: Vec<DateTime<Utc>> = timers
+            .iter()
+            .map(|t| {
+                DateTime::parse_from_rfc3339(&t.fire_at)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            })
+            .collect();
         assert_ne!(
-            timers[0].fire_at, timers[1].fire_at,
-            "resumes must not pile into one instant"
+            fires[0], fires[1],
+            "colliding jitter must not resume two runs in the same instant"
         );
-        for timer in &timers {
-            let fire = DateTime::parse_from_rfc3339(&timer.fire_at)
-                .unwrap()
-                .with_timezone(&Utc);
-            let offset = (fire - Utc::now()).num_seconds();
-            let jitter = jitter_secs(&timer.epic) as i64;
-            assert!(
-                (jitter - 5..=jitter).contains(&offset),
-                "epic {} must fire ~{jitter}s out, got {offset}s",
-                timer.epic
-            );
-        }
+        assert_eq!(
+            (fires[1] - fires[0]).num_seconds(),
+            1,
+            "the collision slides one second, deterministically"
+        );
+        // The first keeps its REAL per-epic jitter — the stagger is
+        // production's arithmetic, not a test-only spacing.
+        let jitter = ChronoDuration::seconds(jitter_secs("#180") as i64);
+        assert!(
+            fires[0] >= before + jitter && fires[0] <= after + jitter,
+            "epic #180 must fire its own jitter out, got {}",
+            timers[0].fire_at
+        );
 
         // The release is a ONE-SHOT edge: a second one (the watch's next
         // healthy tick) finds nothing left parked and arms nothing new.
         assert_eq!(h.parker.release_external_park(GH_AUTH_LOST), 0);
         assert_eq!(h.schedule.list().len(), 2);
+    }
+
+    /// Review finding 1: the restore can land while the sweep is STILL
+    /// parking sessions. `park_reasons` is only written at completion, so a
+    /// release handled there and then drained an empty map — and the auth
+    /// watch's restored edge is one-shot, so nothing ever re-drove it: the
+    /// run stayed parked with no timer and no future edge, exactly the bug
+    /// #208 fixes.
+    #[tokio::test]
+    async fn test_a_release_that_lands_mid_sweep_still_resumes_the_run() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-auth-midsweep";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo = parkable_run(&h, &store, project, 1, "#180");
+
+        h.parker.engage_external_park(GH_AUTH_LOST);
+        assert!(h.parker.parking_engaged(), "the sweep is still in flight");
+
+        // Auth comes back BEFORE the session finished parking.
+        assert_eq!(
+            h.parker.release_external_park(GH_AUTH_LOST),
+            0,
+            "nothing can be armed yet — the run is not parked"
+        );
+
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+        // …and completion honours the deferred release.
+        wait_until(&h.tick, || !h.schedule.list().is_empty()).await;
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 1, "the mid-sweep release is not lost");
+        assert_eq!(timers[0].epic, "#180");
+        assert_eq!(timers[0].reason, GH_AUTH_RESTORED);
     }
 
     #[tokio::test]
