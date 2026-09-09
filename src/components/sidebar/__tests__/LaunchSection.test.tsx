@@ -1138,9 +1138,11 @@ describe("LaunchSection (issue #63)", () => {
         status,
       },
     });
-    // Delivered, no receipt yet: the row must not read as healthy.
+    // Delivered, no receipt yet: the row must not read as healthy. The run's
+    // live orchestrator is on the SAME generation as the stored verdict —
+    // that pairing is what makes the verdict this agent's.
     useSessionStore.setState({ samuraiBriefByRun: brief("delivered") });
-    mockInvoke({ runs: [run()] });
+    mockInvoke({ runs: [run({ orchestrator: orchestrator({ generation: 3 }) })] });
     const view = render(<LaunchSection />);
 
     expect(await screen.findByText("brief ⚠ unread")).toBeInTheDocument();
@@ -1170,6 +1172,40 @@ describe("LaunchSection (issue #63)", () => {
    *  unknown (an old audit log, a route that delivers no pointer) must not
    *  read as unread. */
   it("shows no brief chip for a run the audit trail says nothing about", async () => {
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.queryByText(/^brief/)).toBeNull();
+  });
+
+  /**
+   * PR review: the chip rendered the stored verdict with no generation
+   * cross-check, so gen-3's "brief ✓" could stand against a run whose live
+   * orchestrator is gen-4 — and contradict the SamuraiBadge next to it,
+   * which has always gated on the generation.
+   */
+  it("shows no brief chip when the stored verdict is a previous generation's", async () => {
+    useSessionStore.setState({
+      samuraiBriefByRun: {
+        [samuraiBriefKey("C:/git/maestro", "#38")]: {
+          generation: 3,
+          sessionId: 1,
+          status: "read",
+        },
+      },
+    });
+    // The run has moved on to gen-4: gen-3's receipt says nothing about the
+    // agent working now.
+    mockInvoke({ runs: [run({ orchestrator: orchestrator({ generation: 4 }) })] });
+    const view = render(<LaunchSection />);
+
+    expect(await screen.findByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.queryByText(/^brief/)).toBeNull();
+    view.unmount();
+
+    // And an orchestrator whose generation is not known yet is not a match
+    // either — a chip there would be a guess.
     mockInvoke({ runs: [run()] });
     render(<LaunchSection />);
 

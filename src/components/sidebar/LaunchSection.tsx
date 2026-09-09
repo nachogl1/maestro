@@ -529,7 +529,17 @@ function RunRow({
   // whole delivery chain exists to establish, and which lived only in the
   // audit list until now. Omitted on a FINISHED run: its brief state is
   // history, and the row's next step is cleanup.
-  const briefChip = !isCompleted && brief ? samuraiBriefPresentation(brief.status) : null;
+  //
+  // Gated on the run's CURRENT generation, exactly as SamuraiBadge gates its
+  // own pill (PR review): a verdict stored for an older (or newer) generation
+  // says nothing about the agent working now, and the row must not contradict
+  // the badge sitting next to it. An unknown generation (no orchestrator
+  // registered yet) shows nothing rather than a guess.
+  const currentGeneration = run.orchestrator.generation;
+  const briefChip =
+    !isCompleted && brief && brief.generation === currentGeneration
+      ? samuraiBriefPresentation(brief.status)
+      : null;
   return (
     <div
       className={`rounded px-1 py-0.5 hover:bg-maestro-surface ${pending ? "opacity-60" : ""}`}
