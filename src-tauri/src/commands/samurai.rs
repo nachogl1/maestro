@@ -439,7 +439,7 @@ fn allowance_headroom(usage: &Result<UsageData, String>, config: &SamuraiConfig)
         return check_fail(
             CHECK_ALLOWANCE_HEADROOM,
             format!(
-                "launch refused: {} — at or above the {:.0} % hard park threshold, so the parker                  would park this run on its first sweep",
+                "launch refused: {} — at or above the {:.0} % hard park threshold, so the parker would park this run on its first sweep",
                 headroom_phrase("5-hour", pct, usage.session_resets_at.as_deref()),
                 config.park_hard_5h_pct,
             ),
@@ -449,7 +449,7 @@ fn allowance_headroom(usage: &Result<UsageData, String>, config: &SamuraiConfig)
         return check_fail(
             CHECK_ALLOWANCE_HEADROOM,
             format!(
-                "launch refused: {} — at or above the {:.0} % hard park threshold, so the parker                  would park this run on its first sweep",
+                "launch refused: {} — at or above the {:.0} % hard park threshold, so the parker would park this run on its first sweep",
                 headroom_phrase("7-day", pct, usage.weekly_resets_at.as_deref()),
                 config.park_hard_7d_pct,
             ),
@@ -459,7 +459,7 @@ fn allowance_headroom(usage: &Result<UsageData, String>, config: &SamuraiConfig)
         return check_warn(
             CHECK_ALLOWANCE_HEADROOM,
             format!(
-                "{} — already past the {:.0} % soft park threshold, so this run has little                  headroom before it is parked",
+                "{} — already past the {:.0} % soft park threshold, so this run has little headroom before it is parked",
                 headroom_phrase("5-hour", pct, usage.session_resets_at.as_deref()),
                 config.park_soft_5h_pct,
             ),
@@ -469,7 +469,7 @@ fn allowance_headroom(usage: &Result<UsageData, String>, config: &SamuraiConfig)
         return check_warn(
             CHECK_ALLOWANCE_HEADROOM,
             format!(
-                "{} — within {:.0} points of the {:.0} % hard park threshold, so this run has                  little headroom before it is parked",
+                "{} — within {:.0} points of the {:.0} % hard park threshold, so this run has little headroom before it is parked",
                 headroom_phrase("7-day", pct, usage.weekly_resets_at.as_deref()),
                 WEEKLY_WARN_MARGIN_PCT,
                 config.park_hard_7d_pct,
@@ -2811,7 +2811,18 @@ mod tests {
         };
         let check = |session, weekly| {
             let (usage, clock) = headroom_usage(session, weekly);
-            (allowance_headroom(&Ok(usage), &config), clock)
+            let verdict = allowance_headroom(&Ok(usage), &config);
+            // These sentences ship VERBATIM into the launch-refusal dialog
+            // and the `preflight_overridden` audit row, so a source literal
+            // wrapped in a way that keeps its indentation is a user-visible
+            // defect. Checked on EVERY case, not just the two spelled out
+            // in full below.
+            assert!(
+                !verdict.detail.contains("  "),
+                "the rendered detail has a run of spaces: {:?}",
+                verdict.detail,
+            );
+            (verdict, clock)
         };
 
         // Below the soft line: cleared, and the row still reports what it saw.
@@ -2833,17 +2844,12 @@ mod tests {
         assert_eq!(warn.status, PreflightStatus::Warn, "{}", warn.detail);
         assert!(warn.overridable, "an advisory finding is the user's call");
         assert_eq!(warn.id, CHECK_ALLOWANCE_HEADROOM);
-        assert!(
-            warn.detail.contains("5-hour window at 69 %"),
-            "{}",
-            warn.detail
+        assert_eq!(
+            warn.detail,
+            format!(
+                "5-hour window at 69 % — resets {clock} — already past the 60 % soft park threshold, so this run has little headroom before it is parked"
+            ),
         );
-        assert!(
-            warn.detail.contains(&format!("resets {clock}")),
-            "{}",
-            warn.detail
-        );
-        assert!(warn.detail.contains("60 %"), "the soft threshold is named");
         assert_eq!(check(Some(60.0), None).0.status, PreflightStatus::Warn);
 
         // At or above the hard 5-hour line: the parker would park this run
@@ -2862,6 +2868,13 @@ mod tests {
             );
             assert!(fail.detail.contains("5-hour"), "{}", fail.detail);
         }
+        let (fail, clock) = check(Some(93.0), None);
+        assert_eq!(
+            fail.detail,
+            format!(
+                "launch refused: 5-hour window at 93 % — resets {clock} — at or above the 80 % hard park threshold, so the parker would park this run on its first sweep"
+            ),
+        );
 
         // The weekly window: hard line fails, the margin below it warns.
         let (weekly_fail, weekly_clock) = check(Some(5.0), Some(70.0));
