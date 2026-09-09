@@ -164,9 +164,20 @@ function run(overrides: Partial<SamuraiRunListEntry> = {}): SamuraiRunListEntry 
     display_name: null,
     status: "ACTIVE",
     interrupted_at: null,
+    parked: null,
     created_at: "2026-08-06T10:00:00Z",
     orchestrator: orchestrator(),
     ...overrides,
+  };
+}
+
+/** The stamp a circuit-breaker trip writes on the run config (issue #209). */
+function breakerStamp() {
+  return {
+    reason: "circuit_breaker",
+    at: "2026-09-01T08:00:00Z",
+    generation: 4,
+    head: "abc1234",
   };
 }
 
@@ -302,7 +313,12 @@ describe("LaunchSection (issue #63)", () => {
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     // Untouched workflow editor by default — launches send workflow: null.
     useSamuraiWorkflowStore.setState({ graph: null });
-    useSessionStore.setState({ samuraiBySessionId: {}, samuraiSchedule: [] });
+    useSessionStore.setState({
+      samuraiBySessionId: {},
+      samuraiSchedule: [],
+      samuraiBreakerParks: [],
+      samuraiResumingRuns: [],
+    });
     usePendingLaunchStore.setState({ pending: [] });
     // Issue #109: the gate listener + store are module-level (they outlive
     // mounts on purpose) — detach and drain them between tests so each test
@@ -1104,6 +1120,171 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.getByText("INTERRUPTED").className).toContain("text-maestro-red");
     // The tooltip carries when it died and at which generation.
     expect(screen.getByText("INTERRUPTED").getAttribute("title")).toContain("gen-2");
+  });
+
+  /**
+   * Issue #209: a circuit-breaker trip parks the run and arms NOTHING — no
+   * wind-down, no timer, no resume path — so the row badged it green ACTIVE
+   * and the only way out was never offered. This is the exact state the real
+   * Nido run sat in for 19 days.
+   */
+  it("badges a breaker-parked run PARKED · breaker with Resume and Abandon", async () => {
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "circuit_breaker",
+            at: "2026-09-01T08:00:00Z",
+            generation: 4,
+            head: "abc1234",
+          },
+        }),
+        run({ epic: "#39" }),
+      ],
+    });
+    render(<LaunchSection />);
+
+    const badge = await screen.findByText("PARKED · breaker");
+    // Red = needs input (the fork's status-colour convention).
+    expect(badge.className).toContain("text-maestro-red");
+    expect(badge.getAttribute("title")).toContain("gen-4");
+    expect(badge.getAttribute("title")).toContain("abc1234");
+    // The healthy sibling is untouched — exactly one green ACTIVE.
+    expect(screen.getAllByText("ACTIVE")).toHaveLength(1);
+
+    // Both decisions are on the row, one click each.
+    expect(screen.getByRole("button", { name: "Resume run #38" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Abandon run #38" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume run #38" }));
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+    expect(callsOf("samurai_recover_run")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      epic: "#38",
+    });
+  });
+
+  /**
+   * A breaker park's chip is the only resume surface outside this panel, and
+   * the startup seed runs once per listener lifetime — so a transient IPC
+   * failure must not take it away, and nothing would put it back. Entries go
+   * only where something PROVES the park is gone.
+   */
+  it("keeps the breaker park chip when the run list refresh fails", async () => {
+    mockInvoke({ runs: [run({ parked: breakerStamp() })] });
+    render(<LaunchSection />);
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
+
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "samurai_list_runs") throw new Error("backend gone");
+      return undefined;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh active runs" }));
+
+    await screen.findByText(/backend gone/);
+    expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1);
+  });
+
+  it("drops the chip when a successful refresh no longer lists the run", async () => {
+    mockInvoke({ runs: [run({ parked: breakerStamp() })] });
+    render(<LaunchSection />);
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
+
+    // The run is gone (abandoned elsewhere, cleaned up, archived).
+    mockInvoke({ runs: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh active runs" }));
+
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toEqual([]));
+  });
+
+  it("drops the chip on abandon even when the follow-up refresh fails", async () => {
+    // The hazard the clear-on-failure attempt was aiming at, closed where the
+    // evidence actually is: this client just archived the run.
+    mockInvoke({ runs: [run({ parked: breakerStamp() })] });
+    askMock.mockResolvedValue(true);
+    render(<LaunchSection />);
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(1));
+
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "samurai_abandon_run")
+        return {
+          epic: "#38",
+          worktree_path: "C:/wt",
+          timer_cancelled: false,
+          spawn_cancelled: false,
+        };
+      if (cmd === "samurai_list_runs") throw new Error("backend gone");
+      return undefined;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Abandon run #38" }));
+
+    await waitFor(() => expect(useSessionStore.getState().samuraiBreakerParks).toEqual([]));
+  });
+
+  it("disables the row's Resume while a chip resume for the same run is in flight", async () => {
+    // Review finding: the two surfaces that offer this one click shared no
+    // in-flight guard, and `recover_run_inner` takes no lock — its "no live
+    // session" check cannot bite until the successor registers, so the second
+    // click staged a duplicate gen-N+1 into the same worktree.
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "circuit_breaker",
+            at: "2026-09-01T08:00:00Z",
+            generation: 4,
+            head: null,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+    const button = await screen.findByRole("button", { name: "Resume run #38" });
+    expect(button).toBeEnabled();
+
+    // The chip claims the run.
+    act(() => {
+      useSessionStore.getState().setSamuraiRunResuming("C:\\git\\maestro", "#38", true);
+    });
+    expect(screen.getByRole("button", { name: "Resume run #38" })).toBeDisabled();
+
+    act(() => {
+      useSessionStore.getState().setSamuraiRunResuming("C:\\git\\maestro", "#38", false);
+    });
+    expect(screen.getByRole("button", { name: "Resume run #38" })).toBeEnabled();
+  });
+
+  /**
+   * Issue #209: the action's visibility used to depend on the mere EXISTENCE
+   * of a park (`parked === null`). An allowance park must still hide it — it
+   * resumes itself, and clicking would burn the window the park protects —
+   * but a breaker park arms no timer, so hiding it left no way out at all.
+   */
+  it("keeps Resume hidden for an allowance park and shown for a breaker park", async () => {
+    mockInvoke({ runs: [run()] });
+    useSessionStore.setState({ samuraiSchedule: [timer()] });
+    const { unmount } = render(<LaunchSection />);
+    await screen.findByText("#38");
+    expect(screen.queryByRole("button", { name: /Recover run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Resume run/ })).toBeNull();
+    unmount();
+
+    // Same pending timer, but the run is ALSO breaker-parked: the reason wins.
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "circuit_breaker",
+            at: "2026-09-01T08:00:00Z",
+            generation: 4,
+            head: null,
+          },
+        }),
+      ],
+    });
+    useSessionStore.setState({ samuraiSchedule: [timer()] });
+    render(<LaunchSection />);
+    expect(await screen.findByRole("button", { name: "Resume run #38" })).toBeEnabled();
   });
 
   /**

@@ -53,6 +53,7 @@ function run(overrides: Partial<SamuraiRunListEntry> = {}): SamuraiRunListEntry 
     display_name: null,
     status: "ACTIVE",
     interrupted_at: { at: "2026-08-20T10:00:00Z", prior_generation: 2 },
+    parked: null,
     created_at: "2026-08-19T09:00:00Z",
     orchestrator: {
       generation: null,
@@ -91,7 +92,11 @@ async function restartListener() {
  */
 describe("interrupted-run startup seed", () => {
   beforeEach(() => {
-    useSessionStore.setState({ samuraiToasts: [], attentionSessionIds: [] });
+    useSessionStore.setState({
+      samuraiToasts: [],
+      attentionSessionIds: [],
+      samuraiBreakerParks: [],
+    });
     useGitHubWatchdogStore.setState({ notificationsEnabled: true });
     vi.mocked(notifyOs).mockClear();
     invokeMock.mockReset();
@@ -123,10 +128,81 @@ describe("interrupted-run startup seed", () => {
     ]);
   });
 
+  /**
+   * Issue #209: a breaker park lives only in the in-memory supervisor
+   * registry, so a restart erased it and the run went back to reading green
+   * ACTIVE. The `parked` stamp is durable, and this seed is what turns it
+   * back into a visible decision on a cold start.
+   */
+  it("seeds a breaker-parked run from the run list on a cold start", async () => {
+    mockRuns([
+      run({
+        epic: "#38",
+        interrupted_at: null,
+        parked: {
+          reason: "circuit_breaker",
+          at: "2026-09-01T08:00:00Z",
+          generation: 4,
+          head: "abc1234",
+        },
+      }),
+    ]);
+
+    await restartListener();
+
+    // The chip's only source — a breaker park arms no timer, so it appears
+    // in no schedule.
+    expect(useSessionStore.getState().samuraiBreakerParks).toEqual([
+      { project: "C:/git/nido", epic: "#38", at: "2026-09-01T08:00:00Z" },
+    ]);
+    const toasts = useSessionStore.getState().samuraiToasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({
+      kind: "fatal",
+      epic: "#38",
+      generation: 4,
+      label: "Circuit breaker parked this run — resume or abandon it",
+    });
+  });
+
+  it("announces a breaker-parked run once, not twice, when it is also stamped interrupted", async () => {
+    // Both stamps legitimately coexist: a breaker park that a later cold
+    // start also found ownerless. The breaker one is the specific truth.
+    mockRuns([
+      run({
+        epic: "#38",
+        parked: {
+          reason: "circuit_breaker",
+          at: "2026-09-01T08:00:00Z",
+          generation: 4,
+          head: null,
+        },
+      }),
+    ]);
+
+    await restartListener();
+
+    const toasts = useSessionStore.getState().samuraiToasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].label).toBe("Circuit breaker parked this run — resume or abandon it");
+  });
+
   it("stays quiet for healthy, completed and archived-away runs", async () => {
     mockRuns([
       // Healthy: never stamped.
       run({ epic: "#1", interrupted_at: null }),
+      // An ARCHIVED-away breaker stamp is not a live park either.
+      run({
+        epic: "#3",
+        status: "ARCHIVED",
+        interrupted_at: null,
+        parked: {
+          reason: "circuit_breaker",
+          at: "2026-09-01T08:00:00Z",
+          generation: 4,
+          head: null,
+        },
+      }),
       // Finished-awaiting-cleanup is not a dead run.
       run({ epic: "#2", status: "COMPLETED" }),
     ]);
@@ -134,6 +210,7 @@ describe("interrupted-run startup seed", () => {
     await restartListener();
 
     expect(useSessionStore.getState().samuraiToasts).toEqual([]);
+    expect(useSessionStore.getState().samuraiBreakerParks).toEqual([]);
     expect(notifyOs).not.toHaveBeenCalled();
   });
 

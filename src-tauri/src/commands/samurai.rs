@@ -31,11 +31,13 @@ use crate::core::samurai_journal::{
 };
 use crate::core::samurai_parker::SamuraiParker;
 use crate::core::samurai_pr_runs::PrRunStore;
+use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, DeliveryRoute, SamuraiReplicator};
 use crate::core::samurai_resumer::latest_handoff_generation;
 use crate::core::samurai_run_config::{
     ConfigLookup, RefTitle, RunConfigStatus, RunConfigStore, SamuraiRunConfig,
+    PARK_REASON_CIRCUIT_BREAKER,
 };
 use crate::core::samurai_schedule::{
     SamuraiSchedule, ScheduleEntry, ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH,
@@ -1388,6 +1390,7 @@ pub(crate) async fn recover_run_inner(
     replicator: &Arc<SamuraiReplicator>,
     audit: &AuditLog,
     parker: &SamuraiParker,
+    progress: &SamuraiProgress,
     project: &str,
     epic: &str,
 ) -> Result<SamuraiRecoverResult, String> {
@@ -1477,8 +1480,33 @@ pub(crate) async fn recover_run_inner(
         }
     }
 
+    // Issue #209: a circuit-breaker park is a run this same button resumes,
+    // and its two pieces of durable state have to go before anything spawns.
+    // The stamp, because the successor is the run's new owner and a stale
+    // `parked` would badge it PARKED for ever; the breaker counter, because a
+    // successor generation deliberately KEEPS it (only gen-1 resets), so a
+    // latched trip would park the fresh agent on its first event. The trigger
+    // string separates the two ways into this path in the audit trail.
+    let breaker_park = config
+        .parked
+        .as_ref()
+        .is_some_and(|p| p.reason == PARK_REASON_CIRCUIT_BREAKER);
+    let trigger = if breaker_park {
+        "breaker_manual"
+    } else {
+        "manual_recovery"
+    };
+    if breaker_park {
+        progress.reset_breaker(project, epic);
+    }
+    if let Err(e) = run_configs.clear_parked(project, epic) {
+        // Never fatal: the run is being resumed either way, and a stale
+        // stamp is a wrong badge, not a wrong spawn.
+        log::warn!("samurai recover: could not clear the park stamp for {epic} ({e})");
+    }
+
     log::info!(
-        "samurai recover: run {epic} in {project} — spawning gen-{generation} (prior gen-{prior}, from_handoff={from_handoff}, branch {branch} @ {head})"
+        "samurai recover: run {epic} in {project} — spawning gen-{generation} (prior gen-{prior}, from_handoff={from_handoff}, branch {branch} @ {head}, trigger {trigger})"
     );
     // The RESUME row BEFORE the spawn (the resumer's convention), with the
     // verified repository state on the record.
@@ -1491,7 +1519,7 @@ pub(crate) async fn recover_run_inner(
             // 0 sentinel: the successor session does not exist yet.
             0,
             json!({
-                "trigger": "manual_recovery",
+                "trigger": trigger,
                 "predecessor_generation": prior,
                 "from_handoff": from_handoff,
                 "branch": branch,
@@ -1505,7 +1533,7 @@ pub(crate) async fn recover_run_inner(
         &working_dir,
         generation,
         Some(prior),
-        "manual_recovery",
+        trigger,
     );
     Ok(SamuraiRecoverResult {
         epic: epic.to_string(),
@@ -1530,6 +1558,7 @@ pub async fn samurai_recover_run(
     replicator: State<'_, Arc<SamuraiReplicator>>,
     audit: State<'_, AuditLog>,
     parker: State<'_, Arc<SamuraiParker>>,
+    progress: State<'_, Arc<SamuraiProgress>>,
     project_path: String,
     epic: String,
 ) -> Result<SamuraiRecoverResult, String> {
@@ -1541,6 +1570,7 @@ pub async fn samurai_recover_run(
         &replicator,
         &audit,
         &parker,
+        &progress,
         &project,
         &epic,
     )
@@ -3351,6 +3381,11 @@ mod tests {
         audit: AuditLog,
         in_flight: Arc<LaunchInFlight>,
         parker: Arc<SamuraiParker>,
+        /// Issue #209: the recover path resets a breaker park's counter
+        /// through this. A real tracker (its worker task spawned) rather than
+        /// a stub, so `reset_breaker` operates on the same state a live trip
+        /// would have left behind.
+        progress: Arc<SamuraiProgress>,
         /// Issue #141: a stub that always fails, so ordinary tests never
         /// race a background write onto `ref_titles` — tests exercising the
         /// lookup itself build their own `RefTitleLookup` and call
@@ -3463,6 +3498,23 @@ mod tests {
         let (replicator, spawns, spawn_signal) = test_replicator(supervisor.clone(), audit.clone());
         let parker = test_parker(supervisor.clone(), schedule.clone(), audit.clone());
         let run_configs = Arc::new(RunConfigStore::new(runs_dir.path().to_path_buf()));
+        // The tracker resolves every session to the harness's own git repo:
+        // without a working dir `handle_register` records no epic entry at
+        // all, so a breaker assertion against it would pass vacuously.
+        // `breaker_events: 2` keeps the HEAD-stalled stream a test has to
+        // feed short.
+        let progress_dir = project.clone();
+        let (progress, progress_task) = SamuraiProgress::new(
+            supervisor.clone(),
+            Arc::new(std::sync::RwLock::new(SamuraiConfig {
+                breaker_events: 2,
+                ..SamuraiConfig::default()
+            })),
+            audit.clone(),
+            Arc::new(move |_| Some(progress_dir.clone())),
+        );
+        tokio::spawn(progress_task);
+        progress.set_run_configs(run_configs.clone());
         let title_lookup = RefTitleLookup::new(
             run_configs.clone(),
             Arc::new(|_project: String, _repo_pin: Option<String>, r: String| {
@@ -3480,6 +3532,7 @@ mod tests {
             audit,
             in_flight: Arc::new(LaunchInFlight::default()),
             parker,
+            progress,
             title_lookup,
             project,
             _dirs: (audit_dir, schedule_dir, runs_dir),
@@ -5064,6 +5117,7 @@ mod tests {
             &h.replicator,
             &h.audit,
             &h.parker,
+            &h.progress,
             &h.project,
             epic,
         )
@@ -5113,6 +5167,138 @@ mod tests {
         assert!(err.contains("not ACTIVE"), "{err}");
 
         assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    #[tokio::test]
+    async fn test_recover_of_a_breaker_park_clears_the_stamp_and_the_counter() {
+        // Issue #209: a circuit-breaker park never auto-resumes (an
+        // automatic restart would loop straight back into the same burn), so
+        // this button IS the resume. It has to hand the successor a clean
+        // slate: the `parked` stamp gone (or the row badges PARKED for
+        // ever) and the epic's breaker reset (or a latched trip parks the
+        // fresh agent on its first event).
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let registered = launched.epic.clone();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), registered.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        // The two tees `lib.rs` wires into the tracker, driven by hand: the
+        // registration records the epic's baseline HEAD…
+        h.progress.on_state_change(&snapshot);
+        h.progress.flush().await;
+        // …and the session parks, which is what a breaker trip leaves behind.
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        // Zero progress keeps coming with nobody left to park, so the epic
+        // ends LATCHED with a live count — the shape that would park the
+        // resumed generation on its first event, since a successor keeps the
+        // counter by design (only gen-1 resets it).
+        for _ in 0..3 {
+            h.progress.observe_audit(
+                &h.project,
+                &AuditEvent::now(
+                    &registered,
+                    AuditEventKind::Alert,
+                    1,
+                    1,
+                    json!({ "kind": "ack_timeout" }),
+                ),
+            );
+        }
+        h.progress.flush().await;
+        let (_, count, latched) = h
+            .progress
+            .breaker_view(&h.project, &registered)
+            .expect("the epic must have a breaker entry to reset");
+        assert!(
+            latched && count > 0,
+            "the fixture must leave a live breaker to reset, got {count}/{latched}"
+        );
+        h.run_configs
+            .mark_parked(
+                &h.project,
+                "issue #38",
+                PARK_REASON_CIRCUIT_BREAKER,
+                1,
+                Some("abc1234"),
+            )
+            .unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        assert!(h
+            .run_configs
+            .get(&h.project, "issue #38")
+            .unwrap()
+            .parked
+            .is_some());
+
+        let result = recover(&h, "issue #38").await.unwrap();
+        assert_eq!(
+            result.generation, 2,
+            "the resume spawns the next generation"
+        );
+        assert!(
+            h.run_configs
+                .get(&h.project, "issue #38")
+                .unwrap()
+                .parked
+                .is_none(),
+            "the resume must clear the park stamp — the successor owns the run now"
+        );
+        // The epic's breaker is explicitly back to zero — observed HEAD,
+        // count and latch. (The cross-spelling case that makes
+        // `reset_breaker` match by slug is pinned in `samurai_progress`,
+        // where the map key can be controlled directly.)
+        assert_eq!(
+            h.progress.breaker_view(&h.project, &registered),
+            Some((None, 0, false)),
+            "the resume must reset the epic's breaker counter"
+        );
+        // The audit says WHICH way in this was.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row precedes the spawn");
+        assert_eq!(resume.details["trigger"], "breaker_manual");
+        wait_for_spawns(&h, 2).await;
+        assert_eq!(
+            h.spawns.lock().unwrap()[1].generation,
+            2,
+            "the successor generation is actually spawned"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recover_of_an_unparked_run_keeps_the_manual_recovery_trigger() {
+        // The pre-#209 path is untouched: a crashed (not parked) run still
+        // reports `manual_recovery`, so the two ways in stay distinguishable
+        // in the audit trail.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+
+        recover(&h, "issue #38").await.unwrap();
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row precedes the spawn");
+        assert_eq!(resume.details["trigger"], "manual_recovery");
     }
 
     #[tokio::test]
