@@ -394,7 +394,18 @@ pub(crate) enum ExistingRun {
     /// The config file is there and could not be read. Its status is exactly
     /// what is unreadable, so it is never evidence the epic is free — the
     /// same reason [`ConfigLookup::Unreadable`] is kept apart from `Missing`.
-    Unreadable(String),
+    Unreadable {
+        /// Why the read failed (`parse failed: …` / `read failed: …`).
+        error: String,
+        /// WHERE the offending file is. Named in the refusal because none of
+        /// the three normal exits can clear it: `archive` (Abandon) and
+        /// `complete` error on an unreadable file, cleanup reads it through
+        /// `RunConfigStore::get` — which returns `None` — and so deletes the
+        /// worktree and branch but leaves the config sitting there, and the
+        /// resumer only ever touches ACTIVE configs. Without the path the
+        /// epic is simply stuck.
+        path: String,
+    },
 }
 
 /// Reads the epic's run record and the park timer that belongs to it.
@@ -413,7 +424,12 @@ fn existing_run(
 ) -> ExistingRun {
     let config = match run_configs.lookup(project, epic) {
         ConfigLookup::Missing => return ExistingRun::Replaceable,
-        ConfigLookup::Unreadable(e) => return ExistingRun::Unreadable(e),
+        ConfigLookup::Unreadable(error) => {
+            return ExistingRun::Unreadable {
+                error,
+                path: run_configs.path_of(project, epic).display().to_string(),
+            }
+        }
         ConfigLookup::Found(config) => *config,
     };
     if config.status != RunConfigStatus::Active {
@@ -470,11 +486,12 @@ fn launch_refusal(
                  or clean it up first; relaunching would overwrite its record",
             ));
         }
-        ExistingRun::Unreadable(e) => {
+        ExistingRun::Unreadable { error, path } => {
             return Some(format!(
-                "launch refused: this epic has a run config that could not be read ({e}) — its \
-                 status is exactly what is unreadable, so launching could overwrite a live run; \
-                 repair or clean it up first",
+                "launch refused: this epic's run config could not be read ({error}) — its status \
+                 is exactly what is unreadable, so launching could overwrite a live run. Repair \
+                 or delete {path}, then relaunch; Abandon and Cleanup cannot clear an unreadable \
+                 config",
             ));
         }
         ExistingRun::Replaceable => {}
@@ -2470,15 +2487,58 @@ mod tests {
         .unwrap();
         assert!(over_env.contains("already active"), "{over_env}");
 
-        // An unreadable config is not evidence the epic is free.
+        // An unreadable config is not evidence the epic is free — and the
+        // detail names the ONLY route that clears it (review of #213):
+        // Abandon errors on an unreadable file and Cleanup leaves it behind.
         let torn = launch_refusal(
             &preflight(true, true),
             false,
-            &ExistingRun::Unreadable("parse failed: expected value".to_string()),
+            &ExistingRun::Unreadable {
+                error: "parse failed: expected value".to_string(),
+                path: r"C:\runs\floo\38.json".to_string(),
+            },
         )
         .unwrap();
         assert!(torn.contains("could not be read"), "{torn}");
         assert!(torn.contains("parse failed"));
+        assert!(torn.contains(r"delete C:\runs\floo\38.json"), "{torn}");
+        assert!(torn.contains("Abandon and Cleanup cannot clear"), "{torn}");
+    }
+
+    #[test]
+    fn test_unreadable_config_refusal_names_the_file_that_actually_blocks() {
+        // Review of #213: the refusal must not send the human at an exit
+        // that cannot work. Proven against the real store, not a fixture.
+        let runs_dir = tempdir().unwrap();
+        let schedule_dir = tempdir().unwrap();
+        let run_configs = RunConfigStore::new(runs_dir.path().to_path_buf());
+        let (schedule, _task) =
+            SamuraiSchedule::new(schedule_dir.path().to_path_buf(), Arc::new(|_| {}), None);
+        let project = "/repos/floo";
+
+        let path = run_configs.path_of(project, "#38");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+
+        let ExistingRun::Unreadable {
+            path: named_path, ..
+        } = existing_run(&run_configs, &schedule, project, "#38")
+        else {
+            panic!("an unreadable config must block the launch");
+        };
+        assert_eq!(named_path, path.display().to_string());
+
+        // Abandon cannot clear it: `archive` needs a readable config.
+        assert!(run_configs.archive(project, "#38").is_err());
+        // …and the file the refusal names is still exactly where it says.
+        assert!(path.exists());
+
+        // Deleting that file — the route the message gives — frees the epic.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            existing_run(&run_configs, &schedule, project, "#38"),
+            ExistingRun::Replaceable
+        );
     }
 
     #[test]
