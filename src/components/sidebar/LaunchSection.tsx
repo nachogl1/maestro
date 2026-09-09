@@ -14,10 +14,12 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
   epicSlug,
+  isBreakerParked,
   isParkEntry,
   PREFLIGHT_ALLOWANCE_HEADROOM,
   PREFLIGHT_DUPLICATE_RUN,
@@ -50,6 +52,7 @@ import {
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
   type SamuraiSupervisorState,
+  samuraiRunKey,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { useUsageStore } from "@/stores/useUsageStore";
@@ -476,6 +479,14 @@ function RunRow({
   // which is how the real Nido run read as healthy from 2026-08-20 to
   // 2026-09-08, in the one list that offers the actions to fix it.
   const interrupted = !isCompleted && run.interrupted_at !== null;
+  // Issue #209: the circuit breaker parked this run and armed NOTHING — no
+  // wind-down, no timer, no resume path. It fires because the agent was
+  // burning allowance without moving HEAD, so an automatic restart would
+  // loop; the only way out is deliberately a human's click, which means the
+  // row has to SHOW the park and offer that click. Before the stamp existed
+  // the row read green ACTIVE, which is how the real Nido run sat untouched
+  // for 19 days.
+  const breakerParked = isBreakerParked(run);
   const open = target.kind === "open" ? target : null;
   const openHint = target.kind === "open" ? OPEN_HINT : target.reason;
   // Issue #124 × #122: an openable target no longer implies a live agent —
@@ -495,7 +506,12 @@ function RunRow({
   //  - COMPLETED: finished; cleanup is its next step.
   // A KILLED run whose successor never got staged (spawn_dropped,
   // successor_no_start) still offers Recover — it is the only way out.
-  const recoverable = !isCompleted && !hasLiveAgent && parked === null && !successorPending;
+  //  A BREAKER park is the exception to the parked rule above: it has no
+  //  timer to cancel and no allowance window to protect, so hiding the
+  //  action would leave the run with no way out at all — the visibility now
+  //  depends on the park's REASON, not on the mere existence of a park.
+  const recoverable =
+    !isCompleted && !hasLiveAgent && (parked === null || breakerParked) && !successorPending;
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned
   // the park. The badge below is that missing state — dated, because a park
@@ -516,6 +532,20 @@ function RunRow({
             title="Run verified complete — every issue closed, PR open. Awaiting cleanup."
           >
             FINISHED
+          </span>
+        ) : breakerParked ? (
+          // Red = needs input (the fork's status-colour convention). The
+          // reason rides the badge because the two park kinds need opposite
+          // reactions: an allowance park resumes itself, this one never will.
+          <span
+            className="shrink-0 rounded bg-maestro-red/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-red"
+            title={`Parked by the circuit breaker at gen-${run.parked?.generation ?? 0} on ${
+              run.parked?.at ?? "an unknown date"
+            } — ${
+              run.parked?.head ? `HEAD stood still at ${run.parked.head}. ` : ""
+            }This run has NO live agent and NOTHING will restart it: an automatic resume would burn allowance the same way again. Resume it yourself, or abandon it (abandon keeps the worktree and branch).`}
+          >
+            PARKED · breaker
           </span>
         ) : interrupted ? (
           // Red = needs input, the fork's status-colour convention (blue =
@@ -568,10 +598,17 @@ function RunRow({
             onClick={() => onRecover(run)}
             disabled={pending || recovering || otherBusy}
             className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
-            aria-label={`Recover run ${run.epic}`}
-            title="The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+            aria-label={breakerParked ? `Resume run ${run.epic}` : `Recover run ${run.epic}`}
+            title={
+              breakerParked
+                ? "Resume this breaker-parked run: verify the worktree's real state (git) and spawn a fresh generation from the latest handoff. Nothing else will ever restart it."
+                : "The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+            }
           >
             {recovering ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            {/* A breaker park's whole point is that the human must decide, so
+                this one action is spelled out rather than left as an icon. */}
+            {breakerParked && <span className="ml-0.5 text-[9px] font-bold">Resume</span>}
           </button>
         )}
         {/* The non-destructive way out of the runs list. Before it existed,
@@ -753,14 +790,50 @@ export function LaunchSection({
   const [recoveringKey, setRecoveringKey] = useState<string | null>(null);
   const pendingLaunches = usePendingLaunchStore((s) => s.pending);
 
+  const setBreakerParks = useSessionStore((s) => s.setSamuraiBreakerParks);
+  const setRunResuming = useSessionStore((s) => s.setSamuraiRunResuming);
+  const resumingRuns = useSessionStore(useShallow((s) => s.samuraiResumingRuns));
+
   const refreshRuns = useCallback(async () => {
     try {
-      setRuns(await samuraiListRuns());
+      const fresh = await samuraiListRuns();
+      setRuns(fresh);
+      // Issue #209: the park chip has no other source — a breaker trip arms
+      // no timer, so it never appears on the schedule the other park
+      // surfaces read. Republished here so a resume or an abandon takes the
+      // chip with it instead of leaving it stuck until the next app start.
+      setBreakerParks(
+        fresh.filter(isBreakerParked).map((run) => ({
+          project: run.project_path,
+          epic: run.epic,
+          at: run.parked?.at ?? "",
+        })),
+      );
     } catch (err) {
       setRuns([]);
+      // The park chips are deliberately NOT cleared here. A failed refresh is
+      // no evidence about any run — and this list is the ONLY surface the
+      // resume click lives on outside this panel, while the startup seed runs
+      // once per listener lifetime and would not put it back. Dropping it on
+      // a transient IPC error would hide the one way out of a breaker park
+      // until a manual refresh. Entries are removed only where something
+      // PROVES the park is gone: a successful refresh (above) replaces the
+      // whole list, and abandon/cleanup/recover drop their own run below.
       setError(String(err));
     }
-  }, []);
+  }, [setBreakerParks]);
+
+  /** Drops one run's park chip because THIS client just cleared its park —
+   *  independent of whether the follow-up refresh succeeds. */
+  const dropBreakerPark = useCallback(
+    (run: SamuraiRunListEntry) => {
+      const key = samuraiRunKey(run.project_path, run.epic);
+      const parks = useSessionStore.getState().samuraiBreakerParks;
+      const kept = parks.filter((p) => samuraiRunKey(p.project, p.epic) !== key);
+      if (kept.length !== parks.length) setBreakerParks(kept);
+    },
+    [setBreakerParks],
+  );
 
   useEffect(() => {
     refreshRuns();
@@ -1035,14 +1108,22 @@ export function LaunchSection({
    */
   const handleRecover = async (run: SamuraiRunListEntry) => {
     if (recoveringKeyRef.current !== null) return;
+    if (resumingRuns.includes(samuraiRunKey(run.project_path, run.epic))) return;
     const key = runKey(run);
     recoveringKeyRef.current = key;
     setRecoveringKey(key);
+    // Shared with the park chip's Resume (issue #209): the same command, no
+    // backend lock, and its "no live session" check cannot bite until the
+    // successor registers — so without this the two surfaces could stage two
+    // gen-N+1 orchestrators into one worktree.
+    setRunResuming(run.project_path, run.epic, true);
     setRowError(null);
     setError(null);
     setNotice(null);
     try {
       const result = await samuraiRecoverRun(run.project_path, run.epic);
+      // The run has an owner again; its park is cleared backend-side.
+      dropBreakerPark(run);
       setNotice(
         `Recovery started: gen-${result.generation} for ${result.epic} on ${result.branch} @ ${result.head} (${
           result.from_handoff
@@ -1056,6 +1137,7 @@ export function LaunchSection({
     } finally {
       recoveringKeyRef.current = null;
       setRecoveringKey(null);
+      setRunResuming(run.project_path, run.epic, false);
     }
   };
 
@@ -1076,6 +1158,9 @@ export function LaunchSection({
     setNotice(null);
     try {
       const report = await samuraiAbandonRun(run.project_path, run.epic);
+      // Archived: the run has left the list, so its chip must go with it even
+      // if the refresh below fails.
+      dropBreakerPark(run);
       const stopped = [
         report.timer_cancelled ? "resume timer" : null,
         report.spawn_cancelled ? "staged successor spawn" : null,
@@ -1109,6 +1194,7 @@ export function LaunchSection({
     setNotice(null);
     try {
       const report = await samuraiCleanupEpic(run.project_path, run.epic);
+      dropBreakerPark(run);
       const removed = [
         report.worktree_removed ? "worktree" : null,
         report.branch_deleted ? `branch ${report.branch}` : null,
@@ -1452,7 +1538,13 @@ export function LaunchSection({
                   onAbandon={handleAbandon}
                   successorPending={hasPendingSuccessor(run, pendingLaunches)}
                   pending={deletingKey === key}
-                  recovering={recoveringKey === key}
+                  recovering={
+                    recoveringKey === key ||
+                    // A resume started from the park chip counts too — same
+                    // command, same run, and the row must not offer a second
+                    // one while it is in flight.
+                    resumingRuns.includes(samuraiRunKey(run.project_path, run.epic))
+                  }
                   otherBusy={
                     (deletingKey !== null && deletingKey !== key) ||
                     (recoveringKey !== null && recoveringKey !== key)
