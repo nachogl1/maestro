@@ -1072,6 +1072,14 @@ describe("LaunchSection (issue #63)", () => {
     // knows the user took it on their own head.
     await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
     expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({ overrideWarnings: true });
+
+    // Consent is PER LAUNCH: it clears with the rest of the form, so it
+    // cannot carry into the next epic's launch over a warning the user
+    // never saw.
+    await screen.findByText(/Run launched: epic #38/);
+    expect(
+      screen.getByRole("checkbox", { name: "Launch anyway (warnings only)" }),
+    ).not.toBeChecked();
   });
 
   /**

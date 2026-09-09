@@ -958,6 +958,12 @@ export function LaunchSection({
       setText("");
       setHandoffPct("");
       setPreflight(null);
+      // Issue #214: consent is PER LAUNCH. The user agreed to one warning
+      // about one run — leaving the tick set would silently carry that
+      // agreement into the next epic's launch, over a warning they never
+      // saw. (`skipGate` keeps its own long-standing stickiness; that is
+      // not this issue's to change.)
+      setOverrideWarnings(false);
       // The gate passed and the run is live — its progress line is done.
       // (A REJECTED launch keeps the store entry: the backend's `failed`
       // tick is what a remounted panel re-surfaces — issue #109.)

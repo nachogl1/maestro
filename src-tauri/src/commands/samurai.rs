@@ -1053,29 +1053,6 @@ pub(crate) async fn launch_run_inner(
     if let Some(refusal) = launch_refusal(&checks, override_warnings) {
         return Err(refusal);
     }
-    // Issue #214: a launch that went ahead over an advisory warning is a
-    // durable fact, not a UI moment — when the run later behaves oddly, the
-    // audit says the human was told and chose to launch. ALERT with the
-    // reconciler's account-wide convention (generation 0, session 0), and
-    // `preflight_overridden` is whitelisted in `is_self_event` so this row
-    // never advances the no-progress circuit breaker (#184 class).
-    let overridden: Vec<&PreflightCheck> = checks
-        .iter()
-        .filter(|c| c.status == PreflightStatus::Warn)
-        .collect();
-    if !overridden.is_empty() {
-        audit.append(
-            project,
-            AuditEvent::now(
-                &epic,
-                AuditEventKind::Alert,
-                0,
-                0,
-                json!({ "kind": "preflight_overridden", "checks": overridden }),
-            ),
-        );
-    }
-
     // Review F4: the one per-run threshold the UI exposes — a launch-time
     // `handoff_context_pct` override stores the GLOBAL config with that one
     // field replaced; empty = None = global applies. Validated before any
@@ -1191,6 +1168,39 @@ pub(crate) async fn launch_run_inner(
     config.run_number = run_configs.next_run_number(project);
     config.display_name = Some(format!("Samurai-{}", config.run_number));
     run_configs.save(&config)?;
+
+    // Issue #214: a launch that went ahead over an advisory warning is a
+    // durable fact, not a UI moment — when the run later behaves oddly, the
+    // audit says the human was told and chose to launch. ALERT with the
+    // reconciler's account-wide convention (generation 0, session 0), and
+    // `preflight_overridden` is whitelisted in `is_self_event` so this row
+    // never advances the no-progress circuit breaker (#184 class).
+    //
+    // ORDERED HERE, not up at the refusal matrix: the row says the launch
+    // WENT AHEAD, so it must not exist for a launch that never did. Between
+    // the matrix and this line sit the threshold validation, the worktree
+    // bootstrap and the test gate, any of which can still refuse — and a
+    // red gate that left a `preflight_overridden` row behind would tell a
+    // later reader a run was launched over a warning when none was. The
+    // ACTIVE config on disk is the first moment the run really exists
+    // (everything below is spawned, never fallible), so the fact becomes
+    // true exactly here.
+    let overridden: Vec<&PreflightCheck> = checks
+        .iter()
+        .filter(|c| c.status == PreflightStatus::Warn)
+        .collect();
+    if !overridden.is_empty() {
+        audit.append(
+            project,
+            AuditEvent::now(
+                &epic,
+                AuditEventKind::Alert,
+                0,
+                0,
+                json!({ "kind": "preflight_overridden", "checks": overridden }),
+            ),
+        );
+    }
 
     // Issue #141: best-effort GitHub title lookup for the run's refs, off
     // the launch path — spawned, never awaited, so it can never block or
@@ -3539,6 +3549,7 @@ mod tests {
         gate: &SamuraiTestGate,
         pf: &SamuraiPreflight,
         override_warnings: bool,
+        skip_test_gate: bool,
     ) -> Result<SamuraiLaunchResult, String> {
         launch_run_inner(
             &h.supervisor,
@@ -3550,7 +3561,7 @@ mod tests {
             &h.in_flight,
             gate,
             &h.title_lookup,
-            true,
+            skip_test_gate,
             override_warnings,
             pf,
             SamuraiConfig::default(),
@@ -3572,7 +3583,7 @@ mod tests {
         let (gate, _calls) = recording_gate(vec![]);
         let warned = preflight_with_headroom_warning();
 
-        let refused = run_launch_with_preflight(&h, &gate, &warned, false)
+        let refused = run_launch_with_preflight(&h, &gate, &warned, false, true)
             .await
             .unwrap_err();
         assert!(refused.contains("80% used"), "{refused}");
@@ -3584,7 +3595,7 @@ mod tests {
 
         // …and with the tick it proceeds, leaving the durable record that
         // the human was told and launched anyway.
-        let result = run_launch_with_preflight(&h, &gate, &warned, true)
+        let result = run_launch_with_preflight(&h, &gate, &warned, true, true)
             .await
             .unwrap();
         assert_eq!(result.epic, "issue #38");
@@ -3607,12 +3618,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_a_blocked_launch_writes_no_override_row_even_with_the_tick() {
+        // Review of #214: the row says the launch WENT AHEAD, so ordering it
+        // at the refusal matrix was wrong — the threshold validation, the
+        // worktree bootstrap and the test gate all still refuse below it. A
+        // red gate that left the row behind would tell a later reader a run
+        // launched over a warning when no run was ever launched.
+        let h = cleanup_harness();
+        commit_fixture_files(
+            h.repo.path(),
+            &[("Cargo.toml", "[workspace]\nmembers = []\n")],
+        );
+        let (gate, _calls) = recording_gate(vec![(
+            "cargo test",
+            crate::core::samurai_test_gate::GateCommandOutput {
+                success: false,
+                timed_out: false,
+                stdout: "test result: FAILED. 40 passed; 2 failed; 0 ignored\n".to_string(),
+                stderr: String::new(),
+            },
+        )]);
+
+        let err =
+            run_launch_with_preflight(&h, &gate, &preflight_with_headroom_warning(), true, false)
+                .await
+                .unwrap_err();
+        assert!(err.contains("launch blocked"), "{err}");
+        assert!(h.spawns.lock().unwrap().is_empty(), "no gen-1 spawn");
+        assert!(h.run_configs.load_active().is_empty(), "no ACTIVE config");
+
+        // The gate's own block IS recorded — it happened. The override is
+        // not, because nothing was launched.
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        assert!(
+            read.events
+                .iter()
+                .any(|e| e.details["kind"] == "launch_test_gate"),
+            "the gate block is still a durable fact"
+        );
+        assert!(
+            !read
+                .events
+                .iter()
+                .any(|e| e.details["kind"] == "preflight_overridden"),
+            "a launch that never went ahead must not claim it did"
+        );
+    }
+
+    #[tokio::test]
     async fn test_an_all_pass_preflight_writes_no_override_row() {
         // The counterpart: nothing was overridden, so nothing is recorded —
         // the row must mean something when it appears.
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
-        run_launch_with_preflight(&h, &gate, &preflight(true, true), true)
+        run_launch_with_preflight(&h, &gate, &preflight(true, true), true, true)
             .await
             .unwrap();
         let read = h.audit.read(&h.project, None, None).await.unwrap();
