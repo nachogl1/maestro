@@ -113,6 +113,43 @@ fn default_stamp_kind() -> String {
     "reconcile_interrupted".to_string()
 }
 
+/// Why an ACTIVE run is sitting PARKED, stamped on the run config so the
+/// state survives a restart (issue #209).
+///
+/// Only the CIRCUIT BREAKER stamps this today. An allowance park is a
+/// different animal: it arms a resume timer (`samurai_parker`), so it is
+/// self-healing and the schedule already carries its state. A breaker trip
+/// arms nothing on purpose — it fires because the agent was burning
+/// allowance without moving HEAD, and an automatic restart would loop
+/// straight back into the same burn — so the ONLY way out is a human's
+/// click, and the run must still say PARKED after a cold start to offer
+/// that click at all. Without this stamp the Active Runs row read green
+/// ACTIVE, which is exactly how the real Nido run sat untouched for 19 days.
+///
+/// Coexists with [`InterruptedStamp`]: they answer different questions
+/// ("cold start found no owner" vs "supervision parked it"), and a breaker
+/// park that is later found ownerless legitimately carries both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedStamp {
+    /// Why it parked. `circuit_breaker` is the only value written today;
+    /// the frontend switches its badge and its actions on this string, so an
+    /// unknown reason must degrade to "parked", never to "healthy".
+    pub reason: String,
+    /// RFC 3339 UTC time of the park.
+    pub at: String,
+    /// The generation that was parked — what the row reports and what a
+    /// resume counts forward from.
+    pub generation: u32,
+    /// The repo HEAD the breaker watched stand still, when it was readable.
+    /// `None` when the working dir or `git rev-parse` could not answer —
+    /// unknown evidence never blocks the stamp, it just reports less.
+    pub head: Option<String>,
+}
+
+/// The reason string a circuit-breaker trip stamps, matching the ALERT row's
+/// `details.kind` so audit and config spell it identically.
+pub const PARK_REASON_CIRCUIT_BREAKER: &str = "circuit_breaker";
+
 /// One epic's run config (PRD §5.8: "repo, epic ref, model prefs,
 /// thresholds, worktree path, `--repo` pin"). Fields are snake_case on the
 /// wire like every samurai sibling.
@@ -209,6 +246,14 @@ pub struct SamuraiRunConfig {
     /// generation-advance case.
     #[serde(default)]
     pub interrupted_at: Option<InterruptedStamp>,
+    /// Set while supervision holds this run PARKED with no way back except a
+    /// human (issue #209) — today only a circuit-breaker trip.
+    /// `#[serde(default)]`: a config written before the stamp existed has no
+    /// such key and loads as `None`, i.e. "not parked", which is what every
+    /// healthy run is. Cleared by the resume, the abandon and the cleanup —
+    /// see [`ParkedStamp`].
+    #[serde(default)]
+    pub parked: Option<ParkedStamp>,
     /// RFC 3339 UTC creation timestamp.
     pub created_at: String,
 }
@@ -237,6 +282,7 @@ impl SamuraiRunConfig {
             display_name: None,
             status: RunConfigStatus::Active,
             interrupted_at: None,
+            parked: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
@@ -522,6 +568,10 @@ impl RunConfigStore {
             return Ok(());
         }
         config.status = RunConfigStatus::Archived;
+        // Abandon and cleanup both land here (issue #209): a run that left
+        // the list must not keep a park stamp that would badge it again if
+        // it were ever re-read.
+        config.parked = None;
         atomic_write_json(&path, &config)
     }
 
@@ -635,6 +685,55 @@ impl RunConfigStore {
     /// they are told where it is.
     pub fn path_of(&self, project: &str, epic: &str) -> PathBuf {
         self.config_path(&normalize_project(project), epic)
+    }
+
+    /// Stamps the run PARKED with its reason (issue #209) — written by the
+    /// circuit breaker the moment its trip actually parks a session, so the
+    /// state is durable rather than living only in the in-memory supervisor
+    /// registry that a restart throws away. No status guard, like
+    /// [`Self::mark_interrupted`]: the caller is supervising a live run.
+    /// `Err` on a missing/unreadable config is a normal outcome the caller
+    /// logs and drops — the trip's ALERT and park still stand, the row just
+    /// misses its badge, which is the pre-existing behaviour.
+    pub fn mark_parked(
+        &self,
+        project: &str,
+        epic: &str,
+        reason: &str,
+        generation: u32,
+        head: Option<&str>,
+    ) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.config_path(&normalize_project(project), epic);
+        let mut config = read_config(&path).map_err(|e| match e {
+            ReadError::Missing => format!("no run config for epic {epic:?} at {path:?}"),
+            ReadError::Other(e) => e,
+        })?;
+        config.parked = Some(ParkedStamp {
+            reason: reason.to_string(),
+            at: chrono::Utc::now().to_rfc3339(),
+            generation,
+            head: head.map(str::to_string),
+        });
+        atomic_write_json(&path, &config)
+    }
+
+    /// Drops the park stamp — the human resumed the run, so it has an owner
+    /// again. Writes nothing when the stamp is already clear, so the common
+    /// case (every healthy run) costs one read, exactly like
+    /// [`Self::clear_interrupted`].
+    pub fn clear_parked(&self, project: &str, epic: &str) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.config_path(&normalize_project(project), epic);
+        let mut config = read_config(&path).map_err(|e| match e {
+            ReadError::Missing => format!("no run config for epic {epic:?} at {path:?}"),
+            ReadError::Other(e) => e,
+        })?;
+        if config.parked.is_none() {
+            return Ok(());
+        }
+        config.parked = None;
+        atomic_write_json(&path, &config)
     }
 
     fn config_path(&self, normalized_project: &str, epic: &str) -> PathBuf {

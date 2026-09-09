@@ -1,9 +1,75 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
-import { isParkEntry } from "@/lib/samurai";
-import { type SamuraiScheduleEntry, useSessionStore } from "@/stores/useSessionStore";
+import { isParkEntry, samuraiRecoverRun } from "@/lib/samurai";
+import {
+  type SamuraiBreakerPark,
+  type SamuraiScheduleEntry,
+  useSessionStore,
+} from "@/stores/useSessionStore";
+
+/**
+ * The chip for one circuit-breaker park (issue #209) — the park kind that
+ * arms NO resume timer, so it can never count down to anything and the
+ * acknowledge-only allowance chip below would say nothing useful about it.
+ *
+ * Red, and it carries an action: the breaker fires because the agent was
+ * burning allowance without moving HEAD, an automatic restart would loop
+ * straight back into the same burn, so the ONLY way out is a human's click.
+ * Acknowledging it would just hide a run that nothing will ever restart.
+ */
+function BreakerParkChip({ park }: { park: SamuraiBreakerPark }) {
+  const [resuming, setResuming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const setParks = useSessionStore((s) => s.setSamuraiBreakerParks);
+
+  const resume = async () => {
+    if (resuming) return;
+    setResuming(true);
+    setError(null);
+    try {
+      await samuraiRecoverRun(park.project, park.epic);
+      // The run has an owner again — drop its chip. The Active Runs refresh
+      // republishes the whole list anyway; this just stops the chip lingering
+      // until then.
+      setParks(
+        useSessionStore
+          .getState()
+          .samuraiBreakerParks.filter(
+            (p) => !(samePath(p.project, park.project) && p.epic === park.epic),
+          ),
+      );
+    } catch (err) {
+      // Surfaced on the chip: a refusal that vanished would read as a click
+      // that did nothing.
+      setError(String(err));
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  return (
+    <span
+      className="flex min-w-0 items-center gap-1 rounded border border-maestro-red/40 bg-maestro-red/15 px-1 py-px text-[9px] font-bold leading-tight tracking-wide text-maestro-red"
+      title={
+        error ??
+        `The circuit breaker parked ${park.epic}: it was burning allowance without moving HEAD. NOTHING will restart it — an automatic resume would loop. Resume it here, or abandon it in Active Runs.`
+      }
+    >
+      parked · breaker
+      <button
+        type="button"
+        onClick={resume}
+        disabled={resuming}
+        className="rounded border border-maestro-red/50 px-1 hover:bg-maestro-red/20 disabled:opacity-50"
+        aria-label={`Resume run ${park.epic}`}
+      >
+        {resuming ? "Resuming…" : "Resume"}
+      </button>
+    </span>
+  );
+}
 
 /**
  * The earliest-firing entry — what a project-level chip counts down to when
@@ -58,10 +124,24 @@ export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
     s.samuraiParkAlerts.some((a) => !a.acknowledged && samePath(a.project, projectPath)),
   );
   const acknowledgeParks = useSessionStore((s) => s.acknowledgeSamuraiParks);
+  // Issue #209: breaker parks arm no timer, so they are NOT in the schedule
+  // and need their own source. They render alongside a countdown chip rather
+  // than instead of it — a project can hold both kinds at once.
+  const breakerParks = useSessionStore(
+    useShallow((s) => s.samuraiBreakerParks.filter((p) => samePath(p.project, projectPath))),
+  );
   const soonest = earliestEntry(entries);
   // Hooks run unconditionally; the tick only arms while something is parked.
   const now = useCountdownNow(soonest !== null);
-  if (!soonest) return null;
+  if (!soonest) {
+    return breakerParks.length === 0 ? null : (
+      <span className={`flex min-w-0 flex-wrap gap-1 ${className}`}>
+        {breakerParks.map((park) => (
+          <BreakerParkChip key={`${park.project}|${park.epic}`} park={park} />
+        ))}
+      </span>
+    );
+  }
 
   const resume = formatResumeAt(soonest.fire_at, now);
   const label = resume ? `parked · resumes ${resume}` : "parked";
@@ -69,22 +149,27 @@ export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
     .map((e) => `${e.epic}: ${formatResumeAt(e.fire_at, now) ?? e.fire_at}`)
     .join(", ");
   return (
-    <button
-      type="button"
-      onClick={() => acknowledgeParks(projectPath)}
-      title={
-        unacknowledged
-          ? `Samurai park countdown — work resumes automatically (${detail}). Click to acknowledge.`
-          : `Samurai park countdown — work resumes automatically (${detail})`
-      }
-      // Wraps rather than clipping: the full date + countdown is the whole
-      // point of the chip, so a narrow sidebar takes a second line instead of
-      // truncating the reading away.
-      className={`min-w-0 rounded border px-1 py-px text-[9px] font-bold leading-tight tracking-wide bg-maestro-orange/15 text-maestro-orange ${
-        unacknowledged ? "samurai-park-shine" : "border-maestro-orange/40"
-      } ${className}`}
-    >
-      {label}
-    </button>
+    <span className="flex min-w-0 flex-wrap items-center gap-1">
+      {breakerParks.map((park) => (
+        <BreakerParkChip key={`${park.project}|${park.epic}`} park={park} />
+      ))}
+      <button
+        type="button"
+        onClick={() => acknowledgeParks(projectPath)}
+        title={
+          unacknowledged
+            ? `Samurai park countdown — work resumes automatically (${detail}). Click to acknowledge.`
+            : `Samurai park countdown — work resumes automatically (${detail})`
+        }
+        // Wraps rather than clipping: the full date + countdown is the whole
+        // point of the chip, so a narrow sidebar takes a second line instead of
+        // truncating the reading away.
+        className={`min-w-0 rounded border px-1 py-px text-[9px] font-bold leading-tight tracking-wide bg-maestro-orange/15 text-maestro-orange ${
+          unacknowledged ? "samurai-park-shine" : "border-maestro-orange/40"
+        } ${className}`}
+      >
+        {label}
+      </button>
+    </span>
   );
 });

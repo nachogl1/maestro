@@ -799,6 +799,13 @@ pub fn run() {
             // both controllers.
             replicator.set_run_configs(run_configs.clone());
             injector.set_run_configs(run_configs.clone());
+            // Issue #209: a circuit-breaker trip stamps `parked` on the run
+            // config, so the park survives a restart and the Active Runs row
+            // can offer the human's one-click resume. Late-bound for the same
+            // reason as the two above — the store is built after the tracker.
+            if let Some(progress) = samurai_progress_slot.get() {
+                progress.set_run_configs(run_configs.clone());
+            }
             // Samurai (issue #96): run completion, DECLARE + VERIFY. The
             // orchestrator's `<samurai-run-complete>` declaration (scanned on
             // the EventBus tee above) is verified against GitHub — the

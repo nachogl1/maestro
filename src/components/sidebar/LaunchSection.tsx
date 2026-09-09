@@ -18,6 +18,7 @@ import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
   epicSlug,
+  isBreakerParked,
   isParkEntry,
   PREFLIGHT_ALLOWANCE_HEADROOM,
   PREFLIGHT_DUPLICATE_RUN,
@@ -476,6 +477,14 @@ function RunRow({
   // which is how the real Nido run read as healthy from 2026-08-20 to
   // 2026-09-08, in the one list that offers the actions to fix it.
   const interrupted = !isCompleted && run.interrupted_at !== null;
+  // Issue #209: the circuit breaker parked this run and armed NOTHING — no
+  // wind-down, no timer, no resume path. It fires because the agent was
+  // burning allowance without moving HEAD, so an automatic restart would
+  // loop; the only way out is deliberately a human's click, which means the
+  // row has to SHOW the park and offer that click. Before the stamp existed
+  // the row read green ACTIVE, which is how the real Nido run sat untouched
+  // for 19 days.
+  const breakerParked = isBreakerParked(run);
   const open = target.kind === "open" ? target : null;
   const openHint = target.kind === "open" ? OPEN_HINT : target.reason;
   // Issue #124 × #122: an openable target no longer implies a live agent —
@@ -495,7 +504,12 @@ function RunRow({
   //  - COMPLETED: finished; cleanup is its next step.
   // A KILLED run whose successor never got staged (spawn_dropped,
   // successor_no_start) still offers Recover — it is the only way out.
-  const recoverable = !isCompleted && !hasLiveAgent && parked === null && !successorPending;
+  //  A BREAKER park is the exception to the parked rule above: it has no
+  //  timer to cancel and no allowance window to protect, so hiding the
+  //  action would leave the run with no way out at all — the visibility now
+  //  depends on the park's REASON, not on the mere existence of a park.
+  const recoverable =
+    !isCompleted && !hasLiveAgent && (parked === null || breakerParked) && !successorPending;
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned
   // the park. The badge below is that missing state — dated, because a park
@@ -516,6 +530,20 @@ function RunRow({
             title="Run verified complete — every issue closed, PR open. Awaiting cleanup."
           >
             FINISHED
+          </span>
+        ) : breakerParked ? (
+          // Red = needs input (the fork's status-colour convention). The
+          // reason rides the badge because the two park kinds need opposite
+          // reactions: an allowance park resumes itself, this one never will.
+          <span
+            className="shrink-0 rounded bg-maestro-red/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-red"
+            title={`Parked by the circuit breaker at gen-${run.parked?.generation ?? 0} on ${
+              run.parked?.at ?? "an unknown date"
+            } — ${
+              run.parked?.head ? `HEAD stood still at ${run.parked.head}. ` : ""
+            }This run has NO live agent and NOTHING will restart it: an automatic resume would burn allowance the same way again. Resume it yourself, or abandon it (abandon keeps the worktree and branch).`}
+          >
+            PARKED · breaker
           </span>
         ) : interrupted ? (
           // Red = needs input, the fork's status-colour convention (blue =
@@ -568,10 +596,17 @@ function RunRow({
             onClick={() => onRecover(run)}
             disabled={pending || recovering || otherBusy}
             className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
-            aria-label={`Recover run ${run.epic}`}
-            title="The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+            aria-label={breakerParked ? `Resume run ${run.epic}` : `Recover run ${run.epic}`}
+            title={
+              breakerParked
+                ? "Resume this breaker-parked run: verify the worktree's real state (git) and spawn a fresh generation from the latest handoff. Nothing else will ever restart it."
+                : "The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+            }
           >
             {recovering ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            {/* A breaker park's whole point is that the human must decide, so
+                this one action is spelled out rather than left as an icon. */}
+            {breakerParked && <span className="ml-0.5 text-[9px] font-bold">Resume</span>}
           </button>
         )}
         {/* The non-destructive way out of the runs list. Before it existed,
@@ -753,14 +788,28 @@ export function LaunchSection({
   const [recoveringKey, setRecoveringKey] = useState<string | null>(null);
   const pendingLaunches = usePendingLaunchStore((s) => s.pending);
 
+  const setBreakerParks = useSessionStore((s) => s.setSamuraiBreakerParks);
+
   const refreshRuns = useCallback(async () => {
     try {
-      setRuns(await samuraiListRuns());
+      const fresh = await samuraiListRuns();
+      setRuns(fresh);
+      // Issue #209: the park chip has no other source — a breaker trip arms
+      // no timer, so it never appears on the schedule the other park
+      // surfaces read. Republished here so a resume or an abandon takes the
+      // chip with it instead of leaving it stuck until the next app start.
+      setBreakerParks(
+        fresh.filter(isBreakerParked).map((run) => ({
+          project: run.project_path,
+          epic: run.epic,
+          at: run.parked?.at ?? "",
+        })),
+      );
     } catch (err) {
       setRuns([]);
       setError(String(err));
     }
-  }, []);
+  }, [setBreakerParks]);
 
   useEffect(() => {
     refreshRuns();

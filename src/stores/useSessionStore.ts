@@ -5,6 +5,7 @@ import { notifyOs } from "@/lib/osNotification";
 import { formatResumeAt } from "@/lib/parkTime";
 import { normalizePath, samePath } from "@/lib/path";
 import {
+  isBreakerParked,
   isParkEntry,
   type SamuraiAuditEventPayload,
   type SamuraiRunListEntry,
@@ -279,6 +280,29 @@ const MAX_SAMURAI_TOASTS = 6;
  *  two paths never describe the same state two ways. */
 const INTERRUPTED_RUN_LABEL = "Run was interrupted — resume or abandon it";
 
+/** What the startup seed calls a breaker-parked run (issue #209). Distinct
+ *  wording from the interrupted one because the cause is different: nothing
+ *  crashed, supervision stopped it on purpose and only a human restarts it. */
+const BREAKER_PARK_LABEL = "Circuit breaker parked this run — resume or abandon it";
+
+/**
+ * One run the circuit breaker parked (issue #209), as the chips read it.
+ *
+ * Kept in the store rather than derived from `samuraiSchedule` because a
+ * breaker park arms NO timer — that is the whole point of it — so the
+ * schedule, which is the source for every other park surface, knows nothing
+ * about it. Seeded from the run list at startup and refreshed by the Active
+ * Runs panel, so a resume or an abandon takes the chip with it.
+ */
+export interface SamuraiBreakerPark {
+  /** Canonical project path of the parked run. */
+  project: string;
+  /** The run's identity string — what the resume command is called with. */
+  epic: string;
+  /** RFC 3339 UTC time of the park. */
+  at: string;
+}
+
 let samuraiToastSeq = 0;
 
 /**
@@ -391,6 +415,12 @@ interface SessionState {
    * app restart's worth of absence.
    */
   samuraiParkAlerts: SamuraiParkAlert[];
+  /**
+   * Runs the circuit breaker parked (see {@link SamuraiBreakerPark}) — the
+   * one park kind that arms no timer, so it appears nowhere in
+   * `samuraiSchedule` and needs its own list.
+   */
+  samuraiBreakerParks: SamuraiBreakerPark[];
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
@@ -404,6 +434,9 @@ interface SessionState {
   dismissAllSamuraiToasts: () => void;
   /** Marks parks seen — one project's, or every project's when omitted. */
   acknowledgeSamuraiParks: (projectPath?: string) => void;
+  /** Replaces the breaker-park list wholesale — the run list is the truth,
+   *  and a resumed or abandoned run must lose its chip. */
+  setSamuraiBreakerParks: (parks: SamuraiBreakerPark[]) => void;
   fetchSessions: () => Promise<void>;
   fetchSessionsForProject: (projectPath: string) => Promise<void>;
   addSession: (session: SessionConfig) => void;
@@ -616,6 +649,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   samuraiSchedule: [],
   samuraiToasts: [],
   samuraiParkAlerts: [],
+  samuraiBreakerParks: [],
   isLoading: false,
   error: null,
 
@@ -701,6 +735,19 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       });
       // No-op guard: nothing left to acknowledge — don't re-render the chips.
       return changed ? { samuraiParkAlerts } : state;
+    });
+  },
+
+  setSamuraiBreakerParks: (parks: SamuraiBreakerPark[]) => {
+    set((state) => {
+      // No-op guard: this runs on every Active Runs refresh, and the list is
+      // empty on virtually all of them.
+      const same =
+        state.samuraiBreakerParks.length === parks.length &&
+        state.samuraiBreakerParks.every(
+          (p, i) => samePath(p.project, parks[i].project) && p.epic === parks[i].epic,
+        );
+      return same ? state : { samuraiBreakerParks: parks };
     });
   },
 
@@ -1634,30 +1681,56 @@ async function seedSamuraiInterruptedRuns(): Promise<void> {
     const runs = await samuraiListRuns();
     // Defensive: a mocked/failed IPC layer may hand back a non-array.
     if (!Array.isArray(runs)) return;
-    const dead = runs.filter(
-      (run: SamuraiRunListEntry) => run.status === "ACTIVE" && run.interrupted_at != null,
+    // Issue #209: a breaker park is the same shape of problem from a
+    // different cause — an ACTIVE run with no owner and nothing that will
+    // ever restart it — so it seeds through the same door. Its list is also
+    // published, because the park chip has no other source: a breaker trip
+    // arms no timer, so `samuraiSchedule` never hears about it.
+    const breaker = runs.filter(isBreakerParked);
+    useSessionStore.getState().setSamuraiBreakerParks(
+      breaker.map((run: SamuraiRunListEntry) => ({
+        project: run.project_path,
+        epic: run.epic,
+        at: run.parked?.at ?? "",
+      })),
     );
-    if (dead.length === 0) return;
+    const dead = runs.filter(
+      (run: SamuraiRunListEntry) =>
+        run.status === "ACTIVE" && run.interrupted_at != null && !isBreakerParked(run),
+    );
+    const needy: [SamuraiRunListEntry, string, number][] = [
+      ...dead.map((run: SamuraiRunListEntry): [SamuraiRunListEntry, string, number] => [
+        run,
+        INTERRUPTED_RUN_LABEL,
+        run.interrupted_at?.prior_generation ?? 0,
+      ]),
+      ...breaker.map((run: SamuraiRunListEntry): [SamuraiRunListEntry, string, number] => [
+        run,
+        BREAKER_PARK_LABEL,
+        run.parked?.generation ?? 0,
+      ]),
+    ];
+    if (needy.length === 0) return;
     const notify = useGitHubWatchdogStore.getState().notificationsEnabled;
     if (!notify) return;
     useSessionStore.setState((state) => {
-      const toasts = dead.map((run) => {
+      const toasts = needy.map(([run, label, generation]) => {
         samuraiToastSeq += 1;
         return {
           id: `samurai-${samuraiToastSeq}`,
           kind: "fatal" as const,
           project: run.project_path,
           epic: run.epic,
-          generation: run.interrupted_at?.prior_generation ?? 0,
-          label: INTERRUPTED_RUN_LABEL,
+          generation,
+          label,
         };
       });
       return { samuraiToasts: [...state.samuraiToasts, ...toasts].slice(-MAX_SAMURAI_TOASTS) };
     });
-    for (const run of dead) {
+    for (const [run, label] of needy) {
       void notifyOs(
         `Samurai run needs you — ${projectLabel(run.project_path)}`,
-        `${INTERRUPTED_RUN_LABEL} (${run.epic})`,
+        `${label} (${run.epic})`,
       );
     }
   } catch (err) {

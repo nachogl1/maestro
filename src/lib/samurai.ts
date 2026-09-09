@@ -453,6 +453,39 @@ export interface SamuraiInterruptedStamp {
   kind?: string;
 }
 
+/**
+ * Mirrors the Rust `ParkedStamp` (issue #209): supervision is holding this
+ * run PARKED and only a human gets it moving again.
+ *
+ * Today the only writer is the circuit breaker, which fires when the agent
+ * burned allowance without moving HEAD — an automatic restart would loop
+ * straight back into the same burn, so it arms NO resume timer on purpose.
+ * An allowance park is the opposite and is not stamped here: it carries its
+ * own timer on the schedule and heals itself.
+ */
+export interface SamuraiParkedStamp {
+  /**
+   * Why it parked. `circuit_breaker` is the only value written today; an
+   * unrecognised reason must still read as parked, never as healthy.
+   */
+  reason: string;
+  /** RFC 3339 UTC time of the park. */
+  at: string;
+  /** The generation that was parked. */
+  generation: number;
+  /** The HEAD the breaker watched stand still, when it was readable. */
+  head: string | null;
+}
+
+/** The one `parked.reason` written today — see {@link SamuraiParkedStamp}. */
+export const PARK_REASON_CIRCUIT_BREAKER = "circuit_breaker";
+
+/** Whether a run is parked BY THE BREAKER: a dead run whose only way out is
+ *  the human's Resume click. */
+export function isBreakerParked(run: SamuraiRunConfig): boolean {
+  return run.status === "ACTIVE" && run.parked?.reason === PARK_REASON_CIRCUIT_BREAKER;
+}
+
 /** One epic's run config — mirrors the Rust `SamuraiRunConfig` (P3.1). */
 export interface SamuraiRunConfig {
   /** Canonical project path (Windows `\\?\` prefix already stripped). */
@@ -511,6 +544,13 @@ export interface SamuraiRunConfig {
    * it read as live.
    */
   interrupted_at: SamuraiInterruptedStamp | null;
+  /**
+   * Set while supervision holds this run PARKED with no automatic way back
+   * (issue #209) — today only a circuit-breaker trip. Null on a healthy run
+   * and on configs written before the stamp existed. Cleared by the resume,
+   * the abandon and the cleanup.
+   */
+  parked: SamuraiParkedStamp | null;
   /** RFC 3339 UTC creation timestamp. */
   created_at: string;
 }

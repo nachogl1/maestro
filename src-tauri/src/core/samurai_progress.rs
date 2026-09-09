@@ -274,6 +274,14 @@ pub struct SamuraiProgress {
     session_dirs: SessionDirResolver,
     tx: mpsc::UnboundedSender<Job>,
     state: Mutex<ProgressState>,
+    /// Late-bound (issue #209): the run-config store is built AFTER this
+    /// tracker in `lib.rs`, so it arrives through
+    /// [`set_run_configs`](SamuraiProgress::set_run_configs) — the same
+    /// `OnceLock` shape the replicator uses for the same reason. Unbound in
+    /// most unit tests, and every use is a `get()` that simply does nothing
+    /// then: the stamp is an extra surface on a trip, never a precondition
+    /// for it.
+    run_configs: std::sync::OnceLock<Arc<super::samurai_run_config::RunConfigStore>>,
 }
 
 impl SamuraiProgress {
@@ -294,6 +302,7 @@ impl SamuraiProgress {
             session_dirs,
             tx,
             state: Mutex::new(ProgressState::default()),
+            run_configs: std::sync::OnceLock::new(),
         });
         let worker = worker_task(this.clone(), rx);
         (this, worker)
@@ -334,6 +343,37 @@ impl SamuraiProgress {
     /// Queue-only, same non-blocking discipline as the tees.
     pub fn remove_session(&self, session_id: u32) {
         self.send(Job::Removed { session_id });
+    }
+
+    /// Binds the run-config store (issue #209) — see the field. Called once
+    /// from `lib.rs` after the store is constructed; a second call is
+    /// ignored, like the replicator's.
+    pub fn set_run_configs(&self, store: Arc<super::samurai_run_config::RunConfigStore>) {
+        let _ = self.run_configs.set(store);
+    }
+
+    /// Clears one epic's breaker counter, latch and last-observed HEAD
+    /// (issue #209) — what a human's manual resume of a breaker park does
+    /// before the successor spawns.
+    ///
+    /// Needed because a successor generation deliberately KEEPS the counter
+    /// (`handle_register`: only gen-1 resets, so zero progress across a
+    /// handoff stays visible). A trip that parked cleanly already zeroed the
+    /// counter, but a LATCHED trip — the shape where the park was refused,
+    /// or where the epic kept burning events after the park — did not, and
+    /// the resumed generation would be parked again on its first event.
+    /// Synchronous on purpose: the resume path must see the reset before it
+    /// spawns, not eventually.
+    pub fn reset_breaker(&self, project: &str, epic: &str) {
+        let mut state = self.lock_state();
+        if let Some(entry) = state
+            .epics
+            .get_mut(&(project.to_string(), epic.to_string()))
+        {
+            entry.observed_head = None;
+            entry.count = 0;
+            entry.latched = false;
+        }
     }
 
     fn send(&self, job: Job) {
@@ -584,6 +624,26 @@ impl SamuraiProgress {
                         }),
                     ),
                 );
+                // Issue #209: durable park state. The supervisor registry is
+                // in-memory only, so before this stamp a restart erased every
+                // trace of the trip and the Active Runs row went back to a
+                // green ACTIVE — with no live agent and nothing that would
+                // ever restart it. The stamp is what makes the row say
+                // PARKED · breaker after a cold start and offer the one
+                // click that gets out of it.
+                if let Some(store) = self.run_configs.get() {
+                    if let Err(e) = store.mark_parked(
+                        project,
+                        epic,
+                        super::samurai_run_config::PARK_REASON_CIRCUIT_BREAKER,
+                        snapshot.generation,
+                        observed_head.as_deref(),
+                    ) {
+                        log::warn!(
+                            "samurai progress: circuit breaker parked epic {epic} but its run config could not be stamped ({e}) — the ALERT stands; the Active Runs row will not badge it"
+                        );
+                    }
+                }
                 let mut state = self.lock_state();
                 if let Some(entry) = state.epics.get_mut(&key) {
                     entry.count = 0;
@@ -634,7 +694,7 @@ impl SamuraiProgress {
     /// Test-only barrier: resolves once every job queued before it has been
     /// fully processed (the worker is strictly sequential).
     #[cfg(test)]
-    async fn flush(&self) {
+    pub(crate) async fn flush(&self) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.tx.send(Job::Flush(tx));
         let _ = rx.await;
@@ -651,7 +711,11 @@ impl SamuraiProgress {
 
     /// Test-only view of one epic's breaker: (observed_head, count, latched).
     #[cfg(test)]
-    fn breaker_view(&self, project: &str, epic: &str) -> Option<(Option<String>, u32, bool)> {
+    pub(crate) fn breaker_view(
+        &self,
+        project: &str,
+        epic: &str,
+    ) -> Option<(Option<String>, u32, bool)> {
         self.lock_state()
             .epics
             .get(&(project.to_string(), epic.to_string()))
@@ -1145,6 +1209,115 @@ mod tests {
         assert_eq!(state_of(&h, 1), Parked);
         let (_, _, latched) = h.progress.breaker_view(&project, "epic-b").unwrap();
         assert!(latched, "a due trip with nobody parkable stays latched");
+    }
+
+    #[tokio::test]
+    async fn test_breaker_trip_stamps_the_run_config_parked() {
+        // Issue #209: before this stamp a trip existed only in the in-memory
+        // supervisor registry and one audit row. A restart threw both away,
+        // and the Active Runs row went back to a green ACTIVE for a run with
+        // no live agent and nothing that would ever restart it — the exact
+        // state the real Nido run sat in for 19 days.
+        use super::super::samurai_run_config::{RunConfigStore, SamuraiRunConfig};
+
+        let base = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let project = repo.path().to_string_lossy().into_owned();
+        let h = harness(base.path(), 2);
+
+        let runs = tempdir().unwrap();
+        let store = Arc::new(RunConfigStore::new(runs.path().to_path_buf()));
+        store
+            .save(&SamuraiRunConfig::new(&project, "epic-p", &project))
+            .unwrap();
+        h.progress.set_run_configs(store.clone());
+
+        h.dirs.lock().unwrap().insert(1, project.clone());
+        h.supervisor
+            .register_session(1, project.clone(), "epic-p".into(), 3)
+            .unwrap();
+        settle(&h, &project).await;
+        assert!(
+            store.get(&project, "epic-p").unwrap().parked.is_none(),
+            "a healthy run carries no park stamp"
+        );
+        let head = h.progress.baseline_view(1).unwrap().1.unwrap();
+
+        for _ in 0..2 {
+            h.audit.append(&project, countable("epic-p", 1));
+        }
+        settle(&h, &project).await;
+
+        assert_eq!(state_of(&h, 1), Parked, "the breaker must park the session");
+        let stamp = store
+            .get(&project, "epic-p")
+            .unwrap()
+            .parked
+            .expect("the trip must stamp the run config PARKED");
+        assert_eq!(stamp.reason, "circuit_breaker");
+        assert_eq!(
+            stamp.generation, 3,
+            "the parked generation is on the record"
+        );
+        assert_eq!(stamp.head.as_deref(), Some(head.as_str()));
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&stamp.at).is_ok(),
+            "the stamp time must be RFC 3339, got {:?}",
+            stamp.at
+        );
+        // The stamp survives a restart the way nothing did before: a store
+        // built afresh over the same directory reads it straight back.
+        let reread = RunConfigStore::new(runs.path().to_path_buf());
+        assert_eq!(
+            reread
+                .get(&project, "epic-p")
+                .unwrap()
+                .parked
+                .unwrap()
+                .reason,
+            "circuit_breaker",
+            "the park must be durable, not registry-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_breaker_clears_a_latched_epic() {
+        // The other half of issue #209's contract: the human's resume resets
+        // the epic's breaker. A SUCCESSOR generation deliberately keeps the
+        // counter (only gen-1 resets it), so without this the resumed agent
+        // would be parked again on its first event.
+        let base = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let project = repo.path().to_string_lossy().into_owned();
+        let h = harness(base.path(), 2);
+
+        h.dirs.lock().unwrap().insert(1, project.clone());
+        h.supervisor
+            .register_session(1, project.clone(), "epic-r".into(), 1)
+            .unwrap();
+        settle(&h, &project).await;
+        // Park it, then keep burning events: the trip is due again with
+        // nobody parkable, so the epic ends up latched with a live count.
+        for _ in 0..4 {
+            h.audit.append(&project, countable("epic-r", 1));
+        }
+        settle(&h, &project).await;
+        let (_, count, latched) = h.progress.breaker_view(&project, "epic-r").unwrap();
+        assert!(
+            latched && count > 0,
+            "expected a latched epic, got {count}/{latched}"
+        );
+
+        h.progress.reset_breaker(&project, "epic-r");
+        assert_eq!(
+            h.progress.breaker_view(&project, "epic-r").unwrap(),
+            (None, 0, false),
+            "a manual resume must hand the successor a clean breaker"
+        );
+        // An unknown epic is a no-op, never a panic.
+        h.progress.reset_breaker(&project, "epic-nope");
     }
 
     #[tokio::test]

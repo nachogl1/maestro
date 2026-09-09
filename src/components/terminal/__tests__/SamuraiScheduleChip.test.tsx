@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
 import { formatCountdown, formatFireDateTime } from "@/lib/parkTime";
 import {
   type SamuraiParkAlert,
@@ -12,6 +13,8 @@ import {
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { earliestEntry, SamuraiScheduleChip } from "../SamuraiScheduleChip";
+
+const invokeMock = vi.mocked(invoke);
 
 /** Fixed clock, so every countdown assertion below is exact. */
 const NOW = new Date("2026-08-06T10:00:00+00:00");
@@ -30,7 +33,13 @@ describe("SamuraiScheduleChip (issue #61)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
-    useSessionStore.setState({ samuraiSchedule: [], samuraiParkAlerts: [] });
+    useSessionStore.setState({
+      samuraiSchedule: [],
+      samuraiParkAlerts: [],
+      samuraiBreakerParks: [],
+    });
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -148,6 +157,62 @@ describe("SamuraiScheduleChip (issue #61)", () => {
     act(() => {
       useSessionStore.setState({ samuraiSchedule: [] });
     });
+    expect(container).toBeEmptyDOMElement();
+  });
+  /**
+   * Issue #209: a circuit-breaker park arms NO resume timer — nothing will
+   * ever restart it — so the acknowledge-only chip was the wrong shape for
+   * it twice over: it never rendered (no schedule entry to render from), and
+   * acknowledging is not a decision, it just hides the run.
+   */
+  it("offers Resume on a breaker park and calls the recover command", async () => {
+    useSessionStore.setState({
+      samuraiBreakerParks: [{ project: "C:/proj", epic: "#37", at: "2026-08-06T09:00:00+00:00" }],
+    });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    expect(screen.getByText(/parked · breaker/)).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Resume run #37" });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("samurai_recover_run", {
+      projectPath: "C:/proj",
+      epic: "#37",
+    });
+    // The run has an owner again — its chip goes with it.
+    expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(0);
+  });
+
+  it("leaves the allowance park chip acknowledge-only", () => {
+    // The other park kind is self-healing: it resumes on its own, and
+    // resuming it by hand would burn the exhausted window it protects.
+    useSessionStore.setState({ samuraiSchedule: [entry()] });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    expect(screen.queryByRole("button", { name: /Resume run/ })).toBeNull();
+    expect(screen.queryByText(/parked · breaker/)).toBeNull();
+    fireEvent.click(screen.getByText(/^parked · resumes /));
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a breaker chip alongside a countdown when a project holds both", () => {
+    useSessionStore.setState({
+      samuraiSchedule: [entry()],
+      samuraiBreakerParks: [{ project: "C:/proj", epic: "#40", at: "2026-08-06T09:00:00+00:00" }],
+    });
+    render(<SamuraiScheduleChip projectPath="C:/proj" />);
+
+    expect(screen.getByText(/^parked · resumes /)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume run #40" })).toBeInTheDocument();
+  });
+
+  it("ignores another project's breaker park", () => {
+    useSessionStore.setState({
+      samuraiBreakerParks: [{ project: "C:/other", epic: "#37", at: "2026-08-06T09:00:00+00:00" }],
+    });
+    const { container } = render(<SamuraiScheduleChip projectPath="C:/proj" />);
     expect(container).toBeEmptyDOMElement();
   });
 });
