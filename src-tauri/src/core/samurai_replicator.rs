@@ -3396,6 +3396,14 @@ impl SamuraiReplicator {
         {
             let mut receipts = self.lock_brief_receipts();
             receipts.retain_mut(|r| {
+                if !sessions.iter().any(|s| s.session_id == r.session_id) {
+                    // Torn down / unregistered outside the samurai pipeline —
+                    // the delivery watch's own rule: never write into a
+                    // session that is no longer ours. Checked first, ahead of
+                    // `seen`/`deadline`, so a receipt for a session that was
+                    // hard-killed (no `SessionEnded` hook) can't outlive it.
+                    return false;
+                }
                 // The receipt closed the timer: nothing more is owed, whatever
                 // stage this entry had reached (a Read that lands AFTER the
                 // corrective ends the story exactly as one before it does).
@@ -3407,12 +3415,6 @@ impl SamuraiReplicator {
                 let Some(elapsed) = r.deadline.as_ref().map(|d| d.elapsed()) else {
                     return true;
                 };
-                if !sessions.iter().any(|s| s.session_id == r.session_id) {
-                    // Torn down / unregistered outside the samurai pipeline —
-                    // the delivery watch's own rule: never write into a
-                    // session that is no longer ours.
-                    return false;
-                }
                 if elapsed <= timeout {
                     return true;
                 }
@@ -6609,6 +6611,52 @@ mod tests {
         // test below), which is why the SessionEnd hook's own reason is used.
         h.replicator.observe(&session_ended(2, "exit"));
         assert_eq!(h.replicator.brief_receipt_view(2), None);
+    }
+
+    /// The receipt-deadline tick pass must check liveness FIRST, exactly like
+    /// the sibling `delivered` ladder: a session torn down OUTSIDE the
+    /// samurai pipeline (a hard kill or crash — no `SessionEnded` hook fires,
+    /// so nothing else prunes it) must not leave its `brief_receipts` entry
+    /// behind forever. Covers `seen == true`, the case the unhoisted check
+    /// leaked on most reliably (the `seen` early return fired before
+    /// liveness was ever consulted).
+    #[tokio::test]
+    async fn test_a_seen_receipt_prunes_when_its_session_vanishes_without_a_hook() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-receipt-vanish";
+        let _repo = stage_successor(&h, project).await;
+        let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(2, project.into(), "epic-9".into(), 3, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(2));
+
+        let pointer = h.writes.lock().unwrap()[0].1.clone();
+        let brief = samurai_brief::pointer_brief_file_name(&pointer)
+            .expect("a several-KB ritual takes the brief-file route");
+
+        // Read it: the receipt is SEEN — the old code's earliest early
+        // return, so the path that leaked most reliably.
+        h.replicator
+            .observe(&tool_use(2, "Read", &format!(".maestro/briefs/{brief}")));
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), true))
+        );
+
+        // The session vanishes underneath samurai: gone from the
+        // supervisor's list, but no `SessionEnded` hook of any reason ever
+        // fires (a hard kill or crash, not a normal teardown).
+        assert!(h.supervisor.remove_session(2));
+        h.replicator.tick();
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            None,
+            "a seen receipt for a torn-down session must not survive the tick"
+        );
     }
 
     /// The launch-line route (`gate: launch_line`) — the one where nothing
