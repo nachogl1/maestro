@@ -1012,6 +1012,9 @@ pub fn run() {
                 teardown_for_parker,
             );
             app.manage(samurai_parker.clone());
+            // Issue #208: lets a released external park (auth restored) skip
+            // a run that was completed or archived while it was parked.
+            samurai_parker.set_run_configs(run_configs.clone());
             injector.set_parker(samurai_parker.clone());
             let parker_for_absorb = samurai_parker.clone();
             replicator.set_absorber(Arc::new(move |project: &str, epic: &str| {
