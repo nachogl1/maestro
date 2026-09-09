@@ -510,6 +510,7 @@ const BACKEND_ALERT_KINDS = [
   "park_no_reset_time",
   "resume_run_not_active",
   "resume_no_handoff",
+  "brief_unread",
   "handoff_churn",
   "circuit_breaker",
   "successor_spawn_failed",
@@ -561,6 +562,73 @@ describe("samuraiAuditKey", () => {
 
   it("falls back to `epic` for an identity with nothing sluggable in it", () => {
     expect(samuraiAuditKey("***")).toBe("epic");
+  });
+});
+
+/**
+ * Issue #206 (carried over from the #204 review): the two-step brief delivery
+ * writes rows `describeInject` had no branch for, so the ONE row that proves
+ * a brief was read rendered as `phase=receipt gate=… brief=…` — exactly the
+ * raw key=value output issue #123 exists to remove.
+ */
+describe("the brief exchange reads as a two-step delivery (issue #206)", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    listenMock.mockReset();
+    listenMock.mockImplementation((() => Promise.resolve(() => {})) as typeof listen);
+    useWorkspaceStore.setState({ tabs: [buildTab()] });
+  });
+
+  it("gives the receipt, the corrective and the unread alert their own sentences", async () => {
+    mockInvoke([
+      auditEvent({
+        event: "INJECT",
+        generation: 3,
+        details: { phase: "delivered", instruction: "successor_ritual", gate: "session_started" },
+      }),
+      auditEvent({
+        event: "ALERT",
+        generation: 3,
+        details: { kind: "brief_unread", brief: "epic-9-gen-3-ritual.md", escalated: false },
+      }),
+      auditEvent({
+        event: "INJECT",
+        generation: 3,
+        details: { phase: "corrective", gate: "idle_at_tick", brief: "epic-9-gen-3-ritual.md" },
+      }),
+      auditEvent({
+        event: "INJECT",
+        generation: 3,
+        details: { phase: "receipt", gate: "session_started", brief: "epic-9-gen-3-ritual.md" },
+      }),
+    ]);
+    render(<AuditSection />);
+
+    // The receipt: a sentence AND its own icon, because it shares the INJECT
+    // badge with the delivery it answers.
+    const receipt = await screen.findByText(/Brief read by the agent — epic-9-gen-3-ritual\.md/);
+    expect(receipt).toBeInTheDocument();
+    expect(screen.getByLabelText("brief read receipt")).toBeInTheDocument();
+
+    expect(
+      screen.getByText(/Corrective sent — pointed the agent back at its unread brief/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/The agent has not opened its brief — one corrective is being sent/),
+    ).toBeInTheDocument();
+    // Nothing fell through to the raw key=value fallback.
+    expect(screen.queryByText(/phase=receipt/)).toBeNull();
+    expect(screen.queryByText(/kind=brief_unread/)).toBeNull();
+  });
+
+  it("splits the two rungs of the one brief_unread kind", () => {
+    expect(ALERT_SENTENCES.brief_unread({ escalated: false })).toContain("one corrective");
+    expect(ALERT_SENTENCES.brief_unread({ escalated: true, respawned: true })).toContain(
+      "respawned",
+    );
+    expect(ALERT_SENTENCES.brief_unread({ escalated: true, respawned: false })).toContain(
+      "could NOT be respawned",
+    );
   });
 });
 

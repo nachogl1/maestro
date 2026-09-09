@@ -31,6 +31,7 @@ import {
   type SamuraiTestGateProgress,
   SCHEDULED_LAUNCH_REASON,
   samuraiAbandonRun,
+  samuraiBriefPresentation,
   samuraiCleanupEpic,
   samuraiLaunchRun,
   samuraiListRuns,
@@ -49,9 +50,11 @@ import {
 import { workflowGraphForLaunch } from "@/stores/useSamuraiWorkflowStore";
 import {
   SAMURAI_TERMINAL_STATES,
+  type SamuraiBriefState,
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
   type SamuraiSupervisorState,
+  samuraiBriefKey,
   samuraiRunKey,
   useSessionStore,
 } from "@/stores/useSessionStore";
@@ -433,6 +436,7 @@ function RunRow({
   run,
   target,
   parked,
+  brief,
   now,
   onOpen,
   onCleanup,
@@ -448,6 +452,9 @@ function RunRow({
   target: OpenTarget;
   /** This run's pending resume timer, or null when it is not parked. */
   parked: SamuraiScheduleEntry | null;
+  /** Issue #206: whether this run's newest generation read its brief; null
+   *  when the audit trail has said nothing about it (yet). */
+  brief: SamuraiBriefState | null;
   /** Ticking clock behind the park countdown (see `useCountdownNow`). */
   now: number;
   onOpen: (tabId: string, sessionId: number) => void;
@@ -517,6 +524,12 @@ function RunRow({
   // the park. The badge below is that missing state — dated, because a park
   // governed by the 7-day window can be days out.
   const resume = parked ? formatResumeAt(parked.fire_at, now) : null;
+  // Issue #206: ACTIVE/WORKING only ever said an agent is ALIVE. This says
+  // whether it is working off the instructions Maestro gave it — the fact the
+  // whole delivery chain exists to establish, and which lived only in the
+  // audit list until now. Omitted on a FINISHED run: its brief state is
+  // history, and the row's next step is cleanup.
+  const briefChip = !isCompleted && brief ? samuraiBriefPresentation(brief.status) : null;
   return (
     <div
       className={`rounded px-1 py-0.5 hover:bg-maestro-surface ${pending ? "opacity-60" : ""}`}
@@ -566,6 +579,14 @@ function RunRow({
         ) : (
           <span className="shrink-0 rounded bg-maestro-green/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-green">
             ACTIVE
+          </span>
+        )}
+        {briefChip && (
+          <span
+            className={`shrink-0 whitespace-nowrap rounded px-1 py-px text-[9px] font-bold tracking-wide ${briefChip.cls}`}
+            title={briefChip.title}
+          >
+            {briefChip.label}
           </span>
         )}
         <span className="min-w-0 flex-1 truncate text-maestro-text">
@@ -733,6 +754,10 @@ export function LaunchSection({
   // the full list on every arm/cancel/fire, so a park or a resume repaints the
   // run rows live. Ticks only while something is actually parked.
   const samuraiSchedule = useSessionStore((s) => s.samuraiSchedule);
+  // Issue #206: brief read/unread per run, live from the audit stream and
+  // seeded from the audit log at startup — so a cold start's rows are honest
+  // rather than blank.
+  const briefByRun = useSessionStore((s) => s.samuraiBriefByRun);
   const now = useCountdownNow(samuraiSchedule.length > 0);
 
   const usage = useUsageStore((s) => s.usage);
@@ -1531,6 +1556,7 @@ export function LaunchSection({
                       : { kind: "blocked", reason: NO_SESSION_REASON }
                   }
                   parked={parked}
+                  brief={briefByRun[samuraiBriefKey(run.project_path, run.epic)] ?? null}
                   now={now}
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}

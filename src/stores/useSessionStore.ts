@@ -5,14 +5,20 @@ import { notifyOs } from "@/lib/osNotification";
 import { formatResumeAt } from "@/lib/parkTime";
 import { normalizePath, samePath } from "@/lib/path";
 import {
+  epicSlug,
   isBreakerParked,
   isParkEntry,
+  type SamuraiAuditEvent,
   type SamuraiAuditEventPayload,
+  type SamuraiBriefStatus,
   type SamuraiRunListEntry,
   type SamuraiScheduleEntry,
   type SamuraiSupervisorState,
+  samuraiAuditRead,
+  samuraiBriefSignal,
   samuraiListRuns,
   samuraiListSessions,
+  samuraiRunAttentionLabel,
   samuraiRunFatalLabel,
   samuraiScheduleList,
 } from "@/lib/samurai";
@@ -261,8 +267,12 @@ export interface SamuraiToast {
    * supervised (see {@link applySamuraiAllowanceEvent}) — it carries no run,
    * so it renders with the fatal chrome rather than the park chrome, which
    * would claim a run went away.
+   *
+   * `attention` (issue #206) is the tier between the two: something is wrong
+   * and supervision is still fixing it (an unread brief, mid-nudge), so it
+   * gets its own amber chrome — the fatal red would say the run is dead.
    */
-  kind: "fatal" | "park" | "allowance";
+  kind: "fatal" | "park" | "allowance" | "attention";
   /** Canonical project path the event belongs to. */
   project: string;
   epic: string;
@@ -306,6 +316,40 @@ export interface SamuraiBreakerPark {
   epic: string;
   /** RFC 3339 UTC time of the park. */
   at: string;
+}
+
+/**
+ * Issue #206: whether one run's NEWEST generation has actually READ the brief
+ * it was given.
+ *
+ * `ACTIVE`/`WORKING` only ever said an agent is alive; the two audit rows
+ * behind this say whether it is working off its own instructions. Kept per
+ * RUN (not per session) because the Active Runs row must show it for a run
+ * with no live session at all — a cold start, where the seed reads it back
+ * out of the audit log.
+ *
+ * Only the newest generation is kept: a gen-4 that read its brief says
+ * nothing about gen-3's, and the badge speaks for the agent working now.
+ */
+export interface SamuraiBriefState {
+  /** The generation this verdict is about — older rows are ignored. */
+  generation: number;
+  /** The session the row named; 0 when unknown (a seeded pre-restart row). */
+  sessionId: number;
+  status: SamuraiBriefStatus;
+}
+
+/**
+ * Identity of a run for {@link SessionState.samuraiBriefByRun}.
+ *
+ * `epicSlug` rather than the raw string {@link samuraiRunKey} compares: the
+ * audit row and the run config are two producers of the same epic label
+ * (`#38`, `38`, `epic #38 · issues #7`), and the badge must not go blank
+ * because the two spelled it differently — the same reason
+ * `samuraiAuditKey` exists.
+ */
+export function samuraiBriefKey(project: string, epic: string): string {
+  return `${normalizePath(project)}|${epicSlug(epic)}`;
 }
 
 let samuraiToastSeq = 0;
@@ -426,6 +470,11 @@ interface SessionState {
    * `samuraiSchedule` and needs its own list.
    */
   samuraiBreakerParks: SamuraiBreakerPark[];
+  /**
+   * Issue #206: brief read/unread per run, keyed by {@link samuraiBriefKey}.
+   * Fed by the live audit stream and seeded from the audit log at startup.
+   */
+  samuraiBriefByRun: Record<string, SamuraiBriefState>;
   /**
    * Runs whose resume is in flight right now, as {@link samuraiRunKey}s.
    *
@@ -669,6 +718,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   samuraiToasts: [],
   samuraiParkAlerts: [],
   samuraiBreakerParks: [],
+  samuraiBriefByRun: {},
   samuraiResumingRuns: [],
   isLoading: false,
   error: null,
@@ -1564,6 +1614,95 @@ function applySamuraiFatalAuditEvent(payload: SamuraiAuditEventPayload): void {
 }
 
 /**
+ * Issue #206: the ATTENTION tier — a run that is going wrong while
+ * supervision is still correcting it (today: a brief that has not been read,
+ * with one corrective on its way).
+ *
+ * Same three surfaces as the fatal tier and for the same reason — the human
+ * is not watching the terminal — with one deliberate difference: the session
+ * is flagged for attention but NOT recorded in `runFatalSessionIds`, so
+ * nothing here claims the run is dead and `parkSession` may still clear the
+ * highlight normally. The toast carries its own amber `attention` chrome.
+ */
+function applySamuraiAttentionAuditEvent(payload: SamuraiAuditEventPayload): void {
+  const label = samuraiRunAttentionLabel(payload.event);
+  if (label === null) return;
+  const { session_id, epic, generation } = payload.event;
+  const notify = useGitHubWatchdogStore.getState().notificationsEnabled;
+  useSessionStore.setState((state) => {
+    const knownSession =
+      session_id > 0 &&
+      state.sessions.some((s) => s.id === session_id && samePath(s.project_path, payload.project));
+    const needsAttention = knownSession && !state.attentionSessionIds.includes(session_id);
+    if (!needsAttention && !notify) return state;
+    samuraiToastSeq += 1;
+    return {
+      ...(needsAttention
+        ? { attentionSessionIds: [...state.attentionSessionIds, session_id] }
+        : {}),
+      ...(notify
+        ? {
+            samuraiToasts: [
+              ...state.samuraiToasts,
+              {
+                id: `samurai-${samuraiToastSeq}`,
+                kind: "attention" as const,
+                project: payload.project,
+                epic,
+                generation,
+                label,
+              },
+            ].slice(-MAX_SAMURAI_TOASTS),
+          }
+        : {}),
+    };
+  });
+  if (notify) {
+    void notifyOs(
+      `Samurai needs a look — ${projectLabel(payload.project)}`,
+      `${label} (${epic} · gen-${generation})`,
+    );
+  }
+}
+
+/**
+ * Issue #206: folds one audit row into {@link SessionState.samuraiBriefByRun}.
+ *
+ * Newest generation wins and an older one is ignored outright — a gen-3 row
+ * arriving late (the audit stream is append-ordered, but a seed can race a
+ * live event) must not un-read gen-4's brief. Within a generation the state
+ * only moves forward through `delivered → unread → read`: `read` is final
+ * (the receipt latches backend-side too), and a re-delivery into the same
+ * generation is the #171 re-type, not a new brief.
+ */
+function applySamuraiBriefAuditEvent(project: string, event: SamuraiAuditEvent): void {
+  const signal = samuraiBriefSignal(event);
+  if (signal === null) return;
+  useSessionStore.setState((state) => {
+    const key = samuraiBriefKey(project, event.epic);
+    const current = state.samuraiBriefByRun[key];
+    if (current) {
+      if (current.generation > signal.generation) return state;
+      if (current.generation === signal.generation) {
+        if (current.status === signal.status) return state;
+        if (current.status === "read") return state;
+        if (current.status === "unread" && signal.status === "delivered") return state;
+      }
+    }
+    return {
+      samuraiBriefByRun: {
+        ...state.samuraiBriefByRun,
+        [key]: {
+          generation: signal.generation,
+          sessionId: signal.session_id,
+          status: signal.status,
+        },
+      },
+    };
+  });
+}
+
+/**
  * Review F8: whether a live `samurai-schedule-event` has been applied since
  * this listener lifetime started. The seed's IPC round-trip can resolve
  * AFTER a live event already delivered a newer list — applying the stale
@@ -1772,6 +1911,59 @@ async function seedSamuraiInterruptedRuns(): Promise<void> {
 }
 
 /**
+ * How many audit rows the brief seed reads per project. A generation's
+ * delivery, receipt and unread rows all land within seconds of its SPAWN, so
+ * the newest generation's verdict is always near the tail; this is the same
+ * bound the audit panel and the reconciler read with.
+ */
+const BRIEF_SEED_TAIL = 200;
+
+/**
+ * Issue #206: seeds brief read/unread for every live run, so a COLD START
+ * shows the truth.
+ *
+ * Same reasoning as {@link seedSamuraiInterruptedRuns}: the rows that carry
+ * this fact were emitted long before App mounted the audit listener, and
+ * Tauri buffers no events — without a seed a restart shows every run's brief
+ * as unknown, which is exactly the "the badge says ACTIVE and tells you
+ * nothing" state this issue exists to end. The durable source differs
+ * (`interrupted_at` is stamped on the run config; a read receipt is an audit
+ * row), so the seed reads the audit log instead of the run list — but the RUN
+ * LIST is still what says which projects to read, so an archived run's stale
+ * rows never seed a badge.
+ *
+ * Rows are folded oldest-first, exactly as a live stream would deliver them,
+ * so `applySamuraiBriefAuditEvent`'s newest-generation rule does the picking
+ * and there is no second definition of "current".
+ */
+async function seedSamuraiBriefState(): Promise<void> {
+  try {
+    const runs = await samuraiListRuns();
+    if (!Array.isArray(runs)) return;
+    const projects = new Map<string, string>();
+    for (const run of runs) {
+      if (run.status !== "ACTIVE") continue;
+      const key = normalizePath(run.project_path);
+      if (!projects.has(key)) projects.set(key, run.project_path);
+    }
+    for (const project of projects.values()) {
+      try {
+        const result = await samuraiAuditRead(project, BRIEF_SEED_TAIL);
+        const events = result?.events;
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          applySamuraiBriefAuditEvent(project, event);
+        }
+      } catch (err) {
+        console.error("Failed to seed samurai brief state for", project, err);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to seed samurai brief state:", err);
+  }
+}
+
+/**
  * Seeds `samuraiBySessionId` from the supervisor's current snapshots, so
  * sessions registered before this frontend mounted (dev reload, late mount)
  * still get badges. Live events won the race for any id already present.
@@ -1822,8 +2014,13 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
       applySamuraiScheduleEvent(event.payload);
     }),
     // Issue #174: run-fatal rows raise a toast + persistent attention badge.
+    // Issue #206: the attention tier and the brief read/unread state ride the
+    // same stream — one row is at most one of the two labels, and the brief
+    // fold ignores every row that says nothing about a brief.
     listen<SamuraiAuditEventPayload>("samurai-audit-event", (event) => {
       applySamuraiFatalAuditEvent(event.payload);
+      applySamuraiAttentionAuditEvent(event.payload);
+      applySamuraiBriefAuditEvent(event.payload.project, event.payload.event);
     }),
   ])
     .then((fns) => {
@@ -1844,6 +2041,7 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
   void seedSamuraiSessions();
   void seedSamuraiSchedule();
   void seedSamuraiInterruptedRuns();
+  void seedSamuraiBriefState();
 }
 
 export function stopSamuraiSupervisorListener(): void {
