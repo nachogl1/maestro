@@ -579,6 +579,101 @@ fn turn_activity_session(event: &ClaudeEvent) -> Option<u32> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Issue #204: read receipt — did the agent ever OPEN the brief it was pointed at?
+// ---------------------------------------------------------------------------
+
+/// Shell readers whose command line naming the brief counts as reading it
+/// (issue #204). [`samurai_brief::pointer_instruction`] asks for the `Read`
+/// tool by name, but an agent that legitimately `cat`s the file has still
+/// read it, and recording that as "never read" is the false negative #205
+/// would then enforce on.
+const BRIEF_SHELL_READERS: [&str; 3] = ["cat", "type", "sed"];
+
+/// Splits a `ToolUseStarted` `input_summary` into the tokens a path or a
+/// command word can be.
+///
+/// One summary, two spellings, because the same event arrives on two
+/// channels: the transcript parser summarises `Read` as the bare `file_path`
+/// and `Bash` as the command line, while the PreToolUse hook forwards the
+/// whole tool input as JSON (`{"file_path":"C:\\…\\brief.md"}`). Splitting on
+/// whitespace *and* on the quoting/JSON punctuation both channels use leaves
+/// the path itself as one token either way.
+fn summary_tokens(summary: &str) -> impl Iterator<Item = &str> {
+    summary
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '{' | '}' | '[' | ']' | ',' | ':')
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether any token in `summary` names the file `file_name`.
+///
+/// Compared on the LAST path segment, which is what makes this tolerant of
+/// every spelling the same brief arrives as — relative
+/// (`.maestro/briefs/x.md`), absolute, back-slashed, JSON-escaped
+/// (`C:\\git\\…`) or `\\?\`-prefixed — without normalizing any of them:
+/// splitting on both separators leaves the file name whichever way the path
+/// was written, and an extended-length prefix is just more leading segments.
+/// Case-insensitive: Windows paths are, and a re-typed path is not.
+fn summary_names_file(summary: &str, file_name: &str) -> bool {
+    summary_tokens(summary).any(|token| {
+        token
+            .rsplit(['/', '\\'])
+            .next()
+            .is_some_and(|segment| segment.eq_ignore_ascii_case(file_name))
+    })
+}
+
+/// Whether one `ToolUseStarted` is the agent READING the brief `file_name`.
+///
+/// `Read` is the tool the pointer asks for; `Bash` counts only when its
+/// command line actually invokes a reader ([`BRIEF_SHELL_READERS`]), so a
+/// `git commit` message that happens to mention the brief is not a receipt.
+/// Every other tool is ignored — a `Grep` over the worktree names files it
+/// never opened.
+fn tool_use_reads_brief(tool_name: &str, summary: &str, file_name: &str) -> bool {
+    let reader = match tool_name {
+        "Read" => true,
+        "Bash" => summary_tokens(summary).any(|t| BRIEF_SHELL_READERS.contains(&t)),
+        _ => false,
+    };
+    reader && summary_names_file(summary, file_name)
+}
+
+/// One delivered brief POINTER, watched for evidence the agent opened the
+/// file (issue #204).
+///
+/// Its own store rather than a flag on [`DeliveredWatch`], which cannot hold
+/// it: that watch is RELEASED by the first turn activity of any kind
+/// ([`turn_activity_session`]) — normally the `UserMessage` the CLI writes at
+/// prompt submission, i.e. before the agent has run a single tool — so a
+/// receipt hung off it would be missed in every ordinary run. This entry
+/// outlives the watch and is pruned when the session ends.
+///
+/// Pure observation: nothing reads `seen` to make a decision yet. It is the
+/// state issue #205 enforces on, and the `receipt` audit row is what a human
+/// reads today.
+struct BriefReceipt {
+    project: String,
+    epic: String,
+    generation: u32,
+    session_id: u32,
+    /// The brief's file name (`<stem>.md`), from
+    /// [`samurai_brief::pointer_brief_file_name`].
+    brief: String,
+    /// The `instruction` label its `delivered` row carried, repeated on the
+    /// receipt row so the pair reads as one exchange.
+    instruction: &'static str,
+    /// The `gate` label its `delivered` row carried: `session_started` for a
+    /// typed pointer, `launch_line` for one that rode argv.
+    gate: &'static str,
+    /// The receipt row was appended — exactly one per delivered brief, so the
+    /// same tool call seen on both channels (transcript and PreToolUse hook)
+    /// cannot double it.
+    seen: bool,
+}
+
 /// `git rev-parse HEAD` in `dir` — fixed argv, no shell, hidden console.
 /// Blocking: only ever called inside `spawn_blocking`. `pub(crate)`: the
 /// progress tracker (issue #57) reads baseline/current HEADs through this
@@ -881,6 +976,10 @@ pub struct SamuraiReplicator {
     /// `Arc` so the delivery-outcome callback (issue #109) can arm a watch
     /// after the call that spawned the write returned.
     delivered: Arc<Mutex<Vec<DeliveredWatch>>>,
+    /// Issue #204: delivered brief pointers, watched for the agent's Read.
+    /// `Arc` for the same reason as `delivered`: the typed route arms this
+    /// from the delivery-outcome callback, after `observe_hook` returned.
+    brief_receipts: Arc<Mutex<Vec<BriefReceipt>>>,
     /// Issue #60: the parking-engaged check (see [`HandoffAbsorber`]).
     /// Unset (tests without a parker, or before setup finishes) = never
     /// absorb — successors spawn as in Phase 2.
@@ -919,6 +1018,7 @@ impl SamuraiReplicator {
             resend_enter,
             pending: Arc::new(Mutex::new(Vec::new())),
             delivered: Arc::new(Mutex::new(Vec::new())),
+            brief_receipts: Arc::new(Mutex::new(Vec::new())),
             absorber: std::sync::OnceLock::new(),
             run_configs: std::sync::OnceLock::new(),
         }
@@ -2334,6 +2434,12 @@ impl SamuraiReplicator {
             // re-deliver on ([`Self::rearm_pending`]).
             let pending = self.pending.clone();
             let emit_spawn = self.emit_spawn.clone();
+            // Issue #204: the brief file this delivery points at, resolved
+            // here — the callback must not touch the filesystem or re-parse
+            // anything it can be handed. `None` = an inline instruction, so
+            // there is no file for the agent to read and nothing to receipt.
+            let receipts = self.brief_receipts.clone();
+            let brief = samurai_brief::pointer_brief_file_name(&instruction);
             let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(&instruction);
             let outcome: super::samurai_pty::DeliveryOutcome = Box::new(move |result| {
                 match result {
@@ -2360,6 +2466,24 @@ impl SamuraiReplicator {
                                 }),
                             ),
                         );
+                        // Issue #204: watch for the agent's own Read of the
+                        // brief this pointer named — `delivered` says only
+                        // that the bytes landed in the PTY.
+                        if let Some(brief) = brief {
+                            Self::arm_brief_receipt(
+                                &receipts,
+                                BriefReceipt {
+                                    project: project.clone(),
+                                    epic: epic.clone(),
+                                    generation,
+                                    session_id,
+                                    brief,
+                                    instruction: instruction_kind,
+                                    gate: "session_started",
+                                    seen: false,
+                                },
+                            );
+                        }
                         delivered
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2446,9 +2570,13 @@ impl SamuraiReplicator {
     /// activity releases the watch, so an agent that starts a turn on a
     /// truncated pointer looks identical to a healthy one. Nothing downstream
     /// can see it either — the launch line bypasses `samurai_pty`'s chunked
-    /// writer, which is where the #137 splice was observable at all. Detecting
-    /// that would mean gating release on evidence the brief was actually READ,
-    /// which is a larger change than this route warrants.
+    /// writer, which is where the #137 splice was observable at all. The
+    /// evidence that WOULD see it is the agent's own Read of the brief, and
+    /// issue #204 records exactly that as an `INJECT phase=receipt` row
+    /// ([`SamuraiReplicator::note_brief_receipt`], armed below). Recording
+    /// only: the watch still releases on any turn activity, so nothing about
+    /// this route's behaviour changed — #205 is where a missing receipt
+    /// becomes an ALERT.
     fn audit_launch_line_delivery(&self, p: &PendingRitual, session_id: u32) {
         log::info!(
             "samurai replicator: session {session_id} started with the gen-{} brief already on its command line — nothing typed",
@@ -2478,6 +2606,25 @@ impl SamuraiReplicator {
                 }),
             ),
         );
+        // Issue #204: the receipt this route needs MOST — a positional prompt
+        // the CLI ignored or mangled is invisible to everything else here (see
+        // the note above), and the agent's own Read of the brief is the one
+        // signal that distinguishes it from a healthy launch.
+        if let Some(brief) = samurai_brief::pointer_brief_file_name(&p.instruction) {
+            Self::arm_brief_receipt(
+                &self.brief_receipts,
+                BriefReceipt {
+                    project: p.project.clone(),
+                    epic: p.epic.clone(),
+                    generation: p.generation,
+                    session_id,
+                    brief,
+                    instruction: instruction_kind,
+                    gate: "launch_line",
+                    seen: false,
+                },
+            );
+        }
         self.lock_delivered().push(DeliveredWatch {
             project: p.project.clone(),
             epic: p.epic.clone(),
@@ -2575,6 +2722,10 @@ impl SamuraiReplicator {
     /// Releases the delivery watch for a session that shows turn activity
     /// (or is gone) — see [`turn_activity_session`] for the evidence table.
     fn note_turn_activity(&self, event: &ClaudeEvent) {
+        // Issue #204: the same tap carries the tool calls a read receipt is
+        // made of. Before the release below, because releasing the watch is
+        // not what ends the receipt's own life — the session ending is.
+        self.note_brief_receipt(event);
         let Some(session_id) = turn_activity_session(event) else {
             return;
         };
@@ -2585,6 +2736,101 @@ impl SamuraiReplicator {
             log::info!(
                 "samurai replicator: session {session_id} shows turn activity — delivered instruction confirmed submitted"
             );
+        }
+    }
+
+    /// Arms the issue-#204 read receipt for a brief pointer that has just been
+    /// delivered. A delivery that is NOT a pointer arms nothing — an inline
+    /// instruction has no file to open, so it has nothing to receipt.
+    ///
+    /// Associated rather than a method: the typed route arms it from inside
+    /// the delivery-outcome callback, which owns no `&self`. Queue-push work
+    /// only (one mutex push), as that callback's contract requires.
+    ///
+    /// At most one entry per SESSION: a re-armed generation re-delivered into
+    /// the same session supersedes its own earlier pointer, so the store stays
+    /// bounded and the receipt is always matched against the brief the agent
+    /// last actually got.
+    fn arm_brief_receipt(receipts: &Mutex<Vec<BriefReceipt>>, receipt: BriefReceipt) {
+        let mut receipts = receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        receipts.retain(|r| r.session_id != receipt.session_id);
+        receipts.push(receipt);
+    }
+
+    /// Issue #204: turns the agent's own `Read` of a delivered brief into an
+    /// `INJECT phase=receipt` row — the first evidence in the trail that a
+    /// brief was not merely WRITTEN INTO the PTY but actually opened.
+    ///
+    /// `phase=delivered` only ever meant bytes reached the terminal (or, on
+    /// the launch-line route, that the shell accepted the command); a pointer
+    /// that arrived truncated or was ignored outright looks identical to a
+    /// healthy one in the audit trail. The pointer text commands an
+    /// observable act — "Read `<relpath>` in FULL with the Read tool before
+    /// doing anything else" — and the transcript parser plus the PreToolUse
+    /// hook both report tool calls here already, so the evidence needed only
+    /// to be recorded.
+    ///
+    /// Exactly one row per delivered brief: the latched `seen` flag absorbs
+    /// the same tool call arriving on both channels, and every re-read
+    /// afterwards. Pure observation — nothing is gated on it (issue #205).
+    fn note_brief_receipt(&self, event: &ClaudeEvent) {
+        match event {
+            ClaudeEvent::ToolUseStarted {
+                session_id,
+                tool_name,
+                input_summary,
+                ..
+            } => {
+                // The audit append happens OUTSIDE the lock: it is a channel
+                // send, and the event path never holds this lock across one.
+                let receipt = {
+                    let mut receipts = self.lock_brief_receipts();
+                    let Some(r) = receipts.iter_mut().find(|r| {
+                        r.session_id == *session_id
+                            && !r.seen
+                            && tool_use_reads_brief(tool_name, input_summary, &r.brief)
+                    }) else {
+                        return;
+                    };
+                    r.seen = true;
+                    (
+                        r.project.clone(),
+                        r.epic.clone(),
+                        r.generation,
+                        r.instruction,
+                        r.gate,
+                        r.brief.clone(),
+                    )
+                };
+                let (project, epic, generation, instruction, gate, brief) = receipt;
+                log::info!(
+                    "samurai replicator: session {session_id} read its gen-{generation} brief {brief} with {tool_name} — receipt"
+                );
+                self.audit.append(
+                    &project,
+                    AuditEvent::now(
+                        epic,
+                        AuditEventKind::Inject,
+                        generation,
+                        *session_id,
+                        json!({
+                            "phase": "receipt",
+                            "instruction": instruction,
+                            "gate": gate,
+                            "brief": brief,
+                        }),
+                    ),
+                );
+            }
+            // The session is gone: so is anything a receipt could still say
+            // about it. Keeps the store to the live sessions.
+            ClaudeEvent::SessionEnded { session_id, .. } => {
+                self.lock_brief_receipts()
+                    .retain(|r| r.session_id != *session_id);
+            }
+            _ => {}
         }
     }
 
@@ -3055,10 +3301,28 @@ impl SamuraiReplicator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Same poisoned-lock policy for the read receipts (issue #204).
+    fn lock_brief_receipts(&self) -> std::sync::MutexGuard<'_, Vec<BriefReceipt>> {
+        self.brief_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Test-only: how many delivery watches are armed (issue #103).
     #[cfg(test)]
     fn delivered_count(&self) -> usize {
         self.lock_delivered().len()
+    }
+
+    /// Test-only view of one session's read receipt (issue #204):
+    /// `(brief file name, receipt seen)`, or `None` when no brief pointer is
+    /// being watched for that session at all.
+    #[cfg(test)]
+    fn brief_receipt_view(&self, session_id: u32) -> Option<(String, bool)> {
+        self.lock_brief_receipts()
+            .iter()
+            .find(|r| r.session_id == session_id)
+            .map(|r| (r.brief.clone(), r.seen))
     }
 
     /// Test-only: age one session's delivery watch so the resend path runs
@@ -5719,6 +5983,313 @@ mod tests {
         h2.replicator.observe_hook(&session_started(6));
         h2.replicator.observe(&user_message(6));
         assert_eq!(h2.replicator.delivered_count(), 0);
+    }
+
+    // --- issue #204: the READ receipt for a delivered brief ---
+
+    /// One `ToolUseStarted`, spelled as either channel spells it.
+    fn tool_use(session_id: u32, tool_name: &str, input_summary: &str) -> ClaudeEvent {
+        ClaudeEvent::ToolUseStarted {
+            session_id,
+            tool_name: tool_name.into(),
+            tool_use_id: "tu".into(),
+            input_summary: input_summary.into(),
+            timestamp: "t".into(),
+        }
+    }
+
+    /// The whole tolerance story of the matcher: ONE brief file, every
+    /// spelling an agent might name it by, on both event channels.
+    #[test]
+    fn test_a_summary_names_the_brief_in_every_spelling() {
+        let brief = "epic-9-gen-3-ritual.md";
+        let names = [
+            ".maestro/briefs/epic-9-gen-3-ritual.md",
+            r".maestro\briefs\epic-9-gen-3-ritual.md",
+            "C:/git/wt/.maestro/briefs/epic-9-gen-3-ritual.md",
+            r"C:\git\wt\.maestro\briefs\epic-9-gen-3-ritual.md",
+            r"\\?\C:\git\wt\.maestro\briefs\epic-9-gen-3-ritual.md",
+            "epic-9-gen-3-ritual.md",
+            // The PreToolUse hook forwards the whole tool input as JSON, so
+            // the separators arrive escaped.
+            r#"{"file_path":"C:\\git\\wt\\.maestro\\briefs\\epic-9-gen-3-ritual.md"}"#,
+            // A shell reader, quoted however the shell wanted it.
+            "cat '.maestro/briefs/epic-9-gen-3-ritual.md'",
+            // Windows paths are case-insensitive, and a re-typed one is worse.
+            ".maestro/Briefs/EPIC-9-GEN-3-RITUAL.MD",
+        ];
+        for summary in names {
+            assert!(summary_names_file(summary, brief), "must match: {summary}");
+        }
+        let others = [
+            "",
+            // The PREVIOUS generation's brief, and this generation's other kind.
+            ".maestro/briefs/epic-9-gen-2-ritual.md",
+            ".maestro/briefs/epic-9-gen-3-recovery.md",
+            // Another epic's gen-3 ritual in the same directory.
+            ".maestro/briefs/epic-8-gen-3-ritual.md",
+            "src-tauri/src/core/samurai_replicator.rs",
+            // Neighbours the name is a substring of, either end.
+            "epic-9-gen-3-ritual.md.bak",
+            "not-epic-9-gen-3-ritual.md",
+        ];
+        for summary in others {
+            assert!(
+                !summary_names_file(summary, brief),
+                "must NOT match: {summary}"
+            );
+        }
+    }
+
+    /// Naming the brief is not reading it: the tool has to be one that opens
+    /// the file.
+    #[test]
+    fn test_only_a_reading_tool_receipts_the_brief() {
+        let brief = "epic-9-gen-3-ritual.md";
+        let relpath = ".maestro/briefs/epic-9-gen-3-ritual.md";
+        assert!(tool_use_reads_brief("Read", relpath, brief));
+        for command in [
+            "cat .maestro/briefs/epic-9-gen-3-ritual.md",
+            r"type .maestro\briefs\epic-9-gen-3-ritual.md",
+            "sed -n '1,80p' .maestro/briefs/epic-9-gen-3-ritual.md",
+            r#"{"command":"cat .maestro/briefs/epic-9-gen-3-ritual.md","description":"read the brief"}"#,
+        ] {
+            assert!(
+                tool_use_reads_brief("Bash", command, brief),
+                "a shell read: {command}"
+            );
+        }
+        // A shell command that merely MENTIONS the brief opened nothing.
+        assert!(!tool_use_reads_brief(
+            "Bash",
+            "git add .maestro/briefs/epic-9-gen-3-ritual.md",
+            brief
+        ));
+        // Neither did a tool that only lists or searches over it.
+        assert!(!tool_use_reads_brief(
+            "Grep",
+            &format!("ritual in {relpath}"),
+            brief
+        ));
+        assert!(!tool_use_reads_brief("Glob", ".maestro/briefs/*.md", brief));
+        // A Read of the wrong brief is not this brief's receipt.
+        assert!(!tool_use_reads_brief(
+            "Read",
+            ".maestro/briefs/epic-9-gen-2-ritual.md",
+            brief
+        ));
+    }
+
+    /// The typed route (`gate: session_started`) end to end: `delivered` says
+    /// the pointer reached the PTY, `receipt` says the agent opened the file
+    /// it named — exactly once, however many times it is read afterwards and
+    /// on however many channels the call arrives.
+    #[tokio::test]
+    async fn test_a_typed_brief_gets_exactly_one_receipt_when_the_agent_reads_it() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-204-typed";
+        let repo = stage_successor(&h, project).await;
+        let details = h.replicator.spawn_details(project, "epic-9", 3).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(2, project.into(), "epic-9".into(), 3, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(2));
+
+        let pointer = h.writes.lock().unwrap()[0].1.clone();
+        let brief = samurai_brief::pointer_brief_file_name(&pointer)
+            .expect("a several-KB ritual takes the brief-file route");
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), false)),
+            "armed by the delivery, unread"
+        );
+
+        // The prompt submission that RELEASES the delivery watch is not a
+        // receipt — and it is exactly what would have destroyed a flag kept
+        // on that watch, which is why the receipt has its own store.
+        h.replicator.observe(&user_message(2));
+        assert_eq!(h.replicator.delivered_count(), 0);
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), false))
+        );
+
+        // Reading some other file is not a receipt, and neither is reading
+        // the PREVIOUS generation's brief out of the same directory.
+        let previous = format!("{}.md", ritual_brief_name("epic-9", 2, false));
+        assert_ne!(previous, brief);
+        h.replicator
+            .observe(&tool_use(2, "Read", "src-tauri/src/main.rs"));
+        h.replicator
+            .observe(&tool_use(2, "Read", &format!(".maestro/briefs/{previous}")));
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), false))
+        );
+
+        // The Read the pointer asked for.
+        h.replicator
+            .observe(&tool_use(2, "Read", &format!(".maestro/briefs/{brief}")));
+        assert_eq!(
+            h.replicator.brief_receipt_view(2),
+            Some((brief.clone(), true))
+        );
+
+        // The same call again on the OTHER channel (the PreToolUse hook,
+        // which forwards the absolute path as JSON), and a later re-read.
+        let absolute = repo.path().join(".maestro/briefs").join(&brief);
+        h.replicator.observe_hook(&tool_use(
+            2,
+            "Read",
+            &json!({ "file_path": absolute.to_string_lossy() }).to_string(),
+        ));
+        h.replicator.observe(&tool_use(
+            2,
+            "Bash",
+            &format!("cat .maestro/briefs/{brief}"),
+        ));
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "receipt"
+        })
+        .await;
+        let receipts: Vec<_> = rows
+            .iter()
+            .filter(|r| r.details["phase"] == "receipt")
+            .collect();
+        assert_eq!(receipts.len(), 1, "exactly one receipt per delivered brief");
+        assert_eq!(receipts[0].event, AuditEventKind::Inject);
+        assert_eq!(receipts[0].session_id, 2);
+        assert_eq!(receipts[0].generation, 3);
+        assert_eq!(receipts[0].epic, "epic-9");
+        assert_eq!(receipts[0].details["instruction"], "successor_ritual");
+        assert_eq!(receipts[0].details["gate"], "session_started");
+        assert_eq!(receipts[0].details["brief"], brief);
+        // It FOLLOWS the delivered row for the same brief.
+        let phases: Vec<_> = rows
+            .iter()
+            .filter(|r| r.event == AuditEventKind::Inject)
+            .map(|r| r.details["phase"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(phases, vec!["delivered", "receipt"]);
+
+        // The session going away drops the entry; nothing re-fires for it.
+        h.replicator.observe(&ClaudeEvent::SessionEnded {
+            session_id: 2,
+            reason: "stop".into(),
+            timestamp: "t".into(),
+        });
+        assert_eq!(h.replicator.brief_receipt_view(2), None);
+    }
+
+    /// The launch-line route (`gate: launch_line`) — the one where nothing
+    /// else can see a pointer the CLI mangled or ignored — receipts the brief
+    /// however the agent spells its path, and via a shell read too.
+    #[tokio::test]
+    async fn test_a_launch_line_brief_receipts_every_spelling_of_its_path() {
+        for (i, spelling) in [
+            "relative",
+            "absolute",
+            "backslashed",
+            "extended-length",
+            "shell-read",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir = tempdir().unwrap();
+            let h = harness(dir.path());
+            let project = format!("C:/git/proj-204-launch-{i}");
+            let worktree = tempdir().unwrap();
+            let pointer = stage_launch_with_pointer(&h, &project, worktree.path());
+            let brief = samurai_brief::pointer_brief_file_name(&pointer)
+                .expect("the launch brief takes the brief-file route");
+
+            let details = h.replicator.spawn_details(&project, "#38", 1).unwrap();
+            let snapshot = h
+                .supervisor
+                .register_session_with_details(5, project.clone(), "#38".into(), 1, details)
+                .unwrap();
+            h.replicator
+                .on_registered_with_route(&snapshot, DeliveryRoute::LaunchLine);
+            h.replicator.observe_hook(&session_started(5));
+            assert!(
+                h.writes.lock().unwrap().is_empty(),
+                "the pointer rode the launch line"
+            );
+            assert_eq!(
+                h.replicator.brief_receipt_view(5),
+                Some((brief.clone(), false)),
+                "{spelling}: armed by the launch-line delivery"
+            );
+
+            let absolute = worktree.path().join(".maestro/briefs").join(&brief);
+            let event = match spelling {
+                "relative" => tool_use(5, "Read", &format!(".maestro/briefs/{brief}")),
+                "absolute" => tool_use(5, "Read", &absolute.to_string_lossy()),
+                "backslashed" => tool_use(5, "Read", &format!(r".maestro\briefs\{brief}")),
+                "extended-length" => {
+                    tool_use(5, "Read", &format!(r"\\?\{}", absolute.to_string_lossy()))
+                }
+                _ => tool_use(5, "Bash", &format!("cat .maestro/briefs/{brief}")),
+            };
+            h.replicator.observe(&event);
+            assert_eq!(
+                h.replicator.brief_receipt_view(5),
+                Some((brief.clone(), true)),
+                "{spelling}: the read is a receipt"
+            );
+
+            let rows = wait_for_row(&h.tick, &h.audit, &project, |r| {
+                r.details["phase"] == "receipt"
+            })
+            .await;
+            let receipts: Vec<_> = rows
+                .iter()
+                .filter(|r| r.details["phase"] == "receipt")
+                .collect();
+            assert_eq!(receipts.len(), 1, "{spelling}: one receipt");
+            assert_eq!(receipts[0].details["gate"], "launch_line");
+            assert_eq!(receipts[0].details["instruction"], "launch_brief");
+            assert_eq!(receipts[0].details["brief"], brief);
+            assert_eq!(receipts[0].generation, 1);
+        }
+    }
+
+    /// An INLINE instruction has no brief file, so there is nothing to
+    /// receipt and no entry is armed — a Read of anything at all must not
+    /// invent one.
+    #[tokio::test]
+    async fn test_an_inline_instruction_arms_no_receipt() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-204-inline";
+        // A worktree that does not exist: the brief write fails, so the
+        // launch instruction is typed inline exactly as it stands.
+        let short = "[Maestro Samurai] you are generation 1.".to_string();
+        h.replicator.spawn_first_generation(
+            project,
+            "#38",
+            "C:/git/nonexistent-204",
+            short.clone(),
+        );
+        assert_eq!(h.replicator.pending_view(1).unwrap().1, short);
+        let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(5, project.into(), "#38".into(), 1, details)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.replicator.observe_hook(&session_started(5));
+        assert_eq!(h.writes.lock().unwrap().len(), 1, "typed inline");
+        assert_eq!(h.replicator.brief_receipt_view(5), None);
+
+        h.replicator
+            .observe(&tool_use(5, "Read", ".maestro/briefs/anything.md"));
+        assert_eq!(h.replicator.brief_receipt_view(5), None);
     }
 
     // --- issue #103: post-delivery watch (swallowed-Enter recovery) ---
