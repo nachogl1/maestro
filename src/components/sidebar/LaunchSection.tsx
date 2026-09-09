@@ -25,6 +25,7 @@ import {
   PREFLIGHT_DUPLICATE_RUN,
   PREFLIGHT_GH_AUTH,
   PREFLIGHT_USAGE_WINDOWS,
+  parkReasonLabel,
   type SamuraiPreflightCheck,
   type SamuraiRunListEntry,
   type SamuraiRunOrchestrator,
@@ -40,6 +41,7 @@ import {
   samuraiScheduleLaunch,
   samuraiTimerCancel,
 } from "@/lib/samurai";
+import { resumeRunNow } from "@/lib/samuraiResume";
 import type { UsageData } from "@/lib/usageParser";
 import { type PendingLaunch, usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import {
@@ -441,6 +443,7 @@ function RunRow({
   onOpen,
   onCleanup,
   onRecover,
+  onResumeNow,
   onAbandon,
   successorPending,
   pending,
@@ -461,6 +464,9 @@ function RunRow({
   onCleanup: (run: SamuraiRunListEntry) => void;
   /** Issue #124: explicit crash-recovery relaunch of a non-completed run. */
   onRecover: (run: SamuraiRunListEntry) => void;
+  /** Issue #211: end a PARK early — the same button when the run is parked
+   *  rather than crashed. */
+  onResumeNow: (run: SamuraiRunListEntry) => void;
   /** Archive the run config and NOTHING else — worktree and branch kept. */
   onAbandon: (run: SamuraiRunListEntry) => void;
   /** A successor generation for this run is already queued in the frontend's
@@ -513,12 +519,31 @@ function RunRow({
   //  - COMPLETED: finished; cleanup is its next step.
   // A KILLED run whose successor never got staged (spawn_dropped,
   // successor_no_start) still offers Recover — it is the only way out.
-  //  A BREAKER park is the exception to the parked rule above: it has no
-  //  timer to cancel and no allowance window to protect, so hiding the
-  //  action would leave the run with no way out at all — the visibility now
-  //  depends on the park's REASON, not on the mere existence of a park.
-  const recoverable =
-    !isCompleted && !hasLiveAgent && (parked === null || breakerParked) && !successorPending;
+  //  Issue #211: a PARK is no longer one of them. Hiding the action behind
+  //  `parked === null` was the whole complaint: a user looking at "resumes
+  //  19:10", who knows the window has already reset, had no button anywhere.
+  //  Every park kind now offers the same one — it cancels the timer itself,
+  //  and warns first when the allowance really is still exhausted.
+  const recoverable = !isCompleted && !hasLiveAgent && !successorPending;
+  // Parked means the button RESUMES rather than recovers: a different
+  // command, a different confirmation story, and a spelled-out label instead
+  // of a bare icon. ANY stamp counts, not just the breaker's (issue #211) —
+  // a gh-auth park arms no timer at all, so before the parker stamped its
+  // sweep the row could not tell one from a crashed run and offered
+  // "Recover", whose backend refuses mid-sweep with an allowance-worded
+  // error the user can do nothing about.
+  const stampParked = run.parked !== null;
+  const isParked = parked !== null || stampParked;
+  // The badge exists to name a park that has no countdown of its own. An
+  // allowance park has one (the purple line below), so its stamp stays
+  // silent here rather than badging the row twice. INTERRUPTED outranks it:
+  // #210's failed-arm deferral stamps BOTH `parked` and `interrupted_at` on
+  // one run, and the store raises a fatal INTERRUPTED toast for exactly that
+  // state — badging it "PARKED ~ waits for the cause to be fixed" would put
+  // two contradictory statements about one run on screen at once. The
+  // breaker is the exception, because its stamp IS the whole story.
+  const showParkBadge = breakerParked || (stampParked && parked === null && !interrupted);
+  const parkLabel = parkReasonLabel(run.parked?.reason ?? "");
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned
   // the park. The badge below is that missing state — dated, because a park
@@ -556,19 +581,25 @@ function RunRow({
           >
             FINISHED
           </span>
-        ) : breakerParked ? (
+        ) : showParkBadge ? (
           // Red = needs input (the fork's status-colour convention). The
-          // reason rides the badge because the two park kinds need opposite
-          // reactions: an allowance park resumes itself, this one never will.
+          // reason rides the badge because the kinds need opposite
+          // reactions: an allowance park resumes itself, these never will.
           <span
             className="shrink-0 rounded bg-maestro-red/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-red"
-            title={`Parked by the circuit breaker at gen-${run.parked?.generation ?? 0} on ${
-              run.parked?.at ?? "an unknown date"
-            } — ${
-              run.parked?.head ? `HEAD stood still at ${run.parked.head}. ` : ""
-            }This run has NO live agent and NOTHING will restart it: an automatic resume would burn allowance the same way again. Resume it yourself, or abandon it (abandon keeps the worktree and branch).`}
+            title={
+              breakerParked
+                ? `Parked by the circuit breaker at gen-${run.parked?.generation ?? 0} on ${
+                    run.parked?.at ?? "an unknown date"
+                  } — ${
+                    run.parked?.head ? `HEAD stood still at ${run.parked.head}. ` : ""
+                  }This run has NO live agent and NOTHING will restart it: an automatic resume would burn allowance the same way again. Resume it yourself, or abandon it (abandon keeps the worktree and branch).`
+                : `Parked (${parkLabel}) on ${
+                    run.parked?.at ?? "an unknown date"
+                  }. This run has NO live agent and NO resume timer — it waits for the cause to be fixed. Resume it yourself once it is, or abandon it (abandon keeps the worktree and branch).`
+            }
           >
-            PARKED · breaker
+            PARKED · {parkLabel}
           </span>
         ) : interrupted ? (
           // Red = needs input, the fork's status-colour convention (blue =
@@ -626,20 +657,23 @@ function RunRow({
         {recoverable && (
           <button
             type="button"
-            onClick={() => onRecover(run)}
+            onClick={() => (isParked ? onResumeNow(run) : onRecover(run))}
             disabled={pending || recovering || otherBusy}
             className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-accent disabled:opacity-40"
-            aria-label={breakerParked ? `Resume run ${run.epic}` : `Recover run ${run.epic}`}
+            aria-label={isParked ? `Resume run ${run.epic}` : `Recover run ${run.epic}`}
             title={
               breakerParked
                 ? "Resume this breaker-parked run: verify the worktree's real state (git) and spawn a fresh generation from the latest handoff. Nothing else will ever restart it."
-                : "The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
+                : isParked
+                  ? "Resume now: end the park early — cancel any resume timer and spawn a fresh generation immediately. Use it when the cause is actually gone; if the allowance is still exhausted, you are warned first."
+                  : "The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
             }
           >
             {recovering ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            {/* A breaker park's whole point is that the human must decide, so
-                this one action is spelled out rather than left as an icon. */}
-            {breakerParked && <span className="ml-0.5 text-[9px] font-bold">Resume</span>}
+            {/* A park's whole point is that the human must decide when it
+                ends, so this one action is spelled out rather than left as
+                an icon. */}
+            {isParked && <span className="ml-0.5 text-[9px] font-bold">Resume</span>}
           </button>
         )}
         {/* The non-destructive way out of the runs list. Before it existed,
@@ -1177,6 +1211,41 @@ export function LaunchSection({
   };
 
   /**
+   * Issue #211: end a PARK early. Same row, same spinner, same in-place
+   * refusal as recovery — but the shared action, which cancels the pending
+   * resume timer, warns when the allowance is still past its hard threshold,
+   * and holds the in-flight guard the park chip also claims.
+   */
+  const handleResumeNow = async (run: SamuraiRunListEntry) => {
+    if (recoveringKeyRef.current !== null) return;
+    if (resumingRuns.includes(samuraiRunKey(run.project_path, run.epic))) return;
+    const key = runKey(run);
+    recoveringKeyRef.current = key;
+    setRecoveringKey(key);
+    setRowError(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await resumeRunNow(run.project_path, run.epic);
+      // `null` = the user declined the allowance warning, or another surface
+      // holds the guard. Nothing happened, so the row says nothing.
+      if (result !== null) {
+        setNotice(
+          `Resuming ${result.epic}: gen-${result.generation} on ${result.branch} @ ${result.head}${
+            result.timer_cancelled ? " (its resume timer was cancelled)" : ""
+          }`,
+        );
+        await refreshRuns();
+      }
+    } catch (err) {
+      setRowError({ key, message: String(err) });
+    } finally {
+      recoveringKeyRef.current = null;
+      setRecoveringKey(null);
+    }
+  };
+
+  /**
    * Abandon: archive the run config and nothing else. The confirm spells out
    * what is KEPT, because the neighbouring button deletes exactly that.
    */
@@ -1571,6 +1640,7 @@ export function LaunchSection({
                   onOpen={(tabId, sessionId) => onNavigate?.(tabId, sessionId)}
                   onCleanup={handleCleanup}
                   onRecover={handleRecover}
+                  onResumeNow={handleResumeNow}
                   onAbandon={handleAbandon}
                   successorPending={hasPendingSuccessor(run, pendingLaunches)}
                   pending={deletingKey === key}

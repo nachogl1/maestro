@@ -461,6 +461,22 @@ export function samuraiRecoverRun(
 }
 
 /**
+ * Ends a park EARLY (issue #211) — the one manual resume behind every park
+ * kind: allowance, gh-auth and circuit breaker alike. Cancels the run's
+ * pending resume timer and spawns the successor now.
+ *
+ * Everything `samuraiRecoverRun` verifies still applies (ACTIVE run, no
+ * live agent, worktree branch + HEAD via git, a breaker park's stamp and
+ * counter cleared). The difference: an engaged hard park sweep does not
+ * refuse it, because an exhausted allowance is exactly what the caller is
+ * overriding on purpose. Prefer {@link resumeRunNow} in `lib/samuraiResume`
+ * — it adds the allowance warning and the shared in-flight guard.
+ */
+export function samuraiResumeNow(projectPath: string, epic: string): Promise<SamuraiRecoverResult> {
+  return invoke("samurai_resume_now", { projectPath, epic });
+}
+
+/**
  * Schedules a one-shot run launch for a day+time (issue #129). `fireAt` is
  * RFC 3339 and must be in the future; the free-text request (issue #128) and
  * the launch options are stored on the timer and launched — full server-side
@@ -613,8 +629,29 @@ export interface SamuraiParkedStamp {
   head: string | null;
 }
 
-/** The one `parked.reason` written today — see {@link SamuraiParkedStamp}. */
+/** The `parked.reason` values the backend writes — see
+ *  {@link SamuraiParkedStamp}. The breaker stamps its own park (issue #209);
+ *  the parker's sweep stamps the other two (issue #211), so every park kind
+ *  is visible on the run itself and not only in a timer that, for a gh-auth
+ *  park, is never armed at all. */
 export const PARK_REASON_CIRCUIT_BREAKER = "circuit_breaker";
+export const PARK_REASON_ALLOWANCE = "allowance";
+export const PARK_REASON_GH_AUTH_LOST = "gh_auth_lost";
+
+/** How a park stamp's reason reads on a badge. Unknown reasons (a newer
+ *  backend) render as themselves rather than vanishing. */
+export function parkReasonLabel(reason: string): string {
+  switch (reason) {
+    case PARK_REASON_CIRCUIT_BREAKER:
+      return "breaker";
+    case PARK_REASON_ALLOWANCE:
+      return "allowance";
+    case PARK_REASON_GH_AUTH_LOST:
+      return "gh auth";
+    default:
+      return reason;
+  }
+}
 
 /** Whether a run is parked BY THE BREAKER: a dead run whose only way out is
  *  the human's Resume click. */

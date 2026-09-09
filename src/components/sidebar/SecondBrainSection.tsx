@@ -31,6 +31,7 @@ import {
   samuraiHarvestRead,
   samuraiTimerCancel,
 } from "@/lib/samurai";
+import { resumeRunNow } from "@/lib/samuraiResume";
 import { flagsByRow, useHealthStore } from "@/stores/useHealthStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { type AuditRunFilter, AuditSection, SAMURAI_ACCOUNT_PROJECT } from "./AuditSection";
@@ -505,23 +506,64 @@ export function SecondBrainSection() {
   const handleCancelTimer = async (entry: SamuraiFileEntry) => {
     if (!entry.epic || !entry.project_path) return;
     // Not a file delete: deleting schedule.json would neither stop the
-    // in-memory timer nor scope to one epic (the backend refuses it). The
-    // confirm names the real consequence — no self-resume afterwards.
-    const confirmed = await ask(
-      `Cancel the pending resume for ${entry.epic}? The parked run will NOT resume on its own — you would have to relaunch it.`,
-      { title: "Cancel Resume Timer", kind: "warning" },
+    // in-memory timer nor scope to one epic (the backend refuses it).
+    //
+    // Issue #211: this used to be one confirm with one outcome, and that
+    // outcome left the run stopped for GOOD — relaunching was the only way
+    // back and the preflight rightly refuses that while the run is ACTIVE.
+    // It is now the two-way choice it always should have been. Two dialogs
+    // rather than a single relabelled one, and asked in this order, because
+    // a native dialog has exactly two buttons and DISMISS maps to the
+    // second: every dismissal here must be a no-op, and the timer is not
+    // cancelled until the very last answer. A dialog plugin that throws
+    // takes the same safe path (`.catch(() => false)`), so a broken dialog
+    // can never cancel a timer by itself.
+    const resumeNow = await ask(
+      `Cancel the pending resume for ${entry.epic} and resume the run NOW? That cancels its timer and spawns a fresh agent immediately. Choose No to decide whether to cancel the timer and leave the run stopped.`,
+      {
+        title: "Cancel Resume Timer",
+        kind: "warning",
+        okLabel: "Cancel and resume now",
+        cancelLabel: "No",
+      },
     ).catch(() => false);
-    if (!confirmed) return;
+
+    // Declined the resume: the other way forward, with the consequence
+    // named. Dismissing THIS one keeps the timer exactly as it was.
+    const cancelOnly =
+      !resumeNow &&
+      (await ask(
+        `Cancel the timer and leave ${entry.epic} parked? The run will NOT resume on its own — you would have to relaunch it. Dismiss to keep the timer.`,
+        {
+          title: "Cancel and Stay Parked?",
+          kind: "warning",
+          okLabel: "Cancel and stay parked",
+          cancelLabel: "Keep the timer",
+        },
+      ).catch(() => false));
+    if (!resumeNow && !cancelOnly) return;
+
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const cancelled = await samuraiTimerCancel(entry.project_path, entry.epic);
-      setNotice(
-        cancelled
-          ? `Cancelled the resume timer for ${entry.epic}.`
-          : `No pending resume timer for ${entry.epic}.`,
-      );
+      if (resumeNow) {
+        // The resume cancels the timer itself, so this is ONE command, not
+        // a cancel followed by a resume.
+        const result = await resumeRunNow(entry.project_path, entry.epic);
+        setNotice(
+          result === null
+            ? `Left ${entry.epic} parked — its resume timer is untouched.`
+            : `Resuming ${entry.epic}: gen-${result.generation} on ${result.branch} @ ${result.head}.`,
+        );
+      } else {
+        const cancelled = await samuraiTimerCancel(entry.project_path, entry.epic);
+        setNotice(
+          cancelled
+            ? `Cancelled the resume timer for ${entry.epic}. It will NOT resume on its own.`
+            : `No pending resume timer for ${entry.epic}.`,
+        );
+      }
       await refresh();
     } catch (err) {
       setError(String(err));

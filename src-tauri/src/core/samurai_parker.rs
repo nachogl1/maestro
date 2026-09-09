@@ -64,7 +64,9 @@ use super::samurai_auth_watch::{GH_AUTH_LOST, GH_AUTH_RESTORED};
 use super::samurai_context::SamuraiContextStore;
 use super::samurai_injector::SamuraiInjector;
 use super::samurai_replicator::SessionTeardown;
-use super::samurai_run_config::{ConfigLookup, RunConfigStatus, RunConfigStore};
+use super::samurai_run_config::{
+    ConfigLookup, RunConfigStatus, RunConfigStore, PARK_REASON_CIRCUIT_BREAKER,
+};
 use super::samurai_schedule::{jitter_secs, SamuraiSchedule, ScheduleEntry};
 use super::supervisor::{InstructionKind, SessionSnapshot, Supervisor, SupervisorState};
 
@@ -74,7 +76,7 @@ const RESUME_DELAY_SECS: i64 = 300;
 /// The park reason recorded for an ordinary ALLOWANCE park (issue #208) —
 /// the runs an external release must NEVER touch: they already carry a
 /// resume timer of their own.
-const PARK_REASON_ALLOWANCE: &str = "allowance";
+pub(crate) const PARK_REASON_ALLOWANCE: &str = "allowance";
 
 /// Issue #210: how many times a failing `schedule.json` write is retried
 /// before the run is given up on. One attempt per parker tick
@@ -265,6 +267,11 @@ struct SweepState {
     /// arm has to remember WHICH window it is waiting out.
     window: Option<AllowanceWindow>,
     last_window: Option<AllowanceWindow>,
+    /// Issue #211: the park REASON the last completed sweep recorded, kept
+    /// for exactly the reason `last_resets_at` is — a park that validates
+    /// after its sweep disengaged still has to say what parked it, or a late
+    /// gh-auth park stays indistinguishable from a crash.
+    last_reason: Option<String>,
     /// Issue #63: this sweep was engaged EXTERNALLY (e.g. gh auth loss) — a
     /// condition with no reset time by design, so completion arms NO resume
     /// timers and emits NO per-epic `park_no_reset_time` noise (a human
@@ -544,6 +551,13 @@ impl SamuraiParker {
             "samurai parker: external park ({reason}) released — arming a resume for {} parked run(s)",
             released.len()
         );
+        // Issue #211: the stamp goes with the release, for every run this
+        // park stopped — including the ones skipped below (already live,
+        // already timed). Left behind it badges a run PARKED for ever and
+        // offers a Resume for a park that is already over.
+        for (project, epic) in &released {
+            self.clear_park_stamp(project, epic, Some(reason));
+        }
         let trigger = resume_trigger_for(reason);
         let sessions = self.supervisor.list_sessions();
         let armed_timers = self.schedule.list();
@@ -662,10 +676,85 @@ impl SamuraiParker {
         if parked_epics.is_empty() {
             return;
         }
-        let mut reasons = self.lock_park_reasons();
-        for key in parked_epics {
-            reasons.insert(key.clone(), reason.to_string());
+        {
+            let mut reasons = self.lock_park_reasons();
+            for key in parked_epics {
+                reasons.insert(key.clone(), reason.to_string());
+            }
         }
+        // Issue #211: the same reason, stamped on the run config. The map
+        // above is in-memory and account-wide; the stamp is what a RUN
+        // carries — it survives a restart, it rides `samurai_list_runs` to
+        // the Active Runs row (which needs it to offer a Resume for a park
+        // that arms no timer, i.e. `gh_auth_lost`), and it is what the
+        // manual resume records as `park_reason` on its RESUME row. Best
+        // effort, exactly like the breaker's own stamp (issue #209): a
+        // missing or unreadable config costs a badge, never a park.
+        let Some(store) = self.run_configs.get() else {
+            return;
+        };
+        for (project, epic) in parked_epics {
+            // Generation 0 and no head: the parker parks per (project,
+            // epic), not per session — 0 is already this field's documented
+            // "no generation known" sentinel (see `latch_interrupted`).
+            if let Err(e) = store.mark_parked(project, epic, reason, 0, None) {
+                log::warn!(
+                    "samurai parker: could not stamp {epic} in {project} as parked ({reason}): {e}"
+                );
+            }
+        }
+    }
+
+    /// Why a run is parked, as this parker last recorded it (issue #208's
+    /// map). `None` for a run it did not park. Read by the manual resume
+    /// (issue #211) as the fallback source for the `park_reason` it records,
+    /// for a run whose config stamp could not be written.
+    pub fn park_reason(&self, project: &str, epic: &str) -> Option<String> {
+        self.lock_park_reasons()
+            .get(&(project.to_string(), epic.to_string()))
+            .cloned()
+    }
+
+    /// Drops the park stamp [`Self::record_park_reasons`] wrote, for a run
+    /// whose park is over (issue #211), and the in-memory reason with it.
+    ///
+    /// `only_reason` names the park being ended, so a release resumes only
+    /// what its own condition stopped; `None` means "whatever parked it".
+    /// Either way a CIRCUIT-BREAKER stamp is left alone: nothing but a
+    /// human's click ends that park, and only that click also resets the
+    /// epic's breaker counter.
+    fn clear_park_stamp(&self, project: &str, epic: &str, only_reason: Option<&str>) {
+        self.forget_park_reason(project, epic);
+        let Some(store) = self.run_configs.get() else {
+            return;
+        };
+        let matches = match store.lookup(project, epic) {
+            ConfigLookup::Found(config) => {
+                config.parked.as_ref().is_some_and(|p| match only_reason {
+                    Some(reason) => p.reason == reason,
+                    None => p.reason != PARK_REASON_CIRCUIT_BREAKER,
+                })
+            }
+            _ => false,
+        };
+        if !matches {
+            return;
+        }
+        if let Err(e) = store.clear_parked(project, epic) {
+            log::warn!(
+                "samurai parker: could not clear the park stamp for {epic} in {project}: {e}"
+            );
+        }
+    }
+
+    /// Forgets why a run was parked (issue #211). The map is otherwise
+    /// drained only by [`Self::release_external_park`], so a run parked once
+    /// on the allowance kept its reason for the life of the process — and
+    /// a LATER, unrelated manual recovery of that run then recorded
+    /// `park_reason: "allowance"` for a plain crash.
+    pub fn forget_park_reason(&self, project: &str, epic: &str) {
+        self.lock_park_reasons()
+            .remove(&(project.to_string(), epic.to_string()));
     }
 
     fn lock_park_reasons(&self) -> std::sync::MutexGuard<'_, BTreeMap<(String, String), String>> {
@@ -728,7 +817,7 @@ impl SamuraiParker {
             self.advance();
             return;
         }
-        let (late, resets_at, window) = {
+        let (late, resets_at, window, reason) = {
             let mut state = self.lock_state();
             (
                 state
@@ -736,6 +825,7 @@ impl SamuraiParker {
                     .remove(&(project.to_string(), epic.to_string())),
                 state.last_resets_at,
                 state.last_window,
+                state.last_reason.clone(),
             )
         };
         if !late {
@@ -743,6 +833,14 @@ impl SamuraiParker {
         }
         log::warn!(
             "samurai parker: epic {epic} parked AFTER its sweep completed — arming its resume timer now"
+        );
+        // Issue #211: the same reason + stamp its sweep-mates got. Without
+        // it this one run — and only this one — carried no park reason at
+        // all, so a late gh-auth park still read as a crash on the row and
+        // a manual resume of it recorded `park_reason: null`.
+        self.record_park_reasons(
+            &BTreeSet::from([(project.to_string(), epic.to_string())]),
+            reason.as_deref().unwrap_or(PARK_REASON_ALLOWANCE),
         );
         self.arm_resume_timer(project, epic, resets_at, window);
     }
@@ -1008,10 +1106,14 @@ impl SamuraiParker {
         // Issue #208: remember WHY each run is parked before the set is
         // consumed below — a release is only allowed to resume the runs its
         // own condition stopped.
-        self.record_park_reasons(
-            &parked_epics,
-            external_reason.as_deref().unwrap_or(PARK_REASON_ALLOWANCE),
-        );
+        let reason = external_reason
+            .as_deref()
+            .unwrap_or(PARK_REASON_ALLOWANCE)
+            .to_string();
+        self.record_park_reasons(&parked_epics, &reason);
+        // Issue #211: and keep it for a park that validates LATE, after this
+        // sweep disengaged (see `finish_park`).
+        state.last_reason = Some(reason);
 
         // Issue #63: an externally engaged sweep (gh auth loss) arms nothing
         // — the condition has no reset time BY DESIGN, so the per-epic
@@ -1207,6 +1309,11 @@ impl SamuraiParker {
                 "samurai parker: run {epic} in {project} has a live session again — its deferred arm is dropped, no timer over a running run"
             );
             self.clear_arm_interrupted(project, epic);
+            // Issue #211: and the park stamp, for the same reason the
+            // interrupted one goes — the run HAS a future again. Left
+            // behind it badges a live run PARKED and, once its tab closes,
+            // offers a Resume the backend's no-live-session gate refuses.
+            self.clear_park_stamp(project, epic, None);
             return false;
         }
         if !self.run_is_resumable(project, epic) {
@@ -1391,6 +1498,14 @@ impl SamuraiParker {
                 "samurai parker: could not clear the interrupted stamp for {epic} in {project}: {e} — the resume timer is armed regardless"
             );
         }
+    }
+
+    /// Seeds a park reason directly. Tests only: driving a whole sweep to
+    /// record one would drown the behaviour under test.
+    #[cfg(test)]
+    pub(crate) fn seed_park_reason(&self, project: &str, epic: &str, reason: &str) {
+        self.lock_park_reasons()
+            .insert((project.to_string(), epic.to_string()), reason.to_string());
     }
 
     /// Seeds a pending arm directly. Tests only: reaching a spent write
@@ -2559,6 +2674,183 @@ mod tests {
         // healthy tick) finds nothing left parked and arms nothing new.
         assert_eq!(h.parker.release_external_park(GH_AUTH_LOST), 0);
         assert_eq!(h.schedule.list().len(), 2);
+    }
+
+    /// Issue #211, finding 4: a park that validates AFTER its sweep
+    /// completed (its session was skipped as stuck, then its Stop finally
+    /// landed) is armed from the last sweep's reset — but it was the one
+    /// parked run that got no reason and no stamp, so a late gh-auth park
+    /// still read as a crash on the row and a manual resume of it recorded
+    /// `park_reason: null`.
+    #[tokio::test]
+    async fn test_a_late_park_is_stamped_with_its_sweeps_reason_too() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-late-stamp";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo1 = parkable_run(&h, &store, project, 1, "#1");
+        let _repo2 = parkable_run(&h, &store, project, 2, "#2");
+        h.context.observe(&context_event(1, 90.0));
+        h.context.observe(&context_event(2, 10.0));
+
+        h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
+
+        // Session 1 never answers: it is skipped as stuck, so the sweep
+        // completes on session 2 alone.
+        h.injector
+            .backdate_waiting(1, MAX_TURN_WAIT + Duration::from_secs(1));
+        h.injector.tick();
+        wait_until(&h.tick, || {
+            state_of(&h.supervisor, 2) == Some(SupervisorState::ParkRequested)
+        })
+        .await;
+        complete_park(&h, 2, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+
+        // …and session 1's park validates only now, after the sweep is over.
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || h.schedule.list().len() == 2).await;
+
+        assert_eq!(
+            store
+                .get(project, "#1")
+                .unwrap()
+                .parked
+                .expect("the LATE park carries its reason like its sweep-mates")
+                .reason,
+            PARK_REASON_ALLOWANCE,
+        );
+        assert_eq!(
+            h.parker.park_reason(project, "#1").as_deref(),
+            Some(PARK_REASON_ALLOWANCE)
+        );
+    }
+
+    /// Issue #211, finding 3: a deferred arm dropped because the run is LIVE
+    /// again took off the interrupted stamp but left the park one, so a
+    /// running run kept badging PARKED — and once its tab closed the row
+    /// offered a Resume the backend's no-live-session gate then refused.
+    #[tokio::test]
+    async fn test_a_deferred_arm_dropped_for_a_live_run_clears_its_park_stamp() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-live-again";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo = parkable_run(&h, &store, project, 1, "#180");
+        store
+            .mark_parked(project, "#180", PARK_REASON_ALLOWANCE, 1, None)
+            .unwrap();
+        store
+            .mark_interrupted(project, "#180", 0, "park_no_reset_time")
+            .unwrap();
+        h.parker.seed_pending_arm(
+            project,
+            "#180",
+            PendingArm::NoResetTime {
+                window: AllowanceWindow::FiveHour,
+                since: Utc::now(),
+            },
+        );
+
+        // A human recovered it while the arm was still waiting: the run has
+        // an owner, so the arm is dropped and BOTH stamps go with it.
+        h.supervisor
+            .register_session(9, project.into(), "#180".into(), 2)
+            .unwrap();
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+
+        assert!(h.schedule.list().is_empty(), "no timer over a running run");
+        let config = store.get(project, "#180").unwrap();
+        assert!(config.parked.is_none(), "a live run must not badge PARKED");
+        assert!(config.interrupted_at.is_none());
+        assert_eq!(h.parker.park_reason(project, "#180"), None);
+    }
+
+    /// Issue #211: a gh-auth park arms NO timer by design, and before this
+    /// it left NOTHING on the run either — so the Active Runs row could not
+    /// tell an externally parked run from a crashed one, and offered
+    /// "Recover", whose backend refuses mid-sweep with an allowance-worded
+    /// error the user can do nothing about. The sweep now stamps the run
+    /// config with the reason, and the release takes the stamp away again.
+    #[tokio::test]
+    async fn test_an_external_park_stamps_its_runs_and_the_release_clears_them() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-auth-stamp";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo = parkable_run(&h, &store, project, 1, "#180");
+
+        h.parker.engage_external_park(GH_AUTH_LOST);
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+
+        let stamp = store
+            .get(project, "#180")
+            .expect("the run config survives the park")
+            .parked
+            .expect("the sweep stamps the run with WHY it is parked");
+        assert_eq!(stamp.reason, GH_AUTH_LOST);
+        // The same reason the in-memory map carries — the manual resume
+        // (issue #211) reads whichever of the two answers.
+        assert_eq!(
+            h.parker.park_reason(project, "#180").as_deref(),
+            Some(GH_AUTH_LOST)
+        );
+
+        // `gh auth` comes back: the park is over, so its badge must go with
+        // it — a stale stamp would keep offering a Resume for ever.
+        assert_eq!(h.parker.release_external_park(GH_AUTH_LOST), 1);
+        assert!(
+            store.get(project, "#180").unwrap().parked.is_none(),
+            "the release clears the stamp it wrote"
+        );
+    }
+
+    /// The stamp is written for an ALLOWANCE sweep too — that is what gives
+    /// a manual resume its `park_reason` when no breaker was involved. A
+    /// circuit-breaker stamp must never be overwritten by a release for a
+    /// different reason: only a human's click ends that park.
+    #[tokio::test]
+    async fn test_an_allowance_sweep_stamps_allowance_and_a_release_spares_a_breaker_stamp() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-allowance-stamp";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        let _repo = parkable_run(&h, &store, project, 1, "#180");
+
+        h.parker.on_allowance_event(&hard_event(Some(RESETS_AT)));
+        complete_park(&h, 1, 1).await;
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+
+        assert_eq!(
+            store
+                .get(project, "#180")
+                .unwrap()
+                .parked
+                .expect("an allowance park is stamped too")
+                .reason,
+            PARK_REASON_ALLOWANCE,
+        );
+
+        // A breaker stamp on the same run outranks an external release.
+        store
+            .mark_parked(project, "#180", PARK_REASON_CIRCUIT_BREAKER, 2, None)
+            .unwrap();
+        h.parker.release_external_park(GH_AUTH_LOST);
+        assert_eq!(
+            store
+                .get(project, "#180")
+                .unwrap()
+                .parked
+                .expect("the breaker stamp survives a release for another reason")
+                .reason,
+            PARK_REASON_CIRCUIT_BREAKER,
+        );
     }
 
     /// Review finding 1: the restore can land while the sweep is STILL

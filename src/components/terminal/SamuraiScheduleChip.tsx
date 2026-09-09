@@ -2,7 +2,8 @@ import { memo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
-import { isParkEntry, samuraiRecoverRun } from "@/lib/samurai";
+import { isParkEntry } from "@/lib/samurai";
+import { resumeRunNow } from "@/lib/samuraiResume";
 import {
   type SamuraiBreakerPark,
   type SamuraiScheduleEntry,
@@ -22,8 +23,6 @@ import {
  */
 function BreakerParkChip({ park }: { park: SamuraiBreakerPark }) {
   const [error, setError] = useState<string | null>(null);
-  const setParks = useSessionStore((s) => s.setSamuraiBreakerParks);
-  const setResuming = useSessionStore((s) => s.setSamuraiRunResuming);
   // Shared with the Active Runs row's Resume: both call the same command,
   // which takes no lock and cannot see a successor until it registers, so a
   // per-component flag let the two surfaces double-spawn between them.
@@ -33,26 +32,16 @@ function BreakerParkChip({ park }: { park: SamuraiBreakerPark }) {
 
   const resume = async () => {
     if (resuming) return;
-    setResuming(park.project, park.epic, true);
     setError(null);
     try {
-      await samuraiRecoverRun(park.project, park.epic);
-      // The run has an owner again — drop its chip. The Active Runs refresh
-      // republishes the whole list anyway; this just stops the chip lingering
-      // until then.
-      setParks(
-        useSessionStore
-          .getState()
-          .samuraiBreakerParks.filter(
-            (p) => !(samePath(p.project, park.project) && p.epic === park.epic),
-          ),
-      );
+      // Issue #211: ONE resume action for every park kind. It claims the
+      // shared in-flight guard, warns on an exhausted allowance, and drops
+      // this chip itself once the run has an owner again.
+      await resumeRunNow(park.project, park.epic);
     } catch (err) {
       // Surfaced on the chip: a refusal that vanished would read as a click
       // that did nothing.
       setError(String(err));
-    } finally {
-      setResuming(park.project, park.epic, false);
     }
   };
 
@@ -177,6 +166,50 @@ export const SamuraiScheduleChip = memo(function SamuraiScheduleChip({
       >
         {label}
       </button>
+      {/* Issue #211: acknowledging was the ONLY thing this chip did — a user
+          who knows the window has actually reset had no button anywhere. It
+          acts on the soonest-firing run (the one the countdown shows), which
+          is the only epic this chip ever names. */}
+      <ParkResumeButton entry={soonest} />
     </span>
   );
 });
+
+/**
+ * "Resume now" for one park timer (issue #211), next to the acknowledge
+ * click. Ends the park early: the timer is cancelled and the successor
+ * spawns immediately.
+ */
+function ParkResumeButton({ entry }: { entry: SamuraiScheduleEntry }) {
+  const [error, setError] = useState<string | null>(null);
+  // The same shared guard the breaker chip and the Active Runs row claim:
+  // the command takes no backend lock and cannot see a successor until it
+  // registers, so a per-component flag let two surfaces double-spawn.
+  const resuming = useSessionStore((s) =>
+    s.samuraiResumingRuns.includes(samuraiRunKey(entry.project_path, entry.epic)),
+  );
+  const resume = async () => {
+    if (resuming) return;
+    setError(null);
+    try {
+      await resumeRunNow(entry.project_path, entry.epic);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={resume}
+      disabled={resuming}
+      title={
+        error ??
+        `Resume ${entry.epic} now: cancel its resume timer and spawn a fresh agent immediately. Use it when the allowance window has actually reset — if it has not, you are warned first.`
+      }
+      className="rounded border border-maestro-orange/50 px-1 py-px text-[9px] font-bold leading-tight tracking-wide text-maestro-orange hover:bg-maestro-orange/20 disabled:opacity-50"
+      aria-label={`Resume run ${entry.epic}`}
+    >
+      {resuming ? "Resuming…" : "Resume"}
+    </button>
+  );
+}
