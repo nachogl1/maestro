@@ -30,7 +30,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { formatFireDateTime } from "@/lib/parkTime";
 import type {
-  SamuraiPreflight,
+  SamuraiPreflightCheck,
   SamuraiRunListEntry,
   SamuraiRunOrchestrator,
   SamuraiTestGateProgress,
@@ -72,13 +72,44 @@ function buildTab(overrides: Partial<WorkspaceTab> = {}): WorkspaceTab {
   };
 }
 
-function passPreflight(overrides: Partial<SamuraiPreflight> = {}): SamuraiPreflight {
-  return {
-    gh_auth: { ok: true, username: "nachogl1", error: null },
-    windows_reported: true,
-    ...overrides,
-  };
+/**
+ * The all-green structured preflight (issue #214) — one verdict per check,
+ * in the order the backend returns them. `overrides` replaces individual
+ * rows by id, so a test names only the check it cares about.
+ */
+function passPreflight(
+  overrides: Record<string, Partial<SamuraiPreflightCheck>> = {},
+): SamuraiPreflightCheck[] {
+  const base: SamuraiPreflightCheck[] = [
+    { id: "gh_auth", status: "pass", detail: "gh authenticated as nachogl1", overridable: false },
+    {
+      id: "usage_windows",
+      status: "pass",
+      detail: "Allowance windows reported",
+      overridable: false,
+    },
+    {
+      id: "allowance_headroom",
+      status: "pass",
+      detail: "Allowance headroom is not evaluated yet (issue #212)",
+      overridable: false,
+    },
+    {
+      id: "duplicate_run",
+      status: "pass",
+      detail: "No run owns this epic yet",
+      overridable: false,
+    },
+  ];
+  return base.map((check) => ({ ...check, ...(overrides[check.id] ?? {}) }));
 }
+
+/** The #212-shaped advisory row: the 5h window is nearly spent. */
+const HEADROOM_WARNING: Partial<SamuraiPreflightCheck> = {
+  status: "warn",
+  detail: "the 5h session window is 80% used — this run will park early",
+  overridable: true,
+};
 
 /** Opus 38% used → 62% left; Fable rides the `limits`-derived list. */
 function buildUsage(overrides: Partial<UsageData> = {}): UsageData {
@@ -298,10 +329,14 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.getByLabelText("Model")).toBeInTheDocument();
     expect(screen.getByLabelText("Handoff at context %")).toBeInTheDocument();
     // The agent-readiness declaration is gone — it is the model's call now.
-    // The only checkbox is the test-gate skip toggle (issue #90b), OFF by
-    // default: the gate runs unless the user explicitly opts out.
-    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    // Two checkboxes remain, both OFF by default: the test-gate skip toggle
+    // (issue #90b) and the preflight warnings override (issue #214). The
+    // gate runs, and an amber check blocks, unless the user opts out.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     expect(screen.getByRole("checkbox", { name: "Skip test-suite gate" })).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Launch anyway (warnings only)" }),
+    ).not.toBeChecked();
     expect(screen.getByText(/Make sure the issues are agent-ready/)).toBeInTheDocument();
     // Nothing to work yet → Launch stays disabled.
     expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
@@ -365,6 +400,8 @@ describe("LaunchSection (issue #63)", () => {
       model: null,
       handoffContextPct: null,
       skipTestGate: false,
+      // Issue #214: nothing was warned about, so nothing was overridden.
+      overrideWarnings: false,
       // Issue #91: the workflow editor is untouched — null lets the backend
       // fall back to (and snapshot) the default template.
       workflow: null,
@@ -778,6 +815,7 @@ describe("LaunchSection (issue #63)", () => {
       model: null,
       handoffContextPct: 30,
       skipTestGate: false,
+      overrideWarnings: false,
       workflow: null,
     });
     // Every field clears together after a launch.
@@ -962,24 +1000,86 @@ describe("LaunchSection (issue #63)", () => {
     await screen.findByText("No active runs. Launch one above.");
   });
 
-  it("stops at failing preflight rows and never reaches the launch", async () => {
+  it("renders one row per preflight check, pass or not (issue #214)", async () => {
+    mockInvoke({ preflight: passPreflight({ allowance_headroom: HEADROOM_WARNING }) });
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "#38" } });
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+
+    // All four, including the ones that PASSED — the old dialog showed two
+    // rows and one opaque summary string, so an advisory finding had
+    // nowhere to live.
+    await screen.findByTestId("preflight-gh_auth");
+    for (const id of ["gh_auth", "usage_windows", "allowance_headroom", "duplicate_run"]) {
+      expect(screen.getByTestId(`preflight-${id}`)).toBeInTheDocument();
+    }
+    expect(screen.getByText(/gh authenticated as nachogl1/)).toBeInTheDocument();
+    expect(screen.getByText(/80% used/)).toBeInTheDocument();
+  });
+
+  it("stops at a failing preflight row, disables Launch, and no checkbox clears it", async () => {
     mockInvoke({
-      preflight: {
-        gh_auth: { ok: false, username: null, error: "gh is not authenticated" },
-        windows_reported: false,
-      },
+      preflight: passPreflight({
+        gh_auth: {
+          status: "fail",
+          detail: "launch refused: gh auth check failed — gh is not authenticated",
+        },
+        usage_windows: {
+          status: "fail",
+          detail: "launch refused: the usage API reports no governing allowance window",
+        },
+      }),
     });
     render(<LaunchSection />);
     fireEvent.change(textBox(), { target: { value: "#38" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
-    expect(await screen.findByText(/gh auth failed/)).toBeInTheDocument();
-    expect(screen.getByText(/gh is not authenticated/)).toBeInTheDocument();
-    expect(screen.getByText(/No governing allowance window/)).toBeInTheDocument();
-    expect(screen.getByText(/Preflight failed/)).toBeInTheDocument();
+    // The rows ARE the reason now — no summary string to read past.
+    expect(await screen.findByText(/gh is not authenticated/)).toBeInTheDocument();
+    expect(screen.getByText(/no governing allowance window/)).toBeInTheDocument();
+    expect(screen.queryByText(/Preflight failed/)).not.toBeInTheDocument();
     expect(callsOf("samurai_launch_run")).toHaveLength(0);
-    // Still launchable once the user fixes the environment.
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+
+    // "Launch anyway (warnings only)" means warnings only: a red check is
+    // not a matter of nerve.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Launch anyway (warnings only)" }));
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+    expect(callsOf("samurai_launch_run")).toHaveLength(0);
+
+    // Editing the request retires the stale verdicts, so a user who has
+    // since fixed `gh auth` is not locked out of re-checking.
+    fireEvent.change(textBox(), { target: { value: "#38 again" } });
     expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled();
+  });
+
+  it("launches over a preflight WARNING only once the override is ticked", async () => {
+    mockInvoke({ preflight: passPreflight({ allowance_headroom: HEADROOM_WARNING }) });
+    render(<LaunchSection />);
+    fireEvent.change(textBox(), { target: { value: "#38" } });
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+
+    // An advisory finding still stops the launch — it is just overridable.
+    expect(await screen.findByText(/80% used/)).toBeInTheDocument();
+    expect(callsOf("samurai_launch_run")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Launch anyway (warnings only)" }));
+    expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+
+    // …and the tick rides the request, so the backend — the real gate —
+    // knows the user took it on their own head.
+    await waitFor(() => expect(callsOf("samurai_launch_run")).toHaveLength(1));
+    expect(callsOf("samurai_launch_run")[0][1]).toMatchObject({ overrideWarnings: true });
+
+    // Consent is PER LAUNCH: it clears with the rest of the form, so it
+    // cannot carry into the next epic's launch over a warning the user
+    // never saw.
+    await screen.findByText(/Run launched: epic #38/);
+    expect(
+      screen.getByRole("checkbox", { name: "Launch anyway (warnings only)" }),
+    ).not.toBeChecked();
   });
 
   /**
@@ -1345,11 +1445,11 @@ describe("LaunchSection (issue #63)", () => {
   });
 
   it("drops a preflight result that lands after a project switch", async () => {
-    let resolvePreflight: (result: SamuraiPreflight) => void = () => {};
+    let resolvePreflight: (result: SamuraiPreflightCheck[]) => void = () => {};
     invokeMock.mockImplementation(async (cmd: string) => {
       switch (cmd) {
         case "samurai_preflight":
-          return new Promise<SamuraiPreflight>((resolve) => {
+          return new Promise<SamuraiPreflightCheck[]>((resolve) => {
             resolvePreflight = resolve;
           });
         case "samurai_list_runs":

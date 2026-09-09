@@ -196,6 +196,11 @@ fn is_self_event(event: &AuditEvent) -> bool {
             | Some(super::samurai_reconciler::RECONCILE_UNREADABLE_CONFIG_KIND)
             | Some("context_blind")
             | Some("spawn_dropped")
+            // Issue #214: the human ticked "launch anyway" over a preflight
+            // warning — Maestro recording its own launch decision, and it is
+            // written BEFORE the run's first generation even spawns, so it
+            // can only ever be counted against an agent unfairly.
+            | Some("preflight_overridden")
             | Some("successor_no_start") => true,
             // Only the still-tracked flavor is Maestro's own delivery
             // bookkeeping; the ladder-exhausted flavor (no `still_tracked`
@@ -776,6 +781,19 @@ mod tests {
                     1,
                     1,
                     json!({ "kind": "ack_timeout", "attempts": 0, "still_tracked": true, "never_idled": true }),
+                ),
+                true,
+            ),
+            // Issue #214: the launcher's own record that a human launched
+            // over an advisory preflight warning. Maestro's decision, not
+            // agent evidence — it must not advance the breaker.
+            (
+                AuditEvent::now(
+                    "epic-1",
+                    AuditEventKind::Alert,
+                    0,
+                    0,
+                    json!({ "kind": "preflight_overridden", "checks": [] }),
                 ),
                 true,
             ),
