@@ -461,6 +461,22 @@ export function samuraiRecoverRun(
 }
 
 /**
+ * Ends a park EARLY (issue #211) — the one manual resume behind every park
+ * kind: allowance, gh-auth and circuit breaker alike. Cancels the run's
+ * pending resume timer and spawns the successor now.
+ *
+ * Everything `samuraiRecoverRun` verifies still applies (ACTIVE run, no
+ * live agent, worktree branch + HEAD via git, a breaker park's stamp and
+ * counter cleared). The difference: an engaged hard park sweep does not
+ * refuse it, because an exhausted allowance is exactly what the caller is
+ * overriding on purpose. Prefer {@link resumeRunNow} in `lib/samuraiResume`
+ * — it adds the allowance warning and the shared in-flight guard.
+ */
+export function samuraiResumeNow(projectPath: string, epic: string): Promise<SamuraiRecoverResult> {
+  return invoke("samurai_resume_now", { projectPath, epic });
+}
+
+/**
  * Schedules a one-shot run launch for a day+time (issue #129). `fireAt` is
  * RFC 3339 and must be in the future; the free-text request (issue #128) and
  * the launch options are stored on the timer and launched — full server-side

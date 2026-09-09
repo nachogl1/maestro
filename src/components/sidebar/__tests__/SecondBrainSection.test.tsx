@@ -157,6 +157,17 @@ function mockInvoke(
       }
       case "samurai_timer_cancel":
         return true;
+      // Issue #211: the resume half of the two-way cancel confirm.
+      case "samurai_resume_now":
+        return {
+          epic: "#38",
+          generation: 3,
+          prior_generation: 2,
+          from_handoff: true,
+          branch: "maestro-38",
+          head: "abc1234",
+          timer_cancelled: true,
+        };
       case "samurai_cleanup_epic":
         return {
           epic: "#38",
@@ -895,7 +906,14 @@ describe("SecondBrainSection (issue #66)", () => {
     expect(await screen.findByText("parked")).toBeInTheDocument();
   });
 
-  it("cancels a timer only after the no-self-resume consequence is confirmed", async () => {
+  /**
+   * Issue #211: cancelling used to be the ONLY thing this button could do,
+   * and it left the run stopped for good — relaunching was the way back,
+   * and the preflight rightly refuses that while the run is still ACTIVE.
+   * The confirm is now a two-way choice, and each way calls exactly one
+   * command: the resume cancels the timer itself.
+   */
+  it("offers cancel-and-resume or cancel-and-stay-parked, and calls one command each", async () => {
     mockInvoke([
       fileEntry({
         kind: "TIMER",
@@ -904,22 +922,27 @@ describe("SecondBrainSection (issue #66)", () => {
         in_use: true,
       }),
     ]);
-    askMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    // Declined outright; then cancel + stay parked; then cancel + resume now.
+    askMock
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
     render(<SecondBrainSection />);
     const button = await screen.findByRole("button", { name: "Cancel resume timer for #38" });
 
-    // Declined — nothing cancelled.
+    // Declined — nothing happens at all, and no second question is asked.
     fireEvent.click(button);
     await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
     expect(invokeMock).not.toHaveBeenCalledWith("samurai_timer_cancel", expect.anything());
-    // The confirm names the real consequence: no self-resume afterwards.
-    expect(askMock.mock.calls[0][0]).toMatch(/NOT resume on its own/);
     expect(askMock.mock.calls[0][1]).toMatchObject({
       title: "Cancel Resume Timer",
       kind: "warning",
     });
 
-    // Confirmed — the wrapper is called with the row's project + epic.
+    // Stay parked: the timer goes, nothing spawns, and the consequence is
+    // spelled out on both the question and the answer.
     fireEvent.click(button);
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("samurai_timer_cancel", {
@@ -927,7 +950,25 @@ describe("SecondBrainSection (issue #66)", () => {
         epic: "#38",
       }),
     );
-    expect(await screen.findByText("Cancelled the resume timer for #38.")).toBeInTheDocument();
+    expect(askMock.mock.calls[2][0]).toMatch(/NOT resume on its own/);
+    expect(askMock.mock.calls[2][1]).toMatchObject({
+      okLabel: "Cancel and resume now",
+      cancelLabel: "Cancel and stay parked",
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_resume_now", expect.anything());
+    expect(
+      await screen.findByText("Cancelled the resume timer for #38. It will NOT resume on its own."),
+    ).toBeInTheDocument();
+
+    // Resume now: ONE command, which cancels the timer on its way.
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("samurai_resume_now", {
+        projectPath: "C:\\git\\maestro",
+        epic: "#38",
+      }),
+    );
+    expect(invokeMock.mock.calls.filter(([c]) => c === "samurai_timer_cancel")).toHaveLength(1);
   });
 
   it("renders a shared schedule.json health reason only under the first timer row", async () => {

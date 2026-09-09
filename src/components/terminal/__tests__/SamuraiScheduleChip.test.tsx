@@ -166,7 +166,7 @@ describe("SamuraiScheduleChip (issue #61)", () => {
    * it twice over: it never rendered (no schedule entry to render from), and
    * acknowledging is not a decision, it just hides the run.
    */
-  it("offers Resume on a breaker park and calls the recover command", async () => {
+  it("offers Resume on a breaker park and calls the resume-now command", async () => {
     useSessionStore.setState({
       samuraiBreakerParks: [{ project: "C:/proj", epic: "#37", at: "2026-08-06T09:00:00+00:00" }],
     });
@@ -178,7 +178,8 @@ describe("SamuraiScheduleChip (issue #61)", () => {
       fireEvent.click(button);
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("samurai_recover_run", {
+    // Issue #211: every park kind resumes through the one command.
+    expect(invokeMock).toHaveBeenCalledWith("samurai_resume_now", {
       projectPath: "C:/proj",
       epic: "#37",
     });
@@ -202,16 +203,29 @@ describe("SamuraiScheduleChip (issue #61)", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("leaves the allowance park chip acknowledge-only", () => {
-    // The other park kind is self-healing: it resumes on its own, and
-    // resuming it by hand would burn the exhausted window it protects.
+  /**
+   * Issue #211: acknowledging was the ONLY thing an allowance chip did, so a
+   * user who could see "resumes 14:32" and knew the window had already reset
+   * had nothing to click — here or anywhere else. The countdown keeps its
+   * acknowledge click and gains a Resume beside it.
+   */
+  it("offers Resume beside the allowance chip's acknowledge click (issue #211)", async () => {
     useSessionStore.setState({ samuraiSchedule: [entry()] });
     render(<SamuraiScheduleChip projectPath="C:/proj" />);
 
-    expect(screen.queryByRole("button", { name: /Resume run/ })).toBeNull();
-    expect(screen.queryByText(/parked · breaker/)).toBeNull();
+    // Acknowledging the countdown itself still invokes nothing.
     fireEvent.click(screen.getByText(/^parked · resumes /));
     expect(invokeMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(/parked · breaker/)).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Resume run #37" }));
+    });
+    expect(invokeMock).toHaveBeenCalledWith("samurai_resume_now", {
+      projectPath: "C:/proj",
+      epic: "#37",
+    });
+    expect(useSessionStore.getState().samuraiResumingRuns).toEqual([]);
   });
 
   it("shows a breaker chip alongside a countdown when a project holds both", () => {
@@ -222,7 +236,9 @@ describe("SamuraiScheduleChip (issue #61)", () => {
     render(<SamuraiScheduleChip projectPath="C:/proj" />);
 
     expect(screen.getByText(/^parked · resumes /)).toBeInTheDocument();
+    // One per park: the breaker's own chip, and the countdown's (issue #211).
     expect(screen.getByRole("button", { name: "Resume run #40" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume run #37" })).toBeInTheDocument();
   });
 
   it("ignores another project's breaker park", () => {
@@ -260,7 +276,7 @@ describe("SamuraiScheduleChip — unacknowledged park shine", () => {
     useSessionStore.setState({ samuraiParkAlerts: [alert()] });
     render(<SamuraiScheduleChip projectPath="C:/proj" />);
 
-    const chip = screen.getByRole("button");
+    const chip = screen.getByRole("button", { name: /^parked/ });
     expect(chip.className).toContain("samurai-park-shine");
     expect(chip.getAttribute("title")).toContain("Click to acknowledge");
   });
@@ -269,9 +285,9 @@ describe("SamuraiScheduleChip — unacknowledged park shine", () => {
     useSessionStore.setState({ samuraiParkAlerts: [alert()] });
     render(<SamuraiScheduleChip projectPath="C:/proj" />);
 
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("button", { name: /^parked/ }));
 
-    const chip = screen.getByRole("button");
+    const chip = screen.getByRole("button", { name: /^parked/ });
     expect(chip.className).not.toContain("samurai-park-shine");
     // The park itself stays legible — only the shouting stops.
     expect(chip.textContent).toContain("parked · resumes ");
@@ -282,7 +298,9 @@ describe("SamuraiScheduleChip — unacknowledged park shine", () => {
     useSessionStore.setState({ samuraiParkAlerts: [alert({ project: "C:/other" })] });
     render(<SamuraiScheduleChip projectPath="C:/proj" />);
 
-    expect(screen.getByRole("button").className).not.toContain("samurai-park-shine");
+    expect(screen.getByRole("button", { name: /^parked/ }).className).not.toContain(
+      "samurai-park-shine",
+    );
   });
 });
 

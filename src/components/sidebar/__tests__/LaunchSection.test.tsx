@@ -249,6 +249,8 @@ function mockInvoke({
         });
       case "samurai_timer_cancel":
         return true;
+      // Issue #211: `samurai_resume_now` answers with the same shape.
+      case "samurai_resume_now":
       // Issue #124: recovery answers with what it started.
       case "samurai_recover_run":
         return {
@@ -719,18 +721,57 @@ describe("LaunchSection (issue #63)", () => {
     expect(callsOf("samurai_recover_run")).toHaveLength(1);
   });
 
-  // The backend only refuses a recovery while `parking_engaged()` is true,
-  // and that flag clears as soon as the sweep arms its timers — so a click on
-  // the refresh icon right above a "PARKED · resumes …" badge cancelled the
-  // resume timer and spawned a fresh generation into the exhausted allowance
-  // window the park existed to protect.
-  it("offers no recovery on a parked run", async () => {
+  // Issue #211: an allowance-parked run used to have NO button at all — the
+  // row hid its action behind `parked === null` and the only other offer,
+  // cancelling the timer, left the run stopped for good. A user staring at
+  // "resumes 19:10" who knows the window has already reset now has one
+  // click, and it is a RESUME (the timer goes with it), never a recovery.
+  it("offers Resume on an allowance-parked run (issue #211)", async () => {
     useSessionStore.setState({ samuraiSchedule: [timer()] });
     mockInvoke({ runs: [run()] });
     render(<LaunchSection />);
 
     expect(await screen.findByText(/^PARKED · resumes /)).toBeInTheDocument();
+    // Not "Recover": the park is deliberate, so the label says what ending
+    // it early actually is.
     expect(screen.queryByRole("button", { name: "Recover run #38" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resume run #38" }));
+
+    await waitFor(() => expect(callsOf("samurai_resume_now")).toHaveLength(1));
+    expect(callsOf("samurai_resume_now")[0][1]).toEqual({
+      projectPath: "C:\\git\\maestro",
+      epic: "#38",
+    });
+    expect(callsOf("samurai_recover_run")).toHaveLength(0);
+  });
+
+  // A gh-auth park (issue #63) arms no timer and stamps no run config, so
+  // the frontend cannot tell it from a crashed run — which is exactly why
+  // its row must still carry the action rather than nothing at all.
+  it("still offers the row action on a run parked with no timer (gh-auth park)", async () => {
+    useSessionStore.setState({ samuraiSchedule: [] });
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+    await screen.findByText("#38");
+
+    fireEvent.click(screen.getByRole("button", { name: "Recover run #38" }));
+    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+  });
+
+  // "It is the user's call": the resume warns with the live reading rather
+  // than refusing, and declining leaves the run exactly as it was.
+  it("warns before resuming while the allowance is still exhausted (issue #211)", async () => {
+    useSessionStore.setState({ samuraiSchedule: [timer()] });
+    mockInvoke({ runs: [run()], usage: buildUsage({ sessionPercent: 91 }) });
+    askMock.mockResolvedValue(false);
+    render(<LaunchSection />);
+    await screen.findByText("#38");
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume run #38" }));
+
+    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
+    expect(String(askMock.mock.calls[0][0])).toContain("91%");
+    expect(callsOf("samurai_resume_now")).toHaveLength(0);
   });
 
   // KILLED is the NORMAL post-handoff state, held until the successor
@@ -1247,9 +1288,11 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.getByRole("button", { name: "Resume run #38" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Abandon run #38" })).toBeEnabled();
 
+    // Issue #211: one resume command behind every park kind — the breaker's
+    // button moved off `samurai_recover_run` with the rest.
     fireEvent.click(screen.getByRole("button", { name: "Resume run #38" }));
-    await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
-    expect(callsOf("samurai_recover_run")[0][1]).toEqual({
+    await waitFor(() => expect(callsOf("samurai_resume_now")).toHaveLength(1));
+    expect(callsOf("samurai_resume_now")[0][1]).toEqual({
       projectPath: "C:\\git\\maestro",
       epic: "#38",
     });
@@ -1346,18 +1389,22 @@ describe("LaunchSection (issue #63)", () => {
   });
 
   /**
-   * Issue #209: the action's visibility used to depend on the mere EXISTENCE
-   * of a park (`parked === null`). An allowance park must still hide it — it
-   * resumes itself, and clicking would burn the window the park protects —
-   * but a breaker park arms no timer, so hiding it left no way out at all.
+   * Issue #209 made the action's visibility depend on the park's REASON
+   * instead of the mere existence of a park; issue #211 finished the job and
+   * removed the last gate. EVERY park kind now shows the same Resume — an
+   * allowance park included, because "it resumes itself" is no answer to a
+   * user who knows the window has already reset. What still separates the
+   * two kinds is only the tooltip.
    */
-  it("keeps Resume hidden for an allowance park and shown for a breaker park", async () => {
+  it("shows Resume for an allowance park and for a breaker park", async () => {
     mockInvoke({ runs: [run()] });
     useSessionStore.setState({ samuraiSchedule: [timer()] });
     const { unmount } = render(<LaunchSection />);
     await screen.findByText("#38");
     expect(screen.queryByRole("button", { name: /Recover run/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Resume run/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Resume run #38" }).getAttribute("title")).toContain(
+      "end the park early",
+    );
     unmount();
 
     // Same pending timer, but the run is ALSO breaker-parked: the reason wins.

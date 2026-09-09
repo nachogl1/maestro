@@ -78,6 +78,7 @@ use super::samurai_replicator::SamuraiReplicator;
 use super::samurai_run_config::{ConfigLookup, RunConfigStatus, RunConfigStore, SamuraiRunConfig};
 use super::samurai_schedule::{SamuraiSchedule, ScheduleEntry};
 use super::supervisor::{SessionSnapshot, Supervisor};
+use crate::commands::samurai::TRIGGER_MANUAL_RESUME;
 
 /// How far a deferred resume is pushed out (module doc: parking engaged or a
 /// live orchestrator already exists). 10 minutes: long enough for a park
@@ -116,6 +117,13 @@ fn reason_for_trigger(trigger: &str) -> Option<&'static str> {
     match trigger {
         TRIGGER_PARK => Some(REASON_PARK),
         GH_AUTH_RESTORED => Some(GH_AUTH_RESTORED),
+        // Issue #211: a RESUME NOW is a human ending a park early, and its
+        // spawn can be dropped exactly like a timer's (the project tab is
+        // closed). Without an arm here that click simply vanished — the
+        // failure #207 exists to remove, one surface further along. It
+        // re-arms as an ordinary park timer, which is what the run was
+        // before the click.
+        TRIGGER_MANUAL_RESUME => Some(REASON_PARK),
         _ => None,
     }
 }

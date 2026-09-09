@@ -1495,6 +1495,29 @@ fn verify_worktree_git(worktree: &Path) -> Result<(String, String), String> {
 /// generation through the replicator — which resumes from the prior handoff
 /// when it exists, or runs the full recovery ritual (reconstruct from git +
 /// gh + transcript digest, verify before trusting) when it does not.
+/// Which way in reached [`recover_run_inner`] (issue #211). The two share
+/// every gate, every piece of park-state cleanup and the spawn itself; they
+/// differ only in what an exhausted allowance means and in the `trigger`
+/// the RESUME row records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResumeMode {
+    /// `samurai_recover_run` (issue #124): the agent DIED and a human is
+    /// restarting a crashed run. A hard park sweep in flight refuses it —
+    /// the fresh orchestrator would be swept straight back.
+    Recovery,
+    /// `samurai_resume_now` (issue #211): the run is PARKED and a human is
+    /// deliberately ending the park early — "the window reset, give it
+    /// back". The allowance state is the user's call (the surfaces warn
+    /// with the live reading before they call this), so an engaged sweep
+    /// does not refuse it.
+    ResumeNow,
+}
+
+/// The `trigger` every [`ResumeMode::ResumeNow`] RESUME row records (issue
+/// #211): ONE action for every park kind, so the kind rides `park_reason`
+/// instead of splitting the trigger per park.
+pub(crate) const TRIGGER_MANUAL_RESUME: &str = "manual";
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn recover_run_inner(
     supervisor: &Supervisor,
@@ -1506,6 +1529,7 @@ pub(crate) async fn recover_run_inner(
     progress: &SamuraiProgress,
     project: &str,
     epic: &str,
+    mode: ResumeMode,
 ) -> Result<SamuraiRecoverResult, String> {
     // Only a non-completed run recovers: COMPLETED is finished (cleanup is
     // its next step), ARCHIVED/missing has nothing to restart.
@@ -1523,12 +1547,23 @@ pub(crate) async fn recover_run_inner(
     // burn the exhausted allowance the sweep exists to protect, and the
     // fresh orchestrator gets immediately re-swept. Recovery must honour the
     // same guard.
+    // Issue #211: a RESUME NOW is the exception. It exists precisely for a
+    // run parked on an exhausted allowance, and refusing it here would put
+    // the user back where the issue starts: a parked run with no button.
+    // The allowance is their call — every surface warns with the live
+    // reading before calling, and the run may well park again in minutes.
     if parker.parking_engaged() {
-        return Err(format!(
-            "run {epic} cannot be recovered while allowance parking is engaged — a hard park \
-             sweep is reclaiming exhausted allowance right now; wait for it to finish, then \
-             recover or let the epic resume normally",
-        ));
+        if mode == ResumeMode::Recovery {
+            return Err(format!(
+                "run {epic} cannot be recovered while allowance parking is engaged — a hard \
+                 park sweep is reclaiming exhausted allowance right now; wait for it to finish, \
+                 then recover or let the epic resume normally",
+            ));
+        }
+        log::warn!(
+            "samurai resume now: run {epic} in {project} resumed while a hard park sweep is \
+             engaged — the human asked for it explicitly; it may park again immediately"
+        );
     }
     // A live orchestrator must never be duplicated — recovery is for a
     // crashed run.
@@ -1604,10 +1639,15 @@ pub(crate) async fn recover_run_inner(
         .parked
         .as_ref()
         .is_some_and(|p| p.reason == PARK_REASON_CIRCUIT_BREAKER);
-    let trigger = if breaker_park {
-        "breaker_manual"
-    } else {
-        "manual_recovery"
+    // Issue #211: `samurai_resume_now` is ONE action for every park kind, so
+    // its rows all read `trigger: "manual"` and the kind rides `park_reason`
+    // instead; the recovery path keeps its two established trigger strings
+    // so the pre-#211 audit trail still reads exactly the same.
+    let park_reason = config.parked.as_ref().map(|p| p.reason.clone());
+    let trigger = match (mode, breaker_park) {
+        (ResumeMode::ResumeNow, _) => TRIGGER_MANUAL_RESUME,
+        (ResumeMode::Recovery, true) => "breaker_manual",
+        (ResumeMode::Recovery, false) => "manual_recovery",
     };
     if breaker_park {
         progress.reset_breaker(project, epic);
@@ -1637,6 +1677,10 @@ pub(crate) async fn recover_run_inner(
                 "from_handoff": from_handoff,
                 "branch": branch,
                 "head": head,
+                // Issue #211: what the run was parked FOR, when it was
+                // parked at all — the distinction the single `"manual"`
+                // trigger does not carry by itself.
+                "park_reason": park_reason,
             }),
         ),
     );
@@ -1686,6 +1730,52 @@ pub async fn samurai_recover_run(
         &progress,
         &project,
         &epic,
+        ResumeMode::Recovery,
+    )
+    .await
+}
+
+/// Ends a park EARLY (issue #211): the one manual resume behind every park
+/// kind — allowance, gh-auth, circuit breaker — so a user who can see the
+/// countdown always has a button next to it.
+///
+/// Before this, a parked run had none: the recovery action hid itself
+/// whenever a timer existed, and cancelling the timer left the run stopped
+/// for good. Everything the recovery path does still happens (the ACTIVE
+/// gate, the no-live-session gate, the git verification, the pending timer
+/// cancelled so it cannot double-spawn, the `parked` stamp cleared, a
+/// breaker park's counter reset) — the differences are that an engaged
+/// hard park sweep does NOT refuse it, because an exhausted allowance is
+/// exactly what the caller is overriding on purpose, and that its RESUME
+/// row reads `trigger: "manual"`.
+///
+/// Human-only, like recovery: nothing in the backend ever calls it, so a
+/// breaker park still never resumes itself.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn samurai_resume_now(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    replicator: State<'_, Arc<SamuraiReplicator>>,
+    audit: State<'_, AuditLog>,
+    parker: State<'_, Arc<SamuraiParker>>,
+    progress: State<'_, Arc<SamuraiProgress>>,
+    project_path: String,
+    epic: String,
+) -> Result<SamuraiRecoverResult, String> {
+    let project = samurai_project(&project_path);
+    recover_run_inner(
+        &supervisor,
+        &schedule,
+        &run_configs,
+        &replicator,
+        &audit,
+        &parker,
+        &progress,
+        &project,
+        &epic,
+        ResumeMode::ResumeNow,
     )
     .await
 }
@@ -5407,6 +5497,20 @@ mod tests {
     // --- issue #124: crash-recovery relaunch ---
 
     async fn recover(h: &CleanupHarness, epic: &str) -> Result<SamuraiRecoverResult, String> {
+        resume_in_mode(h, epic, ResumeMode::Recovery).await
+    }
+
+    /// Issue #211's `samurai_resume_now`: the same inner action in the mode
+    /// the parked-run surfaces call.
+    async fn resume_now(h: &CleanupHarness, epic: &str) -> Result<SamuraiRecoverResult, String> {
+        resume_in_mode(h, epic, ResumeMode::ResumeNow).await
+    }
+
+    async fn resume_in_mode(
+        h: &CleanupHarness,
+        epic: &str,
+        mode: ResumeMode,
+    ) -> Result<SamuraiRecoverResult, String> {
         recover_run_inner(
             &h.supervisor,
             &h.schedule,
@@ -5417,6 +5521,7 @@ mod tests {
             &h.progress,
             &h.project,
             epic,
+            mode,
         )
         .await
     }
@@ -5464,6 +5569,214 @@ mod tests {
         assert!(err.contains("not ACTIVE"), "{err}");
 
         assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #211: `samurai_resume_now` — end a park EARLY, on purpose
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resume_now_cancels_the_park_timer_and_spawns_the_successor() {
+        // The shape the issue is about: a run parked on the allowance, its
+        // resume armed for hours out, and a human who knows the window has
+        // actually reset. Before #211 the runs row hid its action whenever a
+        // timer existed, so there was NO button — cancelling the timer was
+        // the only thing on offer and it left the run stopped for good.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        // A park closes the tile and leaves a terminal session behind.
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "issue #38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+
+        let result = resume_now(&h, "issue #38").await.unwrap();
+
+        assert_eq!(result.generation, 2, "the successor generation spawns now");
+        // The timer is GONE: left armed it would fire into the resumed run
+        // and put a second orchestrator in the worktree.
+        assert!(result.timer_cancelled);
+        assert!(h.schedule.list().is_empty(), "the park timer is removed");
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row precedes the spawn");
+        assert_eq!(resume.details["trigger"], TRIGGER_MANUAL_RESUME);
+        wait_for_spawns(&h, 2).await;
+        assert_eq!(h.spawns.lock().unwrap()[1].generation, 2);
+    }
+
+    #[tokio::test]
+    async fn test_resume_now_refuses_a_run_with_a_live_session_and_changes_nothing() {
+        // The one thing a resume must never do is duplicate a live
+        // orchestrator — and a refusal that had already eaten the timer
+        // would leave the run worse off than the click found it.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        h.schedule
+            .arm(ScheduleEntry {
+                project_path: h.project.clone(),
+                epic: "issue #38".to_string(),
+                fire_at: "2030-01-01T00:00:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+        // A WORKING orchestrator for this very run.
+        h.supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+
+        let err = resume_now(&h, "issue #38").await.unwrap_err();
+
+        assert!(err.contains("live supervised session"), "{err}");
+        assert_eq!(h.schedule.list().len(), 1, "the timer survives a refusal");
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "only the launch spawned");
+    }
+
+    #[tokio::test]
+    async fn test_resume_now_proceeds_while_parking_is_engaged() {
+        // The one gate `samurai_resume_now` does NOT inherit from recovery.
+        // The action exists for a run parked on an exhausted allowance, so
+        // refusing while the sweep runs would hand the user back the exact
+        // dead end the issue is about. The surfaces warn with the live
+        // reading first; the call is the human's.
+        use crate::core::allowance_watcher::{AllowanceEvent, AllowanceWindow, ThresholdKind};
+
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(1, SupervisorState::Dead).unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        // A live session on ANOTHER epic keeps the sweep in flight, waiting
+        // for its ACK — the state recovery refuses to spawn into.
+        h.supervisor
+            .register_session(99, h.project.clone(), "#other".to_string(), 1)
+            .unwrap();
+        h.parker
+            .on_allowance_event(&AllowanceEvent::ThresholdCrossed {
+                window: AllowanceWindow::FiveHour,
+                threshold_kind: ThresholdKind::Hard,
+                value: 99.0,
+                threshold: 90.0,
+                resets_at: Some("2030-01-01T00:00:00Z".to_string()),
+            });
+        assert!(h.parker.parking_engaged(), "sweep must be engaged");
+
+        // Recovery still refuses; the resume goes through.
+        let err = recover(&h, "issue #38").await.unwrap_err();
+        assert!(err.contains("parking is engaged"), "{err}");
+        let result = resume_now(&h, "issue #38").await.unwrap();
+
+        assert_eq!(result.generation, 2);
+        wait_for_spawns(&h, 2).await;
+        assert_eq!(h.spawns.lock().unwrap()[1].generation, 2);
+    }
+
+    #[tokio::test]
+    async fn test_resume_now_of_a_breaker_park_clears_the_stamp_and_the_counter() {
+        // Issue #211 migrated both breaker Resume buttons off
+        // `samurai_recover_run` onto this command, so everything #209's
+        // recovery test pins has to hold here too — otherwise the migration
+        // silently re-badges the successor PARKED for ever and parks the
+        // fresh agent on its first event. The RESUME row keeps the park kind
+        // as `park_reason`, since the trigger is now `manual` for every kind.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let registered = launched.epic.clone();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), registered.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.progress.on_state_change(&snapshot);
+        h.progress.flush().await;
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        for _ in 0..3 {
+            h.progress.observe_audit(
+                &h.project,
+                &AuditEvent::now(
+                    &registered,
+                    AuditEventKind::Alert,
+                    1,
+                    1,
+                    json!({ "kind": "ack_timeout" }),
+                ),
+            );
+        }
+        h.progress.flush().await;
+        let (_, count, latched) = h
+            .progress
+            .breaker_view(&h.project, &registered)
+            .expect("the epic must have a breaker entry to reset");
+        assert!(latched && count > 0, "got {count}/{latched}");
+        h.run_configs
+            .mark_parked(
+                &h.project,
+                "issue #38",
+                PARK_REASON_CIRCUIT_BREAKER,
+                1,
+                Some("abc1234"),
+            )
+            .unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+
+        resume_now(&h, "issue #38").await.unwrap();
+
+        assert!(
+            h.run_configs
+                .get(&h.project, "issue #38")
+                .unwrap()
+                .parked
+                .is_none(),
+            "the resume must clear the park stamp"
+        );
+        assert_eq!(
+            h.progress.breaker_view(&h.project, &registered),
+            Some((None, 0, false)),
+            "the resume must reset the epic's breaker counter"
+        );
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let resume = read
+            .events
+            .iter()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("a RESUME row precedes the spawn");
+        assert_eq!(resume.details["trigger"], TRIGGER_MANUAL_RESUME);
+        assert_eq!(resume.details["park_reason"], PARK_REASON_CIRCUIT_BREAKER);
+        wait_for_spawns(&h, 2).await;
+        assert_eq!(h.spawns.lock().unwrap()[1].generation, 2);
     }
 
     #[tokio::test]
