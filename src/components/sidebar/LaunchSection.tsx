@@ -536,8 +536,13 @@ function RunRow({
   const isParked = parked !== null || stampParked;
   // The badge exists to name a park that has no countdown of its own. An
   // allowance park has one (the purple line below), so its stamp stays
-  // silent here rather than badging the row twice.
-  const showParkBadge = breakerParked || (stampParked && parked === null);
+  // silent here rather than badging the row twice. INTERRUPTED outranks it:
+  // #210's failed-arm deferral stamps BOTH `parked` and `interrupted_at` on
+  // one run, and the store raises a fatal INTERRUPTED toast for exactly that
+  // state — badging it "PARKED ~ waits for the cause to be fixed" would put
+  // two contradictory statements about one run on screen at once. The
+  // breaker is the exception, because its stamp IS the whole story.
+  const showParkBadge = breakerParked || (stampParked && parked === null && !interrupted);
   const parkLabel = parkReasonLabel(run.parked?.reason ?? "");
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned

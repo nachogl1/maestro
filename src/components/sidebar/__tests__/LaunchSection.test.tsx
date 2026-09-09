@@ -779,6 +779,61 @@ describe("LaunchSection (issue #63)", () => {
     expect(callsOf("samurai_recover_run")).toHaveLength(0);
   });
 
+  // Issue #210's failed-arm deferral stamps BOTH `parked` (allowance) and
+  // `interrupted_at` on one run, and the store raises a FATAL interrupted
+  // toast for it. Badging that run "PARKED · allowance — waits for the
+  // cause to be fixed" would put two contradictory statements about one run
+  // on screen at once: the park badge yields to INTERRUPTED. The action
+  // still shows, because both states want the same click.
+  it("badges INTERRUPTED, not PARKED, when a failed arm stamped both (issue #210)", async () => {
+    useSessionStore.setState({ samuraiSchedule: [] });
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "allowance",
+            at: "2026-09-01T08:00:00Z",
+            generation: 0,
+            head: null,
+          },
+          interrupted_at: {
+            at: "2026-09-01T08:00:01Z",
+            prior_generation: 0,
+            kind: "park_no_reset_time",
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("INTERRUPTED")).toBeInTheDocument();
+    expect(screen.queryByText(/^PARKED · /)).toBeNull();
+    // A stamped park is still a park: the click resumes rather than recovers.
+    expect(screen.getByRole("button", { name: "Resume run #38" })).toBeEnabled();
+  });
+
+  // A BREAKER stamp is the exception: its badge is the whole story, so it
+  // outranks INTERRUPTED rather than yielding to it.
+  it("keeps the breaker badge even when the run is also stamped interrupted", async () => {
+    useSessionStore.setState({ samuraiSchedule: [] });
+    mockInvoke({
+      runs: [
+        run({
+          parked: breakerStamp(),
+          interrupted_at: {
+            at: "2026-09-01T08:00:01Z",
+            prior_generation: 4,
+            kind: "startup_orphan",
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("PARKED · breaker")).toBeInTheDocument();
+    expect(screen.queryByText("INTERRUPTED")).toBeNull();
+  });
+
   // The crashed shape proper: no timer AND no stamp. Still Recover.
   it("still offers Recover on a crashed run with no park of any kind", async () => {
     useSessionStore.setState({ samuraiSchedule: [] });

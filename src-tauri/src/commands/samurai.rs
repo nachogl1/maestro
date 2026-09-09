@@ -29,7 +29,7 @@ use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
 };
-use crate::core::samurai_parker::{SamuraiParker, PARK_REASON_ALLOWANCE};
+use crate::core::samurai_parker::SamuraiParker;
 use crate::core::samurai_pr_runs::PrRunStore;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
@@ -1669,6 +1669,13 @@ pub(crate) async fn recover_run_inner(
         // stamp is a wrong badge, not a wrong spawn.
         log::warn!("samurai recover: could not clear the park stamp for {epic} ({e})");
     }
+    // Issue #211: and the parker's in-memory reason, which nothing but an
+    // external release drained. Left behind, the FALLBACK above outlives the
+    // park it describes: a run parked on the allowance in the morning, then
+    // resumed, then genuinely crashed in the afternoon, recorded that plain
+    // recovery as `park_reason: "allowance"`. Read BEFORE this line, so the
+    // resume that ends the park still reports it.
+    parker.forget_park_reason(project, epic);
 
     log::info!(
         "samurai recover: run {epic} in {project} — spawning gen-{generation} (prior gen-{prior}, from_handoff={from_handoff}, branch {branch} @ {head}, trigger {trigger})"
@@ -2815,6 +2822,7 @@ mod tests {
     use super::*;
     use crate::core::samurai_audit::AuditLog;
     use crate::core::samurai_files::{strip_extended_length, SamuraiFileKind};
+    use crate::core::samurai_parker::PARK_REASON_ALLOWANCE;
     use crate::core::samurai_run_config::InterruptedStamp;
     // Issue #141's title lookup finishes on a background task the caller
     // never awaits, so the tests below observe it through a harness tick
@@ -5652,6 +5660,77 @@ mod tests {
         assert_eq!(resume.details["park_reason"], PARK_REASON_ALLOWANCE);
         wait_for_spawns(&h, 2).await;
         assert_eq!(h.spawns.lock().unwrap()[1].generation, 2);
+    }
+
+    #[tokio::test]
+    async fn test_a_later_recovery_does_not_inherit_the_park_reason_of_an_old_park() {
+        // Issue #211 review: `park_reason` falls back to the parker's
+        // in-memory map, and NOTHING but an external release used to drain
+        // it — so a run parked on the allowance in the morning, resumed,
+        // and then genuinely crashed in the afternoon had that plain
+        // recovery filed as `park_reason: "allowance"`. The resume that ends
+        // a park is what forgets it.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let launched = run_launch(&h, &gate, true, "#38").await.unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session(1, h.project.clone(), launched.epic.clone(), 1)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor
+            .transition(1, SupervisorState::ParkRequested)
+            .unwrap();
+        h.supervisor.transition(1, SupervisorState::Parked).unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 1);
+        // Parked on the allowance, with only the parker's map to say so:
+        // the stamp write is best effort and this is the case where it did
+        // not land, which is exactly what the fallback exists for.
+        h.parker
+            .seed_park_reason(&h.project, "issue #38", PARK_REASON_ALLOWANCE);
+
+        resume_now(&h, "issue #38").await.unwrap();
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        assert_eq!(
+            read.events
+                .iter()
+                .find(|e| e.event == AuditEventKind::Resume)
+                .expect("a RESUME row precedes the spawn")
+                .details["park_reason"],
+            PARK_REASON_ALLOWANCE,
+            "the resume that ENDS the park still reports it"
+        );
+        assert_eq!(
+            h.parker.park_reason(&h.project, "issue #38"),
+            None,
+            "…and forgets it, so it cannot describe a later, unrelated crash"
+        );
+
+        // The afternoon: the successor crashed. A plain recovery, with no
+        // park anywhere in it.
+        wait_for_spawns(&h, 2).await;
+        let snapshot = h
+            .supervisor
+            .register_session(2, h.project.clone(), launched.epic.clone(), 2)
+            .unwrap();
+        h.replicator.on_registered(&snapshot);
+        h.supervisor.transition(2, SupervisorState::Dead).unwrap();
+        write_handoff(&launched.worktree_path, "issue #38", 2);
+
+        recover(&h, "issue #38").await.unwrap();
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let latest = read
+            .events
+            .iter()
+            .rev()
+            .find(|e| e.event == AuditEventKind::Resume)
+            .expect("the recovery's own RESUME row");
+        assert_eq!(latest.details["trigger"], "manual_recovery");
+        assert_eq!(
+            latest.details["park_reason"],
+            serde_json::Value::Null,
+            "a crash is not a park — the morning's reason must not follow it"
+        );
     }
 
     #[tokio::test]
