@@ -358,28 +358,36 @@ export function samuraiScheduleLaunch(
 // Issue #63: run launcher — preflight, launch, cleanup, run listing
 // ---------------------------------------------------------------------------
 
-/** The `gh auth status` probe's structured result (a failed check is data). */
-export interface SamuraiGhAuthCheck {
-  ok: boolean;
-  /** The authenticated gh user, when the check passed. */
-  username: string | null;
-  /** Why the check failed (gh missing, not logged in, runner error). */
-  error: string | null;
-}
+/**
+ * A preflight row's verdict (issue #214). `pass` clears; `warn` is advisory
+ * — the user may launch over it on their own head; `fail` is "this cannot
+ * work" and no checkbox clears it.
+ */
+export type SamuraiPreflightStatus = "pass" | "warn" | "fail";
+
+/** Every preflight check's stable id — mirrors the Rust `CHECK_*` consts. */
+export const PREFLIGHT_GH_AUTH = "gh_auth";
+export const PREFLIGHT_USAGE_WINDOWS = "usage_windows";
+export const PREFLIGHT_ALLOWANCE_HEADROOM = "allowance_headroom";
+export const PREFLIGHT_DUPLICATE_RUN = "duplicate_run";
 
 /**
- * Preflight results (PRD §5.8). Agent-readiness of the epic's issues is no
- * longer a gate here: gen-1 judges it itself as step 2 of its opening brief,
- * so there is nothing for the form to declare or for this to report.
+ * One structured preflight verdict (issue #214) — mirrors the Rust
+ * `PreflightCheck` (`commands/samurai.rs`). Every check reports itself
+ * whether it passed or not, which is what lets the dialog colour each row
+ * and say which one blocks instead of showing one opaque refusal string.
+ *
+ * Agent-readiness of the epic's issues is not among them: gen-1 judges it
+ * itself as step 2 of its opening brief.
  */
-export interface SamuraiPreflight {
-  gh_auth: SamuraiGhAuthCheck;
-  /**
-   * Whether the usage API reports a governing allowance window. `false`
-   * (session AND weekly both unreported, or the poll failed) is a
-   * launch-blocking error — parking cannot govern the run.
-   */
-  windows_reported: boolean;
+export interface SamuraiPreflightCheck {
+  /** `gh_auth` | `usage_windows` | `allowance_headroom` | `duplicate_run`. */
+  id: string;
+  status: SamuraiPreflightStatus;
+  /** The human sentence. On a `fail` it IS the launch refusal, verbatim. */
+  detail: string;
+  /** Whether "Launch anyway (warnings only)" may carry a launch past it. */
+  overridable: boolean;
 }
 
 /**
@@ -577,9 +585,18 @@ export interface SamuraiCleanupReport {
   branch_deleted: boolean;
 }
 
-/** Runs the launch preflight: gh auth + allowance windows reported. */
-export function samuraiPreflight(projectPath: string): Promise<SamuraiPreflight> {
-  return invoke("samurai_preflight", { projectPath });
+/**
+ * Runs the launch preflight and returns one structured verdict per check
+ * (issue #214): gh auth, allowance windows reported, allowance headroom, and
+ * whether a run already owns this epic. `text` is the launcher request,
+ * because the duplicate-run check is EPIC-level — without it there is no
+ * epic to look up, and that row simply passes.
+ */
+export function samuraiPreflight(
+  projectPath: string,
+  text: string,
+): Promise<SamuraiPreflightCheck[]> {
+  return invoke("samurai_preflight", { projectPath, text });
 }
 
 /**
@@ -588,8 +605,13 @@ export function samuraiPreflight(projectPath: string): Promise<SamuraiPreflight>
  * `cargo test --workspace`, progress on `samurai-test-gate-event`; a red
  * suite blocks the launch unless `skipTestGate` overrides), ACTIVE run
  * config, gen-1 spawn with the opening brief. Refusals (gh auth, no
- * governing window, live session, red gate) arrive as rejected promises
- * with the reason.
+ * governing window, live session, duplicate run, red gate) arrive as
+ * rejected promises with the reason.
+ *
+ * `overrideWarnings` (issue #214) is the user's "Launch anyway (warnings
+ * only)" tick. The backend re-runs the whole preflight and gates on it —
+ * the tick only clears OVERRIDABLE warnings, never a `fail`, and a launch
+ * that used it is recorded in the audit as `preflight_overridden`.
  *
  * `text` is the launcher's single free-text box (issue #128) — "what do you
  * want to work on today". It rides to the orchestrator VERBATIM. Any `#N`
@@ -609,6 +631,7 @@ export function samuraiLaunchRun(
   model: string | null,
   handoffContextPct: number | null,
   skipTestGate: boolean,
+  overrideWarnings: boolean,
   workflow?: SamuraiWorkflowGraph | null,
 ): Promise<SamuraiLaunchResult> {
   return invoke("samurai_launch_run", {
@@ -617,6 +640,7 @@ export function samuraiLaunchRun(
     model,
     handoffContextPct,
     skipTestGate,
+    overrideWarnings,
     workflow: workflow ?? null,
   });
 }

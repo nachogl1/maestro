@@ -260,11 +260,14 @@ pub struct GhAuthCheck {
     pub error: Option<String>,
 }
 
-/// Preflight results (PRD §5.8). Two probed checks. Agent-readiness of the
-/// epic's issues used to be a third gate — a user checkbox (PRD decision
-/// #11) — but a human ticking a box proved no more reliable than not asking:
-/// gen-1 now assesses readiness itself as step 1 of its brief
-/// (`launch_instruction`), so nothing about it appears here either.
+/// Preflight results (PRD §5.8). The PROBE side of preflight — what the
+/// environment actually reported. [`preflight_checks`] folds it, plus the
+/// epic-level duplicate-run evidence, into the structured verdict list the
+/// UI renders and the launch gate reads. Agent-readiness of the epic's
+/// issues used to be a third gate — a user checkbox (PRD decision #11) — but
+/// a human ticking a box proved no more reliable than not asking: gen-1 now
+/// assesses readiness itself as step 1 of its brief (`launch_instruction`),
+/// so nothing about it appears here either.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SamuraiPreflight {
     pub gh_auth: GhAuthCheck,
@@ -274,6 +277,64 @@ pub struct SamuraiPreflight {
     /// failed/needs auth — means parking cannot govern this run: a
     /// launch-blocking error, not a warning.
     pub windows_reported: bool,
+    /// The allowance-headroom verdict, already evaluated against the same
+    /// cached usage poll the two probes above used. Carried as a finished
+    /// [`PreflightCheck`] rather than raw numbers precisely so it is the ONE
+    /// seam issue #212 has to fill (and the one tests drive a `warn`
+    /// through) — see [`allowance_headroom_pending_212`].
+    pub allowance_headroom: PreflightCheck,
+}
+
+/// A preflight row's verdict (issue #214). `pass` clears; `warn` is
+/// advisory — "you probably don't want this", which the user may take on
+/// their own head; `fail` is "this cannot work", which no checkbox clears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+/// One structured preflight verdict (issue #214). Replaces the single opaque
+/// refusal string the launcher used to render: every check reports itself,
+/// pass or not, so the dialog can colour each row and say which one blocks.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PreflightCheck {
+    /// Stable identity the UI maps to its own label — never displayed raw.
+    pub id: &'static str,
+    pub status: PreflightStatus,
+    /// The human sentence for the row. On a `fail` it IS the launch refusal
+    /// verbatim, so the dialog and the rejected launch never disagree.
+    pub detail: String,
+    /// Whether `override_warnings` may carry a launch past this row. Only a
+    /// `warn` is ever overridable: a `fail` is not a matter of nerve.
+    pub overridable: bool,
+}
+
+pub const CHECK_GH_AUTH: &str = "gh_auth";
+pub const CHECK_USAGE_WINDOWS: &str = "usage_windows";
+pub const CHECK_ALLOWANCE_HEADROOM: &str = "allowance_headroom";
+pub const CHECK_DUPLICATE_RUN: &str = "duplicate_run";
+
+/// A cleared row.
+fn check_pass(id: &'static str, detail: impl Into<String>) -> PreflightCheck {
+    PreflightCheck {
+        id,
+        status: PreflightStatus::Pass,
+        detail: detail.into(),
+        overridable: false,
+    }
+}
+
+/// A blocking row. `detail` is the refusal the launch itself returns.
+fn check_fail(id: &'static str, detail: impl Into<String>) -> PreflightCheck {
+    PreflightCheck {
+        id,
+        status: PreflightStatus::Fail,
+        detail: detail.into(),
+        overridable: false,
+    }
 }
 
 /// Folds the `gh auth status` outcome into the structured check.
@@ -307,6 +368,21 @@ fn windows_reported(usage: &Result<UsageData, String>) -> bool {
     )
 }
 
+/// PLACEHOLDER, owned by issue #212. That issue fills in the real thresholds
+/// — `warn` at `park_soft_5h_pct`, `fail` at `park_hard_5h_pct` /
+/// `park_hard_7d_pct` — off exactly this already-cached
+/// `get_claude_usage(None)` result, so no second poll and no new subprocess
+/// is ever needed. Until then the row is shape-only and always passes: the
+/// `warn`/`overridable` wiring downstream of it (the launch gate, the audit
+/// row, the dialog's override checkbox) is complete and is driven in tests
+/// by handing [`SamuraiPreflight`] a `warn` entry directly.
+fn allowance_headroom_pending_212(_usage: &Result<UsageData, String>) -> PreflightCheck {
+    check_pass(
+        CHECK_ALLOWANCE_HEADROOM,
+        "Allowance headroom is not evaluated yet (issue #212)",
+    )
+}
+
 /// Runs both probes. Shared by the preflight command and the launch
 /// command's server-side re-check (the UI's earlier pass is advisory only).
 async fn run_preflight(project: &str) -> SamuraiPreflight {
@@ -318,16 +394,40 @@ async fn run_preflight(project: &str) -> SamuraiPreflight {
     SamuraiPreflight {
         gh_auth: gh_auth_check(auth),
         windows_reported: windows_reported(&usage),
+        allowance_headroom: allowance_headroom_pending_212(&usage),
     }
 }
 
-/// Preflight for the launcher UI (PRD §5.8): `gh auth status` + allowance
-/// windows reported. Structured pass/fail per check — an `Err` here means
-/// the command itself broke, never that a check failed.
+/// Preflight for the launcher UI (PRD §5.8), as the structured verdict list
+/// of issue #214: one row per check, each pass/warn/fail with its own
+/// detail. An `Err` here means the command itself broke, never that a check
+/// failed.
+///
+/// `text` is the launcher's free-text box, because `duplicate_run` is an
+/// EPIC-level check (issue #213) — without the request there is no epic to
+/// look up. An empty box has no epic yet, so that row simply passes; the
+/// launch refuses an empty request on its own.
 #[tauri::command]
-pub async fn samurai_preflight(project_path: String) -> Result<SamuraiPreflight, String> {
+pub async fn samurai_preflight(
+    supervisor: State<'_, Arc<Supervisor>>,
+    schedule: State<'_, Arc<SamuraiSchedule>>,
+    run_configs: State<'_, Arc<RunConfigStore>>,
+    project_path: String,
+    text: String,
+) -> Result<Vec<PreflightCheck>, String> {
     let project = samurai_project(&project_path);
-    Ok(run_preflight(&project).await)
+    let preflight = run_preflight(&project).await;
+    let input = LaunchInput::parse(&text);
+    let (live_session, existing) = if input.is_empty() {
+        (false, ExistingRun::Replaceable)
+    } else {
+        let epic = input.label();
+        let live = supervisor.list_sessions().iter().any(|s| {
+            s.project == project && epic_slug(&s.epic) == epic_slug(&epic) && !s.state.is_terminal()
+        });
+        (live, existing_run(&run_configs, &schedule, &project, &epic))
+    };
+    Ok(preflight_checks(&preflight, live_session, &existing))
 }
 
 /// The epic's dedicated branch: `<project>-<epic_slug>` (PRD §5.9 — one
@@ -458,62 +558,126 @@ fn existing_run(
     }
 }
 
-/// The launch refusal matrix, in check order. `None` = clear to launch.
-fn launch_refusal(
+/// The whole preflight as structured verdicts (issue #214), in the order the
+/// dialog renders them. Every check reports itself whether it passed or not
+/// — that is the point: the launcher used to show two rows and one opaque
+/// refusal string, so an advisory finding had nowhere to live.
+///
+/// Shared by the preflight command and [`launch_refusal`], so what the user
+/// saw and what the server gates on are built by the same code.
+pub(crate) fn preflight_checks(
     preflight: &SamuraiPreflight,
     live_session: bool,
     existing: &ExistingRun,
-) -> Option<String> {
-    if live_session {
-        return Some(
-            "launch refused: this epic already has a live supervised session — let it finish \
-             or clean the epic up first"
-                .to_string(),
-        );
-    }
-    // Issue #213: destructive-adjacent, so it outranks the environment
-    // checks below — an ACTIVE record is the epic's owner with or without a
-    // live session, and relaunching would overwrite it. Never overridable:
-    // the three real exits are Resume, Abandon and Cleanup.
-    match existing {
-        ExistingRun::Active { name, state } => {
-            let state = state
-                .as_deref()
-                .map(|s| format!(" ({s})"))
-                .unwrap_or_default();
-            return Some(format!(
-                "launch refused: run `{name}` is already active{state} — resume it, abandon it, \
-                 or clean it up first; relaunching would overwrite its record",
-            ));
-        }
-        ExistingRun::Unreadable { error, path } => {
-            return Some(format!(
-                "launch refused: this epic's run config could not be read ({error}) — its status \
-                 is exactly what is unreadable, so launching could overwrite a live run. Repair \
-                 or delete {path}, then relaunch; Abandon and Cleanup cannot clear an unreadable \
-                 config",
-            ));
-        }
-        ExistingRun::Replaceable => {}
-    }
-    if !preflight.gh_auth.ok {
-        return Some(format!(
-            "launch refused: gh auth check failed — {}",
-            preflight
-                .gh_auth
-                .error
-                .as_deref()
-                .unwrap_or("not authenticated"),
-        ));
-    }
-    if !preflight.windows_reported {
-        return Some(
+) -> Vec<PreflightCheck> {
+    let gh_auth = if preflight.gh_auth.ok {
+        check_pass(
+            CHECK_GH_AUTH,
+            match preflight.gh_auth.username.as_deref() {
+                Some(user) => format!("gh authenticated as {user}"),
+                None => "gh authenticated".to_string(),
+            },
+        )
+    } else {
+        check_fail(
+            CHECK_GH_AUTH,
+            format!(
+                "launch refused: gh auth check failed — {}",
+                preflight
+                    .gh_auth
+                    .error
+                    .as_deref()
+                    .unwrap_or("not authenticated"),
+            ),
+        )
+    };
+    let usage_windows = if preflight.windows_reported {
+        check_pass(CHECK_USAGE_WINDOWS, "Allowance windows reported")
+    } else {
+        check_fail(
+            CHECK_USAGE_WINDOWS,
             "launch refused: the usage API reports no governing allowance window (session and \
-             weekly both unreported) — allowance parking cannot govern this run"
-                .to_string(),
-        );
+             weekly both unreported) — allowance parking cannot govern this run",
+        )
+    };
+    // Issue #213: destructive-adjacent — an ACTIVE record is the epic's
+    // owner with or without a live session, and relaunching would overwrite
+    // it. Never overridable: the three real exits are Resume, Abandon and
+    // Cleanup.
+    let duplicate_run = if live_session {
+        check_fail(
+            CHECK_DUPLICATE_RUN,
+            "launch refused: this epic already has a live supervised session — let it finish \
+             or clean the epic up first",
+        )
+    } else {
+        match existing {
+            ExistingRun::Active { name, state } => {
+                let state = state
+                    .as_deref()
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                check_fail(
+                    CHECK_DUPLICATE_RUN,
+                    format!(
+                        "launch refused: run `{name}` is already active{state} — resume it, \
+                         abandon it, or clean it up first; relaunching would overwrite its record",
+                    ),
+                )
+            }
+            ExistingRun::Unreadable { error, path } => check_fail(
+                CHECK_DUPLICATE_RUN,
+                format!(
+                    "launch refused: this epic's run config could not be read ({error}) — its \
+                     status is exactly what is unreadable, so launching could overwrite a live \
+                     run. Repair or delete {path}, then relaunch; Abandon and Cleanup cannot \
+                     clear an unreadable config",
+                ),
+            ),
+            ExistingRun::Replaceable => {
+                check_pass(CHECK_DUPLICATE_RUN, "No run owns this epic yet")
+            }
+        }
+    };
+    vec![
+        gh_auth,
+        usage_windows,
+        preflight.allowance_headroom.clone(),
+        duplicate_run,
+    ]
+}
+
+/// The launch refusal matrix over the structured verdicts. `None` = clear to
+/// launch.
+///
+/// `override_warnings` is the user's "launch anyway" — it clears OVERRIDABLE
+/// warnings and nothing else. This function is the gate: the dialog's
+/// checkbox only decides what the request carries, and `launch_run_inner`
+/// re-runs the whole thing server-side regardless of what the UI showed.
+fn launch_refusal(checks: &[PreflightCheck], override_warnings: bool) -> Option<String> {
+    // A duplicate run outranks the environment checks (issue #213): losing
+    // an active run's record is worse than a stale gh token, so it is the
+    // reason the human is told about first.
+    if let Some(dup) = checks
+        .iter()
+        .find(|c| c.id == CHECK_DUPLICATE_RUN && c.status == PreflightStatus::Fail)
+    {
+        return Some(dup.detail.clone());
     }
-    None
+    if let Some(failed) = checks.iter().find(|c| c.status == PreflightStatus::Fail) {
+        return Some(failed.detail.clone());
+    }
+    // A warning stops the launch unless the user took it on their own head —
+    // and a warning marked non-overridable stops it either way.
+    checks
+        .iter()
+        .find(|c| c.status == PreflightStatus::Warn && !(override_warnings && c.overridable))
+        .map(|warn| {
+            format!(
+                "launch refused: {} — tick \"Launch anyway (warnings only)\" to launch over it",
+                warn.detail,
+            )
+        })
 }
 
 /// Creates — or REUSES — the epic worktree at its STABLE deterministic path
@@ -844,6 +1008,10 @@ pub(crate) async fn launch_run_inner(
     test_gate: &SamuraiTestGate,
     title_lookup: &RefTitleLookup,
     skip_test_gate: bool,
+    // Issue #214: the user's "Launch anyway (warnings only)". Clears
+    // overridable `warn` verdicts and nothing else — the re-check below is
+    // the gate, the dialog's checkbox is only what fills this in.
+    override_warnings: bool,
     preflight: &SamuraiPreflight,
     global_config: SamuraiConfig,
     project: &str,
@@ -881,8 +1049,31 @@ pub(crate) async fn launch_run_inner(
     // Issue #213: …and the epic's on-disk record, which outlives every
     // session — a parked or interrupted run has none.
     let existing = existing_run(run_configs, schedule, project, &epic);
-    if let Some(refusal) = launch_refusal(preflight, live_session, &existing) {
+    let checks = preflight_checks(preflight, live_session, &existing);
+    if let Some(refusal) = launch_refusal(&checks, override_warnings) {
         return Err(refusal);
+    }
+    // Issue #214: a launch that went ahead over an advisory warning is a
+    // durable fact, not a UI moment — when the run later behaves oddly, the
+    // audit says the human was told and chose to launch. ALERT with the
+    // reconciler's account-wide convention (generation 0, session 0), and
+    // `preflight_overridden` is whitelisted in `is_self_event` so this row
+    // never advances the no-progress circuit breaker (#184 class).
+    let overridden: Vec<&PreflightCheck> = checks
+        .iter()
+        .filter(|c| c.status == PreflightStatus::Warn)
+        .collect();
+    if !overridden.is_empty() {
+        audit.append(
+            project,
+            AuditEvent::now(
+                &epic,
+                AuditEventKind::Alert,
+                0,
+                0,
+                json!({ "kind": "preflight_overridden", "checks": overridden }),
+            ),
+        );
     }
 
     // Review F4: the one per-run threshold the UI exposes — a launch-time
@@ -1058,6 +1249,8 @@ pub async fn samurai_launch_run(
     model: Option<String>,
     handoff_context_pct: Option<f64>,
     skip_test_gate: Option<bool>,
+    // Issue #214: the launcher's "Launch anyway (warnings only)" tick.
+    override_warnings: Option<bool>,
     workflow: Option<WorkflowGraph>,
 ) -> Result<SamuraiLaunchResult, String> {
     let project = samurai_project(&project_path);
@@ -1091,6 +1284,7 @@ pub async fn samurai_launch_run(
         &test_gate,
         &title_lookup,
         skip_test_gate.unwrap_or(false),
+        override_warnings.unwrap_or(false),
         &preflight,
         global_config,
         &project,
@@ -1555,6 +1749,9 @@ pub(crate) async fn scheduled_launch_fire_inner(
                     test_gate,
                     title_lookup,
                     spec.skip_test_gate,
+                    // An UNATTENDED launch never takes a warning on its own
+                    // head — nobody is there to be told (issue #214).
+                    false,
                     preflight,
                     global_config,
                     &entry.project_path,
@@ -2425,38 +2622,163 @@ mod tests {
                 error: (!gh_ok).then(|| "not authenticated".to_string()),
             },
             windows_reported: windows,
+            allowance_headroom: allowance_headroom_pending_212(&Err("unused".to_string())),
         }
+    }
+
+    /// The seam issue #212 fills: a preflight whose allowance headroom came
+    /// back as an OVERRIDABLE warning (its usage at 80% of the soft park
+    /// threshold). Only this one row differs from a clean preflight, so
+    /// every assertion below is about the warn/override wiring, never about
+    /// #212's thresholds.
+    fn preflight_with_headroom_warning() -> SamuraiPreflight {
+        SamuraiPreflight {
+            allowance_headroom: PreflightCheck {
+                id: CHECK_ALLOWANCE_HEADROOM,
+                status: PreflightStatus::Warn,
+                detail: "the 5h session window is 80% used — this run will park early".to_string(),
+                overridable: true,
+            },
+            ..preflight(true, true)
+        }
+    }
+
+    /// `launch_refusal` over the checks a preflight+epic actually produce —
+    /// the two are always built together in production.
+    fn refusal(
+        pf: &SamuraiPreflight,
+        live_session: bool,
+        existing: &ExistingRun,
+        override_warnings: bool,
+    ) -> Option<String> {
+        launch_refusal(
+            &preflight_checks(pf, live_session, existing),
+            override_warnings,
+        )
     }
 
     #[test]
     fn test_launch_refusal_matrix() {
         let free = ExistingRun::Replaceable;
         // All gates pass → clear to launch.
-        assert_eq!(launch_refusal(&preflight(true, true), false, &free), None);
+        assert_eq!(refusal(&preflight(true, true), false, &free, false), None);
         // Each failing gate refuses with its own reason, in check order.
-        let live = launch_refusal(&preflight(true, true), true, &free).unwrap();
+        let live = refusal(&preflight(true, true), true, &free, false).unwrap();
         assert!(live.contains("live supervised session"));
-        let no_auth = launch_refusal(&preflight(false, true), false, &free).unwrap();
+        let no_auth = refusal(&preflight(false, true), false, &free, false).unwrap();
         assert!(no_auth.contains("gh auth"));
         assert!(no_auth.contains("not authenticated"));
-        let no_window = launch_refusal(&preflight(true, false), false, &free).unwrap();
+        let no_window = refusal(&preflight(true, false), false, &free, false).unwrap();
         assert!(no_window.contains("no governing allowance window"));
         // A live session outranks everything (destructive-adjacent first).
-        let both = launch_refusal(&preflight(false, false), true, &free).unwrap();
+        let both = refusal(&preflight(false, false), true, &free, false).unwrap();
         assert!(both.contains("live supervised session"));
+    }
+
+    #[test]
+    fn test_preflight_checks_report_every_check_pass_or_not() {
+        // Issue #214 acceptance: auth ok, windows reported, allowance at the
+        // soft threshold, epic free → [pass, pass, warn, pass].
+        let checks = preflight_checks(
+            &preflight_with_headroom_warning(),
+            false,
+            &ExistingRun::Replaceable,
+        );
+        assert_eq!(
+            checks.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![
+                CHECK_GH_AUTH,
+                CHECK_USAGE_WINDOWS,
+                CHECK_ALLOWANCE_HEADROOM,
+                CHECK_DUPLICATE_RUN
+            ],
+        );
+        assert_eq!(
+            checks.iter().map(|c| c.status).collect::<Vec<_>>(),
+            vec![
+                PreflightStatus::Pass,
+                PreflightStatus::Pass,
+                PreflightStatus::Warn,
+                PreflightStatus::Pass
+            ],
+        );
+        // A PASSING row still carries its own detail — the dialog renders
+        // every entry, which is the whole point of the structured list.
+        assert!(checks[0].detail.contains("nachogl1"), "{:?}", checks[0]);
+        assert!(checks[3].detail.contains("No run owns this epic"));
+        // Only the warning is overridable; nothing else ever is.
+        assert!(checks[2].overridable);
+        assert!(checks.iter().filter(|c| c.overridable).count() == 1);
+
+        // Every hard failure is a `fail`, and NONE of them is overridable —
+        // a fail is not a matter of nerve.
+        let broken = preflight_checks(
+            &preflight(false, false),
+            false,
+            &ExistingRun::Active {
+                name: "Samurai-3".to_string(),
+                state: None,
+            },
+        );
+        assert!(broken
+            .iter()
+            .filter(|c| c.id != CHECK_ALLOWANCE_HEADROOM)
+            .all(|c| c.status == PreflightStatus::Fail && !c.overridable));
+    }
+
+    #[test]
+    fn test_a_warning_blocks_the_launch_until_it_is_overridden() {
+        // Issue #214: the server-side re-check is the gate. Without the
+        // override the warning refuses, and the refusal NAMES it.
+        let warned = preflight_with_headroom_warning();
+        let free = ExistingRun::Replaceable;
+        let refused = refusal(&warned, false, &free, false).unwrap();
+        assert!(refused.contains("80% used"), "{refused}");
+        assert!(
+            refused.contains("Launch anyway (warnings only)"),
+            "{refused}"
+        );
+        // With it, the launch proceeds.
+        assert_eq!(refusal(&warned, false, &free, true), None);
+
+        // …but the override clears WARNINGS ONLY: a fail alongside the
+        // warning still refuses, and with the fail's reason, not the
+        // warning's.
+        let with_fail = SamuraiPreflight {
+            gh_auth: GhAuthCheck {
+                ok: false,
+                username: None,
+                error: Some("not authenticated".to_string()),
+            },
+            ..warned.clone()
+        };
+        let still = refusal(&with_fail, false, &free, true).unwrap();
+        assert!(still.contains("gh auth check failed"), "{still}");
+
+        // A warning the backend marked NON-overridable is not the
+        // checkbox's to clear either.
+        let stubborn = SamuraiPreflight {
+            allowance_headroom: PreflightCheck {
+                overridable: false,
+                ..warned.allowance_headroom.clone()
+            },
+            ..warned
+        };
+        assert!(refusal(&stubborn, false, &free, true).is_some());
     }
 
     #[test]
     fn test_launch_refusal_names_the_active_runs_state() {
         // Issue #213: an ACTIVE record refuses even with a clean preflight
         // and NO live session, and the detail names the run and its state.
-        let bare = launch_refusal(
+        let bare = refusal(
             &preflight(true, true),
             false,
             &ExistingRun::Active {
                 name: "Samurai-3".to_string(),
                 state: None,
             },
+            false,
         )
         .unwrap();
         assert!(bare.contains("`Samurai-3` is already active"), "{bare}");
@@ -2464,25 +2786,27 @@ mod tests {
         assert!(bare.contains("resume it, abandon it, or clean it up first"));
         assert!(!bare.contains("anyway"));
 
-        let stalled = launch_refusal(
+        let stalled = refusal(
             &preflight(true, true),
             false,
             &ExistingRun::Active {
                 name: "Samurai-3".to_string(),
                 state: Some("parked until 19:10, interrupted since 2026-08-20".to_string()),
             },
+            false,
         )
         .unwrap();
         assert!(stalled.contains("(parked until 19:10, interrupted since 2026-08-20)"));
 
         // It outranks the environment checks — the record is the reason.
-        let over_env = launch_refusal(
+        let over_env = refusal(
             &preflight(false, false),
             false,
             &ExistingRun::Active {
                 name: "Samurai-3".to_string(),
                 state: None,
             },
+            false,
         )
         .unwrap();
         assert!(over_env.contains("already active"), "{over_env}");
@@ -2490,13 +2814,14 @@ mod tests {
         // An unreadable config is not evidence the epic is free — and the
         // detail names the ONLY route that clears it (review of #213):
         // Abandon errors on an unreadable file and Cleanup leaves it behind.
-        let torn = launch_refusal(
+        let torn = refusal(
             &preflight(true, true),
             false,
             &ExistingRun::Unreadable {
                 error: "parse failed: expected value".to_string(),
                 path: r"C:\runs\floo\38.json".to_string(),
             },
+            false,
         )
         .unwrap();
         assert!(torn.contains("could not be read"), "{torn}");
@@ -3194,6 +3519,7 @@ mod tests {
             gate,
             &h.title_lookup,
             skip_test_gate,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
@@ -3204,6 +3530,99 @@ mod tests {
             Some(h.base.path()),
         )
         .await
+    }
+
+    /// Same launch, with the preflight and the "launch anyway" tick the
+    /// caller chooses — issue #214's override path.
+    async fn run_launch_with_preflight(
+        h: &CleanupHarness,
+        gate: &SamuraiTestGate,
+        pf: &SamuraiPreflight,
+        override_warnings: bool,
+    ) -> Result<SamuraiLaunchResult, String> {
+        launch_run_inner(
+            &h.supervisor,
+            &h.schedule,
+            &h.worktrees,
+            &h.run_configs,
+            &h.replicator,
+            &h.audit,
+            &h.in_flight,
+            gate,
+            &h.title_lookup,
+            true,
+            override_warnings,
+            pf,
+            SamuraiConfig::default(),
+            &h.project,
+            &LaunchInput::parse("#38"),
+            None,
+            None,
+            None,
+            Some(h.base.path()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_launch_over_a_preflight_warning_needs_the_override_and_is_audited() {
+        // Issue #214 acceptance, end to end through the real launch: the
+        // SERVER re-check is the gate, so a warning refuses on its own…
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let warned = preflight_with_headroom_warning();
+
+        let refused = run_launch_with_preflight(&h, &gate, &warned, false)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("80% used"), "{refused}");
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "a refused launch spawns nothing"
+        );
+        assert!(h.run_configs.load_active().is_empty(), "no ACTIVE config");
+
+        // …and with the tick it proceeds, leaving the durable record that
+        // the human was told and launched anyway.
+        let result = run_launch_with_preflight(&h, &gate, &warned, true)
+            .await
+            .unwrap();
+        assert_eq!(result.epic, "issue #38");
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let alert = read
+            .events
+            .iter()
+            .find(|e| e.details["kind"] == "preflight_overridden")
+            .expect("an ALERT row records the override");
+        assert_eq!(alert.event, AuditEventKind::Alert);
+        assert_eq!(alert.epic, "issue #38");
+        // The row names WHICH check was overridden, with its detail.
+        assert_eq!(alert.details["checks"][0]["id"], CHECK_ALLOWANCE_HEADROOM);
+        assert_eq!(alert.details["checks"][0]["status"], "warn");
+        assert!(alert.details["checks"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("80% used"));
+        assert_eq!(alert.details["checks"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_an_all_pass_preflight_writes_no_override_row() {
+        // The counterpart: nothing was overridden, so nothing is recorded —
+        // the row must mean something when it appears.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        run_launch_with_preflight(&h, &gate, &preflight(true, true), true)
+            .await
+            .unwrap();
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        assert!(
+            !read
+                .events
+                .iter()
+                .any(|e| e.details["kind"] == "preflight_overridden"),
+            "an all-pass preflight has nothing to override"
+        );
     }
 
     async fn run_cleanup(h: &CleanupHarness, epic: &str) -> Result<SamuraiCleanupReport, String> {
@@ -3533,6 +3952,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             global.clone(),
             &project,
@@ -3591,6 +4011,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             global,
             &project,
@@ -3632,6 +4053,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &project,
@@ -3789,6 +4211,7 @@ mod tests {
             &gate,
             &h.title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
@@ -3842,6 +4265,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
@@ -3901,6 +4325,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
@@ -3958,6 +4383,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
@@ -4027,6 +4453,7 @@ mod tests {
                 &gate,
                 &title_lookup,
                 true,
+                false,
                 &preflight(true, true),
                 SamuraiConfig::default(),
                 &h.project,
@@ -4082,6 +4509,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,
@@ -4156,6 +4584,7 @@ mod tests {
             &gate,
             &title_lookup,
             true,
+            false,
             &preflight(true, true),
             SamuraiConfig::default(),
             &h.project,

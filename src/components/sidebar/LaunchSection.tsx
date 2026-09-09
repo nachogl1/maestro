@@ -19,7 +19,11 @@ import { samePath } from "@/lib/path";
 import {
   epicSlug,
   isParkEntry,
-  type SamuraiPreflight,
+  PREFLIGHT_ALLOWANCE_HEADROOM,
+  PREFLIGHT_DUPLICATE_RUN,
+  PREFLIGHT_GH_AUTH,
+  PREFLIGHT_USAGE_WINDOWS,
+  type SamuraiPreflightCheck,
   type SamuraiRunListEntry,
   type SamuraiRunOrchestrator,
   type SamuraiTestGateProgress,
@@ -179,18 +183,45 @@ function OrchestratorDetails({
   );
 }
 
-/** One pass/fail preflight row. */
-function CheckRow({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
+/**
+ * Human label per preflight check id (issue #214). The backend owns the
+ * DETAIL — the sentence that says what happened, and on a `fail` the launch
+ * refusal verbatim — the UI owns only the row's name. An id the frontend has
+ * not been taught about still renders, under its raw id, rather than
+ * vanishing: a silently dropped preflight row is exactly the failure mode
+ * the structured list exists to end.
+ */
+const PREFLIGHT_LABEL: Record<string, string> = {
+  [PREFLIGHT_GH_AUTH]: "GitHub CLI auth",
+  [PREFLIGHT_USAGE_WINDOWS]: "Allowance windows",
+  [PREFLIGHT_ALLOWANCE_HEADROOM]: "Allowance headroom",
+  [PREFLIGHT_DUPLICATE_RUN]: "Duplicate run",
+};
+
+/**
+ * One structured preflight row (issue #214). Three verdicts, not two: green
+ * passed, amber is advisory ("you probably don't want this" — overridable),
+ * red cannot work and no checkbox clears it.
+ */
+function CheckRow({ check }: { check: SamuraiPreflightCheck }) {
+  const tone =
+    check.status === "pass"
+      ? "text-maestro-text"
+      : check.status === "warn"
+        ? "text-maestro-orange"
+        : "text-maestro-red";
   return (
-    <div className="flex items-start gap-1.5 text-[11px]">
-      {ok ? (
+    <div className="flex items-start gap-1.5 text-[11px]" data-testid={`preflight-${check.id}`}>
+      {check.status === "pass" ? (
         <CheckCircle2 size={12} className="mt-px shrink-0 text-maestro-green" />
+      ) : check.status === "warn" ? (
+        <AlertTriangle size={12} className="mt-px shrink-0 text-maestro-orange" />
       ) : (
         <XCircle size={12} className="mt-px shrink-0 text-maestro-red" />
       )}
-      <span className={ok ? "text-maestro-text" : "text-maestro-red"}>
-        {label}
-        {detail ? <span className="text-maestro-muted"> — {detail}</span> : null}
+      <span className={tone}>
+        {PREFLIGHT_LABEL[check.id] ?? check.id}
+        {check.detail ? <span className="text-maestro-muted"> — {check.detail}</span> : null}
       </span>
     </div>
   );
@@ -681,6 +712,10 @@ export function LaunchSection({
   // Issue #90b: the explicit red-baseline override. Default OFF — the gate
   // runs and a red `cargo test --workspace` blocks the launch.
   const [skipGate, setSkipGate] = useState(false);
+  // Issue #214: "Launch anyway (warnings only)". A UI convenience only —
+  // it decides what the launch request carries, and the backend re-runs the
+  // whole preflight and gates on it either way.
+  const [overrideWarnings, setOverrideWarnings] = useState(false);
   // Issue #129: optional day+time to launch later instead of now. Empty =
   // launch immediately; set = the button arms a one-shot scheduled launch.
   const [scheduleAt, setScheduleAt] = useState("");
@@ -695,7 +730,7 @@ export function LaunchSection({
   const openWorkflowsView = useWorkflowsViewStore((s) => s.open);
   // 1 Hz re-render while the gate line is showing (drives the elapsed time).
   const [, setGateTick] = useState(0);
-  const [preflight, setPreflight] = useState<SamuraiPreflight | null>(null);
+  const [preflight, setPreflight] = useState<SamuraiPreflightCheck[] | null>(null);
   // The project a running launch belongs to — a result that outlives a tab
   // switch is dropped rather than applied to the newly active project.
   const currentProjectRef = useRef(projectPath);
@@ -771,7 +806,19 @@ export function LaunchSection({
 
   // Enabled as soon as anything is typed — free text needs no ref parsing
   // (issue #128), only a non-blank request.
-  const canLaunch = Boolean(projectPath) && text.trim().length > 0 && phase === null;
+  // Issue #214: what the LAST preflight said, once it has said anything. A
+  // `fail` disables the button outright — no checkbox clears it — while a
+  // warning disables it only until the user takes it on their own head. Both
+  // are advisory: `launch_run_inner` re-checks server-side regardless.
+  const blockingCheck =
+    preflight?.find((c) => c.status === "fail") ??
+    (overrideWarnings
+      ? preflight?.find((c) => c.status === "warn" && !c.overridable)
+      : preflight?.find((c) => c.status === "warn")) ??
+    null;
+
+  const canLaunch =
+    Boolean(projectPath) && text.trim().length > 0 && phase === null && blockingCheck === null;
 
   // Issue #129: this project's scheduled launches — pending ones count down
   // to their fire, HELD ones (overdue at app start, or retries exhausted)
@@ -855,12 +902,12 @@ export function LaunchSection({
     clearGates(target);
 
     // Phase 1 — preflight. The backend re-runs it inside the launch anyway;
-    // running it here first is what lets a failure render as pass/fail rows
-    // instead of one opaque refusal string.
+    // running it here first is what lets every check render as its own
+    // coloured row instead of one opaque refusal string (issue #214).
     setPhase("preflight");
-    let checks: SamuraiPreflight;
+    let checks: SamuraiPreflightCheck[];
     try {
-      checks = await samuraiPreflight(target);
+      checks = await samuraiPreflight(target, text);
     } catch (err) {
       if (currentProjectRef.current === target) {
         setError(String(err));
@@ -874,8 +921,15 @@ export function LaunchSection({
       return;
     }
     setPreflight(checks);
-    if (!checks.gh_auth.ok || !checks.windows_reported) {
-      setError("Preflight failed — fix the red checks below, then launch again.");
+    // Issue #214: the rows themselves ARE the reason — there is no summary
+    // string to read past any more. A `fail` stops here outright; a `warn`
+    // stops unless the user ticked "Launch anyway (warnings only)". Either
+    // way `launch_run_inner` re-checks and would refuse: this is the UI
+    // saving a round trip, never the gate.
+    const blocked = checks.find(
+      (c) => c.status === "fail" || (c.status === "warn" && !(overrideWarnings && c.overridable)),
+    );
+    if (blocked) {
       setPhase(null);
       return;
     }
@@ -894,6 +948,7 @@ export function LaunchSection({
         model.trim() || null,
         pct,
         skipGate,
+        overrideWarnings,
         workflow,
       );
       if (currentProjectRef.current !== target) return;
@@ -939,6 +994,10 @@ export function LaunchSection({
         spec.model,
         spec.handoff_context_pct,
         spec.skip_test_gate,
+        // Issue #214: launching a SCHEDULED entry re-runs its preflight
+        // server-side and takes no warning on anyone's head - this
+        // button never showed the user one.
+        false,
         workflow,
       );
       setNotice(`Run launched: ${result.epic} on ${result.branch}`);
@@ -1102,7 +1161,15 @@ export function LaunchSection({
             <textarea
               id="samurai-launch-text"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                // Issue #214: a `fail` disables Launch, so the verdicts must
+                // go stale as soon as the request changes — they were about
+                // the OLD request (`duplicate_run` is epic-level), and a
+                // user who has since fixed `gh auth` would otherwise find
+                // the button dead with no way to re-check.
+                setPreflight(null);
+              }}
               rows={3}
               placeholder="Work #77 and #78 — or describe the work in plain words"
               className="w-full resize-y rounded border border-maestro-border/60 bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
@@ -1168,6 +1235,28 @@ export function LaunchSection({
             </label>
             <p className="mt-0.5 text-[10px] leading-snug text-maestro-muted">
               Off (default): the launch runs the worktree's test suite first and blocks on red.
+            </p>
+          </div>
+
+          {/* Issue #214: the override for ADVISORY preflight findings. It
+              clears amber warnings only — a red check is not a matter of
+              nerve, and the backend refuses one whatever this says. */}
+          <div>
+            <label
+              className="flex items-center gap-1.5 text-[11px] text-maestro-text"
+              title="Preflight warnings are advisory — tick this to launch over them anyway. Red checks always block; this cannot clear them."
+            >
+              <input
+                type="checkbox"
+                checked={overrideWarnings}
+                onChange={(e) => setOverrideWarnings(e.target.checked)}
+                disabled={phase !== null}
+                className="h-3 w-3 accent-maestro-accent"
+              />
+              Launch anyway (warnings only)
+            </label>
+            <p className="mt-0.5 text-[10px] leading-snug text-maestro-muted">
+              Off (default): an amber preflight check blocks the launch. Red checks always do.
             </p>
           </div>
 
@@ -1288,28 +1377,9 @@ export function LaunchSection({
 
           {preflight && (
             <div className="space-y-1 rounded border border-maestro-border/40 bg-maestro-surface/60 p-1.5">
-              <CheckRow
-                ok={preflight.gh_auth.ok}
-                label={
-                  preflight.gh_auth.ok
-                    ? `gh authenticated as ${preflight.gh_auth.username ?? "unknown user"}`
-                    : "gh auth failed"
-                }
-                detail={preflight.gh_auth.ok ? null : preflight.gh_auth.error}
-              />
-              <CheckRow
-                ok={preflight.windows_reported}
-                label={
-                  preflight.windows_reported
-                    ? "Allowance windows reported"
-                    : "No governing allowance window"
-                }
-                detail={
-                  preflight.windows_reported
-                    ? null
-                    : "the usage API reports neither the 5h nor the 7d window — parking cannot govern this run"
-                }
-              />
+              {preflight.map((check) => (
+                <CheckRow key={check.id} check={check} />
+              ))}
             </div>
           )}
 
