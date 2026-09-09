@@ -1002,10 +1002,22 @@ mod tests {
 
         wait_until(&h.tick, || !h.killed.lock().unwrap().is_empty()).await;
         assert_eq!(*h.killed.lock().unwrap(), vec![4], "the PTY was torn down");
-        wait_until(&h.tick, || h.supervisor.list_sessions().is_empty()).await;
 
-        let rows = rows(&h.audit, AuditEventKind::Kill).await;
+        // Wait on the KILL row itself, not the supervisor map removal: the
+        // supervisor drops the session entry BEFORE it appends the KILL row
+        // (`remove_session_with_cause`), so waiting on `list_sessions()` going
+        // empty can race a bare re-read of the audit log and observe zero
+        // rows. The map is always empty by the time the row lands (removal
+        // happens first), so asserting that afterwards is safe.
+        let rows: Vec<AuditEvent> = wait_for_row(&h.tick, &h.audit, PROJECT, |e| {
+            e.event == AuditEventKind::Kill
+        })
+        .await
+        .into_iter()
+        .filter(|e| e.event == AuditEventKind::Kill)
+        .collect();
         assert_eq!(rows.len(), 1);
+        assert!(h.supervisor.list_sessions().is_empty());
         assert_eq!(rows[0].details["cause"], KILL_CAUSE_RUN_COMPLETE);
         assert_eq!(rows[0].details["from"], "WORKING");
         assert_eq!(rows[0].epic, "#38");

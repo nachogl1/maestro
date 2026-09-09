@@ -624,6 +624,19 @@ impl RunConfigStore {
         atomic_write_json(&path, &config)
     }
 
+    /// The file `(project, epic)`'s config lives at — readable or NOT.
+    ///
+    /// What a refusal names when the file is there and cannot be parsed
+    /// (issue #213 review): [`Self::archive`] and [`Self::complete`] both
+    /// error on an unreadable file, and cleanup reads it through
+    /// [`Self::get`], which returns `None` and so leaves it in place. So
+    /// none of Resume/Abandon/Cleanup clears such a file — deleting it at
+    /// this path is the route that does, and the human can only take it if
+    /// they are told where it is.
+    pub fn path_of(&self, project: &str, epic: &str) -> PathBuf {
+        self.config_path(&normalize_project(project), epic)
+    }
+
     fn config_path(&self, normalized_project: &str, epic: &str) -> PathBuf {
         self.base_dir
             .join(project_dir_name(normalized_project))
