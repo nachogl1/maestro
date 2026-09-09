@@ -25,6 +25,7 @@ import {
   PREFLIGHT_DUPLICATE_RUN,
   PREFLIGHT_GH_AUTH,
   PREFLIGHT_USAGE_WINDOWS,
+  parkReasonLabel,
   type SamuraiPreflightCheck,
   type SamuraiRunListEntry,
   type SamuraiRunOrchestrator,
@@ -524,10 +525,20 @@ function RunRow({
   //  Every park kind now offers the same one — it cancels the timer itself,
   //  and warns first when the allowance really is still exhausted.
   const recoverable = !isCompleted && !hasLiveAgent && !successorPending;
-  // Parked (by a timer or by the breaker) means the button RESUMES rather
-  // than recovers: a different command, a different confirmation story, and
-  // a spelled-out label instead of a bare icon.
-  const isParked = parked !== null || breakerParked;
+  // Parked means the button RESUMES rather than recovers: a different
+  // command, a different confirmation story, and a spelled-out label instead
+  // of a bare icon. ANY stamp counts, not just the breaker's (issue #211) —
+  // a gh-auth park arms no timer at all, so before the parker stamped its
+  // sweep the row could not tell one from a crashed run and offered
+  // "Recover", whose backend refuses mid-sweep with an allowance-worded
+  // error the user can do nothing about.
+  const stampParked = run.parked !== null;
+  const isParked = parked !== null || stampParked;
+  // The badge exists to name a park that has no countdown of its own. An
+  // allowance park has one (the purple line below), so its stamp stays
+  // silent here rather than badging the row twice.
+  const showParkBadge = breakerParked || (stampParked && parked === null);
+  const parkLabel = parkReasonLabel(run.parked?.reason ?? "");
   // A parked run has no live agent BY DESIGN (its tile closed; the resume is a
   // fresh spawn), so the row said "ACTIVE / no live agent" and never mentioned
   // the park. The badge below is that missing state — dated, because a park
@@ -565,19 +576,25 @@ function RunRow({
           >
             FINISHED
           </span>
-        ) : breakerParked ? (
+        ) : showParkBadge ? (
           // Red = needs input (the fork's status-colour convention). The
-          // reason rides the badge because the two park kinds need opposite
-          // reactions: an allowance park resumes itself, this one never will.
+          // reason rides the badge because the kinds need opposite
+          // reactions: an allowance park resumes itself, these never will.
           <span
             className="shrink-0 rounded bg-maestro-red/20 px-1 py-px text-[9px] font-bold tracking-wide text-maestro-red"
-            title={`Parked by the circuit breaker at gen-${run.parked?.generation ?? 0} on ${
-              run.parked?.at ?? "an unknown date"
-            } — ${
-              run.parked?.head ? `HEAD stood still at ${run.parked.head}. ` : ""
-            }This run has NO live agent and NOTHING will restart it: an automatic resume would burn allowance the same way again. Resume it yourself, or abandon it (abandon keeps the worktree and branch).`}
+            title={
+              breakerParked
+                ? `Parked by the circuit breaker at gen-${run.parked?.generation ?? 0} on ${
+                    run.parked?.at ?? "an unknown date"
+                  } — ${
+                    run.parked?.head ? `HEAD stood still at ${run.parked.head}. ` : ""
+                  }This run has NO live agent and NOTHING will restart it: an automatic resume would burn allowance the same way again. Resume it yourself, or abandon it (abandon keeps the worktree and branch).`
+                : `Parked (${parkLabel}) on ${
+                    run.parked?.at ?? "an unknown date"
+                  }. This run has NO live agent and NO resume timer — it waits for the cause to be fixed. Resume it yourself once it is, or abandon it (abandon keeps the worktree and branch).`
+            }
           >
-            PARKED · breaker
+            PARKED · {parkLabel}
           </span>
         ) : interrupted ? (
           // Red = needs input, the fork's status-colour convention (blue =
@@ -642,8 +659,8 @@ function RunRow({
             title={
               breakerParked
                 ? "Resume this breaker-parked run: verify the worktree's real state (git) and spawn a fresh generation from the latest handoff. Nothing else will ever restart it."
-                : parked !== null
-                  ? "Resume now: end the park early — cancel the resume timer and spawn a fresh generation immediately. Use it when the allowance window has actually reset; if it has not, you are warned first."
+                : isParked
+                  ? "Resume now: end the park early — cancel any resume timer and spawn a fresh generation immediately. Use it when the cause is actually gone; if the allowance is still exhausted, you are warned first."
                   : "The agent died? Verify the worktree's real state (git) and restart the run from its true resume point — the last handoff, or a full reconstruction from git and GitHub."
             }
           >

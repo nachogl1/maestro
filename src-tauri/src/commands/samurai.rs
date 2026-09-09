@@ -29,7 +29,7 @@ use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
 };
-use crate::core::samurai_parker::SamuraiParker;
+use crate::core::samurai_parker::{SamuraiParker, PARK_REASON_ALLOWANCE};
 use crate::core::samurai_pr_runs::PrRunStore;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
@@ -1643,7 +1643,19 @@ pub(crate) async fn recover_run_inner(
     // its rows all read `trigger: "manual"` and the kind rides `park_reason`
     // instead; the recovery path keeps its two established trigger strings
     // so the pre-#211 audit trail still reads exactly the same.
-    let park_reason = config.parked.as_ref().map(|p| p.reason.clone());
+    //
+    // Two sources, in order of durability: the run config's stamp (written
+    // by the breaker for its own park, and by the parker's sweep for an
+    // allowance or gh-auth one), then the parker's in-memory reason map
+    // (issue #208), which still answers when the stamp could not be
+    // written. Without the second source an allowance resume recorded
+    // `park_reason: null` and the audit lost the kind the single "manual"
+    // trigger no longer carries.
+    let park_reason = config
+        .parked
+        .as_ref()
+        .map(|p| p.reason.clone())
+        .or_else(|| parker.park_reason(project, epic));
     let trigger = match (mode, breaker_park) {
         (ResumeMode::ResumeNow, _) => TRIGGER_MANUAL_RESUME,
         (ResumeMode::Recovery, true) => "breaker_manual",
@@ -5596,6 +5608,11 @@ mod tests {
             .unwrap();
         h.supervisor.transition(1, SupervisorState::Parked).unwrap();
         write_handoff(&launched.worktree_path, "issue #38", 1);
+        // What the parker's sweep leaves behind (issue #211): the timer, and
+        // the run config stamped with WHY it is parked.
+        h.run_configs
+            .mark_parked(&h.project, "issue #38", PARK_REASON_ALLOWANCE, 1, None)
+            .unwrap();
         h.schedule
             .arm(ScheduleEntry {
                 project_path: h.project.clone(),
@@ -5610,6 +5627,14 @@ mod tests {
         let result = resume_now(&h, "issue #38").await.unwrap();
 
         assert_eq!(result.generation, 2, "the successor generation spawns now");
+        assert!(
+            h.run_configs
+                .get(&h.project, "issue #38")
+                .unwrap()
+                .parked
+                .is_none(),
+            "the successor owns the run now — a stale stamp would badge it PARKED for ever"
+        );
         // The timer is GONE: left armed it would fire into the resumed run
         // and put a second orchestrator in the worktree.
         assert!(result.timer_cancelled);
@@ -5621,6 +5646,10 @@ mod tests {
             .find(|e| e.event == AuditEventKind::Resume)
             .expect("a RESUME row precedes the spawn");
         assert_eq!(resume.details["trigger"], TRIGGER_MANUAL_RESUME);
+        // The single "manual" trigger no longer says WHICH park this ended,
+        // so the kind has to ride the row — without it an allowance resume
+        // was indistinguishable from a breaker one in the audit trail.
+        assert_eq!(resume.details["park_reason"], PARK_REASON_ALLOWANCE);
         wait_for_spawns(&h, 2).await;
         assert_eq!(h.spawns.lock().unwrap()[1].generation, 2);
     }

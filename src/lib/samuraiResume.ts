@@ -79,22 +79,27 @@ export async function resumeRunNow(
   epic: string,
 ): Promise<SamuraiRecoverResult | null> {
   const store = useSessionStore.getState();
+  // Claimed SYNCHRONOUSLY, before the first `await`. The config read and the
+  // allowance warning below are both awaits, and a claim after them leaves a
+  // window — seconds wide, while a modal is up — in which a click on the
+  // other surface passes this same check and spawns a second gen-N+1 into
+  // the one worktree. That is the exact race the guard exists to stop.
   if (store.samuraiResumingRuns.includes(samuraiRunKey(project, epic))) return null;
-
-  const over = await overHardThresholds();
-  if (over.length > 0) {
-    const readings = over
-      .map((r) => `${r.label} is at ${Math.round(r.percent)}% (parks at ${r.threshold}%)`)
-      .join(", and ");
-    const confirmed = await ask(
-      `Resume ${epic} now? The allowance has not recovered: ${readings}. The run will very likely park again within minutes.`,
-      { title: "Allowance Still Exhausted", kind: "warning" },
-    ).catch(() => false);
-    if (!confirmed) return null;
-  }
-
   store.setSamuraiRunResuming(project, epic, true);
+
   try {
+    const over = await overHardThresholds();
+    if (over.length > 0) {
+      const readings = over
+        .map((r) => `${r.label} is at ${Math.round(r.percent)}% (parks at ${r.threshold}%)`)
+        .join(", and ");
+      const confirmed = await ask(
+        `Resume ${epic} now? The allowance has not recovered: ${readings}. The run will very likely park again within minutes.`,
+        { title: "Allowance Still Exhausted", kind: "warning" },
+      ).catch(() => false);
+      if (!confirmed) return null;
+    }
+
     const result = await samuraiResumeNow(project, epic);
     // The run has an owner again, and its park is cleared backend-side — so
     // its breaker chip goes with it rather than lingering until the next
@@ -105,6 +110,8 @@ export async function resumeRunNow(
     );
     return result;
   } finally {
+    // Every way out releases it: a declined warning, a backend refusal, a
+    // thrown invoke.
     useSessionStore.getState().setSamuraiRunResuming(project, epic, false);
   }
 }

@@ -506,29 +506,43 @@ export function SecondBrainSection() {
   const handleCancelTimer = async (entry: SamuraiFileEntry) => {
     if (!entry.epic || !entry.project_path) return;
     // Not a file delete: deleting schedule.json would neither stop the
-    // in-memory timer nor scope to one epic (the backend refuses it). The
-    // confirm names the real consequence — no self-resume afterwards.
-    const confirmed = await ask(
-      `Cancel the pending resume for ${entry.epic}? You will then choose whether to resume the run now or leave it stopped.`,
-      { title: "Cancel Resume Timer", kind: "warning" },
-    ).catch(() => false);
-    if (!confirmed) return;
-    // Issue #211: the second half of the confirm is the choice this dialog
-    // used to have no answer for. Cancelling alone left the run stopped for
-    // good (relaunching was the only way back, and the preflight rightly
-    // refuses that while the run is ACTIVE), so "cancel the timer" and
-    // "resume it now" are offered as the two ways forward they really are.
-    // Two dialogs, not one: on a single one, Escape would map to a button
-    // that still cancels the timer.
+    // in-memory timer nor scope to one epic (the backend refuses it).
+    //
+    // Issue #211: this used to be one confirm with one outcome, and that
+    // outcome left the run stopped for GOOD — relaunching was the only way
+    // back and the preflight rightly refuses that while the run is ACTIVE.
+    // It is now the two-way choice it always should have been. Two dialogs
+    // rather than a single relabelled one, and asked in this order, because
+    // a native dialog has exactly two buttons and DISMISS maps to the
+    // second: every dismissal here must be a no-op, and the timer is not
+    // cancelled until the very last answer. A dialog plugin that throws
+    // takes the same safe path (`.catch(() => false)`), so a broken dialog
+    // can never cancel a timer by itself.
     const resumeNow = await ask(
-      `Resume ${entry.epic} now, or leave it parked? Resuming spawns a fresh agent immediately. Leaving it parked cancels the timer only — the run will NOT resume on its own and you would have to relaunch it.`,
+      `Cancel the pending resume for ${entry.epic} and resume the run NOW? That cancels its timer and spawns a fresh agent immediately. Choose No to decide whether to cancel the timer and leave the run stopped.`,
       {
-        title: "Resume Now?",
+        title: "Cancel Resume Timer",
         kind: "warning",
         okLabel: "Cancel and resume now",
-        cancelLabel: "Cancel and stay parked",
+        cancelLabel: "No",
       },
     ).catch(() => false);
+
+    // Declined the resume: the other way forward, with the consequence
+    // named. Dismissing THIS one keeps the timer exactly as it was.
+    const cancelOnly =
+      !resumeNow &&
+      (await ask(
+        `Cancel the timer and leave ${entry.epic} parked? The run will NOT resume on its own — you would have to relaunch it. Dismiss to keep the timer.`,
+        {
+          title: "Cancel and Stay Parked?",
+          kind: "warning",
+          okLabel: "Cancel and stay parked",
+          cancelLabel: "Keep the timer",
+        },
+      ).catch(() => false));
+    if (!resumeNow && !cancelOnly) return;
+
     setBusy(true);
     setError(null);
     setNotice(null);

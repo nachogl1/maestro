@@ -629,8 +629,29 @@ export interface SamuraiParkedStamp {
   head: string | null;
 }
 
-/** The one `parked.reason` written today — see {@link SamuraiParkedStamp}. */
+/** The `parked.reason` values the backend writes — see
+ *  {@link SamuraiParkedStamp}. The breaker stamps its own park (issue #209);
+ *  the parker's sweep stamps the other two (issue #211), so every park kind
+ *  is visible on the run itself and not only in a timer that, for a gh-auth
+ *  park, is never armed at all. */
 export const PARK_REASON_CIRCUIT_BREAKER = "circuit_breaker";
+export const PARK_REASON_ALLOWANCE = "allowance";
+export const PARK_REASON_GH_AUTH_LOST = "gh_auth_lost";
+
+/** How a park stamp's reason reads on a badge. Unknown reasons (a newer
+ *  backend) render as themselves rather than vanishing. */
+export function parkReasonLabel(reason: string): string {
+  switch (reason) {
+    case PARK_REASON_CIRCUIT_BREAKER:
+      return "breaker";
+    case PARK_REASON_ALLOWANCE:
+      return "allowance";
+    case PARK_REASON_GH_AUTH_LOST:
+      return "gh auth";
+    default:
+      return reason;
+  }
+}
 
 /** Whether a run is parked BY THE BREAKER: a dead run whose only way out is
  *  the human's Resume click. */

@@ -36,6 +36,7 @@ import type {
   SamuraiTestGateProgress,
   SamuraiWorkflowGraph,
 } from "@/lib/samurai";
+import { resumeRunNow } from "@/lib/samuraiResume";
 import type { UsageData } from "@/lib/usageParser";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { stopSamuraiGateListener, useSamuraiGateStore } from "@/stores/useSamuraiGateStore";
@@ -45,6 +46,7 @@ import {
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
   samuraiBriefKey,
+  samuraiRunKey,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { useWorkflowsViewStore } from "@/stores/useWorkflowsViewStore";
@@ -745,10 +747,40 @@ describe("LaunchSection (issue #63)", () => {
     expect(callsOf("samurai_recover_run")).toHaveLength(0);
   });
 
-  // A gh-auth park (issue #63) arms no timer and stamps no run config, so
-  // the frontend cannot tell it from a crashed run — which is exactly why
-  // its row must still carry the action rather than nothing at all.
-  it("still offers the row action on a run parked with no timer (gh-auth park)", async () => {
+  // A gh-auth park (issue #63) arms NO timer by design, so before the parker
+  // stamped its sweep (issue #211) the row could not tell one from a crashed
+  // run: it offered "Recover", whose backend refuses mid-sweep with an
+  // allowance-worded error the user can do nothing about. The stamp is the
+  // signal, and it makes the row read the park and offer the resume.
+  it("badges and resumes a gh-auth park, which has no timer at all", async () => {
+    useSessionStore.setState({ samuraiSchedule: [] });
+    mockInvoke({
+      runs: [
+        run({
+          parked: {
+            reason: "gh_auth_lost",
+            at: "2026-09-01T08:00:00Z",
+            generation: 0,
+            head: null,
+          },
+        }),
+      ],
+    });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("PARKED · gh auth")).toBeInTheDocument();
+    // Not the breaker's chip: that surface is for the one park a human must
+    // decide on, and the store seed still keys on the breaker reason.
+    expect(useSessionStore.getState().samuraiBreakerParks).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Recover run #38" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume run #38" }));
+    await waitFor(() => expect(callsOf("samurai_resume_now")).toHaveLength(1));
+    expect(callsOf("samurai_recover_run")).toHaveLength(0);
+  });
+
+  // The crashed shape proper: no timer AND no stamp. Still Recover.
+  it("still offers Recover on a crashed run with no park of any kind", async () => {
     useSessionStore.setState({ samuraiSchedule: [] });
     mockInvoke({ runs: [run()] });
     render(<LaunchSection />);
@@ -756,6 +788,43 @@ describe("LaunchSection (issue #63)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Recover run #38" }));
     await waitFor(() => expect(callsOf("samurai_recover_run")).toHaveLength(1));
+  });
+
+  // The guard is claimed synchronously, BEFORE the config read and the
+  // allowance warning. Claimed after them, two surfaces clicking while a
+  // modal is up both passed the check and both spawned — the exact
+  // double-spawn the guard exists to stop.
+  it("blocks the other surface's resume for the whole warning, not just the invoke", async () => {
+    useSessionStore.setState({ samuraiSchedule: [timer()] });
+    // Over the hard threshold, so the (awaited) warning is in the way.
+    mockInvoke({ runs: [run()], usage: buildUsage({ sessionPercent: 95 }) });
+    let answerWarning: ((ok: boolean) => void) | undefined;
+    askMock.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          answerWarning = resolve;
+        }),
+    );
+    render(<LaunchSection />);
+    await screen.findByText("#38");
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume run #38" }));
+    // The dialog is up and nothing has been invoked yet, but the run is
+    // already claimed — which is what the park chip and every other surface
+    // checks before starting one of their own.
+    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
+    expect(useSessionStore.getState().samuraiResumingRuns).toEqual([
+      samuraiRunKey("C:\\git\\maestro", "#38"),
+    ]);
+    const second = await resumeRunNow("C:\\git\\maestro", "#38");
+    expect(second).toBeNull();
+
+    // Answering releases it, once, through the same finally.
+    await act(async () => {
+      answerWarning?.(true);
+    });
+    await waitFor(() => expect(callsOf("samurai_resume_now")).toHaveLength(1));
+    await waitFor(() => expect(useSessionStore.getState().samuraiResumingRuns).toEqual([]));
   });
 
   // "It is the user's call": the resume warns with the live reading rather

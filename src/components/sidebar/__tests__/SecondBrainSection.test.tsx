@@ -913,7 +913,7 @@ describe("SecondBrainSection (issue #66)", () => {
    * The confirm is now a two-way choice, and each way calls exactly one
    * command: the resume cancels the timer itself.
    */
-  it("offers cancel-and-resume or cancel-and-stay-parked, and calls one command each", async () => {
+  it("offers resume-now or cancel-and-stay-parked, and never acts on a dismissal", async () => {
     mockInvoke([
       fileEntry({
         kind: "TIMER",
@@ -922,27 +922,34 @@ describe("SecondBrainSection (issue #66)", () => {
         in_use: true,
       }),
     ]);
-    // Declined outright; then cancel + stay parked; then cancel + resume now.
+    // Resume now; then declined-then-stay-parked; then declined twice.
     askMock
-      .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false);
     render(<SecondBrainSection />);
     const button = await screen.findByRole("button", { name: "Cancel resume timer for #38" });
 
-    // Declined — nothing happens at all, and no second question is asked.
+    // Resume now: ONE command, which cancels the timer on its way, and no
+    // second question — the choice is already made.
     fireEvent.click(button);
-    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
-    expect(invokeMock).not.toHaveBeenCalledWith("samurai_timer_cancel", expect.anything());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("samurai_resume_now", {
+        projectPath: "C:\\git\\maestro",
+        epic: "#38",
+      }),
+    );
+    expect(askMock).toHaveBeenCalledTimes(1);
     expect(askMock.mock.calls[0][1]).toMatchObject({
       title: "Cancel Resume Timer",
-      kind: "warning",
+      okLabel: "Cancel and resume now",
     });
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_timer_cancel", expect.anything());
 
-    // Stay parked: the timer goes, nothing spawns, and the consequence is
-    // spelled out on both the question and the answer.
+    // Declined the resume, then chose to stay parked: the timer goes, and
+    // the consequence is spelled out on both the question and the answer.
     fireEvent.click(button);
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("samurai_timer_cancel", {
@@ -952,23 +959,42 @@ describe("SecondBrainSection (issue #66)", () => {
     );
     expect(askMock.mock.calls[2][0]).toMatch(/NOT resume on its own/);
     expect(askMock.mock.calls[2][1]).toMatchObject({
-      okLabel: "Cancel and resume now",
-      cancelLabel: "Cancel and stay parked",
+      okLabel: "Cancel and stay parked",
+      cancelLabel: "Keep the timer",
     });
-    expect(invokeMock).not.toHaveBeenCalledWith("samurai_resume_now", expect.anything());
     expect(
       await screen.findByText("Cancelled the resume timer for #38. It will NOT resume on its own."),
     ).toBeInTheDocument();
 
-    // Resume now: ONE command, which cancels the timer on its way.
+    // Dismissed BOTH dialogs: nothing more is invoked. A native dialog has
+    // two buttons and dismiss maps to the second, so this path has to be a
+    // no-op or the button is destructive-by-Escape.
+    invokeMock.mockClear();
     fireEvent.click(button);
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("samurai_resume_now", {
-        projectPath: "C:\\git\\maestro",
-        epic: "#38",
+    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(5));
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_timer_cancel", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_resume_now", expect.anything());
+  });
+
+  // A dialog plugin that throws must not decide anything on the user's
+  // behalf — least of all cancel a timer nobody confirmed cancelling.
+  it("cancels nothing when the confirm dialog itself fails (issue #211)", async () => {
+    mockInvoke([
+      fileEntry({
+        kind: "TIMER",
+        path: "C:\\appdata\\samurai\\schedule.json",
+        fire_at: new Date(Date.now() + 3600_000).toISOString(),
+        in_use: true,
       }),
-    );
-    expect(invokeMock.mock.calls.filter(([c]) => c === "samurai_timer_cancel")).toHaveLength(1);
+    ]);
+    askMock.mockRejectedValue(new Error("dialog plugin unavailable"));
+    render(<SecondBrainSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel resume timer for #38" }));
+
+    await waitFor(() => expect(askMock).toHaveBeenCalledTimes(2));
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_timer_cancel", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("samurai_resume_now", expect.anything());
   });
 
   it("renders a shared schedule.json health reason only under the first timer row", async () => {

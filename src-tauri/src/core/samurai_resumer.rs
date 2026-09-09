@@ -75,7 +75,9 @@ use super::samurai_injector::strip_extended_prefix;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts::{epic_slug, parse_handoff_generation};
 use super::samurai_replicator::SamuraiReplicator;
-use super::samurai_run_config::{ConfigLookup, RunConfigStatus, RunConfigStore, SamuraiRunConfig};
+use super::samurai_run_config::{
+    ConfigLookup, RunConfigStatus, RunConfigStore, SamuraiRunConfig, PARK_REASON_CIRCUIT_BREAKER,
+};
 use super::samurai_schedule::{SamuraiSchedule, ScheduleEntry};
 use super::supervisor::{SessionSnapshot, Supervisor};
 use crate::commands::samurai::TRIGGER_MANUAL_RESUME;
@@ -684,7 +686,13 @@ impl SamuraiResumer {
             ),
         );
         // The run is owned again: forget the repeating conditions and the
-        // restored mark (review 2, findings 2 and 4).
+        // restored mark (review 2, findings 2 and 4), and drop the park
+        // stamp the parker wrote (issue #211) — a successor is spawning, so
+        // a stamp left behind badges the fresh run PARKED for ever and
+        // offers a Resume for a park that is over. A CIRCUIT-BREAKER stamp
+        // is deliberately left alone: only a human's click ends that park,
+        // and only that click also resets the epic's breaker counter.
+        self.clear_stale_park_stamp(&entry.project_path, &entry.epic);
         self.on_resumed(&entry.project_path, &entry.epic);
         self.replicator.spawn_generation(
             &entry.project_path,
@@ -694,6 +702,25 @@ impl SamuraiResumer {
             Some(prior),
             trigger,
         );
+    }
+
+    /// Drops a non-breaker park stamp for a run that is resuming on its own
+    /// timer (issue #211). Best effort: a stale stamp is a wrong badge, a
+    /// failed clear is never a reason not to spawn.
+    fn clear_stale_park_stamp(&self, project: &str, epic: &str) {
+        let breaker = self
+            .run_configs
+            .get(project, epic)
+            .and_then(|c| c.parked)
+            .is_none_or(|p| p.reason == PARK_REASON_CIRCUIT_BREAKER);
+        if breaker {
+            return;
+        }
+        if let Err(e) = self.run_configs.clear_parked(project, epic) {
+            log::warn!(
+                "samurai resumer: could not clear the park stamp for {epic} in {project} ({e})"
+            );
+        }
     }
 
     /// The replicator's `spawn_dropped` veto (issue #207, review finding 1).
@@ -1212,6 +1239,68 @@ mod tests {
         assert_eq!(staged["predecessor_generation"], 2);
         assert_eq!(staged["predecessor_session_id"], 0);
         assert_eq!(staged["trigger"], "resume_timer");
+    }
+
+    /// Issue #211: the parker now stamps every run its sweep parks, so the
+    /// resume that ends the park has to take the stamp away again — left
+    /// behind, the fresh generation is badged PARKED for ever and offered a
+    /// Resume for a park that is already over. A CIRCUIT-BREAKER stamp is
+    /// the deliberate exception: only a human's click ends that one, and
+    /// only that click also resets the epic's breaker counter.
+    #[tokio::test]
+    async fn test_a_timer_resume_clears_the_park_stamp_but_never_a_breakers() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-stamp";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff(repo.path(), "#37", 2);
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                repo.path().to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        h.run_configs
+            .mark_parked(project, "#37", "allowance", 2, None)
+            .unwrap();
+
+        h.resumer.on_fire(entry(project, "#37"));
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
+
+        assert!(
+            h.run_configs.get(project, "#37").unwrap().parked.is_none(),
+            "the run has an owner again — its park stamp goes with the park"
+        );
+
+        // A breaker stamp on a second run survives the same path.
+        let repo2 = tempdir().unwrap();
+        init_repo(repo2.path());
+        write_handoff(repo2.path(), "#38", 1);
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#38",
+                repo2.path().to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        h.run_configs
+            .mark_parked(project, "#38", PARK_REASON_CIRCUIT_BREAKER, 1, None)
+            .unwrap();
+
+        h.resumer.on_fire(entry(project, "#38"));
+        wait_until(&h.tick, || h.spawns.lock().unwrap().len() > 1).await;
+
+        assert_eq!(
+            h.run_configs
+                .get(project, "#38")
+                .unwrap()
+                .parked
+                .expect("a breaker park is never cleared by an automatic resume")
+                .reason,
+            PARK_REASON_CIRCUIT_BREAKER,
+        );
     }
 
     #[tokio::test]
