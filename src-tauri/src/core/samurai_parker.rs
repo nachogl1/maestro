@@ -1174,9 +1174,14 @@ impl SamuraiParker {
         }
     }
 
-    /// Whether a DEFERRED arm is still worth completing — the two guards
+    /// Whether a DEFERRED arm is still worth completing — all THREE guards
     /// [`Self::release_external_park`] applies, for exactly the same reasons:
     ///
+    /// - the run has a LIVE (non-terminal) supervised session — a human
+    ///   clicked Recover, or the run was resumed some other way, while this
+    ///   arm was waiting. Arming over it would put a resume timer on a
+    ///   running run; the resumer's fire-time guard only DEFERS such a
+    ///   timer, so it would still spawn a duplicate once that session ends;
     /// - the run's config is no longer ACTIVE (completed, archived, deleted)
     ///   — nothing left to resume, so the arm is dropped silently;
     /// - the run already has an armed timer — a scheduled launch or a live
@@ -1184,9 +1189,26 @@ impl SamuraiParker {
     ///   replaces by `(project, epic)` alone, so overwriting a scheduled
     ///   launch would also drop its `launch` spec.
     ///
-    /// `false` drops the pending entry: both outcomes are settled, not
-    /// failures, so nothing is retried and nothing ALERTs.
+    /// `false` drops the pending entry: every outcome here is settled, not a
+    /// failure, so nothing is retried and nothing ALERTs. The first and last
+    /// both mean the run HAS a future again, so they also take off the
+    /// interrupted stamp the deferral put on (nothing else would until the
+    /// next app start). The middle one deliberately does not: an archived or
+    /// completed run is not "recovered", and rewriting a dead config to say
+    /// so helps nobody.
     fn deferred_arm_still_wanted(&self, project: &str, epic: &str) -> bool {
+        if self
+            .supervisor
+            .list_sessions()
+            .iter()
+            .any(|s| s.project == project && s.epic == epic && !s.state.is_terminal())
+        {
+            log::info!(
+                "samurai parker: run {epic} in {project} has a live session again — its deferred arm is dropped, no timer over a running run"
+            );
+            self.clear_arm_interrupted(project, epic);
+            return false;
+        }
         if !self.run_is_resumable(project, epic) {
             log::info!(
                 "samurai parker: run {epic} in {project} is no longer active — its deferred resume timer is dropped"
@@ -1202,6 +1224,7 @@ impl SamuraiParker {
             log::info!(
                 "samurai parker: run {epic} in {project} already has an armed timer — its deferred arm is dropped, the existing plan stands"
             );
+            self.clear_arm_interrupted(project, epic);
             return false;
         }
         true
@@ -2956,6 +2979,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
         let project = "C:/git/proj-arm-bound";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        store
+            .save(&crate::core::samurai_run_config::SamuraiRunConfig::new(
+                project,
+                "#1",
+                "C:/git/wt-bound",
+            ))
+            .unwrap();
+        // The stamp the deferral put on while the arm was pending.
+        store
+            .mark_interrupted(project, "#1", 0, "park_no_reset_time")
+            .unwrap();
         // A park a full 5h window ago that never learned its reset time.
         let since = Utc::now() - ChronoDuration::hours(6);
         h.parker.seed_pending_arm(
@@ -2986,6 +3022,15 @@ mod tests {
                 && r.details["source"] == SOURCE_WINDOW_BOUND
         })
         .await;
+
+        // The bound arm is a real arm: the stamp comes off on this path too.
+        assert!(
+            store
+                .get(project, "#1")
+                .and_then(|c| c.interrupted_at)
+                .is_none(),
+            "an outer-bound arm clears the interrupted stamp like any other"
+        );
 
         // Settled: the bound fires once, not on every later tick.
         h.parker.retry_pending_arms(&AllowanceReading::default());
@@ -3107,6 +3152,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let h = harness(dir.path());
         let project = "C:/git/proj-arm-launch";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        store
+            .save(&crate::core::samurai_run_config::SamuraiRunConfig::new(
+                project,
+                "#1",
+                "C:/git/wt-launch",
+            ))
+            .unwrap();
+        store
+            .mark_interrupted(project, "#1", 0, "park_no_reset_time")
+            .unwrap();
         // EARLIER than the park's fire time, so the fire-time comparison
         // alone would happily replace it.
         let launch = ScheduleEntry {
@@ -3148,5 +3205,71 @@ mod tests {
             timers[0].launch.is_some(),
             "the launch spec must survive the deferred arm"
         );
+        // The run has a plan again, so it must stop reading INTERRUPTED —
+        // nothing else would clear the stamp before the next app start.
+        assert!(
+            store
+                .get(project, "#1")
+                .and_then(|c| c.interrupted_at)
+                .is_none(),
+            "a run that gained a timer elsewhere loses the deferral's stamp"
+        );
+    }
+
+    /// Review 2 finding 1: the arm was deferred at park time, then the human
+    /// clicked Recover. Arming over the live session would put a resume
+    /// timer on a running run — and the resumer's fire-time guard only
+    /// DEFERS such a timer, so it would still spawn a duplicate once that
+    /// session ended.
+    #[tokio::test]
+    async fn test_a_deferred_arm_for_a_recovered_run_is_dropped() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-arm-recovered";
+        let store = Arc::new(RunConfigStore::new(dir.path().join("runs")));
+        h.parker.set_run_configs(store.clone());
+        store
+            .save(&crate::core::samurai_run_config::SamuraiRunConfig::new(
+                project,
+                "#1",
+                "C:/git/wt-recovered",
+            ))
+            .unwrap();
+        store
+            .mark_interrupted(project, "#1", 0, "park_no_reset_time")
+            .unwrap();
+        h.parker.seed_pending_arm(
+            project,
+            "#1",
+            PendingArm::NoResetTime {
+                window: AllowanceWindow::FiveHour,
+                since: Utc::now(),
+            },
+        );
+        // Recover: the run is live again, at the next generation.
+        h.supervisor
+            .register_session(7, project.into(), "#1".into(), 2)
+            .unwrap();
+
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+
+        assert!(
+            h.schedule.list().is_empty(),
+            "no resume timer over a live session"
+        );
+        assert!(
+            store
+                .get(project, "#1")
+                .and_then(|c| c.interrupted_at)
+                .is_none(),
+            "a recovered run is not interrupted any more"
+        );
+
+        // Dropped, not merely skipped: it does not arm once the session ends.
+        h.supervisor.transition(7, SupervisorState::Dead).unwrap();
+        h.parker
+            .retry_pending_arms(&reading_with_session_reset(RESETS_AT));
+        assert!(h.schedule.list().is_empty(), "the deferred arm was dropped");
     }
 }
