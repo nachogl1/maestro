@@ -1,6 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronRight, Loader2, RefreshCw, ScrollText, Trash2 } from "lucide-react";
+import { BookOpenCheck, ChevronRight, Loader2, RefreshCw, ScrollText, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { samePath } from "@/lib/path";
 import {
@@ -116,6 +116,17 @@ export const ALERT_SENTENCES: Record<string, (d: Record<string, unknown>) => str
   resume_run_not_active: () => "Resume skipped — the run is no longer active",
   resume_no_handoff: (d) =>
     `Resume skipped for ${strField(d, "epic") ?? "this epic"} — no handoff file found`,
+  // Issue #205's two rungs share ONE kind; `escalated` says which, and they
+  // mean opposite things to a reader — a nudge is in flight, or the run is
+  // over — so the sentence has to split on it.
+  brief_unread: (d) => {
+    if (d.escalated !== true) {
+      return "The agent has not opened its brief — one corrective is being sent";
+    }
+    return `The agent never opened its brief, one corrective later — the run was taken fatal and ${
+      d.respawned === true ? "respawned" : "could NOT be respawned"
+    }`;
+  },
   handoff_churn: () => "Handoff churn detected",
   circuit_breaker: () => "Circuit breaker tripped",
   successor_spawn_failed: () => "Failed to spawn the successor session",
@@ -261,6 +272,21 @@ function describeInject(d: Record<string, unknown>): string | null {
     return `${corrective ? "Corrective instruction" : "Instruction"} delivered — ${instruction}${attemptPart}`;
   }
   if (phase === "acked") return `Instruction acknowledged — ${instruction}`;
+  // Issue #204: the second half of a two-step delivery — `delivered` only
+  // ever meant the bytes reached the terminal, this means the agent OPENED
+  // the file. Landed without a sentence, so the one row that proves a brief
+  // was read rendered as `phase=receipt gate=… brief=…` (issue #123's rule).
+  if (phase === "receipt") {
+    const brief = strField(d, "brief");
+    return `Brief read by the agent${brief ? ` — ${brief}` : ""}`;
+  }
+  // Issue #205: the ONE re-pointer sent when the read window closed unread.
+  if (phase === "corrective") {
+    const brief = strField(d, "brief");
+    return `Corrective sent — pointed the agent back at its unread brief${
+      brief ? ` ${brief}` : ""
+    }`;
+  }
   return null;
 }
 
@@ -382,10 +408,24 @@ function AuditRowDetails({ event }: { event: SamuraiAuditEvent }) {
   );
 }
 
+/**
+ * Issue #206: whether a row is the READ RECEIPT for a brief (issue #204).
+ *
+ * It shares the `INJECT` badge with the delivery it answers, and a delivery
+ * is exactly what it is NOT — so the pair only reads as two steps if the
+ * receipt carries its own mark.
+ */
+function isBriefReceipt(event: SamuraiAuditEvent): boolean {
+  if (event.event !== "INJECT") return false;
+  const d = event.details;
+  return typeof d === "object" && d !== null && (d as Record<string, unknown>).phase === "receipt";
+}
+
 function AuditRow({ event }: { event: SamuraiAuditEvent }) {
   const [expanded, setExpanded] = useState(false);
   const badgeCls = KIND_BADGES[event.event] ?? "bg-maestro-muted/15 text-maestro-muted";
   const summary = describeAuditEvent(event);
+  const receipt = isBriefReceipt(event);
   return (
     <div>
       <button
@@ -408,6 +448,13 @@ function AuditRow({ event }: { event: SamuraiAuditEvent }) {
         >
           {event.event}
         </span>
+        {receipt && (
+          <BookOpenCheck
+            size={10}
+            aria-label="brief read receipt"
+            className="shrink-0 text-maestro-green"
+          />
+        )}
         <span className="shrink-0 text-maestro-muted">gen-{event.generation}</span>
         <span className="min-w-0 flex-1 truncate text-maestro-text">{summary}</span>
         <span className="shrink-0 text-[10px] text-maestro-muted/70">{formatTs(event.ts)}</span>

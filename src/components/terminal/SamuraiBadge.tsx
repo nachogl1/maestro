@@ -1,7 +1,12 @@
 import { memo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { samePath } from "@/lib/path";
-import { type SamuraiSupervisorState, useSessionStore } from "@/stores/useSessionStore";
+import { samuraiBriefPresentation } from "@/lib/samurai";
+import {
+  type SamuraiSupervisorState,
+  samuraiBriefKey,
+  useSessionStore,
+} from "@/stores/useSessionStore";
 
 /**
  * Human badge text + tint per supervisor state (issue #46 / PRD §9: the user
@@ -50,10 +55,16 @@ export const SamuraiBadge = memo(function SamuraiBadge({
       // Same id+project defence as the DEAD handler: session ids alone are
       // not trusted to be unique across projects.
       if (!session || !samePath(session.project_path, entry.project)) return null;
+      // Issue #206: brief read/unread for THIS generation. A verdict stored
+      // for an older (or newer) generation says nothing about the agent in
+      // this terminal, so it is dropped rather than shown against the wrong
+      // one.
+      const brief = s.samuraiBriefByRun[samuraiBriefKey(entry.project, entry.epic)];
       return {
         generation: entry.generation,
         state: entry.state,
         contextPercent: session.contextPercent,
+        briefStatus: brief?.generation === entry.generation ? brief.status : null,
       };
     }),
   );
@@ -61,14 +72,29 @@ export const SamuraiBadge = memo(function SamuraiBadge({
 
   const { label, cls } = presentation(info.state);
   const pct = info.contextPercent !== undefined ? `${Math.round(info.contextPercent)}%` : null;
+  // A SECOND pill rather than more text in the first one: the state pill is
+  // tinted by supervisor state, and the brief has its own colour to carry
+  // (issue #206). Absent until the trail says something — an unsupervised
+  // delivery route, or rows older than this build, must not read as unread.
+  const brief = info.briefStatus === null ? null : samuraiBriefPresentation(info.briefStatus);
   return (
-    <span
-      title={`Samurai-supervised: generation ${info.generation}, ${label}${
-        pct ? `, ${pct} context used` : ""
-      }`}
-      className={`shrink-0 whitespace-nowrap rounded px-1 py-px text-[9px] font-bold tracking-wide ${cls} ${className}`}
-    >
-      {`gen-${info.generation} · ${label}${pct ? ` · ${pct}` : ""}`}
-    </span>
+    <>
+      <span
+        title={`Samurai-supervised: generation ${info.generation}, ${label}${
+          pct ? `, ${pct} context used` : ""
+        }`}
+        className={`shrink-0 whitespace-nowrap rounded px-1 py-px text-[9px] font-bold tracking-wide ${cls} ${className}`}
+      >
+        {`gen-${info.generation} · ${label}${pct ? ` · ${pct}` : ""}`}
+      </span>
+      {brief && (
+        <span
+          title={brief.title}
+          className={`shrink-0 whitespace-nowrap rounded px-1 py-px text-[9px] font-bold tracking-wide ${brief.cls} ${className}`}
+        >
+          {brief.label}
+        </span>
+      )}
+    </>
   );
 });

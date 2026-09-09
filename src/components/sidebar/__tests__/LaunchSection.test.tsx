@@ -41,8 +41,10 @@ import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { stopSamuraiGateListener, useSamuraiGateStore } from "@/stores/useSamuraiGateStore";
 import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
 import {
+  type SamuraiBriefState,
   type SamuraiScheduleEntry,
   type SamuraiSessionInfo,
+  samuraiBriefKey,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { useWorkflowsViewStore } from "@/stores/useWorkflowsViewStore";
@@ -317,6 +319,7 @@ describe("LaunchSection (issue #63)", () => {
       samuraiBySessionId: {},
       samuraiSchedule: [],
       samuraiBreakerParks: [],
+      samuraiBriefByRun: {},
       samuraiResumingRuns: [],
     });
     usePendingLaunchStore.setState({ pending: [] });
@@ -1120,6 +1123,94 @@ describe("LaunchSection (issue #63)", () => {
     expect(screen.getByText("INTERRUPTED").className).toContain("text-maestro-red");
     // The tooltip carries when it died and at which generation.
     expect(screen.getByText("INTERRUPTED").getAttribute("title")).toContain("gen-2");
+  });
+
+  /**
+   * Issue #206: ACTIVE only ever said the agent is ALIVE. Whether it ever
+   * OPENED the instructions it was given lived in the audit list — the
+   * surface that let 22 alerts pile up unread — and nowhere a human looks.
+   */
+  it("shows brief unread until the receipt lands, then brief ✓", async () => {
+    const brief = (status: SamuraiBriefState["status"]) => ({
+      [samuraiBriefKey("C:/git/maestro", "#38")]: {
+        generation: 3,
+        sessionId: 1,
+        status,
+      },
+    });
+    // Delivered, no receipt yet: the row must not read as healthy. The run's
+    // live orchestrator is on the SAME generation as the stored verdict —
+    // that pairing is what makes the verdict this agent's.
+    useSessionStore.setState({ samuraiBriefByRun: brief("delivered") });
+    mockInvoke({ runs: [run({ orchestrator: orchestrator({ generation: 3 }) })] });
+    const view = render(<LaunchSection />);
+
+    expect(await screen.findByText("brief ⚠ unread")).toBeInTheDocument();
+    // Not red: an unread brief is corrected automatically, and red in this
+    // fork means a human is needed.
+    expect(screen.getByText("brief ⚠ unread").className).not.toContain("text-maestro-red");
+
+    // The window closed unread — same words, louder tint.
+    act(() => {
+      useSessionStore.setState({ samuraiBriefByRun: brief("unread") });
+    });
+    expect(screen.getByText("brief ⚠ unread").className).toContain("text-maestro-orange");
+
+    // The agent opened the file (issue #204's receipt row).
+    act(() => {
+      useSessionStore.setState({ samuraiBriefByRun: brief("read") });
+    });
+    expect(screen.getByText("brief ✓")).toBeInTheDocument();
+    expect(screen.queryByText("brief ⚠ unread")).toBeNull();
+    // The status badge is untouched — this issue adds a chip, it does not
+    // change how ACTIVE/INTERRUPTED are computed.
+    expect(screen.getByText("ACTIVE")).toBeInTheDocument();
+    view.unmount();
+  });
+
+  /** Nothing in the trail = nothing claimed: a run whose brief state is
+   *  unknown (an old audit log, a route that delivers no pointer) must not
+   *  read as unread. */
+  it("shows no brief chip for a run the audit trail says nothing about", async () => {
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.queryByText(/^brief/)).toBeNull();
+  });
+
+  /**
+   * PR review: the chip rendered the stored verdict with no generation
+   * cross-check, so gen-3's "brief ✓" could stand against a run whose live
+   * orchestrator is gen-4 — and contradict the SamuraiBadge next to it,
+   * which has always gated on the generation.
+   */
+  it("shows no brief chip when the stored verdict is a previous generation's", async () => {
+    useSessionStore.setState({
+      samuraiBriefByRun: {
+        [samuraiBriefKey("C:/git/maestro", "#38")]: {
+          generation: 3,
+          sessionId: 1,
+          status: "read",
+        },
+      },
+    });
+    // The run has moved on to gen-4: gen-3's receipt says nothing about the
+    // agent working now.
+    mockInvoke({ runs: [run({ orchestrator: orchestrator({ generation: 4 }) })] });
+    const view = render(<LaunchSection />);
+
+    expect(await screen.findByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.queryByText(/^brief/)).toBeNull();
+    view.unmount();
+
+    // And an orchestrator whose generation is not known yet is not a match
+    // either — a chip there would be a guess.
+    mockInvoke({ runs: [run()] });
+    render(<LaunchSection />);
+
+    expect(await screen.findByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.queryByText(/^brief/)).toBeNull();
   });
 
   /**

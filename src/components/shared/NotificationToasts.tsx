@@ -16,6 +16,13 @@ const SAMURAI_FATAL_ACCENT = "rgb(var(--maestro-red))";
 /** Tint for allowance-park toasts — amber, the colour every park surface uses. */
 const SAMURAI_PARK_ACCENT = "rgb(var(--maestro-orange))";
 
+/**
+ * Tint for the attention tier (issue #206): amber, not red — supervision is
+ * still correcting the run, and the red card is reserved for a run that has
+ * actually died.
+ */
+const SAMURAI_ATTENTION_ACCENT = "rgb(var(--maestro-orange))";
+
 /** Last path segment — the toast names the project like the tab strip does. */
 function projectName(projectPath: string): string {
   const segments = projectPath.split(/[\\/]/).filter(Boolean);
@@ -96,10 +103,18 @@ export function NotificationToasts() {
             onDismiss={() => dismissSamuraiToast(toast.id)}
           />
         ) : (
+          // Issue #206: the attention tier says "look at this", the fatal tier
+          // says "this run is dead" — same card, opposite urgency, so the
+          // colour and the kicker have to differ or the loud one stops meaning
+          // anything.
           <Toast
             key={toast.id}
-            accentColor={SAMURAI_FATAL_ACCENT}
-            kicker={`${projectName(toast.project)} — Samurai run needs you`}
+            accentColor={
+              toast.kind === "attention" ? SAMURAI_ATTENTION_ACCENT : SAMURAI_FATAL_ACCENT
+            }
+            kicker={`${projectName(toast.project)} — ${
+              toast.kind === "attention" ? "Samurai needs a look" : "Samurai run needs you"
+            }`}
             title={toast.label}
             detail={`${toast.epic} · gen-${toast.generation}`}
             onDismiss={() => dismissSamuraiToast(toast.id)}

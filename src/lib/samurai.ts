@@ -134,9 +134,145 @@ export function samuraiRunFatalLabel(event: SamuraiAuditEvent): string | null {
     // the toast is the ONLY place it can surface.
     case "reconcile_unreadable_config":
       return "A run's saved file could not be read — that run is invisible to Maestro";
+    // Issue #205's SECOND rung only. One ALERT kind covers both rungs, and
+    // `escalated: false` is the FIRST expiry — a nudge went out and the agent
+    // still has a corrective to act on, so it belongs on the attention tier
+    // ({@link samuraiRunAttentionLabel}), not here. `escalated: true` is the
+    // run going fatal: the brief was never read one corrective later, and the
+    // generation was put back on the queue (or could not be).
+    case "brief_unread":
+      if (details.escalated !== true) return null;
+      return details.respawned === true
+        ? "Brief was never read — the run was respawned"
+        : "Brief was never read — the run is stranded";
     default:
       return null;
   }
+}
+
+/**
+ * Issue #206: a human label for an ATTENTION audit row — something is wrong
+ * with a run but supervision is still correcting it, so the user should SEE
+ * it without being told the run is dead.
+ *
+ * The one row today is the first `brief_unread` expiry (`escalated: false`,
+ * issue #205): the delivered brief has not been opened, and a corrective is
+ * on its way. Loud enough to reach a user who is not watching the terminal
+ * (toast + OS notification, the surfaces #174 built), quiet enough not to
+ * claim a dead run — the escalated rung above is what says that.
+ *
+ * Disjoint from {@link samuraiRunFatalLabel} by construction: no row ever
+ * gets a label from both, so a caller can raise whichever is non-null.
+ */
+export function samuraiRunAttentionLabel(event: SamuraiAuditEvent): string | null {
+  if (event.event !== "ALERT") return null;
+  const details = (event.details ?? {}) as Record<string, unknown>;
+  if (details.kind !== "brief_unread" || details.escalated === true) return null;
+  return "Has not read its brief yet — nudging it";
+}
+
+/**
+ * The `INJECT details.instruction` kinds that deliver a generation's BRIEF —
+ * `samurai_replicator.rs`'s three ritual flavours. Every other INJECT
+ * (`handoff`, `park`, `soft_winddown`, `winddown_allclear` — the injector's
+ * `InstructionKind::as_str`) is an instruction to a RUNNING agent, not the
+ * operating instructions a generation starts from, and has no read receipt.
+ */
+const BRIEF_INSTRUCTION_KINDS = new Set(["launch_brief", "recovery_ritual", "successor_ritual"]);
+
+/**
+ * What the audit trail says about one generation's brief:
+ *
+ * - `delivered` — the pointer reached the terminal (issue #101) and no
+ *   receipt has been seen yet. Ordinary for the first seconds of a
+ *   generation; only a `brief_unread` ALERT turns it into a complaint.
+ * - `unread` — the read window closed with no receipt (issue #205).
+ * - `read` — the agent opened the file (the `receipt` row, issue #204).
+ */
+export type SamuraiBriefStatus = "delivered" | "unread" | "read";
+
+/** One audit row's verdict on a generation's brief (see {@link samuraiBriefSignal}). */
+export interface SamuraiBriefSignal {
+  generation: number;
+  session_id: number;
+  status: SamuraiBriefStatus;
+}
+
+/**
+ * Issue #206: what one audit row says about its generation's brief, or `null`
+ * when it says nothing at all.
+ *
+ * Three row shapes carry the fact, and nothing else in the trail does:
+ * `INJECT phase=delivered` for a ritual instruction (the brief went out),
+ * `INJECT phase=receipt` (issue #204 — the agent opened it), and
+ * `ALERT kind=brief_unread` (issue #205 — the window closed unread). The
+ * `corrective` INJECT is deliberately NOT a signal: it re-points at a brief
+ * that is still unread, so it must not reset the state to `delivered`.
+ */
+export function samuraiBriefSignal(event: SamuraiAuditEvent): SamuraiBriefSignal | null {
+  const details = (event.details ?? {}) as Record<string, unknown>;
+  const at = (status: SamuraiBriefStatus): SamuraiBriefSignal => ({
+    generation: event.generation,
+    session_id: event.session_id,
+    status,
+  });
+  if (event.event === "INJECT") {
+    if (details.phase === "receipt") return at("read");
+    if (details.phase === "delivered" && typeof details.instruction === "string") {
+      return BRIEF_INSTRUCTION_KINDS.has(details.instruction) ? at("delivered") : null;
+    }
+    return null;
+  }
+  if (event.event === "ALERT" && details.kind === "brief_unread") return at("unread");
+  return null;
+}
+
+/** How a brief status reads on the run badge and the Active Runs row. */
+export interface SamuraiBriefPresentation {
+  /** The chip text — `brief ✓` or `brief ⚠ unread`. */
+  label: string;
+  /** Hover text: what the state means and what happens next. */
+  title: string;
+  /** Sidebar badge palette classes, per the fork's status colours. */
+  cls: string;
+}
+
+/**
+ * Issue #206: the chip for one brief status.
+ *
+ * Two readings, not three: the user's question is "is this agent working off
+ * its instructions?", and a brief that HAS NOT BEEN READ YET answers it the
+ * same way as one the window has already expired on. What differs is how
+ * alarming it is — a just-delivered brief is muted grey (nothing is wrong
+ * yet, the read window is open), an expired one is amber (issue #205's nudge
+ * has gone out) — so the tint carries the urgency and the words stay stable.
+ *
+ * Never red: an unread brief is corrected automatically, and red in this fork
+ * means a human is needed. The escalated rung is what turns the run fatal,
+ * and that has its own surfaces ({@link samuraiRunFatalLabel}).
+ */
+export function samuraiBriefPresentation(status: SamuraiBriefStatus): SamuraiBriefPresentation {
+  if (status === "read") {
+    return {
+      label: "brief ✓",
+      title: "This generation opened the brief it was given — it is working off its instructions.",
+      cls: "bg-maestro-green/20 text-maestro-green",
+    };
+  }
+  if (status === "delivered") {
+    return {
+      label: "brief ⚠ unread",
+      title:
+        "The brief was delivered to this generation and it has not opened the file yet. Normal for the first moments of a generation; if the read window closes, Maestro sends one corrective.",
+      cls: "bg-maestro-muted/15 text-maestro-muted",
+    };
+  }
+  return {
+    label: "brief ⚠ unread",
+    title:
+      "The read window closed and this generation never opened its brief. Maestro has sent one corrective; if it is still unread after that, the run is taken fatal and respawned.",
+    cls: "bg-maestro-orange/20 text-maestro-orange",
+  };
 }
 
 /** Mirrors the Rust `AuditReadResult`. */
