@@ -260,6 +260,40 @@ pub fn pointer_instruction(relpath: &str) -> String {
     )
 }
 
+/// The last segment of [`BRIEF_DIR`] — the directory name that sits directly
+/// above every brief file.
+///
+/// Issue #204's receipt matcher checks it, so that a same-named file
+/// elsewhere cannot pass for a brief. Derived rather than spelled again, so
+/// moving the brief directory can never leave the check behind.
+pub fn brief_dir_name() -> &'static str {
+    BRIEF_DIR.rsplit('/').next().unwrap_or(BRIEF_DIR)
+}
+
+/// The brief FILE NAME (`<stem>.md`) that `instruction` points an agent at,
+/// or `None` when `instruction` is not a pointer at all — an inline
+/// instruction under [`INLINE_MAX_BYTES`], or a full ritual text the file
+/// route never got to write.
+///
+/// The NAME, not the path, because the name is the only spelling every later
+/// sighting of the file shares (issue #204): the pointer carries the
+/// worktree-relative path, but an agent Reads it back as relative, absolute,
+/// forward- or back-slashed, or `\\?\`-prefixed, and a `cat` of it is quoted
+/// however the shell wanted it.
+///
+/// Recognises exactly what [`pointer_instruction`] emits: the first
+/// backquoted span, required to be a `<stem>.md` directly under
+/// [`BRIEF_DIR`]. Anything else — prose that merely contains backquotes, a
+/// pointer at some other file — is not a brief pointer.
+pub fn pointer_brief_file_name(instruction: &str) -> Option<String> {
+    let quoted = instruction.split('`').nth(1)?;
+    let file_name = quoted.strip_prefix(&format!("{BRIEF_DIR}/"))?;
+    if !file_name.ends_with(".md") || file_name.contains('/') {
+        return None;
+    }
+    Some(file_name.to_string())
+}
+
 /// Whether `instruction` is delivered as-is, small enough that
 /// [`deliverable_instruction`] makes no filesystem call for it at all.
 ///
@@ -616,6 +650,37 @@ mod tests {
         // It must send the agent to READ the file, in full, first.
         assert!(pointer.contains("Read"), "{pointer}");
         assert!(pointer.contains("FULL"), "{pointer}");
+    }
+
+    /// Issue #204: the receipt is matched on the brief's file NAME, so a
+    /// pointer has to give it back — and nothing else may claim to be one.
+    #[test]
+    fn test_the_brief_file_name_comes_back_out_of_its_own_pointer() {
+        assert_eq!(
+            pointer_brief_file_name(&pointer_instruction(
+                ".maestro/briefs/epic-9-gen-3-ritual.md"
+            )),
+            Some("epic-9-gen-3-ritual.md".to_string())
+        );
+        // A real staged brief, so the round trip is against what is on disk.
+        let dir = tempdir().unwrap();
+        let pointer =
+            deliverable_instruction(dir.path(), "epic-9-gen-1-launch", long_instruction());
+        assert_eq!(
+            pointer_brief_file_name(&pointer),
+            Some("epic-9-gen-1-launch.md".to_string())
+        );
+        // Not pointers: an inline instruction, prose with backquotes, a
+        // pointer at something that is not a brief, a nested path.
+        for other in [
+            long_instruction(),
+            "[Maestro Samurai] run `npm test` and report back".to_string(),
+            pointer_instruction("docs/samurai/prd.md"),
+            pointer_instruction(&format!("{BRIEF_DIR}/old/epic-9-gen-3-ritual.md")),
+            pointer_instruction(&format!("{BRIEF_DIR}/epic-9-gen-3-ritual")),
+        ] {
+            assert_eq!(pointer_brief_file_name(&other), None, "{other}");
+        }
     }
 
     #[test]

@@ -23,8 +23,11 @@
 //!   parker emits the ALERT and sweeps every supervised session without
 //!   arming resume timers (auth has no reset time; the human fixes it and
 //!   resumes manually).
-//! - **`logged_in == true`** → clear the latch, so a future loss alerts
-//!   again.
+//! - **`logged_in == true`** → clear the latch, and — on the RESTORED edge
+//!   only (issue #208) —
+//!   [`SamuraiParker::release_external_park`]`("gh_auth_lost")`, which arms
+//!   a staggered resume for every run this condition parked and left
+//!   without a timer. A future loss alerts again.
 //!
 //! The latch is PERSISTED (`samurai_latches`) and seeded back at loop
 //! start. It used to be a local in the spawned task, so an app restart
@@ -51,6 +54,10 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// The audit `details.kind` (and park reason) for a detected auth loss.
 pub const GH_AUTH_LOST: &str = "gh_auth_lost";
+
+/// The RESUME `trigger` (and schedule-entry reason) the restored edge arms
+/// the parked runs back up with (issue #208).
+pub const GH_AUTH_RESTORED: &str = "gh_auth_restored";
 
 /// Probes `gh auth status` in some active run's directory:
 /// `Ok(logged_in)`, or `Err` for a transient runner failure (gh missing,
@@ -80,6 +87,14 @@ pub(crate) fn tick_action(probe: Result<bool, &str>, latched: bool) -> TickActio
         Ok(false) => TickAction::Noop,
         Err(_) => TickAction::Noop,
     }
+}
+
+/// Whether this tick is the RESTORED edge — the transition OUT of a latched
+/// loss, and the only tick that may release the external park (issue #208).
+/// A steady-state good tick clears an already-clear latch and must resume
+/// nothing: the runs it would spawn are runs nobody parked.
+pub(crate) fn releases_park(action: TickAction, latched: bool) -> bool {
+    action == TickAction::ClearLatch && latched
 }
 
 /// The latch the loop starts from: the persisted one, not a cold `false`.
@@ -124,10 +139,16 @@ pub fn spawn_auth_watch(
                     parker.engage_external_park(GH_AUTH_LOST);
                 }
                 TickAction::ClearLatch => {
-                    if latched {
+                    if releases_park(TickAction::ClearLatch, latched) {
                         log::info!(
-                            "samurai auth watch: gh auth observed good again — loss latch cleared"
+                            "samurai auth watch: gh auth observed good again — loss latch cleared, releasing the external park"
                         );
+                        let resumed = parker.release_external_park(GH_AUTH_LOST);
+                        if resumed > 0 {
+                            log::info!(
+                                "samurai auth watch: {resumed} run(s) parked for {GH_AUTH_LOST} are resuming"
+                            );
+                        }
                     }
                     latched = false;
                     latches.set_gh_auth_lost(false);
@@ -229,6 +250,55 @@ mod tests {
         let latched = seeded_latch(&store);
         assert!(!latched, "a restored auth must not come back latched");
         assert_eq!(tick_action(Ok(false), latched), TickAction::EngagePark);
+    }
+
+    /// Issue #208: the restored EDGE is what resumes, never a steady-state
+    /// good tick — a run parked for an auth loss must not be re-spawned
+    /// every 5 minutes for as long as `gh` stays healthy.
+    #[test]
+    fn test_only_the_restored_edge_releases_the_external_park() {
+        use TickAction::*;
+        let table: [(TickAction, bool, bool); 5] = [
+            // The edge: latched loss → auth good.
+            (ClearLatch, true, true),
+            // Steady-state good ticks: nothing was parked, nothing resumes.
+            (ClearLatch, false, false),
+            // Nothing else ever releases.
+            (EngagePark, false, false),
+            (Noop, true, false),
+            (Noop, false, false),
+        ];
+        for (action, latched, expected) in table {
+            assert_eq!(
+                releases_park(action, latched),
+                expected,
+                "action={action:?} latched={latched}"
+            );
+        }
+    }
+
+    /// The whole loss→restore cycle as the loop drives it: one park engaged,
+    /// one release, and no release from the good ticks that follow.
+    #[test]
+    fn test_a_loss_then_restore_cycle_parks_once_and_releases_once() {
+        let mut latched = false;
+        let (mut engages, mut releases) = (0, 0);
+        for probe in [Ok(false), Ok(false), Ok(true), Ok(true), Err("timeout")] {
+            let action = tick_action(probe, latched);
+            if releases_park(action, latched) {
+                releases += 1;
+            }
+            match action {
+                TickAction::EngagePark => {
+                    latched = true;
+                    engages += 1;
+                }
+                TickAction::ClearLatch => latched = false,
+                TickAction::Noop => {}
+            }
+        }
+        assert_eq!(engages, 1, "one park per loss episode");
+        assert_eq!(releases, 1, "one release per restore, not one per tick");
     }
 
     #[test]

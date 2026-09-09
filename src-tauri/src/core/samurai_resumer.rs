@@ -62,7 +62,7 @@
 //!
 //! [`bind`]: SamuraiResumer::bind
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -70,6 +70,7 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
+use super::samurai_auth_watch::GH_AUTH_RESTORED;
 use super::samurai_injector::strip_extended_prefix;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts::{epic_slug, parse_handoff_generation};
@@ -84,13 +85,40 @@ use super::supervisor::{SessionSnapshot, Supervisor};
 /// that a resume blocked by a transient state lands the same hour.
 const DEFER_DELAY_SECS: i64 = 600;
 
-/// The timer reason the parker arms (`samurai_parker`); the only reason a
-/// fire currently means anything.
+/// The timer reason the parker arms (`samurai_parker`) for an allowance
+/// park, and the `trigger` its fire records.
 const REASON_PARK: &str = "park";
+const TRIGGER_PARK: &str = "resume_timer";
 
-/// The `trigger` this module hands the replicator — and the one it claims
-/// back in [`SamuraiResumer::on_spawn_dropped`].
-const RESUME_TRIGGER: &str = "resume_timer";
+/// The `trigger` a fired timer records, or `None` when this resumer does not
+/// handle that reason (a scheduled launch, or a reason from a newer build).
+/// Issue #208 added the second arm: the parker arms a
+/// [`GH_AUTH_RESTORED`] entry the moment `gh auth` comes back, for the runs
+/// its external park stopped — the same fire path as a park timer, so the
+/// ACTIVE-run gate, the restored-timer gate and the defer guards all apply,
+/// and only the recorded trigger differs.
+fn trigger_for_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        REASON_PARK => Some(TRIGGER_PARK),
+        GH_AUTH_RESTORED => Some(GH_AUTH_RESTORED),
+        _ => None,
+    }
+}
+
+/// The park reason behind a resume `trigger` — the inverse of
+/// [`trigger_for_reason`], for [`SamuraiResumer::on_spawn_dropped`], which
+/// sees only the trigger the spawn was staged with and has to rebuild the
+/// schedule entry from it. Every resume trigger belongs here, not just the
+/// allowance park's: a dropped `gh_auth_restored` resume (issue #208) must
+/// re-arm exactly like a dropped park one, or it ends as a bare ALERT with
+/// no timer — the failure #207 exists to remove.
+fn reason_for_trigger(trigger: &str) -> Option<&'static str> {
+    match trigger {
+        TRIGGER_PARK => Some(REASON_PARK),
+        GH_AUTH_RESTORED => Some(GH_AUTH_RESTORED),
+        _ => None,
+    }
+}
 
 /// "A pre-restart orchestrator is PROBABLY still alive in this worktree":
 /// `Some(transcript_age_secs)`, for the worktree path handed in. Injected
@@ -112,10 +140,24 @@ pub const RESUME_INTERRUPTED_KIND: &str = "resume_interrupted_restart";
 /// in one worktree.
 pub const RESUME_ORPHAN_KIND: &str = "resume_orphan";
 
-/// The replicator's give-up ALERT kind, latched here so a resume that keeps
-/// being dropped (a project the user left closed) says it once per app run
-/// instead of once per defer interval.
+/// The replicator's give-up ALERT kind, rate-limited here so a resume that
+/// keeps being dropped (a project the user left closed) does not alert once
+/// per lap — see [`ALERT_EVERY_LAPS`].
 const SPAWN_DROPPED_KIND: &str = "spawn_dropped";
+
+/// How many laps of the same repeating condition pass between ALERTs: the
+/// first one is always reported, then every Nth after it.
+///
+/// Review 2, finding 5: the drop→defer→re-emit→drop cycle is deliberately
+/// UNBOUNDED — a project the user has closed must still resume the moment
+/// they open it, hours later, and capping the re-arms would put the run
+/// back in the manual-chore state #207 removes. What must not be unbounded
+/// is the SILENCE: latching the ALERT forever would hide a run cycling every
+/// ~25 minutes behind nothing but `resume_deferred` rows. Six laps is a
+/// couple of hours of quiet — long enough that a normal "opened the project
+/// after lunch" recovery says it once, short enough that a genuinely stuck
+/// run resurfaces the same day. The counter resets when the run resumes.
+const ALERT_EVERY_LAPS: u32 = 6;
 
 // ---------------------------------------------------------------------------
 // Pure decisions (table-tested)
@@ -223,16 +265,19 @@ pub struct SamuraiResumer {
     /// the flag the first time a restored resume deferred — the eventual
     /// RESUME row then said `restored: false` and an unrecoverable run got
     /// the unlatched same-process note instead of the latched restart one.
-    restored: OnceLock<HashSet<(String, String)>>,
+    restored: Mutex<HashSet<(String, String)>>,
     /// Issue #207: the survivor check a restored resume runs before
     /// spawning. Unset = no check (see [`OrphanProbe`]).
     orphan_probe: OnceLock<OrphanProbe>,
-    /// `(project, epic, kind)` of the ALERTs already said once this app run
-    /// — the in-memory latch for the two repeatable restored-path alerts
-    /// (a suspected orphan, a spawn the frontend never took). The
-    /// unrecoverable-run alert latches on disk instead, where it has to
-    /// survive a restart.
-    alerted_once: Mutex<HashSet<(String, String, &'static str)>>,
+    /// How many times each repeating condition has come round without the
+    /// run resuming: `(project, epic, kind)` → laps. Drives the
+    /// [`ALERT_EVERY_LAPS`] rate limit for the two repeatable restored-path
+    /// alerts (a suspected orphan, a spawn the frontend never took), and is
+    /// CLEARED for the run the moment it actually resumes — a fresh park
+    /// hours later is a new condition and gets its own first alert (review
+    /// 2, finding 2). The unrecoverable-run alert latches on disk instead,
+    /// where it has to survive a restart.
+    laps: Mutex<HashMap<(String, String, &'static str), u32>>,
 }
 
 impl SamuraiResumer {
@@ -249,9 +294,9 @@ impl SamuraiResumer {
             audit,
             schedule: OnceLock::new(),
             parker: OnceLock::new(),
-            restored: OnceLock::new(),
+            restored: Mutex::new(HashSet::new()),
             orphan_probe: OnceLock::new(),
-            alerted_once: Mutex::new(HashSet::new()),
+            laps: Mutex::new(HashMap::new()),
         })
     }
 
@@ -276,19 +321,19 @@ impl SamuraiResumer {
     /// Called from the setup closure with the same pre-fire-loop snapshot
     /// cold-start reconciliation gets, and before the fire loop is spawned.
     pub fn mark_restored(&self, entries: &[ScheduleEntry]) {
-        let set = entries
+        *self.restored.lock().unwrap_or_else(PoisonError::into_inner) = entries
             .iter()
             .map(|e| (e.project_path.clone(), e.epic.clone()))
             .collect();
-        let _ = self.restored.set(set);
     }
 
     /// Whether this run's timer was already on disk when the app started —
     /// including after a deferral re-armed it under a new `fire_at`.
     fn is_restored(&self, project: &str, epic: &str) -> bool {
         self.restored
-            .get()
-            .is_some_and(|set| set.contains(&(project.to_string(), epic.to_string())))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(project.to_string(), epic.to_string()))
     }
 
     /// Late-binds the survivor check (issue #207), the `bind` pattern.
@@ -296,13 +341,33 @@ impl SamuraiResumer {
         let _ = self.orphan_probe.set(probe);
     }
 
-    /// `true` the FIRST time `(project, epic, kind)` is asked about in this
-    /// app run — the in-memory alert latch (see [`Self::alerted_once`]).
-    fn first_alert_this_run(&self, project: &str, epic: &str, kind: &'static str) -> bool {
-        self.alerted_once
+    /// Counts one lap of `kind` for the run and says whether it should be
+    /// reported: the first lap always, then every [`ALERT_EVERY_LAPS`]-th.
+    fn should_report(&self, project: &str, epic: &str, kind: &'static str) -> bool {
+        let mut laps = self.laps.lock().unwrap_or_else(PoisonError::into_inner);
+        let lap = laps
+            .entry((project.to_string(), epic.to_string(), kind))
+            .or_insert(0);
+        *lap += 1;
+        (*lap - 1).is_multiple_of(ALERT_EVERY_LAPS)
+    }
+
+    /// Forgets every repeating condition recorded for the run, and its
+    /// restored mark. Called when the run actually resumes (review 2,
+    /// findings 2 and 4): the run is owned again, so a LATER drop or park —
+    /// a genuinely new condition, possibly hours later — reports itself
+    /// from scratch, and a timer this session arms is a same-process timer
+    /// like any other. A deferral is deliberately NOT a resume: the flag
+    /// must survive the defer re-arm (round 1, finding 2).
+    fn on_resumed(&self, project: &str, epic: &str) {
+        self.laps
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert((project.to_string(), epic.to_string(), kind))
+            .retain(|(p, e, _), _| p != project || e != epic);
+        self.restored
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&(project.to_string(), epic.to_string()));
     }
 
     /// Late-binds the schedule (for deferral re-arms) and the parker (for
@@ -315,15 +380,15 @@ impl SamuraiResumer {
 
     /// The schedule's fire callback (issue #61): decide, then either defer,
     /// alert, or spawn the next generation. Synchronous — see module doc.
-    pub fn on_fire(&self, entry: ScheduleEntry) {
-        if entry.reason != REASON_PARK {
+    pub fn on_fire(self: &Arc<Self>, entry: ScheduleEntry) {
+        let Some(trigger) = trigger_for_reason(&entry.reason) else {
             log::warn!(
                 "samurai resumer: timer for epic {} has unknown reason {:?} — ignored",
                 entry.epic,
                 entry.reason,
             );
             return;
-        }
+        };
         let (Some(schedule), Some(parker)) = (self.schedule.get(), self.parker.get()) else {
             // Cannot happen after setup; the timer survives on disk until
             // its self-clean, and cold-start reconciliation (P3.4) backstops.
@@ -379,6 +444,21 @@ impl SamuraiResumer {
                 Some(s) => serde_json::to_value(s).unwrap_or_else(|_| json!("UNKNOWN")),
                 None => json!("MISSING"),
             };
+            // Issue #208: an auth-restore resume that finds its run finished
+            // is not news. The parker skips exactly this run SILENTLY when
+            // it arms the release; a run archived during the stagger's own
+            // few seconds is the same run a moment later, and an ALERT there
+            // would ask a human to look at a run they themselves ended.
+            // A park timer keeps its ALERT: that one waited out a whole
+            // allowance window, so a status change is worth the note.
+            if entry.reason == GH_AUTH_RESTORED {
+                log::info!(
+                    "samurai resumer: {GH_AUTH_RESTORED} resume for epic {} in {} found its run {status_value} — dropped silently",
+                    entry.epic,
+                    entry.project_path,
+                );
+                return;
+            }
             // Issue #207: a run whose config is finished, archived or gone
             // cannot be resumed by anyone but a human, and for a RESTORED
             // timer the restart is the story worth telling — one latched
@@ -431,31 +511,92 @@ impl SamuraiResumer {
         // second orchestrator in the same worktree. Ask the reconciler's
         // question through the injected probe instead: a false defer costs
         // one interval, a false spawn costs the worktree.
+        //
+        // Off this thread (review 2, finding 1): the probe refreshes the
+        // whole process table with command lines, and `on_fire` runs
+        // straight from the schedule's `tokio::interval` loop — the
+        // reconciler runs the identical probe under `spawn_blocking`
+        // (`samurai_reconciler`), and so does this. The rest of the fire
+        // resumes on that task. Only a restored fire with a probe bound
+        // takes this hop; every same-process fire stays synchronous.
         if restored {
-            if let Some(age_secs) = self
-                .orphan_probe
-                .get()
-                .and_then(|probe| probe(&working_dir))
-            {
-                log::warn!(
-                    "samurai resumer: epic {} in {working_dir} — transcript written {age_secs}s ago and a claude process is alive: a pre-restart orchestrator probably survived, deferring instead of spawning",
-                    entry.epic,
-                );
-                if self.first_alert_this_run(&entry.project_path, &entry.epic, RESUME_ORPHAN_KIND) {
-                    self.append_alert(
-                        &entry,
-                        json!({
-                            "kind": RESUME_ORPHAN_KIND,
-                            "epic": entry.epic,
-                            "transcript_age_secs": age_secs,
-                        }),
-                    );
-                }
-                self.defer(schedule, &entry);
+            if let Some(probe) = self.orphan_probe.get().cloned() {
+                let this = self.clone();
+                let dir = working_dir.clone();
+                let probe_dir = working_dir.clone();
+                tokio::spawn(async move {
+                    let verdict = tokio::task::spawn_blocking(move || probe(&probe_dir))
+                        .await
+                        .unwrap_or_else(|e| {
+                            log::warn!("samurai resumer: the survivor probe panicked ({e}) — treated as no survivor");
+                            None
+                        });
+                    this.after_survivor_check(entry, dir, trigger, verdict);
+                });
                 return;
             }
         }
 
+        self.resume_now(&entry, &working_dir, trigger, restored, already_alerted);
+    }
+
+    /// The second half of a RESTORED fire, once the survivor probe answered
+    /// (see [`Self::on_fire`]). A probable survivor defers — putting a
+    /// second orchestrator in one worktree is the one outcome worth a lost
+    /// interval — otherwise the resume proceeds exactly as a same-process
+    /// one does.
+    fn after_survivor_check(
+        self: &Arc<Self>,
+        entry: ScheduleEntry,
+        working_dir: String,
+        trigger: &'static str,
+        verdict: Option<u64>,
+    ) {
+        let Some(schedule) = self.schedule.get() else {
+            return;
+        };
+        if let Some(age_secs) = verdict {
+            log::warn!(
+                "samurai resumer: epic {} in {working_dir} — transcript written {age_secs}s ago and a claude process is alive: a pre-restart orchestrator probably survived, deferring instead of spawning",
+                entry.epic,
+            );
+            if self.should_report(&entry.project_path, &entry.epic, RESUME_ORPHAN_KIND) {
+                self.append_alert(
+                    &entry,
+                    json!({
+                        "kind": RESUME_ORPHAN_KIND,
+                        "epic": entry.epic,
+                        "transcript_age_secs": age_secs,
+                    }),
+                );
+            }
+            self.defer(schedule, &entry);
+            return;
+        }
+        // The config was ACTIVE when the fire started and the run has no
+        // live session; re-reading it here would only widen the window.
+        let already_alerted = self
+            .run_configs
+            .get(&entry.project_path, &entry.epic)
+            .is_some_and(|c| restart_alert_latched(&c));
+        self.resume_now(&entry, &working_dir, trigger, true, already_alerted);
+    }
+
+    /// Everything after the gates: pick the next generation, record the
+    /// `RESUME` row, and stage the spawn. Split out of [`Self::on_fire`] so
+    /// the restored path can reach it from the survivor probe's task.
+    fn resume_now(
+        &self,
+        entry: &ScheduleEntry,
+        working_dir: &str,
+        trigger: &'static str,
+        restored: bool,
+        already_alerted: bool,
+    ) {
+        let Some(schedule) = self.schedule.get() else {
+            return;
+        };
+        let sessions = self.supervisor.list_sessions();
         let registry_max = sessions
             .iter()
             .filter(|s| s.project == entry.project_path && s.epic == entry.epic)
@@ -477,14 +618,14 @@ impl SamuraiResumer {
                     entry.epic,
                 );
                 self.append_alert(
-                    &entry,
+                    entry,
                     json!({
                         "kind": "resume_handoffs_unreadable",
                         "epic": entry.epic,
                         "error": e.to_string(),
                     }),
                 );
-                self.defer(schedule, &entry);
+                self.defer(schedule, entry);
                 return;
             }
         };
@@ -493,7 +634,7 @@ impl SamuraiResumer {
             // timer's run really is unrecoverable — the second and last case
             // that still ALERTs about the restart, latched like the first.
             if restored {
-                self.alert_interrupted_restart(&entry, already_alerted, "no_handoff", None);
+                self.alert_interrupted_restart(entry, already_alerted, "no_handoff", None);
                 return;
             }
             log::error!(
@@ -501,7 +642,7 @@ impl SamuraiResumer {
                 entry.epic,
             );
             self.append_alert(
-                &entry,
+                entry,
                 json!({ "kind": "resume_no_handoff", "epic": entry.epic }),
             );
             return;
@@ -526,7 +667,7 @@ impl SamuraiResumer {
                 // 0 sentinel: the successor session does not exist yet.
                 0,
                 json!({
-                    "trigger": "resume_timer",
+                    "trigger": trigger,
                     "fire_at": entry.fire_at,
                     "predecessor_generation": prior,
                     // Issue #207: a resume the app restart used to kill.
@@ -534,13 +675,16 @@ impl SamuraiResumer {
                 }),
             ),
         );
+        // The run is owned again: forget the repeating conditions and the
+        // restored mark (review 2, findings 2 and 4).
+        self.on_resumed(&entry.project_path, &entry.epic);
         self.replicator.spawn_generation(
             &entry.project_path,
             &entry.epic,
-            &working_dir,
+            working_dir,
             generation,
             Some(prior),
-            RESUME_TRIGGER,
+            trigger,
         );
     }
 
@@ -566,9 +710,9 @@ impl SamuraiResumer {
         generation: u32,
         trigger: &str,
     ) -> bool {
-        if trigger != RESUME_TRIGGER {
+        let Some(reason) = reason_for_trigger(trigger) else {
             return false;
-        }
+        };
         let Some(schedule) = self.schedule.get() else {
             return false;
         };
@@ -583,12 +727,12 @@ impl SamuraiResumer {
                 // `defer` writes the real one; the fired entry's own
                 // fire_at self-cleaned when it fired.
                 fire_at: String::new(),
-                reason: REASON_PARK.to_string(),
+                reason: reason.to_string(),
                 launch: None,
                 held: false,
             },
         );
-        !self.first_alert_this_run(project, epic, SPAWN_DROPPED_KIND)
+        !self.should_report(project, epic, SPAWN_DROPPED_KIND)
     }
 
     /// Re-arms the entry [`DEFER_DELAY_SECS`] out and records why. The new
@@ -1220,15 +1364,170 @@ mod tests {
         // A gen-1 launch's drop is not this module's business.
         assert!(!h.resumer.on_spawn_dropped(project, "#37", 1, "launch"));
 
+        // Review 2, finding 3: a dropped gh_auth_restored resume (issue
+        // #208) re-arms too, under ITS reason — not the park one.
+        assert!(!h
+            .resumer
+            .on_spawn_dropped(project, "#99", 2, GH_AUTH_RESTORED));
+        let released = h
+            .schedule
+            .list()
+            .into_iter()
+            .find(|t| t.epic == "#99")
+            .expect("the auth-restore resume is re-armed as well");
+        assert_eq!(released.reason, GH_AUTH_RESTORED);
+
         wait_for_rows(&h.tick, &h.audit, project, |rows| {
             rows.iter()
                 .filter(|r| {
-                    r.event == AuditEventKind::Park && r.details["phase"] == "resume_deferred"
+                    r.epic == "#37"
+                        && r.event == AuditEventKind::Park
+                        && r.details["phase"] == "resume_deferred"
                 })
                 .count()
                 == 2
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_survivor_probe_does_not_run_on_the_fire_thread() {
+        // Review 2, finding 1: the probe refreshes the whole process table
+        // with command lines, and `on_fire` is called straight from the
+        // schedule's interval loop — the reconciler runs the identical probe
+        // under `spawn_blocking`. A probe that BLOCKS proves the hop: if it
+        // ran inline, `on_fire` could not return until it was released.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-probe-thread";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff(repo.path(), "#37", 2);
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                repo.path().to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let entered = Arc::new(Mutex::new(false));
+        let entered_probe = entered.clone();
+        let release_rx = Mutex::new(release_rx);
+        h.resumer.set_orphan_probe(Arc::new(move |_| {
+            *entered_probe.lock().unwrap() = true;
+            let _ = release_rx.lock().unwrap().recv();
+            None
+        }));
+
+        let restored = entry(project, "#37");
+        h.resumer.mark_restored(std::slice::from_ref(&restored));
+        h.resumer.on_fire(restored);
+        // Returned while the probe is still blocked — the fire thread is free.
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "the resume cannot have completed while the probe is blocked"
+        );
+
+        release_tx.send(()).unwrap();
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
+        assert!(*entered.lock().unwrap(), "the probe was consulted");
+        assert_eq!(h.spawns.lock().unwrap()[0].generation, 3);
+    }
+
+    #[tokio::test]
+    async fn test_a_resume_clears_the_restored_mark_and_the_alert_counters() {
+        // Review 2, findings 2 and 4. Once the run resumes it is owned
+        // again: a park armed AFTER that is a same-process timer like any
+        // other (no survivor probe, no latched restart ALERT), and a LATER
+        // drop is a new condition that reports itself instead of being
+        // swallowed by the first one's latch.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-sticky";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        write_handoff(repo.path(), "#37", 2);
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                repo.path().to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        let probe_calls = Arc::new(Mutex::new(0u32));
+        let probe_rec = probe_calls.clone();
+        h.resumer.set_orphan_probe(Arc::new(move |_| {
+            *probe_rec.lock().unwrap() += 1;
+            None
+        }));
+        // One drop before the resume: reported (the first lap).
+        assert!(!h.resumer.on_spawn_dropped(project, "#37", 2, TRIGGER_PARK));
+
+        let restored = entry(project, "#37");
+        h.resumer.mark_restored(std::slice::from_ref(&restored));
+        h.resumer.on_fire(restored);
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
+        assert_eq!(*probe_calls.lock().unwrap(), 1, "the restored fire probed");
+
+        // A drop AFTER the resume is a new condition — reported again, not
+        // swallowed by the pre-resume latch.
+        assert!(
+            !h.resumer.on_spawn_dropped(project, "#37", 3, TRIGGER_PARK),
+            "a drop after a successful resume must alert again"
+        );
+
+        // And a timer armed in THIS session, for a run whose config has
+        // since been archived, gets the same-process note — not the
+        // restored one — and never touches the probe.
+        h.run_configs.archive(project, "#37").unwrap();
+        h.resumer.on_fire(ScheduleEntry {
+            fire_at: "2026-08-06T13:00:00+00:00".to_string(),
+            ..entry(project, "#37")
+        });
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "resume_run_not_active"
+        })
+        .await;
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.details["kind"] == RESUME_INTERRUPTED_KIND),
+            "restoredness must not outlive the resume"
+        );
+        assert_eq!(
+            *probe_calls.lock().unwrap(),
+            1,
+            "no probe for a same-process fire"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_run_stuck_dropping_resurfaces_instead_of_being_silent_forever() {
+        // Review 2, finding 5: the drop -> defer -> re-emit -> drop cycle is
+        // deliberately unbounded (a project opened tomorrow must still
+        // resume), so the SILENCE is what gets bounded. The first lap
+        // reports, then every ALERT_EVERY_LAPS-th, so a run cycling every
+        // ~25 minutes resurfaces instead of hiding behind PARK rows.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-stuck";
+        let reported: Vec<bool> = (1..=ALERT_EVERY_LAPS + 1)
+            .map(|gen| {
+                !h.resumer
+                    .on_spawn_dropped(project, "#37", gen, TRIGGER_PARK)
+            })
+            .collect();
+        let mut expected = vec![false; ALERT_EVERY_LAPS as usize + 1];
+        expected[0] = true;
+        expected[ALERT_EVERY_LAPS as usize] = true;
+        assert_eq!(
+            reported,
+            expected,
+            "lap 1 and lap {} report",
+            ALERT_EVERY_LAPS + 1
+        );
+        assert_eq!(h.schedule.list().len(), 1, "every lap re-armed the timer");
     }
 
     #[tokio::test]
@@ -1810,5 +2109,183 @@ mod tests {
             h.schedule.list().is_empty(),
             "the fired timer must self-clean"
         );
+    }
+
+    /// Review finding 3: the parker skips a finished run SILENTLY when it
+    /// arms a release, but the run can also end during the stagger's own few
+    /// seconds — and the fire-time gate used to ALERT for it, asking a human
+    /// to look at a run they themselves archived. A PARK timer keeps that
+    /// ALERT: it waited out a whole allowance window.
+    #[tokio::test]
+    async fn test_an_auth_restore_whose_run_ended_during_the_wait_drops_silently() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-auth-late-archive";
+        let repo = tempdir().unwrap();
+        init_parkable_repo(repo.path(), "#180", 1);
+        let mut config =
+            SamuraiRunConfig::new(project, "#180", repo.path().to_string_lossy().into_owned());
+        config.status = RunConfigStatus::Archived;
+        h.run_configs.save(&config).unwrap();
+
+        let mut released = entry(project, "#180");
+        released.reason = GH_AUTH_RESTORED.to_string();
+        h.resumer.on_fire(released);
+
+        // A PARK timer for an equally-finished run DOES alert — and the
+        // audit is append-ordered, so once its row is readable any row the
+        // release would have written is already there too. That ordering is
+        // the negative assertion: no sleep, no quiet window.
+        let mut archived_park = entry(project, "#180");
+        archived_park.fire_at = "2026-08-06T13:00:00+00:00".to_string();
+        h.resumer.on_fire(archived_park);
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["kind"] == "resume_run_not_active"
+        })
+        .await;
+        let alerts: Vec<_> = rows
+            .iter()
+            .filter(|r| r.event == AuditEventKind::Alert)
+            .collect();
+        assert_eq!(
+            alerts.len(),
+            1,
+            "only the park timer may alert; the release drops silently: {alerts:?}"
+        );
+        assert_eq!(alerts[0].details["status"], "ARCHIVED");
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "neither timer may spawn into an archived run"
+        );
+    }
+
+    /// Issue #208, the other half of that seam: an EXTERNAL park (gh auth
+    /// loss) arms nothing by design, so before this the runs it stopped sat
+    /// parked until a human found them. The restored edge releases them —
+    /// and this runs the whole chain through the real components: external
+    /// park → park ladder → release → the schedule's own due check → two
+    /// fresh spawns.
+    ///
+    /// The two epics are picked because their real per-epic jitter COLLIDES
+    /// (both hash to 1s, so the de-duplication spaces them 1s and 2s): the
+    /// stagger arithmetic is production's, and the wait is short enough to
+    /// drive from a test.
+    #[tokio::test]
+    async fn test_an_auth_restore_resumes_both_parked_runs_through_the_schedule() {
+        use crate::core::samurai_auth_watch::GH_AUTH_LOST;
+
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-auth-seam";
+        // The parker's own ACTIVE-run check on release (issue #208) — the
+        // wiring `lib.rs` does at startup.
+        h.parker.set_run_configs(h.run_configs.clone());
+
+        let runs = [(1u32, "#180"), (2u32, "#532")];
+        let mut repos = Vec::new();
+        for (id, epic) in runs {
+            let repo = tempdir().unwrap();
+            init_parkable_repo(repo.path(), epic, 1);
+            let worktree = repo.path().to_string_lossy().into_owned();
+            h.dirs.lock().unwrap().insert(id, worktree.clone());
+            h.run_configs
+                .save(&SamuraiRunConfig::new(project, epic, worktree))
+                .unwrap();
+            h.supervisor
+                .register_session(id, project.into(), epic.into(), 1)
+                .unwrap();
+            repos.push(repo);
+        }
+
+        h.parker.engage_external_park(GH_AUTH_LOST);
+        // Sequential sweep: session 1 first (both contexts unknown, so the
+        // tiebreak is the session id), then session 2.
+        for (id, _) in runs {
+            wait_until(&h.tick, || {
+                h.supervisor
+                    .list_sessions()
+                    .iter()
+                    .any(|s| s.session_id == id && s.state == SupervisorState::ParkRequested)
+            })
+            .await;
+            complete_park(&h, id, 1);
+        }
+        wait_until(&h.tick, || !h.parker.parking_engaged()).await;
+        assert!(
+            h.schedule.list().is_empty(),
+            "an external park arms nothing while auth is still broken"
+        );
+
+        // `gh auth` comes back — the watch's restored edge.
+        assert_eq!(h.parker.release_external_park(GH_AUTH_LOST), 2);
+        let timers = h.schedule.list();
+        assert_eq!(timers.len(), 2);
+        let mut fire_ats: Vec<String> = timers.iter().map(|t| t.fire_at.clone()).collect();
+        fire_ats.sort();
+        fire_ats.dedup();
+        assert_eq!(fire_ats.len(), 2, "the two resumes fire at distinct times");
+
+        // Nothing resumes before its time.
+        h.schedule.fire_due();
+        assert!(
+            h.spawns.lock().unwrap().is_empty(),
+            "a future resume must not fire early"
+        );
+
+        // The armed times are seconds out (the epics' real jitter), so the
+        // schedule's own due check is re-driven until both have passed. No
+        // budget: `wait_until` only gives up at the hang backstop, so a
+        // loaded box costs wall time instead of a red test (issues
+        // #197/#198, and the fixed sleep this replaced).
+        let latest = timers
+            .iter()
+            .map(|t| {
+                DateTime::parse_from_rfc3339(&t.fire_at)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            })
+            .max()
+            .unwrap();
+        wait_until(&h.tick, || {
+            h.schedule.fire_due();
+            h.spawns.lock().unwrap().len() == 2
+        })
+        .await;
+        assert!(Utc::now() >= latest, "both armed fire times had to pass");
+        let mut spawned: Vec<(String, u32)> = h
+            .spawns
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| (s.epic.clone(), s.generation))
+            .collect();
+        spawned.sort();
+        assert_eq!(
+            spawned,
+            vec![("#180".to_string(), 2), ("#532".to_string(), 2)],
+            "each parked run spawns its own next generation"
+        );
+
+        let rows = wait_for_rows(&h.tick, &h.audit, project, |rows| {
+            rows.iter()
+                .filter(|r| r.event == AuditEventKind::Resume)
+                .count()
+                == 2
+        })
+        .await;
+        let resume: Vec<_> = rows
+            .iter()
+            .filter(|r| r.event == AuditEventKind::Resume)
+            .collect();
+        assert_eq!(resume.len(), 2);
+        for row in &resume {
+            assert_eq!(
+                row.details["trigger"], "gh_auth_restored",
+                "the row names what was FIXED, not what broke"
+            );
+            assert_eq!(row.details["predecessor_generation"], 1);
+        }
+        assert!(h.schedule.list().is_empty(), "both fired timers self-clean");
     }
 }
