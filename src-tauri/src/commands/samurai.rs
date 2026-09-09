@@ -35,7 +35,7 @@ use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, DeliveryRoute, SamuraiReplicator};
 use crate::core::samurai_resumer::latest_handoff_generation;
 use crate::core::samurai_run_config::{
-    RefTitle, RunConfigStatus, RunConfigStore, SamuraiRunConfig,
+    ConfigLookup, RefTitle, RunConfigStatus, RunConfigStore, SamuraiRunConfig,
 };
 use crate::core::samurai_schedule::{
     SamuraiSchedule, ScheduleEntry, ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH,
@@ -352,14 +352,149 @@ fn epic_branch(project: &str, epic: &str) -> String {
     format!("{project_slug}-{}", epic_slug(epic))
 }
 
+/// `HH:MM` in the reader's own timezone, or `None` when the stamp will not
+/// parse — a malformed timer must degrade to "no state clause", never to a
+/// missing refusal.
+fn local_clock(rfc3339: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+}
+
+/// `YYYY-MM-DD` in the reader's own timezone; `None` on an unparseable stamp
+/// (see [`local_clock`]).
+fn local_date(rfc3339: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339).ok().map(|t| {
+        t.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string()
+    })
+}
+
+/// What the epic's ON-DISK run record says about whether a launch may write
+/// over it (issue #213). A live supervised session is NOT the only thing
+/// that makes an epic taken: `RunConfigStore::save` creates-or-replaces, so
+/// launching over a run that is merely parked, interrupted, or between
+/// generations silently destroyed its generation, thresholds, park stamp and
+/// `interrupted_at` — and orphaned its worktree and handoffs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExistingRun {
+    /// Nothing on disk, or a record a relaunch is free to replace: ARCHIVED
+    /// (Abandon) and COMPLETED (finished, awaiting cleanup).
+    Replaceable,
+    /// An ACTIVE record — this run still owns the epic.
+    Active {
+        /// The run's display name (`Samurai-3`), or its epic label on a
+        /// config written before display names existed.
+        name: String,
+        /// How the run is currently stalled, when anything on disk says so:
+        /// `parked until 19:10`, `interrupted since 2026-08-20`, or both.
+        state: Option<String>,
+    },
+    /// The config file is there and could not be read. Its status is exactly
+    /// what is unreadable, so it is never evidence the epic is free — the
+    /// same reason [`ConfigLookup::Unreadable`] is kept apart from `Missing`.
+    Unreadable {
+        /// Why the read failed (`parse failed: …` / `read failed: …`).
+        error: String,
+        /// WHERE the offending file is. Named in the refusal because none of
+        /// the three normal exits can clear it: `archive` (Abandon) and
+        /// `complete` error on an unreadable file, cleanup reads it through
+        /// `RunConfigStore::get` — which returns `None` — and so deletes the
+        /// worktree and branch but leaves the config sitting there, and the
+        /// resumer only ever touches ACTIVE configs. Without the path the
+        /// epic is simply stuck.
+        path: String,
+    },
+}
+
+/// Reads the epic's run record and the park timer that belongs to it.
+/// Matched by slug like every other identity lookup in this module, so a
+/// relaunch typed as `38` sees the record written under `#38`.
+///
+/// Called from inside the launch slot (`LaunchInFlight`), which is held
+/// across this read AND the `run_configs.save` far below — that is what
+/// makes the check-then-write atomic, so two concurrent launches of the same
+/// (project, epic) cannot both pass this gate and clobber each other.
+fn existing_run(
+    run_configs: &RunConfigStore,
+    schedule: &SamuraiSchedule,
+    project: &str,
+    epic: &str,
+) -> ExistingRun {
+    let config = match run_configs.lookup(project, epic) {
+        ConfigLookup::Missing => return ExistingRun::Replaceable,
+        ConfigLookup::Unreadable(error) => {
+            return ExistingRun::Unreadable {
+                error,
+                path: run_configs.path_of(project, epic).display().to_string(),
+            }
+        }
+        ConfigLookup::Found(config) => *config,
+    };
+    if config.status != RunConfigStatus::Active {
+        return ExistingRun::Replaceable;
+    }
+    let parked = schedule
+        .list()
+        .iter()
+        .find(|e| {
+            e.reason == "park" && e.project_path == project && epic_slug(&e.epic) == epic_slug(epic)
+        })
+        .and_then(|e| local_clock(&e.fire_at))
+        .map(|at| format!("parked until {at}"));
+    let interrupted = config
+        .interrupted_at
+        .as_ref()
+        .and_then(|s| local_date(&s.at))
+        .map(|on| format!("interrupted since {on}"));
+    let state = [parked, interrupted]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    ExistingRun::Active {
+        name: config.display_name.unwrap_or(config.epic),
+        state: (!state.is_empty()).then(|| state.join(", ")),
+    }
+}
+
 /// The launch refusal matrix, in check order. `None` = clear to launch.
-fn launch_refusal(preflight: &SamuraiPreflight, live_session: bool) -> Option<String> {
+fn launch_refusal(
+    preflight: &SamuraiPreflight,
+    live_session: bool,
+    existing: &ExistingRun,
+) -> Option<String> {
     if live_session {
         return Some(
             "launch refused: this epic already has a live supervised session — let it finish \
              or clean the epic up first"
                 .to_string(),
         );
+    }
+    // Issue #213: destructive-adjacent, so it outranks the environment
+    // checks below — an ACTIVE record is the epic's owner with or without a
+    // live session, and relaunching would overwrite it. Never overridable:
+    // the three real exits are Resume, Abandon and Cleanup.
+    match existing {
+        ExistingRun::Active { name, state } => {
+            let state = state
+                .as_deref()
+                .map(|s| format!(" ({s})"))
+                .unwrap_or_default();
+            return Some(format!(
+                "launch refused: run `{name}` is already active{state} — resume it, abandon it, \
+                 or clean it up first; relaunching would overwrite its record",
+            ));
+        }
+        ExistingRun::Unreadable { error, path } => {
+            return Some(format!(
+                "launch refused: this epic's run config could not be read ({error}) — its status \
+                 is exactly what is unreadable, so launching could overwrite a live run. Repair \
+                 or delete {path}, then relaunch; Abandon and Cleanup cannot clear an unreadable \
+                 config",
+            ));
+        }
+        ExistingRun::Replaceable => {}
     }
     if !preflight.gh_auth.ok {
         return Some(format!(
@@ -743,7 +878,10 @@ pub(crate) async fn launch_run_inner(
     let live_session = supervisor.list_sessions().iter().any(|s| {
         s.project == project && epic_slug(&s.epic) == epic_slug(&epic) && !s.state.is_terminal()
     });
-    if let Some(refusal) = launch_refusal(preflight, live_session) {
+    // Issue #213: …and the epic's on-disk record, which outlives every
+    // session — a parked or interrupted run has none.
+    let existing = existing_run(run_configs, schedule, project, &epic);
+    if let Some(refusal) = launch_refusal(preflight, live_session, &existing) {
         return Err(refusal);
     }
 
@@ -2292,19 +2430,186 @@ mod tests {
 
     #[test]
     fn test_launch_refusal_matrix() {
+        let free = ExistingRun::Replaceable;
         // All gates pass → clear to launch.
-        assert_eq!(launch_refusal(&preflight(true, true), false), None);
+        assert_eq!(launch_refusal(&preflight(true, true), false, &free), None);
         // Each failing gate refuses with its own reason, in check order.
-        let live = launch_refusal(&preflight(true, true), true).unwrap();
+        let live = launch_refusal(&preflight(true, true), true, &free).unwrap();
         assert!(live.contains("live supervised session"));
-        let no_auth = launch_refusal(&preflight(false, true), false).unwrap();
+        let no_auth = launch_refusal(&preflight(false, true), false, &free).unwrap();
         assert!(no_auth.contains("gh auth"));
         assert!(no_auth.contains("not authenticated"));
-        let no_window = launch_refusal(&preflight(true, false), false).unwrap();
+        let no_window = launch_refusal(&preflight(true, false), false, &free).unwrap();
         assert!(no_window.contains("no governing allowance window"));
         // A live session outranks everything (destructive-adjacent first).
-        let both = launch_refusal(&preflight(false, false), true).unwrap();
+        let both = launch_refusal(&preflight(false, false), true, &free).unwrap();
         assert!(both.contains("live supervised session"));
+    }
+
+    #[test]
+    fn test_launch_refusal_names_the_active_runs_state() {
+        // Issue #213: an ACTIVE record refuses even with a clean preflight
+        // and NO live session, and the detail names the run and its state.
+        let bare = launch_refusal(
+            &preflight(true, true),
+            false,
+            &ExistingRun::Active {
+                name: "Samurai-3".to_string(),
+                state: None,
+            },
+        )
+        .unwrap();
+        assert!(bare.contains("`Samurai-3` is already active"), "{bare}");
+        // The three real exits, never "launch anyway".
+        assert!(bare.contains("resume it, abandon it, or clean it up first"));
+        assert!(!bare.contains("anyway"));
+
+        let stalled = launch_refusal(
+            &preflight(true, true),
+            false,
+            &ExistingRun::Active {
+                name: "Samurai-3".to_string(),
+                state: Some("parked until 19:10, interrupted since 2026-08-20".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(stalled.contains("(parked until 19:10, interrupted since 2026-08-20)"));
+
+        // It outranks the environment checks — the record is the reason.
+        let over_env = launch_refusal(
+            &preflight(false, false),
+            false,
+            &ExistingRun::Active {
+                name: "Samurai-3".to_string(),
+                state: None,
+            },
+        )
+        .unwrap();
+        assert!(over_env.contains("already active"), "{over_env}");
+
+        // An unreadable config is not evidence the epic is free — and the
+        // detail names the ONLY route that clears it (review of #213):
+        // Abandon errors on an unreadable file and Cleanup leaves it behind.
+        let torn = launch_refusal(
+            &preflight(true, true),
+            false,
+            &ExistingRun::Unreadable {
+                error: "parse failed: expected value".to_string(),
+                path: r"C:\runs\floo\38.json".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(torn.contains("could not be read"), "{torn}");
+        assert!(torn.contains("parse failed"));
+        assert!(torn.contains(r"delete C:\runs\floo\38.json"), "{torn}");
+        assert!(torn.contains("Abandon and Cleanup cannot clear"), "{torn}");
+    }
+
+    #[test]
+    fn test_unreadable_config_refusal_names_the_file_that_actually_blocks() {
+        // Review of #213: the refusal must not send the human at an exit
+        // that cannot work. Proven against the real store, not a fixture.
+        let runs_dir = tempdir().unwrap();
+        let schedule_dir = tempdir().unwrap();
+        let run_configs = RunConfigStore::new(runs_dir.path().to_path_buf());
+        let (schedule, _task) =
+            SamuraiSchedule::new(schedule_dir.path().to_path_buf(), Arc::new(|_| {}), None);
+        let project = "/repos/floo";
+
+        let path = run_configs.path_of(project, "#38");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+
+        let ExistingRun::Unreadable {
+            path: named_path, ..
+        } = existing_run(&run_configs, &schedule, project, "#38")
+        else {
+            panic!("an unreadable config must block the launch");
+        };
+        assert_eq!(named_path, path.display().to_string());
+
+        // Abandon cannot clear it: `archive` needs a readable config.
+        assert!(run_configs.archive(project, "#38").is_err());
+        // …and the file the refusal names is still exactly where it says.
+        assert!(path.exists());
+
+        // Deleting that file — the route the message gives — frees the epic.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            existing_run(&run_configs, &schedule, project, "#38"),
+            ExistingRun::Replaceable
+        );
+    }
+
+    #[test]
+    fn test_existing_run_reads_the_record_and_its_park_timer() {
+        // Issue #213: the states a launch must see — none of which involve a
+        // live session.
+        let runs_dir = tempdir().unwrap();
+        let schedule_dir = tempdir().unwrap();
+        let run_configs = RunConfigStore::new(runs_dir.path().to_path_buf());
+        let (schedule, _task) =
+            SamuraiSchedule::new(schedule_dir.path().to_path_buf(), Arc::new(|_| {}), None);
+        let project = "/repos/floo";
+
+        // Nothing on disk → free.
+        assert_eq!(
+            existing_run(&run_configs, &schedule, project, "#38"),
+            ExistingRun::Replaceable
+        );
+
+        let mut config = SamuraiRunConfig::new(project, "#38", "/wt/floo-38");
+        config.display_name = Some("Samurai-3".to_string());
+        run_configs.save(&config).unwrap();
+
+        // ACTIVE, between generations: refused, no state clause.
+        assert_eq!(
+            existing_run(&run_configs, &schedule, project, "#38"),
+            ExistingRun::Active {
+                name: "Samurai-3".to_string(),
+                state: None,
+            }
+        );
+
+        // PARKED: the park timer's fire time is the state — and the lookup
+        // matches by slug, so a bare "38" relaunch still sees it.
+        schedule
+            .arm(ScheduleEntry {
+                project_path: project.to_string(),
+                epic: "#38".to_string(),
+                fire_at: "2030-01-01T19:10:00+00:00".to_string(),
+                reason: "park".to_string(),
+                launch: None,
+                held: false,
+            })
+            .unwrap();
+        let ExistingRun::Active { state, .. } =
+            existing_run(&run_configs, &schedule, project, "38")
+        else {
+            panic!("parked run must refuse");
+        };
+        let parked = state.expect("park timer named");
+        assert!(parked.starts_with("parked until "), "{parked}");
+
+        // INTERRUPTED: the cold-start stamp joins the clause.
+        run_configs
+            .mark_interrupted(project, "#38", 2, "reconcile_interrupted")
+            .unwrap();
+        let ExistingRun::Active { state, .. } =
+            existing_run(&run_configs, &schedule, project, "#38")
+        else {
+            panic!("interrupted run must refuse");
+        };
+        let both = state.expect("both states named");
+        assert!(both.contains("parked until "), "{both}");
+        assert!(both.contains("interrupted since "), "{both}");
+
+        // Abandon (ARCHIVED) frees the epic again.
+        run_configs.archive(project, "#38").unwrap();
+        assert_eq!(
+            existing_run(&run_configs, &schedule, project, "#38"),
+            ExistingRun::Replaceable
+        );
     }
 
     #[test]
@@ -3264,8 +3569,17 @@ mod tests {
             assert_eq!(spawns[0].model.as_deref(), Some("opus"));
         }
 
-        // Relaunch without a timer or overrides: nothing cancelled, no
-        // thresholds stored (empty = the global config applies).
+        // Issue #213: the epic's config is ACTIVE and there is NO live
+        // session (nothing registered one here) — the relaunch that used to
+        // succeed and clobber the record is now refused, and the record on
+        // disk must survive BYTE-IDENTICAL.
+        let config_path = run_configs
+            .list_with_paths()
+            .into_iter()
+            .find(|(_, c)| c.epic == "issue #38")
+            .expect("the run config is on disk")
+            .0;
+        let before = std::fs::read(&config_path).unwrap();
         let again = launch_run_inner(
             &supervisor,
             &schedule,
@@ -3287,9 +3601,53 @@ mod tests {
             Some(base.path()),
         )
         .await
+        .unwrap_err();
+        assert!(again.contains("already active"), "{again}");
+        assert!(again.contains("`Samurai-1`"), "{again}");
+        assert_eq!(
+            std::fs::read(&config_path).unwrap(),
+            before,
+            "a refused launch writes nothing over the run's record"
+        );
+        // …and the run's own overrides are still the ones the first launch
+        // stored, not the relaunch's empty ones.
+        let kept = run_configs.get(&project, "issue #38").unwrap();
+        assert_eq!(kept.model.as_deref(), Some("opus"));
+        assert_eq!(
+            kept.thresholds.unwrap().handoff_context_pct,
+            30.0,
+            "the relaunch did not blank the stored override"
+        );
+
+        // Abandon it (ARCHIVED) and the epic is launchable again.
+        run_configs.archive(&project, "issue #38").unwrap();
+        let after_abandon = launch_run_inner(
+            &supervisor,
+            &schedule,
+            &worktrees,
+            &run_configs,
+            &replicator,
+            &audit,
+            &in_flight,
+            &gate,
+            &title_lookup,
+            true,
+            &preflight(true, true),
+            SamuraiConfig::default(),
+            &project,
+            &LaunchInput::parse("finish #38"),
+            None,
+            None,
+            None,
+            Some(base.path()),
+        )
+        .await
         .unwrap();
-        assert!(!again.stale_timer_cancelled);
-        assert_eq!(again.epic, "issue #38", "differently worded text, one run");
+        assert!(!after_abandon.stale_timer_cancelled);
+        assert_eq!(
+            after_abandon.epic, "issue #38",
+            "differently worded text, one run"
+        );
         assert_eq!(
             run_configs.get(&project, "issue #38").unwrap().thresholds,
             None
@@ -4153,9 +4511,15 @@ mod tests {
         let h = cleanup_harness();
         let (gate, _calls) = recording_gate(vec![]);
         run_launch(&h, &gate, true, "#38").await.unwrap();
-        // Released on the success path too: a relaunch of the same epic is
-        // not refused by the in-flight slot (nothing else refuses it either
-        // — no live session is registered in this harness).
+        // Released on the success path too: the relaunch gets PAST the
+        // in-flight slot and is stopped by the refusal matrix instead — the
+        // ACTIVE record the first launch wrote (issue #213), not a slot that
+        // was never released.
+        let again = run_launch(&h, &gate, true, "#38").await.unwrap_err();
+        assert!(!again.contains("already in progress"), "{again}");
+        assert!(again.contains("already active"), "{again}");
+        // Abandoned, the epic launches again — the slot really is free.
+        h.run_configs.archive(&h.project, "issue #38").unwrap();
         run_launch(&h, &gate, true, "#38").await.unwrap();
     }
 
