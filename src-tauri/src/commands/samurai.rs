@@ -282,8 +282,8 @@ pub struct SamuraiPreflight {
     /// The allowance-headroom verdict, already evaluated against the same
     /// cached usage poll the two probes above used. Carried as a finished
     /// [`PreflightCheck`] rather than raw numbers precisely so it is the ONE
-    /// seam issue #212 has to fill (and the one tests drive a `warn`
-    /// through) — see [`allowance_headroom_pending_212`].
+    /// seam that reads the park thresholds (and the one tests drive a `warn`
+    /// through) — see [`allowance_headroom`].
     pub allowance_headroom: PreflightCheck,
 }
 
@@ -339,6 +339,18 @@ fn check_fail(id: &'static str, detail: impl Into<String>) -> PreflightCheck {
     }
 }
 
+/// An advisory row: it does not clear, but the user's "launch anyway" may
+/// carry a launch past it. Every `warn` this file builds is overridable —
+/// an advisory finding nobody can consent to is just a `fail` in disguise.
+fn check_warn(id: &'static str, detail: impl Into<String>) -> PreflightCheck {
+    PreflightCheck {
+        id,
+        status: PreflightStatus::Warn,
+        detail: detail.into(),
+        overridable: true,
+    }
+}
+
 /// Folds the `gh auth status` outcome into the structured check.
 fn gh_auth_check(auth: Result<AuthStatus, String>) -> GhAuthCheck {
     match auth {
@@ -370,24 +382,118 @@ fn windows_reported(usage: &Result<UsageData, String>) -> bool {
     )
 }
 
-/// PLACEHOLDER, owned by issue #212. That issue fills in the real thresholds
-/// — `warn` at `park_soft_5h_pct`, `fail` at `park_hard_5h_pct` /
-/// `park_hard_7d_pct` — off exactly this already-cached
-/// `get_claude_usage(None)` result, so no second poll and no new subprocess
-/// is ever needed. Until then the row is shape-only and always passes: the
-/// `warn`/`overridable` wiring downstream of it (the launch gate, the audit
-/// row, the dialog's override checkbox) is complete and is driven in tests
-/// by handing [`SamuraiPreflight`] a `warn` entry directly.
-fn allowance_headroom_pending_212(_usage: &Result<UsageData, String>) -> PreflightCheck {
-    check_pass(
-        CHECK_ALLOWANCE_HEADROOM,
-        "Allowance headroom is not evaluated yet (issue #212)",
-    )
+/// How close a governing window already is to its park line, phrased for a
+/// human: "5-hour window at 89 % — resets 19:10". The reset clause is
+/// dropped when the stamp is missing or unparseable ([`local_clock`]) — a
+/// bad timestamp must never cost the reader the number.
+fn headroom_phrase(window: &str, percent: f64, resets_at: Option<&str>) -> String {
+    let resets = resets_at
+        .and_then(local_clock)
+        .map(|t| format!(" — resets {t}"))
+        .unwrap_or_default();
+    format!("{window} window at {percent:.0} %{resets}")
+}
+
+/// How much of the 7-day allowance a launch wants left BELOW the hard park
+/// line before it stops warning. The weekly window has no soft threshold of
+/// its own (`allowance_watcher` only ever latches it hard), so the advisory
+/// line is derived: five points short of the hard one.
+const WEEKLY_WARN_MARGIN_PCT: f64 = 5.0;
+
+/// The allowance-headroom verdict (issue #212), read off exactly the
+/// `get_claude_usage(None)` result the other two probes already used — the
+/// 30 s-cached HTTPS poll, so no second request and no subprocess.
+///
+/// `fail` at the hard park lines: the parker would park this run on its
+/// first sweep, so the launch would have bought a worktree, a test gate and
+/// a spawn for nothing. `warn` at the soft 5-hour line (and
+/// [`WEEKLY_WARN_MARGIN_PCT`] short of the weekly hard line): the run can
+/// start, it just will not get far — advisory, and therefore overridable.
+///
+/// Thresholds come from the GLOBAL config for the same reason
+/// `allowance_watcher` reads them globally: allowance windows are
+/// account-wide, so a per-run `thresholds` override never governs them.
+///
+/// A poll that failed, needs auth, or reports no window at all passes here:
+/// `usage_windows` already refuses the launch on precisely that, and a
+/// second row repeating it would only bury the one that matters. `None` is
+/// "window not reported", never 0 % (`commands::usage`).
+fn allowance_headroom(usage: &Result<UsageData, String>, config: &SamuraiConfig) -> PreflightCheck {
+    let cleared = |detail: &str| check_pass(CHECK_ALLOWANCE_HEADROOM, detail);
+    let Ok(usage) = usage else {
+        return cleared("Allowance headroom not evaluated — the usage poll failed");
+    };
+    if usage.needs_auth {
+        return cleared("Allowance headroom not evaluated — the usage poll needs auth");
+    }
+    let session = usage.session_percent;
+    let weekly = usage.weekly_percent;
+    if session.is_none() && weekly.is_none() {
+        return cleared("Allowance headroom not evaluated — no governing window reported");
+    }
+
+    // Hard lines first, and the 5-hour window before the weekly one: when
+    // both are over, the 5-hour reset is the sooner of the two, so it is the
+    // wait the human is told about.
+    if let Some(pct) = session.filter(|p| *p >= config.park_hard_5h_pct) {
+        return check_fail(
+            CHECK_ALLOWANCE_HEADROOM,
+            format!(
+                "launch refused: {} — at or above the {:.0} % hard park threshold, so the parker would park this run on its first sweep",
+                headroom_phrase("5-hour", pct, usage.session_resets_at.as_deref()),
+                config.park_hard_5h_pct,
+            ),
+        );
+    }
+    if let Some(pct) = weekly.filter(|p| *p >= config.park_hard_7d_pct) {
+        return check_fail(
+            CHECK_ALLOWANCE_HEADROOM,
+            format!(
+                "launch refused: {} — at or above the {:.0} % hard park threshold, so the parker would park this run on its first sweep",
+                headroom_phrase("7-day", pct, usage.weekly_resets_at.as_deref()),
+                config.park_hard_7d_pct,
+            ),
+        );
+    }
+    if let Some(pct) = session.filter(|p| *p >= config.park_soft_5h_pct) {
+        return check_warn(
+            CHECK_ALLOWANCE_HEADROOM,
+            format!(
+                "{} — already past the {:.0} % soft park threshold, so this run has little headroom before it is parked",
+                headroom_phrase("5-hour", pct, usage.session_resets_at.as_deref()),
+                config.park_soft_5h_pct,
+            ),
+        );
+    }
+    if let Some(pct) = weekly.filter(|p| *p >= config.park_hard_7d_pct - WEEKLY_WARN_MARGIN_PCT) {
+        return check_warn(
+            CHECK_ALLOWANCE_HEADROOM,
+            format!(
+                "{} — within {:.0} points of the {:.0} % hard park threshold, so this run has little headroom before it is parked",
+                headroom_phrase("7-day", pct, usage.weekly_resets_at.as_deref()),
+                WEEKLY_WARN_MARGIN_PCT,
+                config.park_hard_7d_pct,
+            ),
+        );
+    }
+
+    let reported: Vec<String> = [
+        session.map(|p| headroom_phrase("5-hour", p, usage.session_resets_at.as_deref())),
+        weekly.map(|p| headroom_phrase("7-day", p, usage.weekly_resets_at.as_deref())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    cleared(&format!("Allowance headroom: {}", reported.join("; ")))
 }
 
 /// Runs both probes. Shared by the preflight command and the launch
 /// command's server-side re-check (the UI's earlier pass is advisory only).
-async fn run_preflight(project: &str) -> SamuraiPreflight {
+///
+/// ONE usage poll feeds both the window probe and the headroom verdict —
+/// `get_claude_usage(None)` is a 30 s-cached HTTPS call, and asking it twice
+/// per launch would be a second request for the same answer.
+async fn run_preflight(project: &str, config: &SamuraiConfig) -> SamuraiPreflight {
     let auth = GitHub::new(project)
         .auth_status()
         .await
@@ -396,7 +502,7 @@ async fn run_preflight(project: &str) -> SamuraiPreflight {
     SamuraiPreflight {
         gh_auth: gh_auth_check(auth),
         windows_reported: windows_reported(&usage),
-        allowance_headroom: allowance_headroom_pending_212(&usage),
+        allowance_headroom: allowance_headroom(&usage, config),
     }
 }
 
@@ -414,11 +520,16 @@ pub async fn samurai_preflight(
     supervisor: State<'_, Arc<Supervisor>>,
     schedule: State<'_, Arc<SamuraiSchedule>>,
     run_configs: State<'_, Arc<RunConfigStore>>,
+    config: State<'_, SharedSamuraiConfig>,
     project_path: String,
     text: String,
 ) -> Result<Vec<PreflightCheck>, String> {
     let project = samurai_project(&project_path);
-    let preflight = run_preflight(&project).await;
+    let global_config = config
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let preflight = run_preflight(&project, &global_config).await;
     let input = LaunchInput::parse(&text);
     let (live_session, existing) = if input.is_empty() {
         (false, ExistingRun::Replaceable)
@@ -1173,7 +1284,9 @@ pub(crate) async fn launch_run_inner(
 
     // Issue #214: a launch that went ahead over an advisory warning is a
     // durable fact, not a UI moment — when the run later behaves oddly, the
-    // audit says the human was told and chose to launch. ALERT with the
+    // audit says the launch was warned and went ahead: by a human ticking
+    // the box, or by the unattended path's standing consent (issue #212).
+    // ALERT with the
     // reconciler's account-wide convention (generation 0, session 0), and
     // `preflight_overridden` is whitelisted in `is_self_event` so this row
     // never advances the no-progress circuit breaker (#184 class).
@@ -1270,11 +1383,11 @@ pub async fn samurai_launch_run(
     // `launch_run_inner` refuses an empty request — the wire is not trusted
     // to have done either.
     let input = LaunchInput::parse(&text);
-    let preflight = run_preflight(&project).await;
     let global_config = config
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    let preflight = run_preflight(&project, &global_config).await;
     // The real gate: system processes, progress mirrored to the frontend.
     let gate_app = app.clone();
     let test_gate = SamuraiTestGate::new(
@@ -1789,9 +1902,21 @@ pub(crate) async fn scheduled_launch_fire_inner(
                     test_gate,
                     title_lookup,
                     spec.skip_test_gate,
-                    // An UNATTENDED launch never takes a warning on its own
-                    // head — nobody is there to be told (issue #214).
-                    false,
+                    // Issue #212: an OVERRIDABLE warning does not stop an
+                    // unattended launch. Nobody is there to consent, so the
+                    // alternative is a scheduled run refused by an advisory
+                    // finding, retried three times into the same finding and
+                    // then HELD — an advisory turned into a silently lost
+                    // run. Proceeding degrades safely instead: an advisory
+                    // is by definition survivable, and if it is the
+                    // allowance one the parker parks the run on its next
+                    // sweep anyway, which is the outcome the check was only
+                    // ever warning about. The launch is not silent — the
+                    // `preflight_overridden` ALERT row below records exactly
+                    // which warnings it went ahead over. A `fail` still
+                    // blocks: `launch_refusal` returns it before it ever
+                    // looks at this flag.
+                    true,
                     preflight,
                     global_config,
                     &entry.project_path,
@@ -1884,12 +2009,12 @@ pub(crate) async fn scheduled_launch_fire_inner(
 /// callback spawns it onto the runtime.
 pub async fn handle_scheduled_launch_fire(app: AppHandle, entry: ScheduleEntry) {
     use tauri::Manager;
-    let preflight = run_preflight(&entry.project_path).await;
     let global_config = app
         .state::<SharedSamuraiConfig>()
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    let preflight = run_preflight(&entry.project_path, &global_config).await;
     let gate_app = app.clone();
     let test_gate = SamuraiTestGate::new(
         samurai_test_gate::system_runner(),
@@ -2654,6 +2779,175 @@ mod tests {
         assert!(!windows_reported(&Err("network error".to_string())));
     }
 
+    /// A usage poll reporting the given windows, with a reset stamp the
+    /// test can predict in the reader's OWN timezone: built from a real
+    /// local instant and formatted independently, so the assertion is not
+    /// `local_clock` checking itself and no CI timezone can break it.
+    fn headroom_usage(session: Option<f64>, weekly: Option<f64>) -> (UsageData, String) {
+        let resets = chrono::Local::now() + chrono::Duration::minutes(97);
+        let clock = resets.format("%H:%M").to_string();
+        (
+            UsageData {
+                session_percent: session,
+                session_resets_at: session.map(|_| resets.to_rfc3339()),
+                weekly_percent: weekly,
+                weekly_resets_at: weekly.map(|_| resets.to_rfc3339()),
+                ..UsageData::default()
+            },
+            clock,
+        )
+    }
+
+    #[test]
+    fn test_allowance_headroom_table() {
+        // Issue #212. Deliberately NOT the shipped defaults: the thresholds
+        // are read from config, so a test that passed only at 78/90/95
+        // would pass just as well against hardcoded numbers.
+        let config = SamuraiConfig {
+            park_soft_5h_pct: 60.0,
+            park_hard_5h_pct: 80.0,
+            park_hard_7d_pct: 70.0,
+            ..SamuraiConfig::default()
+        };
+        let check = |session, weekly| {
+            let (usage, clock) = headroom_usage(session, weekly);
+            let verdict = allowance_headroom(&Ok(usage), &config);
+            // These sentences ship VERBATIM into the launch-refusal dialog
+            // and the `preflight_overridden` audit row, so a source literal
+            // wrapped in a way that keeps its indentation is a user-visible
+            // defect. Checked on EVERY case, not just the two spelled out
+            // in full below.
+            assert!(
+                !verdict.detail.contains("  "),
+                "the rendered detail has a run of spaces: {:?}",
+                verdict.detail,
+            );
+            (verdict, clock)
+        };
+
+        // Below the soft line: cleared, and the row still reports what it saw.
+        let (pass, clock) = check(Some(41.0), Some(12.0));
+        assert_eq!(pass.status, PreflightStatus::Pass, "{}", pass.detail);
+        assert!(pass.detail.contains("41 %"), "{}", pass.detail);
+        assert!(pass.detail.contains("12 %"), "{}", pass.detail);
+        assert!(pass.detail.contains(&clock), "{}", pass.detail);
+        // The soft line itself is a crossing (`>=`, as the parker latches it).
+        assert_eq!(
+            check(Some(59.9), None).0.status,
+            PreflightStatus::Pass,
+            "just under the soft line still clears"
+        );
+
+        // Between soft and hard: advisory, overridable, and the detail
+        // carries the number and the local reset time.
+        let (warn, clock) = check(Some(69.0), None);
+        assert_eq!(warn.status, PreflightStatus::Warn, "{}", warn.detail);
+        assert!(warn.overridable, "an advisory finding is the user's call");
+        assert_eq!(warn.id, CHECK_ALLOWANCE_HEADROOM);
+        assert_eq!(
+            warn.detail,
+            format!(
+                "5-hour window at 69 % — resets {clock} — already past the 60 % soft park threshold, so this run has little headroom before it is parked"
+            ),
+        );
+        assert_eq!(check(Some(60.0), None).0.status, PreflightStatus::Warn);
+
+        // At or above the hard 5-hour line: the parker would park this run
+        // on its first sweep, so no checkbox clears it.
+        for pct in [80.0, 93.0] {
+            let (fail, _) = check(Some(pct), None);
+            assert_eq!(fail.status, PreflightStatus::Fail, "{}", fail.detail);
+            assert!(
+                !fail.overridable,
+                "a hard park line is not a matter of nerve"
+            );
+            assert!(
+                fail.detail.starts_with("launch refused:"),
+                "{}",
+                fail.detail
+            );
+            assert!(fail.detail.contains("5-hour"), "{}", fail.detail);
+        }
+        let (fail, clock) = check(Some(93.0), None);
+        assert_eq!(
+            fail.detail,
+            format!(
+                "launch refused: 5-hour window at 93 % — resets {clock} — at or above the 80 % hard park threshold, so the parker would park this run on its first sweep"
+            ),
+        );
+
+        // The weekly window: hard line fails, the margin below it warns.
+        let (weekly_fail, weekly_clock) = check(Some(5.0), Some(70.0));
+        assert_eq!(weekly_fail.status, PreflightStatus::Fail);
+        assert!(
+            weekly_fail.detail.contains("7-day window at 70 %"),
+            "{}",
+            weekly_fail.detail
+        );
+        assert!(weekly_fail.detail.contains(&weekly_clock));
+        let (weekly_warn, _) = check(Some(5.0), Some(65.0));
+        assert_eq!(weekly_warn.status, PreflightStatus::Warn);
+        assert!(weekly_warn.overridable);
+        assert!(
+            weekly_warn.detail.contains("7-day window at 65 %"),
+            "{}",
+            weekly_warn.detail
+        );
+        assert_eq!(
+            check(Some(5.0), Some(64.9)).0.status,
+            PreflightStatus::Pass,
+            "outside the margin the weekly window says nothing"
+        );
+
+        // A 5-hour FAIL outranks a weekly warning: its reset is the sooner
+        // of the two, so it is the wait the human is told about.
+        let (both, _) = check(Some(85.0), Some(66.0));
+        assert_eq!(both.status, PreflightStatus::Fail);
+        assert!(both.detail.contains("5-hour"), "{}", both.detail);
+    }
+
+    #[test]
+    fn test_allowance_headroom_stays_quiet_when_there_is_nothing_to_judge() {
+        // The "windows not reported" behaviour is unchanged: `usage_windows`
+        // already refuses the launch on exactly this, so a second row saying
+        // the same thing would only bury the one that matters.
+        let config = SamuraiConfig::default();
+        let quiet = |usage: Result<UsageData, String>| {
+            let check = allowance_headroom(&usage, &config);
+            assert_eq!(check.status, PreflightStatus::Pass, "{}", check.detail);
+            assert!(!check.overridable);
+            check.detail
+        };
+        quiet(Err("network error".to_string()));
+        quiet(Ok(UsageData {
+            // Well over every park line, but the poll needs auth — the
+            // numbers are not evidence.
+            session_percent: Some(99.0),
+            needs_auth: true,
+            ..UsageData::default()
+        }));
+        quiet(Ok(UsageData::default()));
+
+        // A window reported without a parseable reset stamp still reports
+        // its number: a bad timestamp must not cost the reader the verdict.
+        let no_stamp = allowance_headroom(
+            &Ok(UsageData {
+                session_percent: Some(85.0),
+                session_resets_at: Some("tomorrow".to_string()),
+                ..UsageData::default()
+            }),
+            &config,
+        );
+        assert_eq!(
+            no_stamp.status,
+            PreflightStatus::Warn,
+            "{}",
+            no_stamp.detail
+        );
+        assert!(no_stamp.detail.contains("85 %"), "{}", no_stamp.detail);
+        assert!(!no_stamp.detail.contains("resets"), "{}", no_stamp.detail);
+    }
+
     fn preflight(gh_ok: bool, windows: bool) -> SamuraiPreflight {
         SamuraiPreflight {
             gh_auth: GhAuthCheck {
@@ -2662,7 +2956,10 @@ mod tests {
                 error: (!gh_ok).then(|| "not authenticated".to_string()),
             },
             windows_reported: windows,
-            allowance_headroom: allowance_headroom_pending_212(&Err("unused".to_string())),
+            // The headroom row is driven directly where it matters
+            // (`test_allowance_headroom_table`); a clean preflight just
+            // needs it to pass.
+            allowance_headroom: check_pass(CHECK_ALLOWANCE_HEADROOM, "Allowance headroom: clear"),
         }
     }
 
@@ -5787,6 +6084,50 @@ mod tests {
         // The launch's stale-timer cancel consumed the armed entry: nothing
         // pending, nothing to re-fire.
         assert!(h.schedule.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_fire_launches_over_an_overridable_warning_but_not_over_a_fail() {
+        // Issue #212 carry-forward. Nobody is watching an unattended
+        // launch, so there is no one to tick "launch anyway" — refusing on
+        // an advisory finding would retry the entry into the same finding
+        // three times and then HELD it, turning a survivable warning into a
+        // silently lost run. It launches, and the ALERT row says what it
+        // launched over.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+
+        let outcome = fire_scheduled(&h, &gate, &preflight_with_headroom_warning(), entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Launched);
+        assert_eq!(h.spawns.lock().unwrap().len(), 1, "gen-1 spawned");
+        let read = h.audit.read(&h.project, None, None).await.unwrap();
+        let alert = read
+            .events
+            .iter()
+            .find(|e| e.details["kind"] == "preflight_overridden")
+            .expect("the unattended override is still a durable fact");
+        assert_eq!(alert.details["checks"][0]["id"], CHECK_ALLOWANCE_HEADROOM);
+
+        // A FAIL is not the flag's to clear on any path: the entry retries
+        // instead of launching, and nothing was spawned or written.
+        let h = cleanup_harness();
+        let (gate, _calls) = recording_gate(vec![]);
+        let entry = arm_scheduled_launch(&h, "work #38");
+        let blocked = SamuraiPreflight {
+            allowance_headroom: check_fail(
+                CHECK_ALLOWANCE_HEADROOM,
+                "launch refused: 5-hour window at 94 % — at or above the 90 % hard park threshold",
+            ),
+            ..preflight(true, true)
+        };
+
+        let outcome = fire_scheduled(&h, &gate, &blocked, entry).await;
+
+        assert_eq!(outcome, ScheduledLaunchOutcome::Retried { attempts: 1 });
+        assert!(h.spawns.lock().unwrap().is_empty(), "no gen-1 spawn");
+        assert!(h.run_configs.load_active().is_empty(), "no ACTIVE config");
     }
 
     /// Fix C4 (issue #131 review 2): the workflow graph the user EDITED must
