@@ -607,21 +607,54 @@ fn summary_tokens(summary: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
-/// Whether any token in `summary` names the file `file_name`.
+/// Whether any token in `summary` names the brief file `file_name` — inside
+/// the brief DIRECTORY, when the token says which directory at all.
 ///
-/// Compared on the LAST path segment, which is what makes this tolerant of
-/// every spelling the same brief arrives as — relative
+/// Compared on the last path SEGMENT (and its parent), which is what makes
+/// this tolerant of every spelling the same brief arrives as — relative
 /// (`.maestro/briefs/x.md`), absolute, back-slashed, JSON-escaped
 /// (`C:\\git\\…`) or `\\?\`-prefixed — without normalizing any of them:
 /// splitting on both separators leaves the file name whichever way the path
 /// was written, and an extended-length prefix is just more leading segments.
+/// Empty segments are dropped for that reason — a JSON-escaped separator is
+/// two backslashes, so `briefs\\x.md` splits with a gap in the middle.
 /// Case-insensitive: Windows paths are, and a re-typed path is not.
+///
+/// The parent check (PR review) is what keeps a same-named file ELSEWHERE
+/// from receipting a brief nobody opened: every spelling of a real brief path
+/// has [`samurai_brief::BRIEF_DIR`]'s last segment directly above the file, so
+/// requiring it costs no real read and rules out a coincidence like
+/// `docs/epic-9-gen-3-ritual.md`.
+///
+/// A BARE file name (no directory component at all) is still accepted: the
+/// pointer text always carries the directory, so a bare token means the agent
+/// read the file from inside that directory — `cd .maestro/briefs && cat
+/// <brief>` — and treating that as unread is the expensive direction of the
+/// trade, since issue #205 turns a missing receipt into an ALERT. What it
+/// CANNOT rule out is the same brief name in ANOTHER checkout of the same
+/// project (parent `briefs` there too). That is out of reach of any name
+/// match, and matching the full path instead would trade this remote
+/// coincidence for the very real `\\?\`/junction/short-path spelling misses
+/// the name match exists to avoid (issue #165) — which is why the epic
+/// specified the NAME.
 fn summary_names_file(summary: &str, file_name: &str) -> bool {
     summary_tokens(summary).any(|token| {
-        token
-            .rsplit(['/', '\\'])
+        let mut segments = token
+            .split(['/', '\\'])
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev();
+        if !segments
             .next()
-            .is_some_and(|segment| segment.eq_ignore_ascii_case(file_name))
+            .is_some_and(|s| s.eq_ignore_ascii_case(file_name))
+        {
+            return false;
+        }
+        match segments.next() {
+            Some(parent) => parent.eq_ignore_ascii_case(samurai_brief::brief_dir_name()),
+            None => true,
+        }
     })
 }
 
@@ -2824,9 +2857,18 @@ impl SamuraiReplicator {
                     ),
                 );
             }
-            // The session is gone: so is anything a receipt could still say
+            // The session is GONE: so is anything a receipt could still say
             // about it. Keeps the store to the live sessions.
-            ClaudeEvent::SessionEnded { session_id, .. } => {
+            //
+            // `reason == "stop"` is NOT that (PR review): the Stop hook emits
+            // this same variant at every TURN end — the convention
+            // `samurai_injector::idle_session_id` is built on — so pruning on
+            // it would drop the entry after turn 1 and lose exactly the case
+            // this exists for: a brief the agent opens later, or never. Only
+            // the SessionEnd hook's other reasons are a session going away.
+            ClaudeEvent::SessionEnded {
+                session_id, reason, ..
+            } if reason != "stop" => {
                 self.lock_brief_receipts()
                     .retain(|r| r.session_id != *session_id);
             }
@@ -5987,6 +6029,17 @@ mod tests {
 
     // --- issue #204: the READ receipt for a delivered brief ---
 
+    /// `SessionEnded` with an explicit reason: `"stop"` is the Stop hook's
+    /// TURN boundary, anything else is the SessionEnd hook's session going
+    /// away (the convention `samurai_injector::idle_session_id` documents).
+    fn session_ended(session_id: u32, reason: &str) -> ClaudeEvent {
+        ClaudeEvent::SessionEnded {
+            session_id,
+            reason: reason.into(),
+            timestamp: "t".into(),
+        }
+    }
+
     /// One `ToolUseStarted`, spelled as either channel spells it.
     fn tool_use(session_id: u32, tool_name: &str, input_summary: &str) -> ClaudeEvent {
         ClaudeEvent::ToolUseStarted {
@@ -6009,6 +6062,9 @@ mod tests {
             "C:/git/wt/.maestro/briefs/epic-9-gen-3-ritual.md",
             r"C:\git\wt\.maestro\briefs\epic-9-gen-3-ritual.md",
             r"\\?\C:\git\wt\.maestro\briefs\epic-9-gen-3-ritual.md",
+            // No directory component at all: the agent read it from inside
+            // the brief directory (`cd .maestro/briefs && cat …`). Accepted
+            // deliberately — see `summary_names_file`.
             "epic-9-gen-3-ritual.md",
             // The PreToolUse hook forwards the whole tool input as JSON, so
             // the separators arrive escaped.
@@ -6032,6 +6088,13 @@ mod tests {
             // Neighbours the name is a substring of, either end.
             "epic-9-gen-3-ritual.md.bak",
             "not-epic-9-gen-3-ritual.md",
+            // PR review: the same NAME outside the brief directory is not
+            // this brief. Every real spelling has `briefs` directly above
+            // the file, so requiring it costs no genuine read.
+            "docs/epic-9-gen-3-ritual.md",
+            r"C:\git\wt\docs\epic-9-gen-3-ritual.md",
+            ".maestro/epic-9-gen-3-ritual.md",
+            ".maestro/briefs/old/epic-9-gen-3-ritual.md",
         ];
         for summary in others {
             assert!(
@@ -6176,12 +6239,10 @@ mod tests {
             .collect();
         assert_eq!(phases, vec!["delivered", "receipt"]);
 
-        // The session going away drops the entry; nothing re-fires for it.
-        h.replicator.observe(&ClaudeEvent::SessionEnded {
-            session_id: 2,
-            reason: "stop".into(),
-            timestamp: "t".into(),
-        });
+        // The session GOING AWAY drops the entry; nothing re-fires for it.
+        // Not `reason: "stop"` — that is a turn boundary (see the dedicated
+        // test below), which is why the SessionEnd hook's own reason is used.
+        h.replicator.observe(&session_ended(2, "exit"));
         assert_eq!(h.replicator.brief_receipt_view(2), None);
     }
 
@@ -6257,6 +6318,74 @@ mod tests {
             assert_eq!(receipts[0].details["brief"], brief);
             assert_eq!(receipts[0].generation, 1);
         }
+    }
+
+    /// A `SessionEnded { reason: "stop" }` is the Stop hook's TURN boundary,
+    /// not a session going away, so a brief the agent opens in a LATER turn
+    /// still receipts.
+    ///
+    /// PR review. This is the case the whole issue exists for: an agent whose
+    /// pointer arrived mangled starts a turn on it (which is all
+    /// `phase=delivered` and the delivery watch ever proved), ends that turn,
+    /// and only later finds and reads the file — or never does, which is the
+    /// state #205 has to be able to consult. Pruning on `"stop"` erased it
+    /// after turn one.
+    #[tokio::test]
+    async fn test_a_turn_boundary_does_not_forget_an_unread_brief() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-204-turns";
+        let worktree = tempdir().unwrap();
+        let pointer = stage_launch_with_pointer(&h, project, worktree.path());
+        let brief = samurai_brief::pointer_brief_file_name(&pointer).unwrap();
+
+        let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
+        let snapshot = h
+            .supervisor
+            .register_session_with_details(5, project.into(), "#38".into(), 1, details)
+            .unwrap();
+        h.replicator
+            .on_registered_with_route(&snapshot, DeliveryRoute::LaunchLine);
+        h.replicator.observe_hook(&session_started(5));
+
+        // Turn one: a tool call that is not the brief, then the turn ends.
+        h.replicator
+            .observe(&tool_use(5, "Read", "src-tauri/src/main.rs"));
+        h.replicator.observe(&session_ended(5, "stop"));
+        assert_eq!(
+            h.replicator.brief_receipt_view(5),
+            Some((brief.clone(), false)),
+            "a turn boundary is not the session going away"
+        );
+
+        // Turn two: the agent finally opens the brief.
+        h.replicator
+            .observe(&tool_use(5, "Read", &format!(".maestro/briefs/{brief}")));
+        assert_eq!(
+            h.replicator.brief_receipt_view(5),
+            Some((brief.clone(), true))
+        );
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.details["phase"] == "receipt"
+        })
+        .await;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.details["phase"] == "receipt")
+                .count(),
+            1,
+            "still exactly one receipt, several turns later"
+        );
+
+        // Several more turn boundaries change nothing either way.
+        h.replicator.observe(&session_ended(5, "stop"));
+        assert_eq!(
+            h.replicator.brief_receipt_view(5),
+            Some((brief.clone(), true))
+        );
+        // Only the session actually going away drops it.
+        h.replicator.observe(&session_ended(5, "other"));
+        assert_eq!(h.replicator.brief_receipt_view(5), None);
     }
 
     /// An INLINE instruction has no brief file, so there is nothing to

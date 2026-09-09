@@ -260,6 +260,16 @@ pub fn pointer_instruction(relpath: &str) -> String {
     )
 }
 
+/// The last segment of [`BRIEF_DIR`] — the directory name that sits directly
+/// above every brief file.
+///
+/// Issue #204's receipt matcher checks it, so that a same-named file
+/// elsewhere cannot pass for a brief. Derived rather than spelled again, so
+/// moving the brief directory can never leave the check behind.
+pub fn brief_dir_name() -> &'static str {
+    BRIEF_DIR.rsplit('/').next().unwrap_or(BRIEF_DIR)
+}
+
 /// The brief FILE NAME (`<stem>.md`) that `instruction` points an agent at,
 /// or `None` when `instruction` is not a pointer at all — an inline
 /// instruction under [`INLINE_MAX_BYTES`], or a full ritual text the file
