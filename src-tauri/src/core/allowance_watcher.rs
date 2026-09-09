@@ -83,6 +83,28 @@ pub enum AllowanceWindow {
     SevenDay,
 }
 
+impl AllowanceWindow {
+    /// How long the window runs. Issue #210 uses it as the OUTER BOUND for a
+    /// park that never learned its `resets_at`: once a whole window has
+    /// passed since the park, the window it crossed on has certainly reset,
+    /// so a timer at that bound is a fact rather than a guess.
+    pub fn length(self) -> chrono::Duration {
+        match self {
+            Self::FiveHour => chrono::Duration::hours(5),
+            Self::SevenDay => chrono::Duration::days(7),
+        }
+    }
+
+    /// This window's reset time in one usage reading — the field a deferred
+    /// arm (issue #210) is waiting for.
+    pub fn resets_at(self, reading: &AllowanceReading) -> Option<&str> {
+        match self {
+            Self::FiveHour => reading.session_resets_at.as_deref(),
+            Self::SevenDay => reading.weekly_resets_at.as_deref(),
+        }
+    }
+}
+
 /// Soft = wind down (stop new subagents); hard = park (PRD §5.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -431,6 +453,11 @@ pub fn spawn_allowance_loop(
             // falling back below its line emits nothing), and a stale `true`
             // left on disk would suppress the next genuine crossing.
             latches.set_allowance(watcher.latch_state());
+            // Issue #210: a park that completed with NO resume timer retries
+            // its arm here — this reading is exactly where the `resets_at` it
+            // was denied finally shows up, and a run with no timer never
+            // resumes on its own.
+            parker.retry_pending_arms(&reading);
             if events.is_empty() {
                 if !parker.parking_engaged() {
                     // Still above a hard line with the sweep already
