@@ -212,6 +212,14 @@ pub enum DeliveryRoute {
 /// project alerts the same day it parked.
 const MAX_SPAWN_EMITS: u32 = 5;
 
+/// Late-bound veto on the `spawn_dropped` ALERT (issue #207). Called with
+/// `(project, epic, generation, trigger)` when a fresh-spawn entry gives up,
+/// BEFORE the ALERT is appended: `true` means the caller took ownership of
+/// the failure — the resume path re-arms its schedule timer and owns the
+/// alerting — so the generic ALERT is skipped. `false` (or no hook) keeps
+/// the ALERT exactly as it was.
+pub type SpawnDroppedHook = Arc<dyn Fn(&str, &str, u32, &'static str) -> bool + Send + Sync>;
+
 /// Retry state for a fresh-spawn entry (issue #61): how many spawn emits
 /// happened so far. The payload itself lives on the entry
 /// ([`PendingRitual::spawn`]), because a delivery failure re-emits it for
@@ -1017,6 +1025,10 @@ pub struct SamuraiReplicator {
     /// Unset (tests without a parker, or before setup finishes) = never
     /// absorb — successors spawn as in Phase 2.
     absorber: std::sync::OnceLock<HandoffAbsorber>,
+    /// Issue #207: the resume path's veto on the `spawn_dropped` ALERT.
+    /// Late-bound like the absorber (the resumer is constructed after this
+    /// controller in lib.rs).
+    spawn_dropped_hook: std::sync::OnceLock<SpawnDroppedHook>,
     /// Review F4: the run-config store, consulted at spawn-emit time for the
     /// epic's per-run `model` preference. Late-bound like the absorber
     /// (constructed after this controller in lib.rs); unset (tests, early
@@ -1053,6 +1065,7 @@ impl SamuraiReplicator {
             delivered: Arc::new(Mutex::new(Vec::new())),
             brief_receipts: Arc::new(Mutex::new(Vec::new())),
             absorber: std::sync::OnceLock::new(),
+            spawn_dropped_hook: std::sync::OnceLock::new(),
             run_configs: std::sync::OnceLock::new(),
         }
     }
@@ -1062,6 +1075,12 @@ impl SamuraiReplicator {
     /// every OnceLock slot in setup.
     pub fn set_absorber(&self, absorber: HandoffAbsorber) {
         let _ = self.absorber.set(absorber);
+    }
+
+    /// Issue #207: late-binds the `spawn_dropped` veto, the `set_absorber`
+    /// pattern. Second calls are ignored.
+    pub fn set_spawn_dropped_hook(&self, hook: SpawnDroppedHook) {
+        let _ = self.spawn_dropped_hook.set(hook);
     }
 
     /// Review F4: late-binds the run-config store (constructed after this
@@ -2911,6 +2930,9 @@ impl SamuraiReplicator {
             project: String,
             epic: String,
             generation: u32,
+            /// Issue #207: what asked for this spawn — the hook below only
+            /// claims the ones the resume timer started.
+            trigger: &'static str,
         }
         let mut re_emits: Vec<SuccessorSpawn> = Vec::new();
         let mut dropped: Vec<DroppedSpawn> = Vec::new();
@@ -2938,6 +2960,7 @@ impl SamuraiReplicator {
                                     project: p.project.clone(),
                                     epic: p.epic.clone(),
                                     generation: p.generation,
+                                    trigger: p.trigger,
                                 });
                             } else {
                                 respawn.attempts += 1;
@@ -3002,6 +3025,19 @@ impl SamuraiReplicator {
                 d.generation,
                 d.epic,
             );
+            // Issue #207: a RESUME spawn the frontend never took (the
+            // project is closed) must not end here with no timer left —
+            // that is the manual chore #207 exists to remove. The resume
+            // path re-arms its schedule entry and, after the first drop
+            // this app run, owns the alerting too: a `true` here means
+            // "handled, do not repeat the ALERT".
+            if self
+                .spawn_dropped_hook
+                .get()
+                .is_some_and(|hook| hook(&d.project, &d.epic, d.generation, d.trigger))
+            {
+                continue;
+            }
             self.audit.append(
                 &d.project,
                 AuditEvent::now(
@@ -7366,6 +7402,56 @@ mod tests {
             "the relaunch emits a spawn event"
         );
         assert_eq!(h.replicator.pending_count(1), 1, "replaced, not duplicated");
+    }
+
+    #[tokio::test]
+    async fn test_spawn_dropped_hook_can_claim_a_resume_drop_and_suppress_the_alert() {
+        // Issue #207: the resume path re-arms its schedule timer when the
+        // frontend never took the spawn, and owns the alerting from the
+        // second drop on. The hook sees the trigger, and a `true` verdict
+        // replaces the generic ALERT.
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-sg-drop-hook";
+        let repo = tempdir().unwrap();
+        init_repo(repo.path());
+        let head = read_repo_head(repo.path()).unwrap();
+        write_handoff(repo.path(), "epic-9", 3, &head);
+        let working_dir = repo.path().to_string_lossy().into_owned();
+        type DropCall = (String, String, u32, &'static str);
+        let claimed: Arc<Mutex<Vec<DropCall>>> = Arc::new(Mutex::new(Vec::new()));
+        let claimed_rec = claimed.clone();
+        h.replicator.set_spawn_dropped_hook(Arc::new(
+            move |project: &str, epic: &str, generation: u32, trigger: &'static str| {
+                claimed_rec.lock().unwrap().push((
+                    project.to_string(),
+                    epic.to_string(),
+                    generation,
+                    trigger,
+                ));
+                true
+            },
+        ));
+
+        h.replicator
+            .spawn_generation(project, "epic-9", &working_dir, 4, Some(3), "resume_timer");
+        wait_until(&h.tick, || !h.spawns.lock().unwrap().is_empty()).await;
+        for _ in 0..=MAX_SPAWN_EMITS {
+            h.replicator
+                .backdate(4, SHA_TIMEOUT + Duration::from_secs(1));
+            h.replicator.tick();
+        }
+
+        wait_until(&h.tick, || !claimed.lock().unwrap().is_empty()).await;
+        assert_eq!(
+            *claimed.lock().unwrap(),
+            vec![(project.to_string(), "epic-9".to_string(), 4, "resume_timer")],
+        );
+        let rows = h.audit.read(project, None, None).await.unwrap().events;
+        assert!(
+            !rows.iter().any(|r| r.details["kind"] == "spawn_dropped"),
+            "a claimed drop is the hook's to report, not the replicator's"
+        );
     }
 
     #[tokio::test]

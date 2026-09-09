@@ -290,7 +290,7 @@ fn decide(facts: &EpicFacts) -> ReconcileAction {
 /// when NOT to spawn: a false skip costs one launch of delay (the watchdog
 /// or the human sorts it out), a false spawn puts two orchestrators in one
 /// worktree.
-fn orphan_verdict(
+pub(crate) fn orphan_verdict(
     transcript_age: Option<Duration>,
     claude_alive: bool,
     fresh_within: Duration,

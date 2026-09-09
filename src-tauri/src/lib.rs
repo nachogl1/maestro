@@ -1024,11 +1024,47 @@ pub fn run() {
             // resumer can now re-arm deferred timers and consult the
             // parking-engaged guard.
             samurai_resumer.bind(samurai_schedule.clone(), samurai_parker.clone());
-            // Nothing auto-starts on app reopen: the timers `schedule.json`
-            // already held at startup ALERT instead of spawning when they
-            // fire (the same rule the reconciler follows). Uses the same
-            // pre-fire-loop snapshot, and must run BEFORE that loop is
-            // spawned below or a past-due entry could spawn in the gap.
+            // Issue #207: a resume spawn the frontend never took (the user
+            // has the project closed) re-arms the resume timer instead of
+            // ending as an ALERT with nothing left on disk.
+            let resumer_for_drop = samurai_resumer.clone();
+            replicator.set_spawn_dropped_hook(Arc::new(
+                move |project: &str, epic: &str, generation: u32, trigger: &'static str| {
+                    resumer_for_drop.on_spawn_dropped(project, epic, generation, trigger)
+                },
+            ));
+            // Issue #207: a RESTORED resume runs the same survivor check
+            // every other startup spawn goes through before it spawns — the
+            // reconciler's `orphan_verdict` over the watchdog's two real
+            // probes (the worktree's newest transcript age, and whether any
+            // claude is alive). Defined here rather than with the
+            // reconciliation task below because the schedule's fire loop is
+            // spawned a few lines down and its first tick fires every
+            // past-due timer immediately.
+            let transcript_ages: core::samurai_reconciler::TranscriptAgeProbe =
+                Arc::new(|project| {
+                    commands::claude_sessions::newest_transcript_for_project(project)
+                        .and_then(|path| core::samurai_watchdog::transcript_age(&path))
+                });
+            let claude_alive: core::samurai_reconciler::ClaudeAliveProbe = Arc::new(|| {
+                !core::samurai_watchdog::scan_claude_ancestor_pids().is_empty()
+            });
+            let transcript_ages_for_resume = transcript_ages.clone();
+            let claude_alive_for_resume = claude_alive.clone();
+            samurai_resumer.set_orphan_probe(Arc::new(move |worktree: &str| {
+                core::samurai_reconciler::orphan_verdict(
+                    transcript_ages_for_resume(worktree),
+                    claude_alive_for_resume(),
+                    core::samurai_watchdog::TRANSCRIPT_STALE_AFTER,
+                )
+            }));
+            // Issue #207: which runs had a timer on disk at startup. A
+            // restored timer RESUMES (the park asked to be resumed at that
+            // time; the app simply was not running then) — the flag decides
+            // only whether the survivor check above runs and which ALERT an
+            // unrecoverable run gets. Uses the same pre-fire-loop snapshot,
+            // and must run BEFORE that loop is spawned below, or a past-due
+            // entry could fire unmarked in the gap.
             samurai_resumer.mark_restored(&reconcile_timers);
             // Issue #129, same rule for scheduled launches: one whose picked
             // day+time passed while the app was closed is HELD — never
@@ -1101,14 +1137,8 @@ pub fn run() {
             // handed the replicator. The probes are the watchdog's process
             // scan and the project's newest transcript age — both real IO,
             // injected so the module stays harness-testable.
-            let transcript_ages: core::samurai_reconciler::TranscriptAgeProbe =
-                Arc::new(|project| {
-                    commands::claude_sessions::newest_transcript_for_project(project)
-                        .and_then(|path| core::samurai_watchdog::transcript_age(&path))
-                });
-            let claude_alive: core::samurai_reconciler::ClaudeAliveProbe = Arc::new(|| {
-                !core::samurai_watchdog::scan_claude_ancestor_pids().is_empty()
-            });
+            // The probes above are shared with the restored-resume survivor
+            // check (issue #207) — same IO, one definition.
             // The auth probe refines the interrupted-run alert: an epic
             // parked because gh auth died is exactly the one whose manual
             // resume would fail preflight (PRD §5.8), so the row says so.
