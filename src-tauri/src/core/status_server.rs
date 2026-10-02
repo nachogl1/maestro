@@ -58,6 +58,18 @@ fn pre_tool_may_downgrade(notified_at: Option<Instant>, now: Instant) -> bool {
     }
 }
 
+/// Is a hook's `tool_name` Maestro's own status tool
+/// (`mcp__maestro-status__maestro_status`)?
+///
+/// A call to it is the agent REPORTING its state, not doing work, and the
+/// report itself arrives on `/status`. The tool-hook `Working` repaints must
+/// skip it: the PostToolUse one landed right after the report and overwrote
+/// it (`Done` → `Working`), which also made the turn's Stop hook read as a
+/// second "ready" transition and re-fire the parked-session auto-unpark.
+fn is_status_tool(tool_name: &str) -> bool {
+    tool_name.starts_with("mcp__") && tool_name.ends_with("__maestro_status")
+}
+
 /// Callback for emitting status events. In production this wraps `AppHandle::emit`;
 /// in tests it captures events into a `Vec`.
 type EmitFn = Arc<dyn Fn(SessionStatusPayload) + Send + Sync>;
@@ -659,6 +671,11 @@ async fn handle_hook_pre_tool(
     //   digit shortcut (no Enter keypress for the frontend to observe), and
     //   keeps the PTY heuristic inside its "authoritative signal is fresh"
     //   grace window during tool-dense turns.
+    // - Maestro's own status tool is the exception: the report it carries
+    //   is the status (see `is_status_tool`).
+    if is_status_tool(&tool_name) {
+        return StatusCode::OK;
+    }
     if tool_name == "AskUserQuestion" {
         emit_hook_status(
             &state,
@@ -746,6 +763,12 @@ async fn handle_hook_post_tool(
 
     // The wait (if any) is over — a later PreToolUse must repaint freely.
     state.notified_at.write().await.remove(&maestro_session_id);
+
+    // The status tool just reported the agent's state over `/status` — a
+    // `Working` here would overwrite that report (see `is_status_tool`).
+    if is_status_tool(&tool_name) {
+        return StatusCode::OK;
+    }
 
     emit_hook_status(
         &state,
@@ -1602,6 +1625,60 @@ mod tests {
         assert_eq!(emitted[1].message, "Finished Bash");
         assert_eq!(emitted[2].status, "Working");
         assert_eq!(emitted[2].message, "Running Bash");
+    }
+
+    #[tokio::test]
+    async fn status_tool_hooks_do_not_repaint_the_status_it_reported() {
+        // An agent ending its turn with `maestro_status(finished)` used to
+        // go Done → Working (this tool's own PostToolUse) → NeedsInput (the
+        // Stop hook): two "ready" transitions for one finished turn, so a
+        // parked session the user had just re-parked was auto-unparked again.
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let pre_tool = serde_json::json!({
+            "session_id": "claude-uuid",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__maestro-status__maestro_status",
+            "tool_use_id": "tu-1",
+            "tool_input": {"state": "finished", "message": "All done"},
+        });
+        assert_eq!(
+            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), pre_tool).await,
+            200
+        );
+        assert_eq!(
+            post_status(addr, &make_status(1, "inst-secret", "finished", "All done")).await,
+            200
+        );
+        let post_tool = serde_json::json!({
+            "session_id": "claude-uuid",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "mcp__maestro-status__maestro_status",
+            "tool_use_id": "tu-1",
+        });
+        assert_eq!(
+            post_hook(addr, "/hook/post-tool", Some("inst-secret"), post_tool).await,
+            200
+        );
+
+        // Only the agent's own report reaches the frontend.
+        let emitted = events.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].status, "Done");
+    }
+
+    #[test]
+    fn is_status_tool_matches_only_the_maestro_status_mcp_tool() {
+        assert!(is_status_tool("mcp__maestro-status__maestro_status"));
+        assert!(is_status_tool("mcp__maestro__maestro_status"));
+        assert!(!is_status_tool("Bash"));
+        assert!(!is_status_tool("maestro_status"));
+        assert!(!is_status_tool("mcp__other__status"));
     }
 
     #[tokio::test]
