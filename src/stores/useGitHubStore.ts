@@ -110,6 +110,7 @@ export interface IssueInfo {
   url: string;
   labels: PrLabel[];
   closedAt: string | null;
+  assignees: PrAuthor[];
 }
 
 /** Discussion category. */

@@ -494,6 +494,7 @@ mod tests {
                 })
                 .collect(),
             closed_at: None,
+            assignees: Vec::new(),
         }
     }
 

@@ -1,6 +1,8 @@
 import { CircleDot } from "lucide-react";
+import { useState } from "react";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { IssueFilters } from "./IssueFilters";
+import { IssueHierarchyModal } from "./IssueHierarchyModal";
 import { IssueRow } from "./IssueRow";
 
 interface IssueListProps {
@@ -10,7 +12,21 @@ interface IssueListProps {
 }
 
 export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: IssueListProps) {
-  const { issues, isIssuesLoading, issuesError } = useGitHubStore();
+  const { issues, isIssuesLoading, issuesError, issueSearch, fetchIssues } = useGitHubStore();
+  const [hierarchyOpen, setHierarchyOpen] = useState(false);
+
+  const hierarchyModal = hierarchyOpen ? (
+    <IssueHierarchyModal
+      repoPath={repoPath}
+      search={issueSearch}
+      onSelectIssue={onSelectIssue}
+      onClose={() => {
+        setHierarchyOpen(false);
+        // Pick up assignment changes made in the graph.
+        fetchIssues(repoPath);
+      }}
+    />
+  ) : null;
 
   if (issuesError) {
     return (
@@ -33,7 +49,7 @@ export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: Issu
 
   return (
     <div className="flex h-full flex-col">
-      <IssueFilters repoPath={repoPath} />
+      <IssueFilters repoPath={repoPath} onOpenHierarchy={() => setHierarchyOpen(true)} />
 
       {issues.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-4 text-center">
@@ -54,6 +70,7 @@ export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: Issu
           ))}
         </div>
       )}
+      {hierarchyModal}
     </div>
   );
 }

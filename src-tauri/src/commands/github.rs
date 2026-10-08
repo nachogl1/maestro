@@ -1,7 +1,8 @@
 use crate::github::{
     AuthStatus, BranchPullRequest, CreatePullRequestOptions, DiscussionDetail, DiscussionInfo,
-    GitHub, GitHubError, GitHubWatchdog, IssueDetail, IssueFilter, IssueInfo, MergeMethod,
-    PullRequestDetail, PullRequestFilter, PullRequestInfo, WatchedProject,
+    GitHub, GitHubError, GitHubWatchdog, IssueDetail, IssueFilter, IssueInfo, IssueLinks,
+    MergeMethod, PullRequestDetail, PullRequestFilter, PullRequestInfo, RepoAssignee,
+    WatchedProject,
 };
 
 /// Checks if the user is authenticated with GitHub CLI.
@@ -117,6 +118,35 @@ pub async fn github_list_issues(
         search,
     };
     gh.list_issues(filter).await
+}
+
+/// Fetches parent/sub-issue/dependency links for the given issues.
+#[tauri::command]
+pub async fn github_issue_links(
+    repo_path: String,
+    numbers: Vec<u64>,
+) -> Result<Vec<IssueLinks>, GitHubError> {
+    let gh = GitHub::new(&repo_path);
+    gh.list_issue_links(&numbers).await
+}
+
+/// Lists users assignable to issues in the repository.
+#[tauri::command]
+pub async fn github_list_assignees(repo_path: String) -> Result<Vec<RepoAssignee>, GitHubError> {
+    let gh = GitHub::new(&repo_path);
+    gh.list_assignees().await
+}
+
+/// Adds and/or removes assignees on an issue.
+#[tauri::command]
+pub async fn github_update_issue_assignees(
+    repo_path: String,
+    number: u64,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<(), GitHubError> {
+    let gh = GitHub::new(&repo_path);
+    gh.update_issue_assignees(number, &add, &remove).await
 }
 
 /// Lists discussions using the GraphQL API.

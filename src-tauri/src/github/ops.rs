@@ -215,6 +215,85 @@ fn pick_branch_pull_request(rows: Vec<BranchPrRow>) -> Option<BranchPullRequest>
         })
 }
 
+/// GraphQL query fetching relationship data for several issues in one call.
+fn issue_links_query(owner: &str, name: &str, numbers: &[u64]) -> String {
+    let fields = "number body parent { number } \
+        blockedBy(first: 50) { nodes { number } } \
+        blocking(first: 50) { nodes { number } } \
+        subIssues(first: 50) { nodes { number } }";
+    let aliases: Vec<String> = numbers
+        .iter()
+        .enumerate()
+        .map(|(i, n)| format!("i{i}: issue(number: {n}) {{ {fields} }}"))
+        .collect();
+    format!(
+        "{{ repository(owner: \"{owner}\", name: \"{name}\") {{ {} }} }}",
+        aliases.join(" ")
+    )
+}
+
+/// Tolerant parser for [`issue_links_query`] responses: null aliases are
+/// skipped and missing fields become empty.
+fn parse_issue_links(json: &serde_json::Value) -> Vec<IssueLinks> {
+    let numbers_of = |v: &serde_json::Value| -> Vec<u64> {
+        v.get("nodes")
+            .and_then(|n| n.as_array())
+            .map(|a| a.iter().filter_map(|x| x.get("number")?.as_u64()).collect())
+            .unwrap_or_default()
+    };
+    let Some(repo) = json
+        .get("data")
+        .and_then(|d| d.get("repository"))
+        .and_then(|r| r.as_object())
+    else {
+        return Vec::new();
+    };
+    repo.values()
+        .filter_map(|issue| {
+            let number = issue.get("number")?.as_u64()?;
+            Some(IssueLinks {
+                number,
+                blocked_by: issue.get("blockedBy").map(numbers_of).unwrap_or_default(),
+                blocking: issue.get("blocking").map(numbers_of).unwrap_or_default(),
+                parent: issue
+                    .get("parent")
+                    .and_then(|p| p.get("number"))
+                    .and_then(|n| n.as_u64()),
+                sub_issues: issue.get("subIssues").map(numbers_of).unwrap_or_default(),
+                body: issue
+                    .get("body")
+                    .and_then(|b| b.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Parses `gh api --paginate` output on an array endpoint, which prints one
+/// JSON array per page back to back.
+fn parse_assignees_pages(stdout: &str) -> Result<Vec<RepoAssignee>, GitHubError> {
+    let mut all = Vec::new();
+    for page in serde_json::Deserializer::from_str(stdout).into_iter::<Vec<RepoAssignee>>() {
+        all.extend(page?);
+    }
+    Ok(all)
+}
+
+/// Args for [`GitHub::update_issue_assignees`]; empty lists omit their flag.
+fn issue_assignee_args(number: &str, add: &[String], remove: &[String]) -> Vec<String> {
+    let mut args = vec!["issue".to_string(), "edit".to_string(), number.to_string()];
+    if !add.is_empty() {
+        args.push("--add-assignee".to_string());
+        args.push(add.join(","));
+    }
+    if !remove.is_empty() {
+        args.push("--remove-assignee".to_string());
+        args.push(remove.join(","));
+    }
+    args
+}
+
 /// Args for [`GitHub::get_issue_state`] — pure so the `--repo` pin
 /// composition is unit-testable without shelling out (review F1: without a
 /// pin, `gh` resolves the repo from the cwd, which on a fork-with-upstream
@@ -307,6 +386,29 @@ pub struct IssueInfo {
     pub labels: Vec<PrLabel>,
     #[serde(default)]
     pub closed_at: Option<String>,
+    #[serde(default)]
+    pub assignees: Vec<PrAuthor>,
+}
+
+/// Issue relationship data (parent/sub-issues/blocked-by/blocking) from GraphQL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueLinks {
+    pub number: u64,
+    pub blocked_by: Vec<u64>,
+    pub blocking: Vec<u64>,
+    pub parent: Option<u64>,
+    pub sub_issues: Vec<u64>,
+    pub body: String,
+}
+
+/// A user who can be assigned to issues in the repository.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoAssignee {
+    pub login: String,
+    #[serde(default, alias = "avatar_url")]
+    pub avatar_url: String,
 }
 
 /// Discussion information returned from GraphQL API.
@@ -927,7 +1029,7 @@ impl GitHub {
             "issue",
             "list",
             "--json",
-            "number,title,state,author,createdAt,updatedAt,url,labels,closedAt",
+            "number,title,state,author,createdAt,updatedAt,url,labels,closedAt,assignees",
         ];
 
         let state_arg;
@@ -953,6 +1055,66 @@ impl GitHub {
         self.run_json(&args).await
     }
 
+    /// Fetches parent/sub-issue/dependency links for the given issues.
+    pub async fn list_issue_links(&self, numbers: &[u64]) -> Result<Vec<IssueLinks>, GitHubError> {
+        if numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let repo_output = self.run(&["repo", "view", "--json", "owner,name"]).await?;
+        #[derive(Deserialize)]
+        struct RepoInfo {
+            owner: RepoOwner,
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct RepoOwner {
+            login: String,
+        }
+        let repo_info: RepoInfo = serde_json::from_str(&repo_output.stdout)?;
+
+        let mut out = Vec::new();
+        for chunk in numbers.chunks(25) {
+            let query = issue_links_query(&repo_info.owner.login, &repo_info.name, chunk);
+            let json = self.graphql(&query).await?;
+            let parsed = parse_issue_links(&json);
+            let repo_missing = json
+                .get("data")
+                .and_then(|d| d.get("repository"))
+                .is_none_or(|r| r.is_null());
+            if repo_missing && json.get("errors").is_some() {
+                return Err(GitHubError::ParseError {
+                    message: format!("GraphQL returned errors: {}", json["errors"]),
+                });
+            }
+            out.extend(parsed);
+        }
+        Ok(out)
+    }
+
+    /// Lists users who can be assigned to issues in this repository.
+    pub async fn list_assignees(&self) -> Result<Vec<RepoAssignee>, GitHubError> {
+        let output = self
+            .run(&["api", "repos/{owner}/{repo}/assignees", "--paginate"])
+            .await?;
+        parse_assignees_pages(&output.stdout)
+    }
+
+    /// Adds and/or removes assignees on an issue.
+    pub async fn update_issue_assignees(
+        &self,
+        number: u64,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<(), GitHubError> {
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        let args = issue_assignee_args(&number.to_string(), add, remove);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.run(&refs).await?;
+        Ok(())
+    }
+
     /// Gets detailed information about a specific issue.
     pub async fn get_issue(&self, number: u64) -> Result<IssueDetail, GitHubError> {
         let number_str = number.to_string();
@@ -963,7 +1125,7 @@ impl GitHub {
             "view",
             &number_str,
             "--json",
-            "number,title,body,state,author,createdAt,updatedAt,url,labels,closedAt,comments",
+            "number,title,body,state,author,createdAt,updatedAt,url,labels,closedAt,comments,assignees",
         ];
 
         #[derive(Deserialize)]
@@ -1419,6 +1581,75 @@ impl GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_issue_links_query_has_aliases_and_numbers() {
+        let q = issue_links_query("o", "n", &[208, 210]);
+        assert!(q.contains("repository(owner: \"o\", name: \"n\")"));
+        assert!(q.contains("i0: issue(number: 208)"));
+        assert!(q.contains("i1: issue(number: 210)"));
+        assert!(q.contains("blockedBy(first: 50)"));
+        assert!(q.contains("subIssues(first: 50)"));
+    }
+
+    #[test]
+    fn test_parse_issue_links_realistic_null_and_missing() {
+        let json = serde_json::json!({"data": {"repository": {
+            "i0": {"number": 208, "body": "b", "parent": {"number": 216},
+                   "blockedBy": {"nodes": []},
+                   "blocking": {"nodes": [{"number": 211}, {"number": 210}]},
+                   "subIssues": {"nodes": []}},
+            "i1": null,
+            "i2": {"number": 5}
+        }}});
+        let links = parse_issue_links(&json);
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            links[0],
+            IssueLinks {
+                number: 208,
+                blocked_by: vec![],
+                blocking: vec![211, 210],
+                parent: Some(216),
+                sub_issues: vec![],
+                body: "b".to_string(),
+            }
+        );
+        assert_eq!(links[1].number, 5);
+        assert_eq!(links[1].parent, None);
+        assert!(links[1].blocking.is_empty() && links[1].body.is_empty());
+        assert!(parse_issue_links(&serde_json::json!({"errors": []})).is_empty());
+    }
+
+    #[test]
+    fn test_parse_assignees_pages_concatenated_arrays() {
+        let out = r#"[{"login":"a","avatar_url":"http://x/a","id":1}][{"login":"b"}]"#;
+        let users = parse_assignees_pages(out).unwrap();
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].login, "a");
+        assert_eq!(users[0].avatar_url, "http://x/a");
+        assert_eq!(users[1].avatar_url, "");
+    }
+
+    #[test]
+    fn test_issue_assignee_args() {
+        let a = vec!["x".to_string(), "y".to_string()];
+        let r = vec!["z".to_string()];
+        assert_eq!(
+            issue_assignee_args("7", &a, &r),
+            vec![
+                "issue",
+                "edit",
+                "7",
+                "--add-assignee",
+                "x,y",
+                "--remove-assignee",
+                "z"
+            ]
+        );
+        assert_eq!(issue_assignee_args("7", &[], &r).len(), 5);
+        assert_eq!(issue_assignee_args("7", &a, &[]).len(), 5);
+    }
 
     #[test]
     fn test_merge_method_flag() {
