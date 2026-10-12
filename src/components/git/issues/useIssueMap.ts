@@ -9,10 +9,10 @@ export interface RepoAssignee {
   avatarUrl: string;
 }
 
-/** How many issues the hierarchy view fetches (the superset it filters locally). */
-const HIERARCHY_ISSUE_LIMIT = 200;
+/** How many issues the issue map fetches (the superset it filters locally). */
+const MAP_ISSUE_LIMIT = 200;
 
-export interface IssueHierarchyState {
+export interface IssueMapState {
   issues: IssueInfo[];
   links: Record<number, IssueLinks>;
   assignees: RepoAssignee[];
@@ -24,13 +24,13 @@ export interface IssueHierarchyState {
 }
 
 /**
- * Local data for the issue hierarchy modal.
+ * Local data for the issue map modal.
  *
  * Deliberately NOT in `useGitHubStore`: the modal fetches a wider set (every
  * state, up to 200) than the sidebar list, and writing it into the store would
  * clobber what the sidebar shows.
  */
-export function useIssueHierarchy(repoPath: string, search: string): IssueHierarchyState {
+export function useIssueMap(repoPath: string, search: string): IssueMapState {
   const [issues, setIssues] = useState<IssueInfo[]>([]);
   const [links, setLinks] = useState<Record<number, IssueLinks>>({});
   const [assignees, setRepoAssignees] = useState<RepoAssignee[]>([]);
@@ -52,7 +52,7 @@ export function useIssueHierarchy(repoPath: string, search: string): IssueHierar
       const fetched = await invoke<IssueInfo[]>("github_list_issues", {
         repoPath,
         state: null,
-        limit: HIERARCHY_ISSUE_LIMIT,
+        limit: MAP_ISSUE_LIMIT,
         search: trimmed ? trimmed : null,
       });
       if (token !== tokenRef.current) return;
@@ -72,7 +72,7 @@ export function useIssueHierarchy(repoPath: string, search: string): IssueHierar
       setIsLoading(false);
     } catch (err) {
       if (token !== tokenRef.current) return;
-      console.error("Failed to load issue hierarchy:", err);
+      console.error("Failed to load issue map:", err);
       setError(err instanceof Error ? err.message : String(err));
       setIsLoading(false);
     }

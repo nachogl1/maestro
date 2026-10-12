@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { IssueFilters } from "../IssueFilters";
 
 describe("IssueFilters", () => {
-  it("opens the issue hierarchy from the Waypoints button", () => {
-    const onOpenHierarchy = vi.fn();
-    render(<IssueFilters repoPath="C:\\repo" onOpenHierarchy={onOpenHierarchy} />);
-    fireEvent.click(screen.getByRole("button", { name: "Show issue hierarchy" }));
-    expect(onOpenHierarchy).toHaveBeenCalledTimes(1);
+  it("opens the issue map from the Waypoints button", () => {
+    const onOpenMap = vi.fn();
+    render(<IssueFilters repoPath="C:\\repo" onOpenMap={onOpenMap} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show issue map" }));
+    expect(onOpenMap).toHaveBeenCalledTimes(1);
   });
 });

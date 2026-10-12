@@ -80,6 +80,10 @@ export interface TextRef {
 const TEXT_REF_RE =
   /\b(blocked by|depends on|depend on|blocks|blocking|part of epic|part of|child of|parent|epic)\b:?\s*((?:#\d+(?:\s*(?:,|and|&)?\s*)?)+)/gi;
 
+// "### Blocked by" heading, then every line up to the next markdown heading.
+const BLOCKED_BY_SECTION_RE =
+  /^#{1,6}[ \t]*blocked by[ \t]*:?[ \t]*$\n((?:(?!#{1,6}[ \t]+\S)[^\n]*\n?)*)/gim;
+
 const BLOCKED_BY_WORDS = new Set(["blocked by", "depends on", "depend on"]);
 const BLOCKS_WORDS = new Set(["blocks", "blocking"]);
 
@@ -97,6 +101,13 @@ export function parseTextRefs(body: string, self: number): TextRef[] {
     seen.add(key);
     refs.push(ref);
   };
+  // A "### Blocked by" markdown section: every #N until the next heading.
+  BLOCKED_BY_SECTION_RE.lastIndex = 0;
+  for (let m = BLOCKED_BY_SECTION_RE.exec(body); m !== null; m = BLOCKED_BY_SECTION_RE.exec(body)) {
+    for (const n of m[1].matchAll(/#(\d+)/g)) {
+      push({ kind: "blocks", source: Number(n[1]), target: self });
+    }
+  }
   TEXT_REF_RE.lastIndex = 0;
   for (let m = TEXT_REF_RE.exec(body); m !== null; m = TEXT_REF_RE.exec(body)) {
     const word = m[1].toLowerCase();
