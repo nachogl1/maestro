@@ -222,3 +222,78 @@ pub fn github_watchdog_set_projects(
 ) {
     state.set_projects(projects);
 }
+
+/// Write an exported issue map (a standalone HTML file) to `path`.
+///
+/// `path` comes from the OS save dialog the user just confirmed, so the
+/// destination is their choice — but it must end in `.html` and its parent
+/// directory must already exist, so a malformed path fails loudly instead of
+/// scattering files. Writes atomically (temp file + rename).
+#[tauri::command]
+pub async fn export_issue_map(path: String, content: String) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+
+    let extension = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if !matches!(extension.as_deref(), Some("html") | Some("htm")) {
+        return Err("Export must be a .html file".to_string());
+    }
+
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| "Export path has no parent directory".to_string())?;
+    if !parent.is_dir() {
+        return Err(format!("Directory does not exist: {}", parent.display()));
+    }
+
+    crate::core::mcp_config_writer::atomic_write(target, &content).await
+}
+
+#[cfg(test)]
+mod export_issue_map_tests {
+    use super::export_issue_map;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn writes_the_html_to_the_chosen_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("issue-map.html");
+
+        export_issue_map(
+            path.to_string_lossy().into_owned(),
+            "<!doctype html>".into(),
+        )
+        .await
+        .expect("export should succeed");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "<!doctype html>");
+    }
+
+    #[tokio::test]
+    async fn rejects_an_unexpected_extension() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("issue-map.exe");
+
+        let err = export_issue_map(path.to_string_lossy().into_owned(), "x".into())
+            .await
+            .expect_err("an .exe export should be refused");
+
+        assert!(err.contains(".html"), "unexpected error: {err}");
+        assert!(!path.exists(), "nothing should be written");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_missing_directory() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nope").join("issue-map.html");
+
+        let err = export_issue_map(path.to_string_lossy().into_owned(), "x".into())
+            .await
+            .expect_err("a missing directory should be refused");
+
+        assert!(err.contains("does not exist"), "unexpected error: {err}");
+    }
+}

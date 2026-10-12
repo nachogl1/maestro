@@ -1,5 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { RefreshCw, X } from "lucide-react";
+import { Download, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildIssueMap,
@@ -18,6 +20,8 @@ import {
   STATUS_ORDER,
   walk,
 } from "@/lib/issueMap";
+import { buildIssueMapHtml } from "@/lib/issueMapHtml";
+import { type AuthStatus, useGitHubStore } from "@/stores/useGitHubStore";
 import { type RepoAssignee, useIssueMap } from "./useIssueMap";
 
 interface IssueMapModalProps {
@@ -65,6 +69,25 @@ const chipStyle = (status?: IssueMapStatus, kind?: IssueMapKind): React.CSSPrope
   borderColor: kind ? KIND_STROKE[kind].stroke : "rgb(var(--maestro-border))",
   borderStyle: kind?.match(/outside|decision/) ? "dashed" : "solid",
 });
+
+/** "owner/repo" from an issue URL, else the last path segment of the checkout. */
+function repoLabel(repoPath: string, issueUrl: string | undefined): string {
+  const m = issueUrl?.match(/\/\/[^/]+\/([^/]+\/[^/]+)\/issues\//);
+  if (m) return m[1];
+  return repoPath.split(/[\\/]/).filter(Boolean).pop() ?? "repo";
+}
+
+/** Human-readable "12 Oct 2026, 22:52 GMT+1" for the export banner. */
+function formatCreatedAt(date: Date): string {
+  return date.toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
 
 function fitInWindow(x: number, y: number, box: { width: number; height: number }) {
   let left = x + 16;
@@ -183,6 +206,9 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   const [pinned, setPinned] = useState<number | null>(null);
   const [tipAt, setTipAt] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const authStatus = useGitHubStore((s) => s.authStatus);
   const tipRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -270,6 +296,40 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
 
   const openOnGitHub = (node: IssueMapNode) => {
     openUrl(node.url).catch((err) => console.error("Failed to open issue URL:", err));
+  };
+
+  // Save the whole map (every issue, filters ignored) as one standalone HTML
+  // file to hand around. The banner inside names who saved it and when.
+  const handleSave = async (): Promise<void> => {
+    setExportError(null);
+    setExporting(true);
+    try {
+      const repo = repoLabel(repoPath, map.nodes[0]?.url);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const path = await save({
+        defaultPath: `issue-map-${repo.replace(/[^\w.-]+/g, "-")}-${stamp}.html`,
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+      if (!path) return;
+      let createdBy = authStatus?.username ?? null;
+      if (!createdBy) {
+        try {
+          createdBy = (await invoke<AuthStatus>("github_auth_status", { repoPath })).username;
+        } catch (err) {
+          console.error("Failed to read the GitHub login for the export banner:", err);
+        }
+      }
+      const content = buildIssueMapHtml(map, {
+        repo,
+        createdBy: createdBy ?? "unknown user",
+        createdAt: formatCreatedAt(new Date()),
+      });
+      await invoke("export_issue_map", { path, content });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
   };
 
   /* ── Body ── */
@@ -484,6 +544,21 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             link{linkCount === 1 ? "" : "s"}
           </span>
           <div className="flex-1" />
+          {exportError && (
+            <span className="truncate text-[11px] text-maestro-red" title={exportError}>
+              Save failed: {exportError}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={exporting || isLoading || map.nodes.length === 0}
+            title="Save the map as a standalone HTML file to share"
+            className={toolbarButton}
+          >
+            <Download size={11} />
+            Save HTML
+          </button>
           <button
             type="button"
             onClick={() => void reload()}

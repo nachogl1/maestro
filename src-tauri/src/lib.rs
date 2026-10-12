@@ -1348,6 +1348,7 @@ pub fn run() {
             commands::github::github_get_discussion,
             commands::github::github_comment_discussion,
             commands::github::github_watchdog_set_projects,
+            commands::github::export_issue_map,
             // Update commands
             commands::update::check_for_updates,
             commands::update::download_and_install_update,
