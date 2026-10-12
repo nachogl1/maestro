@@ -16,11 +16,11 @@ const QUICK_CHIPS: Array<{ key: string; label: string; clause: string }> = [
 
 interface IssueFiltersProps {
   repoPath: string;
-  /** Open the full-screen issue hierarchy graph. */
-  onOpenHierarchy: () => void;
+  /** Open the full-screen issue map. */
+  onOpenMap: () => void;
 }
 
-export function IssueFilters({ repoPath, onOpenHierarchy }: IssueFiltersProps) {
+export function IssueFilters({ repoPath, onOpenMap }: IssueFiltersProps) {
   const { issueFilter, issueSearch, fetchIssues } = useGitHubStore();
   const [searchInput, setSearchInput] = useState(issueSearch);
 
@@ -81,9 +81,9 @@ export function IssueFilters({ repoPath, onOpenHierarchy }: IssueFiltersProps) {
         ))}
         <button
           type="button"
-          onClick={onOpenHierarchy}
-          title="Show issue hierarchy"
-          aria-label="Show issue hierarchy"
+          onClick={onOpenMap}
+          title="Show issue map"
+          aria-label="Show issue map"
           className="ml-auto rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
         >
           <Waypoints size={13} />
