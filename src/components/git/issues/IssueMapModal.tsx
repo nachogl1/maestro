@@ -5,17 +5,25 @@ import { Download, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildIssueMap,
+  descriptionText,
+  HINT,
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
   KIND_META,
   KIND_ORDER,
+  LEVEL_EXPLANATION,
+  LIMIT_WARNING,
   MAP_BAND_Y,
+  MAP_CHIP_FONT,
+  MAP_CHIP_H,
+  MAP_CHIP_Y,
   MAP_COL_W,
   MAP_LABEL_Y,
   MAP_NODE_H,
   MAP_NODE_W,
   nodeText,
+  problemText,
   STATUS_META,
   STATUS_ORDER,
   walk,
@@ -35,10 +43,6 @@ interface IssueMapModalProps {
 /** Assignee filter key for "nobody assigned". */
 const NOBODY = "\u0000nobody";
 
-const HINT =
-  "Hover an issue to see its chain and a tooltip. Click to pin, double-click to open it on GitHub. " +
-  "Click a legend entry to hide or show that type; each shows shown/total.";
-
 const STATUS_FILL: Record<IssueMapStatus, string> = {
   closed: "rgb(var(--maestro-muted) / 0.22)",
   inprog: "rgb(var(--maestro-yellow) / 0.22)",
@@ -51,7 +55,6 @@ const KIND_STROKE: Record<IssueMapKind, { stroke: string; dash?: string }> = {
   human: { stroke: "rgb(var(--maestro-yellow))" },
   outside: { stroke: "rgb(var(--maestro-text))", dash: "7 4" },
   decision: { stroke: "rgb(var(--maestro-muted))", dash: "5 4" },
-  other: { stroke: "rgb(var(--maestro-border))" },
 };
 
 const EDGE_CLOSED = "rgb(var(--maestro-muted))";
@@ -59,6 +62,8 @@ const EDGE_OPEN = "rgb(var(--maestro-red))";
 const TEXT = "rgb(var(--maestro-text))";
 const MUTED = "rgb(var(--maestro-muted))";
 const CROSS = "rgb(var(--maestro-red))";
+const CHIP_FILL = "rgb(var(--maestro-card))";
+const CHIP_STROKE = "rgb(var(--maestro-border))";
 const BAND_FILLS = ["rgb(var(--maestro-card) / 0.45)", "rgb(var(--maestro-card))"];
 
 const toolbarButton =
@@ -189,15 +194,13 @@ function AssignSection({ node, repoAssignees, setAssignees }: AssignSectionProps
 }
 
 /**
- * Full-screen map of what is blocked by what, wave by wave: columns are waves,
- * the background of a box is its progress, the border is who takes it, and
- * every line runs from a blocker to the issue that waits for it.
+ * Full-screen map of what is blocked by what, level by level: columns are
+ * levels, the background of a box is its progress, the border is who takes it,
+ * and every line runs from a blocker to the issue that waits for it.
  */
 export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: IssueMapModalProps) {
-  const { issues, links, assignees, isLoading, error, reload, setAssignees } = useIssueMap(
-    repoPath,
-    search,
-  );
+  const { issues, links, assignees, isLoading, error, truncated, reload, setAssignees } =
+    useIssueMap(repoPath, search);
 
   const [statusOff, setStatusOff] = useState<Set<IssueMapStatus>>(new Set());
   const [kindOff, setKindOff] = useState<Set<IssueMapKind>>(new Set());
@@ -323,6 +326,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
         repo,
         createdBy: createdBy ?? "unknown user",
         createdAt: formatCreatedAt(new Date()),
+        truncated,
       });
       await invoke("export_issue_map", { path, content });
     } catch (err) {
@@ -432,7 +436,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
               data-testid={`issue-node-${node.number}`}
               data-status={node.status}
               data-kind={node.kind}
-              data-wave={node.wave}
+              data-level={node.level}
               data-hl={hl ? "true" : undefined}
               transform={`translate(${node.x},${node.y})`}
               opacity={opacity}
@@ -518,6 +522,31 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
               <text x={10} y={52} fontSize={11} fontWeight={700} fill={MUTED} pointerEvents="none">
                 {text.assignees}
               </text>
+              {text.chips.map((chip) => (
+                <g
+                  key={chip.x}
+                  data-testid={`issue-chip-${node.number}`}
+                  transform={`translate(${10 + chip.x},${MAP_CHIP_Y})`}
+                  pointerEvents="none"
+                >
+                  <rect
+                    width={chip.w}
+                    height={MAP_CHIP_H}
+                    rx={8}
+                    fill={CHIP_FILL}
+                    stroke={CHIP_STROKE}
+                  />
+                  <text
+                    x={chip.w / 2}
+                    y={MAP_CHIP_H - 4}
+                    textAnchor="middle"
+                    fontSize={MAP_CHIP_FONT}
+                    fill={MUTED}
+                  >
+                    {chip.text}
+                  </text>
+                </g>
+              ))}
             </g>
           );
         })}
@@ -537,12 +566,13 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
         {/* Header */}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-maestro-border px-3">
           <h2 className="text-sm font-semibold text-maestro-text">
-            Issue map: what is blocked by what, wave by wave
+            Issue map: what is blocked by what, level by level
           </h2>
           <span className="text-[11px] text-maestro-muted">
             {map.nodes.length} issue{map.nodes.length === 1 ? "" : "s"} · {linkCount} blocked-by
             link{linkCount === 1 ? "" : "s"}
           </span>
+          {truncated && <span className="text-[11px] text-maestro-yellow">{LIMIT_WARNING}</span>}
           <div className="flex-1" />
           {exportError && (
             <span className="truncate text-[11px] text-maestro-red" title={exportError}>
@@ -685,11 +715,24 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
         </div>
 
         <footer className="shrink-0 border-t border-maestro-border px-3 py-1.5 text-[11px] text-maestro-muted">
-          A story's wave is the length of the longest chain of <i>story</i> blockers beneath it. The
-          columns are the waves; a line always runs from the blocker to the story that waits for it.
-          A story opens the moment every line coming into it is grey, whatever else in its column or
-          earlier columns is still open. Source: GitHub's native blocked-by relation plus "blocked
-          by #N" / "depends on #N" / a "### Blocked by" section in the issue body.
+          {LEVEL_EXPLANATION} A line always runs from the blocker to the issue that waits for it; an
+          issue opens the moment every line coming into it is grey.
+          {map.problems.length === 0 ? (
+            <span data-testid="issue-map-problems"> No data problems.</span>
+          ) : (
+            <details data-testid="issue-map-problems" className="mt-1">
+              <summary className="cursor-pointer">
+                {map.problems.length} data problem{map.problems.length === 1 ? "" : "s"} (links
+                dropped or sources disagreeing)
+              </summary>
+              <ul className="mt-1 max-h-24 list-disc overflow-auto pl-4">
+                {map.problems.map((p) => {
+                  const text = problemText(p);
+                  return <li key={text}>{text}</li>;
+                })}
+              </ul>
+            </details>
+          )}
         </footer>
       </div>
 
@@ -728,11 +771,35 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             <span className="text-maestro-muted">{KIND_META[focusNode.kind].meaning}</span>
           </div>
           <span className="text-maestro-muted">
-            {focusNode.wave} · GitHub state: {focusNode.state}
+            Level {focusNode.level} · GitHub state: {focusNode.state}
             {focusNode.assignees.length > 0
               ? ` · assigned to ${focusNode.assignees.join(", ")}`
               : " · nobody assigned"}
           </span>
+          <div className="my-0.5" data-testid="issue-map-tip-labels">
+            <b>Labels:</b> {focusNode.labels.length === 0 && "none"}
+            {focusNode.labels.map((label) => (
+              <span
+                key={label}
+                className={`ml-1 inline-block rounded-full border bg-maestro-card px-1.5 text-[11px] ${
+                  label === focusNode.kindLabel
+                    ? "border-maestro-text font-bold"
+                    : "border-maestro-border"
+                }`}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+          <div className="my-0.5">
+            <b>Description</b>
+            <div
+              data-testid="issue-map-tip-description"
+              className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-maestro-border px-1.5 py-1 text-[12px] text-maestro-muted"
+            >
+              {descriptionText(focusNode.body) || <i>empty</i>}
+            </div>
+          </div>
           <div className="mt-1.5">
             <b>Blocked by:</b> {focusNode.blockers.length === 0 && "nothing"}
           </div>

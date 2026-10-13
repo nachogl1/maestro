@@ -10,18 +10,26 @@
  */
 
 import {
+  descriptionText,
+  HINT,
   type IssueMap,
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
   KIND_META,
   KIND_ORDER,
+  LEVEL_EXPLANATION,
+  LIMIT_WARNING,
   MAP_BAND_Y,
+  MAP_CHIP_FONT,
+  MAP_CHIP_H,
+  MAP_CHIP_Y,
   MAP_COL_W,
   MAP_LABEL_Y,
   MAP_NODE_H,
   MAP_NODE_W,
   nodeText,
+  problemText,
   STATUS_META,
   STATUS_ORDER,
 } from "./issueMap";
@@ -33,6 +41,8 @@ export interface IssueMapHtmlOptions {
   createdBy: string;
   /** When it was saved, already formatted for people. */
   createdAt: string;
+  /** True when the fetch hit the issue limit, so the map may be missing issues. */
+  truncated?: boolean;
 }
 
 /** The per-issue data the embedded script needs for tooltips and filters. */
@@ -41,7 +51,11 @@ interface ExportMeta {
   state: string;
   status: IssueMapStatus;
   kind: IssueMapKind;
-  wave: string;
+  kindLabel: string | null;
+  level: number;
+  labels: string[];
+  /** Plain-text description, already cut for the tooltip. */
+  body: string;
   assignees: string[];
   url: string;
   blockers: Array<{ n: number; title: string; state: string }>;
@@ -71,10 +85,6 @@ const scriptJson = (value: unknown): string =>
     .replace(/</g, "\\u003c")
     .replace(/\u2028|\u2029/g, " ");
 
-const HINT =
-  "Hover an issue to see its chain and a tooltip. Click to pin, double-click to open it on GitHub. " +
-  "Click a legend entry to hide or show that type; each shows shown/total.";
-
 // Maestro palette (src/styles/globals.css), inlined so the file stands alone.
 const CSS = `
 :root{--bg:#0d0d10;--surface:#121316;--card:#18191c;--border:#26262c;--text:#e8e8ec;--muted:#82828e;--blue:#3b82f6;--green:#3fb950;--red:#dc2626;--yellow:#eab308}
@@ -84,6 +94,7 @@ header{padding:12px 24px;background:var(--surface);border-bottom:1px solid var(-
 h1{font-size:16px;font-weight:600;margin:0 0 6px}
 h1 .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
 #banner{background:rgba(234,179,8,.1);color:var(--yellow);border:1px solid rgba(234,179,8,.4);border-radius:6px;padding:6px 12px;margin:0 0 8px;font-size:12px}
+#limit{color:var(--yellow);font-size:12px;margin:0 0 8px}
 .leg{font-size:12px}.leg span{display:inline-block;margin-right:14px;margin-bottom:3px}
 .leg i{display:inline-block;width:18px;height:18px;border-radius:5px;vertical-align:-3px;margin-right:4px;border:3px solid var(--border);font-style:normal;background:transparent}
 .leg b.ax{display:inline-block;width:160px;color:var(--muted);font-weight:700}
@@ -98,23 +109,29 @@ h1 .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
 .node rect{stroke-width:4;cursor:pointer;rx:7}.node text,.node line{pointer-events:none}
 .num{font-weight:700;font-size:13px;fill:var(--text)}.ic{font-size:12px;font-family:"Segoe UI Emoji",system-ui}
 .ep{font-size:11px;fill:var(--muted)}.tt{font-size:12px;fill:var(--text)}.as{font-size:11px;fill:var(--muted);font-weight:700}
+.lb rect{fill:var(--card);stroke:var(--border);stroke-width:1;rx:8}.lb text{font-size:10px;fill:var(--muted)}
 .node.off,.e.off{opacity:.06!important}
 .node.closed rect{fill:rgba(130,130,142,.22)}.node .x{stroke:var(--red);stroke-width:2;opacity:.55}
 .node.inprog rect{fill:rgba(234,179,8,.22)}.node.ready rect{fill:rgba(63,185,80,.22)}.node.blocked rect{fill:rgba(220,38,38,.22)}
 .node.k-agent rect{stroke:var(--blue)}.node.k-human rect{stroke:var(--yellow)}
 .node.k-outside rect{stroke:var(--text);stroke-dasharray:7 4}.node.k-decision rect{stroke:var(--muted);stroke-dasharray:5 4}
-.node.k-other rect{stroke:var(--border)}.node.k-decision .tt{fill:var(--muted);font-style:italic}
+.node.k-decision .tt{fill:var(--muted);font-style:italic}
 svg.focus .node,svg.focus .e{opacity:.12}svg.focus .node.hl,svg.focus .e.hl{opacity:1}svg.focus .e.hl{stroke-width:3}svg.focus .node.sel rect{stroke-width:7}
 .i.closed{background:rgba(130,130,142,.22)}.i.inprog{background:rgba(234,179,8,.22)}.i.ready{background:rgba(63,185,80,.22)}.i.blocked{background:rgba(220,38,38,.22)}
 .i.k-agent{border-color:var(--blue)}.i.k-human{border-color:var(--yellow)}.i.k-outside{border-color:var(--text);border-style:dashed}
-.i.k-decision{border-color:var(--muted);border-style:dashed}.i.k-other{border-color:var(--border)}
+.i.k-decision{border-color:var(--muted);border-style:dashed}
 #hint{color:var(--muted);font-size:12px;margin-top:4px}
 #tip{position:fixed;z-index:9;display:none;max-width:480px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);padding:10px 14px;font-size:13px;pointer-events:none;color:var(--text)}
+#tip.pinned{pointer-events:auto}
 #tip h3{margin:0 0 4px;font-size:14px;font-weight:700}
+#tip .lbl{display:inline-block;padding:0 7px;border-radius:999px;border:1px solid var(--border);background:var(--card);font-size:11px;margin:1px 2px 1px 0}
+#tip .lbl.k{font-weight:700;border-color:var(--text)}
+#tip .desc{max-height:160px;overflow:auto;white-space:pre-wrap;font-size:12px;color:var(--muted);margin-top:2px;padding:4px 6px;border:1px solid var(--border);border-radius:6px}
 #tip .st{display:inline-block;padding:1px 9px;border-radius:999px;border:3px solid var(--border);font-weight:700;margin:2px 0}
 #tip .row{margin:3px 0}#tip ul{margin:4px 0 0;padding-left:18px}#tip .m{color:var(--muted)}
 #tip .c{text-decoration:line-through;color:var(--muted)}#tip .o{color:var(--red);font-weight:700}#tip .pin{color:var(--muted);font-size:12px;margin-top:6px}
 footer{padding:0 24px 18px;color:var(--muted);font-size:11px;max-width:1000px}
+footer details{margin-top:6px}footer summary{cursor:pointer}footer ul{margin:4px 0 0;padding-left:18px}
 `.trim();
 
 // Runs in the reader's browser: chain focus, tooltip, pin, filters.
@@ -127,12 +144,14 @@ function tipHtml(id){const m=META[id];const [ic,name,mean]=STATUS[m.status];cons
 let h='<h3>#'+id+' '+esc(m.title)+'</h3>';
 h+='<div class="row"><b>Progress</b> <span class="st i '+m.status+'">'+ic+' '+name+'</span> <span class="m">'+esc(mean)+'</span></div>';
 h+='<div class="row"><b>Who takes it</b> <span class="st i k-'+m.kind+'">'+kic+' '+kname+'</span> <span class="m">'+esc(kmean)+'</span></div>';
-h+='<span class="m">'+esc(m.wave)+' \\u00b7 GitHub state: '+esc(m.state)+(m.assignees.length?' \\u00b7 assigned to '+esc(m.assignees.join(', ')):' \\u00b7 nobody assigned')+'</span>';
+h+='<span class="m">Level '+m.level+' \\u00b7 GitHub state: '+esc(m.state)+(m.assignees.length?' \\u00b7 assigned to '+esc(m.assignees.join(', ')):' \\u00b7 nobody assigned')+'</span>';
+h+='<div class="row"><b>Labels:</b> '+(m.labels.length?m.labels.map(l=>'<span class="lbl'+(l===m.kindLabel?' k':'')+'">'+esc(l)+'</span>').join(''):'none')+'</div>';
+h+='<div class="row"><b>Description</b><div class="desc">'+(m.body?esc(m.body):'<i>empty</i>')+'</div></div>';
 h+='<div style="margin-top:6px"><b>Blocked by:</b> '+(m.blockers.length?'':'nothing')+'</div>';
 if(m.blockers.length){h+='<ul>'+m.blockers.map(b=>'<li class="'+(b.state==='OPEN'?'o':'c')+'">#'+b.n+' '+esc(b.title)+' ('+esc(b.state.toLowerCase())+')</li>').join('')+'</ul>'}
 h+='<div style="margin-top:6px"><b>Waiting on it:</b> '+(m.waiting.length?m.waiting.map(w=>'#'+w).join(', '):'nothing')+'</div>';
 h+='<div class="pin">'+(pinned===id?'Pinned. Click the box again to unpin.':'Click to pin \\u00b7 double-click opens it on GitHub')+'</div>';return h}
-function showTip(id,ev){tip.innerHTML=tipHtml(id);tip.style.display='block';moveTip(ev)}
+function showTip(id,ev){tip.innerHTML=tipHtml(id);tip.style.display='block';tip.classList.toggle('pinned',pinned===id);moveTip(ev)}
 function moveTip(ev){if(!ev)return;const r=tip.getBoundingClientRect();let x=ev.clientX+16,y=ev.clientY+16;if(x+r.width>innerWidth-8)x=ev.clientX-r.width-16;if(y+r.height>innerHeight-8)y=ev.clientY-r.height-16;tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px'}
 function focus(id,ev){svg.classList.add('focus');const u=walk(id,up),dn=walk(id,down);const all=new Set([...u,...dn,id]);
 document.querySelectorAll('.node').forEach(g=>{const n=+g.dataset.id;g.classList.toggle('hl',all.has(n));g.classList.toggle('sel',n===id)});
@@ -182,14 +201,21 @@ function nodeSvg(node: IssueMapNode): string {
     `<text class="num" x="10" y="18">#${node.number} <tspan class="ic">${text.icons}</tspan></text>` +
     `<text class="ep" x="${w - 10}" y="18" text-anchor="end">${escapeHtml(text.tag)}</text>` +
     `<text class="tt" x="10" y="36">${escapeHtml(text.title)}</text>` +
-    `<text class="as" x="10" y="52">${escapeHtml(text.assignees)}</text></g>`;
-  return out;
+    `<text class="as" x="10" y="52">${escapeHtml(text.assignees)}</text>`;
+  for (const chip of text.chips) {
+    out +=
+      `<g class="lb" transform="translate(${10 + chip.x},${MAP_CHIP_Y})">` +
+      `<rect width="${chip.w}" height="${MAP_CHIP_H}"/>` +
+      `<text x="${chip.w / 2}" y="${MAP_CHIP_H - 4}" text-anchor="middle" font-size="${MAP_CHIP_FONT}">` +
+      `${escapeHtml(chip.text)}</text></g>`;
+  }
+  return `${out}</g>`;
 }
 
 /** Render the map as one standalone HTML document. */
 export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): string {
-  const { repo, createdBy, createdAt } = options;
-  const title = `${repo} · issue map: what is blocked by what, wave by wave`;
+  const { repo, createdBy, createdAt, truncated = false } = options;
+  const title = `${repo} · issue map: what is blocked by what, level by level`;
 
   const bands = map.columns
     .map(
@@ -245,7 +271,10 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
       state: n.state,
       status: n.status,
       kind: n.kind,
-      wave: n.wave,
+      kindLabel: n.kindLabel,
+      level: n.level,
+      labels: n.labels,
+      body: descriptionText(n.body),
       assignees: n.assignees,
       url: n.url,
       blockers: n.blockers.map((b) => ({ n: b.number, title: b.title, state: b.state })),
@@ -263,6 +292,14 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
   );
 
   const linkCount = map.edges.length;
+  const problems =
+    map.problems.length === 0
+      ? " No data problems."
+      : `<details><summary>${map.problems.length} data problem${
+          map.problems.length === 1 ? "" : "s"
+        } (links dropped or sources disagreeing)</summary><ul>${map.problems
+          .map((p) => `<li>${escapeHtml(problemText(p))}</li>`)
+          .join("")}</ul></details>`;
   const banner =
     `⚠ Transient snapshot, not a source of truth. Generated by <b>${escapeHtml(createdBy)}</b> ` +
     `on <b>${escapeHtml(createdAt)}</b> from the GitHub issues as they were at that moment; ` +
@@ -276,15 +313,13 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
       map.nodes.length === 1 ? "" : "s"
     } · ${linkCount} blocked-by link${linkCount === 1 ? "" : "s"}</span></h1>` +
     `<div id="banner">${banner}</div>` +
+    (truncated ? `<div id="limit">${escapeHtml(LIMIT_WARNING)}</div>` : "") +
     `<div class="leg">${legend}</div><div id="hint"></div></header>` +
     `<div id="tip"></div>` +
     `<div id="wrap"><svg width="${map.width}" height="${map.height}" viewBox="0 0 ${map.width} ${map.height}">` +
     `${bands}${edges}${nodes}</svg></div>` +
-    `<footer>A story's wave is the length of the longest chain of <i>story</i> blockers beneath it. ` +
-    `The columns are the waves; a line always runs from the blocker to the story that waits for it. ` +
-    `A story opens the moment every line coming into it is grey, whatever else in its column or ` +
-    `earlier columns is still open. Source: GitHub's native blocked-by relation plus "blocked by #N" / ` +
-    `"depends on #N" / a "### Blocked by" section in the issue body.</footer>` +
+    `<footer>${escapeHtml(LEVEL_EXPLANATION)} A line always runs from the blocker to the issue ` +
+    `that waits for it; an issue opens the moment every line coming into it is grey.${problems}</footer>` +
     `<script>const up=${scriptJson(map.up)};const META=${scriptJson(meta)};` +
     `const STATUS=${scriptJson(statusDict)};const KIND=${scriptJson(kindDict)};` +
     `const HINT=${scriptJson(HINT)};\n${SCRIPT}</script></body></html>`

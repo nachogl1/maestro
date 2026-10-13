@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { IssueInfo } from "@/stores/useGitHubStore";
 import type { IssueLinks } from "../issueGraph";
-import { parseTextRefs } from "../issueGraph";
 import {
   buildIssueMap,
+  descriptionText,
   edgePath,
+  KIND_ORDER,
   kindOf,
+  labelChips,
   MAP_COL_W,
+  MAP_NODE_H,
+  MAP_NODE_W,
+  MAP_ROW_H,
   MAP_X0,
   MAP_Y0,
   nodeText,
+  problemText,
   walk,
 } from "../issueMap";
 
@@ -35,123 +41,207 @@ function link(overrides: Partial<IssueLinks> & { number: number }): IssueLinks {
 const AGENT = [{ name: "agent-ready", color: "0e8a16" }];
 const HUMAN = [{ name: "needs-human-decision", color: "d93f0b" }];
 const EPIC = [{ name: "epic", color: "5319e7" }];
+const DECISION = [{ name: "decision", color: "cccccc" }];
 
 describe("kindOf", () => {
-  it("maps triage labels, with decision > human > outside > agent precedence", () => {
-    expect(kindOf(AGENT)).toBe("agent");
-    expect(kindOf(HUMAN)).toBe("human");
-    expect(kindOf([{ name: "outside-change" }])).toBe("outside");
-    expect(kindOf(EPIC)).toBe("decision");
-    expect(kindOf([{ name: "agent-ready" }, { name: "outside-change" }])).toBe("outside");
-    expect(kindOf([{ name: "agent-ready" }, { name: "needs-human-decision" }])).toBe("human");
-    expect(kindOf([{ name: "bug" }])).toBe("other");
+  it("maps triage labels with outside > human > agent precedence and names the deciding label", () => {
+    expect(kindOf(AGENT)).toEqual({ kind: "agent", label: "agent-ready" });
+    expect(kindOf(HUMAN)).toEqual({ kind: "human", label: "needs-human-decision" });
+    expect(kindOf([{ name: "Needs-Human" }])).toEqual({ kind: "human", label: "Needs-Human" });
+    expect(kindOf([{ name: "human-needed" }]).kind).toBe("human");
+    expect(kindOf([{ name: "outside-change" }]).kind).toBe("outside");
+    expect(kindOf([{ name: "agent-ready" }, { name: "outside-change" }]).kind).toBe("outside");
+    expect(kindOf([{ name: "needs-human" }, { name: "outside-change" }]).kind).toBe("outside");
+    expect(kindOf([{ name: "agent-ready" }, { name: "needs-human-decision" }]).kind).toBe("human");
   });
-});
 
-describe("parseTextRefs: '### Blocked by' section", () => {
-  it("reads every #N under the heading up to the next heading", () => {
-    const body = "Intro\n\n### Blocked by\n- #10 scaffold\n- [ ] #11\n\n### Notes\nsee #99 later";
-    expect(parseTextRefs(body, 20)).toEqual([
-      { kind: "blocks", source: 10, target: 20 },
-      { kind: "blocks", source: 11, target: 20 },
-    ]);
+  it("falls back to decision / planning for anything else; there is no 'other' kind", () => {
+    expect(kindOf([{ name: "bug" }])).toEqual({ kind: "decision", label: null });
+    expect(kindOf([])).toEqual({ kind: "decision", label: null });
+    expect(kindOf(DECISION)).toEqual({ kind: "decision", label: null });
+    expect(KIND_ORDER).toEqual(["agent", "human", "outside", "decision"]);
   });
 });
 
 describe("buildIssueMap", () => {
-  // 1 (closed scaffold) → 2 → 3; 4 is an open epic that 3 also waits on;
-  // 5 is closed and isolated (already done); 6 open, unlinked, assigned.
+  // 1 (closed) → 2 → 3; 3 also waits on 4 (closed, 'decision' label) and on
+  // epic 9 (dropped); 5 is closed and unlinked; 6 open, unlinked, assigned;
+  // 8 is blocked by #77 which is not loaded.
   const issues = [
     issue({ number: 1, state: "CLOSED", labels: AGENT, title: "Scaffold" }),
-    issue({ number: 2, labels: AGENT, title: "Second step with a very long title indeed" }),
+    issue({
+      number: 2,
+      labels: [...AGENT, { name: "bug", color: "ff0000" }, { name: "ui", color: "00ff00" }],
+      title: "Second step with a very long title indeed",
+    }),
     issue({ number: 3, labels: HUMAN, assignees: [{ login: "bob" }] }),
-    issue({ number: 4, labels: EPIC, title: "Epic: shape" }),
+    issue({ number: 4, state: "CLOSED", labels: DECISION, title: "Decide the shape" }),
     issue({ number: 5, state: "CLOSED" }),
     issue({ number: 6, labels: AGENT, assignees: [{ login: "ann" }] }),
+    issue({ number: 8 }),
+    issue({ number: 9, labels: EPIC, title: "Epic: everything" }),
   ];
   const links = {
     1: link({ number: 1 }),
-    2: link({ number: 2, blockedBy: [1], parent: 4 }),
-    3: link({ number: 3, body: "### Blocked by\n- #2\n- #4\n" }),
-    4: link({ number: 4, subIssues: [2] }),
+    2: link({ number: 2, blockedBy: [1], parent: 9, body: "### Blocked by\n- #1\n" }),
+    3: link({ number: 3, body: "### Blocked by\n- #2\n- #4\n- #9\n" }),
+    4: link({ number: 4 }),
     5: link({ number: 5 }),
-    6: link({ number: 6 }),
+    6: link({ number: 6, body: "# Title\n\nSome **bold** `code` and a [link](http://x).\n" }),
+    8: link({ number: 8, blockedBy: [77] }),
+    9: link({ number: 9, subIssues: [2] }),
   };
   const map = buildIssueMap(issues, links);
   const node = (n: number) => map.nodes.find((x) => x.number === n);
 
-  it("derives status from state, open blockers and assignees", () => {
+  it("draws every non-epic issue, closed included, and never the epic", () => {
+    expect(map.nodes.map((n) => n.number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 8]);
+    expect(node(9)).toBeUndefined();
+  });
+
+  it("derives status from state, open kept blockers and assignees", () => {
     expect(node(1)?.status).toBe("closed");
     expect(node(2)?.status).toBe("ready"); // blocker #1 is closed, nobody on it
-    expect(node(3)?.status).toBe("blocked"); // #2 and #4 still open
-    expect(node(4)?.status).toBe("ready");
+    expect(node(3)?.status).toBe("blocked"); // #2 still open (the epic does not count)
+    expect(node(4)?.status).toBe("closed");
     expect(node(6)?.status).toBe("inprog");
+    expect(node(8)?.status).toBe("ready"); // its only blocker was not loaded
   });
 
-  it("puts issues in waves by the longest chain of story blockers", () => {
-    expect(node(1)?.wave).toBe("Foundation");
-    expect(node(2)?.wave).toBe("Wave 1");
-    expect(node(3)?.wave).toBe("Wave 2");
-    // An epic blocker never moves a story; the epic itself sits in Foundation.
-    expect(node(4)?.wave).toBe("Foundation");
-    expect(node(6)?.wave).toBe("Foundation");
-    // Closed and isolated → already done pile.
-    expect(node(5)?.wave).toBe("Already done · 1 of 1");
-    expect(map.columns.map((c) => c.label)).toEqual([
-      "Already done · 1 of 1",
-      "Foundation",
-      "Wave 1",
-      "Wave 2",
-    ]);
-    expect(map.columns[1]).toMatchObject({ closed: 1, total: 3 });
+  it("levels: 1 + the highest blocker level; closed and decision blockers count too", () => {
+    expect(node(1)?.level).toBe(0);
+    expect(node(2)?.level).toBe(1); // blocked by closed #1
+    expect(node(3)?.level).toBe(2); // #2 is level 1, #4 (closed, decision) is level 0
+    expect(node(4)?.level).toBe(0);
+    expect(node(5)?.level).toBe(0); // closed, unlinked: Level 0 like everything else
+    expect(node(8)?.level).toBe(0); // dropped link does not count
+    expect(map.columns.map((c) => c.label)).toEqual(["Level 0", "Level 1", "Level 2"]);
+    expect(map.columns[0]).toMatchObject({ closed: 3, total: 5 });
   });
 
-  it("lays columns left to right and rows top to bottom", () => {
-    expect(node(5)).toMatchObject({ x: MAP_X0, y: MAP_Y0 });
-    expect(node(1)).toMatchObject({ x: MAP_X0 + MAP_COL_W, y: MAP_Y0 });
-    expect(node(4)?.y).toBeGreaterThan(node(1)?.y ?? 0);
-    expect(map.width).toBe(4 * MAP_COL_W - 10);
+  it("orders a column open first by number, then closed by number", () => {
+    const column0 = map.nodes
+      .filter((n) => n.level === 0)
+      .sort((a, b) => a.y - b.y)
+      .map((n) => n.number);
+    expect(column0).toEqual([6, 8, 1, 4, 5]);
+    expect(node(6)).toMatchObject({ x: MAP_X0, y: MAP_Y0 });
+    expect(node(1)?.y).toBe(MAP_Y0 + 2 * MAP_ROW_H);
+    expect(node(2)).toMatchObject({ x: MAP_X0 + MAP_COL_W, y: MAP_Y0 });
+    expect(map.width).toBe(3 * MAP_COL_W - 10);
+    expect(map.height).toBe(MAP_Y0 + 5 * MAP_ROW_H + 30);
   });
 
-  it("draws one line per blocked-by link, red while the blocker is open", () => {
+  it("draws one line per kept link, red while the blocker is open", () => {
     expect(map.edges.map((e) => [e.from, e.to, e.open])).toEqual([
       [1, 2, false],
       [2, 3, true],
-      [4, 3, true],
+      [4, 3, false],
     ]);
-    const first = map.edges[0];
-    expect(first.path).toBe(edgePath(node(1) as never, node(2) as never));
+    expect(map.edges[0].path).toBe(edgePath(node(1) as never, node(2) as never));
+    expect(MAP_NODE_H).toBeLessThan(MAP_ROW_H);
+    expect(MAP_NODE_W).toBeLessThan(MAP_COL_W);
   });
 
-  it("fills blockers, waiting, epic and up/down for the tooltip and focus", () => {
+  it("fills blockers, waiting, epic tag, labels, body and up/down", () => {
     expect(node(3)?.blockers).toEqual([
       { number: 2, title: "Second step with a very long title indeed", state: "OPEN" },
-      { number: 4, title: "Epic: shape", state: "OPEN" },
+      { number: 4, title: "Decide the shape", state: "CLOSED" },
     ]);
     expect(node(2)?.waiting).toEqual([3]);
-    expect(node(2)?.epic).toBe(4);
+    expect(node(2)?.epic).toBe(9);
+    expect(node(2)?.labels).toEqual(["agent-ready", "bug", "ui"]);
+    expect(node(2)?.kindLabel).toBe("agent-ready");
+    expect(node(8)?.kindLabel).toBeNull();
+    expect(node(6)?.body).toBe(links[6].body);
+    expect(node(8)?.blockers).toEqual([]);
     expect(walk(3, map.up)).toEqual(new Set([1, 2, 4]));
     expect(walk(1, map.down)).toEqual(new Set([2, 3]));
   });
 
-  it("prints the box text: icons, epic tag, truncated title, assignees", () => {
-    expect(nodeText(node(2) as never)).toEqual({
+  it("lists the dropped links and the disagreement as footer problems", () => {
+    expect(map.problems.map(problemText)).toEqual([
+      "#3: section says #2, #4, #9, GitHub does not",
+      "#3: blocked by epic #9, link dropped",
+      "#8: blocked by #77 which was not loaded, link dropped",
+    ]);
+    const disagree = buildIssueMap([issue({ number: 1 }), issue({ number: 2 })], {
+      2: link({ number: 2, blockedBy: [1], body: "### Blocked by\n#1 #5" }),
+    });
+    expect(disagree.problems.map(problemText)).toEqual([
+      "#2: section says #5, GitHub does not",
+      "#2: blocked by #5 which was not loaded, link dropped",
+    ]);
+    expect(
+      problemText({ kind: "disagreement", number: 7, sectionOnly: [1, 2], nativeOnly: [3] }),
+    ).toBe("#7: section says #1, #2, GitHub says #3");
+    expect(problemText({ kind: "disagreement", number: 7, sectionOnly: [], nativeOnly: [3] })).toBe(
+      "#7: GitHub says #3, section does not",
+    );
+    expect(problemText({ kind: "cycle", blocked: 1, blocker: 3 })).toBe(
+      "#1: blocked by #3 closes a cycle, link dropped",
+    );
+  });
+
+  it("drops the edge that closes a cycle and still levels the rest", () => {
+    const cyc = buildIssueMap([issue({ number: 1 }), issue({ number: 2 })], {
+      1: link({ number: 1, blockedBy: [2] }),
+      2: link({ number: 2, blockedBy: [1] }),
+    });
+    expect(cyc.edges).toHaveLength(1);
+    expect(cyc.problems).toEqual([{ kind: "cycle", blocked: 1, blocker: 2 }]);
+    expect(cyc.nodes.map((n) => [n.number, n.level])).toEqual([
+      [1, 0],
+      [2, 1],
+    ]);
+  });
+
+  it("prints the box text: icons, epic tag, truncated title, assignees, label chips", () => {
+    const text = nodeText(node(2) as never);
+    expect(text).toMatchObject({
       icons: "\u{1F7E2}\u{1F916}",
-      tag: "epic #4",
+      tag: "epic #9",
       title: "Second step with a very long t…",
       assignees: "",
     });
+    expect(text.chips.map((c) => c.text)).toEqual(["agent-read…", "bug", "ui"]);
+    expect(text.chips[1].x).toBeGreaterThan(text.chips[0].x + text.chips[0].w);
     expect(nodeText(node(3) as never).assignees).toBe("\u{1F464} bob");
+    expect(nodeText(node(5) as never).chips).toEqual([]);
+  });
+});
+
+describe("labelChips", () => {
+  it("shows at most three chips, then a +N chip, all inside the box", () => {
+    const chips = labelChips(["a", "b", "c", "d", "e"]);
+    expect(chips.map((c) => c.text)).toEqual(["a", "b", "c", "+2"]);
+    const last = chips[chips.length - 1];
+    expect(last.x + last.w).toBeLessThanOrEqual(MAP_NODE_W - 20);
   });
 
-  it("lists an unfetched blocker as unknown without blocking the issue", () => {
-    const partial = buildIssueMap([issue({ number: 7 })], {
-      7: link({ number: 7, blockedBy: [99] }),
-    });
-    expect(partial.nodes[0].status).toBe("ready");
-    expect(partial.nodes[0].blockers).toEqual([
-      { number: 99, title: "not loaded", state: "UNKNOWN" },
-    ]);
-    expect(partial.edges).toEqual([]);
+  it("stops early when a long chip would not fit and counts the rest", () => {
+    const chips = labelChips(["very-long-label", "another-long", "third-long-one", "x"]);
+    const last = chips[chips.length - 1];
+    expect(last.text).toMatch(/^\+\d$/);
+    expect(last.x + last.w).toBeLessThanOrEqual(MAP_NODE_W - 20);
+    const shown = chips.length - 1;
+    expect(last.text).toBe(`+${4 - shown}`);
+  });
+});
+
+describe("descriptionText", () => {
+  it("strips headings, emphasis, backticks, link syntax and comments, keeps the text", () => {
+    expect(
+      descriptionText(
+        "<!-- template -->\n# Title\n\n\n\nSome **bold** `code` and a [link](http://x).\n\n### Blocked by\n- #1",
+      ),
+    ).toBe("Title\n\nSome bold code and a link.\n\nBlocked by\n- #1");
+  });
+
+  it("cuts at 600 characters with an ellipsis and returns '' for an empty body", () => {
+    const long = "x".repeat(700);
+    expect(descriptionText(long)).toHaveLength(601);
+    expect(descriptionText(long).endsWith("…")).toBe(true);
+    expect(descriptionText("")).toBe("");
   });
 });
