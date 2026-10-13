@@ -63,7 +63,7 @@ async function getWorktreeBaseDir(): Promise<string> {
  * @param branch - The branch name
  * @returns The worktree path
  */
-export async function getWorktreePath(repoPath: string, branch: string): Promise<string> {
+async function getWorktreePath(repoPath: string, branch: string): Promise<string> {
   const baseDir = await getWorktreeBaseDir();
   const repoHash = hashString(repoPath);
   const sanitizedBranch = sanitizeBranch(branch);

@@ -3,7 +3,6 @@ import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { DiscussionRow } from "./DiscussionRow";
 
 interface DiscussionListProps {
-  repoPath: string;
   onSelectDiscussion: (discussionNumber: number) => void;
   selectedDiscussionNumber: number | null;
 }

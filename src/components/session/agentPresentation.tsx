@@ -66,7 +66,7 @@ export function edgeStroke(agent: SubagentInfo): string {
 
 /* ── Formatting ── */
 
-export function formatDuration(ms: number): string {
+function formatDuration(ms: number): string {
   const total = Math.round(ms / 1000);
   if (total < 60) return `${total}s`;
   const minutes = Math.floor(total / 60);
@@ -76,7 +76,7 @@ export function formatDuration(ms: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-export function formatTokens(tokens: number): string {
+function formatTokens(tokens: number): string {
   if (tokens < 1000) return `${tokens}`;
   if (tokens < 1_000_000) return `${Math.round(tokens / 1000)}k`;
   return `${(tokens / 1_000_000).toFixed(1)}M`;
@@ -105,7 +105,7 @@ export function statsLine(agent: SubagentInfo): string {
  * would defeat the point. The heading is passed in because the per-terminal
  * export can nest agents under a project or terminal heading.
  */
-export function agentMarkdownLines(agent: SubagentInfo, heading: string): string[] {
+function agentMarkdownLines(agent: SubagentInfo, heading: string): string[] {
   const badge = agentBadge(agent);
   const lines: string[] = [
     heading,
@@ -163,7 +163,7 @@ export function buildExportMarkdown(agents: SubagentInfo[], heading: string): st
 }
 
 /** A copy-to-clipboard button that confirms itself for a moment. */
-export function CopyButton({ text, label }: { text: string; label: string }) {
+function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   if (!text) return null;
   return (
@@ -217,15 +217,7 @@ export function ToolStatsRow({ agent }: { agent: SubagentInfo }) {
 }
 
 /** One labelled block of the drawer: a heading, a char count, copy, the text. */
-export function ExchangeBlock({
-  title,
-  text,
-  empty,
-}: {
-  title: string;
-  text: string;
-  empty: string;
-}) {
+function ExchangeBlock({ title, text, empty }: { title: string; text: string; empty: string }) {
   return (
     <div className="mt-3">
       <div className="flex items-center gap-2 border-b border-maestro-border pb-1">

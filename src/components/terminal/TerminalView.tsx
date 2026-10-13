@@ -20,8 +20,6 @@ import { buildFontFamily, waitForFont } from "@/lib/fonts";
 import { isGitWorktree } from "@/lib/git";
 import { describeSessionContext } from "@/lib/sessionContext";
 import {
-  type BackendInfo,
-  getBackendInfo,
   killSession,
   onPtyOutput,
   resizePty,
@@ -299,21 +297,10 @@ export const TerminalView = memo(function TerminalView({
   const [activeTab, setActiveTab] = useState<"terminal" | "activity" | "graph">("terminal");
   const handleManageClick = useCallback(() => setShowQuickActionsManager(true), []);
 
-  // Backend capabilities (for future enhanced features like terminal state queries)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
-
   // Track app theme (dark/light) for terminal theming
   const [appTheme, setAppTheme] = useState<"dark" | "light">(() => {
     return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
   });
-
-  // Fetch backend info on mount (cached after first call)
-  useEffect(() => {
-    getBackendInfo()
-      .then(setBackendInfo)
-      .catch((err) => console.warn("Failed to get backend info:", err));
-  }, []);
 
   // Watch for theme changes via MutationObserver
   useEffect(() => {

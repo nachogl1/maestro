@@ -43,7 +43,7 @@ const BRANCH_CACHE_TTL_MS = 10_000;
  * @param repoPath - Path to the git repository
  * @returns List of branch info from the backend
  */
-export async function getBranches(repoPath: string): Promise<BranchInfo[]> {
+async function getBranches(repoPath: string): Promise<BranchInfo[]> {
   return invoke<BranchInfo[]>("git_branches", { repoPath });
 }
 
@@ -79,7 +79,7 @@ export async function getBranchesWithWorktreeStatus(
  * @param repoPath - Path to the git repository
  * @returns Current branch name or short commit hash if detached
  */
-export async function getCurrentBranch(repoPath: string): Promise<string> {
+async function getCurrentBranch(repoPath: string): Promise<string> {
   return invoke<string>("git_current_branch", { repoPath });
 }
 

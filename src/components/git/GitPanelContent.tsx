@@ -72,7 +72,6 @@ export function GitPanelContent({
     case "discussions":
       return (
         <DiscussionList
-          repoPath={repoPath}
           onSelectDiscussion={onSelectDiscussion}
           selectedDiscussionNumber={selectedDiscussionNumber}
         />
