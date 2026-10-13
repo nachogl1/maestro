@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 
 use super::config_recovery::read_json_or_recover;
 use super::mcp_config_writer::{atomic_write, dir_lock};
+use super::plugin_error::{PluginError, PluginResult};
 
 /// Merges `enabledPlugins` into an existing settings.local.json file.
 ///
@@ -27,7 +28,7 @@ use super::mcp_config_writer::{atomic_write, dir_lock};
 fn merge_with_existing(
     settings_path: &Path,
     enabled_plugins: &HashMap<String, bool>,
-) -> Result<Value, String> {
+) -> PluginResult<Value> {
     // A corrupt settings.local.json (e.g. from a crashed/interleaved write) is
     // moved aside and treated as empty so the launch self-heals instead of
     // erroring on every future session.
@@ -71,13 +72,13 @@ fn merge_with_existing(
 pub async fn write_session_plugin_config(
     working_dir: &Path,
     enabled_plugins: &HashMap<String, bool>,
-) -> Result<(), String> {
+) -> PluginResult<()> {
     // Create .claude directory if needed
     let claude_dir = working_dir.join(".claude");
     if !claude_dir.exists() {
         tokio::fs::create_dir_all(&claude_dir)
             .await
-            .map_err(|e| format!("Failed to create .claude directory: {}", e))?;
+            .map_err(PluginError::CreateDir)?;
     }
 
     // Serialize against the hooks writer: both read-modify-write the same
@@ -91,8 +92,11 @@ pub async fn write_session_plugin_config(
     let final_config = merge_with_existing(&settings_path, enabled_plugins)?;
 
     // Write the file atomically (temp file + rename)
-    let content = serde_json::to_string_pretty(&final_config)
-        .map_err(|e| format!("Failed to serialize plugin config: {}", e))?;
+    let content =
+        serde_json::to_string_pretty(&final_config).map_err(|source| PluginError::Serialize {
+            what: "plugin config",
+            source,
+        })?;
 
     atomic_write(&settings_path, &content).await?;
 
@@ -116,7 +120,7 @@ pub async fn write_session_plugin_config(
 /// # Arguments
 ///
 /// * `working_dir` - Directory containing the `.claude/settings.local.json` file
-pub async fn remove_session_plugin_config(working_dir: &Path) -> Result<(), String> {
+pub async fn remove_session_plugin_config(working_dir: &Path) -> PluginResult<()> {
     let claude_dir = working_dir.join(".claude");
     let settings_path = claude_dir.join("settings.local.json");
     if !settings_path.exists() {
@@ -129,10 +133,9 @@ pub async fn remove_session_plugin_config(working_dir: &Path) -> Result<(), Stri
 
     let content = tokio::fs::read_to_string(&settings_path)
         .await
-        .map_err(|e| format!("Failed to read settings.local.json: {}", e))?;
+        .map_err(PluginError::ReadSettings)?;
 
-    let mut config: Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse settings.local.json: {}", e))?;
+    let mut config: Value = serde_json::from_str(&content).map_err(PluginError::ParseSettings)?;
 
     // Remove both enabledPlugins and legacy plugins array
     if let Some(obj) = config.as_object_mut() {
@@ -147,12 +150,15 @@ pub async fn remove_session_plugin_config(working_dir: &Path) -> Result<(), Stri
     if config.as_object().map(|o| o.is_empty()).unwrap_or(false) {
         tokio::fs::remove_file(&settings_path)
             .await
-            .map_err(|e| format!("Failed to delete empty settings.local.json: {}", e))?;
+            .map_err(PluginError::DeleteSettings)?;
         log::debug!("Deleted empty settings.local.json at {:?}", settings_path);
     } else {
         // Otherwise, write the updated config atomically
-        let output = serde_json::to_string_pretty(&config)
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        let output =
+            serde_json::to_string_pretty(&config).map_err(|source| PluginError::Serialize {
+                what: "config",
+                source,
+            })?;
 
         atomic_write(&settings_path, &output).await?;
     }

@@ -253,6 +253,7 @@ pub async fn write_session_mcp_config(
         &enabled_custom,
     )
     .await
+    .map_err(|e| e.to_string())
 }
 
 /// Writes a session-specific `opencode.json` to the working directory for OpenCode CLI.
@@ -321,6 +322,7 @@ pub async fn write_opencode_mcp_config(
         &enabled_custom,
     )
     .await
+    .map_err(|e| e.to_string())
 }
 
 /// Internal helper to get custom MCP servers (non-async for use within commands).
@@ -344,7 +346,9 @@ fn get_custom_mcp_servers_internal(app: &AppHandle) -> Result<Vec<McpCustomServe
 #[tauri::command]
 pub async fn remove_session_mcp_config(working_dir: String, session_id: u32) -> Result<(), String> {
     let path = PathBuf::from(&working_dir);
-    mcp_config_writer::remove_session_mcp_config(&path, session_id).await
+    mcp_config_writer::remove_session_mcp_config(&path, session_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Removes a session-specific Maestro server from `opencode.json`.
@@ -356,7 +360,9 @@ pub async fn remove_opencode_mcp_config(
     session_id: u32,
 ) -> Result<(), String> {
     let path = PathBuf::from(&working_dir);
-    mcp_config_writer::remove_opencode_mcp_config(&path, session_id).await
+    mcp_config_writer::remove_opencode_mcp_config(&path, session_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Generates a project hash for the given path.
@@ -380,7 +386,7 @@ pub async fn generate_project_hash(project_path: String) -> Result<String, Strin
 /// `McpManager::get_project_servers` invalidates on config-file mtime changes.
 #[tauri::command]
 pub async fn get_mcp_status(project_path: String) -> Result<McpStatusView, String> {
-    mcp_settings::get_status(&project_path)
+    mcp_settings::get_status(&project_path).map_err(|e| e.to_string())
 }
 
 /// Adds or replaces an MCP server in the real config file for the given scope
@@ -407,6 +413,7 @@ pub async fn upsert_mcp_server(
         _ => None,
     };
     mcp_settings::upsert_server(&project_path, scope, &name, config, overwrite)
+        .map_err(|e| e.to_string())
 }
 
 /// Removes an MCP server from the real config file for the given scope.
@@ -424,7 +431,7 @@ pub async fn remove_mcp_server(
         ),
         _ => None,
     };
-    mcp_settings::remove_server(&project_path, scope, &name)
+    mcp_settings::remove_server(&project_path, scope, &name).map_err(|e| e.to_string())
 }
 
 /// Enables or disables an MCP server (or claude.ai connector) for this project
@@ -437,6 +444,7 @@ pub async fn set_mcp_server_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     mcp_settings::set_server_enabled(&project_path, scope, &name, enabled)
+        .map_err(|e| e.to_string())
 }
 
 /// Gets all custom MCP servers configured by the user.
