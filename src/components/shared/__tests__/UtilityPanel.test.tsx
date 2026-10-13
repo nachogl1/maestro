@@ -24,8 +24,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { useNotesStore } from "@/stores/useNotesStore";
-import { usePlanStore } from "@/stores/usePlanStore";
-import { useStandupStore } from "@/stores/useStandupStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { UtilityPanel } from "../UtilityPanel";
 
@@ -169,30 +167,6 @@ describe("UtilityPanel", () => {
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     // Notes live in a module-level zustand store — reset so tests don't leak.
     useNotesStore.setState({ notes: [], activeNoteId: null });
-    usePlanStore.setState({ status: "idle", plan: null, error: null, concerns: "" });
-    useStandupStore.setState({ reports: {}, scheduleEnabled: false, scheduleTime: "08:30" });
-    // The processes poll skips when the window is unfocused; happy-dom is headless.
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
-  });
-
-  it("renders the Memory panel: user CLAUDE.md plus per-project files", async () => {
-    render(<UtilityPanel panel="memory" width={320} onResize={() => {}} onClose={() => {}} />);
-    expect(screen.getByText("User Memory")).toBeInTheDocument();
-    expect(await screen.findByText("~/.claude/CLAUDE.md")).toBeInTheDocument();
-    // Active project auto-expands with its memory files
-    expect(await screen.findByText("C--git-maestro")).toBeInTheDocument();
-    expect(await screen.findByText("MEMORY.md")).toBeInTheDocument();
-    expect(screen.getByText("INDEX")).toBeInTheDocument();
-    expect(screen.getByText("user_profile.md")).toBeInTheDocument();
-    expect(screen.getByText("Who the user is")).toBeInTheDocument();
-  });
-
-  it("renders the Processes panel", async () => {
-    render(<UtilityPanel panel="processes" width={320} onResize={() => {}} onClose={() => {}} />);
-    expect(
-      screen.getByText("Dev processes on this machine, grouped by command."),
-    ).toBeInTheDocument();
-    expect(await screen.findByText("No watched processes running")).toBeInTheDocument();
   });
 
   it("renders the Notes panel with its empty state", async () => {
@@ -218,42 +192,6 @@ describe("UtilityPanel", () => {
     // The old two-pane implementation is gone: no Preview toggle, no textarea.
     expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
     expect(document.querySelector("textarea")).toBeNull();
-  });
-
-  it("renders the AI panel on the Report tab and switches to Plan", async () => {
-    render(<UtilityPanel panel="ai" width={320} onResize={() => {}} onClose={() => {}} />);
-    // Opening the panel always lands on Report (where Standup used to live).
-    expect(screen.getByRole("tab", { name: "Report" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByLabelText("Daily report time")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
-    expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByLabelText("What's on your mind?")).toBeInTheDocument();
-    // The plan has no schedule of its own; with the report schedule off it
-    // says so rather than silently never running.
-    expect(screen.getByText(/daily schedule is off/i)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Catalog" }));
-    // Catalog is on-demand only: no schedule, just the scan button and the
-    // empty state until the user runs one.
-    expect(screen.getByRole("button", { name: /scan project/i })).toBeInTheDocument();
-  });
-
-  it("Plan tab subscribes to the open projects without an infinite render loop", () => {
-    // Regression guard: a selector returning a freshly mapped array re-renders
-    // forever under zustand v5 (React logs "getSnapshot should be cached" and
-    // then throws "Maximum update depth exceeded"). useShallow is what stops it.
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      render(<UtilityPanel panel="ai" width={320} onResize={() => {}} onClose={() => {}} />);
-      fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
-      expect(screen.getByRole("button", { name: /generate plan/i })).toBeEnabled();
-      const logged = errorSpy.mock.calls.flat().map(String).join(" ");
-      expect(logged).not.toContain("getSnapshot should be cached");
-      expect(logged).not.toContain("Maximum update depth");
-    } finally {
-      errorSpy.mockRestore();
-    }
   });
 
   it("renders the Second Brain panel with the audit stream and the files section", async () => {
@@ -283,8 +221,9 @@ describe("UtilityPanel", () => {
 
   it("calls onClose from the header close button", () => {
     const onClose = vi.fn();
-    render(<UtilityPanel panel="processes" width={320} onResize={() => {}} onClose={onClose} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close Processes panel" }));
+    render(<UtilityPanel panel="launch" width={320} onResize={() => {}} onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close Launch panel" }));
+
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

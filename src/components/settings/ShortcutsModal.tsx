@@ -21,20 +21,16 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
     {
       title: "Left Sidebar",
       shortcuts: [
-        { keys: [alt, "1"], description: "General tab (press again to close)" },
-        { keys: [alt, "2"], description: "History tab (press again to close)" },
-        { keys: [alt, "3"], description: "Infra tab (press again to close)" },
-        { keys: [alt, "4"], description: "Settings tab (press again to close)" },
+        { keys: [alt, "1"], description: "History tab (press again to close)" },
+        { keys: [alt, "2"], description: "Infra tab (press again to close)" },
+        { keys: [alt, "3"], description: "Settings tab (press again to close)" },
       ],
     },
     {
       title: "Right Panels",
       shortcuts: [
         { keys: [mod, "2"], description: "Toggle the Git panel" },
-        { keys: [mod, "3"], description: "Toggle the Memory panel" },
-        { keys: [mod, "4"], description: "Toggle the Processes panel" },
         { keys: [mod, "5"], description: "Toggle the Notes panel" },
-        { keys: [mod, "6"], description: "Toggle the AI panel" },
       ],
     },
     {
@@ -45,7 +41,7 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         { keys: [alt, "← →"], description: "Previous / next tab while zoomed" },
         { keys: [mod, alt, "← →"], description: "Focus the previous / next terminal" },
         { keys: [mod, "G"], description: "Toggle eagle view (all projects)" },
-        { keys: [mod, "Shift", "G"], description: "Toggle the landscape agent graph" },
+
         { keys: [alt, "P"], description: "Park the focused terminal" },
       ],
     },

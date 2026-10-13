@@ -33,16 +33,16 @@ function renderAppKeyboard(overrides: Partial<Parameters<typeof useAppKeyboard>[
 // regardless of what isMac() reports for the test environment.
 const MOD = { ctrlKey: true, metaKey: true };
 
-describe("useAppKeyboard sidebar tabs (Alt+1-4)", () => {
+describe("useAppKeyboard sidebar tabs (Alt+1-3)", () => {
   it("fires onSidebarTab with the pressed tab index", () => {
     const { onSidebarTab } = renderAppKeyboard();
 
-    for (const digit of [1, 2, 3, 4]) {
+    for (const digit of [1, 2, 3]) {
       const ev = dispatch({ key: String(digit), code: `Digit${digit}`, altKey: true });
       expect(ev.defaultPrevented).toBe(true);
     }
 
-    expect(onSidebarTab.mock.calls.map((c) => c[0])).toEqual([1, 2, 3, 4]);
+    expect(onSidebarTab.mock.calls.map((c) => c[0])).toEqual([1, 2, 3]);
   });
 
   it("ignores numpad digits so Windows Alt-code entry keeps working", () => {
@@ -51,10 +51,10 @@ describe("useAppKeyboard sidebar tabs (Alt+1-4)", () => {
     expect(onSidebarTab).not.toHaveBeenCalled();
   });
 
-  it("ignores Alt+5 and Alt+digit with extra modifiers", () => {
+  it("ignores Alt+4 and Alt+digit with extra modifiers", () => {
     const { onSidebarTab } = renderAppKeyboard();
 
-    dispatch({ key: "5", code: "Digit5", altKey: true });
+    dispatch({ key: "4", code: "Digit4", altKey: true });
     dispatch({ key: "1", code: "Digit1", altKey: true, ctrlKey: true });
     dispatch({ key: "1", code: "Digit1", altKey: true, shiftKey: true });
 
@@ -62,7 +62,7 @@ describe("useAppKeyboard sidebar tabs (Alt+1-4)", () => {
   });
 });
 
-describe("useAppKeyboard right panels (Cmd/Ctrl+2-6)", () => {
+describe("useAppKeyboard right panels (Cmd/Ctrl+2 and +5)", () => {
   it("fires onToggleGitPanel on Cmd/Ctrl+2", () => {
     const { onToggleGitPanel, onToggleUtilityPanel } = renderAppKeyboard();
 
@@ -72,26 +72,21 @@ describe("useAppKeyboard right panels (Cmd/Ctrl+2-6)", () => {
     expect(onToggleUtilityPanel).not.toHaveBeenCalled();
   });
 
-  it("maps Cmd/Ctrl+3-6 to the utility panels", () => {
+  it("maps Cmd/Ctrl+5 to the Notes panel and nothing to the removed digits", () => {
     const { onToggleUtilityPanel } = renderAppKeyboard();
 
     for (const digit of [3, 4, 5, 6]) {
       dispatch({ key: String(digit), code: `Digit${digit}`, ...MOD });
     }
 
-    expect(onToggleUtilityPanel.mock.calls.map((c) => c[0])).toEqual([
-      "memory",
-      "processes",
-      "notes",
-      "ai",
-    ]);
+    expect(onToggleUtilityPanel.mock.calls.map((c) => c[0])).toEqual(["notes"]);
   });
 
   it("ignores digits with Alt or Shift held", () => {
     const { onToggleUtilityPanel } = renderAppKeyboard();
 
-    dispatch({ key: "3", code: "Digit3", ...MOD, altKey: true });
-    dispatch({ key: "3", code: "Digit3", ...MOD, shiftKey: true });
+    dispatch({ key: "5", code: "Digit5", ...MOD, altKey: true });
+    dispatch({ key: "5", code: "Digit5", ...MOD, shiftKey: true });
 
     expect(onToggleUtilityPanel).not.toHaveBeenCalled();
   });

@@ -16,7 +16,7 @@ import type { BackendSessionStatus } from "@/stores/useSessionStore";
  * Shared presentation of a subagent: badges, counters, the brief/report drawer
  * and the markdown export.
  *
- * Extracted from the per-terminal [`AgentGraph`] so the landscape view renders
+ * Extracted from the per-terminal [`AgentGraph`] so every surface renders
  * the exact same agent card and drawer — one place decides what a RUNNING badge
  * looks like or how a token count is abbreviated.
  */
@@ -103,7 +103,7 @@ export function statsLine(agent: SubagentInfo): string {
  *
  * Kept whole: an export exists to be read outside Maestro, so truncating it
  * would defeat the point. The heading is passed in because the per-terminal
- * export nests agents one level deeper than the landscape export does.
+ * export can nest agents under a project or terminal heading.
  */
 export function agentMarkdownLines(agent: SubagentInfo, heading: string): string[] {
   const badge = agentBadge(agent);
@@ -256,7 +256,7 @@ export function ExchangeBlock({
  * report the agent sent back, over the graph it was opened from.
  *
  * `subtitle` lets the caller prepend context the graph itself doesn't show —
- * the landscape names the project and terminal the agent belongs to.
+ * a caller can name the project and terminal the agent belongs to.
  */
 export function AgentExchangeDrawer({
   agent,

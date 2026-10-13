@@ -25,7 +25,7 @@ export function soonestPark(alerts: SamuraiParkAlert[]): SamuraiParkAlert | null
 }
 
 interface ParkedRunsBadgeProps {
-  /** Selects the project a parked run belongs to (leaves eagle/landscape). */
+  /** Selects the project a parked run belongs to (leaves eagle view). */
   onNavigate?: (projectPath: string) => void;
 }
 
@@ -34,8 +34,8 @@ interface ParkedRunsBadgeProps {
  * projects — "2 parked · resumes in 6d 3h 12m". Hidden when nothing is parked.
  *
  * The top bar is the one surface mounted in EVERY view (per-project grid,
- * eagle, landscape), which is the point: the project chip and the parked
- * shelf are both view-local, so a park raised while the user was in landscape
+ * eagle), which is the point: the project chip and the parked
+ * shelf are both view-local, so a park raised while the user was in eagle view
  * used to have nowhere to show. Shines until acknowledged; clicking
  * acknowledges and jumps to the project that resumes first.
  */

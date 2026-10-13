@@ -63,7 +63,7 @@ import { cardClass, divider, SectionHeader } from "./sectionChrome";
 interface SidebarProps {
   collapsed?: boolean;
   onCollapse?: () => void;
-  /** Active sidebar tab — lifted to App so Alt+1-4 shortcuts can drive it. */
+  /** Active sidebar tab — lifted to App so Alt+1-3 shortcuts can drive it. */
   activeTab: SidebarTabId;
   /** Select a sidebar tab (App persists the choice). */
   onSelectTab: (tab: SidebarTabId) => void;
@@ -254,10 +254,9 @@ export function Sidebar({
 /*  TAB BAR                                                          */
 /* ================================================================ */
 
-export type SidebarTabId = "general" | "history" | "infra" | "settings";
+export type SidebarTabId = "history" | "infra" | "settings";
 
 export const SIDEBAR_TABS: { id: SidebarTabId; label: string; icon: React.ElementType }[] = [
-  { id: "general", label: "General", icon: Home },
   { id: "history", label: "History", icon: History },
   { id: "infra", label: "Infra", icon: Package },
   { id: "settings", label: "Settings", icon: Settings },
@@ -267,7 +266,7 @@ const SIDEBAR_TAB_STORAGE_KEY = "maestro-sidebar-tab";
 
 export function loadSavedSidebarTab(): SidebarTabId {
   const saved = localStorage.getItem(SIDEBAR_TAB_STORAGE_KEY);
-  return SIDEBAR_TABS.some((t) => t.id === saved) ? (saved as SidebarTabId) : "general";
+  return SIDEBAR_TABS.some((t) => t.id === saved) ? (saved as SidebarTabId) : "history";
 }
 
 export function saveSidebarTab(tab: SidebarTabId): void {
@@ -275,7 +274,7 @@ export function saveSidebarTab(tab: SidebarTabId): void {
 }
 
 /**
- * State transition for the Alt+1-4 sidebar shortcuts: closed → open on that
+ * State transition for the Alt+1-3 sidebar shortcuts: closed → open on that
  * tab; open on that tab already → close; open on another tab → switch.
  * Returns null when the index doesn't name a tab.
  */
@@ -349,14 +348,6 @@ function ConfigTab({
   onHistoryLaunch?: (tabId: string) => void;
 }) {
   switch (activeSidebarTab) {
-    case "general":
-      return (
-        <>
-          <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
-          {divider}
-          <GitRepositorySection />
-        </>
-      );
     case "history":
       // onAgentNavigate is the same sidebar→terminal route the Agents section
       // takes: History reuses it to reach a conversation that is already
@@ -382,6 +373,10 @@ function ConfigTab({
           />
           {divider}
           <NotificationsSettingsSection />
+          {divider}
+          <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
+          {divider}
+          <GitRepositorySection />
         </>
       );
   }

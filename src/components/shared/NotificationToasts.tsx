@@ -31,8 +31,6 @@ function projectName(projectPath: string): string {
 
 /** Toast title per health area — names the panel whose badge has the detail. */
 const HEALTH_AREA_TITLES: Record<HealthArea, string> = {
-  memory: "Memory",
-  processes: "Processes",
   secondbrain: "Second Brain",
 };
 
@@ -53,7 +51,7 @@ const MAX_VISIBLE_TOASTS = 5;
  *   issue, tinted with the project's color, kicker "<Project> — <Type>".
  *   Clicking opens it in the browser (simpler than driving the git panel to
  *   the right project + tab).
- * - Health checker: one card per newly-raised memory/process/Second Brain
+ * - Health checker: one card per newly-raised Second Brain
  *   flag. These have no destination — the badge and the section highlight
  *   carry the detail — so they are dismiss-only.
  *
