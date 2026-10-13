@@ -10,7 +10,7 @@
 use dashmap::DashMap;
 use directories::BaseDirs;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 use tokio::process::Command;
 
 use super::marketplace_error::{MarketplaceError, MarketplaceResult};
@@ -110,7 +110,10 @@ impl MarketplaceManager {
 
     /// Returns all marketplace sources.
     pub fn get_sources(&self) -> Vec<MarketplaceSource> {
-        self.sources.read().unwrap().clone()
+        self.sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Adds a new marketplace source.
@@ -130,13 +133,16 @@ impl MarketplaceManager {
             last_error: None,
         };
 
-        self.sources.write().unwrap().push(source.clone());
+        self.sources
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(source.clone());
         source
     }
 
     /// Removes a marketplace source by ID.
     pub fn remove_source(&self, source_id: &str) -> MarketplaceResult<()> {
-        let mut sources = self.sources.write().unwrap();
+        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
         let initial_len = sources.len();
         sources.retain(|s| s.id != source_id);
 
@@ -152,7 +158,7 @@ impl MarketplaceManager {
 
     /// Toggles a marketplace source's enabled state.
     pub fn toggle_source(&self, source_id: &str) -> MarketplaceResult<bool> {
-        let mut sources = self.sources.write().unwrap();
+        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
 
         for source in sources.iter_mut() {
             if source.id == source_id {
@@ -168,7 +174,7 @@ impl MarketplaceManager {
     pub fn get_source(&self, source_id: &str) -> Option<MarketplaceSource> {
         self.sources
             .read()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .find(|s| s.id == source_id)
             .cloned()
@@ -243,7 +249,7 @@ impl MarketplaceManager {
 
     /// Updates a source after successful fetch.
     fn update_source_success(&self, source_id: &str) {
-        let mut sources = self.sources.write().unwrap();
+        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
         if let Some(source) = sources.iter_mut().find(|s| s.id == source_id) {
             source.last_fetched = Some(Self::now_iso8601());
             source.last_error = None;
@@ -252,7 +258,7 @@ impl MarketplaceManager {
 
     /// Updates a source after failed fetch.
     fn update_source_error(&self, source_id: &str, error: &str) {
-        let mut sources = self.sources.write().unwrap();
+        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
         if let Some(source) = sources.iter_mut().find(|s| s.id == source_id) {
             source.last_error = Some(error.to_string());
         }
@@ -716,7 +722,10 @@ impl MarketplaceManager {
 
         // Check if already installed (scope the lock guard)
         {
-            let installed = self.installed_plugins.read().unwrap();
+            let installed = self
+                .installed_plugins
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
             if installed.iter().any(|p| {
                 matches!(&p.source, InstalledPluginSource::Marketplace { plugin_id, .. } if plugin_id == marketplace_plugin_id)
             }) {
@@ -791,7 +800,7 @@ impl MarketplaceManager {
         // Add to installed plugins
         self.installed_plugins
             .write()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .push(installed_plugin.clone());
 
         Ok(installed_plugin)
@@ -801,7 +810,10 @@ impl MarketplaceManager {
     pub async fn uninstall_plugin(&self, installed_plugin_id: &str) -> MarketplaceResult<()> {
         // Extract the plugin path while holding the lock, then release it
         let plugin_path_string = {
-            let mut installed = self.installed_plugins.write().unwrap();
+            let mut installed = self
+                .installed_plugins
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
 
             let idx = installed
                 .iter()
@@ -823,12 +835,15 @@ impl MarketplaceManager {
 
     /// Gets all installed plugins.
     pub fn get_installed_plugins(&self) -> Vec<InstalledPlugin> {
-        self.installed_plugins.read().unwrap().clone()
+        self.installed_plugins
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Checks if a marketplace plugin is installed.
     pub fn is_plugin_installed(&self, marketplace_plugin_id: &str) -> bool {
-        self.installed_plugins.read().unwrap()
+        self.installed_plugins.read().unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|p| {
                 matches!(&p.source, InstalledPluginSource::Marketplace { plugin_id, .. } if plugin_id == marketplace_plugin_id)
@@ -898,8 +913,11 @@ impl MarketplaceManager {
     pub fn load_from_json(&self, json: &str) -> MarketplaceResult<()> {
         let data: MarketplaceData = serde_json::from_str(json)?;
 
-        *self.sources.write().unwrap() = data.sources;
-        *self.installed_plugins.write().unwrap() = data.installed_plugins;
+        *self.sources.write().unwrap_or_else(PoisonError::into_inner) = data.sources;
+        *self
+            .installed_plugins
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = data.installed_plugins;
 
         Ok(())
     }
