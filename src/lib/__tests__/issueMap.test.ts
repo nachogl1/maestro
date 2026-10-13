@@ -18,6 +18,7 @@ import {
   MAP_X0,
   MAP_Y0,
   nodeText,
+  packIssueMap,
   problemText,
   STATUS_META,
   statusIcon,
@@ -64,7 +65,12 @@ describe("kindOf", () => {
     expect(kindOf([{ name: "bug" }])).toEqual({ kind: "decision", label: null });
     expect(kindOf([])).toEqual({ kind: "decision", label: null });
     expect(kindOf(DECISION)).toEqual({ kind: "decision", label: null });
-    expect(KIND_ORDER).toEqual(["agent", "human", "outside", "decision"]);
+    expect(KIND_ORDER).toEqual(["agent", "human", "outside", "decision", "epic"]);
+  });
+
+  it("an `epic` label wins over every triage label", () => {
+    expect(kindOf(EPIC)).toEqual({ kind: "epic", label: "epic" });
+    expect(kindOf([...AGENT, { name: "Epic" }])).toEqual({ kind: "epic", label: "Epic" });
   });
 });
 
@@ -99,9 +105,30 @@ describe("buildIssueMap", () => {
   const map = buildIssueMap(issues, links);
   const node = (n: number) => map.nodes.find((x) => x.number === n);
 
-  it("draws every non-epic issue, closed included, and never the epic", () => {
-    expect(map.nodes.map((n) => n.number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 8]);
-    expect(node(9)).toBeUndefined();
+  it("draws every issue, closed included, with the epic in its own far-left column", () => {
+    expect(map.nodes.map((n) => n.number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 8, 9]);
+    expect(node(9)).toMatchObject({ kind: "epic", level: -1, status: "ready", blockers: [] });
+    expect(node(9)?.stories).toEqual([
+      { number: 2, title: "Second step with a very long title indeed", state: "OPEN" },
+    ]);
+    expect(node(2)?.parent).toBe(9);
+    expect(node(3)?.parent).toBeNull();
+    expect(map.epicEdges.map((e) => [e.from, e.to, e.open])).toEqual([[9, 2, true]]);
+    expect(map.epicEdges[0].path).toBe(edgePath(node(9) as never, node(2) as never));
+    // The epic never blocks: it stays out of up/down and of every level.
+    expect(map.up[9]).toBeUndefined();
+    expect(walk(2, map.up)).toEqual(new Set([1]));
+  });
+
+  it("ties a story to its epic from either side of the sub-issue link", () => {
+    const viaParent = buildIssueMap([issue({ number: 1, labels: EPIC }), issue({ number: 2 })], {
+      2: link({ number: 2, parent: 1 }),
+    });
+    expect(viaParent.epicEdges.map((e) => [e.from, e.to])).toEqual([[1, 2]]);
+    expect(nodeText(viaParent.nodes[0])).toMatchObject({
+      tag: "epic",
+      assignees: "0/1 stories closed",
+    });
   });
 
   it("derives status from state, open kept blockers and assignees", () => {
@@ -120,21 +147,49 @@ describe("buildIssueMap", () => {
     expect(node(4)?.level).toBe(0);
     expect(node(5)?.level).toBe(0); // closed, unlinked: Level 0 like everything else
     expect(node(8)?.level).toBe(0); // dropped link does not count
-    expect(map.columns.map((c) => c.label)).toEqual(["Level 0", "Level 1", "Level 2"]);
-    expect(map.columns[0]).toMatchObject({ closed: 3, total: 5 });
+    expect(map.columns.map((c) => c.label)).toEqual(["Epics", "Level 0", "Level 1", "Level 2"]);
+    expect(map.columns[0]).toMatchObject({ closed: 0, total: 1, members: [9] });
+    expect(map.columns[1]).toMatchObject({ closed: 3, total: 5 });
   });
 
-  it("orders a column open first by number, then closed by number", () => {
+  it("orders a column open first by number, then closed by number, centred on the tallest", () => {
     const column0 = map.nodes
       .filter((n) => n.level === 0)
       .sort((a, b) => a.y - b.y)
       .map((n) => n.number);
     expect(column0).toEqual([6, 8, 1, 4, 5]);
-    expect(node(6)).toMatchObject({ x: MAP_X0, y: MAP_Y0 });
+    expect(map.columns[1].members).toEqual([6, 8, 1, 4, 5]);
+    expect(node(9)).toMatchObject({ x: MAP_X0, y: MAP_Y0 + 2 * MAP_ROW_H });
+    expect(node(6)).toMatchObject({ x: MAP_X0 + MAP_COL_W, y: MAP_Y0 });
     expect(node(1)?.y).toBe(MAP_Y0 + 2 * MAP_ROW_H);
-    expect(node(2)).toMatchObject({ x: MAP_X0 + MAP_COL_W, y: MAP_Y0 });
-    expect(map.width).toBe(3 * MAP_COL_W - 10);
+    // A one-issue column sits level with the middle row of the five-issue one.
+    expect(node(2)).toMatchObject({ x: MAP_X0 + 2 * MAP_COL_W, y: MAP_Y0 + 2 * MAP_ROW_H });
+    expect(map.width).toBe(4 * MAP_COL_W - 10);
     expect(map.height).toBe(MAP_Y0 + 5 * MAP_ROW_H + 30);
+  });
+
+  it("re-packs the shown issues: hidden ones and empty columns leave the map", () => {
+    const open = new Set(
+      map.nodes.filter((n) => n.state === "OPEN" && n.kind !== "epic").map((n) => n.number),
+    );
+    const packed = packIssueMap(map, open);
+    expect(packed.columns.map((c) => [c.label, c.index, c.x])).toEqual([
+      ["Level 0", 0, MAP_X0],
+      ["Level 1", 1, MAP_X0 + MAP_COL_W],
+      ["Level 2", 2, MAP_X0 + 2 * MAP_COL_W],
+    ]);
+    // The column keeps its whole-column count, whatever is filtered out.
+    expect(packed.columns[0]).toMatchObject({ closed: 3, total: 5 });
+    expect(packed.positions.get(6)).toEqual({ x: MAP_X0, y: MAP_Y0 });
+    expect(packed.positions.get(8)).toEqual({ x: MAP_X0, y: MAP_Y0 + MAP_ROW_H });
+    expect(packed.positions.get(2)).toEqual({ x: MAP_X0 + MAP_COL_W, y: MAP_Y0 + MAP_ROW_H / 2 });
+    expect(packed.positions.has(1)).toBe(false);
+    expect(packed.positions.has(9)).toBe(false);
+    // Only lines whose two ends are shown get a path.
+    expect([...packed.paths.keys()]).toEqual(["2->3"]);
+    expect(packed.width).toBe(3 * MAP_COL_W - 10);
+    expect(packed.height).toBe(MAP_Y0 + 2 * MAP_ROW_H + 30);
+    expect(packIssueMap(map, new Set()).columns).toEqual([]);
   });
 
   it("draws one line per kept link, red while the blocker is open", () => {
@@ -229,20 +284,22 @@ describe("buildIssueMap", () => {
       expect(nodeText(n).icons).not.toMatch(/\u{1F916}|\u{1F64B}|\u{1F3E2}|❓/u);
   });
 
-  it("colours the background by kind: green agent, red human, blue outside, yellow decision", () => {
+  it("colours the background by kind: green agent, red human, blue outside, yellow decision, purple epic", () => {
     expect(KIND_FILL).toEqual({
       agent: "green",
       human: "red",
       outside: "blue",
       decision: "yellow",
+      epic: "purple",
     });
+    expect(KIND_FILL[(node(9) as never as { kind: "epic" }).kind]).toBe("purple");
     expect(KIND_FILL[(node(1) as never as { kind: "agent" }).kind]).toBe("green");
     expect(KIND_FILL[(node(3) as never as { kind: "human" }).kind]).toBe("red");
     expect(KIND_FILL[(node(4) as never as { kind: "decision" }).kind]).toBe("yellow");
     expect(KIND_FILL[kindOf([{ name: "outside-change" }]).kind]).toBe("blue");
     expect(ENCODING_EXPLANATION).toBe(
       "Background = who takes it (green agent-ready, red needs-human, blue outside-change, " +
-        "yellow anything else). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, " +
+        "yellow anything else, purple epic). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, " +
         "\u{1F512} blocked). A cross means closed.",
     );
   });
