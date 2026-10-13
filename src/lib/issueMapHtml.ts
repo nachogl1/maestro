@@ -11,11 +11,14 @@
 
 import {
   descriptionText,
+  ENCODING_EXPLANATION,
   HINT,
   type IssueMap,
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
+  type IssueMapTone,
+  KIND_FILL,
   KIND_META,
   KIND_ORDER,
   LEVEL_EXPLANATION,
@@ -85,6 +88,21 @@ const scriptJson = (value: unknown): string =>
     .replace(/</g, "\\u003c")
     .replace(/\u2028|\u2029/g, " ");
 
+// Translucent box fill per palette colour, same alpha the modal uses.
+const TONE_FILL: Record<IssueMapTone, string> = {
+  green: "rgba(63,185,80,.22)",
+  red: "rgba(220,38,38,.22)",
+  blue: "rgba(59,130,246,.22)",
+  yellow: "rgba(234,179,8,.22)",
+};
+
+// `.k-<kind>` on a box rect or a legend/tooltip swatch paints the kind's fill.
+const KIND_CSS = KIND_ORDER.map(
+  (k) =>
+    `.node.k-${k} rect{fill:${TONE_FILL[KIND_FILL[k]]}}` +
+    `.i.k-${k}{background:${TONE_FILL[KIND_FILL[k]]}}`,
+).join("");
+
 // Maestro palette (src/styles/globals.css), inlined so the file stands alone.
 const CSS = `
 :root{--bg:#0d0d10;--surface:#121316;--card:#18191c;--border:#26262c;--text:#e8e8ec;--muted:#82828e;--blue:#3b82f6;--green:#3fb950;--red:#dc2626;--yellow:#eab308}
@@ -97,6 +115,7 @@ h1 .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
 #limit{color:var(--yellow);font-size:12px;margin:0 0 8px}
 .leg{font-size:12px}.leg span{display:inline-block;margin-right:14px;margin-bottom:3px}
 .leg i{display:inline-block;width:18px;height:18px;border-radius:5px;vertical-align:-3px;margin-right:4px;border:3px solid var(--border);font-style:normal;background:transparent}
+.leg i.xs{background:linear-gradient(to top right,transparent 46%,var(--red) 46%,var(--red) 54%,transparent 54%),linear-gradient(to top left,transparent 46%,var(--red) 46%,var(--red) 54%,transparent 54%)}
 .leg b.ax{display:inline-block;width:160px;color:var(--muted);font-weight:700}
 .leg label{display:inline-block;margin-right:12px;margin-bottom:3px;cursor:pointer;user-select:none;padding:1px 8px;border-radius:999px}
 .leg label:hover{background:var(--card)}.leg label.unchecked{opacity:.4;text-decoration:line-through}.leg input{display:none}
@@ -106,21 +125,16 @@ h1 .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
 .band.b0{fill:var(--card);fill-opacity:.45}.band.b1{fill:var(--card)}
 .wl{font-size:15px;font-weight:700;fill:var(--text)}.wc{font-weight:500;fill:var(--muted);font-size:12px}
 .e{fill:none;stroke-width:1.6;opacity:.6}.e.closed{stroke:var(--muted)}.e.open{stroke:var(--red);stroke-width:2}
-.node rect{stroke-width:4;cursor:pointer;rx:7}.node text,.node line{pointer-events:none}
+.node rect{stroke:var(--border);stroke-width:4;cursor:pointer;rx:7}.node text,.node line{pointer-events:none}
 .num{font-weight:700;font-size:13px;fill:var(--text)}.ic{font-size:12px;font-family:"Segoe UI Emoji",system-ui}
 .ep{font-size:11px;fill:var(--muted)}.tt{font-size:12px;fill:var(--text)}.as{font-size:11px;fill:var(--muted);font-weight:700}
 .lb rect{fill:var(--card);stroke:var(--border);stroke-width:1;rx:8}.lb text{font-size:10px;fill:var(--muted)}
 .node.off,.e.off{opacity:.06!important}
-.node.closed rect{fill:rgba(130,130,142,.22)}.node .x{stroke:var(--red);stroke-width:2;opacity:.55}
-.node.inprog rect{fill:rgba(234,179,8,.22)}.node.ready rect{fill:rgba(63,185,80,.22)}.node.blocked rect{fill:rgba(220,38,38,.22)}
-.node.k-agent rect{stroke:var(--blue)}.node.k-human rect{stroke:var(--yellow)}
-.node.k-outside rect{stroke:var(--text);stroke-dasharray:7 4}.node.k-decision rect{stroke:var(--muted);stroke-dasharray:5 4}
+.node .x{stroke:var(--red);stroke-width:2;opacity:.55}
+${KIND_CSS}
 .node.k-decision .tt{fill:var(--muted);font-style:italic}
 svg.focus .node,svg.focus .e{opacity:.12}svg.focus .node.hl,svg.focus .e.hl{opacity:1}svg.focus .e.hl{stroke-width:3}svg.focus .node.sel rect{stroke-width:7}
-.i.closed{background:rgba(130,130,142,.22)}.i.inprog{background:rgba(234,179,8,.22)}.i.ready{background:rgba(63,185,80,.22)}.i.blocked{background:rgba(220,38,38,.22)}
-.i.k-agent{border-color:var(--blue)}.i.k-human{border-color:var(--yellow)}.i.k-outside{border-color:var(--text);border-style:dashed}
-.i.k-decision{border-color:var(--muted);border-style:dashed}
-#hint{color:var(--muted);font-size:12px;margin-top:4px}
+#enc,#hint{color:var(--muted);font-size:12px;margin-top:4px}
 #tip{position:fixed;z-index:9;display:none;max-width:480px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);padding:10px 14px;font-size:13px;pointer-events:none;color:var(--text)}
 #tip.pinned{pointer-events:auto}
 #tip h3{margin:0 0 4px;font-size:14px;font-weight:700}
@@ -140,10 +154,10 @@ const down={};for(const n in up){for(const b of up[n]){(down[b]=down[b]||[]).pus
 const svg=document.querySelector('svg');const tip=document.getElementById('tip');let pinned=null;
 function walk(start,adj){const s=new Set();const q=[start];while(q.length){const n=q.pop();for(const m of (adj[n]||[])){if(!s.has(m)){s.add(m);q.push(m)}}}return s}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function tipHtml(id){const m=META[id];const [ic,name,mean]=STATUS[m.status];const [kic,kname,kmean]=KIND[m.kind];
+function tipHtml(id){const m=META[id];const [ic,name,mean]=STATUS[m.status];const [kname,kmean]=KIND[m.kind];
 let h='<h3>#'+id+' '+esc(m.title)+'</h3>';
-h+='<div class="row"><b>Progress</b> <span class="st i '+m.status+'">'+ic+' '+name+'</span> <span class="m">'+esc(mean)+'</span></div>';
-h+='<div class="row"><b>Who takes it</b> <span class="st i k-'+m.kind+'">'+kic+' '+kname+'</span> <span class="m">'+esc(kmean)+'</span></div>';
+h+='<div class="row"><b>Progress</b> <span class="st">'+ic+' '+name+'</span> <span class="m">'+esc(mean)+'</span></div>';
+h+='<div class="row"><b>Who takes it</b> <span class="st i k-'+m.kind+'">'+kname+'</span> <span class="m">'+esc(kmean)+'</span></div>';
 h+='<span class="m">Level '+m.level+' \\u00b7 GitHub state: '+esc(m.state)+(m.assignees.length?' \\u00b7 assigned to '+esc(m.assignees.join(', ')):' \\u00b7 nobody assigned')+'</span>';
 h+='<div class="row"><b>Labels:</b> '+(m.labels.length?m.labels.map(l=>'<span class="lbl'+(l===m.kindLabel?' k':'')+'">'+esc(l)+'</span>').join(''):'none')+'</div>';
 h+='<div class="row"><b>Description</b><div class="desc">'+(m.body?esc(m.body):'<i>empty</i>')+'</div></div>';
@@ -238,24 +252,16 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
     a.localeCompare(b),
   );
   const legend =
-    `<b class="ax">Background = progress</b>` +
-    STATUS_ORDER.map((s) =>
-      legendEntry(
-        "status",
-        s,
-        `<i class="i ${s}"></i>`,
-        `${STATUS_META[s].icon} ${STATUS_META[s].name}`,
-      ),
-    ).join("") +
-    `<br><b class="ax">Border = who takes it</b>` +
+    `<b class="ax">Background = who takes it</b>` +
     KIND_ORDER.map((k) =>
-      legendEntry(
-        "kind",
-        k,
-        `<i class="i k-${k}"></i>`,
-        `${KIND_META[k].icon} ${KIND_META[k].name}`,
-      ),
+      legendEntry("kind", k, `<i class="i k-${k}"></i>`, KIND_META[k].name),
     ).join("") +
+    `<br><b class="ax">Icon = progress</b>` +
+    STATUS_ORDER.filter((s) => s !== "closed")
+      .map((s) => legendEntry("status", s, "", `${STATUS_META[s].icon} ${STATUS_META[s].name}`))
+      .join("") +
+    `<br><b class="ax">Cross = closed</b>` +
+    legendEntry("status", "closed", `<i class="i xs"></i>`, STATUS_META.closed.name) +
     `<br><b class="ax">Assignee</b>` +
     logins.map((l) => legendEntry("who", l, "", `\u{1F464} ${l}`)).join("") +
     legendEntry("who", "nobody", "", "nobody assigned") +
@@ -288,7 +294,7 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
     ]),
   );
   const kindDict = Object.fromEntries(
-    KIND_ORDER.map((k) => [k, [KIND_META[k].icon, KIND_META[k].name, KIND_META[k].meaning]]),
+    KIND_ORDER.map((k) => [k, [KIND_META[k].name, KIND_META[k].meaning]]),
   );
 
   const linkCount = map.edges.length;
@@ -314,7 +320,8 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
     } · ${linkCount} blocked-by link${linkCount === 1 ? "" : "s"}</span></h1>` +
     `<div id="banner">${banner}</div>` +
     (truncated ? `<div id="limit">${escapeHtml(LIMIT_WARNING)}</div>` : "") +
-    `<div class="leg">${legend}</div><div id="hint"></div></header>` +
+    `<div class="leg">${legend}</div><div id="enc">${escapeHtml(ENCODING_EXPLANATION)}</div>` +
+    `<div id="hint"></div></header>` +
     `<div id="tip"></div>` +
     `<div id="wrap"><svg width="${map.width}" height="${map.height}" viewBox="0 0 ${map.width} ${map.height}">` +
     `${bands}${edges}${nodes}</svg></div>` +

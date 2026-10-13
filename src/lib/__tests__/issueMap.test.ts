@@ -4,7 +4,10 @@ import type { IssueLinks } from "../issueGraph";
 import {
   buildIssueMap,
   descriptionText,
+  ENCODING_EXPLANATION,
   edgePath,
+  KIND_FILL,
+  KIND_META,
   KIND_ORDER,
   kindOf,
   labelChips,
@@ -16,6 +19,8 @@ import {
   MAP_Y0,
   nodeText,
   problemText,
+  STATUS_META,
+  statusIcon,
   walk,
 } from "../issueMap";
 
@@ -196,10 +201,10 @@ describe("buildIssueMap", () => {
     ]);
   });
 
-  it("prints the box text: icons, epic tag, truncated title, assignees, label chips", () => {
+  it("prints the box text: status icon, epic tag, truncated title, assignees, label chips", () => {
     const text = nodeText(node(2) as never);
     expect(text).toMatchObject({
-      icons: "\u{1F7E2}\u{1F916}",
+      icons: "\u{1F7E2}",
       tag: "epic #9",
       title: "Second step with a very long t…",
       assignees: "",
@@ -208,6 +213,38 @@ describe("buildIssueMap", () => {
     expect(text.chips[1].x).toBeGreaterThan(text.chips[0].x + text.chips[0].w);
     expect(nodeText(node(3) as never).assignees).toBe("\u{1F464} bob");
     expect(nodeText(node(5) as never).chips).toEqual([]);
+  });
+
+  it("shows exactly one status icon on an open box and none on a closed one", () => {
+    expect(statusIcon(node(2) as never)).toBe("\u{1F7E2}"); // ready
+    expect(statusIcon(node(3) as never)).toBe("\u{1F512}"); // blocked
+    expect(statusIcon(node(6) as never)).toBe("\u{1F528}"); // in progress
+    expect(statusIcon(node(1) as never)).toBe(""); // closed: the cross says it
+    expect(nodeText(node(4) as never).icons).toBe("");
+    // The closed icon exists for the legend and tooltip only, never for the box.
+    expect(STATUS_META.closed.icon).toBe("✕");
+    // No kind icon anywhere: colour carries the kind.
+    for (const kind of KIND_ORDER) expect(KIND_META[kind]).not.toHaveProperty("icon");
+    for (const n of map.nodes)
+      expect(nodeText(n).icons).not.toMatch(/\u{1F916}|\u{1F64B}|\u{1F3E2}|❓/u);
+  });
+
+  it("colours the background by kind: green agent, red human, blue outside, yellow decision", () => {
+    expect(KIND_FILL).toEqual({
+      agent: "green",
+      human: "red",
+      outside: "blue",
+      decision: "yellow",
+    });
+    expect(KIND_FILL[(node(1) as never as { kind: "agent" }).kind]).toBe("green");
+    expect(KIND_FILL[(node(3) as never as { kind: "human" }).kind]).toBe("red");
+    expect(KIND_FILL[(node(4) as never as { kind: "decision" }).kind]).toBe("yellow");
+    expect(KIND_FILL[kindOf([{ name: "outside-change" }]).kind]).toBe("blue");
+    expect(ENCODING_EXPLANATION).toBe(
+      "Background = who takes it (green agent-ready, red needs-human, blue outside-change, " +
+        "yellow anything else). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, " +
+        "\u{1F512} blocked). A cross means closed.",
+    );
   });
 });
 

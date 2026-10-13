@@ -6,10 +6,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   buildIssueMap,
   descriptionText,
+  ENCODING_EXPLANATION,
   HINT,
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
+  KIND_FILL,
   KIND_META,
   KIND_ORDER,
   LEVEL_EXPLANATION,
@@ -43,20 +45,10 @@ interface IssueMapModalProps {
 /** Assignee filter key for "nobody assigned". */
 const NOBODY = "\u0000nobody";
 
-const STATUS_FILL: Record<IssueMapStatus, string> = {
-  closed: "rgb(var(--maestro-muted) / 0.22)",
-  inprog: "rgb(var(--maestro-yellow) / 0.22)",
-  ready: "rgb(var(--maestro-green) / 0.22)",
-  blocked: "rgb(var(--maestro-red) / 0.22)",
-};
+/** Background = who takes it: the kind's palette colour at the box alpha. */
+const kindFill = (kind: IssueMapKind): string => `rgb(var(--maestro-${KIND_FILL[kind]}) / 0.22)`;
 
-const KIND_STROKE: Record<IssueMapKind, { stroke: string; dash?: string }> = {
-  agent: { stroke: "rgb(var(--maestro-blue))" },
-  human: { stroke: "rgb(var(--maestro-yellow))" },
-  outside: { stroke: "rgb(var(--maestro-text))", dash: "7 4" },
-  decision: { stroke: "rgb(var(--maestro-muted))", dash: "5 4" },
-};
-
+const BORDER = "rgb(var(--maestro-border))";
 const EDGE_CLOSED = "rgb(var(--maestro-muted))";
 const EDGE_OPEN = "rgb(var(--maestro-red))";
 const TEXT = "rgb(var(--maestro-text))";
@@ -69,11 +61,19 @@ const BAND_FILLS = ["rgb(var(--maestro-card) / 0.45)", "rgb(var(--maestro-card))
 const toolbarButton =
   "flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-maestro-border bg-maestro-card px-1.5 py-1 text-[11px] text-maestro-muted transition-colors hover:text-maestro-text disabled:opacity-40";
 
-const chipStyle = (status?: IssueMapStatus, kind?: IssueMapKind): React.CSSProperties => ({
-  background: status ? STATUS_FILL[status] : "transparent",
-  borderColor: kind ? KIND_STROKE[kind].stroke : "rgb(var(--maestro-border))",
-  borderStyle: kind?.match(/outside|decision/) ? "dashed" : "solid",
-});
+/** Legend swatch for "closed": a neutral box with the same red cross the boxes get. */
+function ClosedSwatch() {
+  return (
+    <svg
+      className="inline-block h-[18px] w-[18px] rounded-[5px] border-[3px] border-maestro-border"
+      viewBox="0 0 12 12"
+      aria-hidden="true"
+    >
+      <line x1={1} y1={1} x2={11} y2={11} stroke={CROSS} strokeWidth={1.5} />
+      <line x1={11} y1={1} x2={1} y2={11} stroke={CROSS} strokeWidth={1.5} />
+    </svg>
+  );
+}
 
 /** "owner/repo" from an issue URL, else the last path segment of the checkout. */
 function repoLabel(repoPath: string, issueUrl: string | undefined): string {
@@ -195,8 +195,9 @@ function AssignSection({ node, repoAssignees, setAssignees }: AssignSectionProps
 
 /**
  * Full-screen map of what is blocked by what, level by level: columns are
- * levels, the background of a box is its progress, the border is who takes it,
- * and every line runs from a blocker to the issue that waits for it.
+ * levels, the background of a box is who takes it, its icon is the progress,
+ * a cross means closed, and every line runs from a blocker to the issue that
+ * waits for it.
  */
 export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: IssueMapModalProps) {
   const { issues, links, assignees, isLoading, error, truncated, reload, setAssignees } =
@@ -428,7 +429,6 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           let opacity = 1;
           if (off) opacity = 0.06;
           else if (focus) opacity = hl ? 1 : 0.12;
-          const kind = KIND_STROKE[node.kind];
           return (
             // biome-ignore lint/a11y/noStaticElementInteractions: SVG issue box; keyboard users get the sidebar list
             <g
@@ -467,10 +467,9 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
                 width={MAP_NODE_W}
                 height={MAP_NODE_H}
                 rx={7}
-                fill={STATUS_FILL[node.status]}
-                stroke={kind.stroke}
+                fill={kindFill(node.kind)}
+                stroke={BORDER}
                 strokeWidth={sel ? 7 : 4}
-                strokeDasharray={kind.dash}
               />
               {node.status === "closed" && (
                 <>
@@ -618,8 +617,30 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             soon as any issue changes. Rebuild it with Reload. The live state is always GitHub.
           </div>
           <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Background = progress</b>
-            {STATUS_ORDER.map((status) => {
+            <b className="inline-block w-40 text-maestro-muted">Background = who takes it</b>
+            {KIND_ORDER.map((kind) => {
+              const c = count((n) => n.kind === kind);
+              return (
+                <LegendEntry
+                  key={kind}
+                  checked={!kindOff.has(kind)}
+                  label={KIND_META[kind].name}
+                  shown={c.shown}
+                  total={c.total}
+                  swatch={
+                    <i
+                      className="inline-block h-[18px] w-[18px] rounded-[5px] border-[3px] border-maestro-border"
+                      style={{ background: kindFill(kind) }}
+                    />
+                  }
+                  onToggle={() => setKindOff((s) => toggleIn(s, kind))}
+                />
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center">
+            <b className="inline-block w-40 text-maestro-muted">Icon = progress</b>
+            {STATUS_ORDER.filter((status) => status !== "closed").map((status) => {
               const c = count((n) => n.status === status);
               return (
                 <LegendEntry
@@ -628,38 +649,21 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
                   label={`${STATUS_META[status].icon} ${STATUS_META[status].name}`}
                   shown={c.shown}
                   total={c.total}
-                  swatch={
-                    <i
-                      className="inline-block h-[18px] w-[18px] rounded-[5px] border-[3px]"
-                      style={chipStyle(status)}
-                    />
-                  }
                   onToggle={() => setStatusOff((s) => toggleIn(s, status))}
                 />
               );
             })}
           </div>
           <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Border = who takes it</b>
-            {KIND_ORDER.map((kind) => {
-              const c = count((n) => n.kind === kind);
-              return (
-                <LegendEntry
-                  key={kind}
-                  checked={!kindOff.has(kind)}
-                  label={`${KIND_META[kind].icon} ${KIND_META[kind].name}`}
-                  shown={c.shown}
-                  total={c.total}
-                  swatch={
-                    <i
-                      className="inline-block h-[18px] w-[18px] rounded-[5px] border-[3px]"
-                      style={chipStyle(undefined, kind)}
-                    />
-                  }
-                  onToggle={() => setKindOff((s) => toggleIn(s, kind))}
-                />
-              );
-            })}
+            <b className="inline-block w-40 text-maestro-muted">Cross = closed</b>
+            <LegendEntry
+              checked={!statusOff.has("closed")}
+              label={STATUS_META.closed.name}
+              shown={count((n) => n.status === "closed").shown}
+              total={count((n) => n.status === "closed").total}
+              swatch={<ClosedSwatch />}
+              onToggle={() => setStatusOff((s) => toggleIn(s, "closed"))}
+            />
           </div>
           <div className="flex flex-wrap items-center">
             <b className="inline-block w-40 text-maestro-muted">Assignee</b>
@@ -703,6 +707,9 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
               />
               blocker still open
             </span>
+          </div>
+          <div className="mt-1 text-maestro-muted" data-testid="issue-map-encoding">
+            {ENCODING_EXPLANATION}
           </div>
           <div className="mt-1 text-maestro-muted" data-testid="issue-map-hint">
             {hint}
@@ -753,8 +760,8 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           <div className="my-0.5">
             <b>Progress</b>{" "}
             <span
-              className="inline-block rounded-full border-[3px] px-2 font-bold"
-              style={chipStyle(focusNode.status)}
+              data-testid="issue-map-tip-progress"
+              className="inline-block rounded-full border-[3px] border-maestro-border px-2 font-bold"
             >
               {STATUS_META[focusNode.status].icon} {STATUS_META[focusNode.status].name}
             </span>{" "}
@@ -763,10 +770,11 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           <div className="my-0.5">
             <b>Who takes it</b>{" "}
             <span
-              className="inline-block rounded-full border-[3px] px-2 font-bold"
-              style={chipStyle(undefined, focusNode.kind)}
+              data-testid="issue-map-tip-kind"
+              className="inline-block rounded-full border-[3px] border-maestro-border px-2 font-bold"
+              style={{ background: kindFill(focusNode.kind) }}
             >
-              {KIND_META[focusNode.kind].icon} {KIND_META[focusNode.kind].name}
+              {KIND_META[focusNode.kind].name}
             </span>{" "}
             <span className="text-maestro-muted">{KIND_META[focusNode.kind].meaning}</span>
           </div>
