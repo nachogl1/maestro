@@ -27,6 +27,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { usePendingLaunch } from "@/hooks/usePendingLaunch";
+import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
+import { useSlotLaunch } from "@/hooks/useSlotLaunch";
 import { useTerminalDragDrop } from "@/hooks/useTerminalDragDrop";
 import { useTerminalKeyboard } from "@/hooks/useTerminalKeyboard";
 import {
@@ -34,59 +37,26 @@ import {
   getBranchesWithWorktreeStatus,
   invalidateCurrentBranchCache,
 } from "@/lib/git";
-import {
-  type McpServerConfig,
-  removeOpenCodeMcpConfig,
-  removeSessionMcpConfig,
-  setSessionMcpServers,
-  writeOpenCodeMcpConfig,
-  writeSessionMcpConfig,
-} from "@/lib/mcp";
-import { checkFullDiskAccess, pathRequiresFDA } from "@/lib/permissions";
+import { type McpServerConfig, removeOpenCodeMcpConfig, removeSessionMcpConfig } from "@/lib/mcp";
 import {
   loadBranchConfig,
   type PluginConfig,
   removeSessionPluginConfig,
   type SkillConfig,
   saveBranchConfig,
-  setSessionPlugins,
-  setSessionSkills,
-  writeSessionPluginConfig,
 } from "@/lib/plugins";
 import { projectColorFor } from "@/lib/projectColor";
-import { samuraiHarvestArm, samuraiRevertLaunchLinePrompt } from "@/lib/samurai";
-import type { ShellFamily } from "@/lib/shellEscape";
 import { shellEscapePaths } from "@/lib/shellEscape";
-import {
-  registerSamuraiSuccessor,
-  samuraiSuccessorCliFlags,
-  successorLaunchImminent,
-} from "@/lib/spawnSession";
-import {
-  AI_CLI_CONFIG,
-  assignSessionBranch,
-  buildCliLaunchLine,
-  checkCliAvailable,
-  createSession,
-  killSession,
-  removeSessionHooksConfig,
-  spawnShell,
-  terminalShellFamily,
-  waitForTerminalReady,
-  writeSessionHooksConfig,
-  writeStdin,
-} from "@/lib/terminal";
-import { terminalArmInitialPrompt } from "@/lib/terminalPrompt";
+import { successorLaunchImminent } from "@/lib/spawnSession";
+import { killSession, removeSessionHooksConfig, writeStdin } from "@/lib/terminal";
 import { useProjectColors } from "@/lib/useProjectColors";
-import { cleanupSessionWorktree, prepareSessionWorktree } from "@/lib/worktreeManager";
+import { cleanupSessionWorktree } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
-import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
-import { useFDAStore } from "@/stores/useFDAStore";
 import { useMcpStore } from "@/stores/useMcpStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { usePluginStore } from "@/stores/usePluginStore";
 import type { AiMode } from "@/stores/useSessionStore";
-import { SAMURAI_TERMINAL_STATES, useSessionStore } from "@/stores/useSessionStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 import {
   type RepositoryInfo,
   useWorkspaceStore,
@@ -96,6 +66,7 @@ import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
 import { ParkedShelf } from "./ParkedShelf";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
+import { createEmptySlot, occupiedSlotCount } from "./slots";
 import {
   buildGridTree,
   collectSlotIds,
@@ -110,157 +81,12 @@ import {
 import { TerminalView } from "./TerminalView";
 import { SessionStatusDot, ThinkingIndicator } from "./ThinkingIndicator";
 
-/**
- * How many parked samurai transcripts one grid keeps mounted (issue #122).
- *
- * A parked tile stays MOUNTED — it renders `display: none`, so its
- * TerminalView and xterm scrollback live on — and since the cap no longer
- * bounds them (see `occupiedSlotCount`) nothing else reaps them: an overnight
- * run at 30-minute handoffs would accrue ~48 of them plus a shelf chip each.
- * The newest few are what anyone actually reads back, so the rest are
- * disposed (PR #131 review M5).
- */
-export const MAX_RETAINED_PARKED_SAMURAI_TILES = 3;
-
-/** The parked samurai terminal-state session ids among these slots, oldest
- *  first — session ids are assigned in launch order and never reused. */
-function parkedSamuraiSessionIds(slots: SessionSlot[]): number[] {
-  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
-  return slots
-    .flatMap((slot) => (slot.sessionId === null ? [] : [slot.sessionId]))
-    .filter((sessionId) => {
-      const info = samuraiBySessionId[sessionId];
-      return (
-        info !== undefined &&
-        SAMURAI_TERMINAL_STATES.has(info.state) &&
-        parkedSessionIds.includes(sessionId)
-      );
-    })
-    .sort((a, b) => a - b);
-}
-
-/**
- * How many of these slots count against `MAX_SESSIONS`.
- *
- * Parked samurai terminal-state tiles (issue #122) are dead weight: the PTY
- * is gone and only the transcript remains. A long autonomous run leaves one
- * per generation, so counting them would first drop a successor's launch
- * AFTER `consume` claimed it (silently stalling the run) and then make the
- * "+" button a silent no-op for the whole project. Both call sites — the
- * pending-launch claim and `addSession` — go through here so the exemption
- * cannot drift apart again (PR #131 review M4/F4).
- */
-function occupiedSlotCount(slots: SessionSlot[]): number {
-  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
-  return slots.filter((slot) => {
-    if (slot.sessionId === null) return true;
-    const info = samuraiBySessionId[slot.sessionId];
-    return !(
-      info !== undefined &&
-      SAMURAI_TERMINAL_STATES.has(info.state) &&
-      parkedSessionIds.includes(slot.sessionId)
-    );
-  }).length;
-}
+export { MAX_RETAINED_PARKED_SAMURAI_TILES } from "@/hooks/useSamuraiAutoPark";
 
 /** Stable empty arrays to avoid infinite re-render loops in Zustand selectors. */
 const EMPTY_MCP_SERVERS: McpServerConfig[] = [];
 const EMPTY_SKILLS: SkillConfig[] = [];
 const EMPTY_PLUGINS: PluginConfig[] = [];
-
-/**
- * Launch mutex to serialize session launches within the same project.
- * This prevents race conditions where multiple sessions share the same .mcp.json file.
- * Without worktrees, sessions can overwrite each other's MCP config before Claude CLI reads it.
- */
-/**
- * Whether a `writeStdin` rejection PROVES nothing reached the PTY (issue
- * #158). Only `SessionNotFound` does: it is raised before any byte is
- * written. `WriteFailed` covers a failed `flush` as well as a failed
- * `write_all` (`process_manager::write_stdin`), so it cannot rule out a line
- * that already landed, and a non-`PtyError` rejection rules out nothing at
- * all. Anything unproven leaves the launch-line claim standing.
- *
- * `WriteFailed` is deliberately not split finer, even though one of its three
- * causes — a poisoned writer lock — is strictly PRE-write and would be safe to
- * revert on. It is indistinguishable from the other two at this boundary, and
- * nothing is lost by treating it as unproven: with no bytes sent, claude never
- * launches, `SessionStarted` never fires, and the entry ends on the ordinary
- * `successor_no_start` ALERT. Letting the sweep report it beats widening a
- * rule whose failure mode is a double paste.
- */
-function writeReachedNothing(err: unknown): boolean {
-  if (!err || typeof err !== "object" || !("code" in err)) return false;
-  return (err as { code?: unknown }).code === "SessionNotFound";
-}
-
-/**
- * Hands a launch-line claim back to the typed route, reporting both ways it
- * can fail to take effect (issue #158). A `false` answer is NOT "nothing to
- * do": it also covers the entry having already been consumed by
- * `SessionStarted` on the launch-line route — audited as delivered, with
- * nothing actually typed — which only the 45s activity watch would otherwise
- * surface.
- */
-async function revertLaunchLineClaim(sessionId: number): Promise<void> {
-  try {
-    if (!(await samuraiRevertLaunchLinePrompt(sessionId))) {
-      console.warn(
-        `[Samurai] No launch-line claim was reverted for session ${sessionId} — it may already have been consumed as delivered`,
-      );
-    }
-  } catch (err) {
-    console.error("[Samurai] Failed to revert the launch-line claim:", err);
-  }
-}
-
-/**
- * The spawned shell's quoting family (issue #158), or `null` when the backend
- * cannot name it — including when the call itself fails. `null` is a refusal,
- * not an error: the caller keeps a route that needs no quoting.
- */
-async function shellFamilyOrNull(): Promise<ShellFamily | null> {
-  try {
-    return await terminalShellFamily();
-  } catch (err) {
-    console.error("[Samurai] Could not read the session shell family:", err);
-    return null;
-  }
-}
-
-const projectLaunchLocks = new Map<string, Promise<void>>();
-
-async function withProjectLock<T>(projectPath: string, fn: () => Promise<T>): Promise<T> {
-  // Wait for any pending launches to complete.
-  // Use a while loop because multiple waiters may wake up when a lock resolves.
-  // After waking, we must re-check if another waiter grabbed the lock first.
-  while (projectLaunchLocks.has(projectPath)) {
-    await projectLaunchLocks.get(projectPath);
-  }
-
-  // Now we're guaranteed to be the only one proceeding
-  // The Promise executor runs synchronously, so `resolve` is always assigned
-  // before this function can reach the `finally` block below.
-  let resolve!: () => void;
-  const newLock = new Promise<void>((r) => {
-    resolve = r;
-  });
-  projectLaunchLocks.set(projectPath, newLock);
-
-  try {
-    return await fn();
-  } finally {
-    resolve();
-    if (projectLaunchLocks.get(projectPath) === newLock) {
-      projectLaunchLocks.delete(projectPath);
-    }
-  }
-}
-
-/** Generates a unique ID for a new session slot. */
-function generateSlotId(): string {
-  return `slot-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
 
 /**
  * Move keyboard focus into a pane's xterm textarea. Double rAF: the caller
@@ -276,30 +102,6 @@ function focusSlotTextarea(slotId: string): void {
       textarea?.focus();
     });
   });
-}
-
-/** Creates a new empty session slot with default configuration. */
-function createEmptySlot(
-  mcpServers: McpServerConfig[] = [],
-  skills: SkillConfig[] = [],
-  plugins: PluginConfig[] = [],
-): SessionSlot {
-  return {
-    id: generateSlotId(),
-    mode: "Claude",
-    branch: null,
-    customName: "",
-    worktreeMode: "project",
-    sessionId: null,
-    worktreePath: null,
-    worktreeWarning: null,
-    enabledMcpServers: mcpServers.map((s) => s.name), // All enabled by default
-    enabledSkills: skills.map((s) => s.id), // All enabled by default
-    enabledPlugins: plugins.filter((p) => p.enabled_by_default).map((p) => p.id),
-    mcpDefaultsApplied: mcpServers.length > 0,
-    skillsDefaultsApplied: skills.length > 0,
-    pluginsDefaultsApplied: plugins.length > 0,
-  };
 }
 
 /**
@@ -398,20 +200,6 @@ interface TerminalGridProps {
  * - When all sessions are killed by the user, an auto-respawn effect creates
  *   a fresh slot so the user is never left with an empty grid.
  */
-/**
- * Message of a backend `PtyError` (`{code, message}` — `src-tauri/src/core/error.rs`),
- * falling back to whatever shape actually arrived. The structured payload is
- * the only thing that names the real cause of a failed spawn.
- */
-function describePtyError(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const { code, message } = err as { code?: unknown; message?: unknown };
-    const text = typeof message === "string" ? message : String(message);
-    return typeof code === "string" ? `${text} (${code})` : text;
-  }
-  return err instanceof Error ? err.message : String(err);
-}
-
 export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(function TerminalGrid(
   {
     projectPath,
@@ -991,451 +779,17 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     prevSlotsRef.current = slots;
   }, [slots, debouncedSaveBranchConfig]);
 
-  /**
-   * Inner implementation of launchSlot, called within the project lock.
-   * Spawns a shell with the configured settings. If a branch is selected,
-   * prepares a worktree for that branch first.
-   */
-  const launchSlotInner = useCallback(
-    async (slotId: string) => {
-      const slot = slotsRef.current.find((s) => s.id === slotId);
-      if (!slot || slot.sessionId !== null) return;
-
-      try {
-        // Save branch config before launching (ensures it's persisted)
-        if (effectiveRepoPath && slot.branch) {
-          await saveBranchConfig(effectiveRepoPath, slot.branch, {
-            enabled_plugins: slot.enabledPlugins,
-            enabled_skills: slot.enabledSkills,
-            enabled_mcp_servers: slot.enabledMcpServers,
-          }).catch((err) => {
-            console.error("Failed to save branch config on launch:", err);
-            // Non-fatal - continue with launch
-          });
-        }
-
-        // Determine the working directory
-        // If a branch is selected, prepare a worktree first
-        // For multi-repo workspaces, use effectiveRepoPath for git operations
-        let workingDirectory = slot.workingDirOverride ?? effectiveRepoPath ?? projectPath;
-        let worktreePath: string | null = null;
-        let worktreeWarning: string | null = null;
-        let detectedBranch: string | null = null;
-
-        if (
-          slot.workingDirOverride &&
-          slot.workingDirOverride !== (effectiveRepoPath ?? projectPath)
-        ) {
-          // Recovered worktree from the History tab: run there as-is, no
-          // preparation. Close-time deletion of a hand-made worktree is
-          // prevented by the backend's managed-base guard.
-          worktreePath = slot.workingDirOverride;
-        } else if (effectiveRepoPath && slot.worktreeMode !== "project" && !slot.resumeSessionId) {
-          // resumeSessionId pins the project dir: `claude --resume` cannot
-          // find the conversation from a worktree (see updateSlotResumeSession).
-          try {
-            const result = await prepareSessionWorktree(
-              effectiveRepoPath,
-              slot.branch ?? null,
-              worktreeBasePath,
-              slot.worktreeMode === "new",
-            );
-            workingDirectory = result.working_directory;
-            worktreePath = result.worktree_path;
-            worktreeWarning = result.warning;
-            detectedBranch = result.branch;
-
-            if (worktreeWarning) {
-              console.error(
-                `[Worktree] Warning for branch "${slot.branch ?? "auto"}": ${worktreeWarning}`,
-              );
-            }
-            if (worktreePath) {
-              refreshBranches();
-            }
-          } catch (err) {
-            console.warn(
-              `[Worktree] Failed to prepare worktree, falling back to project path:`,
-              err,
-            );
-            workingDirectory = effectiveRepoPath;
-          }
-        }
-
-        // Generate project hash for MCP status identification
-        // This is passed as MAESTRO_PROJECT_HASH env var to enable process-isolated
-        // session identification (avoiding .mcp.json race conditions)
-        let envVars: Record<string, string> | undefined;
-        if (projectPath) {
-          const projectHash = await invoke<string>("generate_project_hash", { projectPath });
-          envVars = { MAESTRO_PROJECT_HASH: projectHash };
-        }
-
-        // Spawn the shell in the correct directory (worktree or project path)
-        // MAESTRO_SESSION_ID is automatically injected by the backend
-        const sessionId = await spawnShell(workingDirectory, envVars);
-
-        // Register the session in SessionManager (required before assigning branch)
-        if (projectPath) {
-          const sessionConfig = await createSession(
-            sessionId,
-            slot.mode,
-            projectPath,
-            workingDirectory,
-          );
-
-          // Apply optional custom window name. Empty/whitespace is treated as "no
-          // custom name" — the backend normalizes it back to None.
-          const trimmedName = slot.customName.trim();
-          let finalName: string | null | undefined = sessionConfig.name;
-          if (trimmedName) {
-            try {
-              const renamed = await invoke<{ name?: string | null }>("rename_session", {
-                sessionId,
-                name: trimmedName,
-              });
-              finalName = renamed.name;
-            } catch (err) {
-              console.warn(`[Session] Failed to set custom name for session ${sessionId}:`, err);
-            }
-          }
-
-          // Add project to MCP status monitor for polling status updates
-          await invoke("add_mcp_project", { projectPath });
-          // Add session to store directly (don't refetch all sessions to avoid status reset)
-          // Status is frontend-owned (issue #134): a freshly registered
-          // session starts Idle and moves on the MCP status stream.
-          useSessionStore.getState().addSession({
-            ...sessionConfig,
-            name: finalName,
-            status: "Idle",
-          });
-        }
-
-        // Assign the branch to the session so the header displays it.
-        // Use the explicitly selected branch, or the one detected from the worktree.
-        const effectiveBranch = slot.branch ?? detectedBranch;
-        if (effectiveBranch && worktreePath) {
-          const updatedConfig = await assignSessionBranch(sessionId, effectiveBranch, worktreePath);
-          useSessionStore.getState().updateSession(sessionId, {
-            branch: updatedConfig.branch,
-            worktree_path: updatedConfig.worktree_path,
-          });
-        } else if (effectiveBranch) {
-          useSessionStore.getState().updateSession(sessionId, { branch: effectiveBranch });
-        }
-
-        // Save enabled MCP servers for this session
-        if (projectPath) {
-          await setSessionMcpServers(projectPath, sessionId, slot.enabledMcpServers);
-        }
-
-        // Save enabled skills and plugins for this session
-        if (projectPath) {
-          await setSessionSkills(projectPath, sessionId, slot.enabledSkills);
-          await setSessionPlugins(projectPath, sessionId, slot.enabledPlugins);
-        }
-
-        // Update slot state FIRST to mount TerminalView and initialize xterm.js.
-        // This MUST happen before sending any commands to the PTY, otherwise
-        // xterm.js won't be listening when output arrives and it will be lost.
-        // This is also critical because CLIs like Codex send DSR (cursor position)
-        // queries on startup, and xterm.js must be mounted to respond to them.
-        setSlots((prev) =>
-          prev.map((s) =>
-            s.id === slotId ? { ...s, sessionId, worktreePath, worktreeWarning } : s,
-          ),
-        );
-
-        // Register session with the project
-        if (tabId) {
-          addSessionToProject(tabId, sessionId);
-        }
-
-        // Auto-launch AI CLI after shell initializes
-        // IMPORTANT: For Claude mode, we must write MCP config and launch CLI atomically
-        // to prevent race conditions when multiple sessions launch without worktrees.
-        // Without worktrees, all sessions share the same .mcp.json file, so we must:
-        // 1. Write .mcp.json for this session
-        // 2. Launch CLI immediately (before any other session can overwrite .mcp.json)
-        // 3. Wait for CLI to read the config
-        if (slot.mode !== "Plain") {
-          const cliConfig = AI_CLI_CONFIG[slot.mode];
-          if (cliConfig.command) {
-            const isAvailable = await checkCliAvailable(cliConfig.command);
-
-            if (isAvailable) {
-              // Write MCP config IMMEDIATELY before launching CLI
-              // This allows the CLI to discover MCP servers including the Maestro status server
-              if (workingDirectory && slot.mode === "Claude") {
-                try {
-                  await writeSessionMcpConfig(
-                    workingDirectory,
-                    sessionId,
-                    projectPath ?? workingDirectory,
-                    slot.enabledMcpServers,
-                  );
-                } catch (err) {
-                  console.error("Failed to write MCP config:", err);
-                  // Non-fatal - continue with CLI launch, MCP servers just won't be available
-                }
-
-                // Write plugin enabled/disabled state to settings.local.json
-                // Uses enabledPlugins format (not the legacy plugins array)
-                try {
-                  await writeSessionPluginConfig(
-                    workingDirectory,
-                    projectPath ?? workingDirectory,
-                    slot.enabledPlugins,
-                  );
-                } catch (err) {
-                  console.error("Failed to write plugin config:", err);
-                  // Non-fatal - continue with CLI launch
-                }
-
-                // Write hooks config for Claude sessions
-                // This configures Claude Code to POST hook events back to Maestro's status server
-                try {
-                  await writeSessionHooksConfig(workingDirectory, sessionId);
-                } catch (err) {
-                  console.warn("Failed to write hooks config:", err);
-                  // Non-fatal: hooks are enhancement, session can work without them
-                }
-              } else if (workingDirectory && slot.mode === "OpenCode") {
-                // Write OpenCode MCP config (opencode.json format)
-                try {
-                  await writeOpenCodeMcpConfig(
-                    workingDirectory,
-                    sessionId,
-                    projectPath ?? workingDirectory,
-                    slot.enabledMcpServers,
-                  );
-                } catch (err) {
-                  console.error("Failed to write OpenCode MCP config:", err);
-                  // Non-fatal - continue with CLI launch
-                }
-
-                // Write plugin enabled/disabled state to settings.local.json
-                try {
-                  await writeSessionPluginConfig(
-                    workingDirectory,
-                    projectPath ?? workingDirectory,
-                    slot.enabledPlugins,
-                  );
-                } catch (err) {
-                  console.error("Failed to write plugin config:", err);
-                  // Non-fatal - continue with CLI launch
-                }
-              }
-
-              // Wait for xterm.js to mount and start listening for PTY output
-              // This ensures we don't send CLI commands before the terminal is ready
-              // (which would cause output to be lost since Tauri events aren't buffered)
-              try {
-                await waitForTerminalReady(sessionId);
-              } catch (err) {
-                console.warn("Terminal ready timeout, proceeding anyway:", err);
-              }
-
-              // Brief delay for shell to initialize
-              await new Promise((resolve) => setTimeout(resolve, 100));
-
-              // Build CLI command with user-configured flags. A samurai
-              // successor (issue #55) additionally forces skip-permissions —
-              // an autonomous generation cannot answer permission prompts —
-              // and carries the run config's model preference (review F4).
-              const cliFlags = useCliSettingsStore.getState().getFlags(slot.mode);
-              const effectiveFlags = slot.samurai
-                ? samuraiSuccessorCliFlags(cliFlags, slot.samurai.model)
-                : cliFlags;
-              // Issue #158: a gen-1 launch also carries its brief POINTER on
-              // this very line, as a quoted positional initial prompt, so the
-              // instruction that starts the run is submitted WITH the launch
-              // instead of typed into claude's REPL afterwards. The quoting
-              // family comes from the backend — the shell it actually spawns,
-              // not a guess from the OS — and an unavailable answer simply
-              // keeps the prompt off the line.
-              const launchPrompt = slot.samurai?.launchPrompt ?? null;
-              const shellFamily = launchPrompt ? await shellFamilyOrNull() : null;
-              let launchLine = buildCliLaunchLine(
-                slot.mode,
-                effectiveFlags,
-                slot.resumeSessionId ?? undefined,
-                launchPrompt,
-                shellFamily,
-              );
-              let launchPromptOnLine = launchLine?.launchPromptDelivered ?? false;
-
-              // Samurai successor: register under supervision BEFORE the CLI
-              // launches, so the backend's verify-ritual delivery is armed
-              // strictly ahead of claude's SessionStart hook. Registration
-              // failure is logged, not fatal — the session still launches and
-              // the backend's successor_no_start ALERT surfaces the gap.
-              //
-              // Issue #158: the pointer may only stay on the line if the
-              // backend says it ARMED the launch-line route. A refusal
-              // resolves normally (it refuses a claim it never offered), and a
-              // throw says nothing either way — read as acceptance, both write
-              // a line carrying a pointer the backend is still going to type,
-              // delivering the brief TWICE. Either answer takes it back off.
-              //
-              // The mirror case is accepted, not unhandled: if the backend
-              // DID arm the route but the reply is lost, the pointer is
-              // stripped here and neither route delivers. That is exactly
-              // what the activity-only DeliveredWatch exists for — the
-              // session starts, no turn follows, and it raises
-              // `submit_unconfirmed`. A silent no-delivery is impossible; a
-              // double paste, had this branch guessed the other way, would
-              // not even be visible.
-              if (slot.samurai) {
-                let armed = false;
-                try {
-                  armed = await registerSamuraiSuccessor(
-                    sessionId,
-                    slot.samurai,
-                    launchPromptOnLine,
-                  );
-                } catch (err) {
-                  console.error("[Samurai] Failed to register successor session:", err);
-                }
-                if (launchPromptOnLine && !armed) {
-                  console.warn(
-                    "[Samurai] The backend did not arm the launch-line route — typing the pointer instead",
-                  );
-                  launchLine = buildCliLaunchLine(
-                    slot.mode,
-                    effectiveFlags,
-                    slot.resumeSessionId ?? undefined,
-                    null,
-                    shellFamily,
-                  );
-                  launchPromptOnLine = false;
-                }
-              }
-              const cliCommand = launchLine?.command ?? null;
-
-              // Harvest triage launch (issue #98): arm the backend BEFORE
-              // the CLI launches, so the journal-prompt injection gate is
-              // set strictly ahead of claude's SessionStart hook. Failure is
-              // logged, not fatal — the terminal still opens, just without
-              // the injected prompt.
-              if (slot.harvest) {
-                try {
-                  await samuraiHarvestArm(sessionId);
-                } catch (err) {
-                  // Surfaced, not just logged: the Journal card has already
-                  // told the user the entries will be injected here, so a
-                  // silent failure leaves them believing the journal was
-                  // triaged while the terminal sits at an empty prompt.
-                  console.error("[Harvest] Failed to arm the triage prompt:", err);
-                  setError(
-                    `Harvest triage prompt was not armed (${err instanceof Error ? err.message : String(err)}) — the journal entries were NOT injected`,
-                  );
-                }
-              }
-
-              // Generic initial prompt: same gate as harvest — arm the
-              // backend BEFORE the CLI launches so the injection is set
-              // strictly ahead of claude's SessionStart hook, which is what
-              // types the prompt in. Claude only: no other CLI posts that
-              // hook, so an armed non-Claude session would never inject.
-              // Failure is logged, not fatal — the terminal still opens, the
-              // user just types the prompt themselves.
-              if (slot.initialPrompt && slot.mode === "Claude") {
-                try {
-                  await terminalArmInitialPrompt(
-                    sessionId,
-                    slot.initialPrompt,
-                    slot.briefDir,
-                    slot.briefStem,
-                    slot.prRun,
-                  );
-                } catch (err) {
-                  console.error("[InitialPrompt] Failed to arm the initial prompt:", err);
-                }
-              }
-
-              // Send CLI launch command
-              try {
-                await writeStdin(sessionId, `${cliCommand}\r`);
-              } catch (err) {
-                // Issue #158: the claim above told the backend the pointer
-                // went out on this line. Hand the typed delivery back — but
-                // ONLY when the error proves nothing reached the shell.
-                // `writeStdin` also rejects after `write_all` succeeded (a
-                // failing `flush`, a join error), and there the whole line is
-                // already in the PTY: reverting would type the pointer a
-                // second time on SessionStarted. An unnecessary ALERT on a
-                // delivered run is cheap; a double paste corrupts it.
-                if (launchPromptOnLine && writeReachedNothing(err)) {
-                  await revertLaunchLineClaim(sessionId);
-                }
-                throw err;
-              }
-
-              // Brief delay for CLI initialization.
-              // With session-specific MCP server names (maestro-1, maestro-2, etc.),
-              // we no longer have race conditions on .mcp.json, so we only need
-              // a minimal delay for general CLI startup.
-              await new Promise((resolve) => setTimeout(resolve, 500));
-            } else {
-              console.warn(
-                `CLI '${cliConfig.command}' not found. Install with: ${cliConfig.installHint}`,
-              );
-            }
-          }
-        }
-      } catch (err) {
-        console.error("Failed to spawn shell:", err);
-        // `spawn_shell` returns a structured `PtyError {code, message}`; the
-        // fixed string threw away the only thing that says WHY (a missing
-        // shell, a permission denial, a vanished working directory).
-        setError(`Failed to start terminal session: ${describePtyError(err)}`);
-      }
-    },
-    [projectPath, effectiveRepoPath, worktreeBasePath, tabId, addSessionToProject, refreshBranches],
-  );
-
-  /**
-   * Launches a single slot by spawning a shell with the configured settings.
-   *
-   * NOTE: Uses withProjectLock to serialize launches within the same project.
-   * This prevents race conditions where multiple sessions share the same .mcp.json file.
-   */
-  const launchSlot = useCallback(
-    async (slotId: string) => {
-      const slot = slotsRef.current.find((s) => s.id === slotId);
-      if (!slot || slot.sessionId !== null) return;
-
-      // Gate on FDA: if the project is in a TCC-protected directory, check
-      // Full Disk Access before any Rust-side filesystem operations.
-      if (projectPath && pathRequiresFDA(projectPath)) {
-        const hasAccess = await checkFullDiskAccess();
-        if (!hasAccess) {
-          useFDAStore.getState().requireAccess(projectPath, () => launchSlot(slotId));
-          return;
-        }
-      }
-
-      // Serialize launches within the same project to prevent .mcp.json race conditions
-      const lockPath = projectPath ?? "no-project";
-      await withProjectLock(lockPath, async () => {
-        await launchSlotInner(slotId);
-      });
-    },
-    [projectPath, launchSlotInner],
-  );
-
-  /**
-   * Launches all unlaunched slots sequentially.
-   * Note: launchSlot already uses withProjectLock, so launches are serialized.
-   */
-  const launchAll = useCallback(async () => {
-    const unlaunchedSlots = slotsRef.current.filter((s) => s.sessionId === null);
-    for (const slot of unlaunchedSlots) {
-      await launchSlot(slot.id);
-    }
-  }, [launchSlot]);
+  const { launchSlot, launchAll } = useSlotLaunch({
+    projectPath,
+    effectiveRepoPath,
+    worktreeBasePath,
+    tabId,
+    addSessionToProject,
+    refreshBranches,
+    slotsRef,
+    setSlots,
+    setError,
+  });
 
   /**
    * Closing/removing the zoomed pane keeps the user in zoom-in: the next
@@ -2053,191 +1407,30 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     ],
   );
 
-  // ── History-tab / samurai-successor launches ─────────────────────
-  // The sidebar History tab (and the samurai successor spawn listener)
-  // queues a pre-configured launch (resume id and/or worktree dir) in
-  // usePendingLaunchStore because this grid may not even be mounted when
-  // the request lands. Consume it here: configure a slot, then let the
-  // effect below launch it once the slot has committed to state. One claim
-  // per run — a FIFO store (finding B) with several entries for this tab
-  // re-triggers this effect (the selector returns the next head entry) and
-  // each claim gets its own slot.
-  const pendingLaunch = usePendingLaunchStore((s) =>
-    tabId ? (s.pending.find((p) => p.tabId === tabId) ?? null) : null,
-  );
+  // History-tab / samurai-successor launches: consume the pending-launch
+  // store and launch each claimed slot once it has committed to state.
+  usePendingLaunch({
+    tabId,
+    slots,
+    slotsRef,
+    autoLaunchSlotIdsRef,
+    launchingSlotIdsRef,
+    mcpServers,
+    skills,
+    plugins,
+    orderedSlotIds,
+    launchSlot,
+    setSlots,
+    setLayoutTree,
+    setFocusedSlotId,
+    setError,
+  });
 
-  useEffect(() => {
-    if (!pendingLaunch || !tabId) return;
-    const launch = usePendingLaunchStore.getState().consume(tabId);
-    if (!launch) return;
-
-    // Reuse the pristine initial slot when it's the only one — unless an
-    // earlier claim already configured it and is merely waiting for its
-    // deferred launch (finding B: two claims must never share one slot);
-    // otherwise append.
-    const current = slotsRef.current;
-    const reusable =
-      current.length === 1 &&
-      current[0].sessionId === null &&
-      !autoLaunchSlotIdsRef.current.includes(current[0].id) &&
-      !launchingSlotIdsRef.current.has(current[0].id)
-        ? current[0]
-        : null;
-    // Parked samurai terminal-state tiles do not count — see
-    // `occupiedSlotCount`, shared with `addSession`.
-    if (!reusable && occupiedSlotCount(current) >= MAX_SESSIONS) {
-      // The claim is consumed by now, so the launch is gone: say what did
-      // not happen rather than "cannot resume" — this path also carries
-      // harvest triage and samurai launches, whose own panels have already
-      // reported success.
-      setError(
-        `Could not open the requested session: maximum of ${MAX_SESSIONS} sessions per project — close one and try again`,
-      );
-      return;
-    }
-    const base = reusable ?? createEmptySlot(mcpServers, skills, plugins);
-    const slot: SessionSlot = {
-      ...base,
-      mode: launch.mode,
-      branch: launch.branch,
-      resumeSessionId: launch.resumeSessionId,
-      workingDirOverride: launch.workingDirOverride,
-      // Samurai successor launches (issue #55) name their session and carry
-      // the registration metadata; History launches leave both unset.
-      customName: launch.customName ?? base.customName,
-      samurai: launch.samurai ?? null,
-      // Harvest triage launches (issue #98) arm the backend's journal
-      // prompt injection right before the CLI launches.
-      harvest: launch.harvest ?? false,
-      // Generic initial prompt (any caller): armed right before the CLI
-      // launches, typed into the PTY on the session's first SessionStarted.
-      initialPrompt: launch.initialPrompt ?? null,
-      // Where a long initial prompt is staged as a brief file (issue #138).
-      briefDir: launch.briefDir ?? null,
-      briefStem: launch.briefStem ?? null,
-      // PR-review launches record themselves at the same hop (issue #139).
-      prRun: launch.prRun ?? null,
-      // The History tab always names the exact directory to run in. Reusing the
-      // pristine slot would otherwise inherit its worktreeMode, and any mode but
-      // "project" sends launchSlotInner into prepareSessionWorktree — moving the
-      // session into a worktree where `claude --resume` cannot find the session.
-      worktreeMode: "project",
-    };
-    autoLaunchSlotIdsRef.current = [...autoLaunchSlotIdsRef.current, slot.id];
-    // Advance slotsRef EAGERLY, before the setSlots below (bug: a samurai
-    // launch opened an unsupervised terminal in the main checkout, and the
-    // backend re-emitted 180s later). On the grid's MOUNT commit this effect
-    // and the auto-launch effect below run in the SAME passive-effect flush:
-    // React cannot re-render between them, so the ref sync at line 574 has
-    // not run and launchSlot would read the PRISTINE slot — project dir, no
-    // samurai payload, no registration. The next commit's sync re-derives
-    // the ref from state, so an eager advance is self-healing.
-    //
-    // The setSlots calls stay FUNCTIONAL updaters on purpose: replacing them
-    // with this ref-derived array would clobber a concurrent functional
-    // update (launchSlotInner writes sessionId into another in-flight slot).
-    slotsRef.current = reusable
-      ? slotsRef.current.map((s) => (s.id === reusable.id ? slot : s))
-      : slotsRef.current.some((s) => s.id === slot.id)
-        ? slotsRef.current
-        : [...slotsRef.current, slot];
-    if (reusable) {
-      setSlots((prev) => prev.map((s) => (s.id === reusable.id ? slot : s)));
-    } else {
-      // Dedupe by id instead of re-checking MAX_SESSIONS: the cap was already
-      // enforced against current state above, and a refusal here would strand
-      // the claim registered in autoLaunchSlotIdsRef forever (nothing clears a
-      // claim whose slot never appears), permanently latching
-      // successorLaunchImminent. A pathological same-batch double-claim now
-      // overshoots the cap by one instead — transient and recoverable.
-      setSlots((prev) => (prev.some((s) => s.id === slot.id) ? prev : [...prev, slot]));
-      setLayoutTree(() => buildGridTree([...orderedSlotIds, slot.id]));
-    }
-    setFocusedSlotId(slot.id);
-  }, [pendingLaunch, tabId, mcpServers, skills, plugins, orderedSlotIds]);
-
-  // Launch queued slots only after they exist in committed state — calling
-  // launchSlot in the effect above would race slotsRef against the setSlots.
-  useEffect(() => {
-    const ids = autoLaunchSlotIdsRef.current;
-    if (ids.length === 0) return;
-    const ready = ids.filter((id) => slots.some((s) => s.id === id));
-    if (ready.length === 0) return;
-    autoLaunchSlotIdsRef.current = ids.filter((id) => !ready.includes(id));
-    // Hand the claim from the queued marker to the in-flight one in the same
-    // statement — a slot must never be unmarked while its launch is running,
-    // or the reuse guard treats it as pristine. `launchSlot` always settles
-    // (withProjectLock releases in a finally, launchSlotInner swallows its
-    // own errors), so the marker cannot latch.
-    for (const id of ready) {
-      launchingSlotIdsRef.current.add(id);
-      void launchSlot(id).finally(() => launchingSlotIdsRef.current.delete(id));
-    }
-  }, [slots, launchSlot]);
-
-  // Samurai kills (issue #55), parks (issue #60) and deaths (issue #44):
-  // once a session reaches a terminal supervisor state (KILLED/PARKED/DEAD,
-  // `SAMURAI_TERMINAL_STATES`) the session is announced on the
-  // samurai-supervisor-event channel. No PTY-exit event exists and terminal
-  // teardown is otherwise always frontend-initiated, so without this the
-  // tile would linger, live, forever. Per issue #122's decided policy this
-  // reuses the EXISTING park mechanism (`handlePark`, the same one the P
-  // button drives) rather than closing the tile: the terminal moves into the
-  // footer parking tray, and its transcript stays reachable by unparking it
-  // — resuming is always a fresh spawn either way, so nothing is lost by
-  // keeping the old terminal around instead of destroying it.
-  //
-  // Deliberately placed AFTER the pending-launch consume/launch effects
-  // (fresh-eyes finding A): effects run in definition order, so when a
-  // KILLED update and the successor's queued launch land in the same commit,
-  // the consume effect claims and appends the successor slot first.
-  const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
-  // One-shot guard (PR #131 review H2): the effect re-runs whenever
-  // `parkedSet` changes, and the samurai entry keeps its terminal state
-  // forever — so a user unpark from the tray would immediately re-trigger
-  // the park (and a redundant re-kill) without this. Session ids are never
-  // reused (resume is always a fresh spawn), so once handled is handled.
-  const samuraiAutoParkedSessionIdsRef = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    for (const slot of slotsRef.current) {
-      if (slot.sessionId === null) continue;
-      if (samuraiAutoParkedSessionIdsRef.current.has(slot.sessionId)) continue;
-      const info = samuraiBySessionId[slot.sessionId];
-      if (info && SAMURAI_TERMINAL_STATES.has(info.state)) {
-        samuraiAutoParkedSessionIdsRef.current.add(slot.sessionId);
-        // The replicator/parker paths already tore the PTY down, and a DEAD
-        // session's process is already gone by definition — but the Phase-2
-        // circuit breaker (samurai_progress.rs) only transitions to PARKED,
-        // leaving the PTY running. Kill it there so no path can orphan a
-        // live agent running with --dangerously-skip-permissions; skip the
-        // redundant IPC call for DEAD, whose process is confirmed gone.
-        //
-        // The kill is decided by the SUPERVISOR STATE alone, never by
-        // `parkedSet` (PR #131 review H1): a tile the user already parked
-        // with the P button still has a LIVE PTY — park is CSS-only — so
-        // skipping it there is exactly the case that orphans an agent.
-        // The one-shot ref above is what stops a redundant re-kill.
-        if (info.state !== "DEAD") {
-          killSession(slot.sessionId).catch(console.error);
-        }
-        // Only the tile move is conditional: parking an already-parked tile
-        // would steal zoom/focus from wherever the user moved them.
-        if (!parkedSet.has(slot.sessionId)) {
-          handlePark(slot.id);
-        }
-      }
-    }
-    // Dispose everything past the retention cap, oldest first: a parked tile
-    // is still mounted, so an unbounded run would hoard a TerminalView + xterm
-    // buffer per generation. `keepDirArtifacts` is essential — the worktree,
-    // MCP and hooks config belong to the RUN, which the next generation is
-    // still working in.
-    const retired = parkedSamuraiSessionIds(slotsRef.current);
-    const excess = retired.length - MAX_RETAINED_PARKED_SAMURAI_TILES;
-    for (const sessionId of retired.slice(0, Math.max(0, excess))) {
-      handleKill(sessionId, { keepDirArtifacts: true });
-    }
-  }, [samuraiBySessionId, parkedSet, handlePark, handleKill]);
+  // Deliberately called AFTER usePendingLaunch (fresh-eyes finding A):
+  // effects run in definition order, so when a KILLED update and the
+  // successor's queued launch land in the same commit, the consume effect
+  // claims and appends the successor slot first.
+  useSamuraiAutoPark({ slotsRef, parkedSet, handlePark, handleKill });
 
   // Handle zoom toggle for a slot
   const handleToggleZoom = useCallback(
