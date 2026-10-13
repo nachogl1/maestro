@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { homeDir } from "@tauri-apps/api/path";
 
 /** Worktree info from the backend. */
 export interface WorktreeInfo {
@@ -23,51 +22,6 @@ export interface WorktreePreparationResult {
   created: boolean;
   /** Warning message if something unexpected happened but we recovered. */
   warning: string | null;
-}
-
-/**
- * Generates a hash from a string for creating unique worktree paths.
- */
-function hashString(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  return Math.abs(hash).toString(16).slice(0, 8);
-}
-
-/**
- * Sanitizes a branch name for use in filesystem paths.
- */
-function sanitizeBranch(branch: string): string {
-  return branch.replace(/[^a-zA-Z0-9_-]/g, "-");
-}
-
-/**
- * Gets the base directory for worktrees.
- * Uses ~/.claude-maestro/worktrees/
- */
-async function getWorktreeBaseDir(): Promise<string> {
-  const home = await homeDir();
-  return `${home}.claude-maestro/worktrees`;
-}
-
-/**
- * Calculates the worktree path for a given repo and branch.
- *
- * Path format: ~/.claude-maestro/worktrees/{repoHash}/{sanitizedBranch}/
- *
- * @param repoPath - The path to the main repository
- * @param branch - The branch name
- * @returns The worktree path
- */
-async function getWorktreePath(repoPath: string, branch: string): Promise<string> {
-  const baseDir = await getWorktreeBaseDir();
-  const repoHash = hashString(repoPath);
-  const sanitizedBranch = sanitizeBranch(branch);
-  return `${baseDir}/${repoHash}/${sanitizedBranch}`;
 }
 
 /**
