@@ -150,16 +150,24 @@ describe("IssueMapModal", () => {
     });
   });
 
-  it("warns in the header when the fetch hit the issue limit", async () => {
+  it("warns in the header and in the saved HTML when the fetch hit the issue limit", async () => {
     const many = Array.from({ length: MAP_ISSUE_LIMIT }, (_, i) => buildIssue({ number: i + 1 }));
     mockBackend({ issues: many });
+    useGitHubStore.setState({ authStatus: { logged_in: true, username: "alice", scopes: [] } });
+    vi.mocked(save).mockResolvedValue("C:/exports/map.html");
     renderModal();
     await screen.findByTestId("issue-node-1");
-    expect(
-      screen.getByText(
-        `⚠ Showing the first ${MAP_ISSUE_LIMIT} issues, links beyond it are dropped.`,
-      ),
-    ).toBeInTheDocument();
+    const warning = `⚠ Showing the first ${MAP_ISSUE_LIMIT} issues, links beyond it are dropped.`;
+    expect(screen.getByText(warning)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save HTML" }));
+    await waitFor(() =>
+      expect(mockedInvoke).toHaveBeenCalledWith("export_issue_map", expect.anything()),
+    );
+    const call = mockedInvoke.mock.calls.find((c) => c[0] === "export_issue_map");
+    expect((call?.[1] as { content: string }).content).toContain(
+      `<div id="limit">${warning}</div>`,
+    );
   });
 
   it("prints label chips on the box", async () => {
@@ -353,6 +361,7 @@ describe("IssueMapModal", () => {
     );
     expect(content).toContain('data-id="3"');
     expect(content).toContain("Build the canvas");
+    expect(content).not.toContain('id="limit"');
     // The login already in the store is used; no extra auth call.
     expect(mockedInvoke).not.toHaveBeenCalledWith("github_auth_status", expect.anything());
   });

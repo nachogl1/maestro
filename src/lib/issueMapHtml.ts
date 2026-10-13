@@ -11,6 +11,7 @@
 
 import {
   descriptionText,
+  HINT,
   type IssueMap,
   type IssueMapKind,
   type IssueMapNode,
@@ -18,6 +19,7 @@ import {
   KIND_META,
   KIND_ORDER,
   LEVEL_EXPLANATION,
+  LIMIT_WARNING,
   MAP_BAND_Y,
   MAP_CHIP_FONT,
   MAP_CHIP_H,
@@ -39,6 +41,8 @@ export interface IssueMapHtmlOptions {
   createdBy: string;
   /** When it was saved, already formatted for people. */
   createdAt: string;
+  /** True when the fetch hit the issue limit, so the map may be missing issues. */
+  truncated?: boolean;
 }
 
 /** The per-issue data the embedded script needs for tooltips and filters. */
@@ -81,10 +85,6 @@ const scriptJson = (value: unknown): string =>
     .replace(/</g, "\\u003c")
     .replace(/\u2028|\u2029/g, " ");
 
-const HINT =
-  "Hover an issue to see its chain and a tooltip. Click to pin, double-click to open it on GitHub. " +
-  "Click a legend entry to hide or show that type; each shows shown/total.";
-
 // Maestro palette (src/styles/globals.css), inlined so the file stands alone.
 const CSS = `
 :root{--bg:#0d0d10;--surface:#121316;--card:#18191c;--border:#26262c;--text:#e8e8ec;--muted:#82828e;--blue:#3b82f6;--green:#3fb950;--red:#dc2626;--yellow:#eab308}
@@ -94,6 +94,7 @@ header{padding:12px 24px;background:var(--surface);border-bottom:1px solid var(-
 h1{font-size:16px;font-weight:600;margin:0 0 6px}
 h1 .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
 #banner{background:rgba(234,179,8,.1);color:var(--yellow);border:1px solid rgba(234,179,8,.4);border-radius:6px;padding:6px 12px;margin:0 0 8px;font-size:12px}
+#limit{color:var(--yellow);font-size:12px;margin:0 0 8px}
 .leg{font-size:12px}.leg span{display:inline-block;margin-right:14px;margin-bottom:3px}
 .leg i{display:inline-block;width:18px;height:18px;border-radius:5px;vertical-align:-3px;margin-right:4px;border:3px solid var(--border);font-style:normal;background:transparent}
 .leg b.ax{display:inline-block;width:160px;color:var(--muted);font-weight:700}
@@ -213,7 +214,7 @@ function nodeSvg(node: IssueMapNode): string {
 
 /** Render the map as one standalone HTML document. */
 export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): string {
-  const { repo, createdBy, createdAt } = options;
+  const { repo, createdBy, createdAt, truncated = false } = options;
   const title = `${repo} · issue map: what is blocked by what, level by level`;
 
   const bands = map.columns
@@ -312,6 +313,7 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
       map.nodes.length === 1 ? "" : "s"
     } · ${linkCount} blocked-by link${linkCount === 1 ? "" : "s"}</span></h1>` +
     `<div id="banner">${banner}</div>` +
+    (truncated ? `<div id="limit">${escapeHtml(LIMIT_WARNING)}</div>` : "") +
     `<div class="leg">${legend}</div><div id="hint"></div></header>` +
     `<div id="tip"></div>` +
     `<div id="wrap"><svg width="${map.width}" height="${map.height}" viewBox="0 0 ${map.width} ${map.height}">` +

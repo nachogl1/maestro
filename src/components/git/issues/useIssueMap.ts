@@ -1,16 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueLinks } from "@/lib/issueGraph";
+import { MAP_ISSUE_LIMIT } from "@/lib/issueMap";
 import type { IssueInfo } from "@/stores/useGitHubStore";
+
+export { MAP_ISSUE_LIMIT };
 
 /** A user who can be assigned to issues in the repo. */
 export interface RepoAssignee {
   login: string;
   avatarUrl: string;
 }
-
-/** How many issues the issue map fetches, open and closed (`gh --limit`). */
-export const MAP_ISSUE_LIMIT = 1000;
 
 export interface IssueMapState {
   issues: IssueInfo[];

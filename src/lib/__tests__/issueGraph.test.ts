@@ -39,6 +39,14 @@ describe("parseBlockedBySection", () => {
     expect(parseBlockedBySection("## Blocked by:\n#3, #4 and #3\n# Next\n#5")).toEqual([3, 4]);
   });
 
+  it("reads CRLF bodies and a heading at the very end of the body", () => {
+    expect(
+      parseBlockedBySection("Intro\r\n\r\n### Blocked by\r\n- #1\r\n- #2\r\n\r\n## Next\r\n#3"),
+    ).toEqual([1, 2]);
+    expect(parseBlockedBySection("Intro\n### Blocked by")).toEqual([]);
+    expect(parseBlockedBySection("Intro\r\n### Blocked by\r\n#7")).toEqual([7]);
+  });
+
   it("ignores prose references outside the section; null when there is no section", () => {
     expect(parseBlockedBySection("Blocked by #12 and #13.\nDepends on #14\nblocks #2")).toBeNull();
     expect(parseBlockedBySection("Part of epic #216")).toBeNull();
@@ -98,6 +106,16 @@ describe("buildIssueGraph", () => {
     expect(graph.problems).toEqual([
       { kind: "epic", blocked: 5, blocker: 7 },
       { kind: "not-loaded", blocked: 5, blocker: 99 },
+    ]);
+  });
+
+  it("keeps section links and detects disagreements in a CRLF body", () => {
+    const graph = buildIssueGraph([issue(1), issue(2), issue(3)], {
+      3: links(3, { blockedBy: [1], body: "### Blocked by\r\n- #2\r\n" }),
+    });
+    expect(graph.edges.map((e) => e.id)).toEqual(["1->3", "2->3"]);
+    expect(graph.problems).toEqual([
+      { kind: "disagreement", number: 3, sectionOnly: [2], nativeOnly: [1] },
     ]);
   });
 

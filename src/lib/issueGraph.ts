@@ -69,15 +69,17 @@ export interface IssueGraph {
   problems: IssueLinkProblem[];
 }
 
-// "### Blocked by" heading, then every line up to the next markdown heading.
+// "### Blocked by" heading (also at the very end of the body), then every line
+// up to the next markdown heading.
 const BLOCKED_BY_SECTION_RE =
-  /^#{1,6}[ \t]*blocked by[ \t]*:?[ \t]*$\n((?:(?!#{1,6}[ \t]+\S)[^\n]*\n?)*)/gim;
+  /^#{1,6}[ \t]*blocked by[ \t]*:?[ \t]*(?:\n|$)((?:(?!#{1,6}[ \t]+\S)[^\n]*\n?)*)/gim;
 
 /**
  * Every `#N` under a "### Blocked by" heading of `body`, in order, deduped;
- * null when the body has no such section at all.
+ * null when the body has no such section at all. CRLF bodies are normalised.
  */
-export function parseBlockedBySection(body: string): number[] | null {
+export function parseBlockedBySection(rawBody: string): number[] | null {
+  const body = rawBody.replace(/\r\n?/g, "\n");
   const refs: number[] = [];
   let found = false;
   BLOCKED_BY_SECTION_RE.lastIndex = 0;

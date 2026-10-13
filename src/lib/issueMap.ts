@@ -65,6 +65,17 @@ export const KIND_META: Record<IssueMapKind, IssueMapAxisEntry> = {
   },
 };
 
+/** How many issues the map fetches, open and closed (`gh --limit`). */
+export const MAP_ISSUE_LIMIT = 1000;
+
+/** Header warning when the fetch hit MAP_ISSUE_LIMIT; modal and export print it. */
+export const LIMIT_WARNING = `⚠ Showing the first ${MAP_ISSUE_LIMIT} issues, links beyond it are dropped.`;
+
+/** What the hint line says when nothing is hovered or pinned. */
+export const HINT =
+  "Hover an issue to see its chain and a tooltip. Click to pin, double-click to open it on GitHub. " +
+  "Click a legend entry to hide or show that type; each shows shown/total.";
+
 /** How the levels are built; the modal footer and the export say the same. */
 export const LEVEL_EXPLANATION =
   "An issue's level is 1 + the highest level among its blockers; Level 0 has no blockers. " +
@@ -120,7 +131,6 @@ export interface IssueMapNode {
   blockers: IssueMapBlocker[];
   /** Issues that wait on this one. */
   waiting: number[];
-  column: number;
   x: number;
   y: number;
 }
@@ -300,7 +310,6 @@ export function buildIssueMap(
         epic: graphNode.epic,
         blockers,
         waiting: [...down[n]],
-        column: level,
         x: pos.x,
         y: pos.y,
       });

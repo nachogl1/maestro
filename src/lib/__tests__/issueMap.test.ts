@@ -121,7 +121,7 @@ describe("buildIssueMap", () => {
 
   it("orders a column open first by number, then closed by number", () => {
     const column0 = map.nodes
-      .filter((n) => n.column === 0)
+      .filter((n) => n.level === 0)
       .sort((a, b) => a.y - b.y)
       .map((n) => n.number);
     expect(column0).toEqual([6, 8, 1, 4, 5]);

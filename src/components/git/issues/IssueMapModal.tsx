@@ -6,12 +6,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   buildIssueMap,
   descriptionText,
+  HINT,
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
   KIND_META,
   KIND_ORDER,
   LEVEL_EXPLANATION,
+  LIMIT_WARNING,
   MAP_BAND_Y,
   MAP_CHIP_FONT,
   MAP_CHIP_H,
@@ -28,7 +30,7 @@ import {
 } from "@/lib/issueMap";
 import { buildIssueMapHtml } from "@/lib/issueMapHtml";
 import { type AuthStatus, useGitHubStore } from "@/stores/useGitHubStore";
-import { MAP_ISSUE_LIMIT, type RepoAssignee, useIssueMap } from "./useIssueMap";
+import { type RepoAssignee, useIssueMap } from "./useIssueMap";
 
 interface IssueMapModalProps {
   repoPath: string;
@@ -40,10 +42,6 @@ interface IssueMapModalProps {
 
 /** Assignee filter key for "nobody assigned". */
 const NOBODY = "\u0000nobody";
-
-const HINT =
-  "Hover an issue to see its chain and a tooltip. Click to pin, double-click to open it on GitHub. " +
-  "Click a legend entry to hide or show that type; each shows shown/total.";
 
 const STATUS_FILL: Record<IssueMapStatus, string> = {
   closed: "rgb(var(--maestro-muted) / 0.22)",
@@ -328,6 +326,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
         repo,
         createdBy: createdBy ?? "unknown user",
         createdAt: formatCreatedAt(new Date()),
+        truncated,
       });
       await invoke("export_issue_map", { path, content });
     } catch (err) {
@@ -573,11 +572,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             {map.nodes.length} issue{map.nodes.length === 1 ? "" : "s"} · {linkCount} blocked-by
             link{linkCount === 1 ? "" : "s"}
           </span>
-          {truncated && (
-            <span className="text-[11px] text-maestro-yellow">
-              ⚠ Showing the first {MAP_ISSUE_LIMIT} issues, links beyond it are dropped.
-            </span>
-          )}
+          {truncated && <span className="text-[11px] text-maestro-yellow">{LIMIT_WARNING}</span>}
           <div className="flex-1" />
           {exportError && (
             <span className="truncate text-[11px] text-maestro-red" title={exportError}>

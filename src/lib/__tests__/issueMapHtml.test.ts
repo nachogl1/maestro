@@ -109,6 +109,14 @@ describe("buildIssueMapHtml", () => {
     expect(html).toContain("An issue&#39;s level is 1 + the highest level among its blockers");
   });
 
+  it("prints the issue-limit warning in the header only when the fetch was truncated", () => {
+    const warning = "⚠ Showing the first 1000 issues, links beyond it are dropped.";
+    expect(buildIssueMapHtml(map, OPTIONS)).not.toContain(warning);
+    const html = buildIssueMapHtml(map, { ...OPTIONS, truncated: true });
+    expect(html).toContain(`<div id="limit">${warning}</div>`);
+    expect(html.indexOf('id="limit"')).toBeLessThan(html.indexOf('class="leg"'));
+  });
+
   it("lists the data problems in a collapsible footer, or says there are none", () => {
     const html = buildIssueMapHtml(map, OPTIONS);
     expect(html).toContain(
