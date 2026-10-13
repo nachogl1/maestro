@@ -15,6 +15,7 @@ pub mod mcp_settings;
 pub mod plugin_config_writer;
 pub mod plugin_manager;
 pub mod process_manager;
+pub mod project_key;
 pub mod samurai_audit;
 pub mod samurai_auth_watch;
 pub mod samurai_brief;

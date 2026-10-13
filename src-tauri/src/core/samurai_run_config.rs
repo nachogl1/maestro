@@ -12,8 +12,7 @@
 //! `<base>/<project-name>-<hash12>/<epic-slug>.json`. The app constructs the
 //! store at `commands::ai_runner::artifact_base_dir("runs")`; the per-project
 //! directory follows the existing `<sanitized-basename>-<hash12>` convention
-//! (`commands/ai_runner.rs::project_artifact_dir`, replicated here like
-//! `samurai_audit.rs` does), and the file name is
+//! (`core::project_key`, shared with `samurai_audit.rs`), and the file name is
 //! `samurai_prompts::epic_slug` — the same slug the handoff files use, so a
 //! run's artifacts are trivially correlated.
 //!
@@ -39,12 +38,12 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
+use super::project_key::project_key;
 use super::samurai_config::SamuraiConfig;
 use super::samurai_files::normalize_project;
 use super::samurai_pr_runs;
 use super::samurai_prompts::{epic_slug, RunRefs};
 use super::samurai_workflow::WorkflowGraph;
-use super::status_server::StatusServer;
 
 /// Run config lifecycle state. SCREAMING on the wire like the audit event
 /// kinds (`samurai_audit::AuditEventKind`) — dependent issues consume this
@@ -836,27 +835,11 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
         .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
 }
 
-/// Directory name for a project: `<sanitized-basename>-<hash12>`. Same
-/// convention as `commands/ai_runner.rs::project_artifact_dir` (replicated
-/// here like `samurai_audit.rs::audit_file_name` — the hash disambiguates
-/// same-named projects in different locations).
+/// Directory name for a project: `<sanitized-basename>-<hash12>`, i.e.
+/// [`project_key`] — the same stem `samurai_audit::audit_file_name` uses (the
+/// hash disambiguates same-named projects in different locations).
 fn project_dir_name(project: &str) -> String {
-    let name = Path::new(project)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| "project".to_string());
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let hash = StatusServer::generate_project_hash(project);
-    format!("{}-{}", sanitized, hash)
+    project_key(project)
 }
 
 #[cfg(test)]
