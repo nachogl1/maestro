@@ -352,16 +352,6 @@
   }
 }
 
-@keyframes glow-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 8px rgb(var(--maestro-orange) / 0.2);
-  }
-  50% {
-    box-shadow: 0 0 18px rgb(var(--maestro-orange) / 0.4);
-  }
-}
-
 @keyframes starting-glow {
   0%,
   100% {
@@ -373,21 +363,6 @@
     box-shadow:
       0 0 20px rgb(var(--maestro-orange) / 0.6),
       0 0 40px rgb(var(--maestro-orange) / 0.3);
-  }
-}
-
-@keyframes pod-wake {
-  0% {
-    transform: scale(0.95);
-    opacity: 0.7;
-  }
-  50% {
-    transform: scale(1.02);
-    opacity: 0.9;
-  }
-  100% {
-    transform: scale(1);
-    opacity: 1;
   }
 }
 
@@ -423,15 +398,6 @@
 
 .animate-thinking-dot {
   animation: thinking-dot 1.2s ease-in-out infinite;
-}
-
-.animate-glow {
-  animation: glow-pulse 2s ease-in-out infinite;
-  border-color: rgb(var(--maestro-orange));
-}
-
-.animate-pod-wake {
-  animation: pod-wake 600ms ease-out forwards;
 }
 
 /* Parked-shelf chip demanding attention (agent finished its turn / needs
@@ -483,8 +449,6 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
   .animate-edge-dash,
-  .animate-glow,
-  .animate-pod-wake,
   .animate-thinking-dot,
   .parked-chip-attention,
   .samurai-park-shine,
@@ -523,7 +487,6 @@
 /* Disable breathe/glow animations */
 .platform-linux .animate-breathe,
 .platform-linux .animate-edge-dash,
-.platform-linux .animate-glow,
 .platform-linux .animate-thinking-dot,
 .platform-linux .parked-chip-attention,
 .platform-linux .samurai-park-shine {

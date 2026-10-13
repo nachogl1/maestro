@@ -70,7 +70,7 @@ export interface SamuraiSpawnSuccessorEvent {
  * launches. Returns false (and logs) when no open project tab matches — the
  * backend's `successor_no_start` ALERT then surfaces the stall.
  */
-export function queueSamuraiSuccessorLaunch(event: SamuraiSpawnSuccessorEvent): boolean {
+function queueSamuraiSuccessorLaunch(event: SamuraiSpawnSuccessorEvent): boolean {
   const tab = useWorkspaceStore.getState().tabs.find((t) => samePath(t.projectPath, event.project));
   if (!tab) {
     console.error(
