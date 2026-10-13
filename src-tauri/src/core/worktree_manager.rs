@@ -8,13 +8,21 @@ use crate::git::{Git, GitError, WorktreeInfo};
 pub(crate) fn worktree_base_dir() -> PathBuf {
     directories::ProjectDirs::from("com", "maestro", "maestro")
         .map(|p| p.data_dir().to_path_buf())
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(PathBuf::from)
-                .map(|p| p.join(".local").join("share").join("maestro"))
-                .expect("HOME environment variable must be set for worktree management")
-        })
+        .unwrap_or_else(|| fallback_data_dir(|key| std::env::var(key).ok()))
         .join("worktrees")
+}
+
+/// Data dir used when the OS gives no project dirs: `$HOME`, then
+/// `%USERPROFILE%` (Windows), then the temp dir, so it never panics.
+fn fallback_data_dir(env: impl Fn(&str) -> Option<String>) -> PathBuf {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .find_map(|key| env(key).filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".local")
+        .join("share")
+        .join("maestro")
 }
 
 /// Produces a 16-hex-char SHA-256 digest of the canonicalized repo path.
@@ -365,6 +373,22 @@ mod tests {
         git.run(&["commit", "-m", "initial"]).await.unwrap();
 
         (dir, path)
+    }
+
+    #[test]
+    fn test_fallback_data_dir_never_panics() {
+        let suffix = Path::new(".local").join("share").join("maestro");
+        let home = fallback_data_dir(|k| (k == "HOME").then(|| "h".to_string()));
+        assert_eq!(home, Path::new("h").join(&suffix));
+        let profile = fallback_data_dir(|k| (k == "USERPROFILE").then(|| "u".to_string()));
+        assert_eq!(profile, Path::new("u").join(&suffix));
+        let empty_home = fallback_data_dir(|k| match k {
+            "HOME" => Some(String::new()),
+            _ => Some("u".to_string()),
+        });
+        assert_eq!(empty_home, Path::new("u").join(&suffix));
+        let none = fallback_data_dir(|_| None);
+        assert_eq!(none, std::env::temp_dir().join(&suffix));
     }
 
     #[test]
