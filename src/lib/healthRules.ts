@@ -12,6 +12,7 @@
  * inference about meaning. Hold anything new to the same bar.
  */
 
+import { formatBytes } from "@/lib/format";
 import type { SamuraiFileEntry, SamuraiFileKind } from "@/lib/samurai";
 
 /** How often the background checker runs. Quiet by design — this is not a monitor. */
@@ -59,13 +60,6 @@ const SAMURAI_KIND_LABELS: Record<SamuraiFileKind, string> = {
   JOURNAL: "journal",
   HARVEST_REPORT: "harvest report",
 };
-
-/** "6.2 MB" / "12 KB" / "800 B" — sized to read well at any test threshold. */
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
-}
 
 /** Last path segment — the short label a flag shows for a managed file. */
 function samuraiBaseName(path: string): string {

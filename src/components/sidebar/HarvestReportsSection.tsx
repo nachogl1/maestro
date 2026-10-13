@@ -2,6 +2,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Eye, FileText, Loader2, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { MarkdownBody } from "@/components/git/shared/MarkdownBody";
+import { formatBytes } from "@/lib/format";
 import {
   type SamuraiHarvestReport,
   samuraiFileDelete,
@@ -13,12 +14,6 @@ import {
 function baseName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
-}
-
-/** "3 KB" — rounded size on disk, min 1 KB for anything non-empty. */
-function formatSizeKb(bytes: number): string {
-  if (bytes <= 0) return "0 KB";
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 /** Local date the report was last modified; empty when unknown or unparsable. */
@@ -191,7 +186,10 @@ export function HarvestReportsSection() {
       {notice && <p className="mb-1.5 text-[11px] text-maestro-green">{notice}</p>}
       {reports.map((report) => {
         const name = baseName(report.path);
-        const meta = [formatSizeKb(report.size_bytes), formatModified(report.modified_at)]
+        const meta = [
+          formatBytes(report.size_bytes, { minUnit: "KB", maxUnit: "KB" }),
+          formatModified(report.modified_at),
+        ]
           .filter(Boolean)
           .join(" · ");
         return (

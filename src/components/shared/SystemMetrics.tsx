@@ -1,14 +1,10 @@
 import { useSystemMetrics } from "@/hooks/useSystemMetrics";
+import { formatGiB } from "@/lib/format";
 
 function barColor(percent: number): string {
   if (percent < 50) return "bg-maestro-green";
   if (percent <= 70) return "bg-maestro-yellow";
   return "bg-maestro-red";
-}
-
-function formatGB(bytes: number): string {
-  const gb = bytes / 1024 ** 3;
-  return gb >= 10 ? gb.toFixed(0) : gb.toFixed(1);
 }
 
 /**
@@ -28,7 +24,7 @@ export function SystemMetrics() {
     ? Math.min(100, Math.max(0, metrics.memPercent))
     : 0;
 
-  const ramTitle = `RAM: ${Math.round(mem)}% (${formatGB(metrics.memUsedBytes)}/${formatGB(
+  const ramTitle = `RAM: ${Math.round(mem)}% (${formatGiB(metrics.memUsedBytes)}/${formatGiB(
     metrics.memTotalBytes,
   )} GB)`;
 
@@ -38,7 +34,7 @@ export function SystemMetrics() {
       <Metric
         label="RAM"
         percent={mem}
-        detail={`${formatGB(metrics.memUsedBytes)}/${formatGB(metrics.memTotalBytes)} GB`}
+        detail={`${formatGiB(metrics.memUsedBytes)}/${formatGiB(metrics.memTotalBytes)} GB`}
       />
     </div>
   );

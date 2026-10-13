@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatTimeAgo } from "@/lib/format";
 import type { SamuraiConfig } from "@/lib/samurai";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 
@@ -44,18 +45,6 @@ const INTERVAL_OPTIONS = [
   { label: "6 hours", value: 360 },
   { label: "24 hours", value: 1440 },
 ];
-
-function formatTimeAgo(timestamp: number | null): string {
-  if (!timestamp) return "Never";
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 60) return "Just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -210,7 +199,7 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
                 </div>
               )}
               <div className="flex items-center gap-2 px-1 text-[10px] text-maestro-muted">
-                Last checked: {formatTimeAgo(lastCheckedAt)}
+                Last checked: {formatTimeAgo(lastCheckedAt, { capitalize: true })}
               </div>
             </div>
 
