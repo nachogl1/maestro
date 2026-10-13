@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 /**
  * Zustand store for marketplace plugin browsing and installation.
  *
@@ -158,19 +158,40 @@ const MARKETPLACE_EVENTS = [
   "marketplace:plugin-uninstalled",
 ] as const;
 
-/** True once the listeners are attached — `initialize` may run more than once. */
-let marketplaceEventsBound = false;
+// Global event listeners. `active` tracks the *desired* state so a
+// subscribe/stop pair that races the pending listen() promises can't leak
+// listeners (same pattern as `initAgentListener` in useAgentStore).
+let unlisteners: UnlistenFn[] = [];
+let starting: Promise<void> | null = null;
+let active = false;
 
 async function subscribeToMarketplaceEvents(onChange: () => void): Promise<void> {
-  if (marketplaceEventsBound) return;
-  marketplaceEventsBound = true;
-  try {
-    await Promise.all(MARKETPLACE_EVENTS.map((name) => listen(name, onChange)));
-  } catch (err) {
-    // Event system unavailable (tests): the store still works on reads.
-    marketplaceEventsBound = false;
-    console.error("Failed to subscribe to marketplace events:", err);
-  }
+  active = true;
+  // `initialize` may run more than once: never attach a second set.
+  if (unlisteners.length > 0 || starting) return;
+  starting = Promise.all(MARKETPLACE_EVENTS.map((name) => listen(name, onChange)))
+    .then((fns) => {
+      if (!active) {
+        for (const fn of fns) fn();
+        return;
+      }
+      unlisteners = fns;
+    })
+    .catch((err) => {
+      // Event system unavailable (tests): the store still works on reads.
+      console.error("Failed to subscribe to marketplace events:", err);
+    })
+    .finally(() => {
+      starting = null;
+    });
+  await starting;
+}
+
+/** Detaches the marketplace event listeners attached by `initialize`. */
+export function stopMarketplaceListeners(): void {
+  active = false;
+  for (const fn of unlisteners) fn();
+  unlisteners = [];
 }
 
 export const useMarketplaceStore = create<MarketplaceState>()((set, get) => ({
