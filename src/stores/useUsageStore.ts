@@ -8,7 +8,6 @@ interface UsageState {
   usage: UsageData | null;
   isLoading: boolean;
   error: string | null;
-  lastFetch: Date | null;
   needsAuth: boolean;
 
   fetchUsage: (force?: boolean) => Promise<void>;
@@ -24,7 +23,6 @@ export const useUsageStore = create<UsageState>()((set, get) => ({
   usage: null,
   isLoading: false,
   error: null,
-  lastFetch: null,
   needsAuth: false,
 
   fetchUsage: async (force = false) => {
@@ -40,7 +38,6 @@ export const useUsageStore = create<UsageState>()((set, get) => ({
         usage,
         needsAuth,
         isLoading: false,
-        lastFetch: new Date(),
         error: needsAuth ? null : usage.errorMessage,
       });
     } catch (err) {

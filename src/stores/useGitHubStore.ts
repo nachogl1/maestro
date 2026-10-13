@@ -227,10 +227,6 @@ interface GitHubState {
   fetchDiscussionDetail: (repoPath: string, number: number) => Promise<void>;
   commentDiscussion: (repoPath: string, number: number, body: string) => Promise<void>;
   clearSelectedDiscussion: () => void;
-  setPrFilter: (filter: PrFilterState) => void;
-  setPrSearch: (search: string) => void;
-  setIssueFilter: (filter: IssueFilterState) => void;
-  setIssueSearch: (search: string) => void;
   clearSelectedPR: () => void;
   reset: () => void;
 }
@@ -521,22 +517,6 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
 
   clearSelectedDiscussion: () => {
     set({ selectedDiscussion: null });
-  },
-
-  setPrFilter: (filter: PrFilterState) => {
-    set({ prFilter: filter });
-  },
-
-  setPrSearch: (search: string) => {
-    set({ prSearch: search });
-  },
-
-  setIssueFilter: (filter: IssueFilterState) => {
-    set({ issueFilter: filter });
-  },
-
-  setIssueSearch: (search: string) => {
-    set({ issueSearch: search });
   },
 
   clearSelectedPR: () => {

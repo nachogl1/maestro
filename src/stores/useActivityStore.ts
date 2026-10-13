@@ -18,7 +18,6 @@ interface SessionActivity {
 
 interface ActivityState {
   sessions: Record<number, SessionActivity>;
-  addEvent: (event: ClaudeEvent) => void;
   /**
    * Fold a whole batch of events into the store in ONE set() call. The backend
    * coalesces events on a 16ms timer, so a transcript replay arrives as a few
@@ -116,10 +115,6 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
 
   getSession: (sessionId: number) => {
     return get().sessions[sessionId] ?? EMPTY_SESSION;
-  },
-
-  addEvent: (event: ClaudeEvent) => {
-    set((state) => ({ sessions: foldEvents(state.sessions, [event]) }));
   },
 
   addEvents: (events: ClaudeEvent[]) => {
