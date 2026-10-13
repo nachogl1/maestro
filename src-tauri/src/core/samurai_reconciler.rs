@@ -316,7 +316,7 @@ pub(crate) fn orphan_verdict(
 // spawn an agent if it has no way to ask for one.
 // Startup calls `reconcile_with_auth`; this ungated entry point is what the
 // tests drive so they never shell out to `gh`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub async fn reconcile(
     run_configs: Arc<RunConfigStore>,
     timers: Vec<ScheduleEntry>,

@@ -889,7 +889,7 @@ impl Git {
     ///
     /// Used when we need to free up a branch for worktree creation
     /// but have no other branch to switch to.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn detach_head(&self) -> Result<(), GitError> {
         self.run(&["checkout", "--detach"]).await?;
         Ok(())

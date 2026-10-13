@@ -69,7 +69,7 @@ impl EventBus {
     }
 
     /// Clear the dedup cache entirely.  Useful for testing and cleanup.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn clear_dedup_cache(&self) {
         let mut cache = self.dedup_cache.lock().expect("dedup cache lock poisoned");
         cache.clear();

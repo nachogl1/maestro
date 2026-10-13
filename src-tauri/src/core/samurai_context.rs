@@ -78,13 +78,11 @@ impl SamuraiContextStore {
     }
 
     /// Latest context percentage for a session, `None` if never seen.
-    #[allow(dead_code)] // read API for the handoff trigger / ACK scanner (later P2 issues)
     pub fn percent(&self, session_id: u32) -> Option<f64> {
         self.usage(session_id).map(|u| u.percent)
     }
 
     /// Latest full snapshot (tokens + window + percent) for a session.
-    #[allow(dead_code)] // read API for the handoff trigger / ACK scanner (later P2 issues)
     pub fn usage(&self, session_id: u32) -> Option<ContextUsage> {
         self.lock().get(&session_id).cloned()
     }

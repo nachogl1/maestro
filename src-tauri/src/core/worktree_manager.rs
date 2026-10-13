@@ -91,7 +91,7 @@ impl WorktreeManager {
 
     /// Compute the worktree path for a given repo + branch.
     // Thin wrappers over the `_with_base` variants the callers use directly.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) async fn worktree_path(&self, repo_path: &Path, branch: &str) -> PathBuf {
         self.worktree_path_with_base(repo_path, branch, None).await
     }
@@ -143,7 +143,7 @@ impl WorktreeManager {
     /// existing branch -- no new branch is created.
     // Thin wrapper over `create_with_base`, which every caller uses so it can
     // pass the samurai worktree base explicitly.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn create(&self, branch: &str, repo_path: &Path) -> Result<PathBuf, GitError> {
         self.create_with_base(branch, repo_path, None, false).await
     }
