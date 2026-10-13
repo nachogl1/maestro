@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useDismissable } from "@/hooks/useDismissable";
 import { useGitStore } from "@/stores/useGitStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import {
@@ -41,27 +42,8 @@ interface GitSettingsModalProps {
 export function GitSettingsModal({ repoPath, tabId, onClose }: GitSettingsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [onClose]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Close on outside click or Escape
+  useDismissable(onClose, { ref: modalRef });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">

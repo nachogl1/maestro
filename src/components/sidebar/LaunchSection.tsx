@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useDismissable } from "@/hooks/useDismissable";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
 import {
@@ -259,21 +260,7 @@ function ModelPicker({
 
   // Close on outside click / Escape. Bound only while open so an unopened
   // picker costs no global listeners (this panel can sit mounted for hours).
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  useDismissable(() => setOpen(false), { ref: rootRef, enabled: open });
 
   return (
     <div ref={rootRef} className="relative">

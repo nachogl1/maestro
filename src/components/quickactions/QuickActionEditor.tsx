@@ -1,5 +1,6 @@
 import { Check, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useDismissable } from "@/hooks/useDismissable";
 import type { QuickAction } from "@/types/quickAction";
 import { QUICK_ACTION_COLORS, QUICK_ACTION_ICONS } from "@/types/quickAction";
 import { DynamicIcon } from "./DynamicIcon";
@@ -30,27 +31,8 @@ export function QuickActionEditor({ action, onSave, onClose }: QuickActionEditor
   // Validation
   const isValid = name.trim().length > 0 && prompt.trim().length > 0;
 
-  // Close on outside click
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [onClose]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Close on outside click or Escape
+  useDismissable(onClose, { ref: modalRef });
 
   const handleSave = () => {
     if (!isValid) return;

@@ -15,10 +15,11 @@ import {
   X,
   ZoomIn,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import { type IconComponent, OpenCodeIcon } from "@/components/icons";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
+import { useDismissable } from "@/hooks/useDismissable";
 import type { BranchPullRequest } from "@/lib/github";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 
@@ -190,16 +191,11 @@ export const TerminalHeader = memo(function TerminalHeader({
   );
 
   // Close zoom menu on outside click
-  useEffect(() => {
-    if (!showZoomMenu) return;
-    const handleClick = (e: MouseEvent) => {
-      if (zoomMenuRef.current && !zoomMenuRef.current.contains(e.target as Node)) {
-        setShowZoomMenu(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [showZoomMenu]);
+  useDismissable(() => setShowZoomMenu(false), {
+    ref: zoomMenuRef,
+    enabled: showZoomMenu,
+    escape: false,
+  });
 
   // Calculate adaptive styling based on terminal count
   const getAdaptiveClasses = () => {

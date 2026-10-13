@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useDismissable } from "@/hooks/useDismissable";
 import type { EagleProjectOption } from "./TopBar";
 
 interface EagleProjectPickerModalProps {
@@ -38,16 +39,8 @@ export function EagleProjectPickerModal({
     [projects],
   );
 
-  // Close on click-away (same pattern as ShortcutsModal).
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [onClose]);
+  // Close on click-away. Escape is handled below in the capture-phase listener.
+  useDismissable(onClose, { ref: modalRef, escape: false });
 
   // Capture phase: eagle view keeps live terminals mounted, so without it
   // xterm's textarea would swallow the arrow keys before the modal sees them.
