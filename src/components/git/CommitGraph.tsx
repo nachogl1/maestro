@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { type GraphNode, layoutGraph } from "../../lib/graphLayout";
 import { useGitStore } from "../../stores/useGitStore";
 import { CommitRow } from "./CommitRow";
@@ -36,7 +37,18 @@ export function CommitGraph({
     fetchCommits,
     loadMoreCommits,
     getRefsForCommit,
-  } = useGitStore();
+  } = useGitStore(
+    useShallow((s) => ({
+      commits: s.commits,
+      isLoading: s.isLoading,
+      isLoadingMore: s.isLoadingMore,
+      hasMoreCommits: s.hasMoreCommits,
+      error: s.error,
+      fetchCommits: s.fetchCommits,
+      loadMoreCommits: s.loadMoreCommits,
+      getRefsForCommit: s.getRefsForCommit,
+    })),
+  );
 
   // Refs cache - lazily loaded per commit
   const [refsCache, setRefsCache] = useState<Map<string, string[]>>(new Map());

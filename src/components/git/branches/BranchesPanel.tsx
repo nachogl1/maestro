@@ -19,6 +19,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   type BranchPr,
   fetchBranchPrAudit,
@@ -77,7 +78,21 @@ export function BranchesPanel({ repoPath }: { repoPath: string }) {
     deleteBranch,
     renameBranch,
     deleteRemoteBranch,
-  } = useGitStore();
+  } = useGitStore(
+    useShallow((s) => ({
+      branches: s.branches,
+      currentBranch: s.currentBranch,
+      error: s.error,
+      fetchBranches: s.fetchBranches,
+      fetchCurrentBranch: s.fetchCurrentBranch,
+      fetchAllRemoteRefs: s.fetchAllRemoteRefs,
+      checkoutBranch: s.checkoutBranch,
+      createBranch: s.createBranch,
+      deleteBranch: s.deleteBranch,
+      renameBranch: s.renameBranch,
+      deleteRemoteBranch: s.deleteRemoteBranch,
+    })),
+  );
   // The store's own BranchInfo type predates the backend's additive
   // lastCommitDate/lastCommitAuthor fields; the runtime payload already
   // carries them (same `git_branches` call), so widen the view here rather

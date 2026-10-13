@@ -1,5 +1,6 @@
 import { AlertCircle, GitFork, Loader2, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   PanelResizeHandle,
   RIGHT_PANEL_MAX_WIDTH,
@@ -65,7 +66,12 @@ export function GitGraphPanel({
   const [selectedIssueNumber, setSelectedIssueNumber] = useState<number | null>(null);
   const [selectedDiscussionNumber, setSelectedDiscussionNumber] = useState<number | null>(null);
 
-  const { checkoutBranch, createBranch } = useGitStore();
+  const { checkoutBranch, createBranch } = useGitStore(
+    useShallow((s) => ({
+      checkoutBranch: s.checkoutBranch,
+      createBranch: s.createBranch,
+    })),
+  );
   const {
     authStatus,
     authError,
