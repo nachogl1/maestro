@@ -8,6 +8,12 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use directories::BaseDirs;
 use serde::Serialize;
 
+// Canonicalizes a project path into the form Claude Code encodes (`\\?\` and
+// `\\?\UNC\` stripped on every host). Without the strip, `\\?\C:\git\maestro`
+// encoded to `----C--git-maestro`, a directory that never exists, so every
+// session lookup silently returned an empty list on Windows.
+use crate::commands::ai_runner::canonical_project_path;
+
 /// Maximum number of JSONL lines parsed from the head of a transcript while
 /// looking for metadata and the first user prompt.
 ///
@@ -224,29 +230,6 @@ pub(crate) fn encode_project_path(project_path: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Canonicalizes `project_path` into the form Claude Code encodes, falling back
-/// to the input when the path no longer exists.
-///
-/// On Windows `fs::canonicalize` returns an extended-length path
-/// (`\\?\C:\git\maestro`). Feeding that straight into [`encode_project_path`]
-/// yielded `----C--git-maestro` — four leading dashes for `\\?\` — which is a
-/// directory that never exists, so every session lookup silently returned an
-/// empty list on Windows. Strip the prefix before encoding.
-fn canonical_project_path(project_path: &str) -> String {
-    let canonical = fs::canonicalize(project_path)
-        .unwrap_or_else(|_| PathBuf::from(project_path))
-        .to_string_lossy()
-        .into_owned();
-
-    #[cfg(windows)]
-    let canonical = match canonical.strip_prefix(r"\\?\") {
-        Some(stripped) => stripped.to_string(),
-        None => canonical,
-    };
-
-    canonical
 }
 
 /// `~/.claude/projects` — the root Claude Code files every transcript under.
@@ -1077,6 +1060,22 @@ mod tests {
         // lookups still target a deterministic directory.
         let missing = "/definitely/not/a/real/path-xyz";
         assert_eq!(canonical_project_path(missing), missing);
+    }
+
+    #[test]
+    fn canonical_path_strips_drive_and_unc_verbatim_prefixes_on_any_host() {
+        // Missing paths skip canonicalize, so the strip runs on the literal
+        // string everywhere. The UNC form must stay ABSOLUTE (`\\server\…`),
+        // never the relative `UNC\server\…` a bare `\\?\` strip leaves.
+        let drive = canonical_project_path(r"\\?\C:\maestro-missing-d1-xyz\repo");
+        assert_eq!(drive, r"C:\maestro-missing-d1-xyz\repo");
+        assert_eq!(
+            encode_project_path(&drive),
+            "C--maestro-missing-d1-xyz-repo"
+        );
+
+        let unc = canonical_project_path(r"\\?\UNC\maestro-missing-d1-host\share\repo");
+        assert_eq!(unc, r"\\maestro-missing-d1-host\share\repo");
     }
 
     // ---- path_is_within (host-OS independent) -----------------------------
