@@ -187,7 +187,19 @@ Use this workflow when implementing a task or story, refactoring, or fixing a bu
 2. Map the components, Zustand stores, and Rust commands involved before editing — use Grep/Read to find the touched files first.
 3. Implement the changes needed. Do not apply changes (formatting, style, refactoring) to any other part of the code.
 4. Run tests related to the changes.
-5. Briefly summarize the changes made and print them. 
-6. Describe and suggest next steps.
+5. Record the change in the changelog (see "Changelog" below).
+6. Briefly summarize the changes made and print them. 
+7. Describe and suggest next steps.
+
+## Changelog
+
+**Every user-visible change to Maestro must be recorded in `src/lib/changelog.ts`** (shown in
+Settings → Changelog) in the same PR as the change.
+
+- Add to today's entry (`date: "YYYY-MM-DD"`) if one exists; otherwise add a new entry at the top
+  — the list is newest first and a test enforces that order.
+- One short, plain line per change, written for a user: what they can now see or do, not how
+  it was built. Merge related changes into one line; give the day's entry a short title.
+- Pure refactors, test-only and CI-only changes do not need an entry.
 
 

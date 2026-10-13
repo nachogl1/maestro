@@ -8,6 +8,17 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-14",
+    title: "Readable History, keyboard terminals, richer issue map",
+    items: [
+      "History rows show the session's name and a two-sentence AI summary instead of raw prompts.",
+      "History drops the checkout/worktree/gone filter pills; the search box stays.",
+      "Ctrl+T focuses the new terminal's name box; Tab then Enter launches, and focus lands in it.",
+      "Issue map: epics column with epic-to-story lines, click-only highlight, zoom and drag.",
+      "Issue map hides epics and closed issues by default and packs away empty columns.",
+    ],
+  },
+  {
     date: "2026-10-13",
     title: "Changelog, leaner UI and a sharper issue map",
     items: [
