@@ -105,6 +105,20 @@ function focusSlotTextarea(slotId: string): void {
 }
 
 /**
+ * Move keyboard focus into a pre-launch card's Window Name input, so a new
+ * terminal can be named, Tabbed to Launch and started without the mouse.
+ * Double rAF for the same reason as `focusSlotTextarea`: the card mounts in
+ * the render the caller just triggered.
+ */
+function focusSlotNameInput(slotId: string): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.getElementById(`session-name-${slotId}`)?.focus();
+    });
+  });
+}
+
+/**
  * Imperative handle exposed via `useImperativeHandle` so parent components
  * (e.g. a toolbar button) can add sessions or launch all without lifting state up.
  */
@@ -792,6 +806,25 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   });
 
   /**
+   * Launch from a pre-launch card's button and hand keyboard focus to the new
+   * terminal so the user can start typing. Marking the slot focused up front
+   * lets the TerminalView grab focus as soon as its xterm mounts, instead of
+   * after the whole CLI launch. The trailing focus is only a fallback for when
+   * focus is still nowhere (the launch button unmounted under it) — it must
+   * not steal focus the user moved elsewhere while the CLI was starting. A
+   * failed launch has no xterm textarea, so the fallback is then a no-op.
+   */
+  const launchSlotAndFocus = useCallback(
+    async (slotId: string) => {
+      setFocusedSlotId(slotId);
+      await launchSlot(slotId);
+      const active = document.activeElement;
+      if (!active || active === document.body) focusSlotTextarea(slotId);
+    },
+    [launchSlot],
+  );
+
+  /**
    * Closing/removing the zoomed pane keeps the user in zoom-in: the next
    * pane in zoom-strip order takes over the zoom, same as parking/unparking
    * (grid view only when nothing else is left to zoom). Without this the
@@ -1378,6 +1411,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     // Rebuild layout as a clean 2D grid (matching old CSS grid dimensions)
     setLayoutTree(() => buildGridTree([...orderedSlotIds, newSlot.id]));
     setFocusedSlotId(newSlot.id);
+    focusSlotNameInput(newSlot.id);
     // Stay in zoom-in view: the new pre-launch card takes over the zoom as
     // the last tab in the strip (mirrors handleUnpark's behavior).
     setZoomedSlotId((prev) => (prev === null ? null : newSlot.id));
@@ -1615,7 +1649,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             onMcpUnselectAll={() => unselectAllMcp(slot.id)}
             onPluginsSelectAll={() => selectAllPlugins(slot.id)}
             onPluginsUnselectAll={() => unselectAllPlugins(slot.id)}
-            onLaunch={() => launchSlot(slot.id)}
+            onLaunch={() => launchSlotAndFocus(slot.id)}
             onRemove={() => removeSlot(slot.id)}
             onResumeSessionChange={(sessionId) => updateSlotResumeSession(slot.id, sessionId)}
             isZoomed={isSlotZoomed}
@@ -1663,7 +1697,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       unselectAllMcp,
       selectAllPlugins,
       unselectAllPlugins,
-      launchSlot,
+      launchSlotAndFocus,
       removeSlot,
       updateSlotResumeSession,
       eagleMode,
