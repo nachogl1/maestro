@@ -1514,6 +1514,40 @@ pub(crate) fn strip_extended_length(path: &str) -> String {
     }
 }
 
+/// The persisted per-project store file (`maestro-<hash>.json`, a
+/// tauri-plugin-store file holding MCP/skill/plugin defaults and branch
+/// configs) for a [`canonical_key`].
+///
+/// The hash input is the LEGACY spelling — the raw
+/// `fs::canonicalize(..).to_string_lossy()` these stores were always named
+/// from, `\\?\`-prefixed on Windows — so files written before the switch to
+/// the stripped key keep loading. Accepts either spelling; host-independent.
+pub(crate) fn project_store_name(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let legacy = legacy_extended_length(key);
+    let digest = Sha256::digest(legacy.as_bytes());
+    // First 12 hex characters: short but unique enough for a filename.
+    format!("maestro-{}.json", &format!("{digest:x}")[..12])
+}
+
+/// Inverse of [`strip_extended_length`]: a drive path `C:\…` gets `\\?\`,
+/// a share path `\\server\share\…` gets `\\?\UNC\server\share\…`, exactly
+/// as `fs::canonicalize` emits them on Windows. Already-prefixed and
+/// non-Windows paths pass through unchanged.
+fn legacy_extended_length(key: &str) -> String {
+    if key.starts_with(r"\\?\") {
+        return key.to_string();
+    }
+    if let Some(rest) = key.strip_prefix(r"\\") {
+        return format!(r"\\?\UNC\{rest}");
+    }
+    let bytes = key.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return format!(r"\\?\{key}");
+    }
+    key.to_string()
+}
+
 /// Any spelling of a Windows path a samurai store can hand back, mapped to
 /// the plain ABSOLUTE one. Two rules:
 ///
@@ -1647,6 +1681,43 @@ mod tests {
         assert_eq!(canonical_key(project.join("sub").join("..")).unwrap(), key);
         // The key is itself a usable path that maps back to itself.
         assert_eq!(canonical_key(&key).unwrap(), key);
+    }
+
+    #[test]
+    fn test_project_store_name_keeps_the_legacy_prefixed_hash() {
+        // Store files were named from the raw `\\?\`-prefixed canonical on
+        // Windows; the stripped key must resolve to the SAME file, or saved
+        // MCP/skill/plugin defaults and branch configs stop loading.
+        for (prefixed, stripped) in [
+            (r"\\?\C:\git\maestro", r"C:\git\maestro"),
+            (r"\\?\UNC\server\share\maestro", r"\\server\share\maestro"),
+        ] {
+            assert_eq!(strip_extended_length(prefixed), stripped);
+            assert_eq!(project_store_name(stripped), project_store_name(prefixed));
+        }
+        // Pinned against the pre-change formula: sha256 of the prefixed
+        // string, first 12 hex chars.
+        use sha2::{Digest, Sha256};
+        let legacy = format!("{:x}", Sha256::digest(r"\\?\C:\git\maestro".as_bytes()));
+        assert_eq!(
+            project_store_name(r"C:\git\maestro"),
+            format!("maestro-{}.json", &legacy[..12])
+        );
+        // On a real directory, the key's store matches the old raw
+        // `fs::canonicalize` spelling's store on whatever host runs this.
+        let dir = tempdir().unwrap();
+        let raw = std::fs::canonicalize(dir.path()).unwrap();
+        let raw_hash = format!("{:x}", Sha256::digest(raw.to_string_lossy().as_bytes()));
+        assert_eq!(
+            project_store_name(&canonical_key(dir.path()).unwrap()),
+            format!("maestro-{}.json", &raw_hash[..12])
+        );
+        // Non-Windows keys hash as-is, as before.
+        let unix = format!("{:x}", Sha256::digest(b"/home/u/maestro"));
+        assert_eq!(
+            project_store_name("/home/u/maestro"),
+            format!("maestro-{}.json", &unix[..12])
+        );
     }
 
     #[test]

@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
@@ -18,16 +17,7 @@ pub struct BranchConfig {
 
 use crate::core::plugin_config_writer;
 use crate::core::plugin_manager::{PluginManager, ProjectPlugins};
-use crate::core::samurai_files::canonical_key;
-
-/// Creates a stable hash of a project path for use in store filenames.
-fn hash_project_path(path: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    let result = hasher.finalize();
-    // Take first 12 hex characters for a reasonably short but unique filename
-    format!("{:x}", &result)[..12].to_string()
-}
+use crate::core::samurai_files::{canonical_key, project_store_name};
 
 /// Discovers and returns plugins/skills configured in the project's `.plugins.json`.
 ///
@@ -154,7 +144,7 @@ pub async fn save_project_skill_defaults(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     store.set("enabled_skills", serde_json::json!(enabled_skills));
@@ -175,7 +165,7 @@ pub async fn load_project_skill_defaults(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     let result = store
@@ -203,7 +193,7 @@ pub async fn save_project_plugin_defaults(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     store.set("enabled_plugins", serde_json::json!(enabled_plugins));
@@ -224,7 +214,7 @@ pub async fn load_project_plugin_defaults(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     let result = store
@@ -401,7 +391,7 @@ pub async fn save_branch_config(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     let config = BranchConfig {
@@ -430,7 +420,7 @@ pub async fn load_branch_config(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     let key = format!("branch_config:{}", branch);

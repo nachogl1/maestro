@@ -5,14 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
 use crate::core::mcp_config_writer;
 use crate::core::mcp_manager::{McpManager, McpServerConfig, McpServerSource};
 use crate::core::mcp_settings::{self, McpScope, McpStatusView};
-use crate::core::samurai_files::canonical_key;
+use crate::core::samurai_files::{canonical_key, project_store_name};
 use crate::core::status_server::StatusServer;
 
 /// Store filename for custom MCP servers (global, user-level).
@@ -39,15 +38,6 @@ pub struct McpCustomServer {
     pub is_enabled: bool,
     /// ISO timestamp of when the server was created.
     pub created_at: String,
-}
-
-/// Creates a stable hash of a project path for use in store filenames.
-fn hash_project_path(path: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    let result = hasher.finalize();
-    // Take first 12 hex characters for a reasonably short but unique filename
-    format!("{:x}", &result)[..12].to_string()
 }
 
 /// Discovers and returns MCP servers configured in the project's `.mcp.json`.
@@ -132,7 +122,7 @@ pub async fn save_project_mcp_defaults(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     store.set("enabled_mcp_servers", serde_json::json!(enabled_servers));
@@ -153,7 +143,7 @@ pub async fn load_project_mcp_defaults(
     let canonical = canonical_key(&project_path)
         .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
-    let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
+    let store_name = project_store_name(&canonical);
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
 
     let result = store
