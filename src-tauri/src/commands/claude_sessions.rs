@@ -872,7 +872,16 @@ pub async fn delete_claude_session(project_path: String, session_id: String) -> 
         return Err(format!("Invalid session id: {session_id}"));
     }
 
-    let canonical = canonical_project_path(&project_path);
+    // Canonicalize + directory walk + removals are blocking std::fs work;
+    // keep them off the async runtime.
+    tokio::task::spawn_blocking(move || delete_session_files(&project_path, &session_id))
+        .await
+        .map_err(|e| format!("Delete session task failed: {e}"))?
+}
+
+/// Blocking body of [`delete_claude_session`].
+fn delete_session_files(project_path: &str, session_id: &str) -> Result<(), String> {
+    let canonical = canonical_project_path(project_path);
     let root =
         claude_projects_root().ok_or_else(|| "Could not determine home directory".to_string())?;
 
@@ -885,7 +894,7 @@ pub async fn delete_claude_session(project_path: String, session_id: String) -> 
         }
 
         // Delete the optional snapshot directory (same name without extension)
-        let snapshot_dir = dir.path.join(&session_id);
+        let snapshot_dir = dir.path.join(session_id);
         if snapshot_dir.is_dir() {
             fs::remove_dir_all(&snapshot_dir)
                 .map_err(|e| format!("Failed to delete session snapshot directory: {e}"))?;
@@ -905,20 +914,26 @@ pub async fn list_claude_sessions(
     project_path: String,
     extra_roots: Option<Vec<String>>,
 ) -> Result<ClaudeSessionListing, String> {
-    // Canonicalize the project path for consistent matching
-    let canonical = canonical_project_path(&project_path);
-    let root =
-        claude_projects_root().ok_or_else(|| "Could not determine home directory".to_string())?;
+    // Canonicalize + recursive transcript scan are blocking std::fs work;
+    // keep them off the async runtime.
+    tokio::task::spawn_blocking(move || -> Result<ClaudeSessionListing, String> {
+        // Canonicalize the project path for consistent matching
+        let canonical = canonical_project_path(&project_path);
+        let root = claude_projects_root()
+            .ok_or_else(|| "Could not determine home directory".to_string())?;
 
-    if !root.exists() {
-        return Ok(ClaudeSessionListing::default());
-    }
+        if !root.exists() {
+            return Ok(ClaudeSessionListing::default());
+        }
 
-    Ok(collect_sessions(
-        &root,
-        &canonical,
-        &extra_roots.unwrap_or_default(),
-    ))
+        Ok(collect_sessions(
+            &root,
+            &canonical,
+            &extra_roots.unwrap_or_default(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("List sessions task failed: {e}"))?
 }
 
 #[cfg(test)]
