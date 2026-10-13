@@ -214,6 +214,111 @@ pub fn session_shell_family() -> Option<&'static str> {
     shell_family_of(&session_shell())
 }
 
+/// Builds the command [`ProcessManager::spawn_shell`] runs inside the PTY:
+/// the session shell plus the terminal/locale env, the Maestro session id,
+/// the caller's extra env vars and working directory.
+fn build_shell_command(
+    shell: &str,
+    id: u32,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(shell);
+    #[cfg(unix)]
+    cmd.arg("-l"); // Login shell for proper env on Unix
+
+    // Set TERM for proper terminal emulation on Unix.
+    // xterm-256color is the standard for modern terminal emulators and enables:
+    // - Proper cursor positioning and line editing
+    // - 256-color support
+    // - Correct handling of escape sequences
+    //
+    // On Windows, we don't set TERM because:
+    // - Windows ConPTY handles terminal emulation internally
+    // - cmd.exe/PowerShell don't use the TERM variable
+    // - Setting TERM can cause shell initialization issues (Issue #93)
+    #[cfg(unix)]
+    cmd.env("TERM", "xterm-256color");
+
+    // Ensure UTF-8 locale for proper multi-byte character handling.
+    // macOS Terminal.app/iTerm2 set LANG before launching shells, but Tauri
+    // apps launched from Finder/Dock/Spotlight don't inherit that setting.
+    // Without a UTF-8 locale, zsh/bash treat CJK characters as raw bytes,
+    // causing garbled display and incorrect cursor positioning.
+    #[cfg(unix)]
+    if std::env::var("LANG").unwrap_or_default().is_empty() {
+        cmd.env("LANG", "en_US.UTF-8");
+    }
+
+    // Prevent Claude Code from thinking it's nested inside another session.
+    // Maestro may have been launched from a Claude Code terminal, so strip
+    // the marker env var so terminals inside Maestro can start fresh sessions.
+    cmd.env_remove("CLAUDECODE");
+
+    // Inject MAESTRO_SESSION_ID automatically (used by MCP status server)
+    cmd.env("MAESTRO_SESSION_ID", id.to_string());
+
+    // Apply any additional environment variables from caller
+    if let Some(envs) = env {
+        for (key, value) in envs {
+            cmd.env(&key, &value);
+        }
+    }
+
+    if let Some(ref dir) = cwd {
+        cmd.cwd(dir);
+    }
+    cmd
+}
+
+/// Starts the dedicated OS thread that reads PTY output into `tx`.
+///
+/// Shutdown mechanism: dropping the master/writer FDs closes the PTY
+/// file descriptor, which causes the blocking `reader.read()` call
+/// below to return `Ok(0)` (EOF). This is the primary way the reader
+/// thread terminates — no explicit signal is needed.
+fn spawn_pty_reader(
+    id: u32,
+    mut reader: Box<dyn Read + Send>,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+) -> Result<JoinHandle<()>, PtyError> {
+    std::thread::Builder::new()
+        .name(format!("pty-reader-{id}"))
+        .spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break, // EOF — shell exited
+                    Ok(n) => {
+                        // blocking_send is used because this is an OS thread, not async.
+                        // If the channel is full or closed, we break out of the loop.
+                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                            log::warn!(
+                                "PTY reader {id}: channel send failed, dropping {} bytes",
+                                n
+                            );
+                            break; // Channel full or receiver dropped
+                        }
+                    }
+                    Err(e) => {
+                        // EAGAIN/EINTR are retriable on Unix; anything else is fatal
+                        #[cfg(unix)]
+                        {
+                            let raw = e.raw_os_error().unwrap_or(0);
+                            if raw == libc::EAGAIN || raw == libc::EINTR {
+                                continue;
+                            }
+                        }
+                        log::debug!("PTY reader {id} error: {e}");
+                        break;
+                    }
+                }
+            }
+            log::debug!("PTY reader {id} exited");
+        })
+        .map_err(|e| PtyError::spawn_failed(format!("Failed to spawn reader thread: {e}")))
+}
+
 /// Owns and manages all PTY sessions for the application lifetime.
 ///
 /// Wraps an `Arc<Inner>` so it can be cheaply cloned into Tauri's managed state
@@ -269,24 +374,8 @@ impl ProcessManager {
         cwd: Option<String>,
         env: Option<HashMap<String, String>>,
     ) -> Result<u32, PtyError> {
-        // Windows spawn pacing (Bug #76). Holding the tokio lock across the
-        // sleep is what serializes concurrent callers — releasing it to sleep
-        // would let two callers compute the same remainder and race.
         #[cfg(windows)]
-        {
-            let mut last = self.inner.last_spawn_time.lock().await;
-            let elapsed = last.elapsed();
-            let min_gap = std::time::Duration::from_millis(500);
-            if elapsed < min_gap {
-                let wait = min_gap - elapsed;
-                log::info!(
-                    "Windows spawn pacing: delaying spawn by {}ms after previous spawn",
-                    wait.as_millis()
-                );
-                tokio::time::sleep(wait).await;
-            }
-            *last = std::time::Instant::now();
-        }
+        self.pace_windows_spawn().await;
 
         let id = self
             .inner
@@ -310,51 +399,7 @@ impl ProcessManager {
         // Determine the user's shell (platform-specific)
         let shell = session_shell();
 
-        let mut cmd = CommandBuilder::new(&shell);
-        #[cfg(unix)]
-        cmd.arg("-l"); // Login shell for proper env on Unix
-
-        // Set TERM for proper terminal emulation on Unix.
-        // xterm-256color is the standard for modern terminal emulators and enables:
-        // - Proper cursor positioning and line editing
-        // - 256-color support
-        // - Correct handling of escape sequences
-        //
-        // On Windows, we don't set TERM because:
-        // - Windows ConPTY handles terminal emulation internally
-        // - cmd.exe/PowerShell don't use the TERM variable
-        // - Setting TERM can cause shell initialization issues (Issue #93)
-        #[cfg(unix)]
-        cmd.env("TERM", "xterm-256color");
-
-        // Ensure UTF-8 locale for proper multi-byte character handling.
-        // macOS Terminal.app/iTerm2 set LANG before launching shells, but Tauri
-        // apps launched from Finder/Dock/Spotlight don't inherit that setting.
-        // Without a UTF-8 locale, zsh/bash treat CJK characters as raw bytes,
-        // causing garbled display and incorrect cursor positioning.
-        #[cfg(unix)]
-        if std::env::var("LANG").unwrap_or_default().is_empty() {
-            cmd.env("LANG", "en_US.UTF-8");
-        }
-
-        // Prevent Claude Code from thinking it's nested inside another session.
-        // Maestro may have been launched from a Claude Code terminal, so strip
-        // the marker env var so terminals inside Maestro can start fresh sessions.
-        cmd.env_remove("CLAUDECODE");
-
-        // Inject MAESTRO_SESSION_ID automatically (used by MCP status server)
-        cmd.env("MAESTRO_SESSION_ID", id.to_string());
-
-        // Apply any additional environment variables from caller
-        if let Some(envs) = env {
-            for (key, value) in envs {
-                cmd.env(&key, &value);
-            }
-        }
-
-        if let Some(ref dir) = cwd {
-            cmd.cwd(dir);
-        }
+        let cmd = build_shell_command(&shell, id, cwd, env);
 
         let child = pair
             .slave
@@ -379,66 +424,77 @@ impl ProcessManager {
             .map_err(|e| PtyError::spawn_failed(format!("Failed to take PTY writer: {e}")))?;
 
         // Get reader from master
-        let mut reader = pair
+        let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| PtyError::spawn_failed(format!("Failed to clone PTY reader: {e}")))?;
 
         let shutdown = Arc::new(Notify::new());
-        let shutdown_clone = shutdown.clone();
 
         // Dedicated OS thread for reading PTY output.
         // Sends data through a bounded mpsc channel (~1 MB of 4 KB chunks) to a
         // tokio task that emits Tauri events.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
 
-        // Shutdown mechanism: dropping the master/writer FDs closes the PTY
-        // file descriptor, which causes the blocking `reader.read()` call
-        // below to return `Ok(0)` (EOF). This is the primary way the reader
-        // thread terminates — no explicit signal is needed.
-        let reader_handle = std::thread::Builder::new()
-            .name(format!("pty-reader-{id}"))
-            .spawn(move || {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break, // EOF — shell exited
-                        Ok(n) => {
-                            // blocking_send is used because this is an OS thread, not async.
-                            // If the channel is full or closed, we break out of the loop.
-                            if tx.blocking_send(buf[..n].to_vec()).is_err() {
-                                log::warn!(
-                                    "PTY reader {id}: channel send failed, dropping {} bytes",
-                                    n
-                                );
-                                break; // Channel full or receiver dropped
-                            }
-                        }
-                        Err(e) => {
-                            // EAGAIN/EINTR are retriable on Unix; anything else is fatal
-                            #[cfg(unix)]
-                            {
-                                let raw = e.raw_os_error().unwrap_or(0);
-                                if raw == libc::EAGAIN || raw == libc::EINTR {
-                                    continue;
-                                }
-                            }
-                            log::debug!("PTY reader {id} error: {e}");
-                            break;
-                        }
-                    }
-                }
-                log::debug!("PTY reader {id} exited");
-            })
-            .map_err(|e| PtyError::spawn_failed(format!("Failed to spawn reader thread: {e}")))?;
+        let reader_handle = spawn_pty_reader(id, reader, tx)?;
 
-        // Tokio task: drain the channel and emit Tauri events with time-based batching.
-        // Accumulates decoded text and flushes every 16ms (aligned with 60fps) or when
-        // the buffer exceeds 64KB, whichever comes first. This collapses bursts of small
-        // PTY chunks (e.g. during `npm install` or `cargo build`) into fewer IPC events,
-        // dramatically reducing frontend overhead while remaining imperceptible for typing.
+        self.spawn_output_emitter(app_handle, id, rx, shutdown.clone());
+
+        // Drop the slave — the master keeps the PTY alive
+        drop(pair.slave);
+
+        let session = PtySession {
+            writer: Mutex::new(writer),
+            master: Mutex::new(pair.master),
+            child_pid,
+            child: Mutex::new(child),
+            #[cfg(unix)]
+            pgid,
+            shutdown,
+            reader_handle: Mutex::new(Some(reader_handle)),
+        };
+
+        self.inner.sessions.insert(id, session);
+        #[cfg(unix)]
+        log::info!("Spawned PTY session {id} (pid={child_pid}, pgid={pgid}, shell={shell})");
+        #[cfg(windows)]
+        log::info!("Spawned PTY session {id} (pid={child_pid}, shell={shell})");
+
+        Ok(id)
+    }
+
+    /// Windows spawn pacing (Bug #76). Holding the tokio lock across the
+    /// sleep is what serializes concurrent callers — releasing it to sleep
+    /// would let two callers compute the same remainder and race.
+    #[cfg(windows)]
+    async fn pace_windows_spawn(&self) {
+        let mut last = self.inner.last_spawn_time.lock().await;
+        let elapsed = last.elapsed();
+        let min_gap = std::time::Duration::from_millis(500);
+        if elapsed < min_gap {
+            let wait = min_gap - elapsed;
+            log::info!(
+                "Windows spawn pacing: delaying spawn by {}ms after previous spawn",
+                wait.as_millis()
+            );
+            tokio::time::sleep(wait).await;
+        }
+        *last = std::time::Instant::now();
+    }
+
+    /// Tokio task: drain the channel and emit Tauri events with time-based batching.
+    /// Accumulates decoded text and flushes every 16ms (aligned with 60fps) or when
+    /// the buffer exceeds 64KB, whichever comes first. This collapses bursts of small
+    /// PTY chunks (e.g. during `npm install` or `cargo build`) into fewer IPC events,
+    /// dramatically reducing frontend overhead while remaining imperceptible for typing.
+    fn spawn_output_emitter(
+        &self,
+        app: AppHandle,
+        id: u32,
+        mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        shutdown_clone: Arc<Notify>,
+    ) {
         let event_name = format!("pty-output-{id}");
-        let app = app_handle.clone();
         #[cfg(windows)]
         let inner_ref = self.inner.clone();
         tokio::spawn(async move {
@@ -526,28 +582,6 @@ impl ProcessManager {
             }
             log::debug!("PTY event emitter {id} exited");
         });
-
-        // Drop the slave — the master keeps the PTY alive
-        drop(pair.slave);
-
-        let session = PtySession {
-            writer: Mutex::new(writer),
-            master: Mutex::new(pair.master),
-            child_pid,
-            child: Mutex::new(child),
-            #[cfg(unix)]
-            pgid,
-            shutdown,
-            reader_handle: Mutex::new(Some(reader_handle)),
-        };
-
-        self.inner.sessions.insert(id, session);
-        #[cfg(unix)]
-        log::info!("Spawned PTY session {id} (pid={child_pid}, pgid={pgid}, shell={shell})");
-        #[cfg(windows)]
-        log::info!("Spawned PTY session {id} (pid={child_pid}, shell={shell})");
-
-        Ok(id)
     }
 
     /// Writes raw bytes to a session's PTY stdin and flushes immediately.

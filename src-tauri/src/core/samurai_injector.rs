@@ -834,6 +834,150 @@ fn invalid_alert(p: &PendingInstruction, session_id: u32, failure: String) -> Au
     )
 }
 
+/// One ALERT produced by the injector's timeout pass: session id, the
+/// pending instruction's kind, its project, and the audit row to append.
+type TickAlert = (u32, PendingKind, String, AuditEvent);
+
+/// ACK phase of the timeout pass for one un-ACKed pending entry — P2.2
+/// plumbing, shared by the corrective round (which re-arms as attempts=1 +
+/// awaiting_retry). A terminal ALERT goes to `alerts`; a stuck-wait ALERT
+/// (entry kept) goes to `stuck`.
+fn ack_phase_step(
+    id: u32,
+    p: &mut PendingInstruction,
+    timeout: Duration,
+    max_turn_wait: Duration,
+    alerts: &mut Vec<TickAlert>,
+    stuck: &mut Vec<TickAlert>,
+) {
+    match timeout_verdict(
+        p.acked,
+        p.attempts,
+        p.awaiting_retry,
+        p.injected_elapsed(),
+        p.waiting_elapsed(),
+        timeout,
+        max_turn_wait,
+    ) {
+        TimeoutVerdict::Keep => {}
+        TimeoutVerdict::ArmRetry => {
+            log::warn!(
+                "samurai injector: session {id} did not ACK within {timeout:?} — retrying at next idle"
+            );
+            p.awaiting_retry = true;
+            // The wait for the retry's idle starts now
+            // (finding E age cap).
+            p.waiting_since = AgeableInstant::now();
+        }
+        TimeoutVerdict::AlertStuck => {
+            // Finding E: no injection was possible yet —
+            // the trigger's Stop never came (a very long
+            // turn), the armed retry's idle never came, or
+            // the latest attempt's write never resolved
+            // (issue #160). One ack_timeout ALERT with the
+            // exact flavor, then KEEP TRACKING: the turn
+            // ends eventually and the instruction is still
+            // owed. Latched so the ALERT stays one-shot.
+            if p.stuck_alerted {
+                return;
+            }
+            p.stuck_alerted = true;
+            let flag = if p.awaiting_retry {
+                "retry_never_injected"
+            } else if p.attempts > 0 {
+                // Armed, delivered into the writer, and the
+                // verdict callback never came back (issue
+                // #160): without a stamp the ACK ladder
+                // cannot run, and `should_inject_on_idle`
+                // blocks a bare attempts=1 entry — so also
+                // re-arm the retry here, or a vanished
+                // verdict would wedge the entry forever.
+                // The next idle re-injects, exactly as an
+                // `ack_timeout` retry did before #160.
+                p.awaiting_retry = true;
+                p.waiting_since = AgeableInstant::now();
+                "delivery_unresolved"
+            } else {
+                "never_idled"
+            };
+            let mut details = json!({
+                "kind": "ack_timeout",
+                "attempts": p.attempts,
+                "instruction": p.kind.as_str(),
+                // The entry survives this alert; nothing is
+                // abandoned. Explicit so an audit reader is
+                // not left assuming the epic was dropped.
+                "still_tracked": true,
+            });
+            details[flag] = json!(true);
+            let event = AuditEvent::now(
+                p.epic.clone(),
+                AuditEventKind::Alert,
+                p.generation,
+                id,
+                details,
+            );
+            stuck.push((id, p.kind, p.project.clone(), event));
+        }
+        TimeoutVerdict::Alert => {
+            let event = if p.corrective {
+                // The corrective round dying unACKed is a
+                // validation failure, not a fresh ack_timeout.
+                let failure = format!(
+                    "{}; the corrective instruction was never acknowledged",
+                    p.failure.as_deref().unwrap_or("validation failed")
+                );
+                invalid_alert(p, id, failure)
+            } else {
+                AuditEvent::now(
+                    p.epic.clone(),
+                    AuditEventKind::Alert,
+                    p.generation,
+                    id,
+                    json!({
+                        "kind": "ack_timeout",
+                        "attempts": p.attempts,
+                        "instruction": p.kind.as_str(),
+                    }),
+                )
+            };
+            alerts.push((id, p.kind, p.project.clone(), event));
+        }
+    }
+}
+
+/// Written phase of the timeout pass for one ACKed pending entry: wait for
+/// the marker or time out (corrective round first, then a terminal ALERT).
+fn written_phase_step(
+    id: u32,
+    p: &mut PendingInstruction,
+    written_window: Duration,
+    alerts: &mut Vec<TickAlert>,
+) {
+    match written_verdict(
+        p.validating,
+        p.corrective,
+        p.acked_elapsed(),
+        written_window,
+    ) {
+        WrittenVerdict::Keep => {}
+        WrittenVerdict::Corrective => arm_corrective(
+            p,
+            format!(
+                "the <{WRITTEN_TAG}> marker did not arrive within {written_window:?} of the ACK"
+            ),
+        ),
+        WrittenVerdict::Alert => {
+            let failure = format!(
+                "{}; the <{WRITTEN_TAG}> marker did not arrive after the corrective instruction",
+                p.failure.as_deref().unwrap_or("validation failed")
+            );
+            let event = invalid_alert(p, id, failure);
+            alerts.push((id, p.kind, p.project.clone(), event));
+        }
+    }
+}
+
 /// Review F3a test seam: an optional hook [`finish_validation`] runs between
 /// its completion decision (pending lock released, entry KEPT) and the
 /// transition chain — the exact window a concurrent sweep advance used to
@@ -1241,10 +1385,31 @@ impl SamuraiInjector {
         };
         let written_window = timeout * WRITTEN_WINDOW_MULTIPLIER;
 
-        // Trigger pass: WORKING sessions past the threshold request a
-        // handoff. The state machine enforces one-in-flight and handoff/park
-        // exclusivity and writes the HANDOFF(phase=requested) audit row; a
-        // rejected transition already produced its illegal_transition ALERT.
+        self.trigger_handoffs(threshold_pct);
+
+        let alerts = self.collect_timeout_alerts(timeout, max_turn_wait, written_window);
+        self.report_alerts(alerts);
+
+        self.inject_idle_pending();
+
+        // Issue #55: the replicator's timeout pass (a staged successor that
+        // never produced its SessionStarted) rides this same tick.
+        if let Some(replicator) = &self.replicator {
+            replicator.tick();
+        }
+
+        // Issue #60: the parker's sweep re-evaluation rides it too — the
+        // edge-tolerance that keeps a sweep moving after races/failures.
+        if let Some(parker) = self.parker.get() {
+            parker.tick();
+        }
+    }
+
+    /// Trigger pass: WORKING sessions past the threshold request a
+    /// handoff. The state machine enforces one-in-flight and handoff/park
+    /// exclusivity and writes the HANDOFF(phase=requested) audit row; a
+    /// rejected transition already produced its illegal_transition ALERT.
+    fn trigger_handoffs(&self, threshold_pct: f64) {
         let mut supervised: Vec<u32> = Vec::new();
         for session in self.supervisor.list_sessions() {
             supervised.push(session.session_id);
@@ -1293,9 +1458,20 @@ impl SamuraiInjector {
         }
         // Teardown leaves no callback here, so unsupervised ids would linger.
         self.lock_blind().retain(|id, _| supervised.contains(id));
+    }
 
-        // Prune + timeout pass. Re-list: the trigger pass above may have just
-        // moved sessions into HANDOFF_REQUESTED.
+    /// Prune + timeout pass: drops pending entries whose session left the
+    /// expected state, advances the ACK / written ladders, and returns the
+    /// ALERTs to report (alerted entries are already removed; stuck-wait
+    /// entries are kept).
+    fn collect_timeout_alerts(
+        &self,
+        timeout: Duration,
+        max_turn_wait: Duration,
+        written_window: Duration,
+    ) -> Vec<TickAlert> {
+        // Re-list: the trigger pass may have just moved sessions into
+        // HANDOFF_REQUESTED.
         let state_of: HashMap<u32, SupervisorState> = self
             .supervisor
             .list_sessions()
@@ -1303,166 +1479,50 @@ impl SamuraiInjector {
             .map(|s| (s.session_id, s.state))
             .collect();
 
-        let alerts: Vec<(u32, PendingKind, String, AuditEvent)> = {
-            let mut pending = self.lock_pending();
+        let mut pending = self.lock_pending();
 
-            // An entry is only meaningful while its session sits in its
-            // kind's expected state (HANDOFF_REQUESTED / PARK_REQUESTED /
-            // WORKING for the soft wind-down): validation advancing it, the
-            // watchdog declaring it DEAD, a superseding instruction, or
-            // teardown unregistering it all end the tracking.
-            pending.retain(|id, p| {
-                let expected = p.kind.expected_state();
-                let keep = state_of.get(id) == Some(&expected);
-                if !keep {
-                    log::info!(
-                        "samurai injector: session {id} left {} — dropping pending {} instruction",
-                        expected.as_str(),
-                        p.kind.as_str(),
-                    );
-                }
-                keep
-            });
-
-            let mut alerts: Vec<(u32, PendingKind, String, AuditEvent)> = Vec::new();
-            // Stuck-wait alerts are reported like the rest but their entries
-            // are NOT removed below — the instruction is still owed.
-            let mut stuck: Vec<(u32, PendingKind, String, AuditEvent)> = Vec::new();
-            for (id, p) in pending.iter_mut() {
-                if !p.acked {
-                    // ACK phase — P2.2 plumbing, shared by the corrective
-                    // round (which re-arms as attempts=1 + awaiting_retry).
-                    match timeout_verdict(
-                        p.acked,
-                        p.attempts,
-                        p.awaiting_retry,
-                        p.injected_elapsed(),
-                        p.waiting_elapsed(),
-                        timeout,
-                        max_turn_wait,
-                    ) {
-                        TimeoutVerdict::Keep => {}
-                        TimeoutVerdict::ArmRetry => {
-                            log::warn!(
-                                "samurai injector: session {id} did not ACK within {timeout:?} — retrying at next idle"
-                            );
-                            p.awaiting_retry = true;
-                            // The wait for the retry's idle starts now
-                            // (finding E age cap).
-                            p.waiting_since = AgeableInstant::now();
-                        }
-                        TimeoutVerdict::AlertStuck => {
-                            // Finding E: no injection was possible yet —
-                            // the trigger's Stop never came (a very long
-                            // turn), the armed retry's idle never came, or
-                            // the latest attempt's write never resolved
-                            // (issue #160). One ack_timeout ALERT with the
-                            // exact flavor, then KEEP TRACKING: the turn
-                            // ends eventually and the instruction is still
-                            // owed. Latched so the ALERT stays one-shot.
-                            if p.stuck_alerted {
-                                continue;
-                            }
-                            p.stuck_alerted = true;
-                            let flag = if p.awaiting_retry {
-                                "retry_never_injected"
-                            } else if p.attempts > 0 {
-                                // Armed, delivered into the writer, and the
-                                // verdict callback never came back (issue
-                                // #160): without a stamp the ACK ladder
-                                // cannot run, and `should_inject_on_idle`
-                                // blocks a bare attempts=1 entry — so also
-                                // re-arm the retry here, or a vanished
-                                // verdict would wedge the entry forever.
-                                // The next idle re-injects, exactly as an
-                                // `ack_timeout` retry did before #160.
-                                p.awaiting_retry = true;
-                                p.waiting_since = AgeableInstant::now();
-                                "delivery_unresolved"
-                            } else {
-                                "never_idled"
-                            };
-                            let mut details = json!({
-                                "kind": "ack_timeout",
-                                "attempts": p.attempts,
-                                "instruction": p.kind.as_str(),
-                                // The entry survives this alert; nothing is
-                                // abandoned. Explicit so an audit reader is
-                                // not left assuming the epic was dropped.
-                                "still_tracked": true,
-                            });
-                            details[flag] = json!(true);
-                            let event = AuditEvent::now(
-                                p.epic.clone(),
-                                AuditEventKind::Alert,
-                                p.generation,
-                                *id,
-                                details,
-                            );
-                            stuck.push((*id, p.kind, p.project.clone(), event));
-                        }
-                        TimeoutVerdict::Alert => {
-                            let event = if p.corrective {
-                                // The corrective round dying unACKed is a
-                                // validation failure, not a fresh ack_timeout.
-                                let failure = format!(
-                                    "{}; the corrective instruction was never acknowledged",
-                                    p.failure.as_deref().unwrap_or("validation failed")
-                                );
-                                invalid_alert(p, *id, failure)
-                            } else {
-                                AuditEvent::now(
-                                    p.epic.clone(),
-                                    AuditEventKind::Alert,
-                                    p.generation,
-                                    *id,
-                                    json!({
-                                        "kind": "ack_timeout",
-                                        "attempts": p.attempts,
-                                        "instruction": p.kind.as_str(),
-                                    }),
-                                )
-                            };
-                            alerts.push((*id, p.kind, p.project.clone(), event));
-                        }
-                    }
-                    continue;
-                }
-                // Written phase (ACKed): wait for the marker or time out.
-                match written_verdict(
-                    p.validating,
-                    p.corrective,
-                    p.acked_elapsed(),
-                    written_window,
-                ) {
-                    WrittenVerdict::Keep => {}
-                    WrittenVerdict::Corrective => arm_corrective(
-                        p,
-                        format!(
-                            "the <{WRITTEN_TAG}> marker did not arrive within {written_window:?} of the ACK"
-                        ),
-                    ),
-                    WrittenVerdict::Alert => {
-                        let failure = format!(
-                            "{}; the <{WRITTEN_TAG}> marker did not arrive after the corrective instruction",
-                            p.failure.as_deref().unwrap_or("validation failed")
-                        );
-                        let event = invalid_alert(p, *id, failure);
-                        alerts.push((*id, p.kind, p.project.clone(), event));
-                    }
-                }
+        // An entry is only meaningful while its session sits in its
+        // kind's expected state (HANDOFF_REQUESTED / PARK_REQUESTED /
+        // WORKING for the soft wind-down): validation advancing it, the
+        // watchdog declaring it DEAD, a superseding instruction, or
+        // teardown unregistering it all end the tracking.
+        pending.retain(|id, p| {
+            let expected = p.kind.expected_state();
+            let keep = state_of.get(id) == Some(&expected);
+            if !keep {
+                log::info!(
+                    "samurai injector: session {id} left {} — dropping pending {} instruction",
+                    expected.as_str(),
+                    p.kind.as_str(),
+                );
             }
-            // Alerted sessions stop being tracked (the removal is what makes
-            // the ALERT fire exactly once); they stay in their `*_REQUESTED`
-            // state for human attention. `stuck` entries are deliberately
-            // NOT removed — their one-shot guard is the `stuck_alerted` flag.
-            for (id, _, _, _) in &alerts {
-                pending.remove(id);
-            }
-            alerts.extend(stuck);
-            alerts
-        };
+            keep
+        });
 
+        let mut alerts: Vec<TickAlert> = Vec::new();
+        // Stuck-wait alerts are reported like the rest but their entries
+        // are NOT removed below — the instruction is still owed.
+        let mut stuck: Vec<TickAlert> = Vec::new();
+        for (id, p) in pending.iter_mut() {
+            if !p.acked {
+                ack_phase_step(*id, p, timeout, max_turn_wait, &mut alerts, &mut stuck);
+                continue;
+            }
+            written_phase_step(*id, p, written_window, &mut alerts);
+        }
+        // Alerted sessions stop being tracked (the removal is what makes
+        // the ALERT fire exactly once); they stay in their `*_REQUESTED`
+        // state for human attention. `stuck` entries are deliberately
+        // NOT removed — their one-shot guard is the `stuck_alerted` flag.
+        for (id, _, _, _) in &alerts {
+            pending.remove(id);
+        }
+        alerts.extend(stuck);
+        alerts
+    }
+
+    /// Logs and audits each ALERT from [`Self::collect_timeout_alerts`].
+    fn report_alerts(&self, alerts: Vec<TickAlert>) {
         for (id, kind, project, event) in alerts {
             log::error!(
                 "samurai injector: session {} {} protocol failed — ALERT ({}), leaving in {}",
@@ -1480,12 +1540,14 @@ impl SamuraiInjector {
                 }
             }
         }
+    }
 
-        // Bonus fix (issue #54): a session whose most recent signal was a
-        // Stop is idle RIGHT NOW and will never fire another idle signal on
-        // its own — inject at tick time instead of waiting forever. Covers
-        // the fresh trigger above (same tick, zero extra latency), an armed
-        // retry, and a corrective armed between ticks.
+    /// Bonus fix (issue #54): a session whose most recent signal was a
+    /// Stop is idle RIGHT NOW and will never fire another idle signal on
+    /// its own — inject at tick time instead of waiting forever. Covers
+    /// the fresh trigger (same tick, zero extra latency), an armed
+    /// retry, and a corrective armed between ticks.
+    fn inject_idle_pending(&self) {
         let idle: HashSet<u32> = self
             .idle_now
             .lock()
@@ -1499,18 +1561,6 @@ impl SamuraiInjector {
             .collect();
         for id in idle_pending {
             self.on_idle(id, "idle_at_tick");
-        }
-
-        // Issue #55: the replicator's timeout pass (a staged successor that
-        // never produced its SessionStarted) rides this same tick.
-        if let Some(replicator) = &self.replicator {
-            replicator.tick();
-        }
-
-        // Issue #60: the parker's sweep re-evaluation rides it too — the
-        // edge-tolerance that keeps a sweep moving after races/failures.
-        if let Some(parker) = self.parker.get() {
-            parker.tick();
         }
     }
 
