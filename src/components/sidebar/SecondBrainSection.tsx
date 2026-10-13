@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MarkdownBody } from "@/components/git/shared/MarkdownBody";
 import { HealthReasonLines } from "@/components/shared/HealthReasonLines";
+import { type BytesOptions, formatBytes, formatIsoAge } from "@/lib/format";
 import type { HealthFlag } from "@/lib/healthRules";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
 import { samePath } from "@/lib/path";
@@ -99,11 +100,7 @@ function rowLabel(entry: SamuraiFileEntry): string {
  * for genuinely zero bytes rather than rounded up to a byte that is not there
  * (issue #136 review C6).
  */
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes <= 0) return "0 KB";
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
+const SIZE_OPTIONS: BytesOptions = { minUnit: "KB" };
 
 /**
  * "1 file · 4 KB" / "6 files · 84 KB" — a card header's own reading. The size
@@ -116,20 +113,7 @@ function groupSummary(entries: SamuraiFileEntry[]): string {
     (total, entry) => (SHARED_FILE_KINDS.has(entry.kind) ? total : total + entry.size_bytes),
     0,
   );
-  return `${entries.length} file${entries.length === 1 ? "" : "s"} · ${formatSize(bytes)}`;
-}
-
-/** Rough age from an RFC 3339 modified time; empty when unknown. */
-function formatAge(modifiedAt: string | null): string {
-  if (!modifiedAt) return "";
-  const then = new Date(modifiedAt).getTime();
-  if (Number.isNaN(then)) return "";
-  const mins = Math.round((Date.now() - then) / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  return `${entries.length} file${entries.length === 1 ? "" : "s"} · ${formatBytes(bytes, SIZE_OPTIONS)}`;
 }
 
 /**
@@ -176,7 +160,12 @@ function rowMeta(entry: SamuraiFileEntry, group: SamuraiFileGroup, now: number):
   if (entry.kind === "TIMER" && entry.fire_at) return formatFireAt(entry.fire_at, now);
   if (entry.kind === "AUDIT_LOG") return `${group.audit_rows} rows`;
   if (entry.kind === "JOURNAL") return `${group.journal_entries} entries`;
-  return [formatSize(entry.size_bytes), formatAge(entry.modified_at)].filter(Boolean).join(" · ");
+  return [
+    formatBytes(entry.size_bytes, SIZE_OPTIONS),
+    formatIsoAge(entry.modified_at, { rounding: "nearest" }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function FileRow({
