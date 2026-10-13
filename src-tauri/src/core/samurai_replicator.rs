@@ -1795,18 +1795,52 @@ impl SamuraiReplicator {
                 // line, same contract as replicate/spawn_first_generation.
                 let launch_prompt =
                     samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
-                let mut pending = this.lock_pending();
-                if let Some(p) = pending.iter_mut().find(|p| {
-                    p.generation == generation
-                        && p.epic == snapshot.epic
-                        && p.project == snapshot.project
-                }) {
-                    p.instruction = instruction;
-                    p.launch_prompt_offered = launch_prompt.is_some();
-                    spawn.launch_prompt = launch_prompt;
-                    // The entry's copy is the one a re-arm re-emits, so it
-                    // must carry the same offer as the event going out now.
-                    p.spawn = spawn.clone();
+                // The brief file this re-stage wrote, if any — needed below
+                // should the entry have vanished while the write ran.
+                let written = samurai_brief::pointer_brief_file_name(&instruction);
+                let restaged = {
+                    let mut pending = this.lock_pending();
+                    if let Some(p) = pending.iter_mut().find(|p| {
+                        p.generation == generation
+                            && p.epic == snapshot.epic
+                            && p.project == snapshot.project
+                    }) {
+                        p.instruction = instruction;
+                        p.launch_prompt_offered = launch_prompt.is_some();
+                        spawn.launch_prompt = launch_prompt;
+                        // The entry's copy is the one a re-arm re-emits, so it
+                        // must carry the same offer as the event going out now.
+                        p.spawn = spawn.clone();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                // Audit F1: the `still_pending` check above and the write run
+                // without the lock, so a cancel (`cancel_pending_for_epic`)
+                // can land between them. The re-lock is the authoritative
+                // answer: no entry to receive the pointer means the brief
+                // just written is an orphan, so it is removed (off the lock,
+                // on the blocking pool) before the spawn event goes out.
+                if !restaged {
+                    if let Some(name) = written {
+                        let path = PathBuf::from(&working_dir)
+                            .join(samurai_brief::BRIEF_DIR)
+                            .join(name);
+                        let removed =
+                            tokio::task::spawn_blocking(move || std::fs::remove_file(&path)).await;
+                        let failure = match removed {
+                            Ok(Ok(())) => None,
+                            Ok(Err(e)) => Some(e.to_string()),
+                            Err(e) => Some(e.to_string()),
+                        };
+                        if let Some(e) = failure {
+                            log::warn!(
+                                "samurai replicator: gen-{generation} recovery for epic {} was cancelled mid-write and its orphan brief could not be removed ({e})",
+                                snapshot.epic
+                            );
+                        }
+                    }
                 }
             }
             // The watchdog does not stop the transcript watcher, so the dead
