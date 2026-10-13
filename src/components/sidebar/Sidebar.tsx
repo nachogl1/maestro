@@ -22,6 +22,7 @@ import {
   PlusCircle,
   Power,
   RefreshCw,
+  ScrollText,
   Server,
   Settings,
   Square,
@@ -38,7 +39,7 @@ import { ContextDocEditorModal } from "@/components/claudemd";
 import { GitSettingsModal, RemoteStatusIndicator } from "@/components/git";
 import { MarketplaceBrowser } from "@/components/marketplace";
 import { McpServerEditorModal } from "@/components/mcp";
-import { MaestroSettingsModal, ShortcutsModal } from "@/components/settings";
+import { ChangelogModal, MaestroSettingsModal, ShortcutsModal } from "@/components/settings";
 import { CliSettingsModal } from "@/components/terminal/CliSettingsModal";
 import { SamuraiScheduleChip } from "@/components/terminal/SamuraiScheduleChip";
 import { TerminalSettingsModal } from "@/components/terminal/TerminalSettingsModal";
@@ -1845,6 +1846,7 @@ function AppearanceSection({
   const [showCliSettings, setShowCliSettings] = useState(false);
   const [showMaestroSettings, setShowMaestroSettings] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showChangelog, setShowChangelog] = useState(false);
   const hasRunningSessions = launchedCount > 0;
 
   return (
@@ -1898,6 +1900,14 @@ function AppearanceSection({
           <Keyboard size={14} className="text-maestro-muted" />
           <span>Keyboard Shortcuts</span>
         </button>
+        <button
+          type="button"
+          onClick={() => setShowChangelog(true)}
+          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
+        >
+          <ScrollText size={14} className="text-maestro-muted" />
+          <span>Changelog</span>
+        </button>
         {hasRunningSessions && onStopAll && (
           <button
             type="button"
@@ -1919,6 +1929,7 @@ function AppearanceSection({
         <MaestroSettingsModal onClose={() => setShowMaestroSettings(false)} />
       )}
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+      {showChangelog && <ChangelogModal onClose={() => setShowChangelog(false)} />}
     </>
   );
 }
