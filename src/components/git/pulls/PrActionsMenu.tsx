@@ -1,5 +1,6 @@
 import { MoreVertical, Play } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useDismissable } from "@/hooks/useDismissable";
 import {
   buildPrActionPrompt,
   githubRepoSlug,
@@ -57,23 +58,7 @@ export function PrActionsMenu({ pr, repoPath }: PrActionsMenuProps) {
 
   // Close on outside click or Escape — same idiom as the terminal header's
   // zoom menu.
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [open]);
+  useDismissable(() => setOpen(false), { ref: menuRef, enabled: open });
 
   const toggleStep = (index: number) => {
     setCheckedCount((count) => {

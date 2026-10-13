@@ -2,6 +2,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Eye, FileText, Loader2, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { MarkdownBody } from "@/components/git/shared/MarkdownBody";
+import { useDismissable } from "@/hooks/useDismissable";
 import { formatBytes } from "@/lib/format";
 import {
   type SamuraiHarvestReport,
@@ -51,13 +52,7 @@ function HarvestReportViewer({ path, onClose }: { path: string; onClose: () => v
     };
   }, [path]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  useDismissable(onClose);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">

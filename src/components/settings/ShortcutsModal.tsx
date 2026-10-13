@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
+import { useDismissable } from "@/hooks/useDismissable";
 import { altLabel, modLabel } from "@/lib/shortcuts";
 
 interface ShortcutsModalProps {
@@ -68,23 +69,8 @@ export function ShortcutsModal({ onClose }: ShortcutsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   const groups = buildGroups(modLabel(), altLabel());
 
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [onClose]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Close on outside click or Escape
+  useDismissable(onClose, { ref: modalRef });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">

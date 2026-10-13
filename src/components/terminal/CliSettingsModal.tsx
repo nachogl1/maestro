@@ -1,5 +1,6 @@
 import { AlertTriangle, RotateCcw, Terminal, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useDismissable } from "@/hooks/useDismissable";
 import { AI_CLI_CONFIG, buildCliCommand, type CliAiMode } from "@/lib/terminal";
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
 
@@ -45,27 +46,8 @@ export function CliSettingsModal({ onClose }: CliSettingsModalProps) {
   const { flags, setSkipPermissions, setCustomFlags, resetModeToDefaults, resetAllToDefaults } =
     useCliSettingsStore();
 
-  // Close on outside click
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [onClose]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Close on outside click or Escape
+  useDismissable(onClose, { ref: modalRef });
 
   const currentFlags = flags[activeMode];
   const previewCommand = buildCliCommand(activeMode, currentFlags);

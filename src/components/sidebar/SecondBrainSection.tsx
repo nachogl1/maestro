@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MarkdownBody } from "@/components/git/shared/MarkdownBody";
 import { HealthReasonLines } from "@/components/shared/HealthReasonLines";
+import { useDismissable } from "@/hooks/useDismissable";
 import { type BytesOptions, formatBytes, formatIsoAge } from "@/lib/format";
 import type { HealthFlag } from "@/lib/healthRules";
 import { formatResumeAt, useCountdownNow } from "@/lib/parkTime";
@@ -331,14 +332,8 @@ function FileViewerModal({ entry, onClose }: { entry: SamuraiFileEntry; onClose:
     };
   }, [entry.path, entry.kind]);
 
-  // Close on Escape — same listener shape as FileDiffModal.
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Close on Escape (no ref: outside clicks do not close it).
+  useDismissable(onClose);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
