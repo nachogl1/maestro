@@ -529,15 +529,29 @@ export function PreLaunchCard({
             >
               Window Name <span className="text-maestro-muted/60">(optional)</span>
             </label>
-            <input
-              id={`session-name-${slot.id}`}
-              type="text"
-              value={slot.customName}
-              onChange={(e) => onCustomNameChange(e.target.value)}
-              placeholder="e.g. backend bugfix"
-              maxLength={60}
-              className="w-full rounded border border-maestro-border bg-maestro-card px-3 py-2 text-sm text-maestro-text outline-none transition-colors placeholder:text-maestro-muted/50 hover:border-maestro-accent/50 focus:border-maestro-accent"
-            />
+            {/* Launch sits right after the name input so Tab from the name
+                lands on it and Enter launches. */}
+            <div className="flex gap-2">
+              <input
+                id={`session-name-${slot.id}`}
+                type="text"
+                value={slot.customName}
+                onChange={(e) => onCustomNameChange(e.target.value)}
+                placeholder="e.g. backend bugfix"
+                maxLength={60}
+                className="min-w-0 flex-1 rounded border border-maestro-border bg-maestro-card px-3 py-2 text-sm text-maestro-text outline-none transition-colors placeholder:text-maestro-muted/50 hover:border-maestro-accent/50 focus:border-maestro-accent"
+              />
+              <button
+                type="button"
+                onClick={onLaunch}
+                aria-label={slot.resumeSessionId ? "Resume Session" : "Launch Session"}
+                title={slot.resumeSessionId ? "Resume Session" : "Launch Session"}
+                className="flex shrink-0 items-center justify-center gap-1.5 rounded bg-maestro-accent px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-maestro-accent/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-maestro-accent"
+              >
+                <Play size={14} fill="currentColor" />
+                {slot.resumeSessionId ? "Resume" : "Launch"}
+              </button>
+            </div>
           </div>
 
           {/* AI Mode Selector */}
@@ -1869,16 +1883,6 @@ export function PreLaunchCard({
               )}
             </div>
           )}
-
-          {/* Launch Button */}
-          <button
-            type="button"
-            onClick={onLaunch}
-            className="flex items-center justify-center gap-2 rounded bg-maestro-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-maestro-accent/80"
-          >
-            <Play size={16} fill="currentColor" />
-            {slot.resumeSessionId ? "Resume Session" : "Launch Session"}
-          </button>
         </div>
       </div>
     </div>

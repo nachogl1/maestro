@@ -441,3 +441,71 @@ describe("PreLaunchCard resume session search", () => {
     expect(screen.getByText("Prompt 1")).toBeInTheDocument();
   });
 });
+
+describe("PreLaunchCard keyboard launch flow", () => {
+  const slot: SessionSlot = {
+    id: "slot-kb",
+    mode: "Plain",
+    branch: null,
+    customName: "",
+    worktreeMode: "project",
+    sessionId: null,
+    worktreePath: null,
+    worktreeWarning: null,
+    enabledMcpServers: [],
+    enabledSkills: [],
+    enabledPlugins: [],
+  };
+
+  const props = {
+    slot,
+    projectPath: "/tmp/test-repo",
+    branches: [],
+    isLoadingBranches: false,
+    isGitRepo: true,
+    mcpServers: [],
+    skills: [],
+    plugins: [],
+    onCustomNameChange: vi.fn(),
+    onModeChange: vi.fn(),
+    onBranchChange: vi.fn(),
+    onWorktreeModeChange: vi.fn(),
+    onMcpToggle: vi.fn(),
+    onSkillToggle: vi.fn(),
+    onPluginToggle: vi.fn(),
+    onMcpSelectAll: vi.fn(),
+    onMcpUnselectAll: vi.fn(),
+    onPluginsSelectAll: vi.fn(),
+    onPluginsUnselectAll: vi.fn(),
+    onLaunch: vi.fn(),
+    onRemove: vi.fn(),
+    onResumeSessionChange: vi.fn(),
+  };
+
+  beforeEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("puts the launch button directly after the name input in tab order", () => {
+    const { container } = render(<PreLaunchCard {...props} />);
+    const focusable = Array.from(
+      container.querySelectorAll<HTMLElement>("input, button:not([disabled]), select, textarea"),
+    );
+    const nameInput = screen.getByLabelText(/Window Name/);
+    const launchButton = screen.getByRole("button", { name: "Launch Session" });
+
+    expect(focusable.indexOf(launchButton)).toBe(focusable.indexOf(nameInput) + 1);
+  });
+
+  it("launches when the launch button is clicked", () => {
+    render(<PreLaunchCard {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Launch Session" }));
+    expect(props.onLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels the button Resume Session when resuming", () => {
+    render(<PreLaunchCard {...props} slot={{ ...slot, resumeSessionId: "abc" }} />);
+    expect(screen.getByRole("button", { name: "Resume Session" })).toBeInTheDocument();
+  });
+});
