@@ -200,7 +200,7 @@ describe("IssueMapModal", () => {
   it("legend entries hide a type, show counts, and 'show all' restores", async () => {
     renderModal();
     await screen.findByTestId("issue-node-1");
-    const closed = screen.getByLabelText("✔ Closed");
+    const closed = screen.getByLabelText("Closed");
     expect(closed.parentElement?.textContent).toContain("1/1");
     fireEvent.click(closed);
     expect(screen.getByTestId("issue-node-1")).toHaveAttribute("opacity", "0.06");
@@ -214,6 +214,86 @@ describe("IssueMapModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "show all" }));
     expect(screen.getByText(/Showing 3 of 3 issues/)).toBeInTheDocument();
+  });
+
+  it("colours the box by who takes it, crosses closed ones and shows one status icon", async () => {
+    mockBackend({
+      issues: [
+        ...ISSUES,
+        buildIssue({
+          number: 5,
+          title: "Outside",
+          labels: [{ name: "outside-change", color: "0" }],
+        }),
+        buildIssue({ number: 6, title: "Undecided", labels: [{ name: "bug", color: "0" }] }),
+      ],
+    });
+    renderModal();
+    const n1 = await screen.findByTestId("issue-node-1");
+    const rect = (n: number) => screen.getByTestId(`issue-node-${n}`).querySelector("rect");
+    const iconRun = (n: number) =>
+      screen.getByTestId(`issue-node-${n}`).querySelector("text")?.textContent;
+
+    // Background = kind, border neutral for every box, no dash patterns.
+    expect(rect(1)).toHaveAttribute("fill", "rgb(var(--maestro-green) / 0.22)");
+    expect(rect(2)).toHaveAttribute("fill", "rgb(var(--maestro-green) / 0.22)");
+    expect(rect(3)).toHaveAttribute("fill", "rgb(var(--maestro-red) / 0.22)");
+    expect(rect(5)).toHaveAttribute("fill", "rgb(var(--maestro-blue) / 0.22)");
+    expect(rect(6)).toHaveAttribute("fill", "rgb(var(--maestro-yellow) / 0.22)");
+    for (const n of [1, 2, 3, 5, 6]) {
+      expect(rect(n)).toHaveAttribute("stroke", "rgb(var(--maestro-border))");
+      expect(rect(n)).not.toHaveAttribute("stroke-dasharray");
+    }
+
+    // Closed #1: two cross lines, no status icon; open boxes: one status icon, no cross.
+    expect(n1.querySelectorAll("line")).toHaveLength(2);
+    expect(iconRun(1)).toBe("#1 ");
+    expect(screen.getByTestId("issue-node-2").querySelectorAll("line")).toHaveLength(0);
+    expect(iconRun(2)).toBe("#2 \u{1F7E2}");
+    expect(iconRun(3)).toBe("#3 \u{1F512}");
+    expect(screen.getByRole("img", { name: "Issue map" }).textContent).not.toMatch(
+      /\u{1F916}|\u{1F64B}|\u{1F3E2}|❓|✕|✔/u,
+    );
+
+    // Legend: three groups, new labels, kind toggle filters.
+    expect(screen.getByText("Background = who takes it")).toBeInTheDocument();
+    expect(screen.getByText("Icon = progress")).toBeInTheDocument();
+    expect(screen.getByText("Cross = closed")).toBeInTheDocument();
+    expect(screen.queryByText(/Background = progress|Border = who takes it/)).toBeNull();
+    for (const label of ["agent-ready", "needs-human", "outside-change", "decision / planning"]) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(screen.getByLabelText("\u{1F528} In progress")).toBeInTheDocument();
+    expect(screen.getByLabelText("\u{1F7E2} Ready")).toBeInTheDocument();
+    expect(screen.getByLabelText("\u{1F512} Blocked")).toBeInTheDocument();
+    expect(screen.getByLabelText("Closed").parentElement?.querySelector("svg line")).not.toBeNull();
+    expect(screen.getByTestId("issue-map-encoding")).toHaveTextContent(
+      "Background = who takes it (green agent-ready, red needs-human, blue outside-change, yellow anything else). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, \u{1F512} blocked). A cross means closed.",
+    );
+    const agent = screen.getByLabelText("agent-ready");
+    expect(agent.parentElement?.textContent).toContain("2/2");
+    fireEvent.click(agent);
+    expect(screen.getByTestId("issue-node-1")).toHaveAttribute("opacity", "0.06");
+    expect(screen.getByTestId("issue-node-2")).toHaveAttribute("opacity", "0.06");
+    expect(screen.getByTestId("issue-node-3")).toHaveAttribute("opacity", "1");
+    expect(screen.getByText(/Showing 3 of 5 issues/)).toBeInTheDocument();
+    expect(agent.parentElement?.textContent).toContain("0/2");
+    // Visibility = status toggle AND kind toggle: hiding "blocked" too drops #3.
+    fireEvent.click(screen.getByLabelText("\u{1F512} Blocked"));
+    expect(screen.getByTestId("issue-node-3")).toHaveAttribute("opacity", "0.06");
+    expect(screen.getByText(/Showing 2 of 5 issues/)).toBeInTheDocument();
+
+    // Tooltip chips: kind chip coloured, progress chip neutral; closed says "✕ Closed".
+    fireEvent.mouseEnter(screen.getByTestId("issue-node-3"), { clientX: 100, clientY: 100 });
+    expect(screen.getByTestId("issue-map-tip-progress")).toHaveTextContent("\u{1F512} Blocked");
+    expect(screen.getByTestId("issue-map-tip-progress")).not.toHaveAttribute("style");
+    expect(screen.getByTestId("issue-map-tip-kind")).toHaveTextContent(/^needs-human$/);
+    expect(screen.getByTestId("issue-map-tip-kind")).toHaveStyle({
+      background: "rgb(var(--maestro-red) / 0.22)",
+    });
+    fireEvent.mouseLeave(screen.getByTestId("issue-node-3"));
+    fireEvent.mouseEnter(n1, { clientX: 100, clientY: 100 });
+    expect(screen.getByTestId("issue-map-tip-progress")).toHaveTextContent("✕ Closed");
   });
 
   it("hover focuses the chain, shows the tooltip and explains the hint", async () => {

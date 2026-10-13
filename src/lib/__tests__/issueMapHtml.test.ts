@@ -109,6 +109,63 @@ describe("buildIssueMapHtml", () => {
     expect(html).toContain("An issue&#39;s level is 1 + the highest level among its blockers");
   });
 
+  it("colours the background by kind, marks closed with a cross and shows one status icon", () => {
+    const outside = issue({ number: 5, labels: [{ name: "outside-change", color: "000000" }] });
+    const human = issue({ number: 6, labels: [{ name: "needs-human", color: "000000" }] });
+    const decision = issue({ number: 7, labels: [{ name: "bug", color: "000000" }] });
+    const html = buildIssueMapHtml(
+      buildIssueMap([...issues, outside, human, decision], links),
+      OPTIONS,
+    );
+    // One CSS rule per kind, derived from the shared KIND_FILL map; nothing status-driven.
+    expect(html).toContain(".node.k-agent rect{fill:rgba(63,185,80,.22)}");
+    expect(html).toContain(".node.k-human rect{fill:rgba(220,38,38,.22)}");
+    expect(html).toContain(".node.k-outside rect{fill:rgba(59,130,246,.22)}");
+    expect(html).toContain(".node.k-decision rect{fill:rgba(234,179,8,.22)}");
+    expect(html).toContain(".node rect{stroke:var(--border);");
+    expect(html).not.toMatch(/\.node\.(closed|inprog|ready|blocked) rect|stroke-dasharray/);
+    expect(html).toContain('class="node ready k-outside" data-id="5"');
+    expect(html).toContain('class="node ready k-human" data-id="6"');
+    expect(html).toContain('class="node ready k-decision" data-id="7"');
+    // One box's markup: from its data-id to the next box (or the end of the svg).
+    const box = (id: number) => {
+      const start = html.indexOf(`data-id="${id}"`);
+      const next = html.indexOf('<g class="node', start);
+      return html.slice(start, next === -1 ? html.indexOf("</svg>") : next);
+    };
+    // Closed #1: the cross, and an empty icon run.
+    expect(box(1)).toContain('<line class="x" x1="4" y1="4"');
+    expect(box(1)).toContain('<tspan class="ic"></tspan>');
+    // Open #2 (ready) and #3 (blocked): one status icon each, no cross, no kind icon.
+    expect(box(2)).toContain('<tspan class="ic">\u{1F7E2}</tspan>');
+    expect(box(2)).not.toContain('class="x"');
+    expect(box(3)).toContain('<tspan class="ic">\u{1F512}</tspan>');
+    expect(html).not.toMatch(/\u{1F916}|\u{1F64B}|\u{1F3E2}|❓/u);
+  });
+
+  it("legend has the three groups in order and the header explains the encoding", () => {
+    const html = buildIssueMapHtml(map, OPTIONS);
+    const leg = html.slice(html.indexOf('<div class="leg">'), html.indexOf('<div id="hint">'));
+    const at = (s: string) => leg.indexOf(s);
+    expect(at("Background = who takes it")).toBeGreaterThanOrEqual(0);
+    expect(at("Background = who takes it")).toBeLessThan(at("Icon = progress"));
+    expect(at("Icon = progress")).toBeLessThan(at("Cross = closed"));
+    expect(at("Cross = closed")).toBeLessThan(at("Assignee"));
+    expect(leg).toContain('data-ax="kind" value="agent"><i class="i k-agent"></i>agent-ready<span');
+    expect(leg).toContain('value="decision"><i class="i k-decision"></i>decision / planning<span');
+    expect(leg).toContain('data-ax="status" value="inprog">\u{1F528} In progress<span');
+    expect(leg).toContain('data-ax="status" value="ready">\u{1F7E2} Ready<span');
+    expect(leg).toContain('data-ax="status" value="blocked">\u{1F512} Blocked<span');
+    expect(leg).toContain('data-ax="status" value="closed"><i class="i xs"></i>Closed<span');
+    expect(leg).not.toContain("Background = progress");
+    expect(leg).not.toContain("Border = who takes it");
+    expect(leg).toContain(
+      '<div id="enc">Background = who takes it (green agent-ready, red needs-human, ' +
+        "blue outside-change, yellow anything else). Icon = progress (\u{1F528} in progress, " +
+        "\u{1F7E2} ready, \u{1F512} blocked). A cross means closed.</div>",
+    );
+  });
+
   it("prints the issue-limit warning in the header only when the fetch was truncated", () => {
     const warning = "⚠ Showing the first 1000 issues, links beyond it are dropped.";
     expect(buildIssueMapHtml(map, OPTIONS)).not.toContain(warning);
@@ -149,6 +206,16 @@ describe("buildIssueMapHtml", () => {
     (document.getElementById("all") as HTMLElement).click();
     expect(count.textContent).toBe("Showing 3 of 3 issues");
 
+    // Legend: hide the agent-ready kind → every box here dims (all three are agent-ready).
+    const agent = document.querySelector(
+      'input[data-ax="kind"][value="agent"]',
+    ) as HTMLInputElement;
+    agent.checked = false;
+    agent.dispatchEvent(new Event("change"));
+    expect(count.textContent).toBe("Showing 0 of 3 issues");
+    expect(agent.parentElement?.querySelector(".cnt")?.textContent).toBe("0/3");
+    (document.getElementById("all") as HTMLElement).click();
+
     // Hover: chain focus, hint and tooltip with level, labels and description.
     node(2).dispatchEvent(new MouseEvent("mouseenter", { clientX: 10, clientY: 10 }));
     expect(document.querySelector("svg")?.classList.contains("focus")).toBe(true);
@@ -162,6 +229,12 @@ describe("buildIssueMapHtml", () => {
     expect(tip.style.display).toBe("block");
     expect(tip.classList.contains("pinned")).toBe(false);
     expect(tip.textContent).toContain("#2 Build it");
+    // Progress chip: icon + name, neutral; kind chip: name only, kind-coloured.
+    const chips = Array.from(tip.querySelectorAll(".st"));
+    expect(chips.map((c) => [c.textContent, c.className])).toEqual([
+      ["\u{1F7E2} Ready", "st"],
+      ["agent-ready", "st i k-agent"],
+    ]);
     expect(tip.textContent).toContain("Level 1 · GitHub state: OPEN");
     expect(tip.textContent).toContain("#1 Scaffold <b>& co</b> (closed)");
     expect(tip.textContent).toContain("Waiting on it: #3");

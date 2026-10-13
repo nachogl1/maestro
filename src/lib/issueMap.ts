@@ -20,14 +20,18 @@ export type IssueMapStatus = "closed" | "inprog" | "ready" | "blocked";
 export type IssueMapKind = "agent" | "human" | "outside" | "decision";
 
 export interface IssueMapAxisEntry {
-  icon: string;
   name: string;
   meaning: string;
 }
 
-/** Background = progress. */
-export const STATUS_META: Record<IssueMapStatus, IssueMapAxisEntry> = {
-  closed: { icon: "✔", name: "Closed", meaning: "merged and closed, nothing left to do" },
+export interface IssueMapStatusEntry extends IssueMapAxisEntry {
+  /** Drawn on the box for open issues; the closed "✕" is for the legend and tooltip only. */
+  icon: string;
+}
+
+/** Icon = progress. */
+export const STATUS_META: Record<IssueMapStatus, IssueMapStatusEntry> = {
+  closed: { icon: "✕", name: "Closed", meaning: "merged and closed, nothing left to do" },
   inprog: {
     icon: "\u{1F528}",
     name: "In progress",
@@ -41,29 +45,47 @@ export const STATUS_META: Record<IssueMapStatus, IssueMapAxisEntry> = {
   },
 };
 
-/** Border = who takes it. */
+/** Background = who takes it. */
 export const KIND_META: Record<IssueMapKind, IssueMapAxisEntry> = {
   agent: {
-    icon: "\u{1F916}",
     name: "agent-ready",
     meaning: "nothing left to ask, an agent can claim and build it",
   },
   human: {
-    icon: "\u{1F64B}",
     name: "needs-human",
     meaning: "a person must act or decide first",
   },
   outside: {
-    icon: "\u{1F3E2}",
     name: "outside-change",
     meaning: "a change lands outside the boundary repos, ends at a pull request for a reviewer",
   },
   decision: {
-    icon: "❓",
     name: "decision / planning",
     meaning: "no triage label yet: not a story to build until somebody says who takes it",
   },
 };
+
+/** Maestro palette colour names; the modal and the export each map them to their own CSS. */
+export type IssueMapTone = "green" | "red" | "blue" | "yellow";
+
+/** Background = who takes it: the colour each kind's box is filled with. */
+export const KIND_FILL: Record<IssueMapKind, IssueMapTone> = {
+  agent: "green",
+  human: "red",
+  outside: "blue",
+  decision: "yellow",
+};
+
+/** The one status icon a box shows; "" for a closed issue, whose cross says it all. */
+export function statusIcon(node: { status: IssueMapStatus }): string {
+  return node.status === "closed" ? "" : STATUS_META[node.status].icon;
+}
+
+/** How the boxes are coloured and marked; the modal legend and the export say the same. */
+export const ENCODING_EXPLANATION =
+  "Background = who takes it (green agent-ready, red needs-human, blue outside-change, " +
+  "yellow anything else). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, " +
+  "\u{1F512} blocked). A cross means closed.";
 
 /** How many issues the map fetches, open and closed (`gh --limit`). */
 export const MAP_ISSUE_LIMIT = 1000;
@@ -372,7 +394,7 @@ export function labelChips(labels: string[]): IssueMapChip[] {
   return chips;
 }
 
-/** What the node box prints: number + icons, epic tag, title, assignees, labels. */
+/** What the node box prints: number + status icon, epic tag, title, assignees, labels. */
 export function nodeText(node: IssueMapNode): {
   icons: string;
   tag: string;
@@ -381,7 +403,7 @@ export function nodeText(node: IssueMapNode): {
   chips: IssueMapChip[];
 } {
   return {
-    icons: `${STATUS_META[node.status].icon}${KIND_META[node.kind].icon}`,
+    icons: statusIcon(node),
     tag: node.epic !== null ? `epic #${node.epic}` : "",
     title: truncate(node.title, TITLE_MAX),
     assignees:
