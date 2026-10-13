@@ -1307,13 +1307,6 @@ pub fn run() {
             commands::claudemd::list_context_docs,
             commands::claudemd::read_context_doc,
             commands::claudemd::write_context_doc,
-            // Claude auto-memory commands
-            commands::memory::list_memory_projects,
-            commands::memory::list_memory_files,
-            commands::memory::read_memory_file,
-            commands::memory::write_memory_file,
-            commands::memory::delete_memory_file,
-            commands::memory::delete_memory_project,
             // Font detection commands
             commands::fonts::get_available_fonts,
             commands::fonts::check_font_available,
@@ -1358,17 +1351,6 @@ pub fn run() {
             commands::hooks::remove_session_hooks_config,
             // Agent graph commands
             commands::agents::export_agent_run,
-            // Standup report commands
-            commands::standup::generate_standup_report,
-            commands::standup::get_default_standup_prompt,
-            commands::standup::load_standup_report,
-            // Daily plan commands (one plan across all open projects)
-            commands::plan::generate_daily_plan,
-            commands::plan::load_daily_plan,
-            // Project feature catalogue (on-demand scan, one per project)
-            commands::catalog::scan_project_catalog,
-            commands::catalog::cancel_project_catalog,
-            commands::catalog::load_project_catalog,
             // Samurai supervisor + audit log (Phase 1)
             commands::samurai::samurai_register_session,
             commands::samurai::samurai_revert_launch_line_prompt,

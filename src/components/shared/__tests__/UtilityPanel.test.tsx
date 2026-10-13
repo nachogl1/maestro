@@ -59,36 +59,6 @@ function mockInvoke() {
             exists: true,
           },
         ];
-      case "list_memory_projects":
-        return [
-          {
-            dirName: "C--git-maestro",
-            memoryPath: "C:\\Users\\me\\.claude\\projects\\C--git-maestro\\memory",
-            fileCount: 2,
-            isActive: true,
-          },
-        ];
-      case "list_memory_files":
-        return [
-          {
-            relPath: "MEMORY.md",
-            path: "C:\\Users\\me\\.claude\\projects\\C--git-maestro\\memory\\MEMORY.md",
-            description: null,
-            memType: null,
-            isIndex: true,
-            sizeBytes: 100,
-            modified: null,
-          },
-          {
-            relPath: "user_profile.md",
-            path: "C:\\Users\\me\\.claude\\projects\\C--git-maestro\\memory\\user_profile.md",
-            description: "Who the user is",
-            memType: "user",
-            isIndex: false,
-            sizeBytes: 200,
-            modified: null,
-          },
-        ];
       case "list_dev_processes":
         return [];
       case "list_docker_containers":
