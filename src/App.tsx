@@ -1,26 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { GitFork, RefreshCw, X } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
-import { initSamuraiSpawnListener, stopSamuraiSpawnListener } from "@/lib/spawnSession";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
-import {
-  initContextUsageListener,
-  initSamuraiSupervisorListener,
-  stopContextUsageListener,
-  stopSamuraiSupervisorListener,
-  useSessionStore,
-} from "@/stores/useSessionStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitGraphPanel } from "./components/git/GitGraphPanel";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
@@ -49,21 +40,16 @@ import {
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
 import { UpdateNotification } from "./components/update/UpdateNotification";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
+import { useAppListeners } from "./hooks/useAppListeners";
+import { useBackgroundPollers } from "./hooks/useBackgroundPollers";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
-import { HEALTH_CHECK_INTERVAL_MS } from "./lib/healthRules";
-import { initActivityListener, stopActivityListener } from "./stores/useActivityStore";
-import { initAgentListener, stopAgentListener } from "./stores/useAgentStore";
 import { useGitHubStore } from "./stores/useGitHubStore";
 import {
   useGitHubWatchdogStore,
   WATCHDOG_ISSUE_SEARCH,
   WATCHDOG_PR_SEARCH,
-  watchedProjectsFromTabs,
 } from "./stores/useGitHubWatchdogStore";
 import { useGitStore } from "./stores/useGitStore";
-import { useHealthStore } from "./stores/useHealthStore";
-import { useTerminalSettingsStore } from "./stores/useTerminalSettingsStore";
-import { useUpdateStore } from "./stores/useUpdateStore";
 import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
 
 /**
@@ -102,8 +88,6 @@ function App() {
   const setSessionsLaunched = useWorkspaceStore((s) => s.setSessionsLaunched);
   const setSelectedRepo = useWorkspaceStore((s) => s.setSelectedRepo);
   const rehydrateRepositories = useWorkspaceStore((s) => s.rehydrateRepositories);
-  const fetchSessions = useSessionStore((s) => s.fetchSessions);
-  const initListeners = useSessionStore((s) => s.initListeners);
   const { openProject: handleOpenProject } = useOpenProject();
   const showFDADialog = useFDAStore((s) => s.showDialog);
   const fdaPath = useFDAStore((s) => s.pendingPath);
@@ -156,208 +140,8 @@ function App() {
     localStorage.setItem("maestro-theme", theme);
   }, [theme]);
 
-  // Tag the document with platform class so CSS can disable expensive effects
-  // (e.g. box-shadow animations) that aren't GPU-accelerated on WebKitGTK/Linux.
-  useEffect(() => {
-    const ua = navigator.userAgent.toLowerCase();
-    if (ua.includes("linux")) {
-      document.documentElement.classList.add("platform-linux");
-    }
-  }, []);
-
-  // Clean up orphaned PTY sessions on mount, then fetch fresh session state.
-  // kill_all_sessions clears both ProcessManager (PTYs) and SessionManager
-  // (metadata), so fetchSessions must run AFTER cleanup completes to avoid
-  // loading stale "idle" sessions from a previous frontend lifecycle.
-  useEffect(() => {
-    invoke<number>("kill_all_sessions")
-      .then((count) => {
-        if (count > 0) {
-          console.log(`Cleaned up ${count} orphaned PTY session(s) from previous page load`);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to clean up orphaned sessions:", err);
-      })
-      .finally(() => {
-        fetchSessions().catch((err) => {
-          console.error("Failed to fetch sessions:", err);
-        });
-      });
-
-    const unlistenPromise = initListeners().catch((err) => {
-      console.error("Failed to initialize listeners:", err);
-      return () => {}; // no-op cleanup
-    });
-
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [fetchSessions, initListeners]);
-
-  // Initialize terminal settings store (detects available fonts)
-  const initializeTerminalSettings = useTerminalSettingsStore((s) => s.initialize);
-  useEffect(() => {
-    initializeTerminalSettings().catch((err) => {
-      console.error("Failed to initialize terminal settings:", err);
-    });
-  }, [initializeTerminalSettings]);
-
-  // Initialize update event listeners and auto-check
-  const initUpdateListeners = useUpdateStore((s) => s.initListeners);
-  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
-  const autoCheckEnabled = useUpdateStore((s) => s.autoCheckEnabled);
-  const checkIntervalMinutes = useUpdateStore((s) => s.checkIntervalMinutes);
-
-  useEffect(() => {
-    const unlistenPromise = initUpdateListeners().catch((err) => {
-      console.error("Failed to initialize update listeners:", err);
-      return () => {};
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [initUpdateListeners]);
-
-  // Initialize activity event listener (batched claude-events from the transcript watcher)
-  useEffect(() => {
-    initActivityListener().catch((err) => {
-      console.error("Failed to initialize activity listener:", err);
-    });
-    return () => {
-      stopActivityListener();
-    };
-  }, []);
-
-  // Initialize context usage listener (per-session context-window % from
-  // ContextUsageUpdate events, surfaced on the session store)
-  useEffect(() => {
-    initContextUsageListener().catch((err) => {
-      console.error("Failed to initialize context usage listener:", err);
-    });
-    return () => {
-      stopContextUsageListener();
-    };
-  }, []);
-
-  // Samurai supervisor listener: tracks generation/state for the badges
-  // (issue #46), flips DEAD sessions (silent-death watchdog, issue #44) to
-  // Error chrome + attention, and flags supervised sessions on allowance
-  // threshold crossings (issue #45).
-  useEffect(() => {
-    initSamuraiSupervisorListener().catch((err) => {
-      console.error("Failed to initialize samurai supervisor listener:", err);
-    });
-    return () => {
-      stopSamuraiSupervisorListener();
-    };
-  }, []);
-
-  // Samurai successor spawns (issue #55): after killing gen-N the backend
-  // emits samurai-spawn-successor; this listener queues the gen-N+1 launch
-  // through the existing pending-launch flow (same path as History-tab
-  // recoveries) and the grid registers it under supervision.
-  useEffect(() => {
-    initSamuraiSpawnListener().catch((err) => {
-      console.error("Failed to initialize samurai spawn listener:", err);
-    });
-    return () => {
-      stopSamuraiSpawnListener();
-    };
-  }, []);
-
-  // Initialize agent listener (tracks subagents for the sidebar Agents section)
-  useEffect(() => {
-    initAgentListener().catch((err) => {
-      console.error("Failed to initialize agent listener:", err);
-    });
-    return () => {
-      stopAgentListener();
-    };
-  }, []);
-
-  // Listen for CLI-initiated project open events (from `maestro /path`).
-  //
-  // Two triggers:
-  //   1. A subsequent `maestro <path>` invocation fires the
-  //      `cli-open-project` event immediately via the single-instance plugin.
-  //   2. On first launch the path was captured in a backend slot; we drain it
-  //      here on mount via `take_pending_cli_path`. That replaces the older
-  //      500ms sleep + emit dance, which raced against slow frontend mounts.
-  useEffect(() => {
-    const openFromCli = async (path: string) => {
-      if (!path) return;
-      try {
-        await useWorkspaceStore.getState().openProject(path);
-      } catch (err) {
-        console.error("cli-open-project failed:", err);
-        return;
-      }
-      getCurrentWindow()
-        .setFocus()
-        .catch(() => {});
-    };
-
-    // Drain any path captured before we mounted.
-    invoke<string | null>("take_pending_cli_path")
-      .then((path) => {
-        if (path) void openFromCli(path);
-      })
-      .catch(() => {});
-
-    const unlisten = listen<string>("cli-open-project", (event) => {
-      void openFromCli(event.payload);
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!autoCheckEnabled) return;
-    // Check on mount
-    checkForUpdates();
-    // Then periodically
-    const interval = setInterval(checkForUpdates, checkIntervalMinutes * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [autoCheckEnabled, checkIntervalMinutes, checkForUpdates]);
-
-  // GitHub watchdog: receive poll snapshots from the Rust background task.
-  const initWatchdogListeners = useGitHubWatchdogStore((s) => s.initListeners);
-  useEffect(() => {
-    const unlistenPromise = initWatchdogListeners().catch((err) => {
-      console.error("Failed to initialize GitHub watchdog listeners:", err);
-      return () => {};
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [initWatchdogListeners]);
-
-  // GitHub watchdog: keep the Rust poller's project set in sync with the
-  // open workspace tabs (deduplicated by repo path — see helper docs).
-  // Serialized so active-tab flips (which also mutate `tabs`) don't
-  // re-invoke the command; the backend additionally ignores identical sets.
-  const watchedProjectsJson = useMemo(() => JSON.stringify(watchedProjectsFromTabs(tabs)), [tabs]);
-  useEffect(() => {
-    void useGitHubWatchdogStore.getState().syncProjects(JSON.parse(watchedProjectsJson));
-  }, [watchedProjectsJson]);
-
-  // Health checker: rule-based Samurai-file checks on a quiet interval.
-  // Independent of the open tabs, so nothing here restarts the interval.
-  // The first run is delayed rather than fired on mount so it does not
-  // compete with first paint and terminal spawn. The badge still populates
-  // long before the first interval tick, and first-run suppression via
-  // `baselineKeys` keeps the toast behaviour identical whenever it lands.
-  useEffect(() => {
-    const runCheck = () => void useHealthStore.getState().runCheck();
-    const firstRun = setTimeout(runCheck, 30_000);
-    const interval = setInterval(runCheck, HEALTH_CHECK_INTERVAL_MS);
-    return () => {
-      clearTimeout(firstRun);
-      clearInterval(interval);
-    };
-  }, []);
+  useAppListeners();
+  useBackgroundPollers(tabs);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
   const macTitleBarPadding = useMacTitleBarPadding();
