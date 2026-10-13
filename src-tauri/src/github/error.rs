@@ -18,12 +18,6 @@ pub enum GitHubError {
         command: String,
     },
 
-    /// A gh command was terminated by a signal before completing.
-    // As in `git::error`: only constructible where signals terminate children.
-    #[allow(dead_code)]
-    #[error("gh command was killed by signal")]
-    Killed { command: String },
-
     /// The gh process could not be spawned (e.g., permission denied).
     #[error("failed to spawn gh process: {source}")]
     SpawnError {
