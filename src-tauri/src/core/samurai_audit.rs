@@ -35,8 +35,8 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
+use super::project_key::project_key;
 use super::samurai_files::normalize_project;
-use super::status_server::StatusServer;
 
 /// The audit event kinds (PRD §5.10). Sub-kinds (ack-timeout, breaker-tripped,
 /// threshold-crossed, illegal_transition, …) live in the free-form `details`.
@@ -233,27 +233,13 @@ impl AuditLog {
 }
 
 /// File name for a project's audit log: `<sanitized-basename>-<hash12>.jsonl`.
-/// Same naming convention as `commands/ai_runner.rs::project_artifact_dir` —
-/// the hash disambiguates same-named projects in different locations.
+/// The stem is [`project_key`], shared with `samurai_run_config`'s
+/// per-project directories — the hash disambiguates same-named projects in
+/// different locations.
 /// `pub(crate)` so the file inventory (`samurai_files`, issue #65) can
 /// associate audit files back to their projects.
 pub(crate) fn audit_file_name(project: &str) -> String {
-    let name = Path::new(project)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| "project".to_string());
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let hash = StatusServer::generate_project_hash(project);
-    format!("{}-{}.jsonl", sanitized, hash)
+    format!("{}.jsonl", project_key(project))
 }
 
 fn audit_file_path(base_dir: &Path, project: &str) -> PathBuf {
