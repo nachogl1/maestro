@@ -4,20 +4,17 @@
  * Turns the fetched issues plus their links into a column layout: an issue's
  * level is 1 + the highest level among its blockers (Level 0 has none), the
  * columns are the levels, and a line always runs from the blocker to the
- * issue that waits for it. Pure functions, no React — the modal draws
- * whatever comes out of here as plain SVG, and the HTML export draws the same.
+ * issue that waits for it. Epics sit in their own far-left column, outside
+ * the levels, tied to their stories by GitHub's sub-issue link. Pure
+ * functions, no React — the modal draws whatever comes out of here as plain
+ * SVG, and the HTML export draws the same.
  */
 
 import type { IssueInfo } from "@/stores/useGitHubStore";
-import {
-  buildIssueGraph,
-  type IssueGraphNode,
-  type IssueLinkProblem,
-  type IssueLinks,
-} from "./issueGraph";
+import { buildIssueGraph, type IssueLinkProblem, type IssueLinks, isEpic } from "./issueGraph";
 
 export type IssueMapStatus = "closed" | "inprog" | "ready" | "blocked";
-export type IssueMapKind = "agent" | "human" | "outside" | "decision";
+export type IssueMapKind = "agent" | "human" | "outside" | "decision" | "epic";
 
 export interface IssueMapAxisEntry {
   name: string;
@@ -63,10 +60,14 @@ export const KIND_META: Record<IssueMapKind, IssueMapAxisEntry> = {
     name: "decision / planning",
     meaning: "no triage label yet: not a story to build until somebody says who takes it",
   },
+  epic: {
+    name: "epic",
+    meaning: "an epic, far-left column; click it to see its stories",
+  },
 };
 
 /** Maestro palette colour names; the modal and the export each map them to their own CSS. */
-export type IssueMapTone = "green" | "red" | "blue" | "yellow";
+export type IssueMapTone = "green" | "red" | "blue" | "yellow" | "purple";
 
 /** Background = who takes it: the colour each kind's box is filled with. */
 export const KIND_FILL: Record<IssueMapKind, IssueMapTone> = {
@@ -74,6 +75,7 @@ export const KIND_FILL: Record<IssueMapKind, IssueMapTone> = {
   human: "red",
   outside: "blue",
   decision: "yellow",
+  epic: "purple",
 };
 
 /** The one status icon a box shows; "" for a closed issue, whose cross says it all. */
@@ -84,7 +86,7 @@ export function statusIcon(node: { status: IssueMapStatus }): string {
 /** How the boxes are coloured and marked; the modal legend and the export say the same. */
 export const ENCODING_EXPLANATION =
   "Background = who takes it (green agent-ready, red needs-human, blue outside-change, " +
-  "yellow anything else). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, " +
+  "yellow anything else, purple epic). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, " +
   "\u{1F512} blocked). A cross means closed.";
 
 /** How many issues the map fetches, open and closed (`gh --limit`). */
@@ -93,18 +95,29 @@ export const MAP_ISSUE_LIMIT = 1000;
 /** Header warning when the fetch hit MAP_ISSUE_LIMIT; modal and export print it. */
 export const LIMIT_WARNING = `⚠ Showing the first ${MAP_ISSUE_LIMIT} issues, links beyond it are dropped.`;
 
-/** What the hint line says when nothing is hovered or pinned. */
+/** What the hint line says when no issue is clicked. */
 export const HINT =
-  "Hover an issue to see its chain and a tooltip. Click to pin, double-click to open it on GitHub. " +
-  "Click a legend entry to hide or show that type; each shows shown/total.";
+  "Drag to move around, scroll the wheel to zoom (or use the buttons). Click an issue to see its " +
+  "chain and a tooltip, click it again to clear. Double-click opens it on GitHub. Click a legend " +
+  "entry to hide or show that type (hidden issues leave the map and the rest close up); each " +
+  "shows shown/total.";
 
 /** How the levels are built; the modal footer and the export say the same. */
 export const LEVEL_EXPLANATION =
   "An issue's level is 1 + the highest level among its blockers; Level 0 has no blockers. " +
-  "Only GitHub 'blocked by' and a '### Blocked by' section count; epics are not drawn.";
+  "Only GitHub 'blocked by' and a '### Blocked by' section count. Epics sit in the far-left " +
+  "column, outside the levels, joined to their stories by dashed purple lines (GitHub's " +
+  "sub-issue link). Epics and closed issues start hidden: tick them in the legend.";
 
 export const STATUS_ORDER: IssueMapStatus[] = ["closed", "inprog", "ready", "blocked"];
-export const KIND_ORDER: IssueMapKind[] = ["agent", "human", "outside", "decision"];
+export const KIND_ORDER: IssueMapKind[] = ["agent", "human", "outside", "decision", "epic"];
+
+/** Legend entries that start unticked, so the first view is the open work. */
+export const START_HIDDEN_KINDS: IssueMapKind[] = ["epic"];
+export const START_HIDDEN_STATUSES: IssueMapStatus[] = ["closed"];
+
+/** Name of the far-left column that holds the epics. */
+export const EPICS_COLUMN = "Epics";
 
 /** Label name → kind. First match wins, so order is precedence. */
 const KIND_LABELS: Array<[IssueMapKind, RegExp]> = [
@@ -118,6 +131,8 @@ export function kindOf(labels: Array<{ name: string }>): {
   kind: IssueMapKind;
   label: string | null;
 } {
+  const epic = labels.find((l) => l.name.toLowerCase() === "epic");
+  if (epic) return { kind: "epic", label: epic.name };
   for (const [kind, re] of KIND_LABELS) {
     const hit = labels.find((l) => re.test(l.name));
     if (hit) return { kind, label: hit.name };
@@ -142,6 +157,7 @@ export interface IssueMapNode {
   kind: IssueMapKind;
   /** The label that decided `kind`, null for the fallback. */
   kindLabel: string | null;
+  /** Level column; -1 for an epic, which sits in the Epics column. */
   level: number;
   labels: string[];
   /** Raw issue body ("" when the links did not load). */
@@ -149,6 +165,10 @@ export interface IssueMapNode {
   assignees: string[];
   /** Native parent issue, when GitHub names one (informational). */
   epic: number | null;
+  /** The drawn epic this story belongs to (its sub-issue link), else null. */
+  parent: number | null;
+  /** An epic's stories on the map (its sub-issues); empty for anything else. */
+  stories: IssueMapBlocker[];
   /** Kept blockers: loaded, not epics, not closing a cycle. */
   blockers: IssueMapBlocker[];
   /** Issues that wait on this one. */
@@ -166,16 +186,23 @@ export interface IssueMapEdge {
 }
 
 export interface IssueMapColumn {
+  /** Position from the left, after empty columns are packed away. */
   index: number;
   label: string;
+  /** Closed and total issues of the whole column, whatever is filtered out. */
   closed: number;
   total: number;
   x: number;
+  /** Issue numbers top to bottom (open first by number, closed at the bottom). */
+  members: number[];
 }
 
 export interface IssueMap {
   nodes: IssueMapNode[];
+  /** Blocked-by lines. */
   edges: IssueMapEdge[];
+  /** Dashed epic-to-story lines (sub-issue link); `open` is the story's state. */
+  epicEdges: IssueMapEdge[];
   columns: IssueMapColumn[];
   width: number;
   height: number;
@@ -240,9 +267,59 @@ export function edgePath(from: { x: number; y: number }, to: { x: number; y: num
   return `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`;
 }
 
+/** Where every shown box, column and line sits once hidden issues leave the map. */
+export interface IssueMapLayout {
+  positions: Map<number, { x: number; y: number }>;
+  /** Only the columns that still hold a shown issue, packed left to right. */
+  columns: IssueMapColumn[];
+  /** `${from}->${to}` → path, for every line whose two ends are shown. */
+  paths: Map<string, string>;
+  width: number;
+  height: number;
+}
+
+export const edgeKey = (edge: { from: number; to: number }): string => `${edge.from}->${edge.to}`;
+
+/**
+ * Lay out the shown issues: hidden ones leave the map, empty columns go, the
+ * rest close up left to right, and every column is centred on the tallest.
+ */
+export function packIssueMap(
+  map: Pick<IssueMap, "columns" | "edges" | "epicEdges">,
+  visible: Set<number>,
+): IssueMapLayout {
+  const cols = map.columns
+    .map((col) => ({ col, members: col.members.filter((n) => visible.has(n)) }))
+    .filter((c) => c.members.length > 0);
+  const rows = Math.max(1, ...cols.map((c) => c.members.length));
+  const positions = new Map<number, { x: number; y: number }>();
+  const columns: IssueMapColumn[] = cols.map(({ col, members }, index) => {
+    const x = MAP_X0 + index * MAP_COL_W;
+    const offset = ((rows - members.length) * MAP_ROW_H) / 2;
+    members.forEach((n, row) => {
+      positions.set(n, { x, y: MAP_Y0 + offset + row * MAP_ROW_H });
+    });
+    return { ...col, index, x };
+  });
+  const paths = new Map<string, string>();
+  for (const edge of [...map.edges, ...map.epicEdges]) {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (from && to) paths.set(edgeKey(edge), edgePath(from, to));
+  }
+  return {
+    positions,
+    columns,
+    paths,
+    width: Math.max(1, columns.length) * MAP_COL_W - 10,
+    height: MAP_Y0 + rows * MAP_ROW_H + 30,
+  };
+}
+
 /**
  * Build the map for the fetched issues. Only kept "blocked by" links draw
- * lines and set levels; the native parent only fills the epic tag on the box.
+ * solid lines and set levels; an epic's sub-issue link draws a dashed line
+ * from the Epics column, and the native parent fills the epic tag on the box.
  */
 export function buildIssueMap(
   issues: IssueInfo[],
@@ -263,6 +340,22 @@ export function buildIssueMap(
   for (const edge of sortedEdges) {
     up[edge.target].push(edge.source);
     down[edge.source].push(edge.target);
+  }
+
+  // Epic → its stories, from GitHub's sub-issue link (either side of it).
+  const epics = issues.filter((i) => isEpic(i.labels)).map((i) => i.number);
+  const kids = new Map<number, number[]>();
+  for (const e of epics) {
+    const set = new Set((links[e]?.subIssues ?? []).filter((k) => graphNodes.has(k)));
+    for (const node of graph.nodes) if (node.epic === e) set.add(node.number);
+    kids.set(
+      e,
+      [...set].sort((a, b) => a - b),
+    );
+  }
+  const parent = new Map<number, number>();
+  for (const e of [...epics].sort((a, b) => a - b)) {
+    for (const k of kids.get(e) ?? []) if (!parent.has(k)) parent.set(k, e);
   }
 
   // Level = 1 + the highest level among the blockers; no blockers = 0. Kept
@@ -286,37 +379,45 @@ export function buildIssueMap(
     byLevel.set(level, col);
   }
   const rank = (n: number) => (isOpen((byNumber.get(n) as IssueInfo).state) ? 0 : 1);
-  for (const members of byLevel.values()) members.sort((a, b) => rank(a) - rank(b) || a - b);
+  const ordered = (members: number[]) => members.sort((a, b) => rank(a) - rank(b) || a - b);
 
+  const columnMembers: Array<{ label: string; level: number; members: number[] }> = [];
+  if (epics.length > 0) {
+    columnMembers.push({ label: EPICS_COLUMN, level: -1, members: ordered([...epics]) });
+  }
   const maxLevel = byLevel.size > 0 ? Math.max(...byLevel.keys()) : -1;
-  const columns: IssueMapColumn[] = [];
-  const nodes: IssueMapNode[] = [];
-  const positions = new Map<number, { x: number; y: number }>();
-  let rows = 1;
   for (let level = 0; level <= maxLevel; level++) {
-    const members = byLevel.get(level) ?? [];
-    const x = MAP_X0 + level * MAP_COL_W;
-    let closed = 0;
-    members.forEach((n, row) => {
-      if (!isOpen((byNumber.get(n) as IssueInfo).state)) closed++;
-      positions.set(n, { x, y: MAP_Y0 + row * MAP_ROW_H });
+    columnMembers.push({
+      label: `Level ${level}`,
+      level,
+      members: ordered(byLevel.get(level) ?? []),
     });
-    rows = Math.max(rows, members.length);
-    columns.push({ index: level, label: `Level ${level}`, closed, total: members.length, x });
+  }
+  const columns: IssueMapColumn[] = columnMembers.map(({ label, members }, index) => ({
+    index,
+    label,
+    closed: members.filter((n) => !isOpen((byNumber.get(n) as IssueInfo).state)).length,
+    total: members.length,
+    x: 0,
+    members,
+  }));
+
+  const blockerOf = (b: number): IssueMapBlocker => {
+    const blocker = byNumber.get(b) as IssueInfo;
+    return { number: b, title: blocker.title, state: blocker.state.toUpperCase() };
+  };
+  const nodes: IssueMapNode[] = [];
+  for (const { level, members } of columnMembers) {
     for (const n of members) {
       const issue = byNumber.get(n) as IssueInfo;
-      const graphNode = graphNodes.get(n) as IssueGraphNode;
-      const blockers: IssueMapBlocker[] = up[n].map((b) => {
-        const blocker = byNumber.get(b) as IssueInfo;
-        return { number: b, title: blocker.title, state: blocker.state.toUpperCase() };
-      });
+      const graphNode = graphNodes.get(n);
+      const blockers = graphNode ? up[n].map(blockerOf) : [];
       const { kind, label: kindLabel } = kindOf(issue.labels);
       let status: IssueMapStatus;
       if (!isOpen(issue.state)) status = "closed";
       else if (blockers.some((b) => b.state === "OPEN")) status = "blocked";
       else if ((issue.assignees ?? []).length > 0) status = "inprog";
       else status = "ready";
-      const pos = positions.get(n) as { x: number; y: number };
       nodes.push({
         number: n,
         title: issue.title,
@@ -327,37 +428,47 @@ export function buildIssueMap(
         kindLabel,
         level,
         labels: issue.labels.map((l) => l.name),
-        body: graphNode.body,
+        body: graphNode ? graphNode.body : (links[n]?.body ?? ""),
         assignees: (issue.assignees ?? []).map((a) => a.login),
-        epic: graphNode.epic,
+        epic: graphNode ? graphNode.epic : null,
+        parent: parent.get(n) ?? null,
+        stories: (kids.get(n) ?? []).map(blockerOf),
         blockers,
-        waiting: [...down[n]],
-        x: pos.x,
-        y: pos.y,
+        waiting: graphNode ? [...down[n]] : [],
+        x: 0,
+        y: 0,
       });
     }
   }
 
   const edges: IssueMapEdge[] = [];
   for (const node of nodes) {
-    for (const b of up[node.number]) {
-      const from = positions.get(b) as { x: number; y: number };
-      const blocker = byNumber.get(b) as IssueInfo;
-      edges.push({
-        from: b,
-        to: node.number,
-        open: isOpen(blocker.state),
-        path: edgePath(from, node),
-      });
+    for (const b of up[node.number] ?? []) {
+      const open = isOpen((byNumber.get(b) as IssueInfo).state);
+      edges.push({ from: b, to: node.number, open, path: "" });
     }
   }
+  const epicEdges: IssueMapEdge[] = [];
+  for (const e of epics) {
+    for (const k of kids.get(e) ?? []) {
+      const open = isOpen((byNumber.get(k) as IssueInfo).state);
+      epicEdges.push({ from: e, to: k, open, path: "" });
+    }
+  }
+
+  // The full layout (nothing hidden) is what the boxes carry by default.
+  const all = new Set(nodes.map((n) => n.number));
+  const layout = packIssueMap({ columns, edges, epicEdges }, all);
+  for (const node of nodes) Object.assign(node, layout.positions.get(node.number));
+  for (const edge of [...edges, ...epicEdges]) edge.path = layout.paths.get(edgeKey(edge)) ?? "";
 
   return {
     nodes,
     edges,
-    columns,
-    width: Math.max(1, columns.length) * MAP_COL_W - 10,
-    height: MAP_Y0 + rows * MAP_ROW_H + 30,
+    epicEdges,
+    columns: layout.columns,
+    width: layout.width,
+    height: layout.height,
     up,
     down,
     problems: graph.problems,
@@ -394,6 +505,16 @@ export function labelChips(labels: string[]): IssueMapChip[] {
   return chips;
 }
 
+/** An epic's "3/5 stories closed", else the assignees (or ""). */
+function nodeSubline(node: IssueMapNode): string {
+  if (node.kind === "epic") {
+    const closed = node.stories.filter((k) => k.state === "CLOSED").length;
+    return `${closed}/${node.stories.length} stories closed`;
+  }
+  if (node.assignees.length === 0) return "";
+  return `\u{1F464} ${truncate(node.assignees.join(", "), ASSIGNEE_MAX)}`;
+}
+
 /** What the node box prints: number + status icon, epic tag, title, assignees, labels. */
 export function nodeText(node: IssueMapNode): {
   icons: string;
@@ -404,12 +525,9 @@ export function nodeText(node: IssueMapNode): {
 } {
   return {
     icons: statusIcon(node),
-    tag: node.epic !== null ? `epic #${node.epic}` : "",
+    tag: node.kind === "epic" ? "epic" : node.epic !== null ? `epic #${node.epic}` : "",
     title: truncate(node.title, TITLE_MAX),
-    assignees:
-      node.assignees.length > 0
-        ? `\u{1F464} ${truncate(node.assignees.join(", "), ASSIGNEE_MAX)}`
-        : "",
+    assignees: nodeSubline(node),
     chips: labelChips(node.labels),
   };
 }

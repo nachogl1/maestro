@@ -25,7 +25,7 @@ function link(overrides: Partial<IssueLinks> & { number: number }): IssueLinks {
 
 const AGENT = [{ name: "agent-ready", color: "0e8a16" }];
 
-// 1 (closed) → 2 → 3 (assigned to bob, but blocked by open #2); 4 is an epic.
+// 1 (closed) → 2 → 3 (assigned to bob, but blocked by open #2); 4 is the epic of #3.
 const issues = [
   issue({ number: 1, state: "CLOSED", labels: AGENT, title: "Scaffold <b>& co</b>" }),
   issue({
@@ -44,6 +44,7 @@ const links = {
     body: "## Why\n\nBecause **<script>alert(1)</script>** matters.",
   }),
   3: link({ number: 3, blockedBy: [2], body: "### Blocked by\n#2 #4" }),
+  4: link({ number: 4, subIssues: [3] }),
 };
 const map = buildIssueMap(issues, links);
 const OPTIONS = { repo: "o/r", createdBy: "alice", createdAt: "12 Oct 2026, 22:52 GMT+1" };
@@ -74,7 +75,7 @@ describe("buildIssueMapHtml", () => {
     expect(html).toContain("it goes stale as soon as any issue changes");
     // Nothing fetched from the network: no external scripts, styles or fonts.
     expect(html).not.toMatch(/<(script|link)[^>]*(src|href)=["']https?:/);
-    expect(html).toContain("3 issues · 2 blocked-by links");
+    expect(html).toContain("3 issues + 1 epic · 2 blocked-by links");
   });
 
   it("escapes issue titles, labels, descriptions and the banner fields", () => {
@@ -92,12 +93,15 @@ describe("buildIssueMapHtml", () => {
     expect(escapeHtml(`a"b'c`)).toBe("a&quot;b&#39;c");
   });
 
-  it("draws every box, line, level band and label chip; the epic is absent", () => {
+  it("draws every box, line, level band and label chip; the epic in its own column", () => {
     const html = buildIssueMapHtml(map, OPTIONS);
     expect(html).toContain('class="node closed k-agent" data-id="1"');
     expect(html).toContain('class="node ready k-agent" data-id="2"');
     expect(html).toContain('class="node blocked k-agent" data-id="3"');
-    expect(html).not.toContain('data-id="4"');
+    expect(html).toContain('class="node ready k-epic" data-id="4"');
+    expect(html).toContain('class="e epl" data-from="4" data-to="3"');
+    expect(html).toContain("Epics <tspan");
+    expect(html).toContain(">0/1 stories closed</text>");
     expect(html).toContain('class="e closed" data-from="1" data-to="2"');
     expect(html).toContain('class="e open" data-from="2" data-to="3"');
     expect(html).toContain("Level 0 <tspan");
@@ -123,7 +127,10 @@ describe("buildIssueMapHtml", () => {
     expect(html).toContain(".node.k-outside rect{fill:rgba(59,130,246,.22)}");
     expect(html).toContain(".node.k-decision rect{fill:rgba(234,179,8,.22)}");
     expect(html).toContain(".node rect{stroke:var(--border);");
-    expect(html).not.toMatch(/\.node\.(closed|inprog|ready|blocked) rect|stroke-dasharray/);
+    expect(html).toContain(".node.k-epic rect{fill:rgba(188,140,255,.22)}");
+    expect(html).not.toMatch(/\.node\.(closed|inprog|ready|blocked) rect/);
+    // The only dashes are the epic-to-story lines.
+    expect(html.match(/stroke-dasharray[^;}]*/g)).toEqual(["stroke-dasharray:5 4"]);
     expect(html).toContain('class="node ready k-outside" data-id="5"');
     expect(html).toContain('class="node ready k-human" data-id="6"');
     expect(html).toContain('class="node ready k-decision" data-id="7"');
@@ -157,11 +164,18 @@ describe("buildIssueMapHtml", () => {
     expect(leg).toContain('data-ax="status" value="ready">\u{1F7E2} Ready<span');
     expect(leg).toContain('data-ax="status" value="blocked">\u{1F512} Blocked<span');
     expect(leg).toContain('data-ax="status" value="closed"><i class="i xs"></i>Closed<span');
+    // Epics and closed issues start unticked; everything else starts ticked.
+    expect(leg).toContain(
+      '<input type="checkbox" data-ax="kind" value="epic"><i class="i k-epic"></i>epic<span',
+    );
+    expect(leg).toContain('<input type="checkbox" data-ax="status" value="closed">');
+    expect(leg).toContain('<input type="checkbox" checked data-ax="kind" value="agent">');
+    expect(leg).toContain("epic to its story</span>");
     expect(leg).not.toContain("Background = progress");
     expect(leg).not.toContain("Border = who takes it");
     expect(leg).toContain(
       '<div id="enc">Background = who takes it (green agent-ready, red needs-human, ' +
-        "blue outside-change, yellow anything else). Icon = progress (\u{1F528} in progress, " +
+        "blue outside-change, yellow anything else, purple epic). Icon = progress (\u{1F528} in progress, " +
         "\u{1F7E2} ready, \u{1F512} blocked). A cross means closed.</div>",
     );
   });
@@ -186,48 +200,58 @@ describe("buildIssueMapHtml", () => {
     expect(clean).not.toContain("<details>");
   });
 
-  it("filters, focuses and pins once the embedded script runs", () => {
+  it("filters, re-packs, focuses on click, zooms and drags once the embedded script runs", () => {
     boot(buildIssueMapHtml(map, OPTIONS));
     const count = document.getElementById("count") as HTMLElement;
-    expect(count.textContent).toBe("Showing 3 of 3 issues");
     const node = (n: number) => document.querySelector(`.node[data-id="${n}"]`) as Element;
+    const xOf = (n: number) =>
+      node(n)
+        .getAttribute("transform")
+        ?.match(/translate\(([\d.]+)/)?.[1];
+    const band = (col: number) => document.querySelector(`.band[data-col="${col}"]`) as Element;
 
-    // Legend: hide closed issues → #1 and its line dim, counts update.
-    const closed = document.querySelector(
-      'input[data-ax="status"][value="closed"]',
-    ) as HTMLInputElement;
-    closed.checked = false;
-    closed.dispatchEvent(new Event("change"));
+    // Epics and closed issues start hidden; their columns pack away.
+    expect(count.textContent).toBe("Showing 2 of 4 issues");
     expect(node(1).classList.contains("off")).toBe(true);
-    expect(node(2).classList.contains("off")).toBe(false);
+    expect(node(4).classList.contains("off")).toBe(true);
+    expect(band(0).classList.contains("off")).toBe(true); // Epics
+    expect(band(1).classList.contains("off")).toBe(true); // Level 0, only the closed #1
+    expect(xOf(2)).toBe("30");
+    expect(xOf(3)).toBe("320");
     expect(document.querySelector('.e[data-from="1"]')?.classList.contains("off")).toBe(true);
-    expect(count.textContent).toBe("Showing 2 of 3 issues");
-    expect(closed.parentElement?.querySelector(".cnt")?.textContent).toBe("0/1");
-    (document.getElementById("all") as HTMLElement).click();
-    expect(count.textContent).toBe("Showing 3 of 3 issues");
 
-    // Legend: hide the agent-ready kind → every box here dims (all three are agent-ready).
+    // "show all" brings everything back in its full column.
+    (document.getElementById("all") as HTMLElement).click();
+    expect(count.textContent).toBe("Showing 4 of 4 issues");
+    expect(xOf(4)).toBe("30");
+    expect(xOf(1)).toBe("320");
+    expect(xOf(2)).toBe("610");
+    expect(band(1).classList.contains("off")).toBe(false);
+
+    // Legend: hide the agent-ready kind → only the epic is left.
     const agent = document.querySelector(
       'input[data-ax="kind"][value="agent"]',
     ) as HTMLInputElement;
     agent.checked = false;
     agent.dispatchEvent(new Event("change"));
-    expect(count.textContent).toBe("Showing 0 of 3 issues");
+    expect(count.textContent).toBe("Showing 1 of 4 issues");
     expect(agent.parentElement?.querySelector(".cnt")?.textContent).toBe("0/3");
     (document.getElementById("all") as HTMLElement).click();
 
-    // Hover: chain focus, hint and tooltip with level, labels and description.
+    // Hover does nothing; a click focuses the chain and opens the tooltip.
+    const svg = document.getElementById("map") as Element;
+    const tip = document.getElementById("tip") as HTMLElement;
     node(2).dispatchEvent(new MouseEvent("mouseenter", { clientX: 10, clientY: 10 }));
-    expect(document.querySelector("svg")?.classList.contains("focus")).toBe(true);
+    expect(svg.classList.contains("focus")).toBe(false);
+    node(2).dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10 }));
+    expect(svg.classList.contains("focus")).toBe(true);
     expect(node(1).classList.contains("hl")).toBe(true);
     expect(node(3).classList.contains("hl")).toBe(true);
     expect(node(2).classList.contains("sel")).toBe(true);
     expect(document.getElementById("hint")?.textContent).toBe(
       "#2: 1 issue(s) upstream must close first (left), 1 wait on it (right).",
     );
-    const tip = document.getElementById("tip") as HTMLElement;
     expect(tip.style.display).toBe("block");
-    expect(tip.classList.contains("pinned")).toBe(false);
     expect(tip.textContent).toContain("#2 Build it");
     // Progress chip: icon + name, neutral; kind chip: name only, kind-coloured.
     const chips = Array.from(tip.querySelectorAll(".st"));
@@ -238,6 +262,9 @@ describe("buildIssueMapHtml", () => {
     expect(tip.textContent).toContain("Level 1 · GitHub state: OPEN");
     expect(tip.textContent).toContain("#1 Scaffold <b>& co</b> (closed)");
     expect(tip.textContent).toContain("Waiting on it: #3");
+    expect(tip.textContent).toContain(
+      "Click the box again to clear · double-click opens it on GitHub",
+    );
     const labels = Array.from(tip.querySelectorAll(".lbl"));
     expect(labels.map((l) => [l.textContent, l.classList.contains("k")])).toEqual([
       ["agent-ready", true],
@@ -247,15 +274,38 @@ describe("buildIssueMapHtml", () => {
     expect(desc.textContent).toBe("Why\n\nBecause <script>alert(1)</script> matters.");
     expect(desc.querySelector("script")).toBeNull();
 
-    // Click pins (survives mouseleave, becomes scrollable); Esc unpins.
+    // Clicking the box again clears; Esc clears too.
     node(2).dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10 }));
-    node(2).dispatchEvent(new MouseEvent("mouseleave"));
-    expect(tip.style.display).toBe("block");
-    expect(tip.classList.contains("pinned")).toBe(true);
-    expect(tip.textContent).toContain("Pinned. Click the box again to unpin.");
+    expect(tip.style.display).toBe("none");
+    expect(document.getElementById("hint")?.textContent).toMatch(/^Drag to move around/);
+    node(3).dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10 }));
+    expect(tip.textContent).toContain("Epic #4 Epic");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(tip.style.display).toBe("none");
-    expect(document.getElementById("hint")?.textContent).toMatch(/^Hover an issue/);
+
+    // An epic lights up its stories and lists them.
+    node(4).dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10 }));
+    expect(document.getElementById("hint")?.textContent).toBe(
+      "#4: 1 stories in this epic, lit up across the levels.",
+    );
+    expect(node(3).classList.contains("hl")).toBe(true);
+    expect(document.querySelector(".e.epl")?.classList.contains("hl")).toBe(true);
+    expect(tip.textContent).toContain("Epics · GitHub state: OPEN");
+    expect(tip.textContent).toContain("Stories: #3 Ship it (open)");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+
+    // Zoom buttons and drag move the viewport; the click ending a drag does not pin.
+    const vp = document.getElementById("vp") as Element;
+    (document.getElementById("zin") as HTMLElement).click();
+    expect(document.getElementById("zpct")?.textContent).toBe("125%");
+    expect(vp.getAttribute("transform")).toContain("scale(1.25)");
+    const wrap = document.getElementById("wrap") as HTMLElement;
+    wrap.dispatchEvent(new PointerEvent("pointerdown", { button: 0, clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 30 }));
+    window.dispatchEvent(new PointerEvent("pointerup"));
+    expect(vp.getAttribute("transform")).toBe("translate(50,30) scale(1.25)");
+    node(2).dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 50, clientY: 30 }));
+    expect(tip.style.display).toBe("none");
 
     // Double-click opens the issue on GitHub.
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
