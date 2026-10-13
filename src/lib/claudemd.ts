@@ -20,21 +20,6 @@ export interface ContextDoc {
   exists: boolean;
 }
 
-/** Check if CLAUDE.md exists at project root */
-export async function checkClaudeMd(projectPath: string): Promise<ClaudeMdStatus> {
-  return invoke<ClaudeMdStatus>("check_claude_md", { projectPath });
-}
-
-/** Read CLAUDE.md content */
-export async function readClaudeMd(projectPath: string): Promise<string> {
-  return invoke<string>("read_claude_md", { projectPath });
-}
-
-/** Write CLAUDE.md content (creates or updates) */
-export async function writeClaudeMd(projectPath: string, content: string): Promise<void> {
-  return invoke<void>("write_claude_md", { projectPath, content });
-}
-
 /** List all context docs (user + project) for the active project. */
 export async function listContextDocs(projectPath: string): Promise<ContextDoc[]> {
   return invoke<ContextDoc[]>("list_context_docs", { projectPath });

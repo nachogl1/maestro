@@ -49,16 +49,6 @@ export function clearFontCache(): void {
 }
 
 /**
- * Checks if a specific font family is available on the system.
- *
- * @param family - The font family name to check
- * @returns True if the font is available
- */
-export async function checkFontAvailable(family: string): Promise<boolean> {
-  return invoke<boolean>("check_font_available", { family });
-}
-
-/**
  * Builds a CSS font-family string with appropriate fallbacks.
  *
  * The resulting string will include:

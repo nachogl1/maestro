@@ -39,7 +39,7 @@ export type McpServerSource = "project" | "user" | "local" | "custom";
  * Stdio MCP server config (flattened from backend).
  * The backend uses `#[serde(flatten)]` so type fields are at the root level.
  */
-export interface McpStdioServerConfig {
+interface McpStdioServerConfig {
   name: string;
   type: "stdio";
   command: string;
@@ -52,7 +52,7 @@ export interface McpStdioServerConfig {
  * HTTP MCP server config (flattened from backend).
  * The backend uses `#[serde(flatten)]` so type fields are at the root level.
  */
-export interface McpHttpServerConfig {
+interface McpHttpServerConfig {
   name: string;
   type: "http";
   url: string;
@@ -78,17 +78,6 @@ export async function refreshProjectMcpServers(projectPath: string): Promise<Mcp
 }
 
 /**
- * Gets the enabled MCP server names for a specific session.
- * If not explicitly set, returns all available servers.
- */
-export async function getSessionMcpServers(
-  projectPath: string,
-  sessionId: number,
-): Promise<string[]> {
-  return invoke<string[]>("get_session_mcp_servers", { projectPath, sessionId });
-}
-
-/**
  * Sets the enabled MCP server names for a specific session.
  */
 export async function setSessionMcpServers(
@@ -97,13 +86,6 @@ export async function setSessionMcpServers(
   enabled: string[],
 ): Promise<void> {
   return invoke("set_session_mcp_servers", { projectPath, sessionId, enabled });
-}
-
-/**
- * Returns the count of enabled MCP servers for a session.
- */
-export async function getSessionMcpCount(projectPath: string, sessionId: number): Promise<number> {
-  return invoke<number>("get_session_mcp_count", { projectPath, sessionId });
 }
 
 /**

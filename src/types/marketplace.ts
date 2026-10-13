@@ -170,6 +170,3 @@ export interface MarketplaceFilters {
 
 /** View mode for the marketplace browser. */
 export type ViewMode = "grid" | "list";
-
-/** Sort options for plugin listing. */
-export type SortOption = "name" | "downloads" | "stars" | "updated" | "relevance";
