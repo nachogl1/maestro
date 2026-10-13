@@ -213,7 +213,8 @@ describe("BranchesPanel", () => {
     expect(await screen.findByText("feature-x")).toBeInTheDocument();
     expect(screen.getByText("Local (2)")).toBeInTheDocument();
     expect(screen.getByText("Remote (1)")).toBeInTheDocument();
-    expect(screen.getByText("Worktrees (2)")).toBeInTheDocument();
+    // Worktrees load on their own promise, apart from the branches.
+    expect(await screen.findByText("Worktrees (2)")).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText("Search branches and worktrees..."), {
       target: { value: "feature" },
