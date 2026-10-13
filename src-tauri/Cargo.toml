@@ -13,8 +13,6 @@ crate-type = ["lib"]
 default = ["auto-backend"]
 # Automatically select the best backend for the platform
 auto-backend = []
-# Use VTE parser for terminal state tracking (cross-platform)
-vte-backend = ["vte"]
 # Force xterm.js passthrough on all platforms
 xterm-only = []
 
@@ -51,8 +49,6 @@ url = "2"
 axum = "0.8"
 # UUID generation for instance isolation
 uuid = { version = "1", features = ["v4"] }
-# VT sequence parsing (used by Alacritty)
-vte = { version = "0.14", optional = true }
 # Cross-platform font detection
 font-kit = "0.14"
 # Date/time handling for usage tracking
