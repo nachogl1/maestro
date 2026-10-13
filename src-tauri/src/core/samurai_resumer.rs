@@ -2057,7 +2057,16 @@ mod tests {
 
     /// Drives session `id` through the park ladder's happy path: the Stop
     /// hook injects the instruction, then the ACK, then the written marker.
-    fn complete_park(h: &Harness, id: u32, generation: u32) {
+    ///
+    /// Waits until the park instruction is ARMED first (the parker tests'
+    /// issue #151 guard): `advance()` commits PARK_REQUESTED and only then
+    /// runs `begin_park`, and a sweep advanced from a teardown runs that on
+    /// another thread. A caller that polled the state can land in between;
+    /// the early Stop is remembered, but the ACK and marker would arrive
+    /// before the instruction injects — so they are dropped and the park
+    /// never completes (the 60s hang seen in CI on PR #244).
+    async fn complete_park(h: &Harness, id: u32, generation: u32) {
+        wait_until(&h.tick, || h.injector.pending_view(id).is_some()).await;
         h.injector.observe_hook(&ClaudeEvent::SessionEnded {
             session_id: id,
             reason: "stop".into(),
@@ -2144,7 +2153,7 @@ mod tests {
                 .map(|s| s.state),
             Some(SupervisorState::ParkRequested)
         );
-        complete_park(&h, 1, 1);
+        complete_park(&h, 1, 1).await;
         wait_until(&h.tick, || {
             h.supervisor
                 .list_sessions()
@@ -2306,7 +2315,7 @@ mod tests {
                     .any(|s| s.session_id == id && s.state == SupervisorState::ParkRequested)
             })
             .await;
-            complete_park(&h, id, 1);
+            complete_park(&h, id, 1).await;
         }
         wait_until(&h.tick, || !h.parker.parking_engaged()).await;
         assert!(
