@@ -9,8 +9,8 @@ export interface RepoAssignee {
   avatarUrl: string;
 }
 
-/** How many issues the issue map fetches (the superset it filters locally). */
-const MAP_ISSUE_LIMIT = 200;
+/** How many issues the issue map fetches, open and closed (`gh --limit`). */
+export const MAP_ISSUE_LIMIT = 1000;
 
 export interface IssueMapState {
   issues: IssueInfo[];
@@ -18,6 +18,8 @@ export interface IssueMapState {
   assignees: RepoAssignee[];
   isLoading: boolean;
   error: string | null;
+  /** True when the fetch hit MAP_ISSUE_LIMIT, so issues (and links) may be missing. */
+  truncated: boolean;
   reload: () => Promise<void>;
   /** Add/remove assignees on one issue; re-throws (after reverting) on failure. */
   setAssignees: (number: number, add: string[], remove: string[]) => Promise<void>;
@@ -27,8 +29,8 @@ export interface IssueMapState {
  * Local data for the issue map modal.
  *
  * Deliberately NOT in `useGitHubStore`: the modal fetches a wider set (every
- * state, up to 200) than the sidebar list, and writing it into the store would
- * clobber what the sidebar shows.
+ * state, up to MAP_ISSUE_LIMIT) than the sidebar list, and writing it into the
+ * store would clobber what the sidebar shows.
  */
 export function useIssueMap(repoPath: string, search: string): IssueMapState {
   const [issues, setIssues] = useState<IssueInfo[]>([]);
@@ -49,9 +51,10 @@ export function useIssueMap(repoPath: string, search: string): IssueMapState {
     setError(null);
     try {
       const trimmed = search.trim();
+      // `gh issue list` defaults to open issues only; the map wants closed ones too.
       const fetched = await invoke<IssueInfo[]>("github_list_issues", {
         repoPath,
-        state: null,
+        state: "all",
         limit: MAP_ISSUE_LIMIT,
         search: trimmed ? trimmed : null,
       });
@@ -111,5 +114,14 @@ export function useIssueMap(repoPath: string, search: string): IssueMapState {
     [repoPath],
   );
 
-  return { issues, links, assignees, isLoading, error, reload, setAssignees };
+  return {
+    issues,
+    links,
+    assignees,
+    isLoading,
+    error,
+    truncated: issues.length >= MAP_ISSUE_LIMIT,
+    reload,
+    setAssignees,
+  };
 }

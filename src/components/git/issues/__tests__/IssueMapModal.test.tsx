@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueLinks } from "@/lib/issueGraph";
 import { type IssueInfo, useGitHubStore } from "@/stores/useGitHubStore";
 import { IssueMapModal } from "../IssueMapModal";
+import { MAP_ISSUE_LIMIT } from "../useIssueMap";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(() => Promise.resolve()),
@@ -45,21 +46,31 @@ const ISSUES: IssueInfo[] = [
   buildIssue({
     number: 3,
     title: "Ship it",
-    labels: [{ name: "needs-human-decision", color: "d93f0b" }],
+    labels: [
+      { name: "needs-human-decision", color: "d93f0b" },
+      { name: "bug", color: "ff0000" },
+    ],
     assignees: [{ login: "alice" }],
   }),
+  buildIssue({ number: 4, title: "Epic: all of it", labels: [{ name: "epic", color: "5319e7" }] }),
 ];
 
 const LINKS: IssueLinks[] = [
   buildLinks({ number: 1 }),
-  buildLinks({ number: 2, blockedBy: [1] }),
-  buildLinks({ number: 3, blockedBy: [2] }),
+  buildLinks({
+    number: 2,
+    blockedBy: [1],
+    body: "## Goal\n\nDraw the **canvas** with `svg`.\n\n### Blocked by\n- #1\n",
+  }),
+  buildLinks({ number: 3, blockedBy: [2], body: "### Blocked by\n- #2\n- #4\n" }),
 ];
 
 const mockedInvoke = vi.mocked(invoke);
 const REPO = "/repo";
 
-function mockBackend(options: { failAssign?: boolean; failExport?: boolean } = {}) {
+function mockBackend(
+  options: { failAssign?: boolean; failExport?: boolean; issues?: IssueInfo[] } = {},
+) {
   mockedInvoke.mockImplementation(async (cmd: string) => {
     switch (cmd) {
       case "github_auth_status":
@@ -68,7 +79,7 @@ function mockBackend(options: { failAssign?: boolean; failExport?: boolean } = {
         if (options.failExport) throw new Error("disk full");
         return undefined;
       case "github_list_issues":
-        return ISSUES;
+        return options.issues ?? ISSUES;
       case "github_issue_links":
         return LINKS;
       case "github_list_assignees":
@@ -110,30 +121,72 @@ describe("IssueMapModal", () => {
     mockBackend();
   });
 
-  it("draws every issue in its wave with progress and owner", async () => {
+  it("fetches every issue state up to the limit and draws each non-epic issue at its level", async () => {
     renderModal();
     const n1 = await screen.findByTestId("issue-node-1");
-    expect(n1).toHaveAttribute("data-wave", "Foundation");
+    expect(n1).toHaveAttribute("data-level", "0");
     expect(n1).toHaveAttribute("data-status", "closed");
-    expect(screen.getByTestId("issue-node-2")).toHaveAttribute("data-wave", "Wave 1");
+    expect(screen.getByTestId("issue-node-2")).toHaveAttribute("data-level", "1");
     expect(screen.getByTestId("issue-node-2")).toHaveAttribute("data-status", "ready");
     const n3 = screen.getByTestId("issue-node-3");
-    expect(n3).toHaveAttribute("data-wave", "Wave 2");
+    expect(n3).toHaveAttribute("data-level", "2");
     expect(n3).toHaveAttribute("data-status", "blocked");
     expect(n3).toHaveAttribute("data-kind", "human");
+    expect(screen.queryByTestId("issue-node-4")).not.toBeInTheDocument();
     expect(screen.getByText(/3 issues · 2 blocked-by links/)).toBeInTheDocument();
-    expect(screen.getByText("Foundation")).toBeInTheDocument();
+    expect(screen.getByText("Level 0")).toBeInTheDocument();
+    expect(screen.queryByText(/Wave|Foundation|Already done/)).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 3 of 3 issues/)).toBeInTheDocument();
+    expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
     expect(mockedInvoke).toHaveBeenCalledWith("github_list_issues", {
       repoPath: REPO,
-      state: null,
-      limit: 200,
+      state: "all",
+      limit: 1000,
       search: "assignee:@me",
     });
     expect(mockedInvoke).toHaveBeenCalledWith("github_issue_links", {
       repoPath: REPO,
-      numbers: [1, 2, 3],
+      numbers: [1, 2, 3, 4],
     });
+  });
+
+  it("warns in the header when the fetch hit the issue limit", async () => {
+    const many = Array.from({ length: MAP_ISSUE_LIMIT }, (_, i) => buildIssue({ number: i + 1 }));
+    mockBackend({ issues: many });
+    renderModal();
+    await screen.findByTestId("issue-node-1");
+    expect(
+      screen.getByText(
+        `⚠ Showing the first ${MAP_ISSUE_LIMIT} issues, links beyond it are dropped.`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("prints label chips on the box", async () => {
+    renderModal();
+    await screen.findByTestId("issue-node-1");
+    const chips = screen.getAllByTestId("issue-chip-3").map((c) => c.textContent);
+    expect(chips).toEqual(["needs-huma…", "bug"]);
+    expect(screen.getAllByTestId("issue-chip-2").map((c) => c.textContent)).toEqual([
+      "agent-read…",
+    ]);
+  });
+
+  it("explains the levels and lists the data problems in the footer", async () => {
+    renderModal();
+    await screen.findByTestId("issue-node-1");
+    expect(screen.getByText(/An issue's level is 1 \+ the highest level/)).toBeInTheDocument();
+    const problems = screen.getByTestId("issue-map-problems");
+    expect(within(problems).getByText(/2 data problems \(links dropped/)).toBeInTheDocument();
+    expect(within(problems).getByText("#3: section says #4, GitHub does not")).toBeInTheDocument();
+    expect(within(problems).getByText("#3: blocked by epic #4, link dropped")).toBeInTheDocument();
+  });
+
+  it("says 'No data problems' when every link was kept", async () => {
+    mockBackend({ issues: ISSUES.slice(0, 2) });
+    renderModal();
+    await screen.findByTestId("issue-node-1");
+    expect(screen.getByTestId("issue-map-problems")).toHaveTextContent("No data problems.");
   });
 
   it("legend entries hide a type, show counts, and 'show all' restores", async () => {
@@ -162,8 +215,22 @@ describe("IssueMapModal", () => {
     expect(hint()).toBe("#2: 1 issue(s) upstream must close first (left), 1 wait on it (right).");
     const tip = screen.getByTestId("issue-map-tip");
     expect(within(tip).getByText("#2 Build the canvas")).toBeInTheDocument();
+    expect(
+      within(tip).getByText(/Level 1 · GitHub state: OPEN · nobody assigned/),
+    ).toBeInTheDocument();
     expect(within(tip).getByText("#1 Scaffold (closed)")).toBeInTheDocument();
     expect(within(tip).getByText("#3")).toBeInTheDocument();
+    // Labels as chips, the deciding one bold; the description as plain text.
+    const labels = within(screen.getByTestId("issue-map-tip-labels")).getAllByText(/\S/, {
+      selector: "span",
+    });
+    expect(labels.map((l) => [l.textContent, l.className.includes("font-bold")])).toEqual([
+      ["agent-ready", true],
+    ]);
+    expect(screen.getByTestId("issue-map-tip-description")).toHaveTextContent(
+      "Goal Draw the canvas with svg. Blocked by - #1",
+    );
+    expect(screen.getByTestId("issue-map-tip-description")).toHaveClass("max-h-40");
     expect(screen.getByTestId("issue-node-1")).toHaveAttribute("data-hl", "true");
     expect(screen.getByTestId("issue-node-3")).toHaveAttribute("data-hl", "true");
     expect(tip).toHaveClass("pointer-events-none");
@@ -171,6 +238,19 @@ describe("IssueMapModal", () => {
     fireEvent.mouseLeave(n2);
     expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
     expect(hint()).toMatch(/^Hover an issue/);
+
+    // An issue with several labels marks only the deciding one.
+    fireEvent.mouseEnter(screen.getByTestId("issue-node-3"), { clientX: 100, clientY: 100 });
+    const chips = within(screen.getByTestId("issue-map-tip-labels")).getAllByText(/\S/, {
+      selector: "span",
+    });
+    expect(chips.map((l) => [l.textContent, l.className.includes("font-bold")])).toEqual([
+      ["needs-human-decision", true],
+      ["bug", false],
+    ]);
+    expect(screen.getByTestId("issue-map-tip-description")).toHaveTextContent(
+      "Blocked by - #2 - #4",
+    );
   });
 
   it("click pins, Esc unpins first and closes second", async () => {
