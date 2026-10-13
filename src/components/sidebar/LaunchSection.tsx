@@ -47,6 +47,7 @@ import { type PendingLaunch, usePendingLaunchStore } from "@/stores/usePendingLa
 import {
   initSamuraiGateListener,
   latestGateForProject,
+  type SamuraiGateEntry,
   useSamuraiGateStore,
 } from "@/stores/useSamuraiGateStore";
 import { workflowGraphForLaunch } from "@/stores/useSamuraiWorkflowStore";
@@ -770,6 +771,18 @@ const GATE_RUNNING_STEPS: SamuraiTestGateProgress["step"][] = [
   "cargo_test",
 ];
 
+/** `detail · 12s` — the gate tick's elapsed reading plus the time since it.
+ *  Owns the 1 Hz interval so only this text re-renders, not the section. */
+function GateElapsed({ gate }: { gate: SamuraiGateEntry }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const secs = gate.progress.elapsed_secs + Math.floor((Date.now() - gate.at) / 1000);
+  return <>{`${gate.progress.detail} · ${secs}s`}</>;
+}
+
 /**
  * Samurai run launcher (issue #63, PRD §5.8 + §9): the form that starts an
  * autonomous run — project (the active tab, read-only), the epics and the
@@ -834,8 +847,6 @@ export function LaunchSection({
   // full-screen overlay (`WorkflowsView`, rendered by App) instead of
   // embedding a cramped editor here.
   const openWorkflowsView = useWorkflowsViewStore((s) => s.open);
-  // 1 Hz re-render while the gate line is showing (drives the elapsed time).
-  const [, setGateTick] = useState(0);
   const [preflight, setPreflight] = useState<SamuraiPreflightCheck[] | null>(null);
   // The project a running launch belongs to — a result that outlives a tab
   // switch is dropped rather than applied to the newly active project.
@@ -928,20 +939,9 @@ export function LaunchSection({
   // The active project's newest gate entry — progress or verdict.
   const gate = latestGateForProject(gates, projectPath);
 
-  // Tick the elapsed display once a second while a gate step is running.
+  // The elapsed display ticks inside <GateElapsed>, so only that text
+  // re-renders once a second — not this whole section.
   const gateRunning = gate !== null && GATE_RUNNING_STEPS.includes(gate.progress.step);
-  useEffect(() => {
-    if (!gateRunning) return;
-    const id = setInterval(() => setGateTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [gateRunning]);
-
-  /** `detail · 12s` — the tick's elapsed reading plus the time since it. */
-  const gateLine = gate
-    ? `${gate.progress.detail} · ${
-        gate.progress.elapsed_secs + Math.floor((Date.now() - gate.at) / 1000)
-      }s`
-    : "";
 
   /** The `#N` refs found in the request — informational (issue #128). */
   const refs = useMemo(() => detectedRefs(text), [text]);
@@ -1496,7 +1496,11 @@ export function LaunchSection({
                 {/* Issue #90b: while the test gate runs, its live step (with
                     elapsed time, ticking between backend events) replaces
                     the generic spawning label. */}
-                {gateRunning && phase === "spawning" ? gateLine : PHASE_LABEL[phase]}
+                {gate && gateRunning && phase === "spawning" ? (
+                  <GateElapsed gate={gate} />
+                ) : (
+                  PHASE_LABEL[phase]
+                )}
               </span>
             ) : scheduleAt ? (
               "Schedule"
@@ -1553,10 +1557,12 @@ export function LaunchSection({
               the running step from the store — the launching mount's phase
               state died with it, so the line renders on its own here. The
               backend's launch registry guards a double launch either way. */}
-          {phase === null && gateRunning && (
+          {gate && phase === null && gateRunning && (
             <p className="flex items-center gap-1.5 text-[11px] text-maestro-muted">
               <Loader2 size={11} className="shrink-0 animate-spin" />
-              <span className="min-w-0 flex-1 truncate">{gateLine}</span>
+              <span className="min-w-0 flex-1 truncate">
+                <GateElapsed gate={gate} />
+              </span>
             </p>
           )}
           {/* Issue #109: a gate FAILURE that landed while this panel was
