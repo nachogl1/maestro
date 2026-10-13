@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 use super::atomic_write::atomic_write_async;
 use super::config_recovery::read_json_or_recover;
+use super::mcp_error::{McpError, McpResult};
 use super::mcp_manager::{McpServerConfig, McpServerType};
 use crate::commands::mcp::McpCustomServer;
 
@@ -214,7 +215,7 @@ fn merge_with_existing(
     mcp_path: &Path,
     new_servers: HashMap<String, Value>,
     session_id: u32,
-) -> Result<Value, String> {
+) -> McpResult<Value> {
     log::debug!(
         "[MCP] merge_with_existing: {:?} for session {}",
         mcp_path,
@@ -302,7 +303,7 @@ pub async fn write_session_mcp_config(
     instance_id: &str,
     enabled_servers: &[McpServerConfig],
     custom_servers: &[McpCustomServer],
-) -> Result<(), String> {
+) -> McpResult<()> {
     let mut mcp_servers: HashMap<String, Value> = HashMap::new();
 
     // Add Maestro MCP server with HTTP-based status reporting.
@@ -356,8 +357,12 @@ pub async fn write_session_mcp_config(
     let final_config = merge_with_existing(&mcp_path, mcp_servers, session_id)?;
 
     // Write the file atomically (temp file + rename)
-    let content = serde_json::to_string_pretty(&final_config)
-        .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
+    let content = serde_json::to_string_pretty(&final_config).map_err(|source| {
+        McpError::SerializeConfig {
+            what: "MCP config",
+            source,
+        }
+    })?;
 
     atomic_write(&mcp_path, &content).await?;
 
@@ -430,7 +435,7 @@ pub async fn write_opencode_mcp_config(
     instance_id: &str,
     enabled_servers: &[McpServerConfig],
     custom_servers: &[McpCustomServer],
-) -> Result<(), String> {
+) -> McpResult<()> {
     let mut mcp_servers: HashMap<String, Value> = HashMap::new();
 
     // Add Maestro MCP server with HTTP-based status reporting.
@@ -480,8 +485,12 @@ pub async fn write_opencode_mcp_config(
     let final_config = merge_with_opencode_existing(&opencode_path, mcp_servers, session_id)?;
 
     // Write the file atomically
-    let content = serde_json::to_string_pretty(&final_config)
-        .map_err(|e| format!("Failed to serialize OpenCode MCP config: {}", e))?;
+    let content = serde_json::to_string_pretty(&final_config).map_err(|source| {
+        McpError::SerializeConfig {
+            what: "OpenCode MCP config",
+            source,
+        }
+    })?;
 
     atomic_write(&opencode_path, &content).await?;
 
@@ -504,10 +513,13 @@ fn merge_with_opencode_existing(
     opencode_path: &Path,
     new_servers: HashMap<String, Value>,
     _session_id: u32,
-) -> Result<Value, String> {
+) -> McpResult<Value> {
     let mut root = if opencode_path.exists() {
-        let content = std::fs::read_to_string(opencode_path)
-            .map_err(|e| format!("Failed to read existing opencode.json: {}", e))?;
+        let content =
+            std::fs::read_to_string(opencode_path).map_err(|source| McpError::ReadConfig {
+                file: "existing opencode.json",
+                source,
+            })?;
 
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(existing) if existing.is_object() => existing,
@@ -550,7 +562,7 @@ fn merge_with_opencode_existing(
 /// Removes Maestro server entries from `opencode.json`.
 ///
 /// This should be called when a session is killed to clean up the config file.
-pub async fn remove_opencode_mcp_config(working_dir: &Path, session_id: u32) -> Result<(), String> {
+pub async fn remove_opencode_mcp_config(working_dir: &Path, session_id: u32) -> McpResult<()> {
     let opencode_path = working_dir.join("opencode.json");
     if !opencode_path.exists() {
         return Ok(());
@@ -562,10 +574,16 @@ pub async fn remove_opencode_mcp_config(working_dir: &Path, session_id: u32) -> 
 
     let content = tokio::fs::read_to_string(&opencode_path)
         .await
-        .map_err(|e| format!("Failed to read opencode.json: {}", e))?;
+        .map_err(|source| McpError::ReadConfig {
+            file: "opencode.json",
+            source,
+        })?;
 
-    let mut root: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse opencode.json: {}", e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&content).map_err(|source| McpError::ParseConfig {
+            file: "opencode.json",
+            source,
+        })?;
 
     // Remove only Maestro's own entry, preserving every other key in the file
     // (opencode.json holds the user's main OpenCode settings — it must never
@@ -586,8 +604,11 @@ pub async fn remove_opencode_mcp_config(working_dir: &Path, session_id: u32) -> 
         return Ok(());
     }
 
-    let output = serde_json::to_string_pretty(&root)
-        .map_err(|e| format!("Failed to serialize opencode.json: {}", e))?;
+    let output =
+        serde_json::to_string_pretty(&root).map_err(|source| McpError::SerializeConfig {
+            what: "opencode.json",
+            source,
+        })?;
 
     atomic_write(&opencode_path, &output).await?;
 
@@ -609,7 +630,7 @@ pub async fn remove_opencode_mcp_config(working_dir: &Path, session_id: u32) -> 
 ///
 /// * `working_dir` - Directory containing the `.mcp.json` file
 /// * `session_id` - Session identifier (used for logging, cleanup removes all Maestro entries)
-pub async fn remove_session_mcp_config(working_dir: &Path, session_id: u32) -> Result<(), String> {
+pub async fn remove_session_mcp_config(working_dir: &Path, session_id: u32) -> McpResult<()> {
     let mcp_path = working_dir.join(".mcp.json");
     if !mcp_path.exists() {
         return Ok(());
@@ -621,10 +642,16 @@ pub async fn remove_session_mcp_config(working_dir: &Path, session_id: u32) -> R
 
     let content = tokio::fs::read_to_string(&mcp_path)
         .await
-        .map_err(|e| format!("Failed to read .mcp.json: {}", e))?;
+        .map_err(|source| McpError::ReadConfig {
+            file: ".mcp.json",
+            source,
+        })?;
 
     let mut config: Value =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse .mcp.json: {}", e))?;
+        serde_json::from_str(&content).map_err(|source| McpError::ParseConfig {
+            file: ".mcp.json",
+            source,
+        })?;
 
     if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         // Remove the single maestro-status entry
@@ -652,8 +679,11 @@ pub async fn remove_session_mcp_config(working_dir: &Path, session_id: u32) -> R
         }
     }
 
-    let output = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let output =
+        serde_json::to_string_pretty(&config).map_err(|source| McpError::SerializeConfig {
+            what: "config",
+            source,
+        })?;
 
     atomic_write(&mcp_path, &output).await?;
 

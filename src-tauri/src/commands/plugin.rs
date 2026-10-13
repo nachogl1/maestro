@@ -248,6 +248,7 @@ pub async fn write_session_plugin_config(
 
     plugin_config_writer::write_session_plugin_config(Path::new(&working_dir), &enabled_plugins_map)
         .await
+        .map_err(|e| e.to_string())
 }
 
 /// Removes the plugins array from the session's .claude/settings.local.json.
@@ -255,7 +256,9 @@ pub async fn write_session_plugin_config(
 /// This should be called when a session is killed to clean up.
 #[tauri::command]
 pub async fn remove_session_plugin_config(working_dir: String) -> Result<(), String> {
-    plugin_config_writer::remove_session_plugin_config(Path::new(&working_dir)).await
+    plugin_config_writer::remove_session_plugin_config(Path::new(&working_dir))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Deletes a skill directory from the filesystem.
