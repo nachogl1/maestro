@@ -1022,6 +1022,48 @@ fn recovery_digest_content(
     truncate_chars(&out, DIGEST_MAX_CHARS)
 }
 
+/// A staged successor that never produced its `SessionStarted` within the
+/// window — one `successor_no_start` ALERT from [`SamuraiReplicator::tick`].
+struct NoStartAlert {
+    project: String,
+    epic: String,
+    generation: u32,
+    session_id: u32,
+    registered: bool,
+    predecessor_session_id: u32,
+    predecessor_generation: u32,
+}
+
+/// An unregistered fresh spawn that exhausted its re-emits (issue #61) —
+/// reported by [`SamuraiReplicator::tick`] after the pending lock is released.
+struct DroppedSpawn {
+    project: String,
+    epic: String,
+    generation: u32,
+    /// Issue #207: what asked for this spawn — the hook below only
+    /// claims the ones the resume timer started.
+    trigger: &'static str,
+}
+
+/// What the staged-successor timeout pass of [`SamuraiReplicator::tick`]
+/// decided under the pending lock, acted on after it is released.
+#[derive(Default)]
+struct StagedTimeouts {
+    re_emits: Vec<SuccessorSpawn>,
+    dropped: Vec<DroppedSpawn>,
+    alerts: Vec<NoStartAlert>,
+}
+
+/// Side effects the delivery-watch and receipt-deadline passes of
+/// [`SamuraiReplicator::tick`] collect under their locks: audit rows, and
+/// the spawn events a final give-up re-armed. Both are flushed after the
+/// locks are released.
+#[derive(Default)]
+struct TickOutbox {
+    rows: Vec<(String, AuditEvent)>,
+    rearm_emits: Vec<SuccessorSpawn>,
+}
+
 /// The replication controller. Fed from three directions: the injector's
 /// validated-handoff chain ([`Self::on_handoff_written`]), the registration
 /// command ([`Self::spawn_details`] / [`Self::on_registered`]) and the hook
@@ -3029,96 +3071,116 @@ impl SamuraiReplicator {
         // Snapshot supervised sessions BEFORE taking the pending lock — the
         // supervisor has its own lock and never calls back in here.
         let sessions = self.supervisor.list_sessions();
-        struct NoStartAlert {
-            project: String,
-            epic: String,
-            generation: u32,
-            session_id: u32,
-            registered: bool,
-            predecessor_session_id: u32,
-            predecessor_generation: u32,
+        let staged = self.staged_timeout_pass(&sessions, timeout);
+        self.report_staged_timeouts(staged);
+
+        let mut out = TickOutbox::default();
+        self.delivery_watch_pass(&sessions, &mut out);
+        self.receipt_deadline_pass(&sessions, timeout, &mut out);
+        // Audit I/O outside the lock, like every other tick pass.
+        for (project, row) in out.rows {
+            self.audit.append(&project, row);
         }
-        struct DroppedSpawn {
-            project: String,
-            epic: String,
-            generation: u32,
-            /// Issue #207: what asked for this spawn — the hook below only
-            /// claims the ones the resume timer started.
-            trigger: &'static str,
+        // Same for the re-armed spawns: a stranded ritual gets a new
+        // terminal to be delivered into (bounded by MAX_SPAWN_EMITS in
+        // `rearm_pending`), instead of an ALERT nobody can act on.
+        for spawn in out.rearm_emits {
+            (self.emit_spawn)(&spawn);
         }
-        let mut re_emits: Vec<SuccessorSpawn> = Vec::new();
-        let mut dropped: Vec<DroppedSpawn> = Vec::new();
-        let alerts: Vec<NoStartAlert> = {
-            let mut pending = self.lock_pending();
-            let mut alerts = Vec::new();
-            pending.retain_mut(|p| {
-                // Issue #61: an UNREGISTERED fresh-spawn entry owns its
-                // whole timeout story here — re-emit per window, then a
-                // single spawn_dropped ALERT — and never reaches the
-                // generic branches below (their successor_no_start would be
-                // a second, vaguer alert; and their epic-gone prune would
-                // delete a resume entry instantly, because a resumed epic
-                // has no supervised session until its successor registers).
-                // A registration hands the entry to the generic machinery.
-                if let Some(respawn) = &mut p.respawn {
-                    if p.registered.is_none() {
-                        if p.alerted {
-                            return true; // latched; pruned on delivery only
-                        }
-                        if no_start_expired(p.queued_at, None, timeout) {
-                            if respawn.attempts >= MAX_SPAWN_EMITS {
-                                p.alerted = true;
-                                dropped.push(DroppedSpawn {
-                                    project: p.project.clone(),
-                                    epic: p.epic.clone(),
-                                    generation: p.generation,
-                                    trigger: p.trigger,
-                                });
-                            } else {
-                                respawn.attempts += 1;
-                                // Restart the window so each emit gets a
-                                // full ack_timeout to land.
-                                p.queued_at = AgeableInstant::now();
-                                re_emits.push(p.spawn.clone());
-                            }
-                        }
-                        return true;
+    }
+
+    /// Staged-successor pass of [`Self::tick`], decided under the pending
+    /// lock: re-emits and drops for unregistered fresh spawns (issue #61),
+    /// epic-gone pruning of latched entries, and `successor_no_start`
+    /// alerts.
+    fn staged_timeout_pass(
+        &self,
+        sessions: &[SessionSnapshot],
+        timeout: Duration,
+    ) -> StagedTimeouts {
+        let mut staged = StagedTimeouts::default();
+        let re_emits = &mut staged.re_emits;
+        let dropped = &mut staged.dropped;
+        let alerts = &mut staged.alerts;
+        let mut pending = self.lock_pending();
+        pending.retain_mut(|p| {
+            // Issue #61: an UNREGISTERED fresh-spawn entry owns its
+            // whole timeout story here — re-emit per window, then a
+            // single spawn_dropped ALERT — and never reaches the
+            // generic branches below (their successor_no_start would be
+            // a second, vaguer alert; and their epic-gone prune would
+            // delete a resume entry instantly, because a resumed epic
+            // has no supervised session until its successor registers).
+            // A registration hands the entry to the generic machinery.
+            if let Some(respawn) = &mut p.respawn {
+                if p.registered.is_none() {
+                    if p.alerted {
+                        return true; // latched; pruned on delivery only
                     }
-                }
-                if p.alerted {
-                    let epic_gone = !sessions
-                        .iter()
-                        .any(|s| s.project == p.project && s.epic == p.epic);
-                    if epic_gone {
-                        log::info!(
-                            "samurai replicator: pruning latched successor gen-{} for epic {} — no supervised session remains for the epic",
-                            p.generation,
-                            p.epic,
-                        );
+                    if no_start_expired(p.queued_at, None, timeout) {
+                        if respawn.attempts >= MAX_SPAWN_EMITS {
+                            p.alerted = true;
+                            dropped.push(DroppedSpawn {
+                                project: p.project.clone(),
+                                epic: p.epic.clone(),
+                                generation: p.generation,
+                                trigger: p.trigger,
+                            });
+                        } else {
+                            respawn.attempts += 1;
+                            // Restart the window so each emit gets a
+                            // full ack_timeout to land.
+                            p.queued_at = AgeableInstant::now();
+                            re_emits.push(p.spawn.clone());
+                        }
                     }
-                    return !epic_gone;
+                    return true;
                 }
-                if no_start_expired(p.queued_at, p.registered.map(|(_, t)| t), timeout) {
-                    p.alerted = true;
-                    alerts.push(NoStartAlert {
-                        project: p.project.clone(),
-                        epic: p.epic.clone(),
-                        generation: p.generation,
-                        // Finding F: an unregistered successor has no session
-                        // id of its own — 0 is a sentinel that can never
-                        // collide (ProcessManager ids start at 1: its counter
-                        // is initialized to 1 and hands out the pre-increment
-                        // value). The predecessor's identity stays in details.
-                        session_id: p.registered.map(|(id, _)| id).unwrap_or(0),
-                        registered: p.registered.is_some(),
-                        predecessor_session_id: p.predecessor_session_id,
-                        predecessor_generation: p.predecessor_generation,
-                    });
+            }
+            if p.alerted {
+                let epic_gone = !sessions
+                    .iter()
+                    .any(|s| s.project == p.project && s.epic == p.epic);
+                if epic_gone {
+                    log::info!(
+                        "samurai replicator: pruning latched successor gen-{} for epic {} — no supervised session remains for the epic",
+                        p.generation,
+                        p.epic,
+                    );
                 }
-                true
-            });
-            alerts
-        };
+                return !epic_gone;
+            }
+            if no_start_expired(p.queued_at, p.registered.map(|(_, t)| t), timeout) {
+                p.alerted = true;
+                alerts.push(NoStartAlert {
+                    project: p.project.clone(),
+                    epic: p.epic.clone(),
+                    generation: p.generation,
+                    // Finding F: an unregistered successor has no session
+                    // id of its own — 0 is a sentinel that can never
+                    // collide (ProcessManager ids start at 1: its counter
+                    // is initialized to 1 and hands out the pre-increment
+                    // value). The predecessor's identity stays in details.
+                    session_id: p.registered.map(|(id, _)| id).unwrap_or(0),
+                    registered: p.registered.is_some(),
+                    predecessor_session_id: p.predecessor_session_id,
+                    predecessor_generation: p.predecessor_generation,
+                });
+            }
+            true
+        });
+        staged
+    }
+
+    /// Acts on [`Self::staged_timeout_pass`]'s decisions outside the pending
+    /// lock: re-emits, `spawn_dropped` alerts, then `successor_no_start`
+    /// alerts — in that order.
+    fn report_staged_timeouts(&self, staged: StagedTimeouts) {
+        let StagedTimeouts {
+            re_emits,
+            dropped,
+            alerts,
+        } = staged;
         // Issue #61 re-emits: outside the lock, same policy as every other
         // emit. The frontend consumes duplicates idempotently — an already-
         // consumed launch was claimed by the grid, and a re-emit for it can
@@ -3191,402 +3253,401 @@ impl SamuraiReplicator {
                 ),
             );
         }
+    }
 
-        // Issue #103: the post-delivery watch. A delivered instruction whose
-        // session shows no turn activity within the window gets the lone
-        // Enter re-sent (not the body — it normally sits in the input box),
-        // bounded by MAX_ENTER_RESENDS. Issue #171: when the ladder still
-        // gives up, a replicator-typed body is re-typed IN FULL exactly once
-        // (a CLI that was still initializing discarded the whole paste, so
-        // nothing sits in the input box at all); only the retyped watch's
-        // own give-up emits the final ALERT.
-        let mut rows: Vec<(String, AuditEvent)> = Vec::new();
-        // The spawn events a final give-up re-armed (below): emitted after
-        // the lock, the same discipline as the re-emits above.
-        let mut rearm_emits: Vec<SuccessorSpawn> = Vec::new();
-        {
-            let mut delivered = self.lock_delivered();
-            delivered.retain_mut(|d| {
-                if !sessions.iter().any(|s| s.session_id == d.session_id) {
-                    // Torn down / unregistered outside the samurai pipeline:
-                    // never write into a session that is no longer ours.
-                    return false;
-                }
-                let verdict = match d.route {
-                    DeliveryRoute::Typed => {
-                        enter_resend_verdict(d.delivered_at.elapsed(), d.resends)
-                    }
-                    DeliveryRoute::LaunchLine => activity_only_verdict(d.delivered_at.elapsed()),
-                };
-                match verdict {
-                    EnterResendVerdict::Keep => true,
-                    EnterResendVerdict::Resend => {
-                        d.resends += 1;
-                        // Re-stamp so each resend gets a full window.
-                        d.delivered_at = AgeableInstant::now();
-                        log::warn!(
-                            "samurai replicator: no turn activity from session {} since its instruction was typed in — re-sending the lone Enter (swallowed-submit recovery, issue #103)",
-                            d.session_id
-                        );
-                        // Issue #106 review F4: fire WHILE HOLDING the
-                        // delivered lock. Deciding under the lock but firing
-                        // after release left a gap where turn evidence could
-                        // release the watch (`note_turn_activity` takes this
-                        // same lock) and the queued `\r` still fired into the
-                        // already-started turn. Verdict and fire are atomic
-                        // now: a released watch can never resend. Safe to
-                        // hold: the resender is fire-and-forget (production
-                        // spawns an async task; tests push to a Vec) and
-                        // never re-enters the replicator.
-                        (self.resend_enter)(d.session_id);
-                        rows.push((
-                            d.project.clone(),
-                            AuditEvent::now(
-                                d.epic.clone(),
-                                AuditEventKind::Alert,
-                                d.generation,
-                                d.session_id,
-                                json!({
-                                    "kind": "submit_retry",
-                                    "attempt": d.resends,
-                                    "launch": d.launch,
-                                    "source": d.source,
-                                    "route": route_label(d.route),
-                                }),
-                            ),
-                        ));
-                        true
-                    }
-                    EnterResendVerdict::GiveUp => {
-                        // Issue #171: an Enter-only resend is a no-op when
-                        // the BODY itself was swallowed (a CLI still
-                        // initializing at delivery time discards the whole
-                        // paste — the Nido stranding). A replicator ritual
-                        // whose session never showed any turn activity gets
-                        // ONE full re-type instead of alert-and-strand; the
-                        // retyped delivery runs this same watch ladder again
-                        // and its own give-up is final. Decided and fired
-                        // under the lock, same atomicity as the Enter resend
-                        // (a released watch can never re-type); the outcome
-                        // callback only audits (a channel send), so no lock
-                        // re-entry. Idempotent at the agent level: the body
-                        // is a pointer to the brief file — worst case the
-                        // agent reads the brief twice.
-                        if !d.retyped && d.route == DeliveryRoute::Typed {
-                            if let Some(instruction) = d.instruction.clone() {
-                                d.retyped = true;
-                                d.resends = 0;
-                                d.delivered_at = AgeableInstant::now();
-                                log::warn!(
-                                    "samurai replicator: session {} never confirmed its typed instruction — re-typing the full body once (issue #171)",
-                                    d.session_id
-                                );
-                                rows.push((
-                                    d.project.clone(),
-                                    AuditEvent::now(
-                                        d.epic.clone(),
-                                        AuditEventKind::Alert,
-                                        d.generation,
-                                        d.session_id,
-                                        json!({
-                                            "kind": "delivery_retyped",
-                                            "launch": d.launch,
-                                            "source": d.source,
-                                            "route": route_label(d.route),
-                                        }),
-                                    ),
-                                ));
-                                let audit = self.audit.clone();
-                                let project = d.project.clone();
-                                let epic = d.epic.clone();
-                                let generation = d.generation;
-                                let session_id = d.session_id;
-                                let outcome: super::samurai_pty::DeliveryOutcome =
-                                    Box::new(move |result| {
-                                        if let Err(error) = result {
-                                            // The re-type never reached the
-                                            // PTY; the kept watch's own
-                                            // give-up still ends the story
-                                            // with submit_unconfirmed.
-                                            audit.append(
-                                                &project,
-                                                AuditEvent::now(
-                                                    epic,
-                                                    AuditEventKind::Alert,
-                                                    generation,
-                                                    session_id,
-                                                    json!({
-                                                        "kind": "delivery_failed",
-                                                        "source": "replicator",
-                                                        "retype": true,
-                                                        "error": error,
-                                                    }),
-                                                ),
-                                            );
-                                        }
-                                    });
-                                (self.write_stdin)(session_id, instruction, outcome);
-                                return true;
-                            }
-                        }
-                        // Issue #171's re-type is spent and the session
-                        // still shows no turn activity: the CLI swallowed
-                        // the paste for good. The entry was consumed at
-                        // claim time, so alerting and dropping the watch
-                        // here left the successor at an idle prompt with
-                        // nothing left to deliver — how the Nido run died
-                        // on 2026-08-20, recoverable only by a human. Put
-                        // it back UNREGISTERED and respawn instead; the
-                        // ALERT below still records the give-up.
-                        let respawned = match d.ritual.take() {
-                            Some(ritual) => {
-                                match Self::rearm_pending(
-                                    &self.pending,
-                                    *ritual,
-                                    "the submit was never confirmed",
-                                ) {
-                                    Some(spawn) => {
-                                        rearm_emits.push(spawn);
-                                        true
-                                    }
-                                    None => false,
-                                }
-                            }
-                            None => false,
-                        };
-                        rows.push((
-                            d.project.clone(),
-                            AuditEvent::now(
-                                d.epic.clone(),
-                                AuditEventKind::Alert,
-                                d.generation,
-                                d.session_id,
-                                json!({
-                                    "kind": "submit_unconfirmed",
-                                    // Whether the ritual went back on the
-                                    // queue with a fresh spawn behind it.
-                                    "respawned": respawned,
-                                    "resends": d.resends,
-                                    "launch": d.launch,
-                                    "source": d.source,
-                                    // Issue #158: which delivery this ALERT
-                                    // is about — a launch-line prompt the CLI
-                                    // may have ignored reads very differently
-                                    // from an Enter that never landed.
-                                    "route": route_label(d.route),
-                                    // Issue #171: whether the body was
-                                    // re-typed before this final give-up.
-                                    "retyped": d.retyped,
-                                }),
-                            ),
-                        ));
-                        false
-                    }
-                }
-            });
-        }
-        // Issue #205: the receipt deadline. A brief that reached the agent and
-        // was then released by turn activity while still UNREAD (the Nido
-        // gen-2 failure of 2026-08-20: `delivered` → a turn on something else
-        // → nothing) gets ONE corrective at the next turn boundary, and the
-        // existing run-fatal rung if that second window closes silently too.
-        // Same `ack_timeout_secs` window as every other wait in the chain —
-        // the agent's own budget for showing a sign of life, spent here on the
-        // one act the pointer commanded.
-        {
-            let mut receipts = self.lock_brief_receipts();
-            receipts.retain_mut(|r| {
-                if !sessions.iter().any(|s| s.session_id == r.session_id) {
-                    // Torn down / unregistered outside the samurai pipeline —
-                    // the delivery watch's own rule: never write into a
-                    // session that is no longer ours. Checked first, ahead of
-                    // `seen`/`deadline`, so a receipt for a session that was
-                    // hard-killed (no `SessionEnded` hook) can't outlive it.
-                    return false;
-                }
-                // The receipt closed the timer: nothing more is owed, whatever
-                // stage this entry had reached (a Read that lands AFTER the
-                // corrective ends the story exactly as one before it does).
-                if r.seen {
-                    return true;
-                }
-                // No turn activity yet, so the brief is not late: the #103/#171
-                // delivery ladder still owns this session.
-                let Some(elapsed) = r.deadline.as_ref().map(|d| d.elapsed()) else {
-                    return true;
-                };
-                if elapsed <= timeout {
-                    return true;
-                }
-                // The ALERT is the OBSERVATION and fires the moment the window
-                // is up, even mid-turn: a human reading the trail must see the
-                // unread brief at the time it became a fact, not whenever the
-                // agent next stops. Latched — one row per window.
-                if !r.alerted {
-                    r.alerted = true;
-                    log::error!(
-                        "samurai replicator: session {} never read its gen-{} brief {} within the window — ALERT (issue #205)",
-                        r.session_id,
-                        r.generation,
-                        r.brief,
-                    );
-                    rows.push((
-                        r.project.clone(),
-                        AuditEvent::now(
-                            r.epic.clone(),
-                            AuditEventKind::Alert,
-                            r.generation,
-                            r.session_id,
-                            json!({
-                                "kind": "brief_unread",
-                                "instruction": r.instruction,
-                                "gate": r.gate,
-                                "brief": r.brief,
-                                // Whether this is the first window (a
-                                // corrective follows) or the second (the run
-                                // went fatal). One kind, so the progress
-                                // breaker's whitelist covers both rungs.
-                                "escalated": false,
-                            }),
-                        ),
-                    ));
-                }
-                if !r.nudged {
-                    // The idle gate: typed at a turn boundary, never into a
-                    // running turn (a paste mid-turn is read as input to
-                    // whatever the agent is doing). A session that is busy
-                    // right now is re-checked on the next tick — the ALERT
-                    // above already stands either way.
-                    if !r.idle {
-                        return true;
-                    }
-                    r.nudged = true;
-                    // The escalation window measures silence AFTER the nudge,
-                    // so an agent is never failed for a corrective it has not
-                    // had time to act on.
-                    r.deadline = Some(AgeableInstant::now());
-                    let instruction = samurai_brief::unread_corrective_instruction(&r.brief);
-                    log::warn!(
-                        "samurai replicator: pointing session {} back at its unread gen-{} brief {} — one corrective (issue #205)",
-                        r.session_id,
-                        r.generation,
-                        r.brief,
-                    );
-                    let (excerpt, total_chars) =
-                        super::samurai_audit::instruction_excerpt(&instruction);
-                    let audit = self.audit.clone();
-                    let project = r.project.clone();
-                    let epic = r.epic.clone();
-                    let generation = r.generation;
-                    let session_id = r.session_id;
-                    let instruction_kind = r.instruction;
-                    let brief = r.brief.clone();
-                    // Only the rows, so the callback takes no lock this tick
-                    // holds (the #171 re-type's contract exactly).
-                    let outcome: super::samurai_pty::DeliveryOutcome =
-                        Box::new(move |result| match result {
-                            Ok(()) => audit.append(
-                                &project,
-                                AuditEvent::now(
-                                    epic,
-                                    AuditEventKind::Inject,
-                                    generation,
-                                    session_id,
-                                    json!({
-                                        "phase": "corrective",
-                                        "instruction": instruction_kind,
-                                        "gate": "idle_at_tick",
-                                        "brief": brief,
-                                        "excerpt": excerpt,
-                                        "total_chars": total_chars,
-                                    }),
-                                ),
-                            ),
-                            Err(error) => audit.append(
-                                &project,
-                                AuditEvent::now(
-                                    epic,
-                                    AuditEventKind::Alert,
-                                    generation,
-                                    session_id,
-                                    json!({
-                                        "kind": "delivery_failed",
-                                        "instruction": instruction_kind,
-                                        "source": "replicator",
-                                        "corrective": "brief_unread",
-                                        "error": error,
-                                    }),
-                                ),
-                            ),
-                        });
-                    // Fired WHILE HOLDING the lock, the #106 review F4
-                    // discipline the Enter resend follows: deciding under the
-                    // lock and writing after it left a gap where the receipt
-                    // could land (`note_brief_receipt` takes this same lock)
-                    // and the corrective still went out. Safe to hold — the
-                    // writer is fire-and-forget and never re-enters here.
-                    (self.write_stdin)(session_id, instruction, outcome);
-                    return true;
-                }
-                // The one corrective is spent and the brief is STILL unread:
-                // the agent is working off something other than its
-                // instructions, which is the run being wrong rather than slow.
-                // Same rung as a submit that was never confirmed (#187) — put
-                // the staged entry back UNREGISTERED and respawn it, bounded
-                // by the same MAX_SPAWN_EMITS ladder — so the generation is
-                // re-delivered into a fresh terminal instead of the run
-                // continuing on a brief nobody read.
-                let respawned = match r.ritual.take() {
-                    Some(ritual) => Self::rearm_pending(
-                        &self.pending,
-                        *ritual,
-                        "the delivered brief was never read",
-                    )
-                    .map(|spawn| rearm_emits.push(spawn))
-                    .is_some(),
-                    None => false,
-                };
-                log::error!(
-                    "samurai replicator: session {} still had not read its gen-{} brief {} one corrective later - run-fatal (respawned: {respawned})",
-                    r.session_id,
-                    r.generation,
-                    r.brief,
+    /// Issue #103: the post-delivery watch. A delivered instruction whose
+    /// session shows no turn activity within the window gets the lone
+    /// Enter re-sent (not the body — it normally sits in the input box),
+    /// bounded by MAX_ENTER_RESENDS. Issue #171: when the ladder still
+    /// gives up, a replicator-typed body is re-typed IN FULL exactly once
+    /// (a CLI that was still initializing discarded the whole paste, so
+    /// nothing sits in the input box at all); only the retyped watch's
+    /// own give-up emits the final ALERT.
+    fn delivery_watch_pass(&self, sessions: &[SessionSnapshot], out: &mut TickOutbox) {
+        let mut delivered = self.lock_delivered();
+        delivered.retain_mut(|d| {
+            if !sessions.iter().any(|s| s.session_id == d.session_id) {
+                // Torn down / unregistered outside the samurai pipeline:
+                // never write into a session that is no longer ours.
+                return false;
+            }
+            self.step_delivery_watch(d, out)
+        });
+    }
+
+    /// One [`DeliveredWatch`] step of [`Self::delivery_watch_pass`], run
+    /// while holding the delivered lock. Returns whether to keep the watch.
+    fn step_delivery_watch(&self, d: &mut DeliveredWatch, out: &mut TickOutbox) -> bool {
+        let verdict = match d.route {
+            DeliveryRoute::Typed => enter_resend_verdict(d.delivered_at.elapsed(), d.resends),
+            DeliveryRoute::LaunchLine => activity_only_verdict(d.delivered_at.elapsed()),
+        };
+        match verdict {
+            EnterResendVerdict::Keep => true,
+            EnterResendVerdict::Resend => {
+                d.resends += 1;
+                // Re-stamp so each resend gets a full window.
+                d.delivered_at = AgeableInstant::now();
+                log::warn!(
+                    "samurai replicator: no turn activity from session {} since its instruction was typed in — re-sending the lone Enter (swallowed-submit recovery, issue #103)",
+                    d.session_id
                 );
-                rows.push((
-                    r.project.clone(),
+                // Issue #106 review F4: fire WHILE HOLDING the
+                // delivered lock. Deciding under the lock but firing
+                // after release left a gap where turn evidence could
+                // release the watch (`note_turn_activity` takes this
+                // same lock) and the queued `\r` still fired into the
+                // already-started turn. Verdict and fire are atomic
+                // now: a released watch can never resend. Safe to
+                // hold: the resender is fire-and-forget (production
+                // spawns an async task; tests push to a Vec) and
+                // never re-enters the replicator.
+                (self.resend_enter)(d.session_id);
+                out.rows.push((
+                    d.project.clone(),
                     AuditEvent::now(
-                        r.epic.clone(),
+                        d.epic.clone(),
                         AuditEventKind::Alert,
-                        r.generation,
-                        r.session_id,
+                        d.generation,
+                        d.session_id,
                         json!({
-                            "kind": "brief_unread",
-                            "instruction": r.instruction,
-                            "gate": r.gate,
-                            "brief": r.brief,
-                            "escalated": true,
-                            // Whether the generation went back on the queue
-                            // with a fresh spawn behind it, as in
-                            // `submit_unconfirmed`.
-                            "respawned": respawned,
+                            "kind": "submit_retry",
+                            "attempt": d.resends,
+                            "launch": d.launch,
+                            "source": d.source,
+                            "route": route_label(d.route),
                         }),
                     ),
                 ));
-                // The story ends here: a respawn arms its own receipt for the
-                // new session, and nothing more is owed on this one.
+                true
+            }
+            EnterResendVerdict::GiveUp => {
+                // Issue #171: an Enter-only resend is a no-op when
+                // the BODY itself was swallowed (a CLI still
+                // initializing at delivery time discards the whole
+                // paste — the Nido stranding). A replicator ritual
+                // whose session never showed any turn activity gets
+                // ONE full re-type instead of alert-and-strand; the
+                // retyped delivery runs this same watch ladder again
+                // and its own give-up is final. Decided and fired
+                // under the lock, same atomicity as the Enter resend
+                // (a released watch can never re-type); the outcome
+                // callback only audits (a channel send), so no lock
+                // re-entry. Idempotent at the agent level: the body
+                // is a pointer to the brief file — worst case the
+                // agent reads the brief twice.
+                if !d.retyped && d.route == DeliveryRoute::Typed {
+                    if let Some(instruction) = d.instruction.clone() {
+                        d.retyped = true;
+                        d.resends = 0;
+                        d.delivered_at = AgeableInstant::now();
+                        log::warn!(
+                            "samurai replicator: session {} never confirmed its typed instruction — re-typing the full body once (issue #171)",
+                            d.session_id
+                        );
+                        out.rows.push((
+                            d.project.clone(),
+                            AuditEvent::now(
+                                d.epic.clone(),
+                                AuditEventKind::Alert,
+                                d.generation,
+                                d.session_id,
+                                json!({
+                                    "kind": "delivery_retyped",
+                                    "launch": d.launch,
+                                    "source": d.source,
+                                    "route": route_label(d.route),
+                                }),
+                            ),
+                        ));
+                        let audit = self.audit.clone();
+                        let project = d.project.clone();
+                        let epic = d.epic.clone();
+                        let generation = d.generation;
+                        let session_id = d.session_id;
+                        let outcome: super::samurai_pty::DeliveryOutcome =
+                            Box::new(move |result| {
+                                if let Err(error) = result {
+                                    // The re-type never reached the
+                                    // PTY; the kept watch's own
+                                    // give-up still ends the story
+                                    // with submit_unconfirmed.
+                                    audit.append(
+                                        &project,
+                                        AuditEvent::now(
+                                            epic,
+                                            AuditEventKind::Alert,
+                                            generation,
+                                            session_id,
+                                            json!({
+                                                "kind": "delivery_failed",
+                                                "source": "replicator",
+                                                "retype": true,
+                                                "error": error,
+                                            }),
+                                        ),
+                                    );
+                                }
+                            });
+                        (self.write_stdin)(session_id, instruction, outcome);
+                        return true;
+                    }
+                }
+                // Issue #171's re-type is spent and the session
+                // still shows no turn activity: the CLI swallowed
+                // the paste for good. The entry was consumed at
+                // claim time, so alerting and dropping the watch
+                // here left the successor at an idle prompt with
+                // nothing left to deliver — how the Nido run died
+                // on 2026-08-20, recoverable only by a human. Put
+                // it back UNREGISTERED and respawn instead; the
+                // ALERT below still records the give-up.
+                let respawned = match d.ritual.take() {
+                    Some(ritual) => {
+                        match Self::rearm_pending(
+                            &self.pending,
+                            *ritual,
+                            "the submit was never confirmed",
+                        ) {
+                            Some(spawn) => {
+                                out.rearm_emits.push(spawn);
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    None => false,
+                };
+                out.rows.push((
+                    d.project.clone(),
+                    AuditEvent::now(
+                        d.epic.clone(),
+                        AuditEventKind::Alert,
+                        d.generation,
+                        d.session_id,
+                        json!({
+                            "kind": "submit_unconfirmed",
+                            // Whether the ritual went back on the
+                            // queue with a fresh spawn behind it.
+                            "respawned": respawned,
+                            "resends": d.resends,
+                            "launch": d.launch,
+                            "source": d.source,
+                            // Issue #158: which delivery this ALERT
+                            // is about — a launch-line prompt the CLI
+                            // may have ignored reads very differently
+                            // from an Enter that never landed.
+                            "route": route_label(d.route),
+                            // Issue #171: whether the body was
+                            // re-typed before this final give-up.
+                            "retyped": d.retyped,
+                        }),
+                    ),
+                ));
                 false
-            });
+            }
         }
-        // Audit I/O outside the lock, like every other tick pass.
-        for (project, row) in rows {
-            self.audit.append(&project, row);
+    }
+
+    /// Issue #205: the receipt deadline. A brief that reached the agent and
+    /// was then released by turn activity while still UNREAD (the Nido
+    /// gen-2 failure of 2026-08-20: `delivered` → a turn on something else
+    /// → nothing) gets ONE corrective at the next turn boundary, and the
+    /// existing run-fatal rung if that second window closes silently too.
+    /// Same `ack_timeout_secs` window as every other wait in the chain —
+    /// the agent's own budget for showing a sign of life, spent here on the
+    /// one act the pointer commanded.
+    fn receipt_deadline_pass(
+        &self,
+        sessions: &[SessionSnapshot],
+        timeout: Duration,
+        out: &mut TickOutbox,
+    ) {
+        let mut receipts = self.lock_brief_receipts();
+        receipts.retain_mut(|r| {
+            if !sessions.iter().any(|s| s.session_id == r.session_id) {
+                // Torn down / unregistered outside the samurai pipeline —
+                // the delivery watch's own rule: never write into a
+                // session that is no longer ours. Checked first, ahead of
+                // `seen`/`deadline`, so a receipt for a session that was
+                // hard-killed (no `SessionEnded` hook) can't outlive it.
+                return false;
+            }
+            self.check_receipt(r, timeout, out)
+        });
+    }
+
+    /// One [`BriefReceipt`] step of [`Self::receipt_deadline_pass`], run
+    /// while holding the receipts lock. Returns whether to keep the entry.
+    fn check_receipt(&self, r: &mut BriefReceipt, timeout: Duration, out: &mut TickOutbox) -> bool {
+        // The receipt closed the timer: nothing more is owed, whatever
+        // stage this entry had reached (a Read that lands AFTER the
+        // corrective ends the story exactly as one before it does).
+        if r.seen {
+            return true;
         }
-        // Same for the re-armed spawns: a stranded ritual gets a new
-        // terminal to be delivered into (bounded by MAX_SPAWN_EMITS in
-        // `rearm_pending`), instead of an ALERT nobody can act on.
-        for spawn in rearm_emits {
-            (self.emit_spawn)(&spawn);
+        // No turn activity yet, so the brief is not late: the #103/#171
+        // delivery ladder still owns this session.
+        let Some(elapsed) = r.deadline.as_ref().map(|d| d.elapsed()) else {
+            return true;
+        };
+        if elapsed <= timeout {
+            return true;
         }
+        // The ALERT is the OBSERVATION and fires the moment the window
+        // is up, even mid-turn: a human reading the trail must see the
+        // unread brief at the time it became a fact, not whenever the
+        // agent next stops. Latched — one row per window.
+        if !r.alerted {
+            r.alerted = true;
+            log::error!(
+                "samurai replicator: session {} never read its gen-{} brief {} within the window — ALERT (issue #205)",
+                r.session_id,
+                r.generation,
+                r.brief,
+            );
+            out.rows.push((
+                r.project.clone(),
+                AuditEvent::now(
+                    r.epic.clone(),
+                    AuditEventKind::Alert,
+                    r.generation,
+                    r.session_id,
+                    json!({
+                        "kind": "brief_unread",
+                        "instruction": r.instruction,
+                        "gate": r.gate,
+                        "brief": r.brief,
+                        // Whether this is the first window (a
+                        // corrective follows) or the second (the run
+                        // went fatal). One kind, so the progress
+                        // breaker's whitelist covers both rungs.
+                        "escalated": false,
+                    }),
+                ),
+            ));
+        }
+        if !r.nudged {
+            // The idle gate: typed at a turn boundary, never into a
+            // running turn (a paste mid-turn is read as input to
+            // whatever the agent is doing). A session that is busy
+            // right now is re-checked on the next tick — the ALERT
+            // above already stands either way.
+            if !r.idle {
+                return true;
+            }
+            r.nudged = true;
+            // The escalation window measures silence AFTER the nudge,
+            // so an agent is never failed for a corrective it has not
+            // had time to act on.
+            r.deadline = Some(AgeableInstant::now());
+            let instruction = samurai_brief::unread_corrective_instruction(&r.brief);
+            log::warn!(
+                "samurai replicator: pointing session {} back at its unread gen-{} brief {} — one corrective (issue #205)",
+                r.session_id,
+                r.generation,
+                r.brief,
+            );
+            let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(&instruction);
+            let audit = self.audit.clone();
+            let project = r.project.clone();
+            let epic = r.epic.clone();
+            let generation = r.generation;
+            let session_id = r.session_id;
+            let instruction_kind = r.instruction;
+            let brief = r.brief.clone();
+            // Only the rows, so the callback takes no lock this tick
+            // holds (the #171 re-type's contract exactly).
+            let outcome: super::samurai_pty::DeliveryOutcome =
+                Box::new(move |result| match result {
+                    Ok(()) => audit.append(
+                        &project,
+                        AuditEvent::now(
+                            epic,
+                            AuditEventKind::Inject,
+                            generation,
+                            session_id,
+                            json!({
+                                "phase": "corrective",
+                                "instruction": instruction_kind,
+                                "gate": "idle_at_tick",
+                                "brief": brief,
+                                "excerpt": excerpt,
+                                "total_chars": total_chars,
+                            }),
+                        ),
+                    ),
+                    Err(error) => audit.append(
+                        &project,
+                        AuditEvent::now(
+                            epic,
+                            AuditEventKind::Alert,
+                            generation,
+                            session_id,
+                            json!({
+                                "kind": "delivery_failed",
+                                "instruction": instruction_kind,
+                                "source": "replicator",
+                                "corrective": "brief_unread",
+                                "error": error,
+                            }),
+                        ),
+                    ),
+                });
+            // Fired WHILE HOLDING the lock, the #106 review F4
+            // discipline the Enter resend follows: deciding under the
+            // lock and writing after it left a gap where the receipt
+            // could land (`note_brief_receipt` takes this same lock)
+            // and the corrective still went out. Safe to hold — the
+            // writer is fire-and-forget and never re-enters here.
+            (self.write_stdin)(session_id, instruction, outcome);
+            return true;
+        }
+        // The one corrective is spent and the brief is STILL unread:
+        // the agent is working off something other than its
+        // instructions, which is the run being wrong rather than slow.
+        // Same rung as a submit that was never confirmed (#187) — put
+        // the staged entry back UNREGISTERED and respawn it, bounded
+        // by the same MAX_SPAWN_EMITS ladder — so the generation is
+        // re-delivered into a fresh terminal instead of the run
+        // continuing on a brief nobody read.
+        let respawned = match r.ritual.take() {
+            Some(ritual) => {
+                Self::rearm_pending(&self.pending, *ritual, "the delivered brief was never read")
+                    .map(|spawn| out.rearm_emits.push(spawn))
+                    .is_some()
+            }
+            None => false,
+        };
+        log::error!(
+            "samurai replicator: session {} still had not read its gen-{} brief {} one corrective later - run-fatal (respawned: {respawned})",
+            r.session_id,
+            r.generation,
+            r.brief,
+        );
+        out.rows.push((
+            r.project.clone(),
+            AuditEvent::now(
+                r.epic.clone(),
+                AuditEventKind::Alert,
+                r.generation,
+                r.session_id,
+                json!({
+                    "kind": "brief_unread",
+                    "instruction": r.instruction,
+                    "gate": r.gate,
+                    "brief": r.brief,
+                    "escalated": true,
+                    // Whether the generation went back on the queue
+                    // with a fresh spawn behind it, as in
+                    // `submit_unconfirmed`.
+                    "respawned": respawned,
+                }),
+            ),
+        ));
+        // The story ends here: a respawn arms its own receipt for the
+        // new session, and nothing more is owed on this one.
+        false
     }
 
     /// Puts a claimed-but-undelivered ritual back on `pending` and hands

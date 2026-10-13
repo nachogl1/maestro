@@ -473,11 +473,104 @@ pub fn list_files(
     open_session_ids: &[u32],
 ) -> (Vec<SamuraiFileGroup>, Vec<SamuraiFileEntry>) {
     let live = Liveness::compute(configs, timers, sessions);
-    let mut groups = Groups::default();
+    let open: HashSet<u32> = open_session_ids.iter().copied().collect();
 
-    // 1. The groups themselves. Run configs first — they are the only source
-    //    carrying a label's refs, titles and creation time; a timer or a live
-    //    session for an epic with no config still gets its group, refs-only.
+    // 1. The groups themselves.
+    let mut groups = build_groups(configs, timers, sessions, pr_runs, &live, &open);
+
+    let mut entries: Vec<SamuraiFileEntry> = Vec::new();
+
+    // 2. PR reviews (claimed FIRST — see `push_pr_review_entries`).
+    let claimed_briefs = push_pr_review_entries(pr_runs, &open, &mut entries);
+
+    // 3. Handoffs and briefs in each epic worktree.
+    push_worktree_md_entries(configs, &live, &claimed_briefs, &mut entries);
+
+    // 4. Run configs, every status.
+    push_run_config_entries(configs, &live, &mut entries);
+
+    // 5. Pending timers.
+    push_timer_entries(roots, timers, &live, &mut entries);
+
+    // 6. The two shared logs, sliced per group. Physically unchanged — one
+    //    audit JSONL per project, one append-only journal — because the live
+    //    watchers and the harvest depend on that shape; the split is virtual.
+    //    A group with an empty slice gets no row at all: an "audit (0 rows)"
+    //    line says nothing a missing line does not.
+    let journal_path = roots.journal_dir.join(JOURNAL_FILE);
+    let journal_owners = journal_owners(&journal_path);
+    let journal_stat = stat(&journal_path);
+    // The journal is APPEND TARGET for every live agent (the rider tells them
+    // to `>>` their friction into it), so while any orchestrator is
+    // supervised, deleting it destroys unconsumed entries — it must route
+    // through the harder IN_USE confirm, not an ordinary one.
+    let journal_in_use = !live.session_pairs.is_empty();
+    let journal = JournalSlice {
+        path: journal_path,
+        owners: journal_owners,
+        stat: journal_stat,
+        in_use: journal_in_use,
+    };
+
+    // 6a. Count every audit JSONL in the root.
+    let (audit_counts, audit_projects) = count_audit_slices(roots, &groups);
+
+    // 6b. Adopt every unclaimed audit slice and journal entry.
+    adopt_unclaimed_slices(&mut groups, &audit_counts, &audit_projects, &journal.owners);
+
+    // 6c. The slices themselves.
+    push_slice_entries(
+        roots,
+        &mut groups,
+        &live,
+        &audit_counts,
+        journal,
+        &mut entries,
+    );
+
+    // Entries arrive grouped, in the tree order the panel renders.
+    entries.sort_by(|a, b| {
+        (&a.group_id, a.kind.order(), &a.path, &a.epic, &a.fire_at).cmp(&(
+            &b.group_id,
+            b.kind.order(),
+            &b.path,
+            &b.epic,
+            &b.fire_at,
+        ))
+    });
+    // Live groups first, then newest launch first — the panel's card order.
+    groups.groups.sort_by(|a, b| {
+        (!a.is_live, &b.created_at, &a.id).cmp(&(!b.is_live, &a.created_at, &b.id))
+    });
+    (groups.groups, entries)
+}
+
+/// Per-audit-file slice counts: audit file name → (slice key → row count).
+type AuditCounts = HashMap<String, HashMap<String, u32>>;
+
+/// The shared ops journal as [`list_files`] slices it: its path, the
+/// owner of every entry, its size/mtime, and whether deleting it must go
+/// through the IN_USE confirm.
+struct JournalSlice {
+    path: PathBuf,
+    owners: Vec<JournalOwner>,
+    stat: Option<(u64, Option<String>)>,
+    in_use: bool,
+}
+
+/// Step 1 of [`list_files`]: the groups themselves. Run configs first — they
+/// are the only source carrying a label's refs, titles and creation time; a
+/// timer or a live session for an epic with no config still gets its group,
+/// refs-only.
+fn build_groups(
+    configs: &[(PathBuf, SamuraiRunConfig)],
+    timers: &[ScheduleEntry],
+    sessions: &[SessionSnapshot],
+    pr_runs: &[(PathBuf, PrReviewRun)],
+    live: &Liveness,
+    open: &HashSet<u32>,
+) -> Groups {
+    let mut groups = Groups::default();
     for (_, config) in configs {
         groups.upsert_run(
             &config.project_path,
@@ -497,27 +590,31 @@ pub fn list_files(
     for session in sessions.iter().filter(|s| !s.state.is_terminal()) {
         groups.upsert_run(&session.project, &session.epic, None, true);
     }
-    let open: HashSet<u32> = open_session_ids.iter().copied().collect();
     for (_, run) in pr_runs {
-        groups.upsert_pr(run, samurai_pr_runs::is_live(run, &open));
+        groups.upsert_pr(run, samurai_pr_runs::is_live(run, open));
     }
+    groups
+}
 
-    let mut entries: Vec<SamuraiFileEntry> = Vec::new();
-
-    // 2. PR reviews: the record itself, plus the brief it was delivered as
-    //    (issue #138) when one was written. Claimed FIRST so a review whose
-    //    checkout doubles as a run worktree cannot have its brief swept up by
-    //    the run's brief scan below.
-    //
-    //    One file, one row: relaunching the same PR with the same steps writes
-    //    a second RECORD that reuses the same brief stem, so the two records
-    //    name one file — which must still list once, or the card's
-    //    "N files · X KB" counts it twice.
+/// Step 2 of [`list_files`]: PR reviews — the record itself, plus the brief
+/// it was delivered as (issue #138) when one was written. Claimed FIRST so a
+/// review whose checkout doubles as a run worktree cannot have its brief
+/// swept up by the run's brief scan. Returns the claimed brief keys.
+///
+/// One file, one row: relaunching the same PR with the same steps writes a
+/// second RECORD that reuses the same brief stem, so the two records name one
+/// file — which must still list once, or the card's "N files · X KB" counts
+/// it twice.
+fn push_pr_review_entries(
+    pr_runs: &[(PathBuf, PrReviewRun)],
+    open: &HashSet<u32>,
+    entries: &mut Vec<SamuraiFileEntry>,
+) -> HashSet<String> {
     let mut claimed_briefs: HashSet<String> = HashSet::new();
     let mut brief_rows: HashMap<String, usize> = HashMap::new();
     for (path, run) in pr_runs {
         let group_id = run.group_id();
-        let live = samurai_pr_runs::is_live(run, &open);
+        let live = samurai_pr_runs::is_live(run, open);
         if let Some((size_bytes, modified_at)) = stat(path) {
             entries.push(SamuraiFileEntry {
                 group_id: group_id.clone(),
@@ -562,11 +659,19 @@ pub fn list_files(
             });
         }
     }
+    claimed_briefs
+}
 
-    // 3. Handoffs and briefs: `.maestro/handoffs/*.md` and
-    //    `.maestro/briefs/*.md` in each epic worktree a run config points at.
-    //    Archived configs keep their files (PRD §8 row 2), so completed
-    //    epics' history stays findable until cleanup.
+/// Step 3 of [`list_files`]: handoffs and briefs — `.maestro/handoffs/*.md`
+/// and `.maestro/briefs/*.md` in each epic worktree a run config points at.
+/// Archived configs keep their files (PRD §8 row 2), so completed epics'
+/// history stays findable until cleanup.
+fn push_worktree_md_entries(
+    configs: &[(PathBuf, SamuraiRunConfig)],
+    live: &Liveness,
+    claimed_briefs: &HashSet<String>,
+    entries: &mut Vec<SamuraiFileEntry>,
+) {
     let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
     for (_, config) in configs {
         let group_id = run_group_id(&config.project_path, &config.epic);
@@ -608,11 +713,17 @@ pub fn list_files(
             }
         }
     }
+}
 
-    // 4. Run configs, every status. An unarchived config — ACTIVE, or
-    //    COMPLETED awaiting its cleanup (issue #96) — is in use by
-    //    definition; an archived one only while a live session or pending
-    //    timer still references its epic.
+/// Step 4 of [`list_files`]: run configs, every status. An unarchived config
+/// — ACTIVE, or COMPLETED awaiting its cleanup (issue #96) — is in use by
+/// definition; an archived one only while a live session or pending timer
+/// still references its epic.
+fn push_run_config_entries(
+    configs: &[(PathBuf, SamuraiRunConfig)],
+    live: &Liveness,
+    entries: &mut Vec<SamuraiFileEntry>,
+) {
     for (path, config) in configs {
         let Some((size_bytes, modified_at)) = stat(path) else {
             continue;
@@ -631,9 +742,17 @@ pub fn list_files(
             fire_at: None,
         });
     }
+}
 
-    // 5. Pending timers: one row per timer, all sharing `schedule.json` as
-    //    their path. Every listed timer is pending by definition → in use.
+/// Step 5 of [`list_files`]: pending timers — one row per timer, all sharing
+/// `schedule.json` as their path. Every listed timer is pending by
+/// definition → in use.
+fn push_timer_entries(
+    roots: &SamuraiFilesRoots,
+    timers: &[ScheduleEntry],
+    live: &Liveness,
+    entries: &mut Vec<SamuraiFileEntry>,
+) {
     let schedule_path = roots.samurai_dir.join("schedule.json");
     let schedule_stat = stat(&schedule_path);
     for timer in timers {
@@ -651,27 +770,19 @@ pub fn list_files(
             fire_at: Some(timer.fire_at.clone()),
         });
     }
+}
 
-    // 6. The two shared logs, sliced per group. Physically unchanged — one
-    //    audit JSONL per project, one append-only journal — because the live
-    //    watchers and the harvest depend on that shape; the split is virtual.
-    //    A group with an empty slice gets no row at all: an "audit (0 rows)"
-    //    line says nothing a missing line does not.
-    let journal_path = roots.journal_dir.join(JOURNAL_FILE);
-    let journal_owners = journal_owners(&journal_path);
-    let journal_stat = stat(&journal_path);
-    // The journal is APPEND TARGET for every live agent (the rider tells them
-    // to `>>` their friction into it), so while any orchestrator is
-    // supervised, deleting it destroys unconsumed entries — it must route
-    // through the harder IN_USE confirm, not an ordinary one.
-    let journal_in_use = !live.session_pairs.is_empty();
-
-    // 6a. Count every audit JSONL in the root, not only the files the groups
-    //     above happen to point at. A file no group names is exactly the case
-    //     review B3 is about: the account-wide log, or a project whose run
-    //     configs were cleaned. Both are still on disk, still growing, and
-    //     were listed unconditionally before the panel was grouped.
-    let mut audit_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+/// Step 6a of [`list_files`]: count every audit JSONL in the root, not only
+/// the files the groups happen to point at. A file no group names is exactly
+/// the case review B3 is about: the account-wide log, or a project whose run
+/// configs were cleaned. Both are still on disk, still growing, and were
+/// listed unconditionally before the panel was grouped. Returns the counts
+/// plus the project each group-named audit file belongs to.
+fn count_audit_slices(
+    roots: &SamuraiFilesRoots,
+    groups: &Groups,
+) -> (AuditCounts, HashMap<String, String>) {
+    let mut audit_counts: AuditCounts = HashMap::new();
     let mut audit_projects: HashMap<String, String> = HashMap::new();
     for index in 0..groups.groups.len() {
         let file = groups.audit_files[index].clone();
@@ -703,11 +814,19 @@ pub fn list_files(
                 .or_insert_with(|| count_audit_rows(&path));
         }
     }
+    (audit_counts, audit_projects)
+}
 
-    // 6b. Adopt every counted slice no group claims, and every journal entry
-    //     no group claims, onto the real scope it names (see
-    //     `Groups::adopt_audit_slice`). Sorted so the adoption order — and so
-    //     the returned group order — does not ride on hash iteration.
+/// Step 6b of [`list_files`]: adopt every counted slice no group claims, and
+/// every journal entry no group claims, onto the real scope it names (see
+/// `Groups::adopt_audit_slice`). Sorted so the adoption order — and so the
+/// returned group order — does not ride on hash iteration.
+fn adopt_unclaimed_slices(
+    groups: &mut Groups,
+    audit_counts: &AuditCounts,
+    audit_projects: &HashMap<String, String>,
+    journal_owners: &[JournalOwner],
+) {
     let mut unclaimed: Vec<(&String, &String)> = audit_counts
         .iter()
         .flat_map(|(file, counts)| counts.keys().map(move |key| (file, key)))
@@ -721,7 +840,7 @@ pub fn list_files(
         let (file, key) = (file.clone(), key.clone());
         groups.adopt_audit_slice(&file, &key, audit_projects.get(&file).map(String::as_str));
     }
-    for owner in &journal_owners {
+    for owner in journal_owners {
         match (owner.project.as_deref(), owner.agent.as_deref()) {
             (Some(project), Some(agent)) => {
                 if !groups.claims_journal(project, agent) {
@@ -739,9 +858,19 @@ pub fn list_files(
             _ => groups.upsert_run(ACCOUNT_PROJECT, ACCOUNT_RUN, None, false),
         }
     }
+}
 
-    // 6c. The slices themselves. A group with an empty slice gets no row at
-    //     all: an "audit (0 rows)" line says nothing a missing line does not.
+/// Step 6c of [`list_files`]: the slices themselves. A group with an empty
+/// slice gets no row at all: an "audit (0 rows)" line says nothing a missing
+/// line does not.
+fn push_slice_entries(
+    roots: &SamuraiFilesRoots,
+    groups: &mut Groups,
+    live: &Liveness,
+    audit_counts: &AuditCounts,
+    journal: JournalSlice,
+    entries: &mut Vec<SamuraiFileEntry>,
+) {
     for index in 0..groups.groups.len() {
         let file = groups.audit_files[index].clone();
         let key = groups.groups[index].audit_key.clone();
@@ -775,44 +904,29 @@ pub fn list_files(
             }
         }
 
-        let journal_entries = journal_owners
+        let journal_entries = journal
+            .owners
             .iter()
             .filter(|owner| owner.belongs_to(project.as_deref(), &key))
             .count() as u32;
         groups.groups[index].journal_entries = journal_entries;
         if journal_entries > 0 {
-            if let Some((size_bytes, modified_at)) = journal_stat.clone() {
+            if let Some((size_bytes, modified_at)) = journal.stat.clone() {
                 entries.push(SamuraiFileEntry {
                     group_id: groups.groups[index].id.clone(),
                     kind: SamuraiFileKind::Journal,
-                    path: stripped(&journal_path),
+                    path: stripped(&journal.path),
                     size_bytes,
                     modified_at,
                     project_path: project,
                     epic: groups.epics[index].clone(),
-                    in_use: journal_in_use,
+                    in_use: journal.in_use,
                     has_live_session: false,
                     fire_at: None,
                 });
             }
         }
     }
-
-    // Entries arrive grouped, in the tree order the panel renders.
-    entries.sort_by(|a, b| {
-        (&a.group_id, a.kind.order(), &a.path, &a.epic, &a.fire_at).cmp(&(
-            &b.group_id,
-            b.kind.order(),
-            &b.path,
-            &b.epic,
-            &b.fire_at,
-        ))
-    });
-    // Live groups first, then newest launch first — the panel's card order.
-    groups.groups.sort_by(|a, b| {
-        (!a.is_live, &b.created_at, &a.id).cmp(&(!b.is_live, &a.created_at, &b.id))
-    });
-    (groups.groups, entries)
 }
 
 /// A samurai run's group id: `run:<project-hash>:<epic-slug>` (issue #139).
