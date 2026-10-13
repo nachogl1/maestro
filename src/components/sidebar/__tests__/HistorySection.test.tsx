@@ -25,6 +25,7 @@ import type { WorktreeInfo } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
+import { useSessionSummaryStore } from "@/stores/useSessionSummaryStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { HistorySection } from "../HistorySection";
 
@@ -53,6 +54,7 @@ function conversation(overrides: Partial<ClaudeSessionInfo> = {}): ClaudeSession
   return {
     session_id: "conv-repo",
     summary: null,
+    title: null,
     first_prompt: "Fix the login bug",
     last_prompt: null,
     last_activity: "Updated auth.ts and ran the suite",
@@ -93,15 +95,26 @@ function worktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
   };
 }
 
-/** Routes the invoke mock by command; either call can be made to reject. */
+/**
+ * Routes the invoke mock by command; any call can be made to reject. The AI
+ * label for a conversation is derived from its session id, so tests can tell
+ * rows apart by it.
+ */
 function mockInvoke({
   worktrees = [] as WorktreeInfo[],
   listing = buildListing([]),
   worktreeError = null as string | null,
   listingError = null as string | null,
+  summaryError = null as string | null,
 } = {}) {
-  invokeMock.mockImplementation(async (cmd: string) => {
+  invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
+      case "summarize_claude_session":
+        if (summaryError) throw summaryError;
+        return {
+          name: `AI name ${args?.sessionId}`,
+          summary: `AI summary ${args?.sessionId}.`,
+        };
       case "git_worktree_list":
         if (worktreeError) throw worktreeError;
         return worktrees;
@@ -145,6 +158,7 @@ describe("HistorySection (issue #78)", () => {
     useSessionStore.setState({ sessions: [] });
     useActivityStore.setState({ sessions: {} });
     usePendingLaunchStore.setState({ pending: [] });
+    useSessionSummaryStore.setState({ entries: {} });
   });
 
   it("groups conversations by the checkout or worktree they ran in", async () => {
@@ -178,18 +192,24 @@ describe("HistorySection (issue #78)", () => {
 
     const checkout = groupFor(REPO);
     const branch = groupFor(WORKTREE);
-    // Checkout and worktree are distinguished, not just listed (scoped to the
-    // group's own badge — the filter chips above the list say the same word).
-    expect(within(checkout).getByText("CHECKOUT")).toBeInTheDocument();
-    expect(within(branch).getByText("WORKTREE")).toBeInTheDocument();
+    // Each row is identified by its AI name + summary, under its directory.
+    expect(await within(checkout).findByText("AI name conv-repo")).toBeInTheDocument();
+    expect(within(checkout).queryByText("AI name conv-wt")).not.toBeInTheDocument();
 
-    expect(within(checkout).getByText("Fix the login bug")).toBeInTheDocument();
-    expect(within(checkout).queryByText("Rebuild the history rows")).not.toBeInTheDocument();
-
-    expect(within(branch).getByText("Rebuild the history rows")).toBeInTheDocument();
-    // Enough content to recognise the run: the closing summary and its length.
-    expect(within(branch).getByText(/Opened the PR/)).toBeInTheDocument();
+    expect(await within(branch).findByText("AI name conv-wt")).toBeInTheDocument();
+    expect(within(branch).getByText("AI summary conv-wt.")).toBeInTheDocument();
     expect(within(branch).getByText(/7 msgs/)).toBeInTheDocument();
+    // The raw prompt / last-activity text is replaced, not shown alongside.
+    expect(screen.queryByText("Rebuild the history rows")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Opened the PR/)).not.toBeInTheDocument();
+    // The summary request carries the transcript state the backend caches on.
+    expect(callsOf("summarize_claude_session")).toContainEqual([
+      "summarize_claude_session",
+      { sessionId: "conv-wt", lastActive: "2026-08-11T08:00:00Z", messageCount: 7 },
+    ]);
+    // No directory-kind pills anywhere — neither filter chips nor group badges.
+    expect(screen.queryByText("CHECKOUT")).not.toBeInTheDocument();
+    expect(screen.queryByText("WORKTREE")).not.toBeInTheDocument();
     // Scoped to the row: this worktree's directory is named after its branch,
     // so the label also matches the group header.
     const worktreeRow = within(branch).getByTitle(`Resume this conversation in ${WORKTREE}`);
@@ -228,11 +248,7 @@ describe("HistorySection (issue #78)", () => {
     render(<HistorySection />);
     await expandProject();
 
-    // Visible on the row itself — a tooltip is not enough. (Scoped to the
-    // group's own badge — the filter chips above the list say the same word.)
-    expect(
-      within(groupFor("C:\\git\\maestro\\gone-worktree")).getByText("GONE"),
-    ).toBeInTheDocument();
+    // Visible on the row itself — a tooltip is not enough.
     expect(screen.getByText(/Not resumable — its directory no longer exists/)).toBeInTheDocument();
 
     // And the launch never points a shell at the missing directory: the row
@@ -301,7 +317,9 @@ describe("HistorySection (issue #78)", () => {
     // Counted and reachable, not silently dropped.
     expect(screen.getByText("Running now — 1 not resumable")).toBeInTheDocument();
     expect(resumeRows()).toHaveLength(1);
-    expect(screen.getByText("Finished earlier")).toBeInTheDocument();
+    expect(await screen.findByText("AI name conv-done")).toBeInTheDocument();
+    // The running row is named the same way.
+    expect(await screen.findByText("AI name conv-live")).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Open the live terminal for conversation conv-liv" }),
@@ -369,8 +387,8 @@ describe("HistorySection (issue #78)", () => {
       target: { value: "LOGIN" },
     });
 
-    expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
-    expect(screen.queryByText("Refactor the payment service")).not.toBeInTheDocument();
+    expect(screen.getByText("AI name conv-login")).toBeInTheDocument();
+    expect(screen.queryByText("AI name conv-payment")).not.toBeInTheDocument();
     expect(screen.getByText(/1 of 2 conversations/)).toBeInTheDocument();
 
     // The clear ("X") button empties the box and restores every row.
@@ -378,32 +396,63 @@ describe("HistorySection (issue #78)", () => {
     expect(resumeRows()).toHaveLength(2);
   });
 
-  it("filters groups by kind via the toggle chips", async () => {
+  it("searches the AI summary shown on the row", async () => {
     mockInvoke({
-      worktrees: [worktree({ path: REPO, is_main_worktree: true, branch: "main" }), worktree()],
       listing: buildListing([
-        conversation(),
-        conversation({
-          session_id: "conv-wt",
-          first_prompt: "Rebuild the history rows",
-          cwd: WORKTREE,
-          git_branch: "maestro-78",
-        }),
+        conversation({ session_id: "conv-login" }),
+        conversation({ session_id: "conv-payment" }),
       ]),
     });
     render(<HistorySection />);
     await expandProject();
+    await screen.findByText("AI summary conv-payment.");
 
-    // The chip and the group's own badge both say "WORKTREE" to start.
-    expect(screen.getAllByText("WORKTREE")).toHaveLength(2);
-    expect(screen.getByText("Rebuild the history rows")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Search conversations..."), {
+      target: { value: "summary conv-pay" },
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "WORKTREE" }));
+    expect(resumeRows()).toHaveLength(1);
+    expect(screen.getByText("AI name conv-payment")).toBeInTheDocument();
+  });
 
-    // The worktree group disappears entirely — only the (now inactive) chip remains.
-    expect(screen.getAllByText("WORKTREE")).toHaveLength(1);
-    expect(screen.queryByText("Rebuild the history rows")).not.toBeInTheDocument();
+  it("names a row by the transcript's own title before the AI name", async () => {
+    mockInvoke({
+      listing: buildListing([conversation({ session_id: "conv-titled", title: "my-agent" })]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    expect(await screen.findByText("AI summary conv-titled.")).toBeInTheDocument();
+    expect(screen.getByText("my-agent")).toBeInTheDocument();
+    expect(screen.queryByText("AI name conv-titled")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the first prompt and says so when the summary fails", async () => {
+    mockInvoke({
+      listing: buildListing([conversation({ first_prompt: "Fix the login bug" })]),
+      summaryError: "could not start the claude CLI",
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    const unavailable = await screen.findByText("Summary unavailable");
+    expect(unavailable).toHaveAttribute(
+      "title",
+      expect.stringContaining("could not start the claude CLI"),
+    );
     expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
+  });
+
+  it("asks for a summary once per conversation, not on every render", async () => {
+    mockInvoke({ listing: buildListing([conversation()]) });
+    render(<HistorySection />);
+    await expandProject();
+    await screen.findByText("AI summary conv-repo.");
+
+    fireEvent.change(screen.getByPlaceholderText("Search conversations..."), {
+      target: { value: "conv" },
+    });
+    expect(callsOf("summarize_claude_session")).toHaveLength(1);
   });
 
   it("lifts the display cap while a search query is active", async () => {
@@ -429,7 +478,7 @@ describe("HistorySection (issue #78)", () => {
     expect(screen.queryByRole("button", { name: /show all/ })).not.toBeInTheDocument();
   });
 
-  it("shows an empty state with a one-click clear when filters hide everything", async () => {
+  it("shows an empty state with a one-click clear when the search hides everything", async () => {
     mockInvoke({
       listing: buildListing([conversation({ first_prompt: "Fix the login bug" })]),
     });
@@ -440,13 +489,13 @@ describe("HistorySection (issue #78)", () => {
       target: { value: "no such conversation anywhere" },
     });
 
-    expect(screen.getByText("No conversations match your filters.")).toBeInTheDocument();
-    expect(screen.queryByText("Fix the login bug")).not.toBeInTheDocument();
+    expect(screen.getByText("No conversations match your search.")).toBeInTheDocument();
+    expect(resumeRows()).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    fireEvent.click(screen.getByText("Clear search"));
 
-    expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
-    expect(screen.queryByText("No conversations match your filters.")).not.toBeInTheDocument();
+    expect(resumeRows()).toHaveLength(1);
+    expect(screen.queryByText("No conversations match your search.")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("Search conversations...")).toHaveValue("");
   });
 });

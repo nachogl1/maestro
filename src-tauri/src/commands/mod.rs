@@ -15,6 +15,7 @@ pub mod plugin;
 pub mod processes;
 pub mod samurai;
 pub mod session;
+pub mod session_summary;
 pub mod system;
 pub mod terminal;
 pub mod update;

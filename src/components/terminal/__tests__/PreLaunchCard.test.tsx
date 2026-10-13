@@ -281,6 +281,7 @@ describe("PreLaunchCard resume session search", () => {
   const makeSession = (overrides?: Partial<ClaudeSessionInfo>): ClaudeSessionInfo => ({
     session_id: "session-1",
     summary: null,
+    title: null,
     first_prompt: "Fix the login bug",
     last_prompt: null,
     last_activity: null,

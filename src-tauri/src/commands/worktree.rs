@@ -772,7 +772,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(result.created);
+        assert!(result.created, "{:?}", result.warning);
         assert!(result.worktree_path.is_some());
         assert_ne!(result.working_directory, path.to_string_lossy().to_string());
 
@@ -841,7 +841,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(result.created);
+        assert!(result.created, "{:?}", result.warning);
         assert!(result.worktree_path.is_some());
 
         // Verify the branch was created

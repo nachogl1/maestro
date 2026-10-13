@@ -275,6 +275,7 @@ pub fn run() {
             // Claude session history
             commands::claude_sessions::list_claude_sessions,
             commands::claude_sessions::delete_claude_session,
+            commands::session_summary::summarize_claude_session,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,

@@ -207,6 +207,8 @@ export interface ClaudeSessionInfo {
   session_id: string;
   /** Conversation title from a transcript summary entry, when Claude wrote one. */
   summary: string | null;
+  /** Session name: the user's `/rename`, else Claude Code's own AI title. Null on older transcripts. */
+  title: string | null;
   first_prompt: string | null;
   /** Most recent user prompt — where a long conversation left off. */
   last_prompt: string | null;
@@ -265,6 +267,28 @@ export async function listClaudeSessions(
   extraRoots?: string[],
 ): Promise<ClaudeSessionListing> {
   return invoke<ClaudeSessionListing>("list_claude_sessions", { projectPath, extraRoots });
+}
+
+/** AI-written label for a past conversation, shown in the History tab. */
+export interface ClaudeSessionSummary {
+  /** Short session name, used when the transcript carries no title. */
+  name: string;
+  /** Two sentences: what the user wanted, then where the agent ended up. */
+  summary: string;
+}
+
+/**
+ * Names and summarises a conversation with a headless Haiku run. Cached by
+ * the backend until the transcript changes, so repeat calls are cheap.
+ */
+export async function summarizeClaudeSession(
+  session: Pick<ClaudeSessionInfo, "session_id" | "last_active" | "message_count">,
+): Promise<ClaudeSessionSummary> {
+  return invoke<ClaudeSessionSummary>("summarize_claude_session", {
+    sessionId: session.session_id,
+    lastActive: session.last_active,
+    messageCount: session.message_count,
+  });
 }
 
 /** Deletes a Claude Code session's transcript and snapshot data. */
