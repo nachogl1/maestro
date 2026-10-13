@@ -554,8 +554,26 @@ pub struct CreatePullRequestOptions {
     pub draft: bool,
 }
 
+/// Owner and name of the current repository, as reported by `gh repo view`.
+#[derive(Debug, Deserialize)]
+struct RepoInfo {
+    owner: RepoOwner,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoOwner {
+    login: String,
+}
+
 /// GitHub operations using the `gh` CLI.
 impl GitHub {
+    /// Fetches the owner and name of the current repository via `gh repo view`.
+    async fn repo_info(&self) -> Result<RepoInfo, GitHubError> {
+        let repo_output = self.run(&["repo", "view", "--json", "owner,name"]).await?;
+        Ok(serde_json::from_str(&repo_output.stdout)?)
+    }
+
     /// Checks if the user is authenticated with GitHub.
     pub async fn auth_status(&self) -> Result<AuthStatus, GitHubError> {
         let result = self.run(&["auth", "status"]).await;
@@ -1060,17 +1078,7 @@ impl GitHub {
         if numbers.is_empty() {
             return Ok(Vec::new());
         }
-        let repo_output = self.run(&["repo", "view", "--json", "owner,name"]).await?;
-        #[derive(Deserialize)]
-        struct RepoInfo {
-            owner: RepoOwner,
-            name: String,
-        }
-        #[derive(Deserialize)]
-        struct RepoOwner {
-            login: String,
-        }
-        let repo_info: RepoInfo = serde_json::from_str(&repo_output.stdout)?;
+        let repo_info = self.repo_info().await?;
 
         let mut out = Vec::new();
         for chunk in numbers.chunks(25) {
@@ -1256,20 +1264,7 @@ impl GitHub {
     /// Lists discussions using the GraphQL API.
     pub async fn list_discussions(&self, limit: u32) -> Result<Vec<DiscussionInfo>, GitHubError> {
         // We need repo info first to fill in owner/name.
-        let repo_output = self.run(&["repo", "view", "--json", "owner,name"]).await?;
-
-        #[derive(Deserialize)]
-        struct RepoInfo {
-            owner: RepoOwner,
-            name: String,
-        }
-
-        #[derive(Deserialize)]
-        struct RepoOwner {
-            login: String,
-        }
-
-        let repo_info: RepoInfo = serde_json::from_str(&repo_output.stdout)?;
+        let repo_info = self.repo_info().await?;
 
         // Interpolate owner/name directly rather than via sequential
         // String::replace on shared placeholders: a login containing the literal
@@ -1343,20 +1338,7 @@ impl GitHub {
     /// Gets detailed information about a specific discussion using GraphQL.
     pub async fn get_discussion(&self, number: u64) -> Result<DiscussionDetail, GitHubError> {
         // Get repo info first
-        let repo_output = self.run(&["repo", "view", "--json", "owner,name"]).await?;
-
-        #[derive(Deserialize)]
-        struct RepoInfo {
-            owner: RepoOwner,
-            name: String,
-        }
-
-        #[derive(Deserialize)]
-        struct RepoOwner {
-            login: String,
-        }
-
-        let repo_info: RepoInfo = serde_json::from_str(&repo_output.stdout)?;
+        let repo_info = self.repo_info().await?;
 
         let query = format!(
             r#"{{
@@ -1516,20 +1498,7 @@ impl GitHub {
     /// Adds a comment to a discussion using GraphQL mutation.
     pub async fn comment_discussion(&self, number: u64, body: &str) -> Result<(), GitHubError> {
         // Get repo info first
-        let repo_output = self.run(&["repo", "view", "--json", "owner,name"]).await?;
-
-        #[derive(Deserialize)]
-        struct RepoInfo {
-            owner: RepoOwner,
-            name: String,
-        }
-
-        #[derive(Deserialize)]
-        struct RepoOwner {
-            login: String,
-        }
-
-        let repo_info: RepoInfo = serde_json::from_str(&repo_output.stdout)?;
+        let repo_info = self.repo_info().await?;
 
         // First, get the discussion ID (GraphQL node ID)
         let id_query = format!(
