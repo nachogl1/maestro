@@ -1481,10 +1481,19 @@ fn stat(path: &Path) -> Option<(u64, Option<String>)> {
 /// both sides of its containment check exactly the way the delete above
 /// does — one canonicalization shared, never a second copy that can drift.
 pub(crate) fn canonical_stripped(path: &Path) -> Option<PathBuf> {
-    let canonical = std::fs::canonicalize(path).ok()?;
-    Some(PathBuf::from(strip_extended_length(
-        &canonical.to_string_lossy(),
-    )))
+    canonical_key(path).ok().map(PathBuf::from)
+}
+
+/// [`canonical_stripped`] as a STRING key, keeping the `io::Error` so a
+/// command can report why the path was refused. The one spelling every
+/// per-project cache (MCP, plugin, marketplace and session managers) keys
+/// on: a raw `fs::canonicalize(..).to_string_lossy()` kept the `\\?\`
+/// prefix on Windows, so the same project could sit under two keys next to
+/// code that strips it. The strip is [`strip_extended_length`]'s plain
+/// string rule, so it behaves the same on every host.
+pub(crate) fn canonical_key(path: impl AsRef<Path>) -> std::io::Result<String> {
+    let canonical = std::fs::canonicalize(path)?;
+    Ok(strip_extended_length(&canonical.to_string_lossy()))
 }
 
 /// The `\\?\` / `\\?\UNC\` strip on its own, as a pure string step.
@@ -1548,11 +1557,7 @@ pub(crate) fn normalize_project(project: &str) -> String {
 /// Lossless `\\?\`-strip of a path for display/wire use (no canonicalize —
 /// listing must not require every path to exist).
 fn stripped(path: &Path) -> String {
-    strip_prefix_str(&path.to_string_lossy()).to_string()
-}
-
-fn strip_prefix_str(path: &str) -> &str {
-    path.strip_prefix(r"\\?\").unwrap_or(path)
+    strip_extended_length(&path.to_string_lossy())
 }
 
 /// De-duplication identity of a path that must never be stat'ed to be
@@ -1568,7 +1573,7 @@ fn strip_prefix_str(path: &str) -> &str {
 /// filesystem; briefs are Maestro-written from a slugged, already-lowercased
 /// stem (`samurai_brief::write_brief`), so that pair cannot occur.
 fn path_key(path: &Path) -> String {
-    strip_prefix_str(&path.to_string_lossy())
+    strip_extended_length(&path.to_string_lossy())
         .replace('\\', "/")
         .to_lowercase()
 }
@@ -1619,6 +1624,52 @@ mod tests {
         assert_eq!(
             normalize_project(&normalize_project(r"\\?\UNC\server\share\maestro")),
             r"\\server\share\maestro"
+        );
+    }
+
+    #[test]
+    fn test_canonical_key_is_the_stripped_canonical_spelling() {
+        // The per-project cache key: one spelling whatever the input form,
+        // never the `\\?\` verbatim prefix `fs::canonicalize` adds on
+        // Windows, and the same string `canonical_stripped` resolves to.
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(project.join("sub")).unwrap();
+
+        let key = canonical_key(&project).unwrap();
+        assert!(!key.starts_with(r"\\?\"), "unstripped key: {key}");
+        assert_eq!(
+            Some(PathBuf::from(&key)),
+            canonical_stripped(&project),
+            "canonical_key and canonical_stripped must agree"
+        );
+        // A `..` spelling of the same directory lands on the same key.
+        assert_eq!(canonical_key(project.join("sub").join("..")).unwrap(), key);
+        // The key is itself a usable path that maps back to itself.
+        assert_eq!(canonical_key(&key).unwrap(), key);
+    }
+
+    #[test]
+    fn test_canonical_key_refuses_a_missing_path() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(canonical_key(&missing).is_err());
+        assert!(canonical_stripped(&missing).is_none());
+    }
+
+    #[test]
+    fn test_display_strip_keeps_unc_paths_absolute() {
+        // The wire/display strip and the brief claim key share the full
+        // `\\?\` / `\\?\UNC\` rule: a share path stays `\\server\share\…`,
+        // never the relative `UNC\server\share\…` a bare `\\?\` chop left.
+        assert_eq!(
+            stripped(Path::new(r"\\?\UNC\server\share\b.md")),
+            r"\\server\share\b.md"
+        );
+        assert_eq!(stripped(Path::new(r"\\?\C:\x\b.md")), r"C:\x\b.md");
+        assert_eq!(
+            path_key(Path::new(r"\\?\UNC\Server\Share\B.md")),
+            "//server/share/b.md"
         );
     }
 

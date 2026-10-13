@@ -7,6 +7,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::core::marketplace_manager::MarketplaceManager;
 use crate::core::marketplace_models::*;
+use crate::core::samurai_files::canonical_key;
 
 /// Store filename for marketplace data persistence.
 const MARKETPLACE_STORE: &str = "marketplace.json";
@@ -227,10 +228,8 @@ pub async fn get_session_marketplace_config(
     project_path: String,
     session_id: u32,
 ) -> Result<SessionMarketplaceConfig, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_session_config(&canonical, session_id))
 }
@@ -244,10 +243,8 @@ pub async fn set_marketplace_plugin_enabled(
     installed_plugin_id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     state.set_plugin_enabled_for_session(&canonical, session_id, &installed_plugin_id, enabled);
     Ok(())
@@ -260,10 +257,8 @@ pub async fn clear_session_marketplace_config(
     project_path: String,
     session_id: u32,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     state.clear_session(&canonical, session_id);
     Ok(())

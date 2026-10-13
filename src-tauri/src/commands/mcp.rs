@@ -12,6 +12,7 @@ use tauri_plugin_store::StoreExt;
 use crate::core::mcp_config_writer;
 use crate::core::mcp_manager::{McpManager, McpServerConfig, McpServerSource};
 use crate::core::mcp_settings::{self, McpScope, McpStatusView};
+use crate::core::samurai_files::canonical_key;
 use crate::core::status_server::StatusServer;
 
 /// Store filename for custom MCP servers (global, user-level).
@@ -57,10 +58,8 @@ pub async fn get_project_mcp_servers(
     state: State<'_, McpManager>,
     project_path: String,
 ) -> Result<Vec<McpServerConfig>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_project_servers(&canonical))
 }
@@ -71,10 +70,8 @@ pub async fn refresh_project_mcp_servers(
     state: State<'_, McpManager>,
     project_path: String,
 ) -> Result<Vec<McpServerConfig>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.refresh_project_servers(&canonical))
 }
@@ -88,10 +85,8 @@ pub async fn get_session_mcp_servers(
     project_path: String,
     session_id: u32,
 ) -> Result<Vec<String>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_session_enabled(&canonical, session_id))
 }
@@ -104,10 +99,8 @@ pub async fn set_session_mcp_servers(
     session_id: u32,
     enabled: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     state.set_session_enabled(&canonical, session_id, enabled);
     Ok(())
@@ -120,10 +113,8 @@ pub async fn get_session_mcp_count(
     project_path: String,
     session_id: u32,
 ) -> Result<usize, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_enabled_count(&canonical, session_id))
 }
@@ -138,10 +129,8 @@ pub async fn save_project_mcp_defaults(
     project_path: String,
     enabled_servers: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -161,10 +150,8 @@ pub async fn load_project_mcp_defaults(
     app: AppHandle,
     project_path: String,
 ) -> Result<Option<Vec<String>>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -187,10 +174,8 @@ pub async fn load_project_mcp_defaults(
 /// file-based monitoring anymore. Kept for backwards compatibility.
 #[tauri::command]
 pub async fn add_mcp_project(project_path: String) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     log::debug!(
         "add_mcp_project called for '{}' (no-op in HTTP architecture)",
@@ -221,10 +206,8 @@ pub async fn write_session_mcp_config(
     project_path: String,
     enabled_server_names: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     // Register this session with the status server
     status_server.register_session(session_id, &canonical).await;
@@ -298,10 +281,8 @@ pub async fn write_opencode_mcp_config(
     project_path: String,
     enabled_server_names: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     // Register this session with the status server
     status_server.register_session(session_id, &canonical).await;
@@ -395,10 +376,8 @@ pub async fn remove_opencode_mcp_config(
 /// and potential future use.
 #[tauri::command]
 pub async fn generate_project_hash(project_path: String) -> Result<String, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(StatusServer::generate_project_hash(&canonical))
 }

@@ -46,6 +46,7 @@ use tauri::State;
 
 use super::ai_runner;
 use crate::core::samurai_brief;
+use crate::core::samurai_files::canonical_stripped;
 use crate::core::samurai_injector::SessionDirResolver;
 use crate::core::samurai_journal::{HarvestMarker, JournalEntry, JournalEntryStatus, JournalStore};
 
@@ -785,23 +786,6 @@ pub fn samurai_harvest_arm(
 #[tauri::command]
 pub fn samurai_harvest_preview(triage: State<'_, Arc<HarvestTriage>>) -> Result<usize, String> {
     triage.deliverable_count()
-}
-
-/// `fs::canonicalize` + `\\?\` strip: the one true on-disk identity of a
-/// path, per fork convention (the `core::samurai_files::canonical_stripped`
-/// pattern). `None` when the path does not exist.
-fn canonical_stripped(path: &Path) -> Option<PathBuf> {
-    let canonical = std::fs::canonicalize(path).ok()?;
-    let s = canonical.to_string_lossy();
-    // `\\?\UNC\server\share\…` is a NETWORK path: it must strip back to
-    // `\\server\share\…`. Dropping only `\\?\` would leave a RELATIVE
-    // `UNC\…` path, which resolves against the process cwd and fails the
-    // containment check — the same twin fixed in core::samurai_files.
-    let stripped = match s.strip_prefix(r"\\?\UNC\") {
-        Some(rest) => format!(r"\\{rest}"),
-        None => s.strip_prefix(r"\\?\").unwrap_or(&s).to_string(),
-    };
-    Some(PathBuf::from(stripped))
 }
 
 /// The guarded read behind [`samurai_harvest_read`], extracted for

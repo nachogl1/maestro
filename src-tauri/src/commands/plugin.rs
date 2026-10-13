@@ -18,6 +18,7 @@ pub struct BranchConfig {
 
 use crate::core::plugin_config_writer;
 use crate::core::plugin_manager::{PluginManager, ProjectPlugins};
+use crate::core::samurai_files::canonical_key;
 
 /// Creates a stable hash of a project path for use in store filenames.
 fn hash_project_path(path: &str) -> String {
@@ -36,10 +37,8 @@ pub async fn get_project_plugins(
     state: State<'_, PluginManager>,
     project_path: String,
 ) -> Result<ProjectPlugins, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_project_plugins(&canonical))
 }
@@ -50,10 +49,8 @@ pub async fn refresh_project_plugins(
     state: State<'_, PluginManager>,
     project_path: String,
 ) -> Result<ProjectPlugins, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.refresh_project_plugins(&canonical))
 }
@@ -67,10 +64,8 @@ pub async fn get_session_skills(
     project_path: String,
     session_id: u32,
 ) -> Result<Vec<String>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_session_skills(&canonical, session_id))
 }
@@ -83,10 +78,8 @@ pub async fn set_session_skills(
     session_id: u32,
     enabled: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     state.set_session_skills(&canonical, session_id, enabled);
     Ok(())
@@ -101,10 +94,8 @@ pub async fn get_session_plugins(
     project_path: String,
     session_id: u32,
 ) -> Result<Vec<String>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_session_plugins(&canonical, session_id))
 }
@@ -117,10 +108,8 @@ pub async fn set_session_plugins(
     session_id: u32,
     enabled: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     state.set_session_plugins(&canonical, session_id, enabled);
     Ok(())
@@ -133,10 +122,8 @@ pub async fn get_session_skills_count(
     project_path: String,
     session_id: u32,
 ) -> Result<usize, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_skills_count(&canonical, session_id))
 }
@@ -148,10 +135,8 @@ pub async fn get_session_plugins_count(
     project_path: String,
     session_id: u32,
 ) -> Result<usize, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_plugins_count(&canonical, session_id))
 }
@@ -166,10 +151,8 @@ pub async fn save_project_skill_defaults(
     project_path: String,
     enabled_skills: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -189,10 +172,8 @@ pub async fn load_project_skill_defaults(
     app: AppHandle,
     project_path: String,
 ) -> Result<Option<Vec<String>>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -219,10 +200,8 @@ pub async fn save_project_plugin_defaults(
     project_path: String,
     enabled_plugins: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -242,10 +221,8 @@ pub async fn load_project_plugin_defaults(
     app: AppHandle,
     project_path: String,
 ) -> Result<Option<Vec<String>>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -273,10 +250,8 @@ pub async fn write_session_plugin_config(
     project_path: String,
     enabled_plugin_ids: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     // Resolve Maestro plugin IDs to CLI enabledPlugins map
     let enabled_plugins_map = state.resolve_enabled_plugins_map(&canonical, &enabled_plugin_ids);
@@ -423,10 +398,8 @@ pub async fn save_branch_config(
     enabled_skills: Vec<String>,
     enabled_mcp_servers: Vec<String>,
 ) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
@@ -454,10 +427,8 @@ pub async fn load_branch_config(
     project_path: String,
     branch: String,
 ) -> Result<Option<BranchConfig>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let store_name = format!("maestro-{}.json", hash_project_path(&canonical));
     let store = app.store(&store_name).map_err(|e| e.to_string())?;
