@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use super::atomic_write::atomic_write_async;
 use super::config_recovery::read_json_or_recover;
 use super::mcp_manager::{McpServerConfig, McpServerType};
 use crate::commands::mcp::McpCustomServer;
@@ -45,17 +46,18 @@ pub(crate) async fn atomic_write(path: &Path, content: &str) -> Result<(), Strin
         .ok_or("No file name")?;
     let temp_path = parent.join(format!("{}.tmp.{}", file_name, std::process::id()));
 
-    tokio::fs::write(&temp_path, content)
-        .await
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-    tokio::fs::rename(&temp_path, path).await.map_err(|e| {
-        // Clean up temp file on rename failure
+    // Shared temp+rename with the Windows rename retry (core::atomic_write).
+    let result = atomic_write_async(
+        path.to_path_buf(),
+        temp_path.clone(),
+        content.as_bytes().to_vec(),
+    )
+    .await;
+    if result.is_err() {
+        // Clean up the temp file on failure (a no-op if it was never written)
         let _ = std::fs::remove_file(&temp_path);
-        format!("Failed to rename temp file: {}", e)
-    })?;
-
-    Ok(())
+    }
+    result
 }
 
 /// Finds the maestro-mcp-server binary in common installation locations.

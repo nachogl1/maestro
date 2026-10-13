@@ -52,6 +52,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::atomic_write::atomic_write_via;
 use super::samurai_files::normalize_project;
 use super::samurai_prompts::epic_slug;
 use super::samurai_workflow::WorkflowGraph;
@@ -546,9 +547,7 @@ fn persist(path: &PathBuf, entries: &[ScheduleEntry]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(entries)
         .map_err(|e| format!("failed to serialize schedule: {e}"))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
+    atomic_write_via(path, &tmp, json.as_bytes())
 }
 
 #[cfg(test)]

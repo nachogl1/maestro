@@ -74,6 +74,7 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
+use super::atomic_write::rename_with_retry;
 use super::samurai_files::normalize_project;
 
 /// Name of the active journal file inside the journal dir.
@@ -1122,7 +1123,7 @@ fn atomic_write_carrying_appends_with(
     path: &Path,
     mut content: String,
     mut expected: Vec<u8>,
-    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -1130,48 +1131,38 @@ fn atomic_write_carrying_appends_with(
     }
     let tmp = path.with_extension("jsonl.tmp");
     std::fs::write(&tmp, &content).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
-    let mut attempt = 0;
-    loop {
-        // Re-verify RIGHT before the rename: an out-of-process append that
-        // landed since the last look is folded into the rewrite instead of
-        // being overwritten by it.
-        match std::fs::read(path) {
-            Ok(current) if current == expected => {}
-            Ok(current) if current.len() > expected.len() && current.starts_with(&expected) => {
-                content.push_str(&String::from_utf8_lossy(&current[expected.len()..]));
-                std::fs::write(&tmp, &content)
-                    .map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
-                expected = current;
-            }
-            Ok(_) => {
+    // Shared Windows rename-retry (core::atomic_write); the closure is the
+    // journal-specific re-verify run before EVERY attempt.
+    rename_with_retry(
+        &tmp,
+        path,
+        || {
+            // Re-verify RIGHT before the rename: an out-of-process append that
+            // landed since the last look is folded into the rewrite instead of
+            // being overwritten by it.
+            match std::fs::read(path) {
+                Ok(current) if current == expected => Ok(()),
+                Ok(current) if current.len() > expected.len() && current.starts_with(&expected) => {
+                    content.push_str(&String::from_utf8_lossy(&current[expected.len()..]));
+                    std::fs::write(&tmp, &content)
+                        .map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
+                    expected = current;
+                    Ok(())
+                }
                 // "rewriting", not "deleting": delete is no longer the only
                 // caller — the oversized-entry split (issue #135) shares
                 // this rewriter.
-                return Err(format!(
+                Ok(_) => Err(format!(
                     "journal file {path:?} changed unexpectedly while rewriting; try again"
-                ));
+                )),
+                // Vanished out from under us: nothing to carry — the rename
+                // recreates the file with the rewrite.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("failed to re-read journal file {path:?}: {e}")),
             }
-            // Vanished out from under us: nothing to carry — the rename
-            // recreates the file with the rewrite.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("failed to re-read journal file {path:?}: {e}")),
-        }
-        match rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(e) if attempt < 4 => {
-                attempt += 1;
-                log::warn!(
-                    "rename of {tmp:?} over {path:?} failed (attempt {attempt}/5): {e} — retrying"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(e) => {
-                return Err(format!(
-                    "failed to move {tmp:?} into place at {path:?}: {e}"
-                ));
-            }
-        }
-    }
+        },
+        rename,
+    )
 }
 
 /// Absolute path of the ACTIVE journal file as orchestrator prompts embed it

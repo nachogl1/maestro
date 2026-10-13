@@ -30,10 +30,12 @@
 //! loop can clobber the other's field. Writes only happen when something
 //! actually changed, so a steady state costs no IO.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
+
+use super::atomic_write::atomic_write_via;
 
 /// Every persisted latch. `#[serde(default)]` per container so a file
 /// written by an older build (or a hand-edit that drops a key) loads with
@@ -135,7 +137,7 @@ fn load(path: &PathBuf) -> LatchState {
 /// is the meaningful "everything re-armed" state and must be readable as
 /// itself, not as a missing file — the two happen to mean the same thing,
 /// but leaving the file in place keeps the last write inspectable.
-fn persist(path: &PathBuf, state: &LatchState) -> Result<(), String> {
+fn persist(path: &Path, state: &LatchState) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create latch dir {parent:?}: {e}"))?;
@@ -143,9 +145,7 @@ fn persist(path: &PathBuf, state: &LatchState) -> Result<(), String> {
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("failed to serialize latches: {e}"))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
+    atomic_write_via(path, &tmp, json.as_bytes())
 }
 
 #[cfg(test)]

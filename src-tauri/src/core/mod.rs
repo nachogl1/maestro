@@ -1,4 +1,5 @@
 pub mod allowance_watcher;
+pub mod atomic_write;
 pub mod claude_event;
 pub mod cli_path;
 pub mod config_recovery;
