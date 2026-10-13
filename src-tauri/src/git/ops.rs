@@ -295,15 +295,6 @@ impl Git {
         }
     }
 
-    /// Returns the number of uncommitted changes (staged + unstaged + untracked).
-    ///
-    /// Counts non-empty lines from `git status --porcelain`. Each line represents
-    /// one changed file, so the count reflects individual file changes.
-    pub async fn uncommitted_count(&self) -> Result<usize, GitError> {
-        let output = self.run(&["status", "--porcelain"]).await?;
-        Ok(output.lines().len())
-    }
-
     /// Lists all worktrees by parsing `git worktree list --porcelain`.
     ///
     /// Porcelain format uses blank-line-separated stanzas with `worktree`, `HEAD`,
@@ -516,85 +507,6 @@ impl Git {
         }
 
         Ok(commits)
-    }
-
-    /// Raw `git log` text since a date (or phrase like "3 days ago"), across
-    /// all branches, one line per commit. Used as model context for the
-    /// standup report — deliberately plain text, not a parsed struct.
-    pub async fn commit_log_text_since(
-        &self,
-        since: &str,
-        max_count: usize,
-    ) -> Result<String, GitError> {
-        let since_arg = format!("--since={}", since);
-        let count_arg = format!("--max-count={}", max_count);
-        let output = self
-            .run(&[
-                "log",
-                "--all",
-                &since_arg,
-                &count_arg,
-                "--date=short",
-                "--pretty=format:%ad %h %an: %s",
-            ])
-            .await?;
-        Ok(output.stdout)
-    }
-
-    /// Raw `git log` text since a date on the CHECKED-OUT branch only, one
-    /// line per commit with the author name shown, optionally restricted to a
-    /// single author (`--author` matches against both name and email).
-    ///
-    /// Deliberately different from [`Self::commit_log_text_since`]: the daily
-    /// plan asks "what do I have in flight here", so commits fetched onto
-    /// other branches — and, when the author is known, other people's commits
-    /// on this one — must not read as the user's own momentum.
-    pub async fn commit_log_text_since_on_head(
-        &self,
-        since: &str,
-        max_count: usize,
-        author: Option<&str>,
-    ) -> Result<String, GitError> {
-        let since_arg = format!("--since={}", since);
-        let count_arg = format!("--max-count={}", max_count);
-        // A single `--author=<value>` argument: the value can never be parsed
-        // as a separate option, whatever the configured identity contains.
-        let author_arg = author.map(|a| format!("--author={}", a));
-        let mut args = vec![
-            "log",
-            &since_arg,
-            &count_arg,
-            "--date=short",
-            "--pretty=format:%ad %h %an: %s",
-        ];
-        if let Some(ref arg) = author_arg {
-            args.push(arg);
-        }
-        let output = self.run(&args).await?;
-        Ok(output.stdout)
-    }
-
-    /// Compact variant of [`Self::commit_log_text_since`]: one
-    /// `YYYY-MM-DD subject` line per commit (no hash/author), across all
-    /// branches. Long-horizon overview context for the standup report.
-    pub async fn commit_subjects_text_since(
-        &self,
-        since: &str,
-        max_count: usize,
-    ) -> Result<String, GitError> {
-        let since_arg = format!("--since={}", since);
-        let count_arg = format!("--max-count={}", max_count);
-        let output = self
-            .run(&[
-                "log",
-                "--all",
-                &since_arg,
-                &count_arg,
-                "--date=short",
-                "--pretty=format:%ad %s",
-            ])
-            .await?;
-        Ok(output.stdout)
     }
 
     /// Checks out a branch by name.
