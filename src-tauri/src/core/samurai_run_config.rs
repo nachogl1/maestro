@@ -38,6 +38,7 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
+use super::atomic_write::atomic_write_via;
 use super::project_key::project_key;
 use super::samurai_config::SamuraiConfig;
 use super::samurai_files::normalize_project;
@@ -830,9 +831,7 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
     let json = serde_json::to_string_pretty(value)
         .map_err(|e| format!("failed to serialize run config: {e}"))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("failed to write {tmp:?}: {e}"))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("failed to move {tmp:?} into place at {path:?}: {e}"))
+    atomic_write_via(path, &tmp, json.as_bytes())
 }
 
 /// Directory name for a project: `<sanitized-basename>-<hash12>`, i.e.
