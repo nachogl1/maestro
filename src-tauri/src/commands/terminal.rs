@@ -62,13 +62,6 @@ pub fn get_backend_info() -> BackendInfo {
             shell_integration: false,
             backend_name: "xterm-passthrough",
         },
-        BackendType::VteParser => BackendCapabilities {
-            enhanced_state: true,
-            text_reflow: false,
-            kitty_graphics: false,
-            shell_integration: false,
-            backend_name: "vte-parser",
-        },
     };
 
     BackendInfo {

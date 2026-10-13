@@ -49,10 +49,6 @@ pub mod transcript_parser;
 pub mod transcript_watcher;
 pub mod windows_process;
 pub mod worktree_manager;
-pub mod xterm_backend;
-
-#[cfg(feature = "vte-backend")]
-pub mod vte_backend;
 
 pub use claude_event::ClaudeEvent;
 pub use error::PtyError;
@@ -66,6 +62,3 @@ pub use status_server::StatusServer;
 // nothing calls.
 pub use terminal_backend::{BackendCapabilities, BackendType};
 pub use transcript_watcher::TranscriptWatcher;
-
-#[cfg(feature = "vte-backend")]
-pub use vte_backend::VteBackend;
