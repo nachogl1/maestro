@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::config_recovery::read_json_or_recover;
+use super::samurai_files::strip_extended_length;
 
 /// Serializes all in-process read-modify-write cycles on ~/.claude.json.
 static CLAUDE_JSON_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -122,16 +123,7 @@ pub fn claude_project_key(project_path: &str) -> String {
     let canonical = fs::canonicalize(project_path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| project_path.to_string());
-    let stripped = canonical
-        .strip_prefix(r"\\?\UNC\")
-        .map(|rest| format!(r"\\{}", rest))
-        .unwrap_or_else(|| {
-            canonical
-                .strip_prefix(r"\\?\")
-                .unwrap_or(&canonical)
-                .to_string()
-        });
-    stripped.replace('\\', "/")
+    strip_extended_length(&canonical).replace('\\', "/")
 }
 
 /// Compares two project keys leniently: slash direction, trailing slash and

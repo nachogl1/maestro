@@ -5,6 +5,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::core::samurai_context::SamuraiContextStore;
+use crate::core::samurai_files::canonical_key;
 use crate::core::samurai_injector::SamuraiInjector;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::session_manager::SessionManager;
@@ -90,29 +91,19 @@ pub async fn spawn_shell(
 ) -> Result<u32, PtyError> {
     // Validate cwd if provided: must exist and be a directory
     let canonical_cwd = if let Some(ref dir) = cwd {
-        let path = std::path::Path::new(dir);
-        let canonical = path
-            .canonicalize()
+        // On Windows, canonicalize() prepends \\?\ (the Win32 extended-length
+        // path prefix). cmd.exe treats that as a UNC path and refuses to use it
+        // as a working directory, falling back to C:\Windows instead.
+        // `canonical_key` strips the prefix so the shell receives a normal path.
+        let canonical = canonical_key(dir)
             .map_err(|e| PtyError::spawn_failed(format!("Invalid cwd '{dir}': {e}")))?;
-        if !canonical.is_dir() {
+        if !std::path::Path::new(&canonical).is_dir() {
             return Err(PtyError::spawn_failed(format!(
                 "cwd '{dir}' is not a directory"
             )));
         }
-        // On Windows, canonicalize() prepends \\?\ (the Win32 extended-length
-        // path prefix). cmd.exe treats that as a UNC path and refuses to use it
-        // as a working directory, falling back to C:\Windows instead.
-        // Strip the prefix so the shell receives a normal path.
-        #[cfg(windows)]
-        let canonical = {
-            let s = canonical.to_string_lossy();
-            match s.strip_prefix(r"\\?\") {
-                Some(stripped) => std::path::PathBuf::from(stripped),
-                None => canonical,
-            }
-        };
 
-        Some(canonical.to_string_lossy().into_owned())
+        Some(canonical)
     } else {
         None
     };

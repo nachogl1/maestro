@@ -8,6 +8,7 @@ use crate::core::mcp_manager::McpManager;
 use crate::core::plugin_manager::PluginManager;
 use crate::core::process_manager::ProcessManager;
 use crate::core::samurai_context::SamuraiContextStore;
+use crate::core::samurai_files::canonical_key;
 use crate::core::samurai_injector::SamuraiInjector;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::session_manager::{AiMode, SessionConfig, SessionManager};
@@ -33,19 +34,15 @@ pub async fn create_session(
     working_directory: Option<String>,
 ) -> Result<SessionConfig, String> {
     // Canonicalize path for consistent storage
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     // Canonicalize working_directory too when provided — it may point at a
     // worktree or a sub-repo that differs from the workspace root.
     let canonical_wd = match working_directory {
         Some(wd) => {
-            let c = std::fs::canonicalize(&wd)
-                .map_err(|e| format!("Invalid working directory '{}': {}", wd, e))?
-                .to_string_lossy()
-                .into_owned();
+            let c = canonical_key(&wd)
+                .map_err(|e| format!("Invalid working directory '{}': {}", wd, e))?;
             Some(c)
         }
         None => None,
@@ -115,10 +112,8 @@ pub async fn get_sessions_for_project(
     state: State<'_, SessionManager>,
     project_path: String,
 ) -> Result<Vec<SessionConfig>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     Ok(state.get_sessions_for_project(&canonical))
 }
@@ -143,10 +138,8 @@ pub async fn remove_sessions_for_project(
     samurai_progress: State<'_, Arc<SamuraiProgress>>,
     project_path: String,
 ) -> Result<Vec<SessionConfig>, String> {
-    let canonical = std::fs::canonicalize(&project_path)
-        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?
-        .to_string_lossy()
-        .into_owned();
+    let canonical = canonical_key(&project_path)
+        .map_err(|e| format!("Invalid project path '{}': {}", project_path, e))?;
 
     let removed = state.remove_sessions_for_project(&canonical);
 
