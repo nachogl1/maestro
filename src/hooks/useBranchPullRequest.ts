@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { type BranchPullRequest, getBranchPullRequest } from "@/lib/github";
+import { createSharedPoller } from "@/lib/sharedPoller";
 
 /**
  * How often a terminal re-checks whether its branch has a PR yet. The lib-level
@@ -11,6 +12,9 @@ const POLL_INTERVAL_MS = 60_000;
 
 /** Placeholder the header shows while the branch name is still being read. */
 const UNKNOWN_BRANCH = "...";
+
+/** One PR poll per repo path + branch, however many terminal views show it. */
+const prPoller = createSharedPoller<BranchPullRequest | null>(POLL_INTERVAL_MS);
 
 /**
  * The pull request for a terminal's branch, or null when it has none (or the
@@ -27,34 +31,21 @@ export function useBranchPullRequest(
   isActive: boolean = true,
 ): BranchPullRequest | null {
   const [pr, setPr] = useState<BranchPullRequest | null>(null);
-  const mountedRef = useRef(true);
 
   useEffect(() => {
-    mountedRef.current = true;
-
     // A branch is needed to ask the question at all; the placeholder means the
     // branch read is still in flight and this effect re-runs when it lands.
     if (!repoPath || !branch || branch === UNKNOWN_BRANCH || branch === "HEAD") {
       setPr(null);
-      return () => {
-        mountedRef.current = false;
-      };
+      return;
     }
 
-    const fetchPr = (force = false) => {
-      if (!isActive || (!force && !document.hasFocus())) return;
-      getBranchPullRequest(repoPath, branch).then((found) => {
-        if (mountedRef.current) setPr(found);
-      });
-    };
-
-    fetchPr(true);
-    const id = setInterval(() => fetchPr(false), POLL_INTERVAL_MS);
-
-    return () => {
-      clearInterval(id);
-      mountedRef.current = false;
-    };
+    return prPoller.subscribe(
+      JSON.stringify([repoPath, branch]),
+      () => getBranchPullRequest(repoPath, branch),
+      setPr,
+      isActive,
+    );
   }, [repoPath, branch, isActive]);
 
   return pr;

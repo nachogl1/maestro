@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getDeduplicatedCurrentBranch } from "@/lib/git";
+import { createSharedPoller } from "@/lib/sharedPoller";
 
 const POLL_INTERVAL_MS = 15_000;
+
+/** One branch poll per repo path, however many terminal views show it. */
+const branchPoller = createSharedPoller<string | null>(POLL_INTERVAL_MS);
 
 /**
  * Hook that returns the live branch name for a terminal session.
@@ -19,7 +23,6 @@ export function useSessionBranch(
   isActive: boolean = true,
 ): string | null {
   const [branch, setBranch] = useState<string | null>(isWorktree ? initialBranch : null);
-  const mountedRef = useRef(true);
 
   // Keep in sync if the store pushes a new initialBranch while mounted
   useEffect(() => {
@@ -31,8 +34,6 @@ export function useSessionBranch(
   // Non-worktree: fetch immediately + poll
   // biome-ignore lint/correctness/useExhaustiveDependencies: `branch` is read only as a one-time "haven't fetched yet" guard on (re)mount; adding it as a dependency would re-run this effect (tearing down and restarting the poll interval) every time a fetch inside it calls setBranch.
   useEffect(() => {
-    mountedRef.current = true;
-
     if (isWorktree || !projectPath) return;
 
     // Only reset if we don't have a value yet (initial mount)
@@ -40,30 +41,15 @@ export function useSessionBranch(
       setBranch(null);
     }
 
-    const fetchBranch = (force = false) => {
-      // Skip if window is blurred or tab is inactive to avoid annoying
-      // macOS permission pop-ups in the background.
-      // On mount (force=true), we STILL respect isActive to prevent boot barrage.
-      if (!isActive || (!force && !document.hasFocus())) return;
-
-      getDeduplicatedCurrentBranch(projectPath)
-        .then((name) => {
-          if (mountedRef.current) setBranch(name);
-        })
-        .catch(() => {
-          if (mountedRef.current) setBranch(null);
-        });
-    };
-
-    // Initial fetch - no longer "forced" if inactive
-    fetchBranch(true);
-
-    const id = setInterval(() => fetchBranch(false), POLL_INTERVAL_MS);
-
-    return () => {
-      clearInterval(id);
-      mountedRef.current = false;
-    };
+    // Shared per path: fetches on subscribe when active, then polls while the
+    // window has focus. Inactive tabs only receive what active ones fetch, to
+    // avoid annoying macOS permission pop-ups in the background.
+    return branchPoller.subscribe(
+      projectPath,
+      () => getDeduplicatedCurrentBranch(projectPath).catch(() => null),
+      setBranch,
+      isActive,
+    );
   }, [isWorktree, projectPath, isActive]);
 
   return branch;
