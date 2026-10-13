@@ -279,7 +279,6 @@ type QuickActionActions = {
   addAction: (action: Omit<QuickAction, "id" | "createdAt" | "sortOrder">) => void;
   updateAction: (id: string, updates: Partial<Omit<QuickAction, "id" | "createdAt">>) => void;
   deleteAction: (id: string) => void;
-  reorderActions: (fromIndex: number, toIndex: number) => void;
   getSortedActions: () => QuickAction[];
   resetToDefaults: () => void;
 };
@@ -319,15 +318,6 @@ export const useQuickActionStore = create<QuickActionState & QuickActionActions>
           .sort((a, b) => a.sortOrder - b.sortOrder)
           .map((a, index) => ({ ...a, sortOrder: index }));
         set({ actions: normalized });
-      },
-
-      reorderActions: (fromIndex, toIndex) => {
-        const actions = [...get().actions].sort((a, b) => a.sortOrder - b.sortOrder);
-        const [moved] = actions.splice(fromIndex, 1);
-        actions.splice(toIndex, 0, moved);
-        // Update sort orders
-        const reordered = actions.map((a, index) => ({ ...a, sortOrder: index }));
-        set({ actions: reordered });
       },
 
       /**

@@ -76,7 +76,6 @@ type WorkspaceActions = {
   addSessionToProject: (tabId: string, sessionId: number) => void;
   removeSessionFromProject: (tabId: string, sessionId: number) => void;
   setSessionsLaunched: (tabId: string, launched: boolean) => void;
-  getTabByPath: (projectPath: string) => WorkspaceTab | undefined;
   /** Switch selected repository for a tab (multi-repo workspaces). */
   setSelectedRepo: (tabId: string, repoPath: string) => void;
   /** Update repositories list after recursive scan. */
@@ -361,10 +360,6 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
         set({
           tabs: get().tabs.map((t) => (t.id === tabId ? { ...t, sessionsLaunched: launched } : t)),
         });
-      },
-
-      getTabByPath: (projectPath: string) => {
-        return get().tabs.find((t) => t.projectPath === projectPath);
       },
 
       setSelectedRepo: (tabId: string, repoPath: string) => {
