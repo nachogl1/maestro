@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { GraphNode } from "../../lib/graphLayout";
 import { type FileChange, type FileChangeStatus, useGitStore } from "../../stores/useGitStore";
 
@@ -63,7 +64,11 @@ export function CommitDetailPanel({
   const [isLoadingFiles, setIsLoadingFiles] = useState(true);
   const [copiedHash, setCopiedHash] = useState(false);
 
-  const { getCommitFiles } = useGitStore();
+  const { getCommitFiles } = useGitStore(
+    useShallow((s) => ({
+      getCommitFiles: s.getCommitFiles,
+    })),
+  );
 
   // Fetch files when commit changes
   useEffect(() => {

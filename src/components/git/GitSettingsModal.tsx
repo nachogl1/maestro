@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useGitStore } from "@/stores/useGitStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import {
@@ -97,7 +98,13 @@ export function GitSettingsModal({ repoPath, tabId, onClose }: GitSettingsModalP
 /* ── User Identity Section ── */
 
 function UserIdentitySection({ repoPath }: { repoPath: string }) {
-  const { userConfig, fetchUserConfig, setUserConfig } = useGitStore();
+  const { userConfig, fetchUserConfig, setUserConfig } = useGitStore(
+    useShallow((s) => ({
+      userConfig: s.userConfig,
+      fetchUserConfig: s.fetchUserConfig,
+      setUserConfig: s.setUserConfig,
+    })),
+  );
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [global, setGlobal] = useState(false);
@@ -308,7 +315,22 @@ function RemotesSection({ repoPath }: { repoPath: string }) {
     fetchAllRemoteRefs,
     isFetching,
     fetchingRemotes,
-  } = useGitStore();
+  } = useGitStore(
+    useShallow((s) => ({
+      remotes: s.remotes,
+      remoteStatuses: s.remoteStatuses,
+      fetchRemotes: s.fetchRemotes,
+      addRemote: s.addRemote,
+      removeRemote: s.removeRemote,
+      setRemoteUrl: s.setRemoteUrl,
+      testRemote: s.testRemote,
+      testAllRemotes: s.testAllRemotes,
+      fetchRemoteRefs: s.fetchRemoteRefs,
+      fetchAllRemoteRefs: s.fetchAllRemoteRefs,
+      isFetching: s.isFetching,
+      fetchingRemotes: s.fetchingRemotes,
+    })),
+  );
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newUrl, setNewUrl] = useState("");
@@ -556,7 +578,13 @@ function RemotesSection({ repoPath }: { repoPath: string }) {
 /* ── Default Branch Section ── */
 
 function DefaultBranchSection({ repoPath }: { repoPath: string }) {
-  const { defaultBranch, fetchDefaultBranch, setDefaultBranch } = useGitStore();
+  const { defaultBranch, fetchDefaultBranch, setDefaultBranch } = useGitStore(
+    useShallow((s) => ({
+      defaultBranch: s.defaultBranch,
+      fetchDefaultBranch: s.fetchDefaultBranch,
+      setDefaultBranch: s.setDefaultBranch,
+    })),
+  );
   const [branch, setBranch] = useState("");
   const [global, setGlobal] = useState(false);
   const [saving, setSaving] = useState(false);

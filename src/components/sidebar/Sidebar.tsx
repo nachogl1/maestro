@@ -33,6 +33,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { ContextDocEditorModal } from "@/components/claudemd";
 import { GitSettingsModal, RemoteStatusIndicator } from "@/components/git";
 import { MarketplaceBrowser } from "@/components/marketplace";
@@ -626,7 +627,16 @@ function GitRepositorySection() {
   const worktreeBasePath = activeTab?.worktreeBasePath ?? null;
 
   const { userConfig, remotes, remoteStatuses, fetchUserConfig, fetchRemotes, testAllRemotes } =
-    useGitStore();
+    useGitStore(
+      useShallow((s) => ({
+        userConfig: s.userConfig,
+        remotes: s.remotes,
+        remoteStatuses: s.remoteStatuses,
+        fetchUserConfig: s.fetchUserConfig,
+        fetchRemotes: s.fetchRemotes,
+        testAllRemotes: s.testAllRemotes,
+      })),
+    );
 
   // Fetch default worktree base dir on mount
   useEffect(() => {
