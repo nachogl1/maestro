@@ -6,7 +6,7 @@ import { create } from "zustand";
  *
  * The trigger button lives in the sidebar's Launch tab, several components
  * below `App`; the overlay itself renders at the `App` level, next to
- * `LandscapeView`. A store sidesteps prop-drilling an `onOpen` callback
+ * the terminals. A store sidesteps prop-drilling an `onOpen` callback
  * through `Sidebar` — the same shape `useFDAStore` uses to let a deeply
  * nested caller pop the FDA dialog `App` renders.
  */

@@ -1,14 +1,11 @@
-import { Activity, Brain, BrainCircuit, Rocket, Sparkles, StickyNote, X } from "lucide-react";
+import { BrainCircuit, Rocket, StickyNote, X } from "lucide-react";
 import { lazy, Suspense } from "react";
-import { AiPanel } from "@/components/ai/AiPanel";
 import {
   PanelResizeHandle,
   RIGHT_PANEL_MAX_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
 } from "@/components/shared/PanelResizeHandle";
 import { LaunchSection } from "@/components/sidebar/LaunchSection";
-import { MemorySection } from "@/components/sidebar/MemorySection";
-import { ProcessesSection } from "@/components/sidebar/ProcessesSection";
 import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
 
 // NotepadPanel drags in TipTap + ProseMirror, which are only needed once the
@@ -19,13 +16,10 @@ const NotepadPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "memory" | "processes" | "notes" | "ai" | "secondbrain" | "launch";
+export type UtilityPanelKind = "notes" | "secondbrain" | "launch";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
-  memory: { title: "Memory", icon: Brain },
-  processes: { title: "Processes", icon: Activity },
   notes: { title: "Notes", icon: StickyNote },
-  ai: { title: "AI", icon: Sparkles },
   // Samurai Second Brain (issue #66, PRD §5.11): the Phase 1 audit stream
   // plus the managed-file inventory, absorbed from the old audit panel.
   secondbrain: { title: "Second Brain", icon: BrainCircuit },
@@ -34,9 +28,8 @@ const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementT
 };
 
 /**
- * Right-side panel for the Memory, Processes and Notes views, opened from the
- * top-bar buttons. Reuses the same section components the sidebar tabs used
- * to render, just docked on the right instead of the left.
+ * Right-side panel for the Notes, Second Brain and Launch views, opened from
+ * the top-bar buttons. Docked on the right, one panel at a time.
  */
 export function UtilityPanel({
   panel,
@@ -87,16 +80,10 @@ export function UtilityPanel({
         </Suspense>
       ) : (
         <div className="flex-1 overflow-y-auto px-2.5 py-3">
-          {panel === "memory" ? (
-            <MemorySection />
-          ) : panel === "processes" ? (
-            <ProcessesSection />
-          ) : panel === "secondbrain" ? (
+          {panel === "secondbrain" ? (
             <SecondBrainSection />
-          ) : panel === "launch" ? (
-            <LaunchSection onNavigate={onNavigateToSession} />
           ) : (
-            <AiPanel />
+            <LaunchSection onNavigate={onNavigateToSession} />
           )}
         </div>
       )}

@@ -35,7 +35,7 @@ const invokeMock = vi.mocked(invoke);
 /**
  * React Flow measures its container and nodes through browser APIs happy-dom
  * doesn't implement. These are the stubs React Flow's own docs prescribe for
- * a jsdom/happy-dom test environment (same block as LandscapeView.test.tsx).
+ * a jsdom/happy-dom test environment (same block the old LandscapeView test used).
  */
 beforeAll(() => {
   class ResizeObserverStub {

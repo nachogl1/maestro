@@ -1,16 +1,12 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Activity,
   Bird,
-  Brain,
   BrainCircuit,
   GitMerge,
   Minus,
-  Network,
   PanelLeft,
   Plus,
   Rocket,
-  Sparkles,
   Square,
   StickyNote,
   X,
@@ -53,23 +49,9 @@ interface TopBarProps {
   eagleProjects?: EagleProjectOption[];
   /** Eagle view: add a terminal to the given project (opens its pre-launch card). */
   onAddSessionToProject?: (tabId: string) => void;
-  /** Landscape view: every project, terminal and subagent on one canvas */
-  landscapeView?: boolean;
-  onToggleLandscapeView?: () => void;
-  /** A terminal somewhere is waiting for input — marks the landscape button. */
-  landscapeAttention?: boolean;
-  /** Right-side Memory panel */
-  memoryPanelOpen?: boolean;
-  onToggleMemoryPanel?: () => void;
-  /** Right-side Processes panel */
-  processesPanelOpen?: boolean;
-  onToggleProcessesPanel?: () => void;
   /** Right-side Notes panel */
   notesPanelOpen?: boolean;
   onToggleNotesPanel?: () => void;
-  /** Right-side AI panel (Report / Plan / Catalog tabs) */
-  aiPanelOpen?: boolean;
-  onToggleAiPanel?: () => void;
   /** Right-side Samurai Second Brain panel — audit stream + files (issue #66) */
   secondBrainPanelOpen?: boolean;
   onToggleSecondBrainPanel?: () => void;
@@ -97,17 +79,8 @@ export function TopBar({
   onToggleEagleView,
   eagleProjects = [],
   onAddSessionToProject,
-  landscapeView = false,
-  onToggleLandscapeView,
-  landscapeAttention = false,
-  memoryPanelOpen = false,
-  onToggleMemoryPanel,
-  processesPanelOpen = false,
-  onToggleProcessesPanel,
   notesPanelOpen = false,
   onToggleNotesPanel,
-  aiPanelOpen = false,
-  onToggleAiPanel,
   secondBrainPanelOpen = false,
   onToggleSecondBrainPanel,
   launchPanelOpen = false,
@@ -249,59 +222,6 @@ export function TopBar({
             <Bird size={14} />
           </button>
         )}
-        {onToggleLandscapeView && (
-          <button
-            type="button"
-            onClick={onToggleLandscapeView}
-            className={`relative rounded p-1.5 transition-colors ${
-              landscapeView
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Landscape view"
-            title="Landscape — every project, terminal and subagent on one canvas"
-          >
-            <Network size={14} />
-            {landscapeAttention && !landscapeView && (
-              <span
-                aria-hidden="true"
-                className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-maestro-accent"
-              />
-            )}
-          </button>
-        )}
-        {onToggleMemoryPanel && (
-          <button
-            type="button"
-            onClick={onToggleMemoryPanel}
-            className={`relative rounded p-1.5 transition-colors ${
-              memoryPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Memory"
-            title={titleWithShortcut("Memory", modLabel(), "3")}
-          >
-            <Brain size={14} />
-            <HealthAttentionBadge area="memory" />
-          </button>
-        )}
-        {onToggleProcessesPanel && (
-          <button
-            type="button"
-            onClick={onToggleProcessesPanel}
-            className={`relative rounded p-1.5 transition-colors ${
-              processesPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Processes"
-            title={titleWithShortcut("Processes", modLabel(), "4")}
-          >
-            <Activity size={14} />
-            <HealthAttentionBadge area="processes" />
-          </button>
-        )}
         {onToggleNotesPanel && (
           <button
             type="button"
@@ -315,21 +235,6 @@ export function TopBar({
             title={titleWithShortcut("Notes", modLabel(), "5")}
           >
             <StickyNote size={14} />
-          </button>
-        )}
-        {onToggleAiPanel && (
-          <button
-            type="button"
-            onClick={onToggleAiPanel}
-            className={`rounded p-1.5 transition-colors ${
-              aiPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="AI"
-            title={titleWithShortcut("AI — daily report and plan", modLabel(), "6")}
-          >
-            <Sparkles size={14} />
           </button>
         )}
         {onToggleSecondBrainPanel && (

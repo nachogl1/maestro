@@ -34,7 +34,7 @@ import {
 const invokeMock = vi.mocked(invoke);
 
 /**
- * The active tab is lifted to App (so Alt+1-4 shortcuts can drive it); this
+ * The active tab is lifted to App (so Alt+1-3 shortcuts can drive it); this
  * harness recreates App's side of the contract: state + persistence.
  */
 function ControlledSidebar(
@@ -169,18 +169,16 @@ describe("Sidebar tab bar", () => {
     useSessionStore.setState({ sessions: [], samuraiSchedule: [] });
   });
 
-  it("renders the four tabs with General active by default", () => {
+  it("renders the three tabs with History active by default", () => {
     render(<ControlledSidebar />);
-    for (const label of ["General", "History", "Infra", "Settings"]) {
+    for (const label of ["History", "Infra", "Settings"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
-    // Processes and Memory moved to the right-side utility panel
-    expect(screen.queryByRole("button", { name: "Processes" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Memory" })).not.toBeInTheDocument();
-    // General tab content
-    expect(screen.getByText("Agents")).toBeInTheDocument();
-    expect(screen.getByText("Git Repository")).toBeInTheDocument();
+    // The General tab is gone: its Agents + Git Repository cards live under Settings.
+    expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "History" })).toHaveClass("border-maestro-accent");
     // Content from other tabs is not mounted
+    expect(screen.queryByText("Agents")).not.toBeInTheDocument();
     expect(screen.queryByText("MCP Servers")).not.toBeInTheDocument();
   });
 
@@ -200,6 +198,7 @@ describe("Sidebar tab bar", () => {
         },
       ],
     });
+    localStorage.setItem("maestro-sidebar-tab", "settings");
     render(<ControlledSidebar />);
 
     expect(screen.getByText("No running agents")).toBeInTheDocument();
@@ -218,6 +217,7 @@ describe("Sidebar tab bar", () => {
         },
       ],
     });
+    localStorage.setItem("maestro-sidebar-tab", "settings");
     render(<ControlledSidebar />);
 
     expect(screen.queryByText("No running agents")).not.toBeInTheDocument();
@@ -233,19 +233,24 @@ describe("Sidebar tab bar", () => {
     expect(screen.queryByText("Agents")).not.toBeInTheDocument();
   });
 
-  it("switches to Settings and persists the chosen tab", async () => {
+  it("switches to Settings (appearance, notifications, agents, git) and persists the chosen tab", async () => {
     render(<ControlledSidebar />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByText("Terminal Settings")).toBeInTheDocument();
+    expect(screen.getByText("Notifications")).toBeInTheDocument();
+    // Moved here from the removed General tab, below the existing cards.
+    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByText("Git Repository")).toBeInTheDocument();
     await waitFor(() => {
       expect(localStorage.getItem("maestro-sidebar-tab")).toBe("settings");
     });
   });
 
-  it("falls back to General when a removed tab id was persisted", () => {
-    localStorage.setItem("maestro-sidebar-tab", "memory");
+  it("falls back to History when a removed tab id was persisted", () => {
+    localStorage.setItem("maestro-sidebar-tab", "general");
     render(<ControlledSidebar />);
-    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "History" })).toHaveClass("border-maestro-accent");
+    expect(screen.queryByText("Agents")).not.toBeInTheDocument();
   });
 
   it("History tab lists worktree conversations and resumes in their own directory", async () => {
@@ -437,36 +442,37 @@ describe("Sidebar tab bar", () => {
       ],
     });
     const onNavigate = vi.fn();
+    localStorage.setItem("maestro-sidebar-tab", "settings");
     render(<ControlledSidebar onAgentNavigate={onNavigate} />);
     fireEvent.click(screen.getByText("My agent"));
     expect(onNavigate).toHaveBeenCalledWith("tab-1", 1);
   });
 });
 
-describe("sidebarTabShortcutTransition (Alt+1-4 toggle semantics)", () => {
+describe("sidebarTabShortcutTransition (Alt+1-3 toggle semantics)", () => {
   it("opens the sidebar on the requested tab when closed", () => {
-    expect(sidebarTabShortcutTransition(false, "general", 2)).toEqual({
+    expect(sidebarTabShortcutTransition(false, "settings", 1)).toEqual({
       open: true,
       tab: "history",
     });
   });
 
   it("closes the sidebar when the active tab's shortcut repeats", () => {
-    expect(sidebarTabShortcutTransition(true, "infra", 3)).toEqual({
+    expect(sidebarTabShortcutTransition(true, "infra", 2)).toEqual({
       open: false,
       tab: "infra",
     });
   });
 
   it("switches tabs when the sidebar is open on another tab", () => {
-    expect(sidebarTabShortcutTransition(true, "general", 4)).toEqual({
+    expect(sidebarTabShortcutTransition(true, "history", 3)).toEqual({
       open: true,
       tab: "settings",
     });
   });
 
   it("returns null for an index that names no tab", () => {
-    expect(sidebarTabShortcutTransition(true, "general", 5)).toBeNull();
-    expect(sidebarTabShortcutTransition(false, "general", 0)).toBeNull();
+    expect(sidebarTabShortcutTransition(true, "history", 4)).toBeNull();
+    expect(sidebarTabShortcutTransition(false, "history", 0)).toBeNull();
   });
 });

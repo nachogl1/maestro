@@ -43,9 +43,9 @@ function watchdogToast(overrides: Partial<WatchdogToast> = {}): WatchdogToast {
 function healthToast(overrides: Partial<HealthToast> = {}): HealthToast {
   return {
     id: "health-1",
-    area: "memory",
-    target: "maestro",
-    reason: "12 stale files",
+    area: "secondbrain",
+    target: "app.jsonl",
+    reason: "audit log 6.0 MB (warn at 5.0 MB)",
     ...overrides,
   };
 }
@@ -96,9 +96,9 @@ describe("NotificationToasts", () => {
 
     render(<NotificationToasts />);
 
-    expect(screen.getByText("Health — Memory")).toBeInTheDocument();
-    expect(screen.getByText("maestro")).toBeInTheDocument();
-    expect(screen.getByText("12 stale files")).toBeInTheDocument();
+    expect(screen.getByText("Health — Second Brain")).toBeInTheDocument();
+    expect(screen.getByText("app.jsonl")).toBeInTheDocument();
+    expect(screen.getByText("audit log 6.0 MB (warn at 5.0 MB)")).toBeInTheDocument();
   });
 
   it("keeps the run-fatal samurai kicker as '<Project> — Samurai run needs you'", () => {

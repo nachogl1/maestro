@@ -52,7 +52,7 @@ import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
  * of the Launch tab's sidebar card to its own overlay). Step text is edited
  * in place; steps can be added, removed and rewired. Opened from
  * `LaunchSection` via `useWorkflowsViewStore`, rendered by `App` next to
- * `LandscapeView` — same overlay shell (`absolute inset-0 z-50`), same
+ * the old landscape graph — same overlay shell (`absolute inset-0 z-50`), same
  * "toolbar + React Flow canvas" shape.
  *
  * The same canvas edits TWO workflows, chosen by the mode toggle in the
@@ -493,7 +493,7 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
     fitView({ padding: 0.2 });
   }, [nodesInitialized, fitView]);
 
-  // Esc closes the overlay (same convention as LandscapeView). Capture
+  // Esc closes the overlay (same convention as the old LandscapeView). Capture
   // phase, because a focused textarea inside a step card would otherwise
   // absorb the key first.
   useEffect(() => {
@@ -508,7 +508,7 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
   }, [onClose]);
 
   return (
-    // z-50: matches LandscapeView, the other full-screen overlay App can show.
+    // z-50: the one full-screen overlay App can show; the zoomed eagle pane is z-40.
     <div className="absolute inset-0 z-50 flex flex-col bg-maestro-bg">
       {/* Toolbar */}
       <div className="flex h-10 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-maestro-border px-2">

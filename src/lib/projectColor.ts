@@ -4,7 +4,7 @@
  * The color is derived purely from the project name, so the same project
  * always gets the same color — across sessions, restarts and machines.
  * Used to color-code every terminal that belongs to a project: its cell border,
- * its label in the tab strips, the parked shelf and the landscape graph.
+ * its label in the tab strips and the parked shelf.
  *
  * The whole hue circle is available, red included. Status is no longer carried
  * by color alone — the three-dot ThinkingIndicator (blue = working, red =

@@ -21,8 +21,8 @@ function formatTimeAgo(timestamp: number | null): string {
  * (follows the UpdateSettingsSection pattern).
  *
  * One toggle covers every notifying watcher — the GitHub watchdog, the
- * memory/process/Samurai-file health checker, and the run-fatal Samurai
- * alerts (issue #174). It mutes toasts only: all keep watching, and their
+ * Samurai-file health checker, and the run-fatal Samurai alerts
+ * (issue #174). It mutes toasts only: all keep watching, and their
  * badges (top-bar totals, panel attention counts, session attention
  * highlights) stay on either way, so nothing is ever silently missed.
  */
@@ -66,12 +66,6 @@ export function NotificationsSettingsSection() {
           />
         </button>
       </div>
-
-      <p className="px-2 pt-0.5 text-[10px] text-maestro-muted/70">
-        Toasts for new review requests, assigned issues, health flags (memory, processes, Samurai
-        files), and run-fatal Samurai alerts — the latter also as system notifications, so a dead
-        run reaches you while Maestro is minimized. Badges stay on either way.
-      </p>
 
       <p className="px-2 pt-1 text-[10px] text-maestro-muted">
         GitHub checked {formatTimeAgo(lastPolledAt)} · health checked {formatTimeAgo(lastCheckedAt)}

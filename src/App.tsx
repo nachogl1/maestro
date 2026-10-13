@@ -14,7 +14,6 @@ import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
-import { usePlanStore } from "@/stores/usePlanStore";
 import {
   initContextUsageListener,
   initSamuraiSupervisorListener,
@@ -22,7 +21,6 @@ import {
   stopSamuraiSupervisorListener,
   useSessionStore,
 } from "@/stores/useSessionStore";
-import { useStandupStore } from "@/stores/useStandupStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitGraphPanel } from "./components/git/GitGraphPanel";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
@@ -69,19 +67,9 @@ import { useUpdateStore } from "./stores/useUpdateStore";
 import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
 
 /**
- * Landscape graph, loaded on demand: it pulls in React Flow, which would
- * otherwise sit in the entry chunk even though the view only renders when
- * `landscapeView` is on. Already conditionally rendered, so the boundary is
- * just the import.
- */
-const LandscapeView = lazy(() =>
-  import("./components/landscape/LandscapeView").then((m) => ({ default: m.LandscapeView })),
-);
-
-/**
- * Full-screen workflow editor, loaded on demand for the same reason as
- * LandscapeView above — its own React Flow canvas, opened from the Launch
- * tab via `useWorkflowsViewStore` rather than a prop passed down.
+ * Full-screen workflow editor, loaded on demand: it pulls in React Flow,
+ * which would otherwise sit in the entry chunk even though the editor only
+ * renders once opened from the Launch tab via `useWorkflowsViewStore`.
  */
 const WorkflowsView = lazy(() =>
   import("./components/workflows/WorkflowsView").then((m) => ({ default: m.WorkflowsView })),
@@ -124,7 +112,7 @@ function App() {
   const retryAfterFDAGrant = useFDAStore((s) => s.retryAfterGrant);
   const multiProjectRef = useRef<MultiProjectViewHandle>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // Active left-sidebar tab — lifted out of Sidebar so Alt+1-4 can drive it.
+  // Active left-sidebar tab — lifted out of Sidebar so Alt+1-3 can drive it.
   const [sidebarTab, setSidebarTab] = useState<SidebarTabId>(loadSavedSidebarTab);
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   // Git-panel tab (commits/branches/…) is deliberately a single app-level
@@ -143,22 +131,15 @@ function App() {
   const [eagleAddPickerOpen, setEagleAddPickerOpen] = useState(false);
   // Eagle view git carousel: index of the project whose git panel card shows.
   const [eagleGitIndex, setEagleGitIndex] = useState(0);
-  // Landscape view: every project, terminal and subagent on one graph. Rendered
-  // over the terminals rather than instead of them, so nothing is torn down.
-  const [landscapeView, setLandscapeView] = useState(false);
   // Full-screen workflow editor (Launch tab → "Open workflow editor"):
   // opened via a store rather than local state, since the trigger lives deep
   // inside the sidebar rather than a prop App can pass down.
   const workflowsViewOpen = useWorkflowsViewStore((s) => s.isOpen);
   const closeWorkflowsView = useWorkflowsViewStore((s) => s.close);
-  // Marks the landscape button while a terminal anywhere is blocked on you.
-  const needsInputAnywhere = useSessionStore((s) =>
-    s.sessions.some((session) => session.status === "NeedsInput"),
-  );
-  // Right-side utility panel (Memory / Processes), opened from the top bar.
-  // One at a time: opening one replaces the other.
+  // Right-side utility panel (Notes / Second Brain / Launch), opened from the
+  // top bar. One at a time: opening one replaces the other.
   const [utilityPanel, setUtilityPanel] = useState<UtilityPanelKind | null>(null);
-  // One shared width for every right-docked panel (Memory/Processes, Git),
+  // One shared width for every right-docked panel (utility panels, Git),
   // so switching between them never changes the pane size. Persisted.
   const [rightPanelWidth, setRightPanelWidth] = useState<number>(loadRightPanelWidth);
   const handleRightPanelResize = useCallback((width: number) => {
@@ -362,12 +343,9 @@ function App() {
     void useGitHubWatchdogStore.getState().syncProjects(JSON.parse(watchedProjectsJson));
   }, [watchedProjectsJson]);
 
-  // Health checker: rule-based memory/process checks on a quiet interval.
-  // Independent of the open tabs — it scans every project with saved memory
-  // and the whole watched process table — so nothing here restarts the
-  // interval or resets the CPU/RAM streaks.
-  // The first run is delayed rather than fired on mount: it enumerates the
-  // whole process table (and shells out for listening ports), which would
+  // Health checker: rule-based Samurai-file checks on a quiet interval.
+  // Independent of the open tabs, so nothing here restarts the interval.
+  // The first run is delayed rather than fired on mount so it does not
   // compete with first paint and terminal spawn. The badge still populates
   // long before the first interval tick, and first-run suppression via
   // `baselineKeys` keeps the toast behaviour identical whenever it lands.
@@ -380,42 +358,6 @@ function App() {
       clearInterval(interval);
     };
   }, []);
-
-  // Daily-AI scheduler: a minute tick that fires the standup report AND the
-  // cross-project plan once the configured local time has passed (at most
-  // once per day each; the stores gate on lastRunDate and skip artifacts
-  // already on disk). Both ride the one schedule setting, which lives in the
-  // standup store. Besides the minute tick, a tick fires when either store's
-  // persisted settings finish hydrating and whenever the set of open repo
-  // paths changes — the settings and tabs both load async from disk after
-  // mount, so these extra ticks are what let a run missed while the app was
-  // closed catch up right at startup instead of a minute later.
-  const maybeRunScheduledStandup = useStandupStore((s) => s.maybeRunScheduled);
-  const maybeRunScheduledPlan = usePlanStore((s) => s.maybeRunScheduled);
-  // Stable projection of the open repo paths (newline-joined so string
-  // equality skips re-renders): tab switches flip flags and rebuild the tabs
-  // array every time, and depending on `tabs` directly would tear down and
-  // recreate the interval on each switch. This only changes when a path is
-  // actually added/removed — which is exactly when a fresh tick is wanted.
-  const standupRepoPathsKey = useWorkspaceStore((s) =>
-    s.tabs.map((t) => t.selectedRepoPath ?? t.projectPath).join("\n"),
-  );
-  useEffect(() => {
-    const repoPaths = standupRepoPathsKey === "" ? [] : standupRepoPathsKey.split("\n");
-    const tick = () => {
-      void maybeRunScheduledStandup(repoPaths);
-      void maybeRunScheduledPlan(repoPaths);
-    };
-    tick();
-    const unsubStandupHydration = useStandupStore.persist.onFinishHydration(tick);
-    const unsubPlanHydration = usePlanStore.persist.onFinishHydration(tick);
-    const interval = setInterval(tick, 60_000);
-    return () => {
-      unsubStandupHydration();
-      unsubPlanHydration();
-      clearInterval(interval);
-    };
-  }, [maybeRunScheduledStandup, maybeRunScheduledPlan, standupRepoPathsKey]);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
   const macTitleBarPadding = useMacTitleBarPadding();
@@ -664,25 +606,9 @@ function App() {
     }
   }, []);
 
-  // Landscape view: clicking a node leaves the graph for that project (and,
-  // when the node is a terminal, zooms it) — the same route the sidebar's
-  // Agents section takes.
-  const handleLandscapeNavigate = useCallback(
-    (tabId: string, sessionId?: number) => {
-      setEagleView(false);
-      selectTab(tabId);
-      if (sessionId === undefined) return;
-      requestAnimationFrame(() => {
-        multiProjectRef.current?.zoomSessionInProject(tabId, sessionId);
-      });
-    },
-    [selectTab],
-  );
-
   // Top-bar parked-runs badge: land on the project whose Samurai run is
-  // parked. Leaves eagle/landscape for the same reason the landscape node
-  // route does — the project's own grid is where the park's chip and shelf
-  // chip live.
+  // parked. Leaves eagle view because the project's own grid is where the
+  // park's chip and shelf chip live.
   const handleParkNavigate = useCallback(
     (projectPath: string) => {
       const target = useWorkspaceStore
@@ -690,7 +616,6 @@ function App() {
         .tabs.find((t) => samePath(t.projectPath, projectPath));
       if (!target) return;
       setEagleView(false);
-      setLandscapeView(false);
       selectTab(target.id);
     },
     [selectTab],
@@ -701,7 +626,7 @@ function App() {
     saveSidebarTab(tab);
   }, []);
 
-  // Alt+1-4: open the sidebar on tab N; pressing the active tab's shortcut
+  // Alt+1-3: open the sidebar on tab N; pressing the active tab's shortcut
   // again closes the sidebar (per-tab toggle, no separate pane toggle).
   const handleSidebarTabShortcut = useCallback(
     (index: number) => {
@@ -795,7 +720,6 @@ function App() {
     onToggleGitPanel: handleToggleGitPanel,
     onToggleUtilityPanel: handleToggleUtilityPanel,
     onToggleEagleView: useCallback(() => setEagleView((v) => !v), []),
-    onToggleLandscapeView: useCallback(() => setLandscapeView((v) => !v), []),
     onNextProject: switchToNextTab,
     onPrevProject: switchToPrevTab,
   });
@@ -881,17 +805,8 @@ function App() {
               onToggleEagleView={() => setEagleView((v) => !v)}
               eagleProjects={eagleProjects}
               onAddSessionToProject={handleAddSessionToProject}
-              landscapeView={landscapeView}
-              onToggleLandscapeView={() => setLandscapeView((v) => !v)}
-              landscapeAttention={needsInputAnywhere}
-              memoryPanelOpen={utilityPanel === "memory"}
-              onToggleMemoryPanel={() => handleToggleUtilityPanel("memory")}
-              processesPanelOpen={utilityPanel === "processes"}
-              onToggleProcessesPanel={() => handleToggleUtilityPanel("processes")}
               notesPanelOpen={utilityPanel === "notes"}
               onToggleNotesPanel={() => handleToggleUtilityPanel("notes")}
-              aiPanelOpen={utilityPanel === "ai"}
-              onToggleAiPanel={() => handleToggleUtilityPanel("ai")}
               secondBrainPanelOpen={utilityPanel === "secondbrain"}
               onToggleSecondBrainPanel={() => handleToggleUtilityPanel("secondbrain")}
               launchPanelOpen={utilityPanel === "launch"}
@@ -959,30 +874,13 @@ function App() {
                 eagleView={eagleView}
               />
 
-              {/* Landscape graph — an overlay, never a replacement: unmounting
+              {/* Workflow editor — an overlay, never a replacement: unmounting
                   MultiProjectView would tear down every live terminal. */}
-              {landscapeView && (
-                <Suspense
-                  fallback={
-                    /* z-50 like the landscape itself: the zoomed eagle pane is
-                       z-40, and the fallback must cover it too. */
-                    <div className="absolute inset-0 z-50 flex items-center justify-center bg-maestro-bg text-xs text-maestro-muted">
-                      Loading…
-                    </div>
-                  }
-                >
-                  <LandscapeView
-                    onNavigate={handleLandscapeNavigate}
-                    onClose={() => setLandscapeView(false)}
-                  />
-                </Suspense>
-              )}
-
-              {/* Workflow editor — an overlay, same shell as the landscape
-                  graph above (both z-50; not expected to be open together). */}
               {workflowsViewOpen && (
                 <Suspense
                   fallback={
+                    /* z-50 like the editor itself: the zoomed eagle pane is
+                       z-40, and the fallback must cover it too. */
                     <div className="absolute inset-0 z-50 flex items-center justify-center bg-maestro-bg text-xs text-maestro-muted">
                       Loading…
                     </div>
@@ -993,7 +891,8 @@ function App() {
               )}
             </main>
 
-            {/* Memory / Processes utility panel (optional right side) */}
+            {/* Notes / Second Brain / Launch utility panel (optional right side) */}
+
             {utilityPanel && (
               <UtilityPanel
                 panel={utilityPanel}
