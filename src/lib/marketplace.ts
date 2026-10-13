@@ -10,7 +10,6 @@ import type {
   InstallScope,
   MarketplacePlugin,
   MarketplaceSource,
-  SessionMarketplaceConfig,
 } from "@/types/marketplace";
 
 // ========== Data Loading ==========
@@ -114,53 +113,4 @@ export async function installMarketplacePlugin(
  */
 export async function uninstallPlugin(installedPluginId: string): Promise<void> {
   return invoke("uninstall_plugin", { installedPluginId });
-}
-
-/**
- * Checks if a marketplace plugin is installed.
- */
-export async function isMarketplacePluginInstalled(marketplacePluginId: string): Promise<boolean> {
-  return invoke<boolean>("is_marketplace_plugin_installed", { marketplacePluginId });
-}
-
-// ========== Session Configuration ==========
-
-/**
- * Gets the marketplace configuration for a session.
- */
-export async function getSessionMarketplaceConfig(
-  projectPath: string,
-  sessionId: number,
-): Promise<SessionMarketplaceConfig> {
-  return invoke<SessionMarketplaceConfig>("get_session_marketplace_config", {
-    projectPath,
-    sessionId,
-  });
-}
-
-/**
- * Sets whether a plugin is enabled for a session.
- */
-export async function setMarketplacePluginEnabled(
-  projectPath: string,
-  sessionId: number,
-  installedPluginId: string,
-  enabled: boolean,
-): Promise<void> {
-  return invoke("set_marketplace_plugin_enabled", {
-    projectPath,
-    sessionId,
-    installedPluginId,
-    enabled,
-  });
-}
-
-/**
- * Clears session marketplace configuration.
- */
-export async function clearSessionMarketplaceConfig(
-  projectPath: string,
-  sessionId: number,
-): Promise<void> {
-  return invoke("clear_session_marketplace_config", { projectPath, sessionId });
 }

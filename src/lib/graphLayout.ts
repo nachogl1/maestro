@@ -220,17 +220,3 @@ function determineConnectionType(fromColumn: number, toColumn: number): Connecti
     return "mergeRight";
   }
 }
-
-/**
- * Gets the rail color for a given column index.
- */
-export function getRailColor(column: number): string {
-  return RAIL_COLORS[column % RAIL_COLORS.length];
-}
-
-/**
- * Creates lookup maps for quick access to nodes by hash.
- */
-export function createNodeLookup(nodes: GraphNode[]): Map<string, GraphNode> {
-  return new Map(nodes.map((node) => [node.commit.hash, node]));
-}

@@ -49,7 +49,7 @@ interface BaseSkillConfig {
  * Prompt-based skill config (flattened from backend).
  * The backend uses `#[serde(flatten)]` so type fields are at the root level.
  */
-export interface PromptSkillConfig extends BaseSkillConfig {
+interface PromptSkillConfig extends BaseSkillConfig {
   skill_type: "prompt";
   prompt: string;
 }
@@ -57,14 +57,14 @@ export interface PromptSkillConfig extends BaseSkillConfig {
 /**
  * File-based skill config (flattened from backend).
  */
-export interface FileSkillConfig extends BaseSkillConfig {
+interface FileSkillConfig extends BaseSkillConfig {
   skill_type: "file";
 }
 
 /**
  * Command-based skill config (flattened from backend).
  */
-export interface CommandSkillConfig extends BaseSkillConfig {
+interface CommandSkillConfig extends BaseSkillConfig {
   skill_type: "command";
   command: string;
   args: string[];
@@ -165,14 +165,6 @@ export async function refreshProjectPlugins(projectPath: string): Promise<Projec
 }
 
 /**
- * Gets the enabled skill IDs for a specific session.
- * If not explicitly set, returns all available skills.
- */
-export async function getSessionSkills(projectPath: string, sessionId: number): Promise<string[]> {
-  return invoke<string[]>("get_session_skills", { projectPath, sessionId });
-}
-
-/**
  * Sets the enabled skill IDs for a specific session.
  */
 export async function setSessionSkills(
@@ -184,14 +176,6 @@ export async function setSessionSkills(
 }
 
 /**
- * Gets the enabled plugin IDs for a specific session.
- * If not explicitly set, returns plugins where enabled_by_default is true.
- */
-export async function getSessionPlugins(projectPath: string, sessionId: number): Promise<string[]> {
-  return invoke<string[]>("get_session_plugins", { projectPath, sessionId });
-}
-
-/**
  * Sets the enabled plugin IDs for a specific session.
  */
 export async function setSessionPlugins(
@@ -200,26 +184,6 @@ export async function setSessionPlugins(
   enabled: string[],
 ): Promise<void> {
   return invoke("set_session_plugins", { projectPath, sessionId, enabled });
-}
-
-/**
- * Returns the count of enabled skills for a session.
- */
-export async function getSessionSkillsCount(
-  projectPath: string,
-  sessionId: number,
-): Promise<number> {
-  return invoke<number>("get_session_skills_count", { projectPath, sessionId });
-}
-
-/**
- * Returns the count of enabled plugins for a session.
- */
-export async function getSessionPluginsCount(
-  projectPath: string,
-  sessionId: number,
-): Promise<number> {
-  return invoke<number>("get_session_plugins_count", { projectPath, sessionId });
 }
 
 /**

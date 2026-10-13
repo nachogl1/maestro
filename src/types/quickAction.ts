@@ -50,8 +50,6 @@ export const QUICK_ACTION_ICONS = [
   "Bug",
 ] as const;
 
-export type QuickActionIconName = (typeof QUICK_ACTION_ICONS)[number];
-
 /** Available colors for quick actions */
 export const QUICK_ACTION_COLORS = [
   { name: "green", hex: "#34C759" },
@@ -67,5 +65,3 @@ export const QUICK_ACTION_COLORS = [
   { name: "mint", hex: "#00C7BE" },
   { name: "gray", hex: "#8E8E93" },
 ] as const;
-
-export type QuickActionColorName = (typeof QUICK_ACTION_COLORS)[number]["name"];

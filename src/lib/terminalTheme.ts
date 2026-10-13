@@ -141,60 +141,6 @@ export function toXtermTheme(theme: TerminalTheme): ITheme {
 }
 
 /**
- * Converts a hex color to RGB components.
- */
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16),
-      }
-    : null;
-}
-
-/**
- * Converts a TerminalTheme to Ghostty config format.
- * Returns a string that can be used in a Ghostty config file.
- */
-export function toGhosttyConfig(theme: TerminalTheme): string {
-  const lines: string[] = [];
-
-  const addColor = (name: string, hex: string) => {
-    const rgb = hexToRgb(hex);
-    if (rgb) {
-      lines.push(`${name} = ${rgb.r}, ${rgb.g}, ${rgb.b}`);
-    }
-  };
-
-  addColor("background", theme.background);
-  addColor("foreground", theme.foreground);
-  addColor("cursor-color", theme.cursor);
-  addColor("selection-background", theme.selectionBackground);
-
-  // Palette colors (0-15)
-  addColor("palette = 0", theme.black);
-  addColor("palette = 1", theme.red);
-  addColor("palette = 2", theme.green);
-  addColor("palette = 3", theme.yellow);
-  addColor("palette = 4", theme.blue);
-  addColor("palette = 5", theme.magenta);
-  addColor("palette = 6", theme.cyan);
-  addColor("palette = 7", theme.white);
-  addColor("palette = 8", theme.brightBlack);
-  addColor("palette = 9", theme.brightRed);
-  addColor("palette = 10", theme.brightGreen);
-  addColor("palette = 11", theme.brightYellow);
-  addColor("palette = 12", theme.brightBlue);
-  addColor("palette = 13", theme.brightMagenta);
-  addColor("palette = 14", theme.brightCyan);
-  addColor("palette = 15", theme.brightWhite);
-
-  return lines.join("\n");
-}
-
-/**
  * Terminal backend type as reported by the Rust backend.
  */
 export type BackendType = "xterm-passthrough" | "vte-parser";
@@ -213,24 +159,4 @@ export interface BackendCapabilities {
   shellIntegration: boolean;
   /** Name of the backend implementation */
   backendName: string;
-}
-
-/**
- * Terminal state as reported by backends that support it.
- */
-export interface TerminalState {
-  /** Current cursor row position (0-indexed) */
-  cursorRow: number;
-  /** Current cursor column position (0-indexed) */
-  cursorCol: number;
-  /** Cursor shape */
-  cursorShape: "block" | "underline" | "bar";
-  /** Whether the cursor is visible */
-  cursorVisible: boolean;
-  /** Current scrollback position (lines from bottom) */
-  scrollbackPosition: number;
-  /** Total lines in scrollback buffer */
-  scrollbackTotal: number;
-  /** Terminal title (set by shell escape sequences) */
-  title: string | null;
 }

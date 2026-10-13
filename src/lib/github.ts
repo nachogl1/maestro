@@ -85,20 +85,3 @@ export async function getBranchPullRequest(
   activeFetches.set(key, promise);
   return promise;
 }
-
-/**
- * Drops cached PR lookups so the next read hits `gh` again. Call after opening
- * or merging a PR, so the headers catch up instead of waiting out the TTL.
- *
- * @param repoPath - Repo to invalidate; omit to clear every entry
- */
-export function invalidateBranchPullRequestCache(repoPath?: string): void {
-  if (repoPath === undefined) {
-    prCache.clear();
-    return;
-  }
-  const prefix = `${repoPath}\0`;
-  for (const key of prCache.keys()) {
-    if (key.startsWith(prefix)) prCache.delete(key);
-  }
-}

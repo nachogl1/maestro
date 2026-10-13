@@ -71,56 +71,6 @@ async function getWorktreePath(repoPath: string, branch: string): Promise<string
 }
 
 /**
- * Creates a worktree for a session on a specific branch.
- *
- * If the worktree already exists for this branch, returns its path.
- * If a new branch is needed, creates it from the current HEAD.
- *
- * @param repoPath - The path to the main repository
- * @param sessionId - The session ID (for logging)
- * @param branch - The branch to checkout in the worktree
- * @param createBranch - Whether to create a new branch (default: false)
- * @returns The worktree path
- */
-export async function createSessionWorktree(
-  repoPath: string,
-  sessionId: number,
-  branch: string,
-  createBranch = false,
-): Promise<string> {
-  const worktreePath = await getWorktreePath(repoPath, branch);
-
-  try {
-    // Check if worktree already exists
-    const existingWorktrees = await invoke<WorktreeInfo[]>("git_worktree_list", {
-      repoPath,
-    });
-
-    const existing = existingWorktrees.find((wt) => wt.path === worktreePath);
-    if (existing) {
-      console.log(`[Session ${sessionId}] Worktree already exists at ${worktreePath}`);
-      return worktreePath;
-    }
-
-    // Create the worktree
-    const result = await invoke<WorktreeInfo>("git_worktree_add", {
-      repoPath,
-      path: worktreePath,
-      newBranch: createBranch ? branch : null,
-      checkoutRef: createBranch ? null : branch,
-    });
-
-    console.log(
-      `[Session ${sessionId}] Created worktree at ${result.path} on branch ${result.branch}`,
-    );
-    return result.path;
-  } catch (err) {
-    console.error(`[Session ${sessionId}] Failed to create worktree:`, err);
-    throw err;
-  }
-}
-
-/**
  * Removes a worktree associated with a session.
  *
  * @param repoPath - The path to the main repository
@@ -153,33 +103,6 @@ export async function removeSessionWorktree(
  */
 export async function listWorktrees(repoPath: string): Promise<WorktreeInfo[]> {
   return invoke<WorktreeInfo[]>("git_worktree_list", { repoPath });
-}
-
-/**
- * Checks if a worktree exists for a given branch.
- *
- * @param repoPath - The path to the main repository
- * @param branch - The branch name to check
- * @returns True if a worktree exists for this branch
- */
-export async function worktreeExistsForBranch(repoPath: string, branch: string): Promise<boolean> {
-  const worktrees = await listWorktrees(repoPath);
-  return worktrees.some((wt) => wt.branch === branch);
-}
-
-/**
- * Gets the worktree info for a specific branch if it exists.
- *
- * @param repoPath - The path to the main repository
- * @param branch - The branch name
- * @returns Worktree info or null if not found
- */
-export async function getWorktreeForBranch(
-  repoPath: string,
-  branch: string,
-): Promise<WorktreeInfo | null> {
-  const worktrees = await listWorktrees(repoPath);
-  return worktrees.find((wt) => wt.branch === branch) ?? null;
 }
 
 /**
