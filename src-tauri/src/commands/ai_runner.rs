@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use chrono::Local;
 
+use crate::core::samurai_files::normalize_extended_path;
+
 /// Base directory for one artifact kind: `<app data>/<kind>/`.
 pub fn artifact_base_dir(kind: &str) -> PathBuf {
     directories::ProjectDirs::from("com", "maestro", "maestro")
@@ -24,17 +26,19 @@ pub fn artifact_base_dir(kind: &str) -> PathBuf {
 /// extended-length prefix); cmd.exe rejects that as a working directory and
 /// silently falls back to C:\Windows, so the run would happen in the wrong
 /// directory. Strip it, same as commands/terminal.rs.
+///
+/// The strip is [`normalize_extended_path`]'s plain string rule, applied on
+/// every host: `\\?\C:\x` becomes `C:\x` and `\\?\UNC\server\share\x` becomes
+/// `\\server\share\x` (dropping only `\\?\` would leave a RELATIVE `UNC\…`).
+/// Falls back to the input when the path does not exist.
+///
+/// Also the canonicalization `commands/claude_sessions.rs` encodes session
+/// directories from — one copy, so the two cannot drift.
 pub fn canonical_project_path(project_path: &str) -> String {
     let canonical = std::fs::canonicalize(project_path)
-        .unwrap_or_else(|_| PathBuf::from(project_path))
-        .to_string_lossy()
-        .into_owned();
-    #[cfg(windows)]
-    let canonical = canonical
-        .strip_prefix(r"\\?\")
-        .map(str::to_string)
-        .unwrap_or(canonical);
-    canonical
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| project_path.to_string());
+    normalize_extended_path(&canonical)
 }
 
 /// Today's local calendar date (YYYY-MM-DD) — the artifact's file name.
@@ -129,6 +133,34 @@ pub fn interpolate(template: &str, vars: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_project_path_strips_the_drive_verbatim_prefix() {
+        // A missing path skips canonicalize, so the strip runs on the literal
+        // string on every host (Linux CI cannot produce `\\?\` itself).
+        let path = r"\\?\C:\maestro-missing-d1-xyz\repo";
+        assert_eq!(
+            canonical_project_path(path),
+            r"C:\maestro-missing-d1-xyz\repo"
+        );
+    }
+
+    #[test]
+    fn canonical_project_path_keeps_unc_paths_absolute() {
+        // `\\?\UNC\server\share\…` must become `\\server\share\…`, not the
+        // relative `UNC\server\share\…` a bare `\\?\` strip leaves.
+        let path = r"\\?\UNC\maestro-missing-d1-host\share\repo";
+        assert_eq!(
+            canonical_project_path(path),
+            r"\\maestro-missing-d1-host\share\repo"
+        );
+    }
+
+    #[test]
+    fn canonical_project_path_leaves_plain_paths_alone() {
+        let missing = "/definitely/not/a/real/path-d1";
+        assert_eq!(canonical_project_path(missing), missing);
+    }
 
     #[test]
     fn strip_ansi_removes_csi_and_osc_sequences() {

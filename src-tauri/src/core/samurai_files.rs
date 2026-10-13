@@ -1514,8 +1514,8 @@ pub(crate) fn strip_extended_length(path: &str) -> String {
 ///   than stripping it to a relative-looking `UNC\server\share\…`.
 /// * Legacy repair: a string already mangled to that relative spelling — by
 ///   the pre-#161 copies of this function, persisted in their stores, or
-///   arriving from `commands/ai_runner.rs::canonical_project_path`, which
-///   still strips only `\\?\` — is mapped back to `\\server\share\…`. A
+///   produced by older builds of `commands/ai_runner.rs::canonical_project_path`
+///   (which stripped only `\\?\`) — is mapped back to `\\server\share\…`. A
 ///   leading `UNC\` component cannot occur in a genuine absolute path, so
 ///   the repair is unambiguous, and it is what lets every store accept its
 ///   own pre-#161 records without a rewrite.
