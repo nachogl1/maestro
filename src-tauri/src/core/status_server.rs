@@ -136,6 +136,10 @@ struct ServerState {
     /// are cleared by the signals that genuinely end the wait (PostToolUse,
     /// UserPromptSubmit, Stop, SessionEnd), so the map stays session-bounded.
     notified_at: Arc<RwLock<HashMap<u32, Instant>>>,
+    /// Directory hook-supplied transcript paths must stay under
+    /// (`~/.claude/projects` in production; a temp dir in tests). `None` when
+    /// the home directory cannot be resolved, which rejects every path.
+    claude_projects_dir: Option<std::path::PathBuf>,
 }
 
 /// HTTP status server that receives status updates from MCP servers.
@@ -219,6 +223,7 @@ impl StatusServer {
             session_projects: session_projects.clone(),
             pending_statuses: pending_statuses.clone(),
             notified_at: Arc::new(RwLock::new(HashMap::new())),
+            claude_projects_dir: default_claude_projects_dir(),
         });
 
         let app = build_router(state);
@@ -418,8 +423,12 @@ fn instance_id_matches(headers: &HeaderMap, expected: &str) -> bool {
 /// `transcript_path` arrives in a hook request body; without confinement a
 /// caller could make Maestro open, read, and watch an arbitrary file/directory.
 /// Returns `true` when the (lexically normalized) path stays under
-/// `~/.claude/projects`.
-fn is_within_claude_projects(transcript_path: &str) -> bool {
+/// `projects_dir` (`~/.claude/projects` in production, see
+/// [`default_claude_projects_dir`]); a `None` dir rejects every path.
+fn is_within_claude_projects(
+    transcript_path: &str,
+    projects_dir: Option<&std::path::Path>,
+) -> bool {
     use std::path::{Component, Path};
 
     // Reject traversal components outright rather than trusting canonicalization
@@ -429,11 +438,17 @@ fn is_within_claude_projects(transcript_path: &str) -> bool {
         return false;
     }
 
-    let Some(base_dirs) = directories::BaseDirs::new() else {
+    let Some(projects) = projects_dir else {
         return false;
     };
-    let projects = base_dirs.home_dir().join(".claude").join("projects");
-    path.starts_with(&projects)
+    path.starts_with(projects)
+}
+
+/// The real Claude projects directory, `~/.claude/projects`, or `None` when
+/// the home directory cannot be resolved.
+fn default_claude_projects_dir() -> Option<std::path::PathBuf> {
+    let base_dirs = directories::BaseDirs::new()?;
+    Some(base_dirs.home_dir().join(".claude").join("projects"))
 }
 
 /// Look up a registered session's project and emit a status payload for it.
@@ -495,7 +510,10 @@ async fn handle_hook_session_start(
 
     // Confine the watched transcript to ~/.claude/projects so a hook cannot
     // point the filesystem watcher at an arbitrary path.
-    if !is_within_claude_projects(&payload.transcript_path) {
+    if !is_within_claude_projects(
+        &payload.transcript_path,
+        state.claude_projects_dir.as_deref(),
+    ) {
         eprintln!(
             "[HOOK] session-start: rejected transcript_path outside Claude projects dir: {}",
             payload.transcript_path
@@ -1013,6 +1031,7 @@ mod tests {
         instance_id: &str,
         emit_fn: EmitFn,
     ) -> (std::net::SocketAddr, Arc<ServerState>) {
+        let projects_tmp = tempfile::TempDir::new().unwrap();
         let state = Arc::new(ServerState {
             emit_fn,
             hook_emit_fn: None,
@@ -1020,12 +1039,15 @@ mod tests {
             session_projects: Arc::new(RwLock::new(HashMap::new())),
             pending_statuses: Arc::new(RwLock::new(HashMap::new())),
             notified_at: Arc::new(RwLock::new(HashMap::new())),
+            claude_projects_dir: Some(projects_tmp.path().to_path_buf()),
         });
 
         let app = build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
+            // The temp projects dir lives (and is cleaned up) with the server.
+            let _projects_tmp = projects_tmp;
             axum::serve(listener, app).await.unwrap();
         });
 
@@ -1092,15 +1114,24 @@ mod tests {
 
     #[test]
     fn transcript_path_confinement_rejects_traversal_and_outside_paths() {
-        assert!(!is_within_claude_projects("/etc/passwd"));
-        assert!(!is_within_claude_projects("C:/Windows/System32/config"));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let projects = Some(tmp.path());
+        assert!(!is_within_claude_projects("/etc/passwd", projects));
+        assert!(!is_within_claude_projects(
+            "C:/Windows/System32/config",
+            projects
+        ));
         // Even a path nominally under the dir but using traversal is rejected.
-        let base = directories::BaseDirs::new().unwrap();
-        let escaped = base.home_dir().join(".claude/projects/../../secret.jsonl");
-        assert!(!is_within_claude_projects(&escaped.to_string_lossy()));
+        let escaped = tmp.path().join("../../secret.jsonl");
+        assert!(!is_within_claude_projects(
+            &escaped.to_string_lossy(),
+            projects
+        ));
         // A genuine transcript path is accepted.
-        let ok = base.home_dir().join(".claude/projects/enc/abc.jsonl");
-        assert!(is_within_claude_projects(&ok.to_string_lossy()));
+        let ok = tmp.path().join("enc/abc.jsonl");
+        assert!(is_within_claude_projects(&ok.to_string_lossy(), projects));
+        // An unresolvable projects dir rejects everything.
+        assert!(!is_within_claude_projects(&ok.to_string_lossy(), None));
     }
 
     /// Helper: POST a JSON body to a hook route with optional instance header.
@@ -1210,15 +1241,16 @@ mod tests {
     #[tokio::test]
     async fn session_start_hook_emits_idle_for_registered_session() {
         let (emit_fn, events) = test_emit_fn();
-        let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
-        projects
+        let (addr, state) = start_test_http_server_with_state("inst-secret", emit_fn).await;
+        state
+            .session_projects
             .write()
             .await
             .insert(1, "/path/project".to_string());
 
-        // Must be inside ~/.claude/projects to pass the confinement check.
-        let base = directories::BaseDirs::new().unwrap();
-        let transcript = base.home_dir().join(".claude/projects/enc/t.jsonl");
+        // Must be inside the projects dir to pass the confinement check.
+        let projects_dir = state.claude_projects_dir.as_ref().unwrap();
+        let transcript = projects_dir.join("enc/t.jsonl");
         let body = serde_json::json!({
             "session_id": "claude-uuid",
             "transcript_path": transcript.to_string_lossy(),
@@ -2071,7 +2103,11 @@ mod tests {
     type HookEventLog = Arc<std::sync::Mutex<Vec<ClaudeEvent>>>;
 
     /// Spin up a test HTTP server with a hook_emit_fn that captures ClaudeEvents.
-    async fn start_test_http_server_with_hooks() -> (HookEventLog, u16) {
+    /// Also returns the server's (temp) Claude projects dir, which lives as
+    /// long as the server.
+    async fn start_test_http_server_with_hooks() -> (HookEventLog, u16, std::path::PathBuf) {
+        let projects_tmp = tempfile::TempDir::new().unwrap();
+        let projects_dir = projects_tmp.path().to_path_buf();
         let hook_events: HookEventLog = Arc::new(std::sync::Mutex::new(Vec::new()));
         let hook_events_clone = hook_events.clone();
 
@@ -2088,27 +2124,27 @@ mod tests {
             session_projects: Arc::new(RwLock::new(HashMap::new())),
             pending_statuses: Arc::new(RwLock::new(HashMap::new())),
             notified_at: Arc::new(RwLock::new(HashMap::new())),
+            claude_projects_dir: Some(projects_dir.clone()),
         });
 
         let app = build_router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
+            // The temp projects dir lives (and is cleaned up) with the server.
+            let _projects_tmp = projects_tmp;
             axum::serve(listener, app).await.unwrap();
         });
 
-        (hook_events, port)
+        (hook_events, port, projects_dir)
     }
 
     #[tokio::test]
     async fn test_hook_session_start() {
-        let (hook_events, port) = start_test_http_server_with_hooks().await;
+        let (hook_events, port, projects_dir) = start_test_http_server_with_hooks().await;
 
-        // Must be inside ~/.claude/projects to pass the confinement check.
-        let base = directories::BaseDirs::new().unwrap();
-        let transcript = base
-            .home_dir()
-            .join(".claude/projects/enc/transcript.jsonl");
+        // Must be inside the projects dir to pass the confinement check.
+        let transcript = projects_dir.join("enc/transcript.jsonl");
         let transcript_str = transcript.to_string_lossy().to_string();
 
         let body = serde_json::json!({
@@ -2149,12 +2185,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_hook_missing_session_header() {
-        let (_hook_events, port) = start_test_http_server_with_hooks().await;
+        let (_hook_events, port, projects_dir) = start_test_http_server_with_hooks().await;
 
-        let base = directories::BaseDirs::new().unwrap();
-        let transcript = base
-            .home_dir()
-            .join(".claude/projects/enc/transcript.jsonl");
+        let transcript = projects_dir.join("enc/transcript.jsonl");
 
         let body = serde_json::json!({
             "session_id": "claude-uuid-123",

@@ -354,8 +354,8 @@ mod tests {
     /// lists flagged.
     #[tokio::test]
     async fn test_poll_projects_reports_failed_project_as_errored() {
-        let dir = std::env::temp_dir().join("maestro-watchdog-test-not-a-repo");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
 
         let projects = vec![project("broken", dir.to_string_lossy().as_ref())];
         let snapshot = poll_projects(&projects).await;
