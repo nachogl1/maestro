@@ -20,13 +20,6 @@ pub enum GitError {
         command: String,
     },
 
-    /// A git command was terminated by a signal before completing.
-    // Signal termination is not observable on the Windows runner path, so this
-    // is constructed only on unix builds.
-    #[allow(dead_code)]
-    #[error("git command was killed by signal")]
-    Killed { command: String },
-
     /// The git process could not be spawned (e.g., permission denied).
     #[error("failed to spawn git process: {source}")]
     SpawnError {
@@ -49,11 +42,6 @@ pub enum GitError {
     /// The target branch is already checked out in another worktree.
     #[error("branch '{branch}' already checked out at {path}")]
     BranchAlreadyCheckedOut { branch: String, path: String },
-
-    /// The specified worktree path does not exist in git's worktree list.
-    #[error("worktree not found: {0}")]
-    #[allow(dead_code)]
-    WorktreeNotFound(String),
 }
 
 /// Serializes the error as its `Display` string so the frontend receives a

@@ -9,10 +9,6 @@ pub enum PtyErrorCode {
     SessionNotFound,
     WriteFailed,
     ResizeFailed,
-    // Kill failures currently surface as the underlying io error; the variant
-    // completes the PTY error taxonomy the frontend matches on.
-    #[allow(dead_code)]
-    KillFailed,
     IdOverflow,
 }
 
@@ -64,15 +60,6 @@ impl PtyError {
     pub fn resize_failed(msg: impl Into<String>) -> Self {
         Self {
             code: PtyErrorCode::ResizeFailed,
-            message: msg.into(),
-        }
-    }
-
-    /// Session termination (SIGTERM/SIGKILL) failed.
-    #[allow(dead_code)]
-    pub fn kill_failed(msg: impl Into<String>) -> Self {
-        Self {
-            code: PtyErrorCode::KillFailed,
             message: msg.into(),
         }
     }
