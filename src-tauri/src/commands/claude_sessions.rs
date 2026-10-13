@@ -58,6 +58,10 @@ pub struct ClaudeSessionInfo {
     /// still parsed because it costs nothing in the existing scan and older /
     /// newer Claude Code versions are documented to write it.
     pub summary: Option<String>,
+    /// The session's name: the newest `{"type":"custom-title"}` (set by the
+    /// user's `/rename`), else the newest `{"type":"ai-title"}` Claude Code
+    /// generates itself. Older transcripts carry neither — `None` then.
+    pub title: Option<String>,
     pub first_prompt: Option<String>,
     /// Most recent user prompt, from the newest `{"type":"last-prompt"}` entry
     /// near the end of the transcript — shows where a long conversation left
@@ -126,7 +130,7 @@ const SYSTEM_TAGS: &[&str] = &[
 ];
 
 /// Checks if a user message is a system-generated message (not a real user prompt).
-fn is_system_message(content: &str) -> bool {
+pub(crate) fn is_system_message(content: &str) -> bool {
     let trimmed = content.trim();
     SYSTEM_TAGS.iter().any(|tag| trimmed.starts_with(tag))
 }
@@ -135,7 +139,7 @@ fn is_system_message(content: &str) -> bool {
 /// - Slash commands: extracts `<command-args>` content, or the command name
 /// - System messages: returns empty (caller should skip and try next message)
 /// - Plain text: returns as-is
-fn extract_prompt_text(content: &str) -> String {
+pub(crate) fn extract_prompt_text(content: &str) -> String {
     // Try to extract <command-args>...</command-args>
     if let Some(start) = content.find("<command-args>") {
         let after = &content[start + 14..]; // len("<command-args>") == 14
@@ -189,7 +193,7 @@ fn extract_prompt_text(content: &str) -> String {
 /// Pulls readable text out of a transcript entry's `message.content`, which is
 /// either a bare string or an array of content blocks. Tool-only entries
 /// (`tool_use` / `tool_result` blocks) yield `None` so the caller keeps looking.
-fn message_text(val: &serde_json::Value) -> Option<String> {
+pub(crate) fn message_text(val: &serde_json::Value) -> Option<String> {
     let content = val.get("message")?.get("content")?;
     if let Some(s) = content.as_str() {
         return Some(s.to_string());
@@ -233,7 +237,7 @@ pub(crate) fn encode_project_path(project_path: &str) -> String {
 }
 
 /// `~/.claude/projects` — the root Claude Code files every transcript under.
-fn claude_projects_root() -> Option<PathBuf> {
+pub(crate) fn claude_projects_root() -> Option<PathBuf> {
     let base_dirs = BaseDirs::new()?;
     Some(base_dirs.home_dir().join(".claude").join("projects"))
 }
@@ -365,7 +369,7 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 ///
 /// Real session ids are UUIDv4s (`01234567-89ab-...`); anything containing a
 /// path separator or `..` is rejected.
-fn is_safe_session_id(session_id: &str) -> bool {
+pub(crate) fn is_safe_session_id(session_id: &str) -> bool {
     if session_id.is_empty() {
         return false;
     }
@@ -378,20 +382,27 @@ fn is_safe_session_id(session_id: &str) -> bool {
         .all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// Scans the tail of a transcript for the newest `{"type":"last-prompt"}` and
-/// `{"type":"summary"}` entries, returning `(summary, last_prompt)`.
+/// Newest tail-of-file entries of the kinds that label a conversation.
+#[derive(Debug, Default)]
+struct RecentEntries {
+    summary: Option<String>,
+    last_prompt: Option<String>,
+    /// `custom-title` when present, else `ai-title`.
+    title: Option<String>,
+}
+
+/// Scans the tail of a transcript for the newest `{"type":"last-prompt"}`,
+/// `{"type":"summary"}`, `{"type":"custom-title"}` and `{"type":"ai-title"}`
+/// entries.
 ///
 /// Reads at most [`TAIL_SCAN_BYTES`] from the end (never the whole file) and
 /// walks the lines in reverse so the newest entry of each kind wins. When
 /// `expected_session_id` is known, `last-prompt` entries stamped with a
 /// *different* sessionId are ignored — resumed conversations copy entries
 /// across files, and a foreign session's prompt must not label this one.
-fn scan_tail_for_recent_entries(
-    path: &Path,
-    expected_session_id: Option<&str>,
-) -> (Option<String>, Option<String>) {
+fn scan_tail_for_recent_entries(path: &Path, expected_session_id: Option<&str>) -> RecentEntries {
     let Ok(mut file) = fs::File::open(path) else {
-        return (None, None);
+        return RecentEntries::default();
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(TAIL_SCAN_BYTES);
@@ -402,11 +413,11 @@ fn scan_tail_for_recent_entries(
     // whenever the seek landed right after a newline.)
     let read_from = start.saturating_sub(1);
     if file.seek(SeekFrom::Start(read_from)).is_err() {
-        return (None, None);
+        return RecentEntries::default();
     }
     let mut buf = Vec::with_capacity((len - read_from) as usize);
     if file.read_to_end(&mut buf).is_err() {
-        return (None, None);
+        return RecentEntries::default();
     }
     let text = String::from_utf8_lossy(&buf);
     let mut lines: Vec<&str> = text.lines().collect();
@@ -419,11 +430,15 @@ fn scan_tail_for_recent_entries(
 
     let mut summary: Option<String> = None;
     let mut last_prompt: Option<String> = None;
+    let mut custom_title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
     for line in lines.iter().rev() {
         // Cheap substring pre-filter so huge tool-result lines are not JSON-parsed.
         let looks_last = last_prompt.is_none() && line.contains(r#""type":"last-prompt""#);
         let looks_summary = summary.is_none() && line.contains(r#""type":"summary""#);
-        if !looks_last && !looks_summary {
+        let looks_custom = custom_title.is_none() && line.contains(r#""type":"custom-title""#);
+        let looks_ai = ai_title.is_none() && line.contains(r#""type":"ai-title""#);
+        if !looks_last && !looks_summary && !looks_custom && !looks_ai {
             continue;
         }
         let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -452,13 +467,41 @@ fn scan_tail_for_recent_entries(
                     }
                 }
             }
+            Some("custom-title") if custom_title.is_none() => {
+                custom_title = own_entry_text(&val, expected_session_id, "customTitle");
+            }
+            Some("ai-title") if ai_title.is_none() => {
+                ai_title = own_entry_text(&val, expected_session_id, "aiTitle");
+            }
             _ => {}
         }
-        if summary.is_some() && last_prompt.is_some() {
+        if summary.is_some() && last_prompt.is_some() && custom_title.is_some() {
             break;
         }
     }
-    (summary, last_prompt)
+    RecentEntries {
+        summary,
+        last_prompt,
+        title: custom_title.or(ai_title),
+    }
+}
+
+/// The trimmed, truncated string at `key` of a title entry — `None` when it is
+/// empty or stamped with another session's id (resumed transcripts copy
+/// entries across files, same rule as `last-prompt`).
+fn own_entry_text(
+    val: &serde_json::Value,
+    expected_session_id: Option<&str>,
+    key: &str,
+) -> Option<String> {
+    let stamped = val.get("sessionId").and_then(|v| v.as_str());
+    if let (Some(expected), Some(stamped)) = (expected_session_id, stamped) {
+        if expected != stamped {
+            return None;
+        }
+    }
+    let text = val.get(key)?.as_str()?.trim();
+    (!text.is_empty()).then(|| truncate_chars(text, MAX_PROMPT_CHARS))
 }
 
 /// Metadata recovered from the beginning of a transcript.
@@ -746,8 +789,8 @@ fn parse_session_file(path: &Path) -> Option<ClaudeSessionInfo> {
         .as_deref()
         .filter(|s| is_safe_session_id(s))
         .unwrap_or(session_id.as_str());
-    let (tail_summary, last_prompt) = scan_tail_for_recent_entries(path, Some(expected));
-    let summary = head.summary.or(tail_summary);
+    let recent = scan_tail_for_recent_entries(path, Some(expected));
+    let summary = head.summary.or(recent.summary);
 
     let cwd = head.cwd.or(tail.cwd);
     let cwd_exists = cwd.as_deref().is_some_and(|dir| Path::new(dir).is_dir());
@@ -766,8 +809,9 @@ fn parse_session_file(path: &Path) -> Option<ClaudeSessionInfo> {
     Some(ClaudeSessionInfo {
         session_id,
         summary,
+        title: recent.title,
         first_prompt: head.first_prompt,
-        last_prompt,
+        last_prompt: recent.last_prompt,
         last_activity: tail.last_activity,
         started_at: head.started_at.unwrap_or_default(),
         last_active: last_active.to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -1413,6 +1457,42 @@ mod tests {
         fs::write(&path, jsonl).unwrap();
         let info = parse_session_file(&path).expect("parsed");
         assert_eq!(info.last_prompt, None);
+    }
+
+    #[test]
+    fn parse_takes_the_newest_own_ai_title_as_the_session_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.jsonl");
+        let jsonl = "\
+{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n\
+{\"type\":\"ai-title\",\"aiTitle\":\"Old name\",\"sessionId\":\"abc\"}\n\
+{\"type\":\"ai-title\",\"aiTitle\":\"Login crash fix\",\"sessionId\":\"abc\"}\n\
+{\"type\":\"ai-title\",\"aiTitle\":\"Foreign name\",\"sessionId\":\"def\"}\n";
+        fs::write(&path, jsonl).unwrap();
+        let info = parse_session_file(&path).expect("parsed");
+        assert_eq!(info.title.as_deref(), Some("Login crash fix"));
+    }
+
+    #[test]
+    fn parse_prefers_a_user_rename_over_the_ai_title() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.jsonl");
+        let jsonl = "\
+{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n\
+{\"type\":\"custom-title\",\"customTitle\":\"my-agent\",\"sessionId\":\"abc\"}\n\
+{\"type\":\"ai-title\",\"aiTitle\":\"Login crash fix\",\"sessionId\":\"abc\"}\n";
+        fs::write(&path, jsonl).unwrap();
+        let info = parse_session_file(&path).expect("parsed");
+        assert_eq!(info.title.as_deref(), Some("my-agent"));
+    }
+
+    #[test]
+    fn parse_without_title_entries_leaves_the_name_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.jsonl");
+        fs::write(&path, user_line("abc", "hello")).unwrap();
+        let info = parse_session_file(&path).expect("parsed");
+        assert_eq!(info.title, None);
     }
 
     #[test]

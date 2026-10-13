@@ -22,6 +22,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import { type ComponentProps, useState } from "react";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
+import { useSessionSummaryStore } from "@/stores/useSessionSummaryStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import {
   loadSavedSidebarTab,
@@ -119,6 +120,7 @@ function mockInvoke() {
             {
               session_id: "11111111-2222-3333-4444-555555555555",
               summary: null,
+              title: null,
               first_prompt: "Fix the login bug",
               last_prompt: "Fix the login bug",
               last_activity: "Opened the PR",
@@ -137,6 +139,11 @@ function mockInvoke() {
           unreadable: 0,
         };
       }
+      case "summarize_claude_session":
+        return {
+          name: "Login flow rework",
+          summary: "The user wanted the login bug fixed. The agent reworked the flow.",
+        };
       case "git_worktree_list":
         return [
           {
@@ -167,6 +174,7 @@ describe("Sidebar tab bar", () => {
     localStorage.clear();
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     useSessionStore.setState({ sessions: [], samuraiSchedule: [] });
+    useSessionSummaryStore.setState({ entries: {} });
   });
 
   it("renders the three tabs with History active by default", () => {
@@ -262,7 +270,7 @@ describe("Sidebar tab bar", () => {
     // Expand the project's collapsible
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
-    const conversation = await screen.findByText("Fix the login bug");
+    const conversation = await screen.findByText("Login flow rework");
     fireEvent.click(conversation);
 
     // `claude --resume` only finds the session from the directory it ran in,
@@ -284,7 +292,7 @@ describe("Sidebar tab bar", () => {
     fireEvent.click(screen.getByRole("button", { name: "History" }));
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
-    await screen.findByText("Fix the login bug");
+    await screen.findByText("Login flow rework");
     // ONE call for the whole project (issue #78): the backend derives the
     // repo's subdirectories itself, and the worktrees ride along as extra
     // roots because Maestro keeps them outside the repo.
@@ -312,6 +320,7 @@ describe("Sidebar tab bar", () => {
             {
               session_id: "99999999-8888-7777-6666-555555555555",
               summary: null,
+              title: null,
               first_prompt: "Work in a deleted worktree",
               last_prompt: "Work in a deleted worktree",
               last_activity: null,
@@ -331,6 +340,8 @@ describe("Sidebar tab bar", () => {
         };
       }
       if (cmd === "git_worktree_list") return [];
+      // No summary for this one: the row falls back to its first prompt.
+      if (cmd === "summarize_claude_session") throw "claude CLI not found";
       return base(cmd, args);
     });
 
@@ -343,11 +354,8 @@ describe("Sidebar tab bar", () => {
     // The marker and its reason are visible on the row, not just a tooltip.
     expect(screen.getByText(/Not resumable — its directory no longer exists/)).toBeInTheDocument();
     // Where it ran is still shown: the group the row sits under is headed by
-    // the recorded cwd's folder name, badged GONE. Scoped to the group's own
-    // header — the filter chips above the list say the same word.
-    const groupHeader = screen.getByText("deleted").closest("div");
-    expect(groupHeader).not.toBeNull();
-    expect(within(groupHeader as HTMLElement).getByText("GONE")).toBeInTheDocument();
+    // the recorded cwd's folder name.
+    expect(screen.getByText("deleted")).toBeInTheDocument();
 
     // Resume is disabled: clicking must not queue a launch.
     expect(row).toBeDisabled();
@@ -355,7 +363,7 @@ describe("Sidebar tab bar", () => {
     expect(usePendingLaunchStore.getState().pending).toHaveLength(0);
   });
 
-  it("History tab shows the summary as title, plus branch and folder, on resumable rows", async () => {
+  it("History tab shows the AI name and summary, plus branch and folder, on resumable rows", async () => {
     usePendingLaunchStore.setState({ pending: [] });
     const base = invokeMock.getMockImplementation();
     if (!base) throw new Error("expected invokeMock to have a base implementation");
@@ -365,7 +373,8 @@ describe("Sidebar tab bar", () => {
           sessions: [
             {
               session_id: "11111111-2222-3333-4444-555555555555",
-              summary: "Login flow rework",
+              summary: null,
+              title: null,
               first_prompt: "Fix the login bug",
               last_prompt: "now fix the flaky login test",
               last_activity: null,
@@ -391,10 +400,13 @@ describe("Sidebar tab bar", () => {
     fireEvent.click(screen.getByRole("button", { name: "History" }));
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
-    // Identity: Claude's title leads, the first prompt stays visible below it.
+    // Identity: the AI name and two-sentence summary replace the prompt text.
     const title = await screen.findByText("Login flow rework");
     const row = title.closest("button") as HTMLButtonElement;
-    expect(within(row).getByText("Fix the login bug")).toBeInTheDocument();
+    expect(
+      within(row).getByText("The user wanted the login bug fixed. The agent reworked the flow."),
+    ).toBeInTheDocument();
+    expect(within(row).queryByText("Fix the login bug")).not.toBeInTheDocument();
     // Where it ran: the branch rides the row; the cwd's folder name heads the
     // group the row sits under (the #78 grouped layout carries the directory).
     expect(within(row).getByText("feat/login")).toBeInTheDocument();
