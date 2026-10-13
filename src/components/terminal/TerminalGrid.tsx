@@ -907,18 +907,25 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     };
   }, [preserveOnHide]);
 
-  // When all slots are removed: either return to idle landing view or respawn a slot
+  // Latest MCP servers/skills/plugins for the respawn below, read through a ref
+  // so a late fetch of any of them cannot re-fire onAllSessionsClosed.
+  const slotDefaultsRef = useRef({ mcpServers, skills, plugins });
+  slotDefaultsRef.current = { mcpServers, skills, plugins };
+
+  // When all slots are removed: either return to idle landing view or respawn a slot.
+  // Keyed on slots.length/error only — the callback and slot defaults come from refs.
   useEffect(() => {
     if (slots.length === 0 && mounted.current && !error) {
-      if (onAllSessionsClosed) {
-        onAllSessionsClosed();
+      if (onAllSessionsClosedRef.current) {
+        onAllSessionsClosedRef.current();
       } else {
-        const freshSlot = createEmptySlot(mcpServers, skills, plugins);
+        const defaults = slotDefaultsRef.current;
+        const freshSlot = createEmptySlot(defaults.mcpServers, defaults.skills, defaults.plugins);
         setSlots([freshSlot]);
         setLayoutTree(createLeaf(freshSlot.id));
       }
     }
-  }, [slots.length, error, mcpServers, skills, plugins, onAllSessionsClosed]);
+  }, [slots.length, error]);
 
   /**
    * Saves branch config with debouncing.
