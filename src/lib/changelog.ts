@@ -11,6 +11,8 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-14",
     title: "Readable History, keyboard terminals, richer issue map, agent names",
     items: [
+      "Eagle view: drag the gaps between terminals to resize columns and rows; double-click resets.",
+      "Eagle view: Ctrl+1 zooms and Alt+P parks the terminal you are typing in, as in a project.",
       "The Git pane's Issues list now shows all issues by default, not just ones assigned to you.",
       "A Claude terminal's title is its agent name; renaming the title renames the agent.",
       "History rows show each session's agent name, and the search box finds rows by it.",

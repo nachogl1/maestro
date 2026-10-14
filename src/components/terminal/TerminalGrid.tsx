@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
 import { usePendingLaunch } from "@/hooks/usePendingLaunch";
 import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
 import { useSlotLaunch } from "@/hooks/useSlotLaunch";
@@ -1142,6 +1143,31 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     if (!focusedSlotId) return;
     handlePark(focusedSlotId);
   };
+
+  // Eagle view: Cmd/Ctrl+1 and Alt+P act on the pane holding keyboard focus.
+  // Only launched panes this grid owns are handled; the rest fall through to
+  // the grid that does own them.
+  useEagleTerminalKeyboard({
+    enabled: eagleMode,
+    onToggleZoom: useCallback(
+      (slotId: string) => {
+        const sessionId = slotsRef.current.find((s) => s.id === slotId)?.sessionId ?? null;
+        if (sessionId === null || !onEagleZoomToggle) return false;
+        onEagleZoomToggle(sessionId);
+        return true;
+      },
+      [onEagleZoomToggle],
+    ),
+    onPark: useCallback(
+      (slotId: string) => {
+        const slot = slotsRef.current.find((s) => s.id === slotId);
+        if (!slot || slot.sessionId === null) return false;
+        handlePark(slotId);
+        return true;
+      },
+      [handlePark],
+    ),
+  });
 
   /**
    * Updates the AI mode for a slot.

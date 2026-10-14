@@ -25,6 +25,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { resolveWeights, trackTemplate } from "@/lib/eagleGridSizes";
 import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
 import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
@@ -33,10 +34,15 @@ import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ParkedShelf } from "../terminal/ParkedShelf";
 import { TerminalGrid, type TerminalGridHandle } from "../terminal/TerminalGrid";
 import { SessionStatusDot, ThinkingIndicator } from "../terminal/ThinkingIndicator";
+import { EagleGridResizer } from "./EagleGridResizer";
 import { IdleLandingView } from "./IdleLandingView";
 
 /** Stable empty record so the names selector doesn't re-render grids while the bar is hidden. */
 const EMPTY_SESSION_NAMES: Record<number, string> = {};
+
+/** Eagle grid gap and padding in px (the resize handles sit in the gaps). */
+const EAGLE_GAP_PX = 8;
+const EAGLE_PAD_PX = 8;
 
 /** Stable empty array so the parked selector doesn't re-render grids outside eagle view. */
 const EMPTY_PARKED: number[] = [];
@@ -108,6 +114,12 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // sums over the current `tabs`, so a closed project's leftover entry is
     // simply never counted.
     const [pendingCounts, setPendingCounts] = useState<Map<string, number>>(new Map());
+
+    // Eagle grid track sizes the user dragged (see resolveWeights below).
+    const eagleGridRef = useRef<HTMLDivElement>(null);
+    const [eagleColWeights, setEagleColWeights] = useState<number[]>([]);
+    const [eagleRowWeights, setEagleRowWeights] = useState<number[]>([]);
+    const [eagleResizing, setEagleResizing] = useState(false);
 
     // Live session count drives the eagle grid's column count. Gated on
     // eagleView so session launches/kills don't re-render every project's grid
@@ -476,6 +488,12 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // scrollback and PTY wiring survive the toggle.
     const eagleTileCount = liveSessionCount + pendingTileCount;
     const eagleColumns = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, eagleTileCount))));
+    const eagleRows = Math.max(1, Math.ceil(eagleTileCount / eagleColumns));
+    // User-dragged sizes apply while the grid keeps the same shape; a new
+    // column or row count starts that axis from equal sizes again.
+    const colWeights = resolveWeights(eagleColWeights, eagleColumns);
+    const rowWeights = resolveWeights(eagleRowWeights, eagleRows);
+    const showEagleResizer = eagleView && eagleZoom === null && eagleTileCount > 1;
 
     // The outer column wrapper is permanent (both modes) so toggling eagle view
     // never changes the tree shape around the grids — that would remount every
@@ -486,16 +504,20 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     return (
       <div className="flex h-full w-full flex-col">
         <div
+          ref={eagleGridRef}
           className={
-            eagleView ? "min-h-0 w-full flex-1 bg-maestro-bg p-2" : "relative min-h-0 w-full flex-1"
+            eagleView
+              ? `min-h-0 w-full flex-1 bg-maestro-bg p-2 ${eagleResizing ? "split-dragging" : ""}`
+              : "relative min-h-0 w-full flex-1"
           }
           style={
             eagleView
               ? {
                   display: "grid",
-                  gridTemplateColumns: `repeat(${eagleColumns}, minmax(0, 1fr))`,
+                  gridTemplateColumns: trackTemplate(colWeights),
+                  gridTemplateRows: trackTemplate(rowWeights),
                   gridAutoRows: "minmax(0, 1fr)",
-                  gap: "8px",
+                  gap: `${EAGLE_GAP_PX}px`,
                 }
               : undefined
           }
@@ -679,6 +701,20 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
               )}
             </div>
           ))}
+          {/* Last child on purpose: anything inserted before the tabs above
+          would shift their position and remount every terminal. */}
+          {showEagleResizer && (
+            <EagleGridResizer
+              containerRef={eagleGridRef}
+              colWeights={colWeights}
+              rowWeights={rowWeights}
+              onColWeightsChange={setEagleColWeights}
+              onRowWeightsChange={setEagleRowWeights}
+              onDragStateChange={setEagleResizing}
+              gapPx={EAGLE_GAP_PX}
+              paddingPx={EAGLE_PAD_PX}
+            />
+          )}
         </div>
         {/* Eagle shelf: parked chips across ALL projects, labeled by project. */}
         {eagleView && <ParkedShelf showProjectLabels onUnpark={handleEagleUnpark} />}
