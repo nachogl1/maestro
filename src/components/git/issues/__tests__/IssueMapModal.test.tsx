@@ -293,7 +293,7 @@ describe("IssueMapModal", () => {
       expect(screen.getByLabelText(label)).toBeInTheDocument();
     }
     expect(screen.getByLabelText("\u{1F528} In progress")).toBeInTheDocument();
-    expect(screen.getByLabelText("\u{1F7E2} Ready")).toBeInTheDocument();
+    expect(screen.getByLabelText("\u{1F7E2} Ready to take")).toBeInTheDocument();
     expect(screen.getByLabelText("\u{1F512} Blocked")).toBeInTheDocument();
     expect(screen.getByLabelText("Closed").parentElement?.querySelector("svg line")).not.toBeNull();
     expect(screen.getByTestId("issue-map-encoding")).toHaveTextContent(

@@ -161,7 +161,7 @@ describe("buildIssueMapHtml", () => {
     expect(leg).toContain('data-ax="kind" value="agent"><i class="i k-agent"></i>agent-ready<span');
     expect(leg).toContain('value="decision"><i class="i k-decision"></i>decision / planning<span');
     expect(leg).toContain('data-ax="status" value="inprog">\u{1F528} In progress<span');
-    expect(leg).toContain('data-ax="status" value="ready">\u{1F7E2} Ready<span');
+    expect(leg).toContain('data-ax="status" value="ready">\u{1F7E2} Ready to take<span');
     expect(leg).toContain('data-ax="status" value="blocked">\u{1F512} Blocked<span');
     expect(leg).toContain('data-ax="status" value="closed"><i class="i xs"></i>Closed<span');
     // Epics and closed issues start unticked; everything else starts ticked.
@@ -256,7 +256,7 @@ describe("buildIssueMapHtml", () => {
     // Progress chip: icon + name, neutral; kind chip: name only, kind-coloured.
     const chips = Array.from(tip.querySelectorAll(".st"));
     expect(chips.map((c) => [c.textContent, c.className])).toEqual([
-      ["\u{1F7E2} Ready", "st"],
+      ["\u{1F7E2} Ready to take", "st"],
       ["agent-ready", "st i k-agent"],
     ]);
     expect(tip.textContent).toContain("Level 1 · GitHub state: OPEN");
