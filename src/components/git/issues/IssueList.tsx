@@ -1,8 +1,16 @@
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CircleDot } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef } from "react";
+import {
+  ISSUE_MAP_CLOSED_EVENT,
+  ISSUE_MAP_SELECT_EVENT,
+  type IssueMapSelection,
+  type IssueMapTarget,
+  openIssueMapWindow,
+} from "@/lib/issueMapWindow";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { IssueFilters } from "./IssueFilters";
-import { IssueMapModal } from "./IssueMapModal";
 import { IssueRow } from "./IssueRow";
 
 interface IssueListProps {
@@ -13,20 +21,31 @@ interface IssueListProps {
 
 export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: IssueListProps) {
   const { issues, isIssuesLoading, issuesError, issueSearch, fetchIssues } = useGitHubStore();
-  const [mapOpen, setMapOpen] = useState(false);
+  const onSelectIssueRef = useRef(onSelectIssue);
+  onSelectIssueRef.current = onSelectIssue;
 
-  const issueMapModal = mapOpen ? (
-    <IssueMapModal
-      repoPath={repoPath}
-      search={issueSearch}
-      onSelectIssue={onSelectIssue}
-      onClose={() => {
-        setMapOpen(false);
-        // Pick up assignment changes made in the graph.
-        fetchIssues(repoPath);
-      }}
-    />
-  ) : null;
+  // The map runs in its own window; it reports back by events.
+  useEffect(() => {
+    const unlistenSelect = listen<IssueMapSelection>(ISSUE_MAP_SELECT_EVENT, (event) => {
+      if (event.payload.repoPath !== repoPath) return;
+      onSelectIssueRef.current(event.payload.number);
+      void getCurrentWindow().setFocus();
+    });
+    const unlistenClosed = listen<IssueMapTarget>(ISSUE_MAP_CLOSED_EVENT, (event) => {
+      // Pick up assignment changes made in the map.
+      if (event.payload.repoPath === repoPath) fetchIssues(repoPath);
+    });
+    return () => {
+      void unlistenSelect.then((fn) => fn());
+      void unlistenClosed.then((fn) => fn());
+    };
+  }, [repoPath, fetchIssues]);
+
+  const openMap = () => {
+    openIssueMapWindow({ repoPath, search: issueSearch }).catch((err) =>
+      console.error("Failed to open the issue map window:", err),
+    );
+  };
 
   if (issuesError) {
     return (
@@ -49,7 +68,7 @@ export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: Issu
 
   return (
     <div className="flex h-full flex-col">
-      <IssueFilters repoPath={repoPath} onOpenMap={() => setMapOpen(true)} />
+      <IssueFilters repoPath={repoPath} onOpenMap={openMap} />
 
       {issues.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-4 text-center">
@@ -70,7 +89,6 @@ export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: Issu
           ))}
         </div>
       )}
-      {issueMapModal}
     </div>
   );
 }
