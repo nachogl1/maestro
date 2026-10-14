@@ -55,6 +55,7 @@ function conversation(overrides: Partial<ClaudeSessionInfo> = {}): ClaudeSession
     session_id: "conv-repo",
     summary: null,
     title: null,
+    agent_name: null,
     first_prompt: "Fix the login bug",
     last_prompt: null,
     last_activity: "Updated auth.ts and ran the suite",
@@ -394,6 +395,27 @@ describe("HistorySection (issue #78)", () => {
     // The clear ("X") button empties the box and restores every row.
     fireEvent.click(screen.getByLabelText("Clear search"));
     expect(resumeRows()).toHaveLength(2);
+  });
+
+  it("shows the agent name on the row and finds the row by it", async () => {
+    mockInvoke({
+      listing: buildListing([
+        conversation({ session_id: "conv-login", agent_name: "reviewer-7" }),
+        conversation({ session_id: "conv-payment", agent_name: "maestro-42" }),
+      ]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    expect(await screen.findByText("@reviewer-7")).toBeInTheDocument();
+    expect(screen.getByText("@maestro-42")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search conversations..."), {
+      target: { value: "REVIEWER" },
+    });
+
+    expect(screen.getByText("@reviewer-7")).toBeInTheDocument();
+    expect(screen.queryByText("@maestro-42")).not.toBeInTheDocument();
   });
 
   it("searches the AI summary shown on the row", async () => {

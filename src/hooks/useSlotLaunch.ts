@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type Dispatch, type MutableRefObject, type SetStateAction, useCallback } from "react";
 import type { SessionSlot } from "@/components/terminal/PreLaunchCard";
+import { defaultAgentName, listLiveAgentNames, sanitizeAgentName } from "@/lib/agentName";
 import { setSessionMcpServers, writeOpenCodeMcpConfig, writeSessionMcpConfig } from "@/lib/mcp";
 import { checkFullDiskAccess, pathRequiresFDA } from "@/lib/permissions";
 import {
@@ -151,6 +152,21 @@ interface UseSlotLaunchResult {
 }
 
 /**
+ * The agent name a Claude slot launches with, or null to let Claude keep the
+ * name it has (a resume with no typed name) — and for non-Claude modes.
+ */
+async function launchAgentName(slot: SessionSlot, directory: string): Promise<string | null> {
+  if (slot.mode !== "Claude") return null;
+  const typed = sanitizeAgentName(slot.customName);
+  if (typed || slot.resumeSessionId) return typed;
+  const live = await listLiveAgentNames().catch((err) => {
+    console.warn("[Session] Could not read live agent names:", err);
+    return [];
+  });
+  return defaultAgentName(directory, new Set(live.map((a) => a.name)));
+}
+
+/**
  * Slot launch pipeline for `TerminalGrid`: spawns the shell, registers the
  * session, writes per-session MCP/plugin/hooks config and starts the AI CLI.
  * Launches within one project are serialized by `withProjectLock`.
@@ -247,6 +263,11 @@ export function useSlotLaunch({
           envVars = { MAESTRO_PROJECT_HASH: projectHash };
         }
 
+        // Claude terminals launch with an explicit agent name: the typed
+        // window name, else a fresh `<folder>-<NN>`. A resume keeps the name
+        // the conversation already had unless one was typed.
+        const agentName = await launchAgentName(slot, projectPath ?? workingDirectory ?? "");
+
         // Spawn the shell in the correct directory (worktree or project path)
         // MAESTRO_SESSION_ID is automatically injected by the backend
         const sessionId = await spawnShell(workingDirectory, envVars);
@@ -261,8 +282,10 @@ export function useSlotLaunch({
           );
 
           // Apply optional custom window name. Empty/whitespace is treated as "no
-          // custom name" — the backend normalizes it back to None.
-          const trimmedName = slot.customName.trim();
+          // custom name" — the backend normalizes it back to None. A Claude
+          // terminal's title is its agent name instead (passed as `--name`
+          // below), so other agents can message it by what the title shows.
+          const trimmedName = agentName ?? slot.customName.trim();
           let finalName: string | null | undefined = sessionConfig.name;
           if (trimmedName) {
             try {
@@ -439,6 +462,7 @@ export function useSlotLaunch({
                 slot.resumeSessionId ?? undefined,
                 launchPrompt,
                 shellFamily,
+                agentName ?? undefined,
               );
               let launchPromptOnLine = launchLine?.launchPromptDelivered ?? false;
 
@@ -484,6 +508,7 @@ export function useSlotLaunch({
                     slot.resumeSessionId ?? undefined,
                     null,
                     shellFamily,
+                    agentName ?? undefined,
                   );
                   launchPromptOnLine = false;
                 }

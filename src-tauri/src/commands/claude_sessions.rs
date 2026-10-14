@@ -61,7 +61,15 @@ pub struct ClaudeSessionInfo {
     /// The session's name: the newest `{"type":"custom-title"}` (set by the
     /// user's `/rename`), else the newest `{"type":"ai-title"}` Claude Code
     /// generates itself. Older transcripts carry neither — `None` then.
+    ///
+    /// A custom title that merely repeats [`Self::agent_name`] (`--name` and
+    /// `/rename` write both entries) yields to the AI title, so the row keeps
+    /// a descriptive name next to the agent name instead of showing it twice.
     pub title: Option<String>,
+    /// The agent name other sessions message this one by: the newest
+    /// `{"type":"agent-name"}` entry, written by `claude --name` and
+    /// `/rename`. `None` for conversations that only ever had a derived name.
+    pub agent_name: Option<String>,
     pub first_prompt: Option<String>,
     /// Most recent user prompt, from the newest `{"type":"last-prompt"}` entry
     /// near the end of the transcript — shows where a long conversation left
@@ -387,8 +395,10 @@ pub(crate) fn is_safe_session_id(session_id: &str) -> bool {
 struct RecentEntries {
     summary: Option<String>,
     last_prompt: Option<String>,
-    /// `custom-title` when present, else `ai-title`.
+    /// `custom-title` when present, else `ai-title` (see
+    /// [`title_beside_agent_name`]).
     title: Option<String>,
+    agent_name: Option<String>,
 }
 
 /// Scans the tail of a transcript for the newest `{"type":"last-prompt"}`,
@@ -432,13 +442,15 @@ fn scan_tail_for_recent_entries(path: &Path, expected_session_id: Option<&str>) 
     let mut last_prompt: Option<String> = None;
     let mut custom_title: Option<String> = None;
     let mut ai_title: Option<String> = None;
+    let mut agent_name: Option<String> = None;
     for line in lines.iter().rev() {
         // Cheap substring pre-filter so huge tool-result lines are not JSON-parsed.
         let looks_last = last_prompt.is_none() && line.contains(r#""type":"last-prompt""#);
         let looks_summary = summary.is_none() && line.contains(r#""type":"summary""#);
         let looks_custom = custom_title.is_none() && line.contains(r#""type":"custom-title""#);
         let looks_ai = ai_title.is_none() && line.contains(r#""type":"ai-title""#);
-        if !looks_last && !looks_summary && !looks_custom && !looks_ai {
+        let looks_agent = agent_name.is_none() && line.contains(r#""type":"agent-name""#);
+        if !looks_last && !looks_summary && !looks_custom && !looks_ai && !looks_agent {
             continue;
         }
         let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -473,16 +485,39 @@ fn scan_tail_for_recent_entries(path: &Path, expected_session_id: Option<&str>) 
             Some("ai-title") if ai_title.is_none() => {
                 ai_title = own_entry_text(&val, expected_session_id, "aiTitle");
             }
+            Some("agent-name") if agent_name.is_none() => {
+                agent_name = own_entry_text(&val, expected_session_id, "agentName");
+            }
             _ => {}
         }
-        if summary.is_some() && last_prompt.is_some() && custom_title.is_some() {
+        if summary.is_some()
+            && last_prompt.is_some()
+            && custom_title.is_some()
+            && agent_name.is_some()
+        {
             break;
         }
     }
     RecentEntries {
         summary,
         last_prompt,
-        title: custom_title.or(ai_title),
+        title: title_beside_agent_name(custom_title, ai_title, agent_name.as_deref()),
+        agent_name,
+    }
+}
+
+/// The conversation title shown next to the agent name: a custom title that
+/// only repeats the agent name gives way to the AI title (see
+/// [`ClaudeSessionInfo::title`]).
+fn title_beside_agent_name(
+    custom_title: Option<String>,
+    ai_title: Option<String>,
+    agent_name: Option<&str>,
+) -> Option<String> {
+    match custom_title {
+        Some(custom) if Some(custom.as_str()) == agent_name => ai_title.or(Some(custom)),
+        Some(custom) => Some(custom),
+        None => ai_title,
     }
 }
 
@@ -514,6 +549,8 @@ struct HeadInfo {
     cwd: Option<String>,
     /// Conversation title from a head-of-file `{"type":"summary"}` entry.
     summary: Option<String>,
+    /// `{"type":"agent-name"}` entry, which `claude --name` writes first.
+    agent_name: Option<String>,
 }
 
 /// Metadata recovered from the end of a transcript.
@@ -581,6 +618,14 @@ fn scan_head(file: &mut fs::File) -> HeadInfo {
                     info.summary = Some(truncate_chars(s, MAX_PROMPT_CHARS));
                 }
             }
+        }
+
+        // `claude --name` writes its agent-name entry as one of the very first
+        // lines; the tail usually has a newer copy, this is the fallback.
+        if info.agent_name.is_none()
+            && val.get("type").and_then(|v| v.as_str()) == Some("agent-name")
+        {
+            info.agent_name = own_entry_text(&val, None, "agentName");
         }
 
         // Look for the first real user message (skip system-generated messages)
@@ -810,6 +855,7 @@ fn parse_session_file(path: &Path) -> Option<ClaudeSessionInfo> {
         session_id,
         summary,
         title: recent.title,
+        agent_name: recent.agent_name.or(head.agent_name),
         first_prompt: head.first_prompt,
         last_prompt: recent.last_prompt,
         last_activity: tail.last_activity,
@@ -1484,6 +1530,34 @@ mod tests {
         fs::write(&path, jsonl).unwrap();
         let info = parse_session_file(&path).expect("parsed");
         assert_eq!(info.title.as_deref(), Some("my-agent"));
+    }
+
+    #[test]
+    fn parse_reads_the_agent_name_and_keeps_the_ai_title_beside_it() {
+        // `claude --name` writes a custom-title AND an agent-name with the same
+        // value; the row shows the agent name once and keeps the AI title.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.jsonl");
+        let jsonl = "\
+{\"type\":\"custom-title\",\"customTitle\":\"maestro-42\",\"sessionId\":\"abc\"}\n\
+{\"type\":\"agent-name\",\"agentName\":\"maestro-42\",\"sessionId\":\"abc\"}\n\
+{\"sessionId\":\"abc\",\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n\
+{\"type\":\"ai-title\",\"aiTitle\":\"Login crash fix\",\"sessionId\":\"abc\"}\n\
+{\"type\":\"agent-name\",\"agentName\":\"reviewer\",\"sessionId\":\"abc\"}\n\
+{\"type\":\"custom-title\",\"customTitle\":\"reviewer\",\"sessionId\":\"abc\"}\n";
+        fs::write(&path, jsonl).unwrap();
+        let info = parse_session_file(&path).expect("parsed");
+        assert_eq!(info.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(info.title.as_deref(), Some("Login crash fix"));
+    }
+
+    #[test]
+    fn parse_without_agent_name_entries_leaves_it_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("abc.jsonl");
+        fs::write(&path, user_line("abc", "hello")).unwrap();
+        let info = parse_session_file(&path).expect("parsed");
+        assert_eq!(info.agent_name, None);
     }
 
     #[test]

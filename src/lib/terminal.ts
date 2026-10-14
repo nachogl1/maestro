@@ -7,6 +7,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isValidAgentName } from "@/lib/agentName";
 import { quoteShellArgument, type ShellFamily } from "@/lib/shellEscape";
 import type { BackendCapabilities, BackendType } from "./terminalTheme";
 
@@ -209,6 +210,8 @@ export interface ClaudeSessionInfo {
   summary: string | null;
   /** Session name: the user's `/rename`, else Claude Code's own AI title. Null on older transcripts. */
   title: string | null;
+  /** Agent name other sessions messaged it by (`--name` / `/rename`). Null when never named. */
+  agent_name: string | null;
   first_prompt: string | null;
   /** Most recent user prompt — where a long conversation left off. */
   last_prompt: string | null;
@@ -462,11 +465,15 @@ export type CliFlags = {
  *
  * buildCliCommand("Codex", { skipPermissions: true, customFlags: "" })
  * // Returns: "codex --dangerously-bypass-approvals-and-sandbox"
+ *
+ * buildCliCommand("Claude", undefined, undefined, "maestro-42")
+ * // Returns: "claude --name maestro-42"
  */
 export function buildCliCommand(
   mode: AiMode,
   flags?: CliFlags,
   resumeSessionId?: string,
+  agentName?: string,
 ): string | null {
   const config = AI_CLI_CONFIG[mode];
   if (!config.command) return null;
@@ -482,6 +489,15 @@ export function buildCliCommand(
       throw new Error(`Refusing unsafe resume session id: ${resumeSessionId}`);
     }
     parts.push("--resume", resumeSessionId);
+  }
+
+  // The agent name other sessions message this one by (Claude only). It
+  // sits unquoted on a shell line, so only terminal-safe names pass.
+  if (agentName && mode === "Claude") {
+    if (!isValidAgentName(agentName)) {
+      throw new Error(`Refusing unsafe agent name: ${agentName}`);
+    }
+    parts.push("--name", agentName);
   }
 
   if (flags) {
@@ -543,8 +559,9 @@ export function buildCliLaunchLine(
   resumeSessionId: string | undefined,
   launchPrompt: string | null | undefined,
   shell: ShellFamily | null,
+  agentName?: string,
 ): CliLaunchLine | null {
-  const command = buildCliCommand(mode, flags, resumeSessionId);
+  const command = buildCliCommand(mode, flags, resumeSessionId, agentName);
   if (command === null) return null;
   const refused = { command, launchPromptDelivered: false };
   if (!launchPrompt || mode !== "Claude") return refused;

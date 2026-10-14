@@ -9,8 +9,10 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-14",
-    title: "Readable History, keyboard terminals, richer issue map",
+    title: "Readable History, keyboard terminals, richer issue map, agent names",
     items: [
+      "A Claude terminal's title is its agent name; renaming the title renames the agent.",
+      "History rows show each session's agent name, and the search box finds rows by it.",
       "History rows show the session's name and a two-sentence AI summary instead of raw prompts.",
       "History drops the checkout/worktree/gone filter pills; the search box stays.",
       "Ctrl+T focuses the new terminal's name box; Tab then Enter launches, and focus lands in it.",

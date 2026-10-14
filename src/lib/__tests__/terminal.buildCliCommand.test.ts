@@ -134,3 +134,26 @@ describe("buildCliLaunchLine", () => {
     });
   });
 });
+
+describe("buildCliCommand agent name", () => {
+  it("launches claude under the given agent name", () => {
+    expect(buildCliCommand("Claude", undefined, undefined, "maestro-42")).toBe(
+      "claude --name maestro-42",
+    );
+  });
+
+  it("refuses an agent name that is not terminal-safe", () => {
+    expect(() => buildCliCommand("Claude", undefined, undefined, "x; rm -rf /")).toThrow(
+      /unsafe agent name/i,
+    );
+  });
+
+  it("ignores the agent name for other CLIs", () => {
+    expect(buildCliCommand("Gemini", undefined, undefined, "maestro-42")).toBe("gemini");
+  });
+
+  it("keeps the name ahead of a positional launch prompt", () => {
+    const line = buildCliLaunchLine("Claude", undefined, undefined, "go", "posix", "maestro-42");
+    expect(line).toEqual({ command: "claude --name maestro-42 'go'", launchPromptDelivered: true });
+  });
+});

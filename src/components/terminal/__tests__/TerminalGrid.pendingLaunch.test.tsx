@@ -309,7 +309,7 @@ describe("TerminalGrid pending samurai launch", () => {
 
     await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
     const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("claude --dangerously-skip-permissions");
+    expect(cli).toContain("claude --name samurai-gen-1-77-78 --dangerously-skip-permissions");
     expect(cli).not.toContain("Maestro Samurai");
     expect(registerMock).toHaveBeenCalledWith(expect.any(Number), "C:/proj", "77, 78", 1, false);
   });
@@ -327,7 +327,7 @@ describe("TerminalGrid pending samurai launch", () => {
 
     await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
     const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("claude --dangerously-skip-permissions");
+    expect(cli).toContain("claude --name samurai-gen-1-77-78 --dangerously-skip-permissions");
     expect(cli).not.toContain("Maestro Samurai");
     errorSpy.mockRestore();
   });
@@ -394,7 +394,7 @@ describe("TerminalGrid pending samurai launch", () => {
 
     await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
     const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("claude --dangerously-skip-permissions");
+    expect(cli).toContain("claude --name samurai-gen-1-77-78 --dangerously-skip-permissions");
     expect(cli).not.toContain("Maestro Samurai");
     warnSpy.mockRestore();
   });
