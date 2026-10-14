@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work Journal Mock</title>
+<style>
+  :root { --bg:#0f1115; --panel:#161a21; --raised:#1d222b; --line:#2a303b; --text:#d7dbe2; --muted:#8a93a3; --accent:#5b9dff; --ok:#3fb97a; --no:#e5534b; --hl:#5c4b12; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 "Segoe UI", system-ui, sans-serif; }
+  .banner { padding:10px 16px; background:#2b2140; color:#e6dcff; font-weight:600; }
+  .switch { display:flex; gap:8px; padding:10px 16px; border-bottom:1px solid var(--line); }
+  .switch button { background:var(--raised); color:var(--text); border:1px solid var(--line); padding:6px 12px; border-radius:6px; cursor:pointer; }
+  .switch button.on { border-color:var(--accent); color:#fff; }
+  .layout { display:none; height:calc(100vh - 88px); }
+  .layout.on { display:flex; }
+  /* fake Maestro app */
+  .app { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .topbar { height:38px; display:flex; align-items:center; justify-content:flex-end; gap:6px; padding:0 10px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .ico { width:26px; height:26px; display:grid; place-items:center; border-radius:6px; color:var(--muted); position:relative; }
+  .ico.on { background:var(--raised); color:#fff; outline:1px solid var(--accent); }
+  .badge { position:absolute; top:-4px; right:-5px; background:var(--accent); color:#fff; font-size:10px; border-radius:8px; padding:0 4px; }
+  .terms { flex:1; display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:6px; }
+  .term { background:#0b0d10; border:1px solid var(--line); border-radius:6px; color:#5d6676; padding:8px; font-family:Consolas, monospace; }
+  /* journal pieces */
+  .side { width:560px; border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; }
+  .head { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid var(--line); }
+  .head .title { flex:1; font-weight:600; font-size:14px; background:transparent; border:1px dashed transparent; color:var(--text); padding:2px 4px; }
+  .head .title:hover { border-color:var(--line); }
+  .btn { background:var(--raised); border:1px solid var(--line); color:var(--text); border-radius:5px; padding:3px 8px; cursor:pointer; font-size:12px; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px; border-bottom:1px solid var(--line); }
+  .toolbar select, .toolbar .t { background:var(--raised); border:1px solid var(--line); color:var(--text); border-radius:4px; padding:2px 6px; font-size:12px; }
+  .editor { flex:1; overflow:auto; padding:12px 16px; }
+  .editor p { margin:0 0 6px; }
+  .serif { font-family:Georgia, serif; }
+  mark { background:var(--hl); color:#ffe9a8; }
+  .chk { color:var(--muted); }
+  .cands { border-top:1px solid var(--line); background:#131820; padding:8px 10px; max-height:38%; overflow:auto; }
+  .cands h4 { margin:0 0 6px; font-size:12px; color:var(--muted); font-weight:600; display:flex; justify-content:space-between; }
+  .cand { display:flex; align-items:center; gap:8px; padding:5px 6px; border:1px solid var(--line); border-radius:6px; margin-bottom:5px; background:var(--raised); }
+  .cand .txt { flex:1; }
+  .cand .src { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+  .ok { color:var(--ok); cursor:pointer; font-weight:700; } .no { color:var(--no); cursor:pointer; font-weight:700; }
+  .list { width:200px; border-right:1px solid var(--line); overflow:auto; }
+  .day { padding:6px 10px; border-bottom:1px solid #20252e; cursor:pointer; }
+  .day.cur { background:var(--raised); border-left:3px solid var(--accent); }
+  .day .d { font-size:11px; color:var(--muted); }
+  .day.wk { opacity:.55; }
+  .window { flex:1; display:flex; flex-direction:column; background:var(--panel); }
+  .wbar { height:32px; display:flex; align-items:center; padding:0 12px; border-bottom:1px solid var(--line); color:var(--muted); }
+  .note { padding:8px 16px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="banner">THROWAWAY MOCK: rough on purpose. React to the layout, not the styling.</div>
+<div class="switch">
+  <button class="on" data-l="a">A. Side pane (560px default, 340–800 resizable)</button>
+  <button data-l="b">B. Own window (like the issue map)</button>
+</div>
+
+<!-- Layout A: side pane -->
+<div class="layout on" id="a">
+  <div class="app">
+    <div class="topbar">
+      <span class="ico" title="Notes">🗒</span>
+      <span class="ico" title="Second Brain">🧠</span>
+      <span class="ico" title="Launch">🚀</span>
+      <span class="ico on" title="Work Journal">📓<span class="badge">3</span></span>
+    </div>
+    <div class="terms"><div class="term">terminal 1…</div><div class="term">terminal 2…</div></div>
+  </div>
+  <div class="side">
+    <div class="head">
+      <button class="btn">◀</button>
+      <input class="title" value="Wed 14 Oct 2026">
+      <button class="btn">▶</button>
+      <button class="btn" title="Jump to date">📅</button>
+      <button class="btn" title="New page for a date">＋</button>
+      <button class="btn" title="Delete page">🗑</button>
+      <button class="btn" title="Report">Report</button>
+      <button class="btn" title="Open in own window">⧉</button>
+    </div>
+    <div class="toolbar">
+      <select><option>Segoe UI</option><option>Georgia</option><option>Arial</option><option>Consolas</option></select>
+      <select><option>13</option><option>16</option><option>20</option></select>
+      <span class="t"><b>B</b></span><span class="t"><i>I</i></span><span class="t"><u>U</u></span>
+      <span class="t">A🎨</span><span class="t">🖍</span><span class="t">H</span><span class="t">•</span><span class="t">1.</span><span class="t">☑</span><span class="t">🔗</span>
+    </div>
+    <div class="editor">
+      <p>09:10 - Reviewed the PR for the login fix</p>
+      <p>11:30 - Charted the Work Journal map with <mark>12 decision tickets</mark></p>
+      <p class="serif">Thoughts: the backup folder should be OneDrive.</p>
+      <p class="chk">☑ Send the weekly update &nbsp; ☐ Book the 1:1</p>
+    </div>
+    <div class="cands">
+      <h4><span>Suggestions (3)</span><span>next run 15:00 · <a style="color:var(--accent)">run now</a></span></h4>
+      <div class="cand"><span class="txt">13:42 - Merged the PR for issue “default Issues list to all states”</span><span class="src">GitHub</span><span class="ok">✓</span><span class="no">✕</span></div>
+      <div class="cand"><span class="txt">14:05 - Worked on agent-name terminal titles in maestro</span><span class="src">Claude</span><span class="ok">✓</span><span class="no">✕</span></div>
+      <div class="cand"><span class="txt">14:30 - Design sync on Work Journal</span><span class="src">Granola</span><span class="ok">✓</span><span class="no">✕</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Layout B: own window -->
+<div class="layout" id="b">
+  <div class="window">
+    <div class="wbar">Maestro: Work Journal (separate OS window)</div>
+    <div style="flex:1; display:flex; min-height:0;">
+      <div class="list">
+        <div class="day cur"><div>Wed 14 Oct 2026</div><div class="d">3 suggestions</div></div>
+        <div class="day"><div>Tue 13 Oct 2026</div><div class="d">6 entries</div></div>
+        <div class="day"><div>Mon 12 Oct 2026</div><div class="d">4 entries</div></div>
+        <div class="day wk"><div>Sun 11 Oct 2026</div><div class="d">Weekend</div></div>
+        <div class="day wk"><div>Sat 10 Oct 2026</div><div class="d">Weekend</div></div>
+        <div class="day"><div>Fri 9 Oct 2026</div><div class="d">5 entries</div></div>
+      </div>
+      <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+        <div class="head">
+          <input class="title" value="Wed 14 Oct 2026">
+          <button class="btn">＋ Page</button><button class="btn">🗑</button><button class="btn">Report</button>
+        </div>
+        <div class="toolbar">
+          <select><option>Segoe UI</option><option>Georgia</option></select><select><option>13</option></select>
+          <span class="t"><b>B</b></span><span class="t"><i>I</i></span><span class="t"><u>U</u></span><span class="t">A🎨</span><span class="t">🖍</span><span class="t">☑</span>
+        </div>
+        <div class="editor">
+          <p>09:10 - Reviewed the PR for the login fix</p>
+          <p>11:30 - Charted the Work Journal map with <mark>12 decision tickets</mark></p>
+        </div>
+        <div class="cands">
+          <h4><span>Suggestions (3)</span><span>next run 15:00 · run now</span></h4>
+          <div class="cand"><span class="txt">13:42 - Merged the PR for issue “default Issues list to all states”</span><span class="src">GitHub</span><span class="ok">✓</span><span class="no">✕</span></div>
+          <div class="cand"><span class="txt">14:05 - Worked on agent-name terminal titles in maestro</span><span class="src">Claude</span><span class="ok">✓</span><span class="no">✕</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">The pane icon would open this window instead of a side panel. The terminals stay fully visible in the main window.</div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.switch button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.switch button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.layout').forEach(l => l.classList.toggle('on', l.id === b.dataset.l));
+  });
+</script>
+</body>
+</html>
