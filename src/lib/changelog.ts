@@ -15,6 +15,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "History drops the checkout/worktree/gone filter pills; the search box stays.",
       "Ctrl+T focuses the new terminal's name box; Tab then Enter launches, and focus lands in it.",
       "Issue map: epics column with epic-to-story lines, click-only highlight, zoom and drag.",
+      'Issue map: the "Ready" status is now "Ready to take", so it is not mixed up with agent-ready.',
       "Issue map hides epics and closed issues by default and packs away empty columns.",
     ],
   },

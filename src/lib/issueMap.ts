@@ -34,7 +34,11 @@ export const STATUS_META: Record<IssueMapStatus, IssueMapStatusEntry> = {
     name: "In progress",
     meaning: "somebody has claimed it and is building it now",
   },
-  ready: { icon: "\u{1F7E2}", name: "Ready", meaning: "open, nobody on it, every blocker closed" },
+  ready: {
+    icon: "\u{1F7E2}",
+    name: "Ready to take",
+    meaning: "open, nobody on it, every blocker closed",
+  },
   blocked: {
     icon: "\u{1F512}",
     name: "Blocked",
