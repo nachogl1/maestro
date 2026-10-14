@@ -129,7 +129,3 @@ npm install
 cargo build --release -p maestro-mcp-server
 npm run tauri build
 ```
-
----
-
-Built with Love by Jack
