@@ -4,8 +4,9 @@ Date: 2026-10-14 · Decision map: [Wayfinder map: Work Journal](https://github.c
 
 Every requirement below comes from a closed ticket on that map, a later user
 correction on a ticket, or the map itself. Details a ticket marked as "derived"
-(not asked directly) keep that label here. Two items are proposals the user has
-not confirmed yet; they are marked **Proposal** and listed again at the end.
+(not asked directly) keep that label here. The user's corrections made while
+reviewing this PRD (fonts dropped, Granola entry time, temporary file, source
+tags) are folded in and linked in the Decision trace.
 
 ## Glossary
 
@@ -39,8 +40,8 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
 
 - A Work Journal icon in the right-side pane opens a journal with one page per
   day, created automatically.
-- Word-like editing of each page: per-selection font, size, colour and
-  highlight, plus the basics and checklists.
+- Rich editing of each page: per-selection text colour and highlight, plus the
+  basics and checklists.
 - Claude proposes candidate entries from the user's Maestro activity, on a
   schedule, and the user accepts or rejects each one.
 - Granola meeting notes (free tier) can feed candidates when the user has
@@ -65,6 +66,9 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
   the last 30 days, no transcripts, no folder or search tools. The paid public
   API is not used.
 - Tables and images in pages.
+- **Font changes.** Dropped by the user while reviewing this PRD ("I don't
+  need to modify fonts"): no font-family picker, no font-size picker, no
+  journal-wide default font setting, no curated font list.
 - Edit-before-accept on a candidate. Accepted lines are ordinary page text and
   can be edited in the page afterwards.
 - A preview or edit step for the supervisor report.
@@ -106,27 +110,19 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
 
 ### Editing
 
-- **On selected text:** font family from a curated list of about 8 fonts that
-  exist on both Windows and macOS, font size, text colour, and highlight
-  (background colour).
+- **On selected text:** text colour and highlight (background colour).
 - **Basics:** bold, italic, underline, headings, bullet and numbered lists,
   links.
 - **Checklists:** lists with tick boxes.
-- **Journal-wide default:** a default font and size in settings.
-- **Not included:** tables and images.
+- **Not included:** tables, images, and any font change (family or size). The
+  user dropped fonts while reviewing this PRD; see the Decision trace.
 - **Editor:** TipTap, with its own setup (not the Notes markdown pipeline).
   Checklists come from `@tiptap/extension-list` (`TaskList`, `TaskItem`,
-  already installed). Fonts and colours need `@tiptap/extension-text-style`,
-  a new dependency. The font list is a fixed constant in code; the existing
-  font detection (`src-tauri/src/commands/fonts.rs`) lists terminal monospace
-  fonts only and does not fit.
-- **Proposal (user to confirm): the curated font list.** The ticket left the
-  exact fonts and size steps to the PRD. Proposed list of 8 fonts that ship on
-  both Windows and macOS: Arial, Verdana, Tahoma, Trebuchet MS, Georgia, Times
-  New Roman, Courier New, Comic Sans MS. Default: Arial, until the user
-  changes it in settings.
-- **Proposal (user to confirm): the font size steps.** 10, 11, 12, 13, 14, 16,
-  18, 20, 24, 28 and 32 px, with 14 px as the journal-wide default.
+  already installed). Text colour and highlight need
+  `@tiptap/extension-text-style`, a new dependency; its font-family and
+  font-size parts are not used.
+- Derived (challenge if wrong): text colour is kept because the user's
+  correction named fonts only.
 
 ### Candidates
 
@@ -141,10 +137,14 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
   is adjustable in Maestro Settings.
 - **Where they appear:** in a suggestions box under the page body of the day
   page. The user keeps writing in the page while candidates wait below it.
-- **Each candidate shows:** its text, a source tag (GitHub, Claude, Granola),
-  an Accept icon and a Reject icon. The box also shows "next run · run now".
+- **Each candidate shows:** its text, a source tag, an Accept icon and a Reject
+  icon. The box also shows "next run · run now".
+- **Source tags:** five, one per source: GitHub, Git, Claude, Terminal,
+  Granola.
 - **Accept:** the candidate is added to that day's page as one line in the
   form `time - action`, for example `14:05 - Merged the PR for the login fix`.
+  Granola lines carry no time, because the free tier has none, for example
+  `Meeting - Design sync: agreed the backup plan`.
 - **Reject:** the candidate is removed from the box.
 - **Badge:** the Work Journal pane icon shows a count of waiting candidates.
 - **Model:** the user's own default Claude model, changeable in Settings (user
@@ -162,6 +162,9 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
     memory only, and ids are reassigned each launch. The journal needs a small
     timestamped record of which project and branch had a terminal open, and
     when.
+- **Temporary file (user decision):** pending and rejected candidates and the
+  terminal-session record live in a temporary file that is deleted after a
+  day. They are not part of `work-journal.json` and are not backed up.
   - **Missed hours:** if Maestro was closed, the next run on start covers the
     missed time window, in line with gap-filling for pages.
   - **Headless run:** the run reuses the History-summary pattern, a headless
@@ -190,7 +193,8 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
   `get_meeting_attachment`. Wildcards like `mcp__granola__*` are not used.
 - **What the free tier gives:** meeting id, title, date, attendees, private
   notes and summarised notes, for the last 30 days. There is no start time,
-  end time or duration field.
+  end time or duration field, so Granola candidate lines carry no time (for
+  example `Meeting - Design sync: agreed the backup plan`).
 - **One-time opt-in (privacy).** The first time Maestro finds Granola
   connected, the suggestions box asks: "Use your Granola meeting notes for
   suggestions? Notes are sent to Claude and not stored." The user answers Yes
@@ -202,8 +206,8 @@ not confirmed yet; they are marked **Proposal** and listed again at the end.
 - **Without Granola** the journal works exactly as before.
 - Derived (challenge if wrong):
   - Pending and rejected Granola candidates follow the same rules as all other
-    candidates: kept for same-day duplicate removal only, one line of text,
-    never note excerpts.
+    candidates: kept in the temporary file for same-day duplicate removal
+    only, one line of text, never note excerpts.
   - The opt-in choice is a Work Journal setting stored in the journal file. A
     "No" means the run does not allow the Granola tools at all, rather than
     calling them and ignoring the result.
@@ -236,7 +240,8 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 
 - **One file:** `work-journal.json` in Maestro's app-data folder, next to its
   other JSON files. It holds all pages, the deleted-dates list and journal
-  settings.
+  settings. Pending and rejected candidates and the terminal-session record
+  are not in it; they live in the temporary file described under Candidates.
 - **Safe write:** every save writes a temporary file first and then swaps it
   in, using the existing helper (`src-tauri/src/core/atomic_write.rs`), so a
   crash cannot leave a half-written journal.
@@ -310,7 +315,7 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 
 ## Data model
 
-All of this lives in `work-journal.json`.
+In `work-journal.json` (backed up):
 
 - **Layout version:** a number, for upgrade-or-refuse on load and restore.
 - **Page:** date (unique key), title (defaults from the date), body (TipTap
@@ -320,13 +325,17 @@ All of this lives in `work-journal.json`.
 - **Deleted dates:** dates whose auto page the user removed. They block
   auto-creation only.
 - **Last auto-created date:** where gap-filling starts on the next launch.
-- **Candidates:** one-line text, source tag, the activity time, the date it
-  belongs to, and its state (pending, accepted, rejected). Kept for same-day
-  duplicate removal. Never holds Granola note excerpts.
 - **Journal settings:** see Settings. The Granola opt-in is one of them.
-- Derived (challenge if wrong): the terminal-session capture (project, branch,
-  open and close times) is a new small record kept by Maestro for the
-  candidate run. Its exact home is not decided; see Assumptions to confirm.
+
+In a temporary file, deleted after a day (not backed up):
+
+- **Pending and rejected candidates:** one-line text, source tag, the
+  activity time (none for Granola), the date it belongs to, and its state.
+  Kept for same-day duplicate removal. Never holds Granola note excerpts.
+- **Terminal-session record:** which project and branch had a terminal open,
+  and when (derived detail; the fields are not decided beyond this).
+
+An accepted candidate becomes ordinary page text in `work-journal.json`.
 
 ## Settings
 
@@ -335,7 +344,6 @@ A Work Journal section in Maestro Settings holds:
 - Candidate schedule (default: every hour).
 - Model for candidate runs and reports (default: the user's default Claude
   model).
-- Default font and font size for the journal.
 - Backup folder, "Back up now", last backup time, "Restore from backup",
   "Undo restore".
 - Report folder.
@@ -375,9 +383,9 @@ to their own Claude setup.
   states the Windows token location or confirms reuse from a separate process
   with a temp-dir working directory. This needs a hands-on test with a real
   Granola account during the build, before the Granola path is called done.
-- **Granola free tier has no meeting time field.** Only a date is returned, so
-  a Granola candidate's `time` may have to be approximate or blank. How to
-  show it is not decided.
+- **Granola free tier has no meeting time field.** Only a date is returned.
+  Decided: Granola lines carry no time (`Meeting - ...` instead of
+  `time - action`).
 - **The supervisor report has no preview.** The "facts only from the journal"
   prompt rule is the only guard against overstatement reaching a supervisor.
 - **Hourly runs on a large default model use more of the user's plan
@@ -401,40 +409,31 @@ it appears above.
 2. Candidate time is the activity time; same-day duplicate removal by feeding
    today's page and candidates to the run; the run on start covers missed
    hours; no edit-before-accept.
-3. A new timestamped terminal-session record exists for the candidate run.
-   Where it lives (inside `work-journal.json` or its own file) is not decided.
-4. Candidates are stored in `work-journal.json` (the storage ticket names
-   pages, deleted dates and settings only). What happens to pending candidates
-   of past days is not decided.
-5. Source tags in the mock are GitHub, Claude and Granola; tags for commits
-   and terminal sessions are not decided (assume "Git" and "Terminal").
-6. Granola: opt-in stored in the journal file; "No" blocks the tools entirely;
+3. A new timestamped terminal-session record exists for the candidate run
+   (its home, the temporary file, is decided; its fields are not).
+4. Granola: opt-in stored in the journal file; "No" blocks the tools entirely;
    no note text in logs. `query_granola_meetings` is not allowed because the
    research could not confirm it works on the free plan.
-7. Backup: temp-then-swap backup write; last backup time shown; failures
+5. Backup: temp-then-swap backup write; last backup time shown; failures
    visible.
-8. Restore: button location, browse to any file, single undo copy, never
+6. Restore: button location, browse to any file, single undo copy, never
    automatic, version check on normal load.
-9. Report: facts-only prompt rule, text-only input with empty and "Weekend"
+7. Report: facts-only prompt rule, text-only input with empty and "Weekend"
    pages skipped, user's default model, self-contained HTML, remembered
    folder, "Saved to …" confirmation.
-10. Pane and pop-out window share live data.
-11. `TextStyleKit` from `@tiptap/extension-text-style` covers font family,
-    size, colour and background colour in TipTap v3 (not checked against the
-    installed code).
-
-## Proposals the user must confirm
-
-1. The curated font list: Arial, Verdana, Tahoma, Trebuchet MS, Georgia, Times
-   New Roman, Courier New, Comic Sans MS (default Arial).
-2. The font size steps: 10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32 px (default
-   14 px).
+8. Pane and pop-out window share live data.
+9. Text colour is kept because the user's font correction named fonts
+   (family and size) only.
+10. `@tiptap/extension-text-style` covers text colour and background colour
+    in TipTap v3 (not checked against the installed code).
 
 ## Verification
 
 - Unit tests: gap-filling from the last auto-created date (including weekends,
   deleted dates and midnight rollover); default title format; `time - action`
-  line insertion; layout-version upgrade and refuse; report file naming and
+  line insertion and the time-less `Meeting - ...` form for Granola; the
+  temporary file is deleted after a day and excluded from the backup;
+  layout-version upgrade and refuse; report file naming and
   overwrite; "Weekend"/empty page skipping for the report.
 - Storage tests: temp-then-swap write for the journal and for the backup;
   daily and on-start backup triggers; restore with safety copy and undo.
@@ -448,8 +447,8 @@ it appears above.
   `get_meetings` without a prompt, and that an expired sign-in degrades to
   "Granola off" rather than an error.
 - Live dev build: pane icon and badge; side pane header actions; pop-out
-  window with day list, pane and window in sync; per-selection font, size,
-  colour, highlight and checklists; accept and reject; "Back up now" and
+  window with day list, pane and window in sync; per-selection text colour,
+  highlight and checklists; the five source tags; accept and reject; "Back up now" and
   "Restore from backup"; a report generated to the chosen folder.
 
 ## Decision trace
@@ -467,7 +466,9 @@ Each ticket by title, with what it settled.
 - [Work Journal: rules for day pages (auto-create, delete, weekends, titles)](https://github.com/nachogl1/maestro/issues/287):
   the Day pages section.
 - [Work Journal: editing scope (fonts and formatting) and content storage format](https://github.com/nachogl1/maestro/issues/288):
-  the Editing section and TipTap JSON storage.
+  the Editing section and TipTap JSON storage. Later user correction
+  ([comment "no font changes"](https://github.com/nachogl1/maestro/issues/288#issuecomment-6176035835)):
+  fonts dropped; text colour, highlight and checklists kept.
 - [Work Journal: local storage file and the overwrite-in-place backup](https://github.com/nachogl1/maestro/issues/289):
   the Storage and backup section.
 - [Work Journal: what "learn from the journal to suggest actions" means](https://github.com/nachogl1/maestro/issues/290):
@@ -492,4 +493,9 @@ Each ticket by title, with what it settled.
 - [Work Journal: privacy rules for Granola meeting notes](https://github.com/nachogl1/maestro/issues/301):
   the opt-in and privacy rules in the Granola connector section.
 - [Work Journal: assemble the PRD](https://github.com/nachogl1/maestro/issues/298):
-  this document.
+  this document. The user's review
+  ([comment "gaps settled by the user"](https://github.com/nachogl1/maestro/issues/298#issuecomment-6176036241))
+  settled four gaps: fonts dropped; Granola lines carry no time; pending and
+  rejected candidates and the terminal-session record live in a temporary
+  file deleted after a day, not in `work-journal.json` and not backed up;
+  five source tags (GitHub, Git, Claude, Terminal, Granola).
