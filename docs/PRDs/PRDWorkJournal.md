@@ -3,10 +3,12 @@
 Date: 2026-10-14 · Decision map: [Wayfinder map: Work Journal](https://github.com/nachogl1/maestro/issues/286)
 
 Every requirement below comes from a closed ticket on that map, a later user
-correction on a ticket, or the map itself. Details a ticket marked as "derived"
-(not asked directly) keep that label here. The user's corrections made while
-reviewing this PRD (fonts dropped, Granola entry time, temporary file, source
-tags) are folded in and linked in the Decision trace.
+correction on a ticket, or the map itself. Details first written as "derived"
+were all confirmed by the user on 2026-10-14 in the agent-ready pass (see
+"Splitting into agent-ready issues"), so this PRD holds no open decision. The
+user's corrections made while reviewing this PRD (fonts dropped, temporary
+file, source tags) and the agent-ready pass (schedule, badge, report HTML,
+Granola time) are folded in and linked in the Decision trace.
 
 ## Glossary
 
@@ -97,7 +99,7 @@ tags) are folded in and linked in the Decision trace.
   not by the title.
 - **Manual pages.** The user can create a page for any date, past or future,
   that has no page.
-- Derived (challenge if wrong):
+- Confirmed by the user (2026-10-14):
   - **Midnight while running:** Maestro also creates the new day's page when
     the date changes while it is open.
   - **First run:** the first launch creates only today's page, with no
@@ -106,7 +108,7 @@ tags) are folded in and linked in the Decision trace.
     not from the newest existing page. Otherwise deleting yesterday would make
     it come back.
   - **Title language:** English on every machine, not the system date format.
-    Translating it is not decided.
+    Translation is not part of v1.
 
 ### Editing
 
@@ -121,7 +123,7 @@ tags) are folded in and linked in the Decision trace.
   already installed). Text colour and highlight need
   `@tiptap/extension-text-style`, a new dependency; its font-family and
   font-size parts are not used.
-- Derived (challenge if wrong): text colour is kept because the user's
+- Confirmed by the user (2026-10-14): text colour is kept because the user's
   correction named fonts only.
 
 ### Candidates
@@ -133,8 +135,10 @@ tags) are folded in and linked in the Decision trace.
   3. PRs and issues, through the GitHub CLI (`gh`).
   4. Terminal sessions.
   Granola comes in through the optional connector (see below).
-- **Timing:** every hour by default. The schedule (which hours, or how often)
-  is adjustable in Maestro Settings.
+- **Timing:** one setting, "run every X hours" (default 1), and only while
+  Maestro is open. Nothing runs while Maestro is closed. There is no
+  active-hours window, no weekday filter and no cron expression (user, in the
+  agent-ready pass: "run the job every X hours during maestro open").
 - **Where they appear:** in a suggestions box under the page body of the day
   page. The user keeps writing in the page while candidates wait below it.
 - **Each candidate shows:** its text, a source tag, an Accept icon and a Reject
@@ -143,15 +147,17 @@ tags) are folded in and linked in the Decision trace.
   Granola.
 - **Accept:** the candidate is added to that day's page as one line in the
   form `time - action`, for example `14:05 - Merged the PR for the login fix`.
-  Granola lines carry no time, because the free tier has none, for example
-  `Meeting - Design sync: agreed the backup plan`.
+  Granola lines use the meeting's `meeting_at` time, for example
+  `14:30 - Meeting: Design sync, agreed the backup plan`. If a meeting has no
+  time, the line falls back to `Meeting - Design sync: agreed the backup plan`.
 - **Reject:** the candidate is removed from the box.
-- **Badge:** the Work Journal pane icon shows a count of waiting candidates.
+- **Badge:** the Work Journal pane icon shows the number of pending candidates
+  for today only.
 - **Model:** the user's own default Claude model, changeable in Settings (user
   correction: not Haiku by default). Runs use the user's existing Claude plan,
   so there is no extra bill.
 - **No learning.** The run never sees journal history or past verdicts.
-- Derived (challenge if wrong):
+- Confirmed by the user (2026-10-14):
   - **Time:** the time in `time - action` is when the activity happened, taken
     from transcript, commit or GitHub times, not when the candidate was made.
   - **No repeats within a day:** each run is given today's page text and
@@ -159,19 +165,27 @@ tags) are folded in and linked in the Decision trace.
     the same thing twice. This is same-day duplicate removal only, not the
     learning that was dropped.
   - **Terminal sessions need new capture:** Maestro keeps terminal sessions in
-    memory only, and ids are reassigned each launch. The journal needs a small
-    timestamped record of which project and branch had a terminal open, and
-    when.
+    memory only, and ids are reassigned each launch. The journal keeps a small
+    record per terminal: project name, branch, opened-at and closed-at. Nothing
+    typed in the terminal is stored.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
-  day. They are not part of `work-journal.json` and are not backed up.
-  - **Missed hours:** if Maestro was closed, the next run on start covers the
-    missed time window, in line with gap-filling for pages.
+  day. They are not part of `work-journal.json` and are not backed up. The user
+  confirmed knowingly that unreviewed (pending) candidates are deleted after a
+  day too, even if never seen.
+  - **Catch-up on start:** the first run after Maestro starts covers activity
+    since the last run (for example commits made from another tool while
+    Maestro was closed). Nothing runs while Maestro is closed.
   - **Headless run:** the run reuses the History-summary pattern, a headless
     `claude -p` with no built-in tools, no saved session
     (`--no-session-persistence`), a temp-dir working directory and a timeout
     (`src-tauri/src/commands/session_summary.rs`). It must not use `--bare`,
     because bare mode never reads stored OAuth sign-ins (needed for Granola).
+  - **Override the system prompt:** the user's personal CLAUDE.md leaks into
+    headless runs (seen in the hands-on test; the cause of issue #97). The
+    candidate and report runs must pass their own `--system-prompt`, as History
+    summaries do (`src-tauri/src/commands/session_summary.rs:42`), or reply
+    parsing breaks.
 
 ### Granola connector (optional, free tier)
 
@@ -191,10 +205,20 @@ tags) are folded in and linked in the Decision trace.
   `--permission-mode dontAsk` so every other tool is denied. Never allow
   `sign_out`, `switch_workspace`, `get_meeting_transcript` (paid) or
   `get_meeting_attachment`. Wildcards like `mcp__granola__*` are not used.
-- **What the free tier gives:** meeting id, title, date, attendees, private
-  notes and summarised notes, for the last 30 days. There is no start time,
-  end time or duration field, so Granola candidate lines carry no time (for
-  example `Meeting - Design sync: agreed the backup plan`).
+- **What Granola gives:** meeting id, title, date, attendees, private notes and
+  summarised notes, for the last 30 days on the free tier. The hands-on test
+  (2026-10-14) also saw a `meeting_at` field in `list_meetings`, which the
+  earlier research had not found. Granola lines use it as their time (see
+  Candidates). Whether `meeting_at` is present on the free plan specifically
+  was not confirmed, so the time-less fallback stays.
+- **Proven on Windows (hands-on test, 2026-10-14):** after one interactive
+  `claude mcp login granola`, a separate headless run from the temp folder
+  reused the sign-in with no prompt; `--tools ""` plus `--allowedTools` exposed
+  only the two read tools; `get_meeting_transcript` was denied. Sign-in itself
+  needs a real terminal; it fails with "stdin isn't a terminal" otherwise.
+- **Preflight output format (checked):** `claude mcp list` prints one line per
+  server: `<name>: <target> - ✔ Connected` or
+  `<name>: <target> - ! Needs authentication`.
 - **One-time opt-in (privacy).** The first time Maestro finds Granola
   connected, the suggestions box asks: "Use your Granola meeting notes for
   suggestions? Notes are sent to Claude and not stored." The user answers Yes
@@ -204,7 +228,7 @@ tags) are folded in and linked in the Decision trace.
   No note text is saved anywhere. The only thing kept is the one-line
   candidate Claude writes, under the user's Claude plan's normal data terms.
 - **Without Granola** the journal works exactly as before.
-- Derived (challenge if wrong):
+- Confirmed by the user (2026-10-14):
   - Pending and rejected Granola candidates follow the same rules as all other
     candidates: kept in the temporary file for same-day duplicate removal
     only, one line of text, never note excerpts.
@@ -233,7 +257,7 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   header, toolbar, page and suggestions box.
 - The right pane defaults to 560px and resizes from 340 to 800px
   (`src/components/shared/PanelResizeHandle.tsx`).
-- Derived (challenge if wrong): pane and window show the same live data, so an
+- Confirmed by the user (2026-10-14): pane and window show the same live data, so an
   edit or an accept in one shows up in the other.
 
 ### Storage and backup
@@ -255,7 +279,7 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   last backup is more than a day old. Plus a "Back up now" button.
 - **No OS scheduler.** The file only changes while Maestro runs, and Maestro
   must work the same on every OS it ships to.
-- Derived (challenge if wrong):
+- Confirmed by the user (2026-10-14):
   - The backup copy uses the same temp-then-swap write, so a sync client never
     uploads a half-written file.
   - Maestro records the last successful backup time and shows it next to the
@@ -270,7 +294,7 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 - **Version handling.** A backup from an older Maestro is upgraded
   automatically on restore. One from a newer Maestro is refused with "update
   Maestro first", changing nothing.
-- Derived (challenge if wrong):
+- Confirmed by the user (2026-10-14):
   - The "Restore from backup" button lives in Work Journal settings, next to
     the backup folder and "Back up now".
   - The default file is the backup in the configured folder; the user can also
@@ -294,7 +318,11 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 - **File naming:** one file per range, named after its dates, for example
   `work-report_2026-10-05_to_2026-10-16.html`. Regenerating the same range
   overwrites that file; a different range makes a new file.
-- Derived (challenge if wrong):
+- Confirmed by the user (2026-10-14):
+  - **How the HTML is made:** Claude returns the summary as plain text
+    sections; Maestro inserts them into one fixed, self-contained HTML
+    template. Claude never writes markup, so every report looks the same and
+    no script or broken markup can reach the file.
   - **Facts only from the journal:** the prompt tells Claude to state only what
     is written in the journal pages for that range. It may choose and frame
     what to emphasise, but must never invent or inflate results. With no
@@ -332,8 +360,8 @@ In a temporary file, deleted after a day (not backed up):
 - **Pending and rejected candidates:** one-line text, source tag, the
   activity time (none for Granola), the date it belongs to, and its state.
   Kept for same-day duplicate removal. Never holds Granola note excerpts.
-- **Terminal-session record:** which project and branch had a terminal open,
-  and when (derived detail; the fields are not decided beyond this).
+- **Terminal-session record:** per terminal, project name, branch, opened-at
+  and closed-at. Nothing typed in the terminal is stored.
 
 An accepted candidate becomes ordinary page text in `work-journal.json`.
 
@@ -341,7 +369,7 @@ An accepted candidate becomes ordinary page text in `work-journal.json`.
 
 A Work Journal section in Maestro Settings holds:
 
-- Candidate schedule (default: every hour).
+- Candidate schedule: "run every X hours" while Maestro is open (default 1).
 - Model for candidate runs and reports (default: the user's default Claude
   model).
 - Backup folder, "Back up now", last backup time, "Restore from backup",
@@ -378,14 +406,11 @@ to their own Claude setup.
 
 ## Known risks
 
-- **Granola sign-in reuse by headless runs is unproven on Windows.** The docs
-  say stored sign-ins are reused and a headless run cannot sign in, but no doc
-  states the Windows token location or confirms reuse from a separate process
-  with a temp-dir working directory. This needs a hands-on test with a real
-  Granola account during the build, before the Granola path is called done.
-- **Granola free tier has no meeting time field.** Only a date is returned.
-  Decided: Granola lines carry no time (`Meeting - ...` instead of
-  `time - action`).
+- **Granola on macOS is untested (known gap, accepted by the user).** Windows
+  was proven hands-on on 2026-10-14. On macOS, a failed preflight still falls
+  back to "Granola off", so the journal keeps working without Granola.
+- **`meeting_at` on the free plan is unconfirmed.** Lines fall back to
+  `Meeting - ...` when it is missing.
 - **The supervisor report has no preview.** The "facts only from the journal"
   prompt rule is the only guard against overstatement reaching a supervisor.
 - **Hourly runs on a large default model use more of the user's plan
@@ -399,33 +424,28 @@ to their own Claude setup.
 - **Transcript retention** is outside this repo; how long Claude keeps
   `~/.claude/projects` transcripts was not verified.
 
-## Assumptions to confirm
+## Confirmed defaults (formerly "Assumptions to confirm")
 
-Items the user did not choose explicitly. Each is also marked "derived" where
-it appears above.
+Every item that was once an assumption was confirmed by the user on
+2026-10-14, or checked against code:
 
-1. Midnight page creation while running, no back-fill on first run, gap-fill
-   anchored on the last auto-created date, English title on every machine.
-2. Candidate time is the activity time; same-day duplicate removal by feeding
-   today's page and candidates to the run; the run on start covers missed
-   hours; no edit-before-accept.
-3. A new timestamped terminal-session record exists for the candidate run
-   (its home, the temporary file, is decided; its fields are not).
-4. Granola: opt-in stored in the journal file; "No" blocks the tools entirely;
-   no note text in logs. `query_granola_meetings` is not allowed because the
-   research could not confirm it works on the free plan.
-5. Backup: temp-then-swap backup write; last backup time shown; failures
-   visible.
-6. Restore: button location, browse to any file, single undo copy, never
-   automatic, version check on normal load.
-7. Report: facts-only prompt rule, text-only input with empty and "Weekend"
-   pages skipped, user's default model, self-contained HTML, remembered
-   folder, "Saved to …" confirmation.
-8. Pane and pop-out window share live data.
-9. Text colour is kept because the user's font correction named fonts
-   (family and size) only.
-10. `@tiptap/extension-text-style` covers text colour and background colour
-    in TipTap v3 (not checked against the installed code).
+1. Day pages: midnight creation while running, no back-fill on first run,
+   gap-fill anchored on the last auto-created date, English titles. Confirmed.
+2. Candidates: activity time on each line; same-day duplicate removal by
+   feeding today's page and today's candidates; no edit-before-accept;
+   catch-up on start. Confirmed.
+3. Terminal record fields: project name, branch, opened-at, closed-at.
+   Confirmed.
+4. Granola: opt-in stored in the journal file; "No" never calls Granola; no
+   note text in logs; `query_granola_meetings` not used. Confirmed.
+5. Backup and restore details (safe backup write, last backup time and visible
+   errors, restore location, browse to any file, one undo copy, never
+   automatic, version check on load). Confirmed.
+6. Report details (facts only, skip empty and "Weekend" pages, default model,
+   remembered folder, "Saved to …"); pane and window in live sync; text colour
+   and highlight kept. Confirmed.
+7. `@tiptap/extension-text-style@3.29.2` exports `Color` and `BackgroundColor`.
+   Checked against the published package.
 
 ## Verification
 
@@ -441,15 +461,65 @@ it appears above.
   `--no-session-persistence`, timeout, `--permission-mode dontAsk`, only the
   two Granola read tools when opted in, nothing Granola-related when not);
   "Granola off" handling of a non-Connected `claude mcp list` line.
-- Hands-on test (owed during the build, on Windows and macOS): sign in to
-  Granola once interactively, then confirm a Maestro-started `claude -p` run
-  from a temp-dir working directory can call `list_meetings` and
-  `get_meetings` without a prompt, and that an expired sign-in degrades to
-  "Granola off" rather than an error.
-- Live dev build: pane icon and badge; side pane header actions; pop-out
+- Hands-on Granola test: done on Windows on 2026-10-14 (passed; see the
+  Granola connector section). macOS is a known, accepted gap. The build still
+  checks that an expired sign-in degrades to "Granola off" rather than an
+  error (unit test against a `! Needs authentication` line).
+- Live dev build (a devtest Maestro instance an agent can run): pane icon and badge; side pane header actions; pop-out
   window with day list, pane and window in sync; per-selection text colour,
   highlight and checklists; the five source tags; accept and reject; "Back up now" and
   "Restore from backup"; a report generated to the chosen folder.
+
+## Splitting into agent-ready issues
+
+The build is split into GitHub issues that an agent can finish alone, with no
+human decision. This PRD holds no open decision; if an agent still meets one,
+it stops (see "Done means" in the template).
+
+**Split rules:**
+
+- One outcome per issue, sized for one agent session.
+- Keep the files two issues touch apart, so issues can run in parallel; where
+  they must share, add an explicit blocking edge.
+- Every issue gets the labels `agent-ready`, `enhancement` and `work-journal`,
+  and is a sub-issue of one Work Journal epic.
+- Blocking uses GitHub's native dependency plus a `### Blocked by` section in
+  the body (the convention the issue map reads).
+- No human-only issues are needed: the Granola hands-on test is done on
+  Windows, and macOS is an accepted known gap.
+
+**Issue template (agreed with the user on 2026-10-14):**
+
+```markdown
+Title: feat(work-journal): <one outcome>
+Labels: agent-ready, enhancement, work-journal
+
+## Outcome
+What is true when this is done (1-3 lines).
+
+## Context
+- PRD section: <link to docs/PRDs/PRDWorkJournal.md#...>
+- Files to touch: <path:line> (verified)
+- Existing pattern to copy: <path>
+
+## Out of scope
+What this issue must NOT do (handled by <issue title>).
+
+## Acceptance
+- Given/When/Then lines
+- Unit tests named
+- Live dev-build check (devtest instance)
+
+### Blocked by
+- <issue title + link>
+
+## Done means
+Tests + biome + clippy green, changelog line added, PR to main.
+If a human decision turns up: stop, comment the question,
+add needs-human-decision, remove agent-ready.
+
+Part of <epic title + link>
+```
 
 ## Decision trace
 
@@ -495,7 +565,13 @@ Each ticket by title, with what it settled.
 - [Work Journal: assemble the PRD](https://github.com/nachogl1/maestro/issues/298):
   this document. The user's review
   ([comment "gaps settled by the user"](https://github.com/nachogl1/maestro/issues/298#issuecomment-6176036241))
-  settled four gaps: fonts dropped; Granola lines carry no time; pending and
+  settled four gaps: fonts dropped; Granola lines carry no time (later reversed by the agent-ready pass); pending and
   rejected candidates and the terminal-session record live in a temporary
   file deleted after a day, not in `work-journal.json` and not backed up;
   five source tags (GitHub, Git, Claude, Terminal, Granola).
+- Agent-ready pass (2026-10-14, after this PRD merged): the user settled the
+  schedule ("run every X hours" while open), the today-only badge, report HTML
+  from a fixed template, terminal record fields and catch-up on start, and
+  confirmed every former assumption. A hands-on Granola test on Windows passed
+  and found a `meeting_at` field, so Granola lines now carry a time
+  ([test result](https://github.com/nachogl1/maestro/issues/300#issuecomment-6176493291)).
