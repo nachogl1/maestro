@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for Maestro",
-  "windows": ["main"],
+  "windows": ["main", "issue-map"],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -18,6 +18,9 @@
     "updater:default",
     "cli:default",
     "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-destroy",
+    "core:webview:allow-create-webview-window",
     "notification:default"
   ]
 }

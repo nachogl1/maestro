@@ -213,7 +213,7 @@ function AssignSection({ node, repoAssignees, setAssignees }: AssignSectionProps
 }
 
 /**
- * Full-screen map of what is blocked by what, level by level: columns are
+ * Map of what is blocked by what, level by level, filling its own window: columns are
  * levels, the background of a box is who takes it, its icon is the progress,
  * a cross means closed, and every line runs from a blocker to the issue that
  * waits for it.
@@ -399,8 +399,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
 
   const place = (ev: React.MouseEvent) => setTipAt({ x: ev.clientX, y: ev.clientY });
 
-  // Esc backs out one level: unpin, else close the modal. Capture phase,
-  // because a terminal underneath still holds DOM focus.
+  // Esc backs out one level: unpin, else close the map window.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -689,12 +688,8 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   const issueCount = map.nodes.length - epicCount;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div
-        role="dialog"
-        aria-label="Issue map"
-        className="flex h-[94vh] w-[96vw] flex-col overflow-hidden rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
-      >
+    <div className="fixed inset-0 flex bg-maestro-bg">
+      <main aria-label="Issue map" className="flex h-full w-full flex-col overflow-hidden">
         {/* Header */}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-maestro-border px-3">
           <h2 className="text-sm font-semibold text-maestro-text">
@@ -934,7 +929,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             </details>
           )}
         </footer>
-      </div>
+      </main>
 
       {/* Tooltip */}
       {focusNode && !tipHidden && (
@@ -1059,10 +1054,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             </button>
             <button
               type="button"
-              onClick={() => {
-                onSelectIssue(focusNode.number);
-                onClose();
-              }}
+              onClick={() => onSelectIssue(focusNode.number)}
               className={toolbarButton}
             >
               Show in sidebar

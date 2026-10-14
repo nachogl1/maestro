@@ -16,7 +16,7 @@ const QUICK_CHIPS: Array<{ key: string; label: string; clause: string }> = [
 
 interface IssueFiltersProps {
   repoPath: string;
-  /** Open the full-screen issue map. */
+  /** Open the issue map in its own window. */
   onOpenMap: () => void;
 }
 

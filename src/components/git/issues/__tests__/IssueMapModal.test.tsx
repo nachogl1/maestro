@@ -444,12 +444,12 @@ describe("IssueMapModal", () => {
     expect(openUrl).toHaveBeenCalledWith("https://github.com/o/r/issues/3");
   });
 
-  it("'Show in sidebar' selects the issue and closes the modal", async () => {
+  it("'Show in sidebar' selects the issue and keeps the map window open", async () => {
     const { onSelectIssue, onClose } = renderModal();
     fireEvent.click(await screen.findByTestId("issue-node-3"), { clientX: 5, clientY: 5 });
     fireEvent.click(screen.getByRole("button", { name: "Show in sidebar" }));
     expect(onSelectIssue).toHaveBeenCalledWith(3);
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("pinned tooltip assigns and unassigns through the backend", async () => {

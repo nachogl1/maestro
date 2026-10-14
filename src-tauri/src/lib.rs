@@ -180,6 +180,19 @@ pub fn run() {
             // Alt+F4, and taskbar close; with zero terminals the window
             // closes silently. (The macOS app-menu Quit item bypasses
             // CloseRequested entirely — known gap.)
+            // Only the main window quits the app; secondary windows (the
+            // issue map) close silently and go away with the main one.
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::Destroyed = event {
+                for (label, other) in window.app_handle().webview_windows() {
+                    if label != "main" {
+                        let _ = other.destroy();
+                    }
+                }
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let count = window.state::<ProcessManager>().session_count();
                 if count == 0 {

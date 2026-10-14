@@ -16,6 +16,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Ctrl+T focuses the new terminal's name box; Tab then Enter launches, and focus lands in it.",
       "Issue map: epics column with epic-to-story lines, click-only highlight, zoom and drag.",
       "Issue map hides epics and closed issues by default and packs away empty columns.",
+      "Issue map opens in its own window, so it never hides behind views and can sit on a second screen.",
     ],
   },
   {
