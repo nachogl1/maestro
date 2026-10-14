@@ -238,9 +238,11 @@ interface GitHubState {
  * Clearing the search box still shows everything.
  * PRs default to empty (= all open PRs): the PR tab is a monitoring tower
  * over the whole repo, not just the current user's own PRs.
+ * Issues default to every issue (any state, any assignee) for the same reason.
  */
 const DEFAULT_PR_SEARCH = "";
-const DEFAULT_ISSUE_SEARCH = "assignee:@me";
+const DEFAULT_ISSUE_SEARCH = "";
+const DEFAULT_ISSUE_FILTER: IssueFilterState = "all";
 
 /**
  * Late-response guard: each fetch slot records the id of its newest request,
@@ -271,7 +273,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
   selectedPR: null,
   isLoadingPRDetail: false,
   issues: [],
-  issueFilter: "open",
+  issueFilter: DEFAULT_ISSUE_FILTER,
   issueSearch: DEFAULT_ISSUE_SEARCH,
   isIssuesLoading: false,
   issuesError: null,
@@ -536,7 +538,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
       selectedPR: null,
       isLoadingPRDetail: false,
       issues: [],
-      issueFilter: "open",
+      issueFilter: DEFAULT_ISSUE_FILTER,
       issueSearch: DEFAULT_ISSUE_SEARCH,
       isIssuesLoading: false,
       issuesError: null,

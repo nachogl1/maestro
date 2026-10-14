@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-14",
     title: "Readable History, keyboard terminals, richer issue map, agent names",
     items: [
+      "The Git pane's Issues list now shows all issues by default, not just ones assigned to you.",
       "A Claude terminal's title is its agent name; renaming the title renames the agent.",
       "History rows show each session's agent name, and the search box finds rows by it.",
       "History rows show the session's name and a two-sentence AI summary instead of raw prompts.",
