@@ -123,8 +123,8 @@ function classifyConversationKind(
 }
 
 /**
- * Case-insensitive substring match for the search box: the session name and
- * AI summary shown on the row, the prompt previews, the directory (full path
+ * Case-insensitive substring match for the search box: the agent name, the
+ * session name and AI summary shown on the row, the prompt previews, the directory (full path
  * and basename), the git branch, and the session id — everything a user might
  * recognise a conversation by.
  */
@@ -134,6 +134,7 @@ function matchesSearch(
   aiLabel: SessionSummaryEntry | undefined,
 ): boolean {
   const haystacks = [
+    conv.agent_name,
     conv.title,
     aiLabel?.name,
     aiLabel?.summary,

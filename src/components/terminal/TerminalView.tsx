@@ -11,6 +11,7 @@ import { AgentGraph } from "@/components/session/AgentGraph";
 import { useBranchPullRequest } from "@/hooks/useBranchPullRequest";
 import { useSessionBranch } from "@/hooks/useSessionBranch";
 import { useXtermSession } from "@/hooks/useXtermSession";
+import { renameAgent, sanitizeAgentName } from "@/lib/agentName";
 import { buildFontFamily } from "@/lib/fonts";
 import { isGitWorktree } from "@/lib/git";
 import { describeSessionContext } from "@/lib/sessionContext";
@@ -327,9 +328,26 @@ export const TerminalView = memo(function TerminalView({
     [onKill],
   );
 
-  const handleRename = useCallback((id: number, name: string | null) => {
-    useSessionStore.getState().renameSession(id, name);
-  }, []);
+  // A Claude terminal's title IS its agent name (the name other agents
+  // message it by): a title edit becomes a valid agent name and is also
+  // typed into the agent as `/rename`. Agent names cannot be cleared, so an
+  // emptied title keeps the current name. Other CLIs keep free-text titles.
+  const isClaudeSession = sessionData?.mode === "Claude";
+  const handleRename = useCallback(
+    (id: number, name: string | null) => {
+      if (!isClaudeSession) {
+        useSessionStore.getState().renameSession(id, name);
+        return;
+      }
+      const agentName = name ? sanitizeAgentName(name) : null;
+      if (!agentName) return;
+      useSessionStore.getState().renameSession(id, agentName);
+      renameAgent(id, agentName).catch((err) => {
+        console.error("Failed to rename agent:", err);
+      });
+    },
+    [isClaudeSession],
+  );
 
   /**
    * Handles quick action button clicks: pastes the prompt into the agent's

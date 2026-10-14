@@ -15,6 +15,8 @@ interface HistoryConversationLabelProps {
  * name. Mounting asks for the summary, so only rows on screen cost a model
  * call. When the summary cannot be made, the first prompt stands in for the
  * name so the row stays recognisable, and the reason sits in the hover.
+ * The agent name the session answered to (`--name` / `/rename`) leads the
+ * name line, so a row can be matched to the terminal title it had.
  */
 export function HistoryConversationLabel({ conv, compact = false }: HistoryConversationLabelProps) {
   const entry = useSessionSummaryStore((s) => s.entries[conv.session_id]);
@@ -32,13 +34,26 @@ export function HistoryConversationLabel({ conv, compact = false }: HistoryConve
     (failed ? conv.first_prompt?.trim() : null) ||
     (entry?.status === "loading" ? "Naming session…" : "Untitled session");
 
+  const agentName = conv.agent_name?.trim();
+  const agentBadge = agentName ? (
+    <span className="mr-1 font-mono text-maestro-accent" title="Agent name">
+      @{agentName}
+    </span>
+  ) : null;
+
   if (compact) {
-    return <span className="truncate text-[10px] text-maestro-text">{name}</span>;
+    return (
+      <span className="truncate text-[10px] text-maestro-text">
+        {agentBadge}
+        {name}
+      </span>
+    );
   }
 
   return (
     <>
       <span className="line-clamp-1 block text-[11px] font-semibold leading-snug text-maestro-text">
+        {agentBadge}
         {name}
       </span>
       {entry?.status === "ready" ? (
