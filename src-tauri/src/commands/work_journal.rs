@@ -510,9 +510,10 @@ fn save_attempt(path: &Path, last_attempt_at: String) -> WorkJournalResult<WorkJ
 
 /// Runs the Work Journal candidate run over every project Maestro knows
 /// (see [`plan_run_projects`]; `projects` are the open tabs' repo paths): the
-/// activity since `last_run_at` (or one interval back) becomes pending
-/// candidates, one headless `claude` call per date that has activity (with
-/// Granola on, per date of the window, see [`work_journal_run`]). Saves
+/// activity since `last_run_at` (never run: since local midnight today)
+/// becomes pending candidates, one headless `claude` call per date that has
+/// activity (with Granola on, per date of the window, see
+/// [`work_journal_run`]). Saves
 /// `last_run_at` and emits [`work_journal_run::CANDIDATES_EVENT`] when
 /// candidates were added. Only one run at a time; a second request while one
 /// runs gets `Busy`. The covered projects are saved for later runs. With no

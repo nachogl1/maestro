@@ -343,32 +343,61 @@ pub fn effective_run_every_hours(setting: Option<u32>) -> u32 {
 /// The run's half-open UTC window `[start, end)`. `end` is `now` (whole
 /// seconds, so the next window starts exactly where this one ended). `start`
 /// is `last_run_at` when it parses and is not after `now` (equal = an empty
-/// window: nothing to do), else (missing, unparsable, or in the future after
-/// a clock change) one run interval back; never more than
-/// [`MAX_CATCH_UP_DAYS`] back.
+/// window: nothing to do); when there is no `last_run_at` (never run) it is
+/// local midnight of today, so the first run covers the whole day so far;
+/// when it is unparsable or in the future (a clock change) it is one run
+/// interval back; never more than [`MAX_CATCH_UP_DAYS`] back.
 pub fn run_window(
     last_run_at: Option<&str>,
     run_every_hours: Option<u32>,
     now: DateTime<Utc>,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
+    run_window_in(&Local, last_run_at, run_every_hours, now)
+}
+
+/// [`run_window`] with today's midnight taken in `tz`.
+fn run_window_in<Tz: TimeZone>(
+    tz: &Tz,
+    last_run_at: Option<&str>,
+    run_every_hours: Option<u32>,
+    now: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
     let end = now.trunc_subsecs(0);
-    let start = uncapped_start(last_run_at, run_every_hours, end);
+    let start = uncapped_start(tz, last_run_at, run_every_hours, end);
     (start.max(end - TimeDelta::days(MAX_CATCH_UP_DAYS)), end)
 }
 
 /// [`run_window`]'s start before the [`MAX_CATCH_UP_DAYS`] cap, for a
-/// window ending at `end`.
-fn uncapped_start(
+/// window ending at `end`, with today's midnight taken in `tz`.
+fn uncapped_start<Tz: TimeZone>(
+    tz: &Tz,
     last_run_at: Option<&str>,
     run_every_hours: Option<u32>,
     end: DateTime<Utc>,
 ) -> DateTime<Utc> {
     let interval = TimeDelta::hours(i64::from(effective_run_every_hours(run_every_hours)));
-    last_run_at
-        .and_then(|at| DateTime::parse_from_rfc3339(at.trim()).ok())
+    let Some(last_run_at) = last_run_at else {
+        return local_midnight(tz, end).unwrap_or(end - interval);
+    };
+    DateTime::parse_from_rfc3339(last_run_at.trim())
+        .ok()
         .map(|at| at.with_timezone(&Utc))
         .filter(|at| *at <= end)
         .unwrap_or(end - interval)
+}
+
+/// The start of `at`'s calendar day in `tz`, in UTC. Where a clock change
+/// skips midnight, the first hour after it. `None` if neither exists.
+fn local_midnight<Tz: TimeZone>(tz: &Tz, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let midnight = at.with_timezone(tz).date_naive().and_hms_opt(0, 0, 0)?;
+    tz.from_local_datetime(&midnight)
+        .earliest()
+        .or_else(|| {
+            tz.from_local_datetime(&(midnight + TimeDelta::hours(1)))
+                .earliest()
+        })
+        .map(|start| start.with_timezone(&Utc))
+        .filter(|start| *start <= at)
 }
 
 /// Where the window of [`run_window`] would have started without the
@@ -379,7 +408,7 @@ pub fn catch_up_truncated_from(
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
     let (start, end) = run_window(last_run_at, run_every_hours, now);
-    let wanted = uncapped_start(last_run_at, run_every_hours, end);
+    let wanted = uncapped_start(&Local, last_run_at, run_every_hours, end);
     (wanted < start).then_some(wanted)
 }
 
@@ -1237,14 +1266,38 @@ mod tests {
     // --- run_window ---
 
     #[test]
-    fn test_run_window_without_last_run_covers_one_interval() {
+    fn test_run_window_without_last_run_starts_at_local_midnight() {
+        // 12:00 UTC is 14:00 at UTC+2: the day began at 22:00 UTC the day before.
+        let plus_two = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let midnight = Utc.with_ymd_and_hms(2026, 10, 14, 22, 0, 0).unwrap();
         assert_eq!(
-            run_window(None, None, now()),
-            (now() - TimeDelta::hours(1), now())
+            run_window_in(&plus_two, None, None, now()),
+            (midnight, now())
         );
         assert_eq!(
-            run_window(None, Some(3), now()),
-            (now() - TimeDelta::hours(3), now())
+            run_window_in(&plus_two, None, Some(24), now()),
+            (midnight, now())
+        );
+        // 12:00 UTC is 07:00 at UTC-5: the day began at 05:00 UTC.
+        let minus_five = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(
+            run_window_in(&minus_five, None, None, now()),
+            (Utc.with_ymd_and_hms(2026, 10, 15, 5, 0, 0).unwrap(), now())
+        );
+        assert_eq!(
+            run_window_in(&Utc, None, Some(3), now()).0,
+            now() - TimeDelta::hours(12)
+        );
+    }
+
+    #[test]
+    fn test_run_window_without_last_run_uses_the_local_day_on_a_clock_change() {
+        // 2026-10-25 12:00 UTC is 12:00 in UkLike (winter, +00:00), whose
+        // midnight that day was still summer time (+01:00): 23:00 UTC before.
+        let noon = Utc.with_ymd_and_hms(2026, 10, 25, 12, 0, 0).unwrap();
+        assert_eq!(
+            run_window_in(&UkLike, None, None, noon).0,
+            Utc.with_ymd_and_hms(2026, 10, 24, 23, 0, 0).unwrap()
         );
     }
 
@@ -2709,7 +2762,8 @@ mod tests {
         let fake = Fake::default();
         let report = run_with(&fake, &journal_with(None, Some("a b")), &[], now()).await;
         assert!(report.error.is_some());
-        assert_eq!(report.covered_until, now() - TimeDelta::hours(1));
+        // Never run: the window starts at local midnight today.
+        assert_eq!(report.covered_until, run_window(None, None, now()).0);
         assert!(fake.windows.lock().unwrap().is_empty());
     }
 
@@ -2797,9 +2851,11 @@ mod tests {
         assert_eq!(asked.len(), 1, "a date without other activity still runs");
         assert_eq!(asked[0].0, claude_args(None, Some(GRANOLA_URL)).unwrap());
         assert!(asked[0].1.starts_with(&format!("Date: {today}")));
-        assert!(asked[0]
-            .1
-            .ends_with(&granola_input(&today, now() - TimeDelta::hours(1), now())));
+        assert!(asked[0].1.ends_with(&granola_input(
+            &today,
+            run_window(None, None, now()).0,
+            now()
+        )));
         assert_eq!(*fake.asked_granola.lock().unwrap(), vec![true]);
         let added = fake.added.lock().unwrap();
         assert_eq!(added[0].time.as_deref(), Some("14:30"));
