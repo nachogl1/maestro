@@ -114,8 +114,8 @@ pub enum WorkJournalError {
     Write(String),
     /// A page or candidate write arrived while a restore or undo replaces the
     /// journal (or began before one): it belongs to the replaced journal. The
-    /// frontend matches this exact text and drops the write quietly.
-    #[error("The Work Journal is being restored; this change was not saved.")]
+    /// frontend matches the `RESTORE_IN_PROGRESS:` code at the start.
+    #[error("RESTORE_IN_PROGRESS: The Work Journal is being restored; this change was not saved.")]
     RestoreInProgress,
 }
 

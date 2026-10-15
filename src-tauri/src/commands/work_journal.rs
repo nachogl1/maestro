@@ -85,8 +85,8 @@ fn notify_replacing(window: &WebviewWindow, active: bool) {
 /// safety copy. A save arriving later is refused, never written over.
 const REPLACE_GRACE: Duration = Duration::from_millis(300);
 
-/// Restores and undos running now; page and candidate writes are refused
-/// while it is above zero.
+/// Restores and undos running now; page writes are refused while it is
+/// above zero.
 static REPLACES_RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 /// Bumped when a restore or undo starts. A write that began before it and
@@ -650,7 +650,6 @@ pub async fn reject_work_journal_candidate(
     window: WebviewWindow,
     id: String,
 ) -> Result<Candidate, String> {
-    refuse_while_replacing(replace_generation()).map_err(|e| e.to_string())?;
     let candidate = work_journal_activity::set_candidate_state(
         &work_journal_activity::activity_dir(),
         &id,
@@ -681,7 +680,6 @@ pub async fn accept_work_journal_candidate(
     window: WebviewWindow,
     id: String,
 ) -> Result<Option<Candidate>, String> {
-    refuse_while_replacing(replace_generation()).map_err(|e| e.to_string())?;
     let removed = removed_or_gone(
         work_journal_activity::remove_candidate(&work_journal_activity::activity_dir(), &id).await,
     )
@@ -1014,10 +1012,10 @@ mod tests {
 
         update(replace_generation()).unwrap();
         assert_eq!(title(), "Old text");
-        assert_eq!(
-            WorkJournalError::RestoreInProgress.to_string(),
-            "The Work Journal is being restored; this change was not saved."
-        );
+        // The frontend matches this code (`WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE`).
+        assert!(WorkJournalError::RestoreInProgress
+            .to_string()
+            .starts_with("RESTORE_IN_PROGRESS: "));
     }
 
     #[test]

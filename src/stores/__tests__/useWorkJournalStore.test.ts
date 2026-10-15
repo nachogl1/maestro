@@ -7,7 +7,7 @@ import {
   retryWorkJournalSaves,
   useWorkJournalStore,
   WEEKEND_PAGE_BODY,
-  WORK_JOURNAL_RESTORE_IN_PROGRESS_ERROR,
+  WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE,
   WORK_JOURNAL_SAVE_RETRY_DELAYS_MS,
   type WorkJournalFile,
   type WorkJournalPage,
@@ -483,36 +483,70 @@ describe("useWorkJournalStore failed-save retries", () => {
     return answer;
   }
 
-  it("a save attempted while the replacing event is active is dropped and not retried", async () => {
+  /** The backend refuses page saves, as while a restore runs. */
+  let restoring = false;
+
+  /** Reads the journal, then a body save is refused because a restore runs. */
+  async function refusedSave(text: string): Promise<void> {
     await useWorkJournalStore.getState().load();
-    // The backend refuses it: a restore started in the other window is running.
     const backend = invokeMock.getMockImplementation();
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) =>
-      cmd === "update_work_journal_page"
-        ? Promise.reject(WORK_JOURNAL_RESTORE_IN_PROGRESS_ERROR)
+      cmd === "update_work_journal_page" && restoring
+        ? Promise.reject(`${WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE} The Work Journal is being restored`)
         : backend?.(cmd, args),
     );
-    expect(await useWorkJournalStore.getState().updatePage(DATE, { body: body("old") })).toBe(
-      false,
-    );
+    failing = false;
+    restoring = true;
+    // This window has not heard of the restore yet: the backend refuses it.
+    expect(await useWorkJournalStore.getState().updatePage(DATE, { body: body(text) })).toBe(false);
+    // Then the replacing event arrives.
+    useWorkJournalStore.setState({ replacing: true });
+  }
+
+  it("a save attempted while the replacing event is active is dropped and not retried", async () => {
+    await refusedSave("old");
     expect(useWorkJournalStore.getState().error).toBeNull();
     expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
 
-    // The replacing event froze this window: later saves never reach the backend.
-    await useWorkJournalStore.getState().beginReplace();
+    // Frozen: later saves never reach the backend, and nothing is retried.
     expect(await useWorkJournalStore.getState().updatePage(DATE, { body: body("older") })).toBe(
       false,
     );
     await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[1] * 3);
     expect(saves()).toHaveLength(1);
 
-    // The restored journal read back ends the freeze.
+    // The restored journal read back ends the freeze and drops the old text.
     disk.pages[DATE].body = body("restored");
     await useWorkJournalStore.getState().sync(true);
     const state = useWorkJournalStore.getState();
     expect(state.replacing).toBe(false);
     expect(state.revision).toBe(1);
     expect(state.pages[DATE].body).toEqual(body("restored"));
+    await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[1] * 3);
+    expect(saves()).toHaveLength(1);
+  });
+
+  it("text a restore refused is saved when the restore fails", async () => {
+    await refusedSave("typed during the restore");
+    restoring = false;
+    useWorkJournalStore.getState().endReplace();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(saves()).toHaveLength(2);
+    expect(disk.pages[DATE].body).toEqual(body("typed during the restore"));
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+  });
+
+  it("an unreadable restored journal unfreezes the window without the old pages", async () => {
+    await useWorkJournalStore.getState().load();
+    invokeMock.mockImplementation(async () => Promise.reject("disk gone"));
+    useWorkJournalStore.setState({ replacing: true });
+
+    await useWorkJournalStore.getState().sync(true);
+    const state = useWorkJournalStore.getState();
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "load_work_journal")).toHaveLength(3);
+    expect(state.replacing).toBe(false);
+    expect(state.pages).toEqual({});
+    expect(state.error).toContain("could not be read");
   });
 
   it("a sync reply that started before a restore is dropped", async () => {

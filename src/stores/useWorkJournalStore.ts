@@ -92,7 +92,10 @@ interface WorkJournalState {
    * queued saves have landed.
    */
   beginReplace: () => Promise<void>;
-  /** Ends a restore or undo that failed: clears `replacing`; the journal is unchanged. */
+  /**
+   * Ends a restore or undo that failed: clears `replacing` (the journal is
+   * unchanged) and sends text whose save the restore refused.
+   */
   endReplace: () => void;
   /**
    * Shows a journal that replaced the whole file (restore or undo); bumps
@@ -100,6 +103,15 @@ interface WorkJournalState {
    */
   replaceJournal: (journal: WorkJournalFile) => void;
 }
+
+/** A journal with no pages. */
+const EMPTY_JOURNAL: WorkJournalFile = {
+  layout_version: 1,
+  pages: {},
+  deleted_dates: [],
+  last_auto_created_date: null,
+  settings: {},
+};
 
 /** A new weekday page's body: what an empty TipTap editor returns. */
 export const EMPTY_PAGE_BODY: JSONContent = { type: "doc", content: [{ type: "paragraph" }] };
@@ -436,11 +448,24 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * The backend's refusal of a write while a restore or undo replaces the
- * journal (`WorkJournalError::RestoreInProgress`), matched by its text.
+ * The code that starts the backend's refusal of a write while a restore or
+ * undo replaces the journal (`WorkJournalError::RestoreInProgress`).
  */
-export const WORK_JOURNAL_RESTORE_IN_PROGRESS_ERROR =
-  "The Work Journal is being restored; this change was not saved.";
+export const WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE = "RESTORE_IN_PROGRESS:";
+
+/**
+ * Reads the journal file. After a restore or undo (`replaced`) a failed read
+ * is tried once more, since this window stays frozen until it reads one.
+ */
+async function readJournal(replaced: boolean): Promise<WorkJournalFile> {
+  try {
+    return await invoke<WorkJournalFile>("load_work_journal");
+  } catch (error) {
+    if (!replaced) throw error;
+    console.error("Failed to read the restored Work Journal, trying again:", error);
+    return invoke<WorkJournalFile>("load_work_journal");
+  }
+}
 
 /**
  * Pages from a backend reply, keeping pages that still have a save in flight
@@ -499,7 +524,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     const tick = saveTick;
     const { revision } = get();
     try {
-      const journal = await invoke<WorkJournalFile>("load_work_journal");
+      const journal = await readJournal(replaced);
       // A restore or undo happened (or is running) since the read started:
       // the reply may hold the journal it replaced. The read that follows a
       // finished one (`replaced`) is what ends `replacing` here.
@@ -530,6 +555,14 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       void retryWorkJournalSaves();
     } catch (error) {
       console.error("Failed to re-read the Work Journal:", error);
+      // The restored journal cannot be read: unfreeze, but without the old
+      // pages, whose text must not be saved over it. A later change re-reads.
+      if (replaced && get().replacing) {
+        get().replaceJournal({ ...EMPTY_JOURNAL });
+        set({
+          error: `The restored Work Journal could not be read: ${errorMessage(error)}. Close and reopen the Work Journal.`,
+        });
+      }
     }
   },
 
@@ -624,16 +657,16 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         if (disk) diskPages = { ...diskPages, [date]: { ...disk, ...patch } };
         publishFailedSaves();
       } catch (error) {
-        // A restore or undo in another window refused it: dropped like a save
-        // made while `replacing` (no error, no retry; the text belongs to the
-        // journal being replaced).
-        if (errorMessage(error) === WORK_JOURNAL_RESTORE_IN_PROGRESS_ERROR) return;
-        console.error("Failed to save the Work Journal page:", error);
         const key = chainKey(date, patch);
         failedSaves.add(key);
         if (!failedBases.has(key) && diskPages[date]) {
           failedBases.set(key, fieldsJson(key, diskPages[date]));
         }
+        // A restore or undo refused it: kept quietly (no error, no retry). A
+        // restore that lands drops it with the old journal; one that fails
+        // sends it again (`endReplace`).
+        if (errorMessage(error).startsWith(WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE)) return;
+        console.error("Failed to save the Work Journal page:", error);
         set({ error: errorMessage(error) });
         publishFailedSaves();
         scheduleRetry();
@@ -690,7 +723,11 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     await allSavesSettled();
   },
 
-  endReplace: () => set({ replacing: false }),
+  // Text a backend refusal kept during the restore is sent now.
+  endReplace: () => {
+    set({ replacing: false });
+    void retryWorkJournalSaves();
+  },
 
   // Every save was settled before the restore, so the reply replaces the
   // pages outright (no merge with local copies).
