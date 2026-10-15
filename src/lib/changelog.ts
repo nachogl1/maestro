@@ -19,6 +19,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Installing an update now closes all terminals first, so Windows no longer asks for a reboot to finish it.",
       "Every code change merged to main is published as a signed Windows installer automatically.",
       "Work Journal settings: choose a backup folder, back up daily and on demand, see the last backup time.",
+      "Work Journal: a toolbar for bold, italic, headings, lists, links, text colour, highlight and tick-box checklists.",
       "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
       "Work Journal: every hour (change it in Settings) Claude turns your commits, PRs, conversations and terminals into suggested journal lines; Settings also has Run now and a model choice.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
