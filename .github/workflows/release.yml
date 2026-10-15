@@ -28,6 +28,8 @@ jobs:
   windows:
     name: Build and publish Windows installer
     runs-on: windows-latest
+    # Manual runs from other branches must not become the "latest" release.
+    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout

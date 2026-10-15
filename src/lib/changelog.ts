@@ -12,7 +12,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     title: "Maestro updates itself",
     items: [
       "Maestro now checks this fork's releases and can download and install a new build in one click.",
-      "Every change merged to main is published as a signed Windows installer automatically.",
+      "Every code change merged to main is published as a signed Windows installer automatically.",
     ],
   },
   {
