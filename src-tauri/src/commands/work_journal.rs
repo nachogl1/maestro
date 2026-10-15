@@ -93,17 +93,20 @@ pub async fn update_work_journal_settings(
     .await
 }
 
-/// Writes the journal to `<backup folder>/work-journal.json` now and records
-/// `last_backup_at`. Refused when no folder is set or the folder is missing;
-/// the journal is then left untouched.
+/// "Back up now": writes the journal to `<backup folder>/work-journal.json`
+/// and records `last_backup_at`, replacing any file there (the explicit
+/// override of the automatic guard). Refused when no folder is set or the
+/// folder is missing; the journal is then left untouched.
 #[tauri::command]
 pub async fn work_journal_backup_now() -> Result<WorkJournal, String> {
     with_journal(|path| work_journal::backup_now(&path, chrono::Utc::now())).await
 }
 
 /// Backs up when a folder is set and the last backup is a day old (or
-/// missing); returns `None` and writes nothing otherwise. Called on start
-/// and by the in-app timer.
+/// missing); returns `None` and writes nothing otherwise. Never replaces a
+/// backup file this Maestro has not written (see
+/// [`work_journal::backup_if_due`]). Called on start, by the in-app timer and
+/// after a folder is chosen.
 #[tauri::command]
 pub async fn work_journal_backup_if_due() -> Result<Option<WorkJournal>, String> {
     with_journal(|path| work_journal::backup_if_due(&path, chrono::Utc::now())).await
