@@ -1,14 +1,17 @@
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import {
   followWorkJournalRunState,
   isWorkJournalWindowView,
   listenWorkJournalChanged,
+  openWorkJournalSettingsInMainWindow,
   openWorkJournalWindow,
   serveWorkJournalWindow,
   WORK_JOURNAL_CHANGED_EVENT,
+  WORK_JOURNAL_OPEN_SETTINGS_EVENT,
   WORK_JOURNAL_RUN_NOW_EVENT,
   WORK_JOURNAL_RUN_STATE_EVENT,
   WORK_JOURNAL_RUN_STATE_REQUEST_EVENT,
@@ -143,5 +146,25 @@ describe("candidate runs from the pop-out window", () => {
     vi.mocked(emitTo).mockClear();
     await state.runNow(state.projects);
     expect(emitTo).toHaveBeenCalledWith("main", WORK_JOURNAL_RUN_NOW_EVENT);
+  });
+});
+
+describe("Settings from the pop-out window", () => {
+  afterEach(() => {
+    useWorkJournalBackupStore.setState({ settingsRequested: false });
+  });
+
+  it("the pop-out asks the main window and focuses it; the main window opens Settings", async () => {
+    const main = { unminimize: vi.fn(), setFocus: vi.fn() };
+    getByLabel.mockResolvedValue(main);
+    await openWorkJournalSettingsInMainWindow();
+    expect(emitTo).toHaveBeenCalledWith("main", WORK_JOURNAL_OPEN_SETTINGS_EVENT);
+    expect(getByLabel).toHaveBeenCalledWith("main");
+    expect(main.setFocus).toHaveBeenCalled();
+
+    const stop = await serveWorkJournalWindow(vi.fn());
+    handlers[WORK_JOURNAL_OPEN_SETTINGS_EVENT]({ payload: null });
+    expect(useWorkJournalBackupStore.getState().settingsRequested).toBe(true);
+    stop();
   });
 });
