@@ -216,3 +216,46 @@ describe("useTerminalKeyboard Alt+P park", () => {
     expect(onParkFocused).not.toHaveBeenCalled();
   });
 });
+
+describe("useTerminalKeyboard Alt+Shift+Arrow pane moves", () => {
+  function dispatchAltShiftArrow(key: string): KeyboardEvent {
+    const ev = new KeyboardEvent("keydown", {
+      key,
+      altKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(ev);
+    return ev;
+  }
+
+  it("moves the focused pane in the arrow's direction and prevents default", () => {
+    const onMoveFocused = vi.fn();
+    renderKeyboardHook({ onMoveFocused });
+
+    const ev = dispatchAltShiftArrow("ArrowDown");
+
+    expect(onMoveFocused).toHaveBeenCalledWith("down");
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("does not treat Alt+Shift+Arrow as a zoom-tab or focus cycle", () => {
+    const onMoveFocused = vi.fn();
+    const { onZoomedNext, onCycleNext } = renderKeyboardHook({ onMoveFocused, isZoomed: true });
+
+    dispatchAltShiftArrow("ArrowRight");
+
+    expect(onMoveFocused).toHaveBeenCalledWith("right");
+    expect(onZoomedNext).not.toHaveBeenCalled();
+    expect(onCycleNext).not.toHaveBeenCalled();
+  });
+
+  it("leaves Alt+Shift+Arrow alone when no move handler is given", () => {
+    renderKeyboardHook({ onMoveFocused: undefined });
+
+    const ev = dispatchAltShiftArrow("ArrowLeft");
+
+    expect(ev.defaultPrevented).toBe(false);
+  });
+});

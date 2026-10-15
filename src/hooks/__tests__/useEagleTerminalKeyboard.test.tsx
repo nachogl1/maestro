@@ -90,3 +90,41 @@ describe("useEagleTerminalKeyboard", () => {
     expect(onPark).not.toHaveBeenCalled();
   });
 });
+
+describe("useEagleTerminalKeyboard Alt+Shift+Arrow tile moves", () => {
+  function pressMove(target: EventTarget, key: string): KeyboardEvent {
+    const ev = new KeyboardEvent("keydown", {
+      key,
+      altKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    target.dispatchEvent(ev);
+    return ev;
+  }
+
+  it("moves the tile the key was pressed in and stops the key reaching the terminal", () => {
+    const onMove = vi.fn(() => true);
+    renderHook(() =>
+      useEagleTerminalKeyboard({ enabled: true, onToggleZoom: vi.fn(), onPark: vi.fn(), onMove }),
+    );
+    const input = mountPane("slot-m");
+    const inner = vi.fn();
+    input.addEventListener("keydown", inner);
+    const ev = pressMove(input, "ArrowUp");
+    expect(onMove).toHaveBeenCalledWith("slot-m", "up");
+    expect(ev.defaultPrevented).toBe(true);
+    expect(inner).not.toHaveBeenCalled();
+  });
+
+  it("lets the key through when no grid owns the pane", () => {
+    const onMove = vi.fn(() => false);
+    renderHook(() =>
+      useEagleTerminalKeyboard({ enabled: true, onToggleZoom: vi.fn(), onPark: vi.fn(), onMove }),
+    );
+    const ev = pressMove(mountPane("slot-x"), "ArrowLeft");
+    expect(onMove).toHaveBeenCalledWith("slot-x", "left");
+    expect(ev.defaultPrevented).toBe(false);
+  });
+});
