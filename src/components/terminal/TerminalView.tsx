@@ -8,7 +8,6 @@ import { useShallow } from "zustand/react/shallow";
 import { QuickActionsManager } from "@/components/quickactions/QuickActionsManager";
 import { ActivityFeed } from "@/components/session/ActivityFeed";
 import { AgentGraph } from "@/components/session/AgentGraph";
-import { useBranchPullRequest } from "@/hooks/useBranchPullRequest";
 import { useSessionBranch } from "@/hooks/useSessionBranch";
 import { useXtermSession } from "@/hooks/useXtermSession";
 import { renameAgent, sanitizeAgentName } from "@/lib/agentName";
@@ -236,10 +235,8 @@ export const TerminalView = memo(function TerminalView({
     isActive,
   );
   const effectiveBranch = liveBranch ?? "...";
-  // For the UI badge: show "worktree" if either Maestro created one or the project itself is a worktree.
+  // For the branch tooltip: "worktree" if either Maestro created one or the project itself is a worktree.
   const isWorktree = hasSessionWorktree || isProjectWorktree;
-  // The branch's PR, so the header can hand the user straight to GitHub.
-  const pullRequest = useBranchPullRequest(projectPath, liveBranch, isActive);
 
   // Get terminal settings from store (select individual primitives for granular updates)
   const fontSize = useTerminalSettingsStore((s) => s.settings.fontSize);
@@ -413,7 +410,6 @@ export const TerminalView = memo(function TerminalView({
         provider={effectiveProvider}
         sessionName={sessionData?.name}
         branchName={effectiveBranch}
-        pullRequest={pullRequest}
         isWorktree={isWorktree}
         onKill={handleKill}
         onRename={handleRename}
