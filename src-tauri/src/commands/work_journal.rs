@@ -1,8 +1,8 @@
 //! Tauri commands for the Work Journal file: load it, and create, update and
-//! delete pages and settings, and back it up. The file logic lives in
-//! [`crate::core::work_journal`]; these wrappers pick the app-data path,
-//! serialise every read-modify-write, and run the blocking file work off the
-//! async runtime.
+//! delete pages and settings, back it up, and restore it from a backup. The
+//! file logic lives in [`crate::core::work_journal`]; these wrappers pick the
+//! app-data path, serialise every read-modify-write, and run the blocking
+//! file work off the async runtime.
 //!
 //! Every changing command returns the whole saved journal, so the frontend
 //! never has to guess side effects (for example `deleted_dates` after a
@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::core::work_journal::{
-    self, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
+    self, AutoBackupAfterRestore, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
 };
 use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 
@@ -255,6 +255,73 @@ pub async fn work_journal_run_candidates(
     Ok(candidate_run_outcome(report, last_run_at))
 }
 
+/// A restore or undo reply: the whole saved journal, whether a readable
+/// safety copy is there for "Undo restore", and what the automatic backup
+/// does next (for the notice).
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkJournalRestoreReply {
+    pub journal: WorkJournal,
+    pub can_undo: bool,
+    pub auto_backup: AutoBackupAfterRestore,
+}
+
+/// Builds the reply for a journal a restore or undo just saved at `path`.
+fn restore_reply(path: &std::path::Path, journal: WorkJournal) -> WorkJournalRestoreReply {
+    WorkJournalRestoreReply {
+        can_undo: work_journal::can_undo_restore(path),
+        auto_backup: work_journal::auto_backup_after_restore(&journal),
+        journal,
+    }
+}
+
+/// Whether "Undo restore" has a safety copy to put back.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkJournalRestoreState {
+    pub can_undo: bool,
+}
+
+/// "Restore from backup": replaces the whole journal with the backup file
+/// `file`, or with the backup in the configured folder when `file` is
+/// `None`, after saving the current journal as the safety copy. Keeps the
+/// local backup folder and clears the last backup time, so automatic
+/// backups leave the backup folder alone until "Back up now".
+#[tauri::command]
+pub async fn restore_work_journal(file: Option<String>) -> Result<WorkJournalRestoreReply, String> {
+    with_journal(move |path| {
+        let source = match file {
+            Some(file) => PathBuf::from(file),
+            None => work_journal::default_restore_source(&path)?,
+        };
+        let journal = work_journal::restore_from(&path, &source)?;
+        Ok(restore_reply(&path, journal))
+    })
+    .await
+}
+
+/// "Undo restore": puts the safety copy back and deletes it (undo works
+/// once). Refused when there is no safety copy.
+#[tauri::command]
+pub async fn undo_work_journal_restore() -> Result<WorkJournalRestoreReply, String> {
+    with_journal(|path| {
+        let journal = work_journal::undo_restore(&path)?;
+        Ok(restore_reply(&path, journal))
+    })
+    .await
+}
+
+/// Whether "Undo restore" is available (a readable safety copy exists).
+#[tauri::command]
+pub async fn work_journal_restore_state() -> Result<WorkJournalRestoreState, String> {
+    with_journal(|path| {
+        Ok(WorkJournalRestoreState {
+            can_undo: work_journal::can_undo_restore(&path),
+        })
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +399,24 @@ mod tests {
             Some(CandidateRunOutcome::NoProjects)
         );
         assert_eq!(skip_without_projects(&["C:\\git\\p".to_string()]), None);
+    }
+
+    #[test]
+    fn test_restore_replies_use_camel_case_for_the_frontend() {
+        let reply = WorkJournalRestoreReply {
+            journal: WorkJournal::default(),
+            can_undo: true,
+            auto_backup: AutoBackupAfterRestore::NoFolder,
+        };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["canUndo"], true);
+        assert_eq!(value["autoBackup"], "no_folder");
+        assert_eq!(value["journal"]["layout_version"], 1);
+
+        let state = WorkJournalRestoreState { can_undo: false };
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            serde_json::json!({"canUndo": false})
+        );
     }
 }

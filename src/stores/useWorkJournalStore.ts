@@ -38,6 +38,18 @@ interface WorkJournalState {
   viewedDate: string | null;
   loading: boolean;
   error: string | null;
+  /**
+   * Bumped when the whole journal is replaced (restore or undo). The pane puts
+   * it in each editor's React key, so open editors remount with the new body,
+   * and an editor from an older revision never saves.
+   */
+  revision: number;
+  /**
+   * True while a restore or undo is replacing the journal: page saves are
+   * dropped and editors are read-only, so nothing typed meanwhile can land
+   * over the new journal.
+   */
+  replacing: boolean;
   /** Reads the journal file. */
   load: () => Promise<void>;
   /** Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). */
@@ -54,6 +66,19 @@ interface WorkJournalState {
   /** Deletes the page for `date` and shows the nearest remaining page. */
   deletePage: (date: string) => Promise<void>;
   clearError: () => void;
+  /**
+   * Starts a restore or undo: sends every open editor's unsaved text, sets
+   * `replacing` (so every later save is dropped), then waits until all
+   * queued saves have landed.
+   */
+  beginReplace: () => Promise<void>;
+  /** Ends a restore or undo that failed: clears `replacing`; the journal is unchanged. */
+  endReplace: () => void;
+  /**
+   * Shows a journal that replaced the whole file (restore or undo); bumps
+   * `revision` and clears `replacing`.
+   */
+  replaceJournal: (journal: WorkJournalFile) => void;
 }
 
 /** A new weekday page's body: what an empty TipTap editor returns. */
@@ -92,6 +117,25 @@ function savesSettled(date: string): Promise<void> {
     .filter(([key]) => key.startsWith(`${date}:`))
     .map(([, chain]) => chain);
   return Promise.all(queued).then(() => undefined);
+}
+
+/** Resolves once every save queued so far, for any date, has finished. */
+function allSavesSettled(): Promise<void> {
+  return Promise.all([...saveChains.values()]).then(() => undefined);
+}
+
+/** Each open editor's "send my unsaved text now" function. */
+const editorFlushes = new Set<() => void>();
+
+/**
+ * Registers an open editor's flush, so a restore can save typing that is
+ * still waiting for the debounce. Returns the unregister function.
+ */
+export function registerWorkJournalEditorFlush(flush: () => void): () => void {
+  editorFlushes.add(flush);
+  return () => {
+    editorFlushes.delete(flush);
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -134,6 +178,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   viewedDate: null,
   loading: false,
   error: null,
+  revision: 0,
+  replacing: false,
 
   load: async () => {
     set({ loading: true, error: null });
@@ -192,7 +238,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   },
 
   updatePage: async (date: string, patch: WorkJournalPagePatch) => {
-    if (!get().pages[date]) return;
+    // Dropped while a restore or undo replaces the journal: the text belongs to
+    // the journal being replaced.
+    if (!get().pages[date] || get().replacing) return;
     // Optimistic: the store holds what the user sees right away. The reply
     // is not applied, so an older reply can never overwrite newer typing.
     set((s) => {
@@ -249,4 +297,25 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  // The flag is set before the wait, so a save made while earlier ones settle
+  // is dropped rather than sent unawaited.
+  beginReplace: async () => {
+    for (const flush of editorFlushes) flush();
+    set({ replacing: true });
+    await allSavesSettled();
+  },
+
+  endReplace: () => set({ replacing: false }),
+
+  // Every save was settled before the restore, so the reply replaces the
+  // pages outright (no merge with local copies).
+
+  replaceJournal: (journal: WorkJournalFile) =>
+    set((s) => ({
+      pages: journal.pages,
+      revision: s.revision + 1,
+      replacing: false,
+      error: null,
+    })),
 }));

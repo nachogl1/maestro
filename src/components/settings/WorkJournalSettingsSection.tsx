@@ -1,5 +1,5 @@
-import { open } from "@tauri-apps/plugin-dialog";
-import { BookOpen, FolderOpen, Loader2 } from "lucide-react";
+import { ask, open } from "@tauri-apps/plugin-dialog";
+import { BookOpen, FolderOpen, Loader2, Undo2 } from "lucide-react";
 import { useEffect } from "react";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
@@ -12,9 +12,26 @@ function formatBackupTime(iso: string): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** The backup file inside `folder` (the backend's `backup_path`), for the confirm text. */
+function backupFileIn(folder: string): string {
+  const separator = folder.includes("\\") ? "\\" : "/";
+  const base = folder.endsWith(separator) ? folder : `${folder}${separator}`;
+  return `${base}work-journal.json`;
+}
+
+/** Asks before a restore replaces the whole journal; a dialog failure counts as "no". */
+function confirmRestore(file: string): Promise<boolean> {
+  return ask(
+    `Replace your whole Work Journal with the backup ${file}? Your current journal is saved as ` +
+      "one safety copy, and Undo restore puts it back.",
+    { title: "Restore Work Journal", kind: "warning" },
+  ).catch(() => false);
+}
+
 /**
- * Work Journal section of Maestro Settings: the backup folder, "Back up now"
- * and the last backup time. Restore rows join this section later.
+ * Work Journal section of Maestro Settings: the backup folder, "Back up now",
+ * the last backup time, "Restore from backup" (the folder's backup or a
+ * browsed file) and "Undo restore".
  */
 export function WorkJournalSettingsSection(): JSX.Element {
   const backupFolder = useWorkJournalBackupStore((s) => s.backupFolder);
@@ -27,10 +44,18 @@ export function WorkJournalSettingsSection(): JSX.Element {
   const backUpNow = useWorkJournalBackupStore((s) => s.backUpNow);
   const runError = useWorkJournalCandidateRunStore((s) => s.runError);
   const runSettingsError = useWorkJournalCandidateRunStore((s) => s.settingsError);
+  const canUndo = useWorkJournalBackupStore((s) => s.canUndo);
+  const restoring = useWorkJournalBackupStore((s) => s.restoring);
+  const notice = useWorkJournalBackupStore((s) => s.notice);
+  const loadRestoreState = useWorkJournalBackupStore((s) => s.loadRestoreState);
+  const restore = useWorkJournalBackupStore((s) => s.restore);
+  const undoRestore = useWorkJournalBackupStore((s) => s.undoRestore);
+  const busy = backingUp || restoring;
 
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadRestoreState();
+  }, [load, loadRestoreState]);
 
   const handleChooseFolder = async (): Promise<void> => {
     try {
@@ -44,6 +69,36 @@ export function WorkJournalSettingsSection(): JSX.Element {
     } catch (err) {
       console.error("Failed to open the folder picker:", err);
     }
+  };
+
+  const handleRestoreDefault = async (): Promise<void> => {
+    if (!backupFolder || !(await confirmRestore(backupFileIn(backupFolder)))) return;
+    await restore();
+  };
+
+  const handleBrowseRestore = async (): Promise<void> => {
+    let picked: string | string[] | null;
+    try {
+      picked = await open({
+        multiple: false,
+        filters: [{ name: "Work Journal backup", extensions: ["json"] }],
+        defaultPath: backupFolder ?? undefined,
+        title: "Choose a Work Journal backup file",
+      });
+    } catch (err) {
+      console.error("Failed to open the file picker:", err);
+      return;
+    }
+    if (typeof picked !== "string" || !(await confirmRestore(picked))) return;
+    await restore(picked);
+  };
+
+  const handleUndoRestore = async (): Promise<void> => {
+    const confirmed = await ask(
+      "Put back your Work Journal from before the restore? Changes made since the restore are lost.",
+      { title: "Undo Restore", kind: "warning" },
+    ).catch(() => false);
+    if (confirmed) await undoRestore();
   };
 
   return (
@@ -90,6 +145,41 @@ export function WorkJournalSettingsSection(): JSX.Element {
             Back up now
           </button>
         </div>
+        <div className="flex items-center gap-2">
+          <span className="flex-1 text-[10px] text-maestro-muted">
+            Restore replaces the whole journal
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleRestoreDefault()}
+            disabled={!backupFolder || busy}
+            title={backupFolder ? backupFileIn(backupFolder) : "Choose a backup folder first"}
+            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
+          >
+            {restoring && <Loader2 size={11} className="animate-spin" />}
+            Restore from backup
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleBrowseRestore()}
+            disabled={busy}
+            title="Restore from any Work Journal backup file"
+            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
+          >
+            <FolderOpen size={11} />
+            Browse…
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleUndoRestore()}
+            disabled={!canUndo || busy}
+            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
+          >
+            <Undo2 size={11} />
+            Undo restore
+          </button>
+        </div>
+        {notice && <output className="block text-[11px] text-maestro-green">{notice}</output>}
         {[runSettingsError, runError, loadError, error].filter(Boolean).map((text) => (
           <div key={text} role="alert" className="text-[11px] text-maestro-red">
             {text}
