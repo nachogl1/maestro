@@ -286,7 +286,7 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
 
   return (
     <>
-      {editor && <WorkJournalToolbar editor={editor} />}
+      {editor && <WorkJournalToolbar editor={editor} disabled={replacing} />}
       <EditorContent
         editor={editor}
         // Reuses the Notes editor's typography (headings, lists, links) so the

@@ -25,7 +25,10 @@ type ReportPhase = "idle" | "preparing" | "writing";
 type ReportResultState =
   | { kind: "saved"; path: string }
   | { kind: "nothing" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  // The saved folder is gone: offers "Choose folder" next to the message.
+  | { kind: "folder_missing"; message: string }
+  | { kind: "folder_chosen"; path: string };
 
 export interface ReportDialogProps {
   /** Closes the dialog. */
@@ -49,6 +52,8 @@ const DATE_INPUT =
  * days ending today), Generate, and the result. Before the first report,
  * Generate asks for the report folder and saves it. The report is written
  * by the backend straight into that folder; "Open folder" reveals the file.
+ * When the saved folder is gone, the dialog offers "Choose folder"; choosing
+ * one never starts a report by itself.
  * The dialog cannot be closed while a report runs (nothing would cancel it).
  */
 export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
@@ -141,6 +146,8 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
           kind: "error",
           message: "No report folder is set. Press Generate again to choose one.",
         });
+      } else if (outcome?.status === "folder_missing") {
+        setResult({ kind: "folder_missing", message: outcome.message });
       } else if (outcome?.status === "busy") {
         setResult({
           kind: "error",
@@ -151,6 +158,18 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
       console.error("Work Journal report failed:", error);
       // The backend's messages are already plain sentences.
       setResult({ kind: "error", message: errorMessage(error) });
+    }
+  };
+
+  /** "Choose folder" after the saved folder went missing; never starts a report itself. */
+  const handleChooseFolder = async (): Promise<void> => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    try {
+      const picked = await pickFolder();
+      if (picked) setResult({ kind: "folder_chosen", path: picked });
+    } finally {
+      busyRef.current = false;
     }
   };
 
@@ -237,6 +256,26 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
           )}
           {result?.kind === "nothing" && (
             <output className="block text-maestro-text">{NOTHING_TO_REPORT}</output>
+          )}
+          {result?.kind === "folder_missing" && (
+            <div className="flex items-center gap-2">
+              <div role="alert" className="min-w-0 flex-1 break-all text-maestro-red">
+                {result.message}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleChooseFolder()}
+                className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40"
+              >
+                <FolderOpen size={11} />
+                Choose folder
+              </button>
+            </div>
+          )}
+          {result?.kind === "folder_chosen" && (
+            <output className="block break-all text-maestro-text">
+              Reports will be saved to {result.path}. Press Generate to make the report.
+            </output>
           )}
           {result?.kind === "error" && (
             <div role="alert" className="text-maestro-red">

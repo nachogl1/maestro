@@ -241,6 +241,25 @@ describe("WorkJournalSettingsSection", () => {
     expect(callsExceptRestoreState()).toHaveLength(1);
   });
 
+  it("shows folder and file pickers that fail to open in the section's error line", async () => {
+    routeInvoke({ load_work_journal: () => journal({}) });
+    openMock.mockRejectedValue(new Error("no window"));
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText(/No backup folder chosen/);
+
+    fireEvent.click(screen.getByRole("button", { name: /Choose folder/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not open the folder picker: no window",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Browse/ }));
+    expect(
+      await screen.findByText("Could not open the file picker: no window"),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("restore_work_journal", expect.anything());
+  });
+
   it("shows an automatic backup failure in the section and warns once per failure run", async () => {
     const failure = "Backup failed: the backup folder D:\\Gone does not exist.";
     let ifDueFails = true;
@@ -518,6 +537,7 @@ describe("WorkJournalSettingsSection restore", () => {
       expect.stringContaining("before the restore"),
       expect.objectContaining({ kind: "warning" }),
     );
+    expect(String(askMock.mock.calls[0][0])).toContain("work-journal.before-undo.json");
     expect(invokeMock).toHaveBeenCalledWith("undo_work_journal_restore");
     expect(useWorkJournalStore.getState().pages).toEqual({ "2026-10-15": before });
     expect(screen.getByRole("button", { name: /Undo restore/ })).toBeDisabled();
