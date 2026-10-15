@@ -26,6 +26,14 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { resolveWeights, trackTemplate } from "@/lib/eagleGridSizes";
+import {
+  type EagleDropZone,
+  eagleAutoColumns,
+  type MoveDirection,
+  moveInOrder,
+  nextTileSpan,
+  reorderTiles,
+} from "@/lib/paneMoves";
 import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
 import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
@@ -180,17 +188,71 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       }),
     );
 
-    // User-dragged order for the eagle zoom tab strip (runtime-only — session
-    // ids don't survive restarts). Same self-heal pattern as the per-project
-    // zoom strip: killed sessions drop out, new ones append in natural order.
-    const [eagleTabOrder, setEagleTabOrder] = useState<number[]>([]);
+    // The user's free eagle tile order (store, runtime-only — session ids
+    // don't survive restarts): it places the grid tiles AND the zoom tab
+    // strip, so the two always agree. Same self-heal pattern as the
+    // per-project zoom strip: killed sessions drop out, new ones append in
+    // natural (project tab) order.
+    const eagleTileOrder = useWorkspaceStore((s) => s.eagleTileOrder);
+    const setEagleTileOrder = useWorkspaceStore((s) => s.setEagleTileOrder);
+    const eagleTileSpans = useWorkspaceStore((s) => s.eagleTileSpans);
+    const setEagleTileSpan = useWorkspaceStore((s) => s.setEagleTileSpan);
+    const eagleColumnsPick = useWorkspaceStore((s) => s.eagleColumns);
     const orderedEagleSessions = useMemo(() => {
-      if (!eagleTabOrder.length) return eagleSessions;
-      const rank = new Map(eagleTabOrder.map((id, i) => [id, i]));
+      if (!eagleTileOrder.length) return eagleSessions;
+      const rank = new Map(eagleTileOrder.map((id, i) => [id, i]));
       return [...eagleSessions].sort(
         (a, b) => (rank.get(a.sessionId) ?? Infinity) - (rank.get(b.sessionId) ?? Infinity),
       );
-    }, [eagleSessions, eagleTabOrder]);
+    }, [eagleSessions, eagleTileOrder]);
+
+    // Pending (unlaunched) tiles, summed only over tabs that still exist —
+    // this is what keeps a closed project's leftover pendingCounts entry from
+    // being counted. A visible pre-launch card needs a grid cell like a
+    // launched tile does.
+    const pendingTileCount = tabs.reduce((sum, tab) => sum + (pendingCounts.get(tab.id) ?? 0), 0);
+
+    // Eagle grid shape. Cells = every tile's size (a 2×2 tile fills four);
+    // the column count is the user's pick or the square-ish automatic one.
+    const eagleCells =
+      orderedEagleSessions.reduce((sum, sess) => {
+        const span = eagleTileSpans[sess.sessionId];
+        return sum + (span ? span[0] * span[1] : 1);
+      }, 0) + pendingTileCount;
+    const hasWideTile = orderedEagleSessions.some(
+      (sess) => (eagleTileSpans[sess.sessionId]?.[0] ?? 1) > 1,
+    );
+    const eagleColumns = eagleColumnsPick ?? eagleAutoColumns(eagleCells, hasWideTile);
+
+    // Eagle grid: each tile's place in the free order (CSS `order`), and the
+    // moves — drop before/after/onto a tile, Alt+Shift+Arrow, tile size.
+    const eagleTileRank = useMemo(
+      () => new Map(orderedEagleSessions.map((sess, i) => [sess.sessionId, i])),
+      [orderedEagleSessions],
+    );
+    const handleEagleReorder = useCallback(
+      (src: number, dest: number, zone: EagleDropZone) => {
+        const ids = orderedEagleSessions.map((sess) => sess.sessionId);
+        setEagleTileOrder(reorderTiles(ids, src, dest, zone));
+      },
+      [orderedEagleSessions, setEagleTileOrder],
+    );
+    const handleEagleMoveTile = useCallback(
+      (sessionId: number, direction: MoveDirection) => {
+        const ids = orderedEagleSessions.map((sess) => sess.sessionId);
+        setEagleTileOrder(moveInOrder(ids, sessionId, direction, eagleColumns));
+      },
+      [orderedEagleSessions, eagleColumns, setEagleTileOrder],
+    );
+    const handleEagleCycleTileSize = useCallback(
+      (sessionId: number) => {
+        setEagleTileSpan(
+          sessionId,
+          nextTileSpan(useWorkspaceStore.getState().eagleTileSpans[sessionId]),
+        );
+      },
+      [setEagleTileSpan],
+    );
 
     // Stale-zoom guard: if the zoomed session disappears from the strip
     // (parked, killed or closed), keep the user in zoom-in — the next terminal
@@ -237,9 +299,9 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         const from = ids.indexOf(active.id as number);
         const to = ids.indexOf(over.id as number);
         if (from === -1 || to === -1) return;
-        setEagleTabOrder(arrayMove(ids, from, to));
+        setEagleTileOrder(arrayMove(ids, from, to));
       },
-      [orderedEagleSessions],
+      [orderedEagleSessions, setEagleTileOrder],
     );
 
     // Keyboard while eagle-zoomed. Capture phase: xterm stops propagation on
@@ -476,19 +538,14 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       );
     }
 
-    // Sum of each tab's pending slots, but only over tabs that still exist —
-    // this is what keeps a closed project's leftover pendingCounts entry from
-    // being counted (see the state comment above).
-    const pendingTileCount = tabs.reduce((sum, tab) => sum + (pendingCounts.get(tab.id) ?? 0), 0);
-
     // Eagle view lays every launched pane AND every visible pre-launch card of
     // every project into one flat grid. The per-project wrappers and split
     // trees flatten out via `display:contents` (className "contents"), so the
     // SAME mounted xterm elements become direct grid items — no remount,
-    // scrollback and PTY wiring survive the toggle.
+    // scrollback and PTY wiring survive the toggle. Tiles are placed by their
+    // CSS `order` (the user's free order, see eagleTileRank above).
     const eagleTileCount = liveSessionCount + pendingTileCount;
-    const eagleColumns = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, eagleTileCount))));
-    const eagleRows = Math.max(1, Math.ceil(eagleTileCount / eagleColumns));
+    const eagleRows = Math.max(1, Math.ceil(eagleCells / eagleColumns));
     // User-dragged sizes apply while the grid keeps the same shape; a new
     // column or row count starts that axis from equal sizes again.
     const colWeights = resolveWeights(eagleColWeights, eagleColumns);
@@ -517,6 +574,8 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   gridTemplateColumns: trackTemplate(colWeights),
                   gridTemplateRows: trackTemplate(rowWeights),
                   gridAutoRows: "minmax(0, 1fr)",
+                  // Bigger tiles leave holes that later tiles fill in.
+                  gridAutoFlow: "dense",
                   gap: `${EAGLE_GAP_PX}px`,
                 }
               : undefined
@@ -695,6 +754,12 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   onEagleZoomToggle={handleEagleZoomToggle}
                   eagleTileCount={eagleTileCount}
                   pinnedTileStyles={pinnedStrip?.get(tab.id) ?? null}
+                  eagleTileRank={eagleTileRank}
+                  eagleTileSpans={eagleTileSpans}
+                  eagleColumnCount={eagleColumns}
+                  onEagleReorder={handleEagleReorder}
+                  onEagleMoveTile={handleEagleMoveTile}
+                  onEagleCycleTileSize={handleEagleCycleTileSize}
                 />
               ) : (
                 <IdleLandingView onAdd={mustCallback(launchCallbacks, tab.id)} />

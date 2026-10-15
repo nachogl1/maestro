@@ -522,3 +522,122 @@
   /* biome-ignore lint/complexity/noImportantStyles: same as box-shadow above. */
   transition: border-color 200ms ease !important;
 }
+
+/* ── Move a terminal: drop zones, ghost and stage-edge highlight ── */
+/* The zone overlay lives inside every pane; the drag sets `data-drop-zone`
+   on the pane being hovered and the overlay draws itself for that zone. */
+.pane-drop-zone {
+  position: absolute;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 25;
+  pointer-events: none;
+  border: 2px solid rgb(var(--maestro-blue));
+  border-radius: 4px;
+  background: rgb(var(--maestro-blue) / 0.22);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px #000;
+}
+[data-drop-zone] .pane-drop-zone {
+  display: flex;
+}
+[data-drop-zone="swap"] .pane-drop-zone {
+  inset: 0;
+  border-radius: 0;
+}
+[data-drop-zone="left"] .pane-drop-zone {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 50%;
+}
+[data-drop-zone="right"] .pane-drop-zone {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 50%;
+}
+[data-drop-zone="top"] .pane-drop-zone {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 50%;
+}
+[data-drop-zone="bottom"] .pane-drop-zone {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 50%;
+}
+/* Eagle view: a bar on the side the tile will be inserted at. */
+[data-drop-zone="before"] .pane-drop-zone,
+[data-drop-zone="after"] .pane-drop-zone {
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  border: 0;
+  border-radius: 3px;
+  background: rgb(var(--maestro-blue));
+}
+[data-drop-zone="before"] .pane-drop-zone {
+  left: 0;
+}
+[data-drop-zone="after"] .pane-drop-zone {
+  right: 0;
+}
+[data-drop-zone="before"] .pane-drop-zone > span,
+[data-drop-zone="after"] .pane-drop-zone > span {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgb(var(--maestro-blue));
+  white-space: nowrap;
+}
+[data-drop-zone="before"] .pane-drop-zone > span {
+  left: 10px;
+}
+[data-drop-zone="after"] .pane-drop-zone > span {
+  right: 10px;
+}
+/* Split layout: the band of the whole area the pane becomes a column/row of. */
+.pane-stage-drop {
+  position: absolute;
+  z-index: 26;
+  pointer-events: none;
+  border: 2px solid rgb(var(--maestro-blue));
+  border-radius: 4px;
+  background: rgb(var(--maestro-blue) / 0.3);
+}
+/* Label that follows the pointer while a pane is being dragged. */
+.pane-drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  padding: 4px 10px;
+  border: 1px solid rgb(var(--maestro-border));
+  border-radius: 6px;
+  background: rgb(var(--maestro-card));
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.6);
+  color: rgb(var(--maestro-text));
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* While a pane is being dragged: xterm must not grab the pointer, and the
+   grabbing cursor shows on the panes. */
+.pane-dragging .xterm {
+  pointer-events: none;
+}
+.pane-dragging,
+.pane-dragging [data-slot-id],
+.pane-dragging [data-pane-drag-handle] {
+  cursor: grabbing;
+}
+.pane-dragging .pane-drag-source {
+  opacity: 0.4;
+}

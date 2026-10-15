@@ -3,6 +3,7 @@ import {
   Bird,
   BrainCircuit,
   GitMerge,
+  Group,
   Minus,
   PanelLeft,
   Plus,
@@ -15,9 +16,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
 import { ParkedRunsBadge } from "./ParkedRunsBadge";
+
+/** Column counts offered by the eagle view picker (besides automatic). */
+const EAGLE_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6] as const;
 
 /** One entry of the eagle-view "add terminal" project dropdown. */
 export interface EagleProjectOption {
@@ -89,6 +94,12 @@ export function TopBar({
   onParkNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
+
+  // Eagle view grid controls: how many columns, and "group by project" to undo
+  // the free mixing of projects' terminals (runtime-only store state).
+  const eagleColumns = useWorkspaceStore((s) => s.eagleColumns);
+  const setEagleColumns = useWorkspaceStore((s) => s.setEagleColumns);
+  const groupEagleTilesByProject = useWorkspaceStore((s) => s.groupEagleTilesByProject);
 
   // Eagle view add-terminal dropdown (pick which project gets the new terminal)
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -206,6 +217,36 @@ export function TopBar({
               </div>
             )}
           </div>
+        )}
+        {/* Eagle view: column count and "group by project". */}
+        {eagleView && (
+          <>
+            <select
+              value={eagleColumns === null ? "auto" : String(eagleColumns)}
+              onChange={(e) =>
+                setEagleColumns(e.target.value === "auto" ? null : Number(e.target.value))
+              }
+              className="rounded border border-maestro-border bg-maestro-surface px-1 py-0.5 text-[11px] text-maestro-muted hover:text-maestro-text"
+              aria-label="Eagle view columns"
+              title="How many columns the eagle grid has (auto = square-ish)"
+            >
+              <option value="auto">Auto cols</option>
+              {EAGLE_COLUMN_CHOICES.map((n) => (
+                <option key={n} value={String(n)}>
+                  {n} {n === 1 ? "col" : "cols"}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={groupEagleTilesByProject}
+              className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+              aria-label="Group terminals by project"
+              title="Group terminals by project (undo mixing)"
+            >
+              <Group size={14} />
+            </button>
+          </>
         )}
         {onToggleEagleView && (
           <button

@@ -242,3 +242,83 @@ export function findSiblingSlotId(tree: TreeNode, slotId: string): string | null
   // Recurse
   return findSiblingSlotId(left, slotId) ?? findSiblingSlotId(right, slotId);
 }
+
+/** Which side of a pane a dropped pane lands on. */
+export type PaneSide = "left" | "right" | "top" | "bottom";
+
+function sideDirection(side: PaneSide): SplitDirection {
+  return side === "left" || side === "right" ? "vertical" : "horizontal";
+}
+
+function sideIsFirst(side: PaneSide): boolean {
+  return side === "left" || side === "top";
+}
+
+/**
+ * Move a pane next to another one: the moved leaf leaves its place (its old
+ * sibling takes the space) and the target leaf is split in two, the moved
+ * pane taking the given side with half the room.
+ *
+ * Returns the original tree unchanged when either slot is missing, when
+ * both are the same, or when the tree has nothing else to lay out.
+ */
+export function moveSlotToSide(
+  tree: TreeNode,
+  srcSlotId: string,
+  targetSlotId: string,
+  side: PaneSide,
+): TreeNode {
+  if (srcSlotId === targetSlotId) return tree;
+  const ids = collectSlotIds(tree);
+  if (!ids.includes(srcSlotId) || !ids.includes(targetSlotId)) return tree;
+  const rest = removeLeaf(tree, srcSlotId);
+  if (rest === null) return tree;
+
+  function rewrite(node: TreeNode): TreeNode {
+    if (node.type === "leaf") {
+      if (node.slotId !== targetSlotId) return node;
+      const moved = createLeaf(srcSlotId);
+      return {
+        type: "split",
+        id: uid(),
+        direction: sideDirection(side),
+        children: sideIsFirst(side) ? [moved, node] : [node, moved],
+        ratio: 0.5,
+      };
+    }
+    const [left, right] = node.children;
+    const newLeft = rewrite(left);
+    const newRight = rewrite(right);
+    if (newLeft === left && newRight === right) return node;
+    return { ...node, children: [newLeft, newRight] };
+  }
+
+  return rewrite(rest);
+}
+
+/**
+ * Move a pane to an edge of the whole layout: it becomes a full-height
+ * column (left/right) or a full-width row (top/bottom) next to everything
+ * else, taking `share` of the space.
+ *
+ * Returns the original tree unchanged when the slot is missing or is the
+ * only pane.
+ */
+export function moveSlotToTreeEdge(
+  tree: TreeNode,
+  srcSlotId: string,
+  side: PaneSide,
+  share: number = 0.33,
+): TreeNode {
+  const rest = removeLeaf(tree, srcSlotId);
+  if (rest === null || rest === tree) return tree;
+  const moved = createLeaf(srcSlotId);
+  const first = sideIsFirst(side);
+  return {
+    type: "split",
+    id: uid(),
+    direction: sideDirection(side),
+    children: first ? [moved, rest] : [rest, moved],
+    ratio: first ? share : 1 - share,
+  };
+}
