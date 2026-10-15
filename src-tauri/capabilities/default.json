@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for Maestro",
-  "windows": ["main", "issue-map", "work-journal"],
+  "windows": ["main", "issue-map"],
   "permissions": [
     "core:default",
     "core:event:default",
