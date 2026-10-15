@@ -27,7 +27,7 @@ Maestro's state changes are quiet. A terminal parked to the shelf just disappear
 - `src/lib/particleEffects.ts`: a tiny event bus (`park` | `resume` | `attention`, by session id). The session store emits `park`/`resume` from `parkSession`/`unparkSession`, **before** it changes state so the pane or chip can still be measured.
 - `src/lib/particleEngine.ts`: three.js renderer with a pixel-space orthographic camera on a full-window canvas, so DOM rectangles map 1:1 to particle positions. Lazy-imports `three` on the first effect; the render loop runs only while particles are alive and the canvas is `display:none` in between, so the compositor has no extra layer to blend over the terminals. Falls back to a window-centre / bottom-centre target when the destination element has not been committed by React within 300 ms.
 - `src/components/shared/ParticleEffectsLayer.tsx`: mounted once in `App`, owns the canvas, subscribes to the bus, and derives the `attention` flare from the session store (status flips to `NeedsInput` while the pane is on screen and not parked). Draws nothing under `prefers-reduced-motion: reduce`.
-- Anchors: panes already carry `data-session-id` (TerminalGrid pane wrapper); shelf chips gained `data-parked-session-id`.
+- Anchors: the terminal cell root (TerminalView) gained `data-particle-session-id` (the grid wrapper's `data-session-id` only exists in eagle mode, which the live check caught); shelf chips gained `data-parked-session-id`.
 - Colours: park/resume use the pane's project colour (read from its `.terminal-cell` border), with white sparks; attention uses yellow + white.
 
 ## Risks and mitigations

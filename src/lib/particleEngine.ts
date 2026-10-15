@@ -63,9 +63,9 @@ export function parseCssRgb(value: string): Rgb | null {
   return [Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255];
 }
 
-/** Selector for the pane of a session (set by TerminalGrid's pane wrapper). */
+/** Selector for the pane of a session (set on TerminalView's cell root). */
 export function paneSelector(sessionId: number): string {
-  return `[data-session-id="${sessionId}"]`;
+  return `[data-particle-session-id="${sessionId}"]`;
 }
 
 /** Selector for the parked-shelf chip of a session (set by ParkedShelf). */

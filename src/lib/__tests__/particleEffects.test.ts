@@ -33,7 +33,7 @@ describe("particleEngine helpers", () => {
   });
 
   it("targets the pane and shelf chip by their session id", () => {
-    expect(paneSelector(12)).toBe('[data-session-id="12"]');
+    expect(paneSelector(12)).toBe('[data-particle-session-id="12"]');
     expect(chipSelector(12)).toBe('[data-parked-session-id="12"]');
   });
 });
