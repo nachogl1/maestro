@@ -33,7 +33,13 @@ describe("useWorkJournalCandidateTimer", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "load_work_journal") return { settings: { run_every_hours: 2 } };
       if (cmd === "work_journal_run_candidates") {
-        return { status: "ran", added: 0, dates: [], lastRunAt: "2026-10-15T12:00:00Z" };
+        return {
+          status: "ran",
+          added: 0,
+          dates: [],
+          lastRunAt: "2026-10-15T12:00:00Z",
+          lastAttemptAt: "2026-10-15T12:00:00Z",
+        };
       }
       throw new Error(`unexpected command ${cmd}`);
     });

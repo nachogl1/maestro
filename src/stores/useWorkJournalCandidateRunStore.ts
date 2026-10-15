@@ -12,6 +12,8 @@ export interface WorkJournalCandidateRunSettings {
   run_every_hours?: number | null;
   model?: string | null;
   last_run_at?: string | null;
+  /** When the last run started (RFC 3339), failed runs included; display only. */
+  last_attempt_at?: string | null;
   /** Whether runs may read Granola meeting notes; absent means not asked yet. */
   granola_opt_in?: boolean | null;
 }
@@ -21,12 +23,22 @@ export interface WorkJournalCandidateRunFile {
   settings: WorkJournalCandidateRunSettings;
 }
 
+/**
+ * What a finished run reports: how far it covered, when it started, and where
+ * the catch-up would have started when the 7-day cap cut it.
+ */
+interface CandidateRunTimes {
+  lastRunAt: string;
+  lastAttemptAt: string;
+  truncatedFrom?: string;
+}
+
 /** What `work_journal_run_candidates` did, tagged by `status`. */
 export type CandidateRunOutcome =
-  | { status: "ran"; added: number; dates: string[]; lastRunAt: string }
+  | ({ status: "ran"; added: number; dates: string[] } & CandidateRunTimes)
   | { status: "busy" }
   | { status: "no_projects" }
-  | { status: "failed"; message: string; added: number; dates: string[]; lastRunAt: string };
+  | ({ status: "failed"; message: string; added: number; dates: string[] } & CandidateRunTimes);
 
 /** Shown when a run is asked for while another one is going. */
 export const RUN_BUSY_NOTICE = "A run is already in progress.";
@@ -35,6 +47,10 @@ export const RUN_BUSY_NOTICE = "A run is already in progress.";
 export const RUN_NO_PROJECTS_NOTICE =
   "No project has been opened in Maestro yet, so there was nothing to look at.";
 
+/** Shown after a catch-up run that the 7-day cap cut short. */
+export const CATCH_UP_TRUNCATED_NOTICE =
+  "Only the last 7 days were checked; earlier activity was skipped.";
+
 export interface WorkJournalCandidateRunState {
   /** Hours between runs while Maestro is open (1–24). */
   runEveryHours: number;
@@ -42,6 +58,8 @@ export interface WorkJournalCandidateRunState {
   model: string;
   /** RFC 3339 time the last run's window ended; null when never. */
   lastRunAt: string | null;
+  /** RFC 3339 time the last run started, failed runs included; null when not recorded. */
+  lastAttemptAt: string | null;
   /** The Granola opt-in: true = yes, false = no, null = not asked yet. */
   granolaOptIn: boolean | null;
   /** True once the settings were read (or saved) at least once. */
@@ -50,7 +68,10 @@ export interface WorkJournalCandidateRunState {
   running: boolean;
   /** The last run failure; cleared by a successful run. */
   runError: string | null;
-  /** Why the last request did not run (busy, no project open); cleared by the next run. */
+  /**
+   * Why the last request did not run (busy, no project open), or that its catch-up skipped
+   * older days; cleared by the next run.
+   */
   runNotice: string | null;
   /** The last failure to read or save the run settings; cleared on success. */
   settingsError: string | null;
@@ -94,13 +115,14 @@ function fromJournal(
   journal: WorkJournalCandidateRunFile,
 ): Pick<
   WorkJournalCandidateRunState,
-  "runEveryHours" | "model" | "lastRunAt" | "granolaOptIn" | "settingsLoaded"
+  "runEveryHours" | "model" | "lastRunAt" | "lastAttemptAt" | "granolaOptIn" | "settingsLoaded"
 > {
   const granolaOptIn = journal.settings.granola_opt_in;
   return {
     runEveryHours: clampRunEveryHours(journal.settings.run_every_hours),
     model: journal.settings.model ?? "",
     lastRunAt: journal.settings.last_run_at || null,
+    lastAttemptAt: journal.settings.last_attempt_at || null,
     granolaOptIn: typeof granolaOptIn === "boolean" ? granolaOptIn : null,
     settingsLoaded: true,
   };
@@ -122,6 +144,7 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
   runEveryHours: DEFAULT_RUN_EVERY_HOURS,
   model: "",
   lastRunAt: null,
+  lastAttemptAt: null,
   granolaOptIn: null,
   settingsLoaded: false,
   running: false,
@@ -156,10 +179,13 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
       const outcome = await invoke<CandidateRunOutcome>("work_journal_run_candidates", {
         projects,
       });
-      if (outcome?.status === "ran") {
-        set({ lastRunAt: outcome.lastRunAt, runError: null, runNotice: null });
-      } else if (outcome?.status === "failed") {
-        set({ lastRunAt: outcome.lastRunAt, runError: outcome.message, runNotice: null });
+      if (outcome?.status === "ran" || outcome?.status === "failed") {
+        set({
+          lastRunAt: outcome.lastRunAt,
+          lastAttemptAt: outcome.lastAttemptAt ?? null,
+          runError: outcome.status === "failed" ? outcome.message : null,
+          runNotice: outcome.truncatedFrom ? CATCH_UP_TRUNCATED_NOTICE : null,
+        });
       } else if (outcome?.status === "busy") {
         set({ runNotice: RUN_BUSY_NOTICE });
       } else if (outcome?.status === "no_projects") {

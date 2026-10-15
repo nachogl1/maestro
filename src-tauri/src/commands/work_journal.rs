@@ -339,12 +339,17 @@ pub async fn work_journal_ensure_pages(
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CandidateRunOutcome {
     /// The run finished: how many candidates it added, the dates that got
-    /// them, and the saved `last_run_at`.
+    /// them, the saved `last_run_at` and `last_attempt_at`, and where the
+    /// catch-up would have started when the 7-day cap cut it.
     Ran {
         added: usize,
         dates: Vec<String>,
         #[serde(rename = "lastRunAt")]
         last_run_at: String,
+        #[serde(rename = "lastAttemptAt")]
+        last_attempt_at: String,
+        #[serde(rename = "truncatedFrom", skip_serializing_if = "Option::is_none")]
+        truncated_from: Option<String>,
     },
     /// Another run is still going; nothing was started.
     Busy,
@@ -363,22 +368,38 @@ pub enum CandidateRunOutcome {
         dates: Vec<String>,
         #[serde(rename = "lastRunAt")]
         last_run_at: String,
+        #[serde(rename = "lastAttemptAt")]
+        last_attempt_at: String,
+        #[serde(rename = "truncatedFrom", skip_serializing_if = "Option::is_none")]
+        truncated_from: Option<String>,
     },
 }
 
-/// Maps a finished run and its saved `last_run_at` to the command's outcome.
-fn candidate_run_outcome(report: RunReport, last_run_at: String) -> CandidateRunOutcome {
+/// Maps a finished run, its saved `last_run_at` and the `last_attempt_at`
+/// saved when it started to the command's outcome.
+fn candidate_run_outcome(
+    report: RunReport,
+    last_run_at: String,
+    last_attempt_at: String,
+) -> CandidateRunOutcome {
+    let truncated_from = report
+        .truncated_from
+        .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true));
     match report.error {
         None => CandidateRunOutcome::Ran {
             added: report.added,
             dates: report.dates,
             last_run_at,
+            last_attempt_at,
+            truncated_from,
         },
         Some(message) => CandidateRunOutcome::Failed {
             message,
             added: report.added,
             dates: report.dates,
             last_run_at,
+            last_attempt_at,
+            truncated_from,
         },
     }
 }
@@ -473,6 +494,15 @@ fn save_run(
     })
 }
 
+/// Saves when a candidate run started, before it runs, so the time shows
+/// even when the run then fails. The caller logs a failure and runs anyway.
+fn save_attempt(path: &Path, last_attempt_at: String) -> WorkJournalResult<WorkJournal> {
+    work_journal::modify(path, |j| {
+        j.settings.last_attempt_at = Some(last_attempt_at);
+        Ok(())
+    })
+}
+
 /// Runs the Work Journal candidate run over every project Maestro knows
 /// (see [`plan_run_projects`]; `projects` are the open tabs' repo paths): the
 /// activity since `last_run_at` (or one interval back) becomes pending
@@ -519,6 +549,12 @@ pub async fn work_journal_run_candidates(
     if let Some(outcome) = skip_without_projects(&plan.run) {
         return Ok(outcome);
     }
+    let last_attempt_at = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let attempt = last_attempt_at.clone();
+    // Only for display: a failed save is logged and the run goes on.
+    if let Err(e) = with_journal(move |path| save_attempt(&path, attempt)).await {
+        log::warn!("Work journal: saving the run start time failed: {e}");
+    }
     let report = work_journal_run::run_candidates(&journal, &plan.run, now).await;
     if report.added > 0 {
         let payload = CandidatesAdded {
@@ -541,7 +577,7 @@ pub async fn work_journal_run_candidates(
             replaced: false,
         },
     );
-    Ok(candidate_run_outcome(report, last_run_at))
+    Ok(candidate_run_outcome(report, last_run_at, last_attempt_at))
 }
 
 /// Whether Granola is connected in the user's Claude setup, for the
@@ -813,22 +849,37 @@ mod tests {
                 .with_timezone(&Utc),
             retry_dates: BTreeMap::new(),
             error: error.map(str::to_string),
+            truncated_from: None,
         };
+        let tried = "2026-10-15T11:59:00Z".to_string();
 
-        let ran = candidate_run_outcome(report(None), at.clone());
+        let ran = candidate_run_outcome(report(None), at.clone(), tried.clone());
         assert_eq!(
             serde_json::to_value(&ran).unwrap(),
             serde_json::json!({
-                "status": "ran", "added": 2, "dates": ["2026-10-15"], "lastRunAt": at
+                "status": "ran", "added": 2, "dates": ["2026-10-15"], "lastRunAt": at,
+                "lastAttemptAt": tried
             })
         );
 
-        let failed = candidate_run_outcome(report(Some("claude timed out")), at.clone());
+        let failed =
+            candidate_run_outcome(report(Some("claude timed out")), at.clone(), tried.clone());
         let value = serde_json::to_value(&failed).unwrap();
         assert_eq!(value["status"], "failed");
         assert_eq!(value["message"], "claude timed out");
         assert_eq!(value["added"], 2);
         assert_eq!(value["lastRunAt"], at.as_str());
+        assert_eq!(value["lastAttemptAt"], tried.as_str());
+        assert!(value.get("truncatedFrom").is_none());
+
+        let mut capped = report(None);
+        capped.truncated_from = Some(
+            chrono::DateTime::parse_from_rfc3339("2026-10-05T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        );
+        let value = serde_json::to_value(candidate_run_outcome(capped, at.clone(), tried)).unwrap();
+        assert_eq!(value["truncatedFrom"], "2026-10-05T12:00:00Z");
 
         assert_eq!(
             serde_json::to_value(CandidateRunOutcome::Busy).unwrap(),
@@ -926,6 +977,61 @@ mod tests {
             "the closed tab is still covered"
         );
         assert_eq!(next.save, vec![repo]);
+    }
+
+    #[test]
+    fn test_the_attempt_time_is_saved_first_and_kept_when_the_run_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("app").join("work-journal.json");
+
+        save_attempt(&journal, "2026-10-15T12:00:00Z".into()).unwrap();
+        let started = work_journal::load(&journal).unwrap();
+        assert_eq!(
+            started.settings.last_attempt_at.as_deref(),
+            Some("2026-10-15T12:00:00Z")
+        );
+        assert_eq!(
+            started.settings.last_run_at, None,
+            "the schedule time is untouched"
+        );
+
+        // A failed run is still saved, with the window start it got to.
+        let mut retry_dates = BTreeMap::new();
+        retry_dates.insert(
+            "2026-10-15".to_string(),
+            CandidateRetry {
+                since: "2026-10-14T22:00:00Z".into(),
+                failures: 1,
+            },
+        );
+        save_run(
+            &journal,
+            "2026-10-15T00:00:00Z".into(),
+            Vec::new(),
+            retry_dates,
+        )
+        .unwrap();
+        let after = work_journal::load(&journal).unwrap();
+        assert_eq!(
+            after.settings.last_attempt_at.as_deref(),
+            Some("2026-10-15T12:00:00Z"),
+            "the attempt time stays the real start time"
+        );
+        assert_eq!(
+            after.settings.last_run_at.as_deref(),
+            Some("2026-10-15T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn test_a_failed_attempt_save_is_an_error_the_caller_can_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-folder");
+        std::fs::write(&blocker, "x").unwrap();
+        let journal = blocker.join("work-journal.json");
+
+        assert!(save_attempt(&journal, "2026-10-15T12:00:00Z".into()).is_err());
+        assert!(!journal.exists());
     }
 
     #[test]

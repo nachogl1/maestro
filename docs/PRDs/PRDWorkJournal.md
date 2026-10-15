@@ -199,7 +199,13 @@ Granola time) are folded in and linked in the Decision trace.
   day too, even if never seen.
   - **Catch-up on start:** the first run after Maestro starts covers activity
     since the last run (for example commits made from another tool while
-    Maestro was closed). Nothing runs while Maestro is closed.
+    Maestro was closed). Nothing runs while Maestro is closed. Decided during
+    the 2026-10-15 audit fixes, flagged for the user to confirm: catch-up
+    covers at most 7 days. When the cap cuts a catch-up short, the run says so
+    once, in the suggestions box and in Settings: "Only the last 7 days were
+    checked; earlier activity was skipped." Settings shows "Last run: <when
+    the last run started> (covered up to <how far it got>)"; a failed run
+    still updates the start time.
   - **A failing day (fix, 2026-10-15):** a day whose run fails does not hold
     back the others: the run's window still counts as covered, and only the
     failed day is remembered in `work-journal.json` settings (`retry_dates`:
