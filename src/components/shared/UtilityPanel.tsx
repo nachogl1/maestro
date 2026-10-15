@@ -1,10 +1,11 @@
-import { BookOpenCheck, BrainCircuit, Rocket, StickyNote, X } from "lucide-react";
+import { BookOpenCheck, BrainCircuit, Rocket, StickyNote, Syringe, X } from "lucide-react";
 import { lazy, Suspense } from "react";
 import {
   PanelResizeHandle,
   RIGHT_PANEL_MAX_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
 } from "@/components/shared/PanelResizeHandle";
+import { InjectorSection } from "@/components/sidebar/InjectorSection";
 import { LaunchSection } from "@/components/sidebar/LaunchSection";
 import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
 
@@ -23,10 +24,12 @@ const WorkJournalPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "notes" | "secondbrain" | "launch" | "workjournal";
+export type UtilityPanelKind = "notes" | "secondbrain" | "launch" | "workjournal" | "inject";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
   notes: { title: "Notes", icon: StickyNote },
+  // Injector: one message typed + submitted into every ticked terminal.
+  inject: { title: "Injector", icon: Syringe },
   // Samurai Second Brain (issue #66, PRD §5.11): the Phase 1 audit stream
   // plus the managed-file inventory, absorbed from the old audit panel.
   secondbrain: { title: "Second Brain", icon: BrainCircuit },
@@ -96,6 +99,8 @@ export function UtilityPanel({
         <div className="flex-1 overflow-y-auto px-2.5 py-3">
           {panel === "secondbrain" ? (
             <SecondBrainSection />
+          ) : panel === "inject" ? (
+            <InjectorSection />
           ) : (
             <LaunchSection onNavigate={onNavigateToSession} />
           )}
