@@ -76,11 +76,6 @@ pub const GRANOLA_DENIED_TOOLS: [&str; 7] = [
     "mcp__granola__get_account_info",
 ];
 
-/// Granola's official MCP server (the URL the PRD's setup command adds),
-/// used when the user's `granola` line in `claude mcp list` names no
-/// `https://` URL of its own.
-pub const GRANOLA_URL: &str = "https://mcp.granola.ai/mcp";
-
 /// How far before the run's window a meeting may start and still count, so
 /// a meeting whose notes were not written yet at the last run is read once
 /// they are (the fed-back candidates stop repeats).
@@ -158,16 +153,23 @@ fn connected_granola_target(output: &str) -> Option<&str> {
 }
 
 /// The URL a Granola run reaches Granola at, from `claude mcp list` output:
-/// the user's own server (`granola: <url> (HTTP) - <tick> Connected`) when
-/// it is an `https://` URL, so the run reuses their stored sign-in, else
-/// [`GRANOLA_URL`]. `None` when Granola is not connected.
+/// the user's own server (`granola: <url> (HTTP) - <tick> Connected`), so
+/// the run reuses their stored sign-in. `None` (Granola off) when Granola is
+/// not connected, and also when it is connected some other way (a local
+/// proxy command, SSE): the run's `--mcp-config` names an HTTP server only,
+/// and another URL's sign-in may not apply, so there is no fallback URL.
 pub fn parse_granola_url(output: &str) -> Option<String> {
     let target = connected_granola_target(output)?;
-    let own = target
-        .strip_suffix(" (HTTP)")
-        .map(str::trim)
-        .filter(|url| url.starts_with("https://") && !url.contains(char::is_whitespace));
-    Some(own.unwrap_or(GRANOLA_URL).to_string())
+    let url = target.strip_suffix(" (HTTP)").map(str::trim).filter(|url| {
+        (url.starts_with("https://") || url.starts_with("http://"))
+            && !url.contains(char::is_whitespace)
+    });
+    if url.is_none() {
+        log::info!(
+            "Work journal: Granola is connected, but not as an HTTP(S) server; Granola is off"
+        );
+    }
+    url.map(str::to_string)
 }
 
 /// The preflight: runs `claude mcp list` and says whether Granola is
@@ -414,8 +416,8 @@ pub(crate) fn is_safe_model(model: &str) -> bool {
 ///   server given by `--mcp-config`), so `--setting-sources ""` instead: no
 ///   CLAUDE.md, and no user, project or local settings (so no hooks,
 ///   plugins or "always allow" rules). `--strict-mcp-config` with an
-///   `--mcp-config` naming only the `granola` server at `granola` (which
-///   reuses the stored sign-in) loads no other MCP server. The system prompt
+///   `--mcp-config` naming only the `granola` server at the given URL
+///   (which reuses the stored sign-in) loads no other MCP server. The system prompt
 ///   carries the Granola rules, the two [`GRANOLA_TOOLS`] are allowed, the
 ///   [`GRANOLA_DENIED_TOOLS`] are denied by name, and `--permission-mode
 ///   dontAsk` denies everything not allowed. `--mcp-config`,
@@ -744,23 +746,23 @@ impl RunSources for LiveSources {
 /// on, the timeout is [`GRANOLA_RUN_TIMEOUT`] and a failed exit's error
 /// never quotes the output (it could hold meeting notes).
 async fn run_claude(args: &[String], input: &str, granola: bool) -> Result<String, String> {
-    if granola {
+    let result = if granola {
         run_process("claude", args, input, GRANOLA_RUN_TIMEOUT, false).await
     } else {
-        run_process("claude", args, input, RUN_TIMEOUT, true)
-            .await
-            .map_err(safe_mode_error)
-    }
+        run_process("claude", args, input, RUN_TIMEOUT, true).await
+    };
+    result.map_err(old_cli_error)
 }
 
-/// Maps a failed run of a `claude` too old for `--safe-mode` (`error:
-/// unknown option '--safe-mode'`) to a plain "update Claude Code" message;
-/// any other error is kept. Never retried without `--safe-mode`.
-fn safe_mode_error(message: String) -> String {
-    let lower = message.to_lowercase();
-    if lower.contains("unknown option") && lower.contains("--safe-mode") {
-        "Your Claude Code is too old for Work Journal suggestions (it does not know \
-         --safe-mode). Update Claude Code and try again."
+/// Maps a failed run of a `claude` too old for one of the run's options
+/// (`error: unknown option '--safe-mode'`, or `--setting-sources` in a
+/// Granola run, where [`exchange`] names only that fact) to a plain "update
+/// Claude Code" message; any other error is kept. The arguments are fixed,
+/// so an unknown option always means an old CLI. Never retried without it.
+fn old_cli_error(message: String) -> String {
+    if message.to_lowercase().contains("unknown option") {
+        "Your Claude Code is too old for Work Journal suggestions (it does not know an \
+         option they need). Update Claude Code and try again."
             .to_string()
     } else {
         message
@@ -838,10 +840,16 @@ async fn exchange(
     let status = status.map_err(|e| format!("claude run failed ({e})"))?;
     let stdout = stdout.map_err(|e| format!("claude run failed ({e})"))?;
     if !status.success() {
+        let stderr = String::from_utf8_lossy(stderr.as_deref().unwrap_or_default());
         if !quote_output {
+            // An argument-parse failure (`error: unknown option '--x'`) comes
+            // before any input is read; only that fact is named, never what
+            // was printed.
+            if stderr.to_lowercase().contains("error: unknown option") {
+                return Err(format!("claude exited with {status}: unknown option"));
+            }
             return Err(format!("claude exited with {status}"));
         }
-        let stderr = String::from_utf8_lossy(stderr.as_deref().unwrap_or_default());
         let stdout = String::from_utf8_lossy(&stdout);
         let detail = if stderr.trim().is_empty() {
             stdout
@@ -1016,6 +1024,9 @@ async fn run_date<S: RunSources>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Granola's official MCP server, the URL the PRD's setup command adds.
+    const GRANOLA_URL: &str = "https://mcp.granola.ai/mcp";
     use crate::core::work_journal::{PageOrigin, WorkJournalPage};
     use crate::core::work_journal_activity::CandidateState;
     use serde_json::json;
@@ -1340,19 +1351,23 @@ mod tests {
     }
 
     #[test]
-    fn test_an_old_cli_without_safe_mode_gets_a_plain_message() {
-        let err = safe_mode_error(
-            "claude exited with exit code: 1: error: unknown option '--safe-mode'".into(),
-        );
-        assert_eq!(
-            err,
-            "Your Claude Code is too old for Work Journal suggestions (it does not know \
-             --safe-mode). Update Claude Code and try again."
-        );
-        let other = "claude did not answer within 180s".to_string();
-        assert_eq!(safe_mode_error(other.clone()), other);
-        let unrelated = "error: unknown option '--frobnicate'".to_string();
-        assert_eq!(safe_mode_error(unrelated.clone()), unrelated);
+    fn test_an_old_cli_gets_a_plain_message_in_both_run_kinds() {
+        let old = "Your Claude Code is too old for Work Journal suggestions (it does not know \
+                   an option they need). Update Claude Code and try again.";
+        // Without Granola the error quotes stderr; with Granola, `exchange`
+        // names only the fact.
+        for message in [
+            "claude exited with exit code: 1: error: unknown option '--safe-mode'",
+            "claude exited with exit code: 1: unknown option",
+        ] {
+            assert_eq!(old_cli_error(message.into()), old, "{message}");
+        }
+        for kept in [
+            "claude did not answer within 180s",
+            "claude exited with exit code: 1",
+        ] {
+            assert_eq!(old_cli_error(kept.into()), kept);
+        }
     }
 
     #[test]
@@ -1547,17 +1562,24 @@ mod tests {
             parse_granola_url(output).as_deref(),
             Some("https://eu.granola.example/mcp")
         );
-        for fallback in [
-            "granola: https://mcp.granola.ai/mcp (HTTP) - \u{221A} Connected",
+        assert_eq!(
+            parse_granola_url("granola: https://mcp.granola.ai/mcp (HTTP) - \u{221A} Connected")
+                .as_deref(),
+            Some(GRANOLA_URL)
+        );
+        assert_eq!(
+            parse_granola_url("granola: http://localhost:9000/mcp (HTTP) - \u{2714} Connected")
+                .as_deref(),
+            Some("http://localhost:9000/mcp")
+        );
+        // Connected some other way: Granola off, never a fallback URL.
+        for other in [
             "granola: npx granola-proxy - \u{2714} Connected",
             "granola: https://mcp.granola.ai/sse (SSE) - \u{2714} Connected",
-            "granola: http://localhost:9000/mcp (HTTP) - \u{2714} Connected",
+            "granola: ftp://example.com/mcp (HTTP) - \u{2714} Connected",
+            "granola: https://a b/mcp (HTTP) - \u{2714} Connected",
         ] {
-            assert_eq!(
-                parse_granola_url(fallback).as_deref(),
-                Some(GRANOLA_URL),
-                "{fallback:?}"
-            );
+            assert_eq!(parse_granola_url(other), None, "{other:?}");
         }
         assert_eq!(
             parse_granola_url(
@@ -2328,6 +2350,37 @@ mod tests {
             .unwrap_err();
         assert!(bare.starts_with("claude exited with"), "{bare}");
         assert!(!bare.contains("secret"), "{bare}");
+    }
+
+    #[tokio::test]
+    async fn test_an_unknown_option_is_named_even_when_the_output_is_not_quoted() {
+        let (program, args) = if cfg!(windows) {
+            (
+                "cmd",
+                vec![
+                    "/C".to_string(),
+                    "echo error: unknown option --setting-sources 1>&2 & echo secret 1>&2 & exit 1"
+                        .to_string(),
+                ],
+            )
+        } else {
+            (
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "echo error: unknown option --setting-sources >&2; echo secret >&2; exit 1"
+                        .to_string(),
+                ],
+            )
+        };
+        let mut child = spawn_process(program, &args).unwrap();
+        let err = exchange(&mut child, "", Duration::from_secs(20), false)
+            .await
+            .unwrap_err();
+        assert!(err.ends_with(": unknown option"), "{err}");
+        assert!(!err.contains("secret"), "{err}");
+        assert!(!err.contains("--setting-sources"), "{err}");
+        assert!(old_cli_error(err).contains("Update Claude Code"));
     }
 
     #[test]
