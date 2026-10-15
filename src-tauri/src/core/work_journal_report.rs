@@ -23,7 +23,7 @@ use std::time::Duration;
 use chrono::NaiveDate;
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::core::atomic_write::atomic_write_async;
+use crate::core::atomic_write::atomic_write_durable_async;
 use crate::core::work_journal::WorkJournal;
 use crate::core::work_journal_run::{is_safe_model, page_text, run_process};
 
@@ -520,10 +520,7 @@ where
     };
     let html = render_html(from, to, generated_on, &blocks);
     let target = folder.join(report_file_name(start, end));
-    let mut tmp_name = target.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = target.with_file_name(tmp_name);
-    atomic_write_async(target.clone(), tmp, html.into_bytes())
+    atomic_write_durable_async(target.clone(), html.into_bytes())
         .await
         .map_err(ReportError::Write)?;
     Ok(ReportResult::Saved(target))
