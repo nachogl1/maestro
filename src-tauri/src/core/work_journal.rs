@@ -2094,6 +2094,11 @@ mod tests {
         backup_with_foreign_settings(&folder);
         local_journal(&path, &folder);
         set_local_settings(&path, true, "C:\\Reports", "sonnet", 2);
+        modify(&path, |j| {
+            j.settings.extra.insert("local_only".into(), json!("kept"));
+            Ok(())
+        })
+        .unwrap();
         let backup = load_existing(&backup_path(&folder)).unwrap();
 
         let saved = restore_from(&path, &backup_path(&folder)).unwrap();
@@ -2109,6 +2114,11 @@ mod tests {
         assert!(
             !s.extra.contains_key("future_setting"),
             "no setting comes from the file"
+        );
+        assert_eq!(
+            s.extra.get("local_only"),
+            Some(&json!("kept")),
+            "a local setting this build does not know survives"
         );
         assert!(s.last_backup_at.is_none());
         assert_eq!(saved.pages, backup.pages, "pages come from the backup");
