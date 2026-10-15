@@ -41,6 +41,12 @@ vi.mock("@tauri-apps/api/webviewWindow", () => {
   return { WebviewWindow, getCurrentWebviewWindow: vi.fn(() => ({ label: "main" })) };
 });
 
+// The backup reminder reads the journal and follows changes on its own; it
+// has its own tests, and here it would add reads and listeners.
+vi.mock("../WorkJournalBackupReminder", () => ({
+  WorkJournalBackupReminder: () => <div data-testid="backup-reminder" />,
+}));
+
 const invokeMock = vi.mocked(invoke);
 const askMock = vi.mocked(ask);
 const listenMock = vi.mocked(listen);
@@ -146,6 +152,7 @@ describe("WorkJournalPanel", () => {
 
     expect(await screen.findByDisplayValue("Wed 14 Oct 2026")).toBeInTheDocument();
     expect(callsTo("work_journal_ensure_pages")).toEqual([{ today: "2026-10-14" }]);
+    expect(screen.getByTestId("backup-reminder")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next day" })).toBeDisabled();
   });
 
@@ -219,7 +226,9 @@ describe("WorkJournalPanel", () => {
 
     expect(await screen.findByDisplayValue("Tue 13 Oct 2026")).toBeInTheDocument();
     expect(askMock).toHaveBeenCalledTimes(1);
-    expect(callsTo("delete_work_journal_page")).toEqual([{ date: "2026-10-14" }]);
+    expect(callsTo("delete_work_journal_page")).toEqual([
+      { date: "2026-10-14", today: "2026-10-14" },
+    ]);
     expect(file.pages["2026-10-14"]).toBeUndefined();
   });
 

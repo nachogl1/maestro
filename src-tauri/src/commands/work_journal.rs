@@ -226,14 +226,19 @@ pub async fn update_work_journal_page(
     Ok(journal)
 }
 
-/// Deletes the page for `date` and records the date in `deleted_dates`.
+/// Deletes the page for `date` and records the date in `deleted_dates` when
+/// `delete_page` decides it must. `today` is the frontend's local date; when
+/// sent, it counts as already reached by the auto pass.
 #[tauri::command]
 pub async fn delete_work_journal_page(
     window: WebviewWindow,
     date: String,
+    today: Option<String>,
 ) -> Result<WorkJournal, String> {
     let journal = with_journal_write(move |path| {
-        work_journal::modify(&path, |j| work_journal::delete_page(j, &date))
+        work_journal::modify(&path, |j| {
+            work_journal::delete_page(j, &date, today.as_deref())
+        })
     })
     .await?;
     notify_changed(&window, false);

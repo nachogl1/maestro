@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { JSONContent } from "@tiptap/react";
 import { create } from "zustand";
-import { daysBetween, defaultWorkJournalTitle, isWeekend } from "@/lib/workJournalDates";
+import {
+  daysBetween,
+  defaultWorkJournalTitle,
+  isWeekend,
+  localDateString,
+} from "@/lib/workJournalDates";
 
 /** How a page came to exist (backend `PageOrigin`). */
 export type WorkJournalPageOrigin = "auto" | "manual";
@@ -69,7 +74,11 @@ interface WorkJournalState {
    * page stays on screen.
    */
   sync: (replaced: boolean) => Promise<void>;
-  /** Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). */
+  /**
+   * Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). A call
+   * for a date that is still in flight shares it, so the pane and the start-up
+   * hook do not both run it.
+   */
   ensurePages: (today: string) => Promise<void>;
   selectDate: (date: string) => void;
   /** Moves to the nearest existing page before the viewed date. */
@@ -296,6 +305,9 @@ function publishFailedSaves(): void {
 
 /** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
 let saveTick = 0;
+
+/** The day-pages call still running and the date it is for, if any. */
+let ensureInFlight: { today: string; done: Promise<void> } | null = null;
 const lastLocalSave = new Map<string, number>();
 
 /**
@@ -579,17 +591,25 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     }
   },
 
-  ensurePages: async (today: string) => {
-    set({ loading: true, error: null });
-    const tick = saveTick;
-    try {
-      const journal = await invoke<WorkJournalFile>("work_journal_ensure_pages", { today });
-      absorbDiskPages(journal.pages, tick);
-      set((s) => ({ pages: mergePages(s.pages, journal.pages), loading: false }));
-    } catch (error) {
-      console.error("Failed to create the Work Journal day pages:", error);
-      set({ loading: false, error: errorMessage(error) });
-    }
+  ensurePages: (today: string) => {
+    if (ensureInFlight?.today === today) return ensureInFlight.done;
+    const run = async (): Promise<void> => {
+      set({ loading: true, error: null });
+      const tick = saveTick;
+      try {
+        const journal = await invoke<WorkJournalFile>("work_journal_ensure_pages", { today });
+        absorbDiskPages(journal.pages, tick);
+        set((s) => ({ pages: mergePages(s.pages, journal.pages), loading: false }));
+      } catch (error) {
+        console.error("Failed to create the Work Journal day pages:", error);
+        set({ loading: false, error: errorMessage(error) });
+      }
+    };
+    const done = run().finally(() => {
+      if (ensureInFlight?.done === done) ensureInFlight = null;
+    });
+    ensureInFlight = { today, done };
+    return done;
   },
 
   selectDate: (date: string) => set({ viewedDate: date }),
@@ -703,7 +723,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       clearFailedSaves(date);
       publishFailedSaves();
       const tick = saveTick;
-      const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
+      const journal = await invoke<WorkJournalFile>("delete_work_journal_page", {
+        date,
+        today: localDateString(new Date()),
+      });
       absorbDiskPages(journal.pages, tick);
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {

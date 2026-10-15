@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { localDateString } from "@/lib/workJournalDates";
 import {
   discardWorkJournalConflicts,
   EMPTY_PAGE_BODY,
@@ -154,7 +155,10 @@ describe("useWorkJournalStore", () => {
     invokeMock.mockResolvedValueOnce(journal([page("2026-10-10"), page("2026-10-14")]));
     await useWorkJournalStore.getState().deletePage("2026-10-13");
 
-    expect(invokeMock).toHaveBeenCalledWith("delete_work_journal_page", { date: "2026-10-13" });
+    expect(invokeMock).toHaveBeenCalledWith("delete_work_journal_page", {
+      date: "2026-10-13",
+      today: localDateString(new Date()),
+    });
     expect(useWorkJournalStore.getState().pages["2026-10-13"]).toBeUndefined();
     expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-14");
   });
@@ -492,7 +496,9 @@ describe("useWorkJournalStore failed-save retries", () => {
     const backend = invokeMock.getMockImplementation();
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) =>
       cmd === "update_work_journal_page" && restoring
-        ? Promise.reject(`${WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE} The Work Journal is being restored`)
+        ? Promise.reject(
+            `${WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE} The Work Journal is being restored`,
+          )
         : backend?.(cmd, args),
     );
     failing = false;
