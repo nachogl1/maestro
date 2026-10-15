@@ -4,7 +4,32 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to the same PR cancels the run that is still going for the old
+# commit, so runners only ever test the latest code.
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src-tauri/**'
+              - 'maestro-mcp-server/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/pr-checks.yml'
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -14,9 +39,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install dependencies
-        run: npm install
+        # npm ci keeps the lockfile's @tauri-apps/* versions in step with the
+        # Rust crates in Cargo.lock (same reason as release.yml).
+        run: npm ci
 
       - name: Typecheck
         run: npx tsc --noEmit
@@ -29,6 +57,10 @@ jobs:
 
   rust:
     name: Rust
+    needs: changes
+    # Manual runs always test Rust; PRs only when Rust-side files changed.
+    # A skipped job counts as passing for the PR status.
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +69,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: ". -> target"
 
       - name: Install Linux build dependencies
         run: |

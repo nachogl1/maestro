@@ -53,6 +53,7 @@ pub mod transcript_parser;
 pub mod transcript_watcher;
 pub mod windows_process;
 pub mod work_journal;
+pub mod work_journal_activity;
 pub mod worktree_manager;
 
 pub use claude_event::ClaudeEvent;

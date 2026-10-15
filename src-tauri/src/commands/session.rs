@@ -15,6 +15,7 @@ use crate::core::session_manager::{AiMode, SessionConfig, SessionManager};
 use crate::core::status_server::StatusServer;
 use crate::core::supervisor::Supervisor;
 use crate::core::transcript_watcher::TranscriptWatcher;
+use crate::core::work_journal_activity;
 
 /// Exposes `SessionManager::all_sessions` to the frontend.
 /// Returns a snapshot of all active sessions in arbitrary order.
@@ -48,9 +49,13 @@ pub async fn create_session(
         None => None,
     };
 
-    state
+    let config = state
         .create_session(id, mode, canonical, canonical_wd)
-        .map_err(|existing| format!("Session {} already exists", existing.id))
+        .map_err(|existing| format!("Session {} already exists", existing.id))?;
+    // Work journal: the first point where the terminal's project is known —
+    // record that it opened (never what is typed). Errors are only logged.
+    work_journal_activity::note_terminal_opened(&config).await;
+    Ok(config)
 }
 
 /// Exposes `SessionManager::assign_branch` to the frontend.
