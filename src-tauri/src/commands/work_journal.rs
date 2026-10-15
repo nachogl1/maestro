@@ -130,16 +130,14 @@ pub async fn delete_work_journal_page(
 }
 
 /// Shallow-merges `settings` into the journal settings: each top-level key
-/// sent overwrites or adds that key; keys not sent are kept.
+/// sent overwrites or adds that key; keys not sent are kept. The journal's
+/// own folder is refused as the backup folder.
 #[tauri::command]
 pub async fn update_work_journal_settings(
     window: WebviewWindow,
     settings: Map<String, Value>,
 ) -> Result<WorkJournal, String> {
-    let journal = with_journal(move |path| {
-        work_journal::modify(&path, |j| work_journal::merge_settings(j, settings))
-    })
-    .await?;
+    let journal = with_journal(move |path| work_journal::update_settings(&path, settings)).await?;
     notify_changed(&window, false);
     Ok(journal)
 }
