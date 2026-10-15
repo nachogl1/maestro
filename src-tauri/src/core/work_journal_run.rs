@@ -892,7 +892,7 @@ async fn exchange(
     let Ok((sent, stdout, stderr, status)) = timed else {
         let _ = child.start_kill();
         let _ = tokio::time::timeout(KILL_WAIT, child.wait()).await;
-        return Err(format!("claude did not answer within {}s", limit.as_secs()));
+        return Err(format!("{TIMEOUT_ERROR} {}s", limit.as_secs()));
     };
     let status = status.map_err(|e| format!("claude run failed ({e})"))?;
     let stdout = stdout.map_err(|e| format!("claude run failed ({e})"))?;
@@ -921,6 +921,9 @@ async fn exchange(
     sent.map_err(|e| format!("could not send the activity to claude ({e})"))?;
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
+
+/// How a `claude` call that ran past its limit fails (see [`exchange`]).
+const TIMEOUT_ERROR: &str = "claude did not answer within";
 
 /// How long a killed child is waited for before giving up on reaping it.
 const KILL_WAIT: Duration = Duration::from_secs(5);
@@ -985,12 +988,16 @@ async fn run_with<S: RunSources>(
     let mut by_date: BTreeMap<String, Vec<ActivityItem>> = BTreeMap::new();
     // A date tried again also gets its own activity from before the window
     // (the part a failed run left uncovered), collected first so it stays
-    // in time order. Its activity inside the window comes below.
+    // in time order. Its activity inside the window comes below, without
+    // what the retry already has (a Claude session or terminal spanning the
+    // window start is listed by both collections).
+    let mut from_retries: HashSet<(&'static str, String)> = HashSet::new();
     for retry in &retries {
         let to = end_of_local_date(&retry.date).map_or(start, |day_end| day_end.min(start));
         if retry.since < to {
             for item in sources.collect(retry.since, to, projects).await {
                 if item.date == retry.date {
+                    from_retries.insert((source_tag(item.source), item.key.clone()));
                     by_date.entry(item.date.clone()).or_default().push(item);
                 }
             }
@@ -1000,6 +1007,9 @@ async fn run_with<S: RunSources>(
         }
     }
     for item in sources.collect(start, end, projects).await {
+        if from_retries.contains(&(source_tag(item.source), item.key.clone())) {
+            continue;
+        }
         by_date.entry(item.date.clone()).or_default().push(item);
     }
     // Meetings happen on days without other activity too, so with Granola on
@@ -1015,7 +1025,9 @@ async fn run_with<S: RunSources>(
     // its uncovered activity starts, so the next run asks about that date
     // alone (a date that already succeeded is never asked again, even once
     // its candidates left the temporary file). After `MAX_DATE_TRIES`
-    // failures the date is given up with an error the user sees.
+    // failures of the date's own call the date is given up with an error the
+    // user sees; a failure of the whole run (see `DateFailure`) is not
+    // counted, so being offline or logged out never gives a date up.
     let mut retry_dates = BTreeMap::new();
     let mut errors: Vec<String> = Vec::new();
     for (date, items) in by_date {
@@ -1031,9 +1043,9 @@ async fn run_with<S: RunSources>(
                 report.added += added;
                 report.dates.push(date);
             }
-            Err(e) => {
+            Err(DateFailure { message: e, counts }) => {
                 log::warn!("Work journal: candidate run for {date} failed: {e}");
-                let failures = previous.map_or(0, |retry| retry.failures) + 1;
+                let failures = previous.map_or(0, |retry| retry.failures) + u32::from(counts);
                 if failures >= MAX_DATE_TRIES {
                     errors.push(format!(
                         "Could not get suggestions for {} after {failures} tries: {e}",
@@ -1072,6 +1084,27 @@ fn local_dates(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<String> {
         .collect()
 }
 
+/// Why one date's run failed.
+struct DateFailure {
+    message: String,
+    /// The failure is about this date's call (an unusable reply or a
+    /// timeout), so it counts as one of the date's [`MAX_DATE_TRIES`]. A
+    /// failure of the whole run (`claude` cannot start, exits with an
+    /// error, is too old; the activity file cannot be read or written) does
+    /// not: the date is kept for a retry with its count unchanged.
+    counts: bool,
+}
+
+impl DateFailure {
+    /// A failure of the whole run, not of this date.
+    fn run_wide(message: String) -> Self {
+        Self {
+            message,
+            counts: false,
+        }
+    }
+}
+
 /// One `claude` call for one date; returns how many candidates were added.
 /// `granola_window` is the run's window when Granola is on (`None` = off).
 async fn run_date<S: RunSources>(
@@ -1081,8 +1114,11 @@ async fn run_date<S: RunSources>(
     granola_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     date: &str,
     items: &[ActivityItem],
-) -> Result<usize, String> {
-    let existing = sources.candidates(date).await?;
+) -> Result<usize, DateFailure> {
+    let existing = sources
+        .candidates(date)
+        .await
+        .map_err(DateFailure::run_wide)?;
     let page = journal
         .pages
         .get(date)
@@ -1093,8 +1129,18 @@ async fn run_date<S: RunSources>(
     if let Some((start, end)) = granola_window {
         input.push_str(&granola_input(date, start, end));
     }
-    let reply = sources.ask_claude(args, &input, granola).await?;
-    let valid: Vec<NewCandidate> = parse_reply(&reply, date, &existing, granola)?
+    let reply = sources
+        .ask_claude(args, &input, granola)
+        .await
+        .map_err(|message| DateFailure {
+            counts: message.starts_with(TIMEOUT_ERROR),
+            message,
+        })?;
+    let valid: Vec<NewCandidate> = parse_reply(&reply, date, &existing, granola)
+        .map_err(|message| DateFailure {
+            message,
+            counts: true,
+        })?
         .iter()
         .filter_map(|candidate| match validate_candidate(candidate) {
             Ok(valid) => Some(valid),
@@ -1107,7 +1153,7 @@ async fn run_date<S: RunSources>(
     if valid.is_empty() {
         return Ok(0);
     }
-    sources.add(valid).await
+    sources.add(valid).await.map_err(DateFailure::run_wide)
 }
 
 #[cfg(test)]
@@ -1958,6 +2004,8 @@ mod tests {
         /// Collect only the items whose local date and time fall inside the
         /// asked window (off: every item, whatever the window).
         by_window: bool,
+        /// Every `claude` call fails with this (a failure of the whole run).
+        fail_all: Option<String>,
     }
 
     /// When `item` happened, read back from its local date and time.
@@ -2009,6 +2057,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((args.to_vec(), input.to_string()));
+            if let Some(error) = &self.fail_all {
+                return Err(error.clone());
+            }
             let date = input
                 .lines()
                 .next()
@@ -2017,7 +2068,7 @@ mod tests {
             self.replies
                 .get(date)
                 .cloned()
-                .ok_or_else(|| "timed out".to_string())
+                .ok_or_else(|| format!("{TIMEOUT_ERROR} 180s"))
         }
 
         async fn add(&self, new: Vec<NewCandidate>) -> Result<usize, String> {
@@ -2132,7 +2183,7 @@ mod tests {
         assert_eq!(report.added, 1);
         assert_eq!(report.dates, vec!["2026-10-14"]);
         let error = report.error.unwrap();
-        assert!(error.contains("2026-10-15") && error.contains("timed out"));
+        assert!(error.contains("2026-10-15") && error.contains(TIMEOUT_ERROR));
         assert_eq!(report.covered_until, now());
         assert_eq!(
             report.retry_dates.keys().collect::<Vec<_>>(),
@@ -2342,25 +2393,134 @@ mod tests {
 
     #[test]
     fn test_a_retry_beyond_the_catch_up_limit_is_dropped() {
-        let old = (now() - TimeDelta::days(MAX_CATCH_UP_DAYS + 2))
+        let local_date =
+            |at: DateTime<Utc>| at.with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let old = local_date(now() - TimeDelta::days(MAX_CATCH_UP_DAYS + 2));
+        let recent = local_date(now());
+        let saved = BTreeMap::from([
+            (old.clone(), retry_at(start_of_local_date(&old).unwrap(), 1)),
+            (
+                recent.clone(),
+                CandidateRetry {
+                    since: "not a time".into(),
+                    failures: 2,
+                },
+            ),
+        ]);
+        let pending = pending_retries(&saved, now());
+        assert_eq!(pending.len(), 1, "the old retry is dropped");
+        assert_eq!(pending[0].date, recent, "the newer retry is kept");
+        assert_eq!(pending[0].since, start_of_local_date(&recent).unwrap());
+        assert_eq!(pending[0].failures, 2);
+        assert_eq!(short_date("2026-10-04"), "4 Oct");
+    }
+
+    #[tokio::test]
+    async fn test_a_run_wide_failure_never_gives_a_date_up() {
+        let (mut fake, day, _next) = failing_day_then_good_day();
+        fake.fail_all = Some("could not start the claude CLI (program not found)".into());
+        let mut journal = journal_with(Some((now() - TimeDelta::days(3)).to_rfc3339()), None);
+        journal.settings.retry_dates = BTreeMap::from([(
+            day.clone(),
+            retry_at(start_of_local_date(&day).unwrap(), MAX_DATE_TRIES - 1),
+        )]);
+        let mut at = now();
+        for _ in 0..MAX_DATE_TRIES {
+            let report = run_with(&fake, &journal, &[], at).await;
+            let error = report.error.clone().unwrap();
+            assert!(!error.contains("Could not get suggestions"), "{error}");
+            assert_eq!(report.retry_dates[&day].failures, MAX_DATE_TRIES - 1);
+            save(&mut journal, &report);
+            at += TimeDelta::hours(1);
+        }
+
+        // Once claude runs again, a timeout of the date is its last try.
+        fake.fail_all = None;
+        let report = run_with(&fake, &journal, &[], at).await;
+        assert!(report
+            .error
+            .unwrap()
+            .contains("Could not get suggestions for"));
+        assert!(!report.retry_dates.contains_key(&day));
+    }
+
+    #[tokio::test]
+    async fn test_a_retry_for_today_joins_the_window_without_repeating_an_item() {
+        // Local noon of the test day, so every instant below is on one date.
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let noon = start_of_local_date(&today).unwrap() + TimeDelta::hours(12);
+        let since = noon - TimeDelta::hours(3);
+        let start = noon - TimeDelta::hours(1);
+        // A Claude session spanning the window start is listed by both
+        // collections, with the same key.
+        let session = |at| ActivityItem {
+            source: CandidateSource::Claude,
+            key: "session-1".into(),
+            ..item_at(at, "Long session")
+        };
+        let mut fake = Fake {
+            items: vec![
+                item_at(noon - TimeDelta::hours(2), "Commit a"),
+                session(noon - TimeDelta::minutes(90)),
+                session(noon - TimeDelta::minutes(50)),
+                item_at(noon - TimeDelta::minutes(30), "Commit b"),
+            ],
+            by_window: true,
+            ..Fake::default()
+        };
+        fake.replies.insert(today.clone(), "NONE".into());
+        let mut journal = journal_with(Some(start.to_rfc3339()), None);
+        journal.settings.retry_dates = BTreeMap::from([(today.clone(), retry_at(since, 1))]);
+
+        let report = run_with(&fake, &journal, &[], noon).await;
+
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(report.retry_dates.is_empty());
+        assert_eq!(
+            *fake.windows.lock().unwrap(),
+            vec![(since, start), (start, noon)]
+        );
+        let asked = fake.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "one call for the date");
+        let input = &asked[0].1;
+        assert!(
+            input.contains("Commit a") && input.contains("Commit b"),
+            "{input}"
+        );
+        assert_eq!(input.matches("Long session").count(), 1, "{input}");
+    }
+
+    #[tokio::test]
+    async fn test_a_granola_retry_asks_its_date_with_its_own_meetings_window() {
+        let day = (now() - TimeDelta::days(2))
             .with_timezone(&Local)
             .format("%Y-%m-%d")
             .to_string();
-        let saved =
-            BTreeMap::from([(old.clone(), retry_at(start_of_local_date(&old).unwrap(), 1))]);
-        assert!(pending_retries(&saved, now()).is_empty());
-        let recent = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
-        let saved = BTreeMap::from([(
-            recent.clone(),
-            CandidateRetry {
-                since: "not a time".into(),
-                failures: 2,
-            },
-        )]);
-        let pending = pending_retries(&saved, now());
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].since, start_of_local_date(&recent).unwrap());
-        assert_eq!(short_date("2026-10-04"), "4 Oct");
+        let since = start_of_local_date(&day).unwrap() + TimeDelta::hours(2);
+        let fake = Fake {
+            granola: true,
+            ..Fake::default()
+        };
+        let mut journal = granola_journal(Some(true));
+        let start = now() - TimeDelta::hours(1);
+        journal.settings.last_run_at = Some(start.to_rfc3339());
+        journal.settings.retry_dates = BTreeMap::from([(day.clone(), retry_at(since, 1))]);
+
+        let report = run_with(&fake, &journal, &[], now()).await;
+
+        let asked = fake.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1 + local_dates(start, now()).len());
+        let input = &asked
+            .iter()
+            .find(|(_, input)| input.starts_with(&format!("Date: {day}\n")))
+            .expect("the retried date is asked without any activity")
+            .1;
+        assert!(
+            input.ends_with(&granola_input(&day, since, now())),
+            "{input}"
+        );
+        // The fake has no replies: a timeout is the date's second try.
+        assert_eq!(report.retry_dates[&day].failures, 2);
     }
 
     #[tokio::test]
