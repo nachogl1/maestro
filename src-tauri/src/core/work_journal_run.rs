@@ -990,14 +990,20 @@ async fn run_with<S: RunSources>(
     // (the part a failed run left uncovered), collected first so it stays
     // in time order. Its activity inside the window comes below, without
     // what the retry already has (a Claude session or terminal spanning the
-    // window start is listed by both collections).
-    let mut from_retries: HashSet<(&'static str, String)> = HashSet::new();
+    // window start is listed by both collections). The date is part of the
+    // match: such an item keeps its key on every day it spans, and its entry
+    // on another date is that date's own activity.
+    let mut from_retries: HashSet<(String, &'static str, String)> = HashSet::new();
     for retry in &retries {
         let to = end_of_local_date(&retry.date).map_or(start, |day_end| day_end.min(start));
         if retry.since < to {
             for item in sources.collect(retry.since, to, projects).await {
                 if item.date == retry.date {
-                    from_retries.insert((source_tag(item.source), item.key.clone()));
+                    from_retries.insert((
+                        item.date.clone(),
+                        source_tag(item.source),
+                        item.key.clone(),
+                    ));
                     by_date.entry(item.date.clone()).or_default().push(item);
                 }
             }
@@ -1007,7 +1013,8 @@ async fn run_with<S: RunSources>(
         }
     }
     for item in sources.collect(start, end, projects).await {
-        if from_retries.contains(&(source_tag(item.source), item.key.clone())) {
+        let seen = (item.date.clone(), source_tag(item.source), item.key.clone());
+        if from_retries.contains(&seen) {
             continue;
         }
         by_date.entry(item.date.clone()).or_default().push(item);
@@ -1025,9 +1032,11 @@ async fn run_with<S: RunSources>(
     // its uncovered activity starts, so the next run asks about that date
     // alone (a date that already succeeded is never asked again, even once
     // its candidates left the temporary file). After `MAX_DATE_TRIES`
-    // failures of the date's own call the date is given up with an error the
-    // user sees; a failure of the whole run (see `DateFailure`) is not
-    // counted, so being offline or logged out never gives a date up.
+    // counted failures the date is given up with an error the user sees. Only
+    // a timeout of the date's own `claude` call and an unusable reply count;
+    // `claude` not starting, a non-zero exit (a logged-out or too-old CLI
+    // among them), an I/O error and an activity-file error do not (see
+    // `DateFailure`).
     let mut retry_dates = BTreeMap::new();
     let mut errors: Vec<String> = Vec::new();
     for (date, items) in by_date {
@@ -1087,11 +1096,11 @@ fn local_dates(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<String> {
 /// Why one date's run failed.
 struct DateFailure {
     message: String,
-    /// The failure is about this date's call (an unusable reply or a
-    /// timeout), so it counts as one of the date's [`MAX_DATE_TRIES`]. A
-    /// failure of the whole run (`claude` cannot start, exits with an
-    /// error, is too old; the activity file cannot be read or written) does
-    /// not: the date is kept for a retry with its count unchanged.
+    /// Counts as one of the date's [`MAX_DATE_TRIES`]: only a timeout of the
+    /// date's own `claude` call or an unusable reply. Not counted, the date
+    /// kept for a retry with its count unchanged: `claude` not starting, a
+    /// non-zero exit (a logged-out or too-old CLI among them), an I/O error
+    /// talking to it, and reading or writing the activity file.
     counts: bool,
 }
 
@@ -2488,6 +2497,44 @@ mod tests {
             "{input}"
         );
         assert_eq!(input.matches("Long session").count(), 1, "{input}");
+    }
+
+    #[tokio::test]
+    async fn test_a_terminal_spanning_midnight_stays_in_both_days_prompts() {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let midnight = start_of_local_date(&today).unwrap();
+        let noon = midnight + TimeDelta::hours(12);
+        let start = noon - TimeDelta::hours(1);
+        let before = midnight - TimeDelta::hours(2);
+        let yesterday = before.with_timezone(&Local).format("%Y-%m-%d").to_string();
+        // One terminal open overnight: the same key on both days.
+        let terminal = |at| ActivityItem {
+            source: CandidateSource::Terminal,
+            key: "terminal-1".into(),
+            ..item_at(at, "Terminal open")
+        };
+        let mut fake = Fake {
+            items: vec![
+                terminal(midnight - TimeDelta::hours(1)),
+                terminal(noon - TimeDelta::minutes(30)),
+            ],
+            by_window: true,
+            ..Fake::default()
+        };
+        fake.replies.insert(yesterday.clone(), "NONE".into());
+        fake.replies.insert(today.clone(), "NONE".into());
+        let mut journal = journal_with(Some(start.to_rfc3339()), None);
+        journal.settings.retry_dates = BTreeMap::from([(yesterday.clone(), retry_at(before, 1))]);
+
+        let report = run_with(&fake, &journal, &[], noon).await;
+
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(asked_about(&fake, &yesterday), 1);
+        assert_eq!(asked_about(&fake, &today), 1, "today is still asked");
+        let asked = fake.asked.lock().unwrap();
+        assert!(asked
+            .iter()
+            .all(|(_, input)| input.matches("Terminal open").count() == 1));
     }
 
     #[tokio::test]
