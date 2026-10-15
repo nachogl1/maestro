@@ -5,9 +5,12 @@ import {
   createLeaf,
   gridDimensions,
   MAX_SESSIONS,
+  moveSlotToSide,
+  moveSlotToTreeEdge,
   removeLeaf,
   splitLeaf,
   swapSlots,
+  type TreeNode,
   updateRatio,
 } from "../splitTree";
 
@@ -99,5 +102,95 @@ describe("swapSlots", () => {
     expect(after).not.toBeNull();
     if (!after) throw new Error("expected removeLeaf to return a tree");
     expect(collectSlotIds(after)).toEqual(["c", "a"]);
+  });
+});
+
+describe("moveSlotToSide", () => {
+  // a | (b over c)
+  const tree = (): TreeNode => ({
+    type: "split",
+    id: "root",
+    direction: "vertical",
+    ratio: 0.5,
+    children: [
+      createLeaf("a"),
+      {
+        type: "split",
+        id: "right",
+        direction: "horizontal",
+        ratio: 0.5,
+        children: [createLeaf("b"), createLeaf("c")],
+      },
+    ],
+  });
+
+  it("takes the moved pane out and splits the target on the given side", () => {
+    const after = moveSlotToSide(tree(), "a", "c", "bottom");
+    // a's old sibling (the b/c stack) is promoted to the root.
+    expect(after.type).toBe("split");
+    if (after.type !== "split") throw new Error("expected split root");
+    expect(after.direction).toBe("horizontal");
+    expect(collectSlotIds(after)).toEqual(["b", "c", "a"]);
+    const cSplit = after.children[1];
+    expect(cSplit.type).toBe("split");
+    if (cSplit.type !== "split") throw new Error("expected c to be split");
+    expect(cSplit.direction).toBe("horizontal");
+    expect(cSplit.ratio).toBe(0.5);
+    expect(collectSlotIds(cSplit)).toEqual(["c", "a"]);
+  });
+
+  it("puts the moved pane first for left/top and second for right/bottom", () => {
+    expect(collectSlotIds(moveSlotToSide(tree(), "a", "b", "left"))).toEqual(["a", "b", "c"]);
+    expect(collectSlotIds(moveSlotToSide(tree(), "a", "b", "right"))).toEqual(["b", "a", "c"]);
+    const left = moveSlotToSide(tree(), "c", "a", "left");
+    expect(left.type).toBe("split");
+    if (left.type !== "split") throw new Error("expected split root");
+    expect(left.children[0].type).toBe("split");
+    if (left.children[0].type !== "split") throw new Error("expected a to be split");
+    expect(left.children[0].direction).toBe("vertical");
+  });
+
+  it("keeps the tree for a missing slot or a self-drop", () => {
+    const t = tree();
+    expect(moveSlotToSide(t, "a", "a", "left")).toBe(t);
+    expect(moveSlotToSide(t, "zz", "a", "left")).toBe(t);
+    expect(moveSlotToSide(t, "a", "zz", "left")).toBe(t);
+  });
+});
+
+describe("moveSlotToTreeEdge", () => {
+  it("makes the pane a full column or row beside everything else", () => {
+    const t: TreeNode = {
+      type: "split",
+      id: "root",
+      direction: "horizontal",
+      ratio: 0.5,
+      children: [createLeaf("a"), createLeaf("b")],
+    };
+    const right = moveSlotToTreeEdge(t, "a", "right");
+    expect(right.type).toBe("split");
+    if (right.type !== "split") throw new Error("expected split root");
+    expect(right.direction).toBe("vertical");
+    expect(collectSlotIds(right)).toEqual(["b", "a"]);
+    expect(right.ratio).toBeCloseTo(0.67);
+
+    const top = moveSlotToTreeEdge(t, "b", "top", 0.25);
+    if (top.type !== "split") throw new Error("expected split root");
+    expect(top.direction).toBe("horizontal");
+    expect(collectSlotIds(top)).toEqual(["b", "a"]);
+    expect(top.ratio).toBe(0.25);
+  });
+
+  it("keeps a single pane or a missing slot unchanged", () => {
+    const single = createLeaf("a");
+    expect(moveSlotToTreeEdge(single, "a", "left")).toBe(single);
+    const t: TreeNode = {
+      type: "split",
+      id: "root",
+      direction: "horizontal",
+      ratio: 0.5,
+      children: [createLeaf("a"), createLeaf("b")],
+    };
+    expect(moveSlotToTreeEdge(t, "zz", "left")).toBe(t);
   });
 });

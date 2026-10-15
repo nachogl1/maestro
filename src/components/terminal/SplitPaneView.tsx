@@ -16,6 +16,12 @@ interface SplitPaneViewProps {
    */
   eagleMode?: boolean;
   /**
+   * Id written to `data-split-stage` on the split area (non-eagle only), so
+   * a pane drag can hit-test the area's outer edges and keyboard moves can
+   * find this grid's panes.
+   */
+  stageId?: string;
+  /**
    * Slots to CSS-hide (parked terminals). Hiding is className-only — the
    * React element tree never changes shape, so the xterm instances stay
    * mounted (same keep-alive trick as eagle mode's flattening).
@@ -224,6 +230,7 @@ export function SplitPaneView({
   eagleMode = false,
   hiddenSlotIds,
   zoomedSlotId = null,
+  stageId,
 }: SplitPaneViewProps) {
   const leaves: LeafBox[] = [];
   const dividers: DividerBox[] = [];
@@ -236,7 +243,12 @@ export function SplitPaneView({
   // means toggling eagle view never reorders (or otherwise touches) the
   // mounted pane elements.
   return (
-    <div className={eagleMode ? "contents" : "relative h-full w-full min-h-0 min-w-0"}>
+    <div
+      className={eagleMode ? "contents" : "relative h-full w-full min-h-0 min-w-0"}
+      // Lets a pane drag find the whole split area (drop on its outer edge =
+      // full column/row) and keyboard moves find this grid's panes.
+      data-split-stage={eagleMode ? undefined : stageId}
+    >
       {leaves.map(({ slotId, rect }) => {
         const isHidden = hiddenSlotIds?.has(slotId) ?? false;
         const isZoomed = zoomActive && slotId === zoomedSlotId;

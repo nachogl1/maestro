@@ -6,6 +6,7 @@ import {
   Expand,
   GitBranch,
   GitPullRequest,
+  Grid2x2,
   Minimize,
   ParkingSquare,
   Pin,
@@ -69,6 +70,13 @@ interface TerminalHeaderProps {
   projectColor?: string;
   /** Reserve space at the left for the pane's drag handle overlay. */
   hasMoveHandle?: boolean;
+  /**
+   * Eagle view: cycle this tile through the sizes (1×1 → 2 wide → 2×2 → 2
+   * tall). Undefined hides the button — only the eagle grid has tile sizes.
+   */
+  onCycleTileSize?: () => void;
+  /** Current eagle tile size, e.g. "2×1", shown in the size button's tooltip. */
+  tileSizeLabel?: string;
   /** Warning flag: renders the header yellow (toggled by clicking it). */
   isFlagged?: boolean;
   /**
@@ -150,6 +158,8 @@ export const TerminalHeader = memo(function TerminalHeader({
   projectLabel,
   projectColor,
   hasMoveHandle = false,
+  onCycleTileSize,
+  tileSizeLabel,
   isFlagged = false,
   hasAttention = false,
   onToggleFlag,
@@ -312,6 +322,10 @@ export const TerminalHeader = memo(function TerminalHeader({
     // biome-ignore lint/a11y/useKeyWithClickEvents: see noStaticElementInteractions above.
     <div
       className={`no-select flex ${adaptive.headerHeight} shrink-0 items-center ${adaptive.gapSize} border-b ${statusBorder} ${isFlagged || hasAttention ? "warning-flag" : "bg-maestro-surface"} ${hasMoveHandle ? "pl-6 pr-2" : "px-2"} ${onToggleFlag ? "cursor-pointer" : ""}`}
+      // The whole title bar is the pane's drag handle (see DraggablePane in
+      // TerminalGrid): press and move to pick the terminal up; a plain click
+      // still toggles the flag.
+      data-pane-drag-handle=""
       onClick={handleHeaderClick}
       title={
         onToggleFlag
@@ -443,6 +457,19 @@ export const TerminalHeader = memo(function TerminalHeader({
             className="rounded bg-maestro-green px-1.5 py-0.5 font-medium text-white transition-colors hover:bg-maestro-green/80 text-[9px]"
           >
             Launch
+          </button>
+        )}
+
+        {/* Tile size (eagle view only) — cycles 1×1 → 2×1 → 2×2 → 1×2 */}
+        {onCycleTileSize && (
+          <button
+            type="button"
+            onClick={() => onCycleTileSize()}
+            className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-accent"
+            title={`Tile size ${tileSizeLabel ?? "1×1"} — click for the next size`}
+            aria-label={`Change tile size of session ${sessionId}`}
+          >
+            <Grid2x2 size={terminalCount <= 4 ? 14 : 12} />
           </button>
         )}
 

@@ -40,6 +40,19 @@ import {
 } from "@/lib/git";
 import { type McpServerConfig, removeOpenCodeMcpConfig, removeSessionMcpConfig } from "@/lib/mcp";
 import {
+  clampSpan,
+  type EagleDropZone,
+  eagleDropZone,
+  type MoveDirection,
+  neighbourInDirection,
+  type PaneDropZone,
+  paneDropZone,
+  STAGE_EDGE_RATIO,
+  stageEdgeAt,
+  type TileSpan,
+  tileSpanLabel,
+} from "@/lib/paneMoves";
+import {
   loadBranchConfig,
   type PluginConfig,
   removeSessionPluginConfig,
@@ -74,6 +87,9 @@ import {
   createLeaf,
   findSiblingSlotId,
   MAX_SESSIONS,
+  moveSlotToSide,
+  moveSlotToTreeEdge,
+  type PaneSide,
   removeLeaf,
   swapSlots,
   type TreeNode,
@@ -200,6 +216,21 @@ interface TerminalGridProps {
    * terminals are already on screen.
    */
   pinnedTileStyles?: ReadonlyMap<number, React.CSSProperties> | null;
+  /**
+   * Eagle view: display position of each launched tile (session id → index)
+   * in the user's free order; tiles not listed go after the ordered ones.
+   */
+  eagleTileRank?: ReadonlyMap<number, number>;
+  /** Eagle view: tile sizes per session id (columns × rows); absent = 1×1. */
+  eagleTileSpans?: Readonly<Record<number, TileSpan>>;
+  /** Eagle view: current column count — a tile is never wider than the grid. */
+  eagleColumnCount?: number;
+  /** Eagle view: a tile was dropped before/after/onto another tile (session ids). */
+  onEagleReorder?: (srcSessionId: number, destSessionId: number, zone: EagleDropZone) => void;
+  /** Eagle view: Alt+Shift+Arrow — move a tile one step in the grid. */
+  onEagleMoveTile?: (sessionId: number, direction: MoveDirection) => void;
+  /** Eagle view: the header's tile-size button — next size for this session. */
+  onEagleCycleTileSize?: (sessionId: number) => void;
 }
 
 /**
@@ -234,11 +265,19 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onEagleZoomToggle,
     eagleTileCount = 0,
     pinnedTileStyles = null,
+    eagleTileRank,
+    eagleTileSpans,
+    eagleColumnCount,
+    onEagleReorder,
+    onEagleMoveTile,
+    onEagleCycleTileSize,
   },
   ref,
 ) {
   // Use repoPath for git operations, falling back to projectPath
   const effectiveRepoPath = repoPath ?? projectPath;
+  // Identifies this grid's split area in the DOM (pane drags and keyboard moves).
+  const stageId = tabId ?? "grid";
 
   const addSessionToProject = useWorkspaceStore((s) => s.addSessionToProject);
   const removeSessionFromProject = useWorkspaceStore((s) => s.removeSessionFromProject);
@@ -486,6 +525,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   }, [zoomedSlotId, visibleDisplaySlotIds, clearSlotAttention]);
 
   // Terminal keyboard navigation hook
+  // Same deferred-ref pattern as parkFocusedRef: the move handler is defined
+  // further down (it needs handleSwapSlots), so the hook reads it at call time.
+  const moveFocusedRef = useRef<(direction: MoveDirection) => void>(() => {});
+
   useTerminalKeyboard({
     terminalCount: launchedSlots.length,
     // While zoomed, focus-cycling follows the zoom-tab order so Cmd/Ctrl+Alt+
@@ -517,6 +560,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     // hands the hook the closure from the PREVIOUS render (stale focusedSlotId
     // — Alt+P would park the pane focused one render ago).
     onParkFocused: useCallback(() => parkFocusedRef.current(), []),
+    onMoveFocused: useCallback((direction: MoveDirection) => moveFocusedRef.current(direction), []),
     onToggleZoomFocused: useCallback(() => {
       const targetId = focusedSlotId ?? slotsRef.current[0]?.id;
       if (!targetId) return;
@@ -1167,6 +1211,15 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       },
       [handlePark],
     ),
+    onMove: useCallback(
+      (slotId: string, direction: MoveDirection) => {
+        const sessionId = slotsRef.current.find((s) => s.id === slotId)?.sessionId ?? null;
+        if (sessionId === null || !onEagleMoveTile) return false;
+        onEagleMoveTile(sessionId, direction);
+        return true;
+      },
+      [onEagleMoveTile],
+    ),
   });
 
   /**
@@ -1525,13 +1578,48 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   );
 
   /**
-   * Eagle view: dropping a tile onto another project's tile reorders the
-   * project tabs (tile order = tab order × per-project pane order, so
-   * cross-project placement can only be expressed as a tab move).
+   * Drop a pane on the edge of another: the moved pane leaves its place and
+   * takes half of the target's room on that side.
    */
-  const handleEagleCrossReorder = useCallback((srcTabId: string, destTabId: string) => {
-    useWorkspaceStore.getState().reorderTabs(srcTabId, destTabId);
+  const handleMoveSlotToSide = useCallback(
+    (srcSlotId: string, destSlotId: string, side: PaneSide) => {
+      if (!srcSlotId || !destSlotId || srcSlotId === destSlotId) return;
+      setLayoutTree((prev) => moveSlotToSide(prev, srcSlotId, destSlotId, side));
+      focusSlotTextarea(srcSlotId);
+    },
+    [],
+  );
+
+  /** Drop a pane on the split area's outer edge: it becomes a full column/row. */
+  const handleMoveSlotToStageEdge = useCallback((srcSlotId: string, side: PaneSide) => {
+    setLayoutTree((prev) => moveSlotToTreeEdge(prev, srcSlotId, side, STAGE_EDGE_RATIO));
+    focusSlotTextarea(srcSlotId);
   }, []);
+
+  /**
+   * Alt+Shift+Arrow: swap the focused pane with its nearest neighbour in that
+   * direction (measured on screen, so it follows whatever shape the layout has).
+   */
+  const handleMoveFocusedPane = useCallback(
+    (direction: MoveDirection) => {
+      if (!focusedSlotId || zoomedSlotId !== null) return;
+      const stage = document.querySelector<HTMLElement>(`[data-split-stage="${stageId}"]`);
+      const self = stage?.querySelector<HTMLElement>(`[data-slot-id="${focusedSlotId}"]`);
+      if (!stage || !self) return;
+      const others: { id: string; rect: DOMRect }[] = [];
+      for (const el of stage.querySelectorAll<HTMLElement>("[data-slot-id]")) {
+        const id = el.dataset.slotId;
+        if (!id || id === focusedSlotId) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue; // parked (hidden) panes
+        others.push({ id, rect });
+      }
+      const dest = neighbourInDirection(self.getBoundingClientRect(), others, direction);
+      if (dest) handleSwapSlots(focusedSlotId, dest);
+    },
+    [focusedSlotId, zoomedSlotId, stageId, handleSwapSlots],
+  );
+  moveFocusedRef.current = handleMoveFocusedPane;
 
   // Stable per-project accent color for eagle mode tiles (clash-resolved
   // against the other open projects).
@@ -1582,9 +1670,24 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           <DraggablePane
             slotId={slot.id}
             gridId={tabId}
+            sessionId={sessionId}
+            projectName={projectName}
             showHandle={showReorderHandle}
             onSwap={handleSwapSlots}
-            onCrossGridReorder={handleEagleCrossReorder}
+            onMoveToSide={handleMoveSlotToSide}
+            onMoveToStageEdge={handleMoveSlotToStageEdge}
+            onEagleReorder={onEagleReorder}
+            eagleOrder={
+              eagleMode ? (eagleTileRank?.get(sessionId) ?? EAGLE_UNRANKED_ORDER) : undefined
+            }
+            eagleSpan={
+              eagleMode
+                ? clampSpan(
+                    eagleTileSpans?.[sessionId],
+                    eagleColumnCount ?? Number.MAX_SAFE_INTEGER,
+                  )
+                : undefined
+            }
             eagleMode={flatLayout}
             eagleHidden={spotlightHidden}
             eagleZoomed={isEagleZoomed}
@@ -1626,6 +1729,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
               projectLabel={flatLayout ? projectName : undefined}
               projectColor={eagleColor}
               hasMoveHandle={showReorderHandle}
+              // Tile sizes only exist in the eagle grid.
+              onCycleTileSize={
+                eagleMode && onEagleCycleTileSize
+                  ? () => onEagleCycleTileSize(sessionId)
+                  : undefined
+              }
+              tileSizeLabel={eagleMode ? tileSpanLabel(eagleTileSpans?.[sessionId]) : undefined}
               showShortcutHints={!flatLayout}
             />
             {dropOverlay}
@@ -1637,9 +1747,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         <DraggablePane
           slotId={slot.id}
           gridId={tabId}
-          showHandle={showReorderHandle}
+          // A card has no session yet, so the eagle order (session ids) cannot
+          // place it: it tiles after the launched terminals and is not draggable there.
+          showHandle={showReorderHandle && !eagleMode}
           onSwap={handleSwapSlots}
-          onCrossGridReorder={handleEagleCrossReorder}
+          onMoveToSide={handleMoveSlotToSide}
+          onMoveToStageEdge={handleMoveSlotToStageEdge}
+          eagleOrder={eagleMode ? EAGLE_PRELAUNCH_ORDER : undefined}
           eagleMode={flatLayout}
           eagleHidden={spotlightHidden}
           eagleZoomed={false}
@@ -1697,7 +1811,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       handlePark,
       handleAttachFiles,
       handleSwapSlots,
-      handleEagleCrossReorder,
+      handleMoveSlotToSide,
+      handleMoveSlotToStageEdge,
+      onEagleReorder,
+      onEagleCycleTileSize,
+      eagleTileRank,
+      eagleTileSpans,
+      eagleColumnCount,
       projectPath,
       branches,
       isLoadingBranches,
@@ -1920,6 +2040,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           eagleMode={flatLayout}
           hiddenSlotIds={parkedSlotIds}
           zoomedSlotId={zoomActive ? zoomedSlotId : null}
+          stageId={stageId}
         />
         {allParked && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-maestro-muted">
@@ -1949,14 +2070,54 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   );
 });
 
+/** Eagle grid `order` for a launched tile that has no place in the user's order yet (goes last). */
+const EAGLE_UNRANKED_ORDER = 10_000;
+/** Eagle grid `order` for pre-launch cards: after every launched tile. */
+const EAGLE_PRELAUNCH_ORDER = 20_000;
+/** Pointer travel before a title-bar press turns into a drag (a plain click stays a click). */
+const DRAG_START_PX = 4;
+
+/** What the drop-zone overlay says for each zone. */
+const DROP_ZONE_LABELS: Record<PaneDropZone | EagleDropZone, string> = {
+  swap: "Swap",
+  left: "Move here (left half)",
+  right: "Move here (right half)",
+  top: "Move here (top half)",
+  bottom: "Move here (bottom half)",
+  before: "Insert before",
+  after: "Insert after",
+};
+
+/** Where a dragged pane would land right now. */
+type DropTarget =
+  | {
+      kind: "pane";
+      el: HTMLElement;
+      slotId: string;
+      sessionId: number | null;
+      zone: PaneDropZone | EagleDropZone;
+    }
+  | { kind: "stage"; edge: PaneSide };
+
 /**
- * Wraps a terminal pane in a relative container that supports drag-to-reorder.
+ * Wraps a terminal pane in a relative container that supports drag-to-move.
+ *
+ * Pick a pane up by its title bar (any part that is not a button) or by the
+ * grip in the corner, and drop it:
+ * - split layout: on the outer quarter of another pane to move next to it
+ *   (it takes half that pane's room), on the middle to swap, or on the outer
+ *   edge of the whole split area to become a full column/row;
+ * - eagle view: on the outer third of a tile to insert before/after it (any
+ *   project, any position), on the middle to swap.
  *
  * Uses pointer events (mousedown/move/up) instead of HTML5 DnD because
  * Tauri's WebView2 keeps showing the "no drop" cursor when custom MIME
  * types aren't surfaced in `dataTransfer.types` during dragover. Pointer
  * events are also lighter — no drag image, no system cursor switching —
  * and let us use `document.elementFromPoint` to find the destination pane.
+ * The hover highlight is written straight into the hovered pane's DOM
+ * (`data-drop-zone` + the overlay every pane renders) — React state would
+ * re-render every grid on each pointer tick.
  *
  * `min-h-0 min-w-0` keep the flex/overflow chain working so children with
  * `overflow-y-auto` (e.g. PreLaunchCard) can shrink past their intrinsic
@@ -1965,9 +2126,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 function DraggablePane({
   slotId,
   gridId,
+  sessionId = null,
+  projectName,
   showHandle,
   onSwap,
-  onCrossGridReorder,
+  onMoveToSide,
+  onMoveToStageEdge,
+  onEagleReorder,
   children,
   eagleMode = false,
   eagleHidden = false,
@@ -1975,14 +2140,24 @@ function DraggablePane({
   eagleObscured = false,
   eagleReserveShelf = false,
   pinnedStyle = null,
+  eagleOrder,
+  eagleSpan,
 }: {
   slotId: string;
   /** Owning grid (tab) id — identifies the source project for eagle drops. */
   gridId?: string;
+  /** Launched session in this pane (null for a pre-launch card). */
+  sessionId?: number | null;
+  /** Project name for the drag label. */
+  projectName?: string;
   showHandle: boolean;
   onSwap: (srcSlotId: string, destSlotId: string) => void;
-  /** Eagle view: tile dropped onto another project's tile → reorder tabs. */
-  onCrossGridReorder?: (srcTabId: string, destTabId: string) => void;
+  /** Split layout: pane dropped on the edge of another pane. */
+  onMoveToSide: (srcSlotId: string, destSlotId: string, side: PaneSide) => void;
+  /** Split layout: pane dropped on the outer edge of the split area. */
+  onMoveToStageEdge: (srcSlotId: string, side: PaneSide) => void;
+  /** Eagle view: tile dropped before/after/onto another tile (session ids). */
+  onEagleReorder?: (srcSessionId: number, destSessionId: number, zone: EagleDropZone) => void;
   children: ReactNode;
   /** Eagle view: this pane is a tile of the global all-projects grid. */
   eagleMode?: boolean;
@@ -2000,82 +2175,212 @@ function DraggablePane({
    * tile class — the tile is positioned against the content area, not tiled.
    */
   pinnedStyle?: React.CSSProperties | null;
+  /** Eagle view: CSS `order` of this tile in the grid (the user's free order). */
+  eagleOrder?: number;
+  /** Eagle view: columns × rows this tile spans. */
+  eagleSpan?: TileSpan;
 }) {
   const [isDragging, setIsDragging] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
-  const startDrag = useCallback(
+  /**
+   * Runs one drag from the given pointer position. `immediate` starts it on
+   * the spot (the grip); otherwise it starts once the pointer has travelled
+   * DRAG_START_PX, so a plain click on the title bar is still a click.
+   */
+  const runDrag = useCallback(
+    (startX: number, startY: number, immediate: boolean) => {
+      // The split area (non-eagle): drops on its outer edge make a full column/row.
+      const stage =
+        !eagleMode && gridId
+          ? document.querySelector<HTMLElement>(`[data-split-stage="${gridId}"]`)
+          : null;
+      let active = false;
+      let ghost: HTMLDivElement | null = null;
+      let stageHighlight: HTMLDivElement | null = null;
+      let hovered: HTMLElement | null = null;
+
+      const begin = () => {
+        active = true;
+        setIsDragging(true);
+        document.body.classList.add("pane-dragging");
+        wrapperRef.current?.classList.add("pane-drag-source");
+        ghost = document.createElement("div");
+        ghost.className = "pane-drag-ghost";
+        const name =
+          sessionId !== null
+            ? useSessionStore
+                .getState()
+                .sessions.find((sess) => sess.id === sessionId)
+                ?.name?.trim()
+            : undefined;
+        ghost.textContent = `${projectName ? `${projectName} · ` : ""}${name || "Terminal"}`;
+        ghost.style.left = `${startX + 14}px`;
+        ghost.style.top = `${startY + 10}px`;
+        document.body.appendChild(ghost);
+      };
+
+      const findTarget = (x: number, y: number): DropTarget | null => {
+        if (stage) {
+          const edge = stageEdgeAt(stage.getBoundingClientRect(), x, y);
+          if (edge) return { kind: "stage", edge };
+        }
+        const elem = document.elementFromPoint(x, y) as HTMLElement | null;
+        const el = elem?.closest<HTMLElement>("[data-slot-id]") ?? null;
+        if (!el || el.dataset.slotId === slotId) return null;
+        if (eagleMode) {
+          // Only visible launched tiles (they carry grid + session ids) take drops;
+          // the order is by session id, so a pre-launch card has no place in it.
+          if (!el.dataset.gridId || !el.dataset.sessionId) return null;
+          return {
+            kind: "pane",
+            el,
+            slotId: el.dataset.slotId ?? "",
+            sessionId: Number(el.dataset.sessionId),
+            zone: eagleDropZone(el.getBoundingClientRect(), x),
+          };
+        }
+        if (stage && !stage.contains(el)) return null;
+        return {
+          kind: "pane",
+          el,
+          slotId: el.dataset.slotId ?? "",
+          sessionId: null,
+          zone: paneDropZone(el.getBoundingClientRect(), x, y),
+        };
+      };
+
+      const clearHighlight = () => {
+        if (hovered) {
+          delete hovered.dataset.dropZone;
+          hovered = null;
+        }
+        stageHighlight?.remove();
+        stageHighlight = null;
+      };
+
+      const showTarget = (target: DropTarget | null) => {
+        clearHighlight();
+        if (!target) return;
+        if (target.kind === "stage") {
+          if (!stage) return;
+          stageHighlight = document.createElement("div");
+          stageHighlight.className = "pane-stage-drop";
+          const share = `${Math.round(STAGE_EDGE_RATIO * 100)}%`;
+          const style = stageHighlight.style;
+          if (target.edge === "left" || target.edge === "right") {
+            style.top = "0";
+            style.bottom = "0";
+            style.width = share;
+          } else {
+            style.left = "0";
+            style.right = "0";
+            style.height = share;
+          }
+          style[target.edge] = "0";
+          stage.appendChild(stageHighlight);
+          return;
+        }
+        hovered = target.el;
+        hovered.dataset.dropZone = target.zone;
+        const label = hovered.querySelector<HTMLElement>(".pane-drop-zone > span");
+        if (label) label.textContent = DROP_ZONE_LABELS[target.zone];
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        if (!active) {
+          if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_START_PX) return;
+          begin();
+        }
+        if (ghost) {
+          ghost.style.left = `${ev.clientX + 14}px`;
+          ghost.style.top = `${ev.clientY + 10}px`;
+        }
+        showTarget(findTarget(ev.clientX, ev.clientY));
+      };
+
+      const finish = (ev: PointerEvent, drop: boolean) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
+        if (!active) return;
+        const target = drop ? findTarget(ev.clientX, ev.clientY) : null;
+        clearHighlight();
+        ghost?.remove();
+        document.body.classList.remove("pane-dragging");
+        wrapperRef.current?.classList.remove("pane-drag-source");
+        setIsDragging(false);
+        // Releasing also fires a click on whatever is under the pointer (the
+        // title bar toggles its warning flag on click) — swallow that one.
+        const swallowClick = (e: MouseEvent) => {
+          e.stopPropagation();
+          e.preventDefault();
+        };
+        window.addEventListener("click", swallowClick, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }), 0);
+        if (!target) return;
+        if (target.kind === "stage") {
+          onMoveToStageEdge(slotId, target.edge);
+          return;
+        }
+        if (eagleMode) {
+          if (sessionId !== null && target.sessionId !== null) {
+            onEagleReorder?.(sessionId, target.sessionId, target.zone as EagleDropZone);
+          }
+          return;
+        }
+        if (target.zone === "swap") onSwap(slotId, target.slotId);
+        else onMoveToSide(slotId, target.slotId, target.zone as PaneSide);
+      };
+      const onUp = (ev: PointerEvent) => finish(ev, true);
+      const onCancel = (ev: PointerEvent) => finish(ev, false);
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
+      if (immediate) begin();
+    },
+    [
+      slotId,
+      gridId,
+      sessionId,
+      projectName,
+      eagleMode,
+      onSwap,
+      onMoveToSide,
+      onMoveToStageEdge,
+      onEagleReorder,
+    ],
+  );
+
+  /** The grip: picks the pane up at once. */
+  const handleGripPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0 && e.pointerType !== "touch") return;
       e.preventDefault();
       e.stopPropagation();
-
-      setIsDragging(true);
-
-      // Outline every other pane so the user can see they're valid drop targets.
-      // In eagle mode every visible tile (any project) is a target: same-grid
-      // drops swap panes, cross-grid drops reorder the project tabs. The
-      // [data-grid-id] filter keeps 0×0 display:contents leaf wrappers out.
-      const allWrappers = Array.from(
-        document.querySelectorAll<HTMLElement>(
-          eagleMode ? "[data-slot-id][data-grid-id]" : "[data-slot-id]",
-        ),
-      );
-      const decorate = (el: HTMLElement, hovered: boolean) => {
-        el.style.outline = hovered
-          ? "2px solid rgb(var(--maestro-blue))"
-          : "1px dashed rgb(var(--maestro-border))";
-        el.style.outlineOffset = "-2px";
-      };
-      const cleanup = () => {
-        for (const el of allWrappers) {
-          el.style.outline = "";
-          el.style.outlineOffset = "";
-        }
-      };
-      for (const el of allWrappers) {
-        if (el.getAttribute("data-slot-id") !== slotId) decorate(el, false);
-      }
-
-      const findTarget = (clientX: number, clientY: number): HTMLElement | null => {
-        const elem = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-        const target = elem?.closest("[data-slot-id]") as HTMLElement | null;
-        // Eagle: only visible tiles (which carry data-grid-id) are targets.
-        if (eagleMode && !target?.dataset.gridId) return null;
-        return target;
-      };
-
-      const onMove = (ev: PointerEvent) => {
-        const target = findTarget(ev.clientX, ev.clientY);
-        const targetId = target?.getAttribute("data-slot-id");
-        for (const el of allWrappers) {
-          const id = el.getAttribute("data-slot-id");
-          if (id === slotId) continue;
-          decorate(el, id === targetId && id !== slotId);
-        }
-      };
-      const onUp = (ev: PointerEvent) => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
-        cleanup();
-        setIsDragging(false);
-        const target = findTarget(ev.clientX, ev.clientY);
-        const dest = target?.getAttribute("data-slot-id");
-        if (!dest || dest === slotId) return;
-        const destGridId = target?.dataset.gridId;
-        if (eagleMode && gridId && destGridId && destGridId !== gridId) {
-          // Different project: express the move as a project-tab reorder.
-          onCrossGridReorder?.(gridId, destGridId);
-        } else {
-          onSwap(slotId, dest);
-        }
-      };
-
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
+      runDrag(e.clientX, e.clientY, true);
     },
-    [slotId, onSwap, onCrossGridReorder, eagleMode, gridId],
+    [runDrag],
+  );
+
+  /**
+   * The title bar (`[data-pane-drag-handle]`, rendered by TerminalHeader):
+   * picks the pane up once the pointer moves. Buttons and inputs on it keep
+   * their own behaviour, and no default is prevented here so a plain click
+   * still reaches the header.
+   */
+  const handleWrapperPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!showHandle) return;
+      if (e.button !== 0 && e.pointerType !== "touch") return;
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input, a, select, textarea, [contenteditable='true']")) return;
+      const handle = target.closest<HTMLElement>("[data-pane-drag-handle]");
+      if (!handle || !e.currentTarget.contains(handle)) return;
+      runDrag(e.clientX, e.clientY, false);
+    },
+    [showHandle, runDrag],
   );
 
   // Eagle view restyles this container purely with CSS so the children
@@ -2090,7 +2395,9 @@ function DraggablePane({
   // - obscured: another pane is zoomed — visibility:hidden stops WebGL paints
   //             behind the opaque overlay (also excludes it from drop hit-tests)
   // - tile:     plain grid item — the project-colored border is painted by the
-  //             terminal cell itself (TerminalView's projectColor override)
+  //             terminal cell itself (TerminalView's projectColor override);
+  //             `order` is the user's free tile order and `grid-column/row`
+  //             spans the tile's chosen size
   const eagleClass = eagleHidden
     ? "hidden"
     : pinnedStyle
@@ -2102,9 +2409,24 @@ function DraggablePane({
             eagleReserveShelf ? "bottom-8" : "bottom-0"
           }`
         : "relative h-full w-full min-h-0 min-w-0 overflow-hidden rounded-md";
+  let eagleStyle: React.CSSProperties | undefined;
+  if (eagleMode && !eagleHidden) {
+    if (pinnedStyle) {
+      eagleStyle = pinnedStyle;
+    } else {
+      eagleStyle = {};
+      if (eagleObscured) eagleStyle.visibility = "hidden";
+      if (eagleOrder !== undefined) eagleStyle.order = eagleOrder;
+      if (eagleSpan && eagleSpan[0] > 1) eagleStyle.gridColumn = `span ${eagleSpan[0]}`;
+      if (eagleSpan && eagleSpan[1] > 1) eagleStyle.gridRow = `span ${eagleSpan[1]}`;
+    }
+  }
+  const carriesIds = eagleMode && !eagleHidden && !pinnedStyle;
   return (
     <div
+      ref={wrapperRef}
       className={eagleMode ? eagleClass : "relative h-full w-full min-h-0 min-w-0"}
+      onPointerDown={handleWrapperPointerDown}
       // In eagle mode the normal [data-slot-id] wrapper (SplitPaneView's leaf)
       // is display:contents, whose rect is 0x0 — carrying the id here keeps
       // file drag-and-drop hit-testing working on the visible tile box.
@@ -2112,22 +2434,24 @@ function DraggablePane({
       // not a drop target of the active project's grid, whose pane-swap drag
       // hit-tests every [data-slot-id] and would otherwise "swap" with a slot
       // that does not exist in it.
-      data-slot-id={eagleMode && !eagleHidden && !pinnedStyle ? slotId : undefined}
-      data-grid-id={eagleMode && !eagleHidden && !pinnedStyle ? gridId : undefined}
-      style={
-        eagleMode && !eagleHidden
-          ? (pinnedStyle ?? (eagleObscured ? { visibility: "hidden" } : undefined))
-          : undefined
-      }
+      data-slot-id={carriesIds ? slotId : undefined}
+      data-grid-id={carriesIds ? gridId : undefined}
+      data-session-id={carriesIds && sessionId !== null ? sessionId : undefined}
+      style={eagleStyle}
     >
       {children}
+      {/* Drop-zone overlay: hidden until a drag sets data-drop-zone on this
+          pane's [data-slot-id] element (see globals.css). */}
+      <div className="pane-drop-zone">
+        <span />
+      </div>
       {showHandle && (
         <div
-          onPointerDown={startDrag}
+          onPointerDown={handleGripPointerDown}
           title={
             eagleMode
-              ? "Drag to swap panes — drop on another project to reorder projects"
-              : "Drag to swap with another pane"
+              ? "Drag to move this terminal — edges insert, middle swaps"
+              : "Drag to move this pane — edges move it there, middle swaps"
           }
           className={`absolute left-1 top-1 z-20 flex h-5 w-4 items-center justify-center rounded transition-colors hover:bg-maestro-card/80 hover:text-maestro-text ${
             isDragging ? "cursor-grabbing text-maestro-blue" : "cursor-grab text-maestro-muted/40"

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import type { MoveDirection } from "@/lib/paneMoves";
 import { isMac } from "@/lib/platform";
 
 interface UseEagleTerminalKeyboardOptions {
@@ -13,7 +14,17 @@ interface UseEagleTerminalKeyboardOptions {
   onToggleZoom: (slotId: string) => boolean;
   /** Alt+P inside a pane: park it. Same ownership contract as `onToggleZoom`. */
   onPark: (slotId: string) => boolean;
+  /** Alt+Shift+Arrow inside a pane: move its tile one step. Same ownership contract. */
+  onMove?: (slotId: string, direction: MoveDirection) => boolean;
 }
+
+/** Arrow key → move direction for Alt+Shift+Arrow. */
+const ARROW_DIRECTIONS: Record<string, MoveDirection | undefined> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
 
 /** The pane (slot) that owns a keyboard event's target, if any. */
 function targetSlotId(event: KeyboardEvent): string | null {
@@ -23,7 +34,8 @@ function targetSlotId(event: KeyboardEvent): string | null {
 }
 
 /**
- * Eagle view's Cmd/Ctrl+1 (zoom) and Alt+P (park). Per-project grids get
+ * Eagle view's Cmd/Ctrl+1 (zoom), Alt+P (park) and Alt+Shift+Arrow (move
+ * the tile). Per-project grids get
  * these from `useTerminalKeyboard`, which is off in eagle view because every
  * project's grid is on screen at once and each would act on its own focused
  * pane. Here the target is the pane the keyboard focus is actually in.
@@ -35,6 +47,7 @@ export function useEagleTerminalKeyboard({
   enabled,
   onToggleZoom,
   onPark,
+  onMove,
 }: UseEagleTerminalKeyboardOptions): void {
   useEffect(() => {
     if (!enabled) return;
@@ -52,11 +65,21 @@ export function useEagleTerminalKeyboard({
         !event.metaKey &&
         !event.shiftKey &&
         event.code === "KeyP";
-      if (!isZoom && !isPark) return;
+      const moveDirection =
+        event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey
+          ? ARROW_DIRECTIONS[event.key]
+          : undefined;
+      if (!isZoom && !isPark && !moveDirection) return;
 
       const slotId = targetSlotId(event);
       if (!slotId) return;
-      const handled = isZoom ? onToggleZoom(slotId) : onPark(slotId);
+      const handled = isZoom
+        ? onToggleZoom(slotId)
+        : isPark
+          ? onPark(slotId)
+          : moveDirection && onMove
+            ? onMove(slotId, moveDirection)
+            : false;
       if (!handled) return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -64,5 +87,5 @@ export function useEagleTerminalKeyboard({
 
     window.addEventListener("keydown", handleCapture, { capture: true });
     return () => window.removeEventListener("keydown", handleCapture, { capture: true });
-  }, [enabled, onToggleZoom, onPark]);
+  }, [enabled, onToggleZoom, onPark, onMove]);
 }

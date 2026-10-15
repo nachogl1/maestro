@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 
+import type { MoveDirection } from "@/lib/paneMoves";
+
 interface UseTerminalKeyboardOptions {
   /** Total number of launched terminals */
   terminalCount: number;
@@ -15,6 +17,8 @@ interface UseTerminalKeyboardOptions {
   onZoomedPrev?: () => void;
   /** Callback to park the focused terminal (Alt+P) */
   onParkFocused?: () => void;
+  /** Callback to move the focused terminal one pane in a direction (Alt+Shift+Arrow) */
+  onMoveFocused?: (direction: MoveDirection) => void;
   /**
    * Whether a single terminal is currently zoomed/maximized. When true, the
    * tab strip is visible and Alt+Left/Alt+Right cycle between tabs. When
@@ -25,6 +29,14 @@ interface UseTerminalKeyboardOptions {
   /** Whether this keyboard handler is active (e.g. only for the active project tab) */
   enabled?: boolean;
 }
+
+/** Arrow key → move direction for Alt+Shift+Arrow. */
+const ARROW_DIRECTIONS: Record<string, MoveDirection | undefined> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
 
 /**
  * Detect whether the current platform uses Cmd (Mac) or Ctrl (Windows/Linux) as the modifier key.
@@ -41,6 +53,7 @@ function isMac(): boolean {
  * - Cmd/Ctrl+Alt+Left/Right: Cycle focus to the previous/next terminal
  * - Alt+Left/Right: Previous/next terminal tab while zoomed
  * - Alt+P: Park the focused terminal
+ * - Alt+Shift+Arrow: Move the focused terminal one pane in that direction
  */
 export function useTerminalKeyboard({
   terminalCount,
@@ -50,6 +63,7 @@ export function useTerminalKeyboard({
   onZoomedNext,
   onZoomedPrev,
   onParkFocused,
+  onMoveFocused,
   isZoomed = false,
   enabled = true,
 }: UseTerminalKeyboardOptions): void {
@@ -84,6 +98,17 @@ export function useTerminalKeyboard({
           event.stopImmediatePropagation();
           onCyclePrevious();
           return;
+        }
+        return;
+      }
+
+      // Alt+Shift+Arrow: move the focused pane (swap with its neighbour).
+      if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        const direction = ARROW_DIRECTIONS[event.key];
+        if (direction && onMoveFocused) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onMoveFocused(direction);
         }
         return;
       }
@@ -126,6 +151,7 @@ export function useTerminalKeyboard({
     onZoomedNext,
     onZoomedPrev,
     onParkFocused,
+    onMoveFocused,
   ]);
 
   useEffect(() => {
