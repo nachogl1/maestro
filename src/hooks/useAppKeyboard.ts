@@ -13,7 +13,7 @@ interface UseAppKeyboardOptions {
   onAddSession: () => void;
   /** Whether adding a session is currently allowed */
   canAddSession: boolean;
-  /** Alt+1-3: toggle the left sidebar on tab N (1-based tab index) */
+  /** Alt+1-4: toggle the left sidebar on tab N (1-based tab index) */
   onSidebarTab?: (index: number) => void;
   /** Callback to toggle the git panel (Cmd/Ctrl+2) */
   onToggleGitPanel?: () => void;
@@ -38,7 +38,7 @@ function isMac(): boolean {
  * App-level keyboard shortcut handler.
  *
  * Shortcuts:
- * - Alt+1-3: Toggle the left sidebar on tab N (History/Infra/Settings)
+ * - Alt+1-4: Toggle the left sidebar on tab N (History/Infra/Settings/Inject)
  * - Cmd/Ctrl+2: Toggle the git panel
  * - Cmd/Ctrl+5: Toggle the Notes panel
  * - Cmd/Ctrl+T: Add a new terminal (project picker in eagle view)
@@ -60,10 +60,10 @@ export function useAppKeyboard({
       // Alt-based shortcuts (no Cmd/Ctrl, no Shift)
       // Use event.code so the bindings are layout-independent (AZERTY etc.).
       if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        // Alt+1-3: toggle the left sidebar on the given tab. Top-row digits
+        // Alt+1-4: toggle the left sidebar on the given tab. Top-row digits
         // only — Alt+numpad digits must stay free for Windows Alt-code entry
         // (e.g. Alt+164 → ñ typed into a terminal).
-        const sidebarDigit = /^Digit([1-3])$/.exec(event.code);
+        const sidebarDigit = /^Digit([1-4])$/.exec(event.code);
         if (sidebarDigit && onSidebarTab) {
           event.preventDefault();
           event.stopImmediatePropagation();
