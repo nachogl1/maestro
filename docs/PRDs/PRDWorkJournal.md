@@ -197,6 +197,13 @@ Granola time) are folded in and linked in the Decision trace.
     candidate and report runs must pass their own `--system-prompt`, as History
     summaries do (`src-tauri/src/commands/session_summary.rs:42`), or reply
     parsing breaks.
+  - **Keep the user's setup out (checked live, Claude Code 2.1.300):**
+    `--system-prompt` alone does not keep CLAUDE.md out. Runs without Granola
+    pass `--safe-mode` (no CLAUDE.md, hooks, skills, plugins or MCP servers).
+    Safe mode also drops a server given by `--mcp-config`, so Granola runs pass
+    `--setting-sources ""` instead (no CLAUDE.md and no settings files) plus
+    `--strict-mcp-config` with an `--mcp-config` naming only the user's
+    `granola` server, which reuses the stored sign-in.
 
 ### Granola connector (optional, free tier)
 
@@ -216,6 +223,8 @@ Granola time) are folded in and linked in the Decision trace.
   `--permission-mode dontAsk` so every other tool is denied. Never allow
   `sign_out`, `switch_workspace`, `get_meeting_transcript` (paid) or
   `get_meeting_attachment`. Wildcards like `mcp__granola__*` are not used.
+  Every other Granola tool (search, folders, account info) is denied by
+  name, and no other MCP server is loaded (see Candidates).
 - **What Granola gives:** meeting id, title, date, attendees, private notes and
   summarised notes, for the last 30 days on the free tier. The hands-on test
   (2026-10-14) also saw a `meeting_at` field in `list_meetings`, which the

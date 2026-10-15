@@ -13,6 +13,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     items: [
       "Work Journal suggestions now cover every project Maestro has seen in a tab or terminal since this update, including closed tabs and every repo of a multi-repo project, not only the tabs open right now.",
       "Terminal title bar: the name now follows the Claude agent's real name even when Claude was started by hand in the terminal or its start-up hooks were missing, so the header and Claude's own status bar agree without re-saving the name.",
+      "Work Journal suggestion runs no longer see your personal Claude instructions, hooks or settings, and a Granola run can reach only Granola, not your other MCP servers.",
       "Issue map: the 'data problems' footer now opens by itself and explains each problem in plain words — which issues and links, what it changes on the map, and how to fix it on GitHub. The saved HTML map says the same.",
       "Maestro Settings: hover over any setting (Updates, CLI command, every Samurai threshold, Work Journal, Advanced) for a plain-language explanation of what it does.",
       "Project tabs can no longer be pinned; the pin button and marker on tabs are gone. Pinning terminals is unchanged.",
