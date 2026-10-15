@@ -679,3 +679,194 @@ describe("useWorkJournalStore failed-save retries", () => {
     expect(saves()).toHaveLength(1);
   });
 });
+
+describe("useWorkJournalStore page revs (the pane and the pop-out saving the same page)", () => {
+  function body(text: string): WorkJournalPage["body"] {
+    return { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] };
+  }
+
+  /** The backend's file; its pages carry a `rev` like the real one. */
+  let disk: WorkJournalFile;
+
+  function saves(): Array<{ title: string | null; body: unknown; baseRev?: number }> {
+    return invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "update_work_journal_page")
+      .map(([, args]) => args as { title: string | null; body: unknown; baseRev?: number });
+  }
+
+  /** The other window saves `change` to the page for `date`. */
+  function otherWindowSaves(date: string, change: Partial<WorkJournalPage>): void {
+    const saved = disk.pages[date];
+    disk.pages[date] = { ...saved, ...change, rev: (saved.rev ?? 0) + 1 };
+  }
+
+  /** Lets the re-read a conflict starts finish. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  beforeEach(async () => {
+    invokeMock.mockReset();
+    disk = journal([]);
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") {
+        const a = args as { date: string; title: string | null; body: unknown; baseRev?: number };
+        const saved = disk.pages[a.date];
+        if (a.baseRev !== undefined && a.baseRev !== saved.rev) {
+          throw `PAGE_CHANGED: The page for ${a.date} was changed in another window; this change was not saved.`;
+        }
+        if (a.title != null) saved.title = a.title;
+        if (a.body != null) saved.body = a.body as WorkJournalPage["body"];
+        saved.rev = (saved.rev ?? 0) + 1;
+      }
+      if (cmd === "create_work_journal_page") {
+        const a = args as { date: string; title: string; body: WorkJournalPage["body"] };
+        // Starts over at rev 0, so only the window forgetting the old page's
+        // history keeps its saves from being refused.
+        disk.pages[a.date] = {
+          date: a.date,
+          title: a.title,
+          body: a.body,
+          origin: "manual",
+          rev: 0,
+        };
+      }
+      if (cmd === "delete_work_journal_page") {
+        delete disk.pages[(args as { date: string }).date];
+      }
+      return structuredClone(disk);
+    });
+    useWorkJournalStore.setState({
+      pages: {},
+      viewedDate: null,
+      loading: false,
+      error: null,
+      revision: 0,
+      replacing: false,
+    });
+  });
+
+  it("a save based on an older copy is not written and lands in the conflict state", async () => {
+    const date = "2026-11-02";
+    disk.pages[date] = { ...page(date), body: body("start"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+    // The pop-out accepts a suggestion while the pane's typing waits to be saved.
+    otherWindowSaves(date, { body: body("start + accepted line") });
+
+    const saved = await useWorkJournalStore
+      .getState()
+      .updatePage(date, { body: body("start + typing") }, 0);
+    await settle();
+
+    expect(saved).toBe(false);
+    expect(disk.pages[date].body).toEqual(body("start + accepted line"));
+    expect(saves()).toHaveLength(1);
+    const state = useWorkJournalStore.getState();
+    expect(state.conflictDates).toEqual([date]);
+    expect(state.unsavedDates).toEqual([date]);
+    expect(state.error).toBeNull();
+    expect(state.pages[date].body).toEqual(body("start + typing"));
+
+    // "Overwrite with mine" lands, and typing based on the old copy keeps saving.
+    await retryWorkJournalSaves(true);
+    expect(disk.pages[date].body).toEqual(body("start + typing"));
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+    expect(
+      await useWorkJournalStore.getState().updatePage(date, { body: body("start + more") }, 0),
+    ).toBe(true);
+    expect(disk.pages[date].body).toEqual(body("start + more"));
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+  });
+
+  it("a title change goes on top of the other window's body change", async () => {
+    const date = "2026-11-03";
+    disk.pages[date] = { ...page(date, "Old title"), body: body("start"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+    otherWindowSaves(date, { body: body("accepted line") });
+
+    expect(await useWorkJournalStore.getState().updatePage(date, { title: "Mine" })).toBe(true);
+
+    expect(disk.pages[date]).toMatchObject({ title: "Mine", body: body("accepted line"), rev: 2 });
+    expect(saves().map((s) => s.baseRev)).toEqual([0, 1]);
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+    // The other window's text, which the save went on top of, shows here too.
+    await settle();
+    expect(useWorkJournalStore.getState().pages[date].body).toEqual(body("accepted line"));
+  });
+
+  it("a second title commit during a title conflict does not overwrite the other window's title", async () => {
+    const date = "2026-11-06";
+    disk.pages[date] = { ...page(date, "Old title"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+    otherWindowSaves(date, { title: "Theirs" });
+    expect(await useWorkJournalStore.getState().updatePage(date, { title: "Mine" })).toBe(false);
+    await settle();
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([date]);
+
+    expect(await useWorkJournalStore.getState().updatePage(date, { title: "Mine again" })).toBe(
+      false,
+    );
+    await settle();
+
+    expect(disk.pages[date].title).toBe("Theirs");
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([date]);
+    discardWorkJournalConflicts();
+    expect(useWorkJournalStore.getState().pages[date].title).toBe("Theirs");
+  });
+
+  it("a page deleted and made again saves without a conflict", async () => {
+    const date = "2026-11-07";
+    disk.pages[date] = { ...page(date), body: body("old page"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+    expect(await useWorkJournalStore.getState().updatePage(date, { body: body("typed") }, 0)).toBe(
+      true,
+    );
+
+    await useWorkJournalStore.getState().deletePage(date);
+    await useWorkJournalStore.getState().createPage(date);
+    const base = useWorkJournalStore.getState().pages[date].rev;
+    const saved = await useWorkJournalStore
+      .getState()
+      .updatePage(date, { body: body("new page") }, base);
+
+    expect(saved).toBe(true);
+    expect(disk.pages[date].body).toEqual(body("new page"));
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+  });
+
+  it("a body change goes on top of the other window's title change", async () => {
+    const date = "2026-11-04";
+    disk.pages[date] = { ...page(date, "Old title"), body: body("start"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+    otherWindowSaves(date, { title: "Theirs" });
+
+    const saved = await useWorkJournalStore.getState().updatePage(date, { body: body("mine") }, 0);
+
+    expect(saved).toBe(true);
+    expect(disk.pages[date]).toMatchObject({ title: "Theirs", body: body("mine") });
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+  });
+
+  it("this window's own title and body saves never end in a conflict", async () => {
+    const date = "2026-11-05";
+    disk.pages[date] = { ...page(date), body: body("start"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+
+    const { updatePage } = useWorkJournalStore.getState();
+    const results = await Promise.all([
+      updatePage(date, { body: body("a") }, 0),
+      updatePage(date, { body: body("ab") }, 0),
+      updatePage(date, { title: "New" }),
+      updatePage(date, { body: body("abc") }, 0),
+    ]);
+
+    expect(results).toEqual([true, true, true, true]);
+    expect(disk.pages[date]).toMatchObject({ title: "New", body: body("abc"), rev: 4 });
+    // Body saves after the first go out on the rev the one before made.
+    const bodySaves = saves().filter((s) => s.body != null);
+    expect(bodySaves.map((s) => s.baseRev).slice(0, 2)).toEqual([0, 1]);
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+  });
+});

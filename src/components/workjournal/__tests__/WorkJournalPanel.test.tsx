@@ -91,8 +91,14 @@ function mockBackend(): void {
       }
       case "update_work_journal_page": {
         const date = a.date as string;
-        if (a.title != null) file.pages[date].title = a.title as string;
-        if (a.body != null) file.pages[date].body = a.body as WorkJournalPage["body"];
+        const saved = file.pages[date];
+        // Like the backend: a save based on an older copy of a page is refused.
+        if (a.baseRev !== undefined && saved.rev !== undefined && a.baseRev !== saved.rev) {
+          throw `PAGE_CHANGED: The page for ${date} was changed in another window; this change was not saved.`;
+        }
+        if (a.title != null) saved.title = a.title as string;
+        if (a.body != null) saved.body = a.body as WorkJournalPage["body"];
+        if (saved.rev !== undefined) saved.rev += 1;
         return snapshot();
       }
       case "delete_work_journal_page": {
@@ -881,6 +887,32 @@ describe("WorkJournalPanel and the pop-out window", () => {
       vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
     });
     expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pane");
+  });
+
+  it("keeps a line accepted in the other window during the save delay and asks which text to keep", async () => {
+    file.pages["2026-10-14"].rev = 0;
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    act(() => {
+      pageEditor().commands.insertContent("Typed in the pane");
+    });
+    // Within the save delay, the pop-out accepts a suggestion and saves the page.
+    file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: OTHER_BODY, rev: 1 };
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: false }));
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+
+    // The pane's older copy is refused, not written over the accepted line.
+    expect(await screen.findByText(/the other window changed this text too/)).toBeInTheDocument();
+    expect(file.pages["2026-10-14"].body).toEqual(OTHER_BODY);
+    expect(file.pages["2026-10-14"].rev).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard mine" }));
+    expect(await screen.findByText("Typed in the window")).toBeInTheDocument();
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(file.pages["2026-10-14"].body).toEqual(OTHER_BODY);
   });
 });
 

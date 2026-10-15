@@ -19,6 +19,11 @@ export interface WorkJournalPage {
   /** TipTap editor JSON (`editor.getJSON()`), stored as-is. */
   body: JSONContent;
   origin: WorkJournalPageOrigin;
+  /**
+   * Bumped by the backend on every title or body change. A save sends the
+   * `rev` its text was based on, and one based on an older copy is refused.
+   */
+  rev?: number;
 }
 
 /** The whole journal as every backend command returns it. */
@@ -89,9 +94,12 @@ interface WorkJournalState {
   createPage: (date: string) => Promise<void>;
   /**
    * Saves a title and/or body change; ignored for a date with no page.
+   * `baseRev` is the page `rev` the text was based on (default: the stored
+   * page's). A save the other window overtook is re-sent when that window
+   * changed only the other field, else it becomes a conflict.
    * Resolves true once the backend saved it, false when skipped or failed.
    */
-  updatePage: (date: string, patch: WorkJournalPagePatch) => Promise<boolean>;
+  updatePage: (date: string, patch: WorkJournalPagePatch, baseRev?: number) => Promise<boolean>;
   /** Deletes the page for `date` and shows the nearest remaining page. */
   deletePage: (date: string) => Promise<void>;
   clearError: () => void;
@@ -166,6 +174,7 @@ function clearFailedSaves(date: string): void {
 function forgetFailedSave(key: string): void {
   failedSaves.delete(key);
   failedBases.delete(key);
+  failedRevs.delete(key);
   conflictSaves.delete(key);
 }
 
@@ -183,6 +192,110 @@ const failedBases = new Map<string, string>();
  * overwrite newer text, so only the user's choice sends or drops them.
  */
 const conflictSaves = new Set<string>();
+
+/** Per failed field, the page `rev` its first failed save was based on. */
+const failedRevs = new Map<string, number>();
+
+/**
+ * How often a refused save is re-sent on top of a newer copy that left its
+ * field alone, before it counts as a conflict.
+ */
+const PAGE_CHANGED_RESENDS = 3;
+
+/** How many entries each rev map below keeps (the oldest go first). */
+const REV_MAP_LIMIT = 500;
+
+/**
+ * Disk copies of pages by `<date>@<rev>`, from every read and save reply,
+ * to tell which field the other window changed after a save was refused.
+ */
+const revCopies = new Map<string, WorkJournalPage>();
+
+/**
+ * This window's own saves by `<date>@<rev sent>` → the rev they made. Such
+ * a save changed only this window's text, so text based on the old rev is
+ * based on the new one too.
+ */
+const ownSaveRevs = new Map<string, number>();
+
+/**
+ * Like `ownSaveRevs`, but for one field only (`<date>:<fields>@<rev>`): a
+ * save re-sent over the other window's change of the other field, or the
+ * user's overwrite. Text of that field based on the old rev is based on
+ * the new one; text of the other field is not.
+ */
+const fieldRevs = new Map<string, number>();
+
+/** Sets `key` in a rev map as its newest entry, dropping the oldest past the limit. */
+function setRevEntry<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > REV_MAP_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
+/** Remembers a page as it is on disk at its `rev`. */
+function rememberRevCopy(page: WorkJournalPage | undefined): void {
+  if (page?.rev === undefined) return;
+  setRevEntry(revCopies, `${page.date}@${page.rev}`, page);
+}
+
+/**
+ * The newest rev that text of `key`'s fields based on `rev` is based on,
+ * following this window's own saves. Shortens the chain it followed, so a
+ * long typing session never walks a long one.
+ */
+function resolveBaseRev(date: string, key: string, rev: number | undefined): number | undefined {
+  if (rev === undefined) return undefined;
+  let current = rev;
+  let viaField = false;
+  for (let step = 0; step < REV_MAP_LIMIT; step++) {
+    const field = fieldRevs.get(`${key}@${current}`);
+    if (field !== undefined) {
+      current = field;
+      viaField = true;
+      continue;
+    }
+    const own = ownSaveRevs.get(`${date}@${current}`);
+    if (own === undefined) break;
+    current = own;
+  }
+  if (current !== rev) {
+    if (viaField) setRevEntry(fieldRevs, `${key}@${rev}`, current);
+    else setRevEntry(ownSaveRevs, `${date}@${rev}`, current);
+  }
+  return current;
+}
+
+/**
+ * The page `rev` the stored body of `date` is based on, for an editor
+ * opening it: while that body's save failed, the rev of the failed save
+ * (the stored rev may be newer, from the other window's change).
+ */
+export function workJournalBodyBaseRev(date: string): number | undefined {
+  return failedRevs.get(`${date}:body`) ?? useWorkJournalStore.getState().pages[date]?.rev;
+}
+
+/**
+ * Forgets the rev history of `date`: its page is gone, and a page made
+ * again for that date starts a history of its own.
+ */
+function forgetRevs(date: string): void {
+  for (const map of [revCopies, ownSaveRevs]) {
+    for (const key of [...map.keys()]) if (key.startsWith(`${date}@`)) map.delete(key);
+  }
+  for (const key of [...fieldRevs.keys()]) if (key.startsWith(`${date}:`)) fieldRevs.delete(key);
+}
+
+/** Forgets every rev mapping: the journal was replaced. */
+function clearRevMaps(): void {
+  revCopies.clear();
+  ownSaveRevs.clear();
+  fieldRevs.clear();
+}
 
 /** JSON with sorted object keys, so the same text compares equal however it was built. */
 function stableJson(value: unknown): string {
@@ -217,6 +330,8 @@ function fieldsJson(key: string, page: WorkJournalPage | undefined): string {
  * disk, so it keeps what the save put there and is not checked.
  */
 function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number): void {
+  for (const date of Object.keys(diskPages)) if (!incoming[date]) forgetRevs(date);
+  for (const page of Object.values(incoming)) rememberRevCopy(page);
   const savedSince = (date: string): boolean => (lastLocalSave.get(date) ?? 0) > tick;
   for (const key of [...failedSaves]) {
     const date = keyDate(key);
@@ -315,7 +430,8 @@ const lastLocalSave = new Map<string, number>();
  * `<date>:title`). Each save waits for the previous one of the same field,
  * so the backend writes them in the order they were made and the newest
  * text wins on disk. Title and body saves touch different fields, so they
- * do not wait for each other.
+ * do not wait for each other (one refused for the other's new `rev` is
+ * re-sent on top of it).
  */
 const saveChains = new Map<string, Promise<void>>();
 
@@ -383,7 +499,9 @@ export function retryWorkJournalSaves(overwrite = false): Promise<void> {
       if (field === "body") patch.body = page.body;
       if (field === "title") patch.title = page.title;
     }
-    retries.push(updatePage(date, patch));
+    // Sent on the disk copy last read: a retry only runs where nobody changed
+    // the field since (or the user chose to overwrite it).
+    retries.push(updatePage(date, patch, diskPages[date]?.rev));
   }
   publishFailedSaves();
   return Promise.all(retries).then(() => undefined);
@@ -401,7 +519,7 @@ export function discardWorkJournalConflicts(): void {
     const local = changed[date] ?? useWorkJournalStore.getState().pages[date];
     forgetFailedSave(key);
     if (!disk || !local) continue;
-    const page = { ...local };
+    const page = { ...local, rev: disk.rev };
     for (const field of keyFields(key)) {
       if (field === "body") page.body = disk.body;
       if (field === "title") page.title = disk.title;
@@ -468,6 +586,17 @@ export const WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE = "RESTORE_IN_PROGRESS:";
 /** Whether `error` is the backend's refusal while a restore or undo runs. */
 function isRestoreRefusal(error: unknown): boolean {
   return errorMessage(error).startsWith(WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE);
+}
+
+/**
+ * The code that starts the backend's refusal of a page save based on an
+ * older copy of the page (`WorkJournalError::PageChanged`).
+ */
+export const WORK_JOURNAL_PAGE_CHANGED_CODE = "PAGE_CHANGED:";
+
+/** Whether `error` is the backend's refusal of a save based on an older page copy. */
+function isPageChangedRefusal(error: unknown): boolean {
+  return errorMessage(error).startsWith(WORK_JOURNAL_PAGE_CHANGED_CODE);
 }
 
 /** An error for the user to read: without the restore refusal's code. */
@@ -661,12 +790,16 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     }
   },
 
-  updatePage: async (date: string, patch: WorkJournalPagePatch) => {
+  updatePage: async (date: string, patch: WorkJournalPagePatch, baseRev?: number) => {
     // Dropped while a restore or undo replaces the journal: the text belongs to
     // the journal being replaced.
     if (!get().pages[date] || get().replacing) return false;
     // The journal this text belongs to (see `revision`).
     const { revision } = get();
+    const key = chainKey(date, patch);
+    // The copy of the page this text was made on: while this field's save
+    // failed, the copy that save was made on (the stored rev may be newer).
+    const callerBase = baseRev ?? failedRevs.get(key) ?? get().pages[date]?.rev;
     // Optimistic: the store holds what the user sees right away. The reply
     // is not applied, so an older reply can never overwrite newer typing.
     set((s) => {
@@ -677,29 +810,108 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     saveTick += 1;
     lastLocalSave.set(date, saveTick);
     let saved = false;
+    const send = (base: number | undefined): Promise<WorkJournalFile | undefined> =>
+      invoke<WorkJournalFile | undefined>("update_work_journal_page", {
+        date,
+        title: patch.title ?? null,
+        body: patch.body ?? null,
+        // Left out without a known rev: the backend then saves unchecked.
+        ...(base === undefined ? {} : { baseRev: base }),
+      });
+    // Records a save that landed on `base`: the rev it made, and the disk copy.
+    const landed = (base: number | undefined, reply: WorkJournalFile | undefined): number => {
+      const page = reply?.pages?.[date];
+      rememberRevCopy(page);
+      const rev = page?.rev;
+      if (rev === undefined) return Number.NaN;
+      if (base !== undefined && rev !== base) setRevEntry(ownSaveRevs, `${date}@${base}`, rev);
+      return rev;
+    };
     const run = async (): Promise<void> => {
+      // Resolved when the save runs: an earlier save of this window queued
+      // ahead of it may have moved the page on meanwhile.
+      const sentBase = resolveBaseRev(date, key, callerBase);
+      // Set when the other window changed this field since `sentBase`.
+      let conflict = false;
+      // Set when the save went on top of a newer copy this window has not shown.
+      let resent = false;
       try {
-        await invoke<WorkJournalFile>("update_work_journal_page", {
-          date,
-          title: patch.title ?? null,
-          body: patch.body ?? null,
-        });
+        let rev = Number.NaN;
+        let base = sentBase;
+        for (let attempt = 0; ; attempt++) {
+          try {
+            rev = landed(base, await send(base));
+            break;
+          } catch (error) {
+            const retry = attempt < PAGE_CHANGED_RESENDS && base !== undefined;
+            if (!retry || !isPageChangedRefusal(error)) throw error;
+            // The page was saved since (by the other window, or by this one's
+            // save of the other field). When this field was left alone, this
+            // text goes on top of that copy; otherwise it is a conflict.
+            const fresh = (await invoke<WorkJournalFile>("load_work_journal")).pages[date];
+            // A restore or undo landed meanwhile: the text belongs to the old journal.
+            if (get().revision !== revision) throw error;
+            rememberRevCopy(fresh);
+            const made = revCopies.get(`${date}@${sentBase}`);
+            if (
+              fresh?.rev === undefined ||
+              !made ||
+              fieldsJson(key, made) !== fieldsJson(key, fresh)
+            ) {
+              conflict = true;
+              throw error;
+            }
+            base = fresh.rev;
+          }
+        }
+        resent = base !== sentBase;
+        if (resent && !Number.isNaN(rev)) {
+          setRevEntry(fieldRevs, `${key}@${sentBase}`, rev);
+        }
         saved = true;
-        forgetFailedSave(chainKey(date, patch));
+        // A retry (or the user's overwrite) put this field's text on disk:
+        // text the failed saves were based on is now based on this rev.
+        const failedRev = failedRevs.get(key);
+        if (failedRev !== undefined && !Number.isNaN(rev)) {
+          setRevEntry(fieldRevs, `${key}@${failedRev}`, rev);
+        }
+        forgetFailedSave(key);
         // The disk now holds this text: a later read showing other text
         // means the other window saved after it.
         const disk = diskPages[date];
-        if (disk) diskPages = { ...diskPages, [date]: { ...disk, ...patch } };
+        if (disk) {
+          const onDisk = Number.isNaN(rev) ? disk.rev : rev;
+          diskPages = { ...diskPages, [date]: { ...disk, ...patch, rev: onDisk } };
+        }
         publishFailedSaves();
       } catch (error) {
         const refused = isRestoreRefusal(error);
-        // A restore or undo refused it and has landed since: the text
-        // belonged to the replaced journal.
-        if (refused && get().revision !== revision) return;
-        const key = chainKey(date, patch);
+        // A restore or undo refused it, or one landed since the page was
+        // found changed: the text belonged to the replaced journal.
+        const replaced = refused || isPageChangedRefusal(error);
+        if (replaced && get().revision !== revision) return;
         failedSaves.add(key);
-        if (!failedBases.has(key) && diskPages[date]) {
-          failedBases.set(key, fieldsJson(key, diskPages[date]));
+        if (!failedRevs.has(key) && sentBase !== undefined) failedRevs.set(key, sentBase);
+        if (!failedBases.has(key)) {
+          // The text this save was made on; unknown text counts as changed.
+          const base =
+            sentBase === undefined ? diskPages[date] : revCopies.get(`${date}@${sentBase}`);
+          if (base) failedBases.set(key, fieldsJson(key, base));
+        }
+        if (conflict) {
+          // The other window changed this field too: the user picks which text
+          // stays. The read shows its text for "Discard mine".
+          conflictSaves.add(key);
+          publishFailedSaves();
+          void get().sync(false);
+          return;
+        }
+        if (isPageChangedRefusal(error)) {
+          // Overtaken again and again while the field stayed untouched: the
+          // timed retry sends it on the copy it reads then.
+          publishFailedSaves();
+          scheduleRetry();
+          return;
         }
         if (refused) {
           // Kept quietly while frozen: a restore that lands drops it, one that
@@ -716,12 +928,13 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         const left = (pendingUpdates.get(date) ?? 1) - 1;
         if (left > 0) pendingUpdates.set(date, left);
         else pendingUpdates.delete(date);
+        // Shows here the other window's change this save went on top of.
+        if (resent) void get().sync(false);
       }
     };
     // Queue behind the previous save of this field (run never rejects). With
     // nothing queued it starts at once, so a flush on window close is sent
     // before the page goes away.
-    const key = chainKey(date, patch);
     const previous = saveChains.get(key);
     const queued = previous ? previous.then(run) : run();
     saveChains.set(key, queued);
@@ -743,6 +956,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       // backend would refuse it for a page that no longer exists.
       await savesSettled(date);
       clearFailedSaves(date);
+      forgetRevs(date);
       publishFailedSaves();
       const tick = saveTick;
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", {
@@ -782,7 +996,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   replaceJournal: (journal: WorkJournalFile) => {
     failedSaves.clear();
     failedBases.clear();
+    failedRevs.clear();
     conflictSaves.clear();
+    clearRevMaps();
+    for (const page of Object.values(journal.pages)) rememberRevCopy(page);
     diskPages = journal.pages;
     publishFailedSaves();
     set((s) => ({

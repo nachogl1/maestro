@@ -14,6 +14,7 @@ import {
   registerWorkJournalEditorAppend,
   registerWorkJournalEditorFlush,
   useWorkJournalStore,
+  workJournalBodyBaseRev,
 } from "@/stores/useWorkJournalStore";
 
 /** How long typing must pause before the page body is saved. */
@@ -142,6 +143,10 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   const dateRef = useRef(date);
   // The journal revision this editor was mounted for; see `revision`.
   const revisionRef = useRef(useWorkJournalStore.getState().revision);
+  // The page `rev` the text here is based on: the one loaded at mount, or the
+  // other window's last change shown here. A save based on an older copy than
+  // the disk's is refused instead of written over it.
+  const baseRevRef = useRef(workJournalBodyBaseRev(date));
 
   // Sends unsaved text now; resolves true once the backend saved it.
   const saveNow = (): Promise<boolean> => {
@@ -157,7 +162,7 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
     if (useWorkJournalStore.getState().revision !== revisionRef.current) {
       return Promise.resolve(false);
     }
-    return useWorkJournalStore.getState().updatePage(dateRef.current, { body });
+    return useWorkJournalStore.getState().updatePage(dateRef.current, { body }, baseRevRef.current);
   };
   const saveNowRef = useRef(saveNow);
   saveNowRef.current = saveNow;
@@ -252,18 +257,23 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   // stored body only differs from the editor's when it came from elsewhere,
   // since this editor's own saves put its text in the store. Skipped while
   // typing here waits to be saved; that save is newer and wins. No update
-  // event and no undo step, so nothing is saved back.
+  // event and no undo step, so nothing is saved back. The caret and selection
+  // stay where they were (clamped to the new text's length).
   const storedBody = useWorkJournalStore((s) => s.pages[date]?.body);
   useEffect(() => {
     if (!editor || editor.isDestroyed || !storedBody || pendingRef.current) return;
     if (!canReadWorkJournalBody(storedBody)) return;
     if (JSON.stringify(storedBody) === JSON.stringify(editor.getJSON())) return;
+    const { from, to } = editor.state.selection;
     editor
       .chain()
       .setMeta("addToHistory", false)
       .setContent(storedBody, { emitUpdate: false })
       .run();
-  }, [editor, storedBody]);
+    const size = editor.state.doc.content.size;
+    editor.commands.setTextSelection({ from: Math.min(from, size), to: Math.min(to, size) });
+    baseRevRef.current = useWorkJournalStore.getState().pages[date]?.rev;
+  }, [editor, storedBody, date]);
 
   // Read-only while a restore or undo replaces the journal. No update event:
   // the text did not change, so nothing must be saved.

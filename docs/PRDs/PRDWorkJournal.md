@@ -304,6 +304,12 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   (`src/components/shared/PanelResizeHandle.tsx`).
 - Confirmed by the user (2026-10-14): pane and window show the same live data, so an
   edit or an accept in one shows up in the other.
+- Decided during the 2026-10-15 audit fixes, flagged for the user to confirm: a
+  save based on an older copy of the page is refused and the user chooses which
+  text to keep ("Overwrite with mine" or "Discard mine"). When one window
+  changed only the title and the other only the text, both changes are kept
+  without asking. Text changed in the other window keeps the cursor where it
+  was.
 
 ### Storage and backup
 

@@ -41,6 +41,67 @@ async function lastSavedBody(): Promise<JSONContent> {
   return calls[calls.length - 1][1].body;
 }
 
+describe("WorkJournalEditor and the other window's changes", () => {
+  afterEach(() => {
+    useWorkJournalStore.setState({ pages: {} });
+  });
+
+  it("keeps the caret where it was when the other window changes the body", () => {
+    const date = "2026-10-21";
+    const page = { date, title: "Wed", body: textBody("Hello world"), origin: "auto" as const };
+    useWorkJournalStore.setState({ pages: { [date]: { ...page, rev: 1 } } });
+    render(<WorkJournalEditor date={date} initialBody={page.body} />);
+    act(() => {
+      pageEditor().commands.setTextSelection(3);
+    });
+
+    act(() => {
+      useWorkJournalStore.setState({
+        pages: { [date]: { ...page, body: textBody("Hello world, and more"), rev: 2 } },
+      });
+    });
+
+    expect(pageEditor().getText()).toBe("Hello world, and more");
+    expect(pageEditor().state.selection.from).toBe(3);
+    expect(pageEditor().state.selection.to).toBe(3);
+
+    // Shorter text: the caret moves back to its end (after "Hi"), never past it.
+    act(() => {
+      pageEditor().commands.setTextSelection(20);
+      useWorkJournalStore.setState({
+        pages: { [date]: { ...page, body: textBody("Hi"), rev: 3 } },
+      });
+    });
+    expect(pageEditor().state.selection.from).toBe(3);
+  });
+
+  it("sends the rev of the copy its text was made on", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const date = "2026-10-21";
+      const page = { date, title: "Wed", body: textBody("Hello"), origin: "auto" as const };
+      const save = vi.fn(async () => true);
+      useWorkJournalStore.setState({ pages: { [date]: { ...page, rev: 4 } }, updatePage: save });
+      render(<WorkJournalEditor date={date} initialBody={page.body} />);
+      act(() => {
+        useWorkJournalStore.setState({
+          pages: { [date]: { ...page, body: textBody("Hello there"), rev: 5 } },
+        });
+      });
+
+      act(() => {
+        pageEditor().commands.insertContent("!");
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+      });
+      expect(save).toHaveBeenCalledWith(date, { body: expect.anything() }, 5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("WorkJournalEditor formatting", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

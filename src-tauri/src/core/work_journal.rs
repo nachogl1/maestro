@@ -133,6 +133,13 @@ pub enum WorkJournalError {
     /// frontend matches the `RESTORE_IN_PROGRESS:` code at the start.
     #[error("RESTORE_IN_PROGRESS: The Work Journal is being restored; this change was not saved.")]
     RestoreInProgress,
+    /// A page save based on an older copy of the page: another window saved
+    /// it since. Nothing was written. The frontend matches the
+    /// `PAGE_CHANGED:` code at the start.
+    #[error(
+        "PAGE_CHANGED: The page for {0} was changed in another window; this change was not saved."
+    )]
+    PageChanged(String),
 }
 
 /// Result type for Work Journal operations.
@@ -159,6 +166,11 @@ pub struct WorkJournalPage {
     pub body: Value,
     /// Whether Maestro or the user created the page.
     pub origin: PageOrigin,
+    /// Bumped on every change of the title or body (and by a restore or
+    /// undo), so a save based on an older copy can be refused. Absent in
+    /// older files: 0.
+    #[serde(default)]
+    pub rev: u64,
 }
 
 /// Journal settings. Later features add named fields with `#[serde(default)]`;
@@ -239,6 +251,11 @@ pub struct WorkJournal {
     /// Journal settings (see [`WorkJournalSettings`]).
     #[serde(default)]
     pub settings: WorkJournalSettings,
+    /// The page `rev` the next change gets (see [`issue_rev`]). One counter
+    /// for the whole journal, so a rev is never used twice, not even by a
+    /// page deleted and created again for the same date.
+    #[serde(default)]
+    pub next_rev: u64,
 }
 
 impl Default for WorkJournal {
@@ -249,6 +266,7 @@ impl Default for WorkJournal {
             deleted_dates: BTreeSet::new(),
             last_auto_created_date: None,
             settings: WorkJournalSettings::default(),
+            next_rev: 0,
         }
     }
 }
@@ -409,6 +427,7 @@ pub fn create_page(
     if journal.pages.contains_key(date) {
         return Err(WorkJournalError::PageExists(date.to_string()));
     }
+    let rev = issue_rev(journal);
     journal.pages.insert(
         date.to_string(),
         WorkJournalPage {
@@ -416,29 +435,77 @@ pub fn create_page(
             title,
             body,
             origin,
+            rev,
         },
     );
     Ok(())
 }
 
-/// Changes the title and/or body of an existing page.
+/// The lowest rev that no page of `journal` has used: past `next_rev` and
+/// past every page's `rev` (a file written before the counter existed).
+fn rev_floor(journal: &WorkJournal) -> u64 {
+    let pages = journal.pages.values().map(|p| p.rev + 1).max().unwrap_or(0);
+    journal.next_rev.max(pages)
+}
+
+/// Hands out a page `rev` never used in this journal (at least 1) and moves
+/// the counter past it.
+fn issue_rev(journal: &mut WorkJournal) -> u64 {
+    let rev = rev_floor(journal).max(1);
+    journal.next_rev = rev + 1;
+    rev
+}
+
+/// Changes the title and/or body of an existing page, bumping its `rev`
+/// when either actually changes. With `base_rev` (the `rev` of the copy the
+/// change was made on), a page whose `rev` differs was saved by someone
+/// else since: refused with [`WorkJournalError::PageChanged`], nothing
+/// changed. Without it the change always applies (older callers).
 pub fn update_page(
     journal: &mut WorkJournal,
     date: &str,
     title: Option<String>,
     body: Option<Value>,
+    base_rev: Option<u64>,
 ) -> WorkJournalResult<()> {
     let page = journal
         .pages
         .get_mut(date)
         .ok_or_else(|| WorkJournalError::PageNotFound(date.to_string()))?;
+    if base_rev.is_some_and(|base| base != page.rev) {
+        return Err(WorkJournalError::PageChanged(date.to_string()));
+    }
+    let mut changed = false;
     if let Some(title) = title {
+        changed |= page.title != title;
         page.title = title;
     }
     if let Some(body) = body {
+        changed |= page.body != body;
         page.body = body;
     }
+    if changed {
+        let rev = issue_rev(journal);
+        if let Some(page) = journal.pages.get_mut(date) {
+            page.rev = rev;
+        }
+    }
     Ok(())
+}
+
+/// Gives every page of a journal coming back from a backup or the safety
+/// copy a new `rev` past every rev of the journal it replaces (`floor`, see
+/// [`rev_floor`]), so no save based on a page of the replaced journal can
+/// match it.
+fn bump_revs_past(journal: &mut WorkJournal, floor: u64) {
+    journal.next_rev = journal.next_rev.max(floor);
+    let dates: Vec<String> = journal.pages.keys().cloned().collect();
+    for date in dates {
+        let rev = issue_rev(journal);
+        if let Some(page) = journal.pages.get_mut(&date) {
+            page.rev = rev;
+        }
+    }
 }
 
 /// Removes a page and, when needed, records its date in `deleted_dates` so the
@@ -686,20 +753,25 @@ pub fn default_restore_source(path: &Path) -> WorkJournalResult<PathBuf> {
         .ok_or(WorkJournalError::RestoreNoBackupFolder)
 }
 
+/// The local journal as [`current_journal`] returns it: its exact bytes, its
+/// settings and its [`rev_floor`].
+type CurrentJournal = (Vec<u8>, WorkJournalSettings, u64);
+
 /// The local journal as restore and undo see it: its exact bytes (a missing
-/// file counts as an empty journal) and its settings (empty when missing).
+/// file counts as an empty journal), its settings and its [`rev_floor`]
+/// (empty and 0 when missing or unreadable).
 ///
 /// A local journal from a newer Maestro is refused ("update Maestro first"),
 /// so an older layout never replaces it. One that cannot be read as a journal
 /// at all (corrupt) has empty settings but can still be restored over: its
 /// bytes go into the safety copy unchanged.
-fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, WorkJournalSettings)> {
+fn current_journal(path: &Path) -> WorkJournalResult<CurrentJournal> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let empty = serde_json::to_vec_pretty(&WorkJournal::default())
                 .map_err(WorkJournalError::Serialize)?;
-            return Ok((empty, WorkJournalSettings::default()));
+            return Ok((empty, WorkJournalSettings::default(), 0));
         }
         Err(e) => return Err(WorkJournalError::Read(e)),
     };
@@ -717,7 +789,11 @@ fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, WorkJournalSettin
             None
         }
     };
-    Ok((bytes, journal.map(|j| j.settings).unwrap_or_default()))
+    let Some(journal) = journal else {
+        return Ok((bytes, WorkJournalSettings::default(), 0));
+    };
+    let floor = rev_floor(&journal);
+    Ok((bytes, journal.settings, floor))
 }
 
 /// The settings rules for a journal coming back from a backup or the safety
@@ -774,13 +850,14 @@ pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal
             },
         }
     })?;
-    let (current_bytes, local_settings) = current_journal(path)?;
+    let (current_bytes, local_settings, rev_floor) = current_journal(path)?;
     let safety = safety_copy_path(path);
     if let Some(parent) = safety.parent() {
         std::fs::create_dir_all(parent).map_err(WorkJournalError::CreateDir)?;
     }
     atomic_write_durable(&safety, &current_bytes).map_err(WorkJournalError::SafetyCopyNotSaved)?;
     keep_local_settings(&mut restored, local_settings);
+    bump_revs_past(&mut restored, rev_floor);
     save(path, &restored)?;
     Ok(restored)
 }
@@ -835,7 +912,7 @@ pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
         WorkJournalError::Read(io) => WorkJournalError::SafetyCopyUnreadable(io.to_string()),
         other => WorkJournalError::SafetyCopyUnreadable(other.to_string()),
     })?;
-    let (current_bytes, local_settings) = current_journal(path)?;
+    let (current_bytes, local_settings, rev_floor) = current_journal(path)?;
     let consumed = consumed_safety_copy_path(path);
     move_file(&safety, &consumed).map_err(WorkJournalError::SafetyCopyNotSetAside)?;
     let before_undo = before_undo_path(path);
@@ -844,6 +921,7 @@ pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
         return Err(put_safety_copy_back(&consumed, &safety, cause));
     }
     keep_local_settings(&mut previous, local_settings);
+    bump_revs_past(&mut previous, rev_floor);
     if let Err(e) = save(path, &previous) {
         return Err(put_safety_copy_back(&consumed, &safety, e));
     }
@@ -1313,17 +1391,155 @@ mod tests {
         )
         .unwrap();
 
-        update_page(&mut journal, "2026-10-14", Some("new".into()), None).unwrap();
+        update_page(&mut journal, "2026-10-14", Some("new".into()), None, None).unwrap();
         assert_eq!(journal.pages["2026-10-14"].title, "new");
         assert_eq!(journal.pages["2026-10-14"].body, json!({"v": 1}));
 
-        update_page(&mut journal, "2026-10-14", None, Some(json!({"v": 2}))).unwrap();
+        update_page(
+            &mut journal,
+            "2026-10-14",
+            None,
+            Some(json!({"v": 2})),
+            None,
+        )
+        .unwrap();
         assert_eq!(journal.pages["2026-10-14"].title, "new");
         assert_eq!(journal.pages["2026-10-14"].body, json!({"v": 2}));
         assert_eq!(journal.pages["2026-10-14"].origin, PageOrigin::Auto);
 
-        let err = update_page(&mut journal, "2026-10-15", None, None).unwrap_err();
+        let err = update_page(&mut journal, "2026-10-15", None, None, None).unwrap_err();
         assert!(matches!(err, WorkJournalError::PageNotFound(_)));
+    }
+
+    #[test]
+    fn test_update_with_a_stale_base_rev_is_refused_and_leaves_the_page_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = journal_path(dir.path());
+        let date = "2026-10-15";
+        modify(&path, |j| {
+            create_page(j, date, "Day".into(), json!({"v": 1}), PageOrigin::Auto)
+        })
+        .unwrap();
+        // The pop-out saves first, based on the new page's rev 1.
+        modify(&path, |j| {
+            update_page(j, date, None, Some(json!({"v": "accepted"})), Some(1))
+        })
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        // The pane's save was made on rev 1 too: refused, file untouched.
+        let err = modify(&path, |j| {
+            update_page(
+                j,
+                date,
+                Some("Mine".into()),
+                Some(json!({"v": "older"})),
+                Some(1),
+            )
+        })
+        .unwrap_err();
+        assert!(matches!(err, WorkJournalError::PageChanged(ref d) if d == date));
+        // The frontend matches this code (`WORK_JOURNAL_PAGE_CHANGED_CODE`).
+        assert!(err.to_string().starts_with("PAGE_CHANGED: "));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let page = &load(&path).unwrap().pages[date];
+        assert_eq!(page.body, json!({"v": "accepted"}));
+        assert_eq!(page.title, "Day");
+        assert_eq!(page.rev, 2);
+    }
+
+    #[test]
+    fn test_an_appended_line_bumps_the_rev_and_a_current_base_saves() {
+        let mut journal = WorkJournal::default();
+        let date = "2026-10-15";
+        create_page(
+            &mut journal,
+            date,
+            "Day".into(),
+            json!({"v": 1}),
+            PageOrigin::Auto,
+        )
+        .unwrap();
+        assert_eq!(journal.pages[date].rev, 1);
+
+        // Accepting a suggestion saves the page with its new line.
+        update_page(
+            &mut journal,
+            date,
+            None,
+            Some(json!({"v": [1, "line"]})),
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(journal.pages[date].rev, 2);
+        update_page(&mut journal, date, Some("New".into()), None, Some(2)).unwrap();
+        assert_eq!(journal.pages[date].rev, 3);
+        assert_eq!(journal.pages[date].body, json!({"v": [1, "line"]}));
+        // Saving the same text again changes nothing, so the rev stays.
+        update_page(&mut journal, date, Some("New".into()), None, Some(3)).unwrap();
+        assert_eq!(journal.pages[date].rev, 3);
+    }
+
+    #[test]
+    fn test_a_page_deleted_and_created_again_never_reuses_a_rev() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = journal_path(dir.path());
+        let date = "2026-10-15";
+        let create = |path: &Path| {
+            modify(path, |j| {
+                create_page(j, date, "Day".into(), json!({"v": 1}), PageOrigin::Manual)
+            })
+            .unwrap()
+        };
+        create(&path);
+        modify(&path, |j| {
+            update_page(j, date, None, Some(json!({"v": 2})), Some(1))
+        })
+        .unwrap();
+        modify(&path, |j| delete_page(j, date, None)).unwrap();
+
+        // The counter is in the file, so the new page starts past every old rev.
+        let again = create(&path).pages[date].rev;
+        assert_eq!(again, 3);
+        for old in [0, 1, 2] {
+            let err = modify(&path, |j| {
+                update_page(j, date, None, Some(json!({"v": "stale"})), Some(old))
+            })
+            .unwrap_err();
+            assert!(matches!(err, WorkJournalError::PageChanged(_)));
+        }
+        modify(&path, |j| {
+            update_page(j, date, None, Some(json!({"v": 3})), Some(again))
+        })
+        .unwrap();
+        assert_eq!(load(&path).unwrap().pages[date].rev, 4);
+    }
+
+    #[test]
+    fn test_update_without_a_base_rev_still_saves() {
+        let mut journal = WorkJournal::default();
+        let date = "2026-10-15";
+        create_page(
+            &mut journal,
+            date,
+            "Day".into(),
+            json!({"v": 1}),
+            PageOrigin::Auto,
+        )
+        .unwrap();
+        update_page(&mut journal, date, None, Some(json!({"v": 2})), Some(1)).unwrap();
+
+        update_page(&mut journal, date, Some("Old caller".into()), None, None).unwrap();
+        assert_eq!(journal.pages[date].title, "Old caller");
+        assert_eq!(journal.pages[date].rev, 3);
+    }
+
+    #[test]
+    fn test_a_page_without_rev_in_an_older_file_reads_as_rev_0() {
+        let text = r#"{"layout_version": 1, "pages": {"2026-10-14": {"date": "2026-10-14",
+            "title": "Tue", "body": {"type": "doc"}, "origin": "auto"}}}"#;
+        let journal = parse_journal(text).unwrap();
+        assert_eq!(journal.pages["2026-10-14"].rev, 0);
     }
 
     #[test]
@@ -2258,6 +2474,18 @@ mod tests {
         text
     }
 
+    /// `pages` with the revs a restore gave them in `saved` (see
+    /// `bump_revs_past`, tested on its own), so the rest compares exactly.
+    fn with_revs_of(
+        mut pages: BTreeMap<String, WorkJournalPage>,
+        saved: &WorkJournal,
+    ) -> BTreeMap<String, WorkJournalPage> {
+        for (date, page) in pages.iter_mut() {
+            page.rev = saved.pages[date].rev;
+        }
+        pages
+    }
+
     /// A local journal with one page, a backup folder and a backup time.
     fn local_journal(path: &Path, folder: &Path) -> Vec<u8> {
         journal_with_backup_folder(path, folder);
@@ -2297,6 +2525,9 @@ mod tests {
         expected.settings = old.settings;
         expected.settings.last_backup_at = None;
         expected.settings.last_run_at = None;
+        // A restored page always gets a new rev (see `bump_revs_past`).
+        expected.pages = with_revs_of(expected.pages, &saved);
+        expected.next_rev = saved.next_rev;
         assert_eq!(saved, expected);
         assert!(saved.settings.last_run_at.is_none());
         assert_eq!(
@@ -2323,6 +2554,35 @@ mod tests {
             backup
         );
         assert!(leftover_temps(path.parent().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn test_restore_and_undo_move_each_page_rev_past_the_replaced_one() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        let mut backup: Value = serde_json::from_str(&other_machine_backup(&folder)).unwrap();
+        backup["pages"]["2026-10-15"] = json!({"date": "2026-10-15", "title": "Backup",
+            "body": {"type": "doc"}, "origin": "auto", "rev": 2});
+        std::fs::write(backup_path(&folder), backup.to_string()).unwrap();
+        local_journal(&path, &folder);
+        for n in 0..5 {
+            modify(&path, |j| {
+                update_page(j, "2026-10-15", Some(format!("Local {n}")), None, None)
+            })
+            .unwrap();
+        }
+        assert_eq!(load(&path).unwrap().pages["2026-10-15"].rev, 6);
+
+        let restored = restore_from(&path, &backup_path(&folder)).unwrap();
+        // No save made on a local page (revs 1 to 6) can match a restored one.
+        assert_eq!(restored.pages["2026-09-01"].rev, 7);
+        assert_eq!(restored.pages["2026-10-15"].rev, 8);
+
+        let undone = undo_restore(&path).unwrap();
+        assert_eq!(undone.pages["2026-10-15"].title, "Local 4");
+        assert_eq!(undone.pages["2026-10-15"].rev, 9);
+        assert_eq!(load(&path).unwrap(), undone);
     }
 
     #[test]
@@ -2385,6 +2645,8 @@ mod tests {
         expected.settings.last_run_at = None;
         expected.settings.last_attempt_at = None;
         expected.settings.retry_dates.clear();
+        expected.pages = with_revs_of(expected.pages, &saved);
+        expected.next_rev = saved.next_rev;
         assert_eq!(saved, expected);
         assert!(saved.settings.last_run_at.is_none());
         assert!(saved.settings.last_attempt_at.is_none());
@@ -2607,7 +2869,11 @@ mod tests {
             "a local setting this build does not know survives"
         );
         assert!(s.last_backup_at.is_none());
-        assert_eq!(saved.pages, backup.pages, "pages come from the backup");
+        assert_eq!(
+            saved.pages,
+            with_revs_of(backup.pages.clone(), &saved),
+            "pages come from the backup"
+        );
         assert_eq!(saved.deleted_dates, backup.deleted_dates);
         assert_eq!(saved.last_auto_created_date, backup.last_auto_created_date);
         assert!(
@@ -2746,7 +3012,10 @@ mod tests {
 
         let safety = std::fs::read_to_string(safety_copy_path(&path)).unwrap();
         assert_eq!(parse_journal(&safety).unwrap(), WorkJournal::default());
-        assert_eq!(saved.pages, parse_journal(&backup).unwrap().pages);
+        assert_eq!(
+            saved.pages,
+            with_revs_of(parse_journal(&backup).unwrap().pages, &saved)
+        );
         assert!(
             saved.settings.backup_folder.is_none(),
             "no local folder yet"
@@ -2758,7 +3027,14 @@ mod tests {
             "a new laptop takes no settings from the backup; Granola stays unasked"
         );
 
-        assert_eq!(undo_restore(&path).unwrap(), WorkJournal::default());
+        let undone = undo_restore(&path).unwrap();
+        // Empty again, but the rev counter never goes back.
+        assert!(undone.next_rev >= saved.next_rev);
+        let empty = WorkJournal {
+            next_rev: undone.next_rev,
+            ..WorkJournal::default()
+        };
+        assert_eq!(undone, empty);
     }
 
     #[test]
@@ -2832,7 +3108,10 @@ mod tests {
 
         let saved = restore_from(&path, &backup_path(&folder)).unwrap();
 
-        assert_eq!(saved.pages, parse_journal(&backup).unwrap().pages);
+        assert_eq!(
+            saved.pages,
+            with_revs_of(parse_journal(&backup).unwrap().pages, &saved)
+        );
         assert!(saved.settings.backup_folder.is_none());
         assert_eq!(std::fs::read(safety_copy_path(&path)).unwrap(), broken);
 
