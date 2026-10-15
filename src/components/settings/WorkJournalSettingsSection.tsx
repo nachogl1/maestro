@@ -121,7 +121,9 @@ export function WorkJournalSettingsSection(): JSX.Element {
 
   const handleUndoRestore = async (): Promise<void> => {
     const confirmed = await ask(
-      "Put back your Work Journal from before the restore? Changes made since the restore are lost.",
+      "Put back your Work Journal from before the restore? Changes made since the restore are " +
+        "replaced. Your current journal is kept as work-journal.before-undo.json in " +
+        "Maestro's data folder.",
       { title: "Undo Restore", kind: "warning" },
     ).catch(() => false);
     if (confirmed) await undoRestore();

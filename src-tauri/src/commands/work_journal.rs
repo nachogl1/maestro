@@ -500,8 +500,9 @@ pub async fn restore_work_journal(
     Ok(reply)
 }
 
-/// "Undo restore": puts the safety copy back and deletes it (undo works
-/// once). Refused when there is no safety copy.
+/// "Undo restore": keeps the current journal as the before-undo copy, puts
+/// the safety copy back and removes it (undo works once). Refused when there
+/// is no safety copy.
 #[tauri::command]
 pub async fn undo_work_journal_restore(
     window: WebviewWindow,
