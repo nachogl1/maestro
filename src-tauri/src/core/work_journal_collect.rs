@@ -292,7 +292,6 @@ struct Found {
 /// paths), sorted by when it happened and dated in local time. Terminal
 /// sessions are global, so they are listed whatever the projects. Never
 /// fails: a source that errors is logged and left out.
-#[allow(dead_code)] // first used by issue #313 (scheduled candidate run)
 pub async fn collect_activity(
     start: DateTime<Utc>,
     end: DateTime<Utc>,

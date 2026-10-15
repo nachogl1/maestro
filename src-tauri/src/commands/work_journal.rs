@@ -11,12 +11,15 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{Map, Value};
+use tauri::{AppHandle, Emitter};
 
 use crate::core::work_journal::{
     self, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
 };
+use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 
 /// Serialises load-change-save cycles so two commands never interleave and
 /// lose a write.
@@ -110,7 +113,7 @@ pub async fn work_journal_backup_now() -> Result<WorkJournal, String> {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BackupIfDueOutcome {
     /// A backup was written; the saved journal.
-    Written { journal: WorkJournal },
+    Written { journal: Box<WorkJournal> },
     /// Nothing to do: no folder set, or not due yet.
     Idle,
     /// The guard refused to replace a backup this Maestro has not written.
@@ -123,7 +126,9 @@ fn backup_if_due_outcome(
     result: WorkJournalResult<Option<WorkJournal>>,
 ) -> WorkJournalResult<BackupIfDueOutcome> {
     match result {
-        Ok(Some(journal)) => Ok(BackupIfDueOutcome::Written { journal }),
+        Ok(Some(journal)) => Ok(BackupIfDueOutcome::Written {
+            journal: Box::new(journal),
+        }),
         Ok(None) => Ok(BackupIfDueOutcome::Idle),
         Err(e @ WorkJournalError::AutoBackupWouldReplaceUnknownBackup) => {
             Ok(BackupIfDueOutcome::Skipped {
@@ -155,6 +160,85 @@ pub async fn work_journal_ensure_pages(today: String) -> Result<WorkJournal, Str
     with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await
 }
 
+/// What a candidate run did, tagged by `status` for the frontend.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CandidateRunOutcome {
+    /// The run finished: how many candidates it added, the dates that got
+    /// them, and the saved `last_run_at`.
+    Ran {
+        added: usize,
+        dates: Vec<String>,
+        #[serde(rename = "lastRunAt")]
+        last_run_at: String,
+    },
+    /// Another run is still going; nothing was started.
+    Busy,
+    /// The run stopped early with `message`. Candidates of the dates before
+    /// the failure were kept, and `last_run_at` only moved past those dates.
+    Failed {
+        message: String,
+        added: usize,
+        dates: Vec<String>,
+        #[serde(rename = "lastRunAt")]
+        last_run_at: String,
+    },
+}
+
+/// Maps a finished run and its saved `last_run_at` to the command's outcome.
+fn candidate_run_outcome(report: RunReport, last_run_at: String) -> CandidateRunOutcome {
+    match report.error {
+        None => CandidateRunOutcome::Ran {
+            added: report.added,
+            dates: report.dates,
+            last_run_at,
+        },
+        Some(message) => CandidateRunOutcome::Failed {
+            message,
+            added: report.added,
+            dates: report.dates,
+            last_run_at,
+        },
+    }
+}
+
+/// Runs the Work Journal candidate run over `projects` (their paths): the
+/// activity since `last_run_at` (or one interval back) becomes pending
+/// candidates, one headless `claude` call per date that has activity. Saves
+/// `last_run_at` and emits [`work_journal_run::CANDIDATES_EVENT`] when
+/// candidates were added. Only one run at a time; a second request while one
+/// runs gets `Busy`.
+#[tauri::command]
+pub async fn work_journal_run_candidates(
+    app: AppHandle,
+    projects: Vec<String>,
+) -> Result<CandidateRunOutcome, String> {
+    let Some(_running) = work_journal_run::try_begin_run() else {
+        return Ok(CandidateRunOutcome::Busy);
+    };
+    let journal = with_journal(|path| work_journal::load(&path)).await?;
+    let report = work_journal_run::run_candidates(&journal, &projects, Utc::now()).await;
+    if report.added > 0 {
+        let payload = CandidatesAdded {
+            dates: report.dates.clone(),
+            added: report.added,
+        };
+        let _ = app.emit(work_journal_run::CANDIDATES_EVENT, payload);
+    }
+    let last_run_at = report
+        .covered_until
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
+    let saved = last_run_at.clone();
+    with_journal(move |path| {
+        work_journal::modify(&path, |j| {
+            j.settings.last_run_at = Some(saved);
+            Ok(())
+        })
+    })
+    .await?;
+    Ok(candidate_run_outcome(report, last_run_at))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +266,38 @@ mod tests {
 
         let failed = backup_if_due_outcome(Err(WorkJournalError::NoBackupFolder));
         assert!(matches!(failed, Err(WorkJournalError::NoBackupFolder)));
+    }
+
+    #[test]
+    fn test_candidate_run_outcome_tags_each_case() {
+        let at = "2026-10-15T12:00:00Z".to_string();
+        let report = |error: Option<&str>| RunReport {
+            added: 2,
+            dates: vec!["2026-10-15".to_string()],
+            covered_until: chrono::DateTime::parse_from_rfc3339(&at)
+                .unwrap()
+                .with_timezone(&Utc),
+            error: error.map(str::to_string),
+        };
+
+        let ran = candidate_run_outcome(report(None), at.clone());
+        assert_eq!(
+            serde_json::to_value(&ran).unwrap(),
+            serde_json::json!({
+                "status": "ran", "added": 2, "dates": ["2026-10-15"], "lastRunAt": at
+            })
+        );
+
+        let failed = candidate_run_outcome(report(Some("claude timed out")), at.clone());
+        let value = serde_json::to_value(&failed).unwrap();
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["message"], "claude timed out");
+        assert_eq!(value["added"], 2);
+        assert_eq!(value["lastRunAt"], at.as_str());
+
+        assert_eq!(
+            serde_json::to_value(CandidateRunOutcome::Busy).unwrap(),
+            serde_json::json!({"status": "busy"})
+        );
     }
 }

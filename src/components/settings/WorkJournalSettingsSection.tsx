@@ -2,6 +2,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { BookOpen, FolderOpen, Loader2 } from "lucide-react";
 import { useEffect } from "react";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
+import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
+import { WorkJournalCandidateRunRows } from "./WorkJournalCandidateRunRows";
 
 /** "15 Oct 2026, 12:34" in the user's locale; the raw text if unparsable. */
 function formatBackupTime(iso: string): string {
@@ -23,6 +25,8 @@ export function WorkJournalSettingsSection(): JSX.Element {
   const load = useWorkJournalBackupStore((s) => s.load);
   const chooseFolder = useWorkJournalBackupStore((s) => s.chooseFolder);
   const backUpNow = useWorkJournalBackupStore((s) => s.backUpNow);
+  const runError = useWorkJournalCandidateRunStore((s) => s.runError);
+  const runSettingsError = useWorkJournalCandidateRunStore((s) => s.settingsError);
 
   useEffect(() => {
     void load();
@@ -49,6 +53,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
         Work Journal
       </div>
       <div className="space-y-1.5 px-1">
+        <WorkJournalCandidateRunRows />
         <div className="flex items-center gap-2 text-xs">
           <span className="shrink-0 text-maestro-muted">Backup folder</span>
           <span
@@ -85,7 +90,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
             Back up now
           </button>
         </div>
-        {[loadError, error].filter(Boolean).map((text) => (
+        {[runSettingsError, runError, loadError, error].filter(Boolean).map((text) => (
           <div key={text} role="alert" className="text-[11px] text-maestro-red">
             {text}
           </div>

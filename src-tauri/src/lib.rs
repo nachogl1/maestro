@@ -302,6 +302,7 @@ pub fn run() {
             commands::work_journal::work_journal_backup_now,
             commands::work_journal::work_journal_backup_if_due,
             commands::work_journal::work_journal_ensure_pages,
+            commands::work_journal::work_journal_run_candidates,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,

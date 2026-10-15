@@ -130,6 +130,16 @@ pub struct WorkJournalSettings {
     /// When the last successful backup was written (RFC 3339, UTC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_backup_at: Option<String>,
+    /// Hours between candidate runs while Maestro is open; absent = 1
+    /// (see [`crate::core::work_journal_run::effective_run_every_hours`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_every_hours: Option<u32>,
+    /// Model for candidate runs; absent or blank = the user's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// When the last candidate run's window ended (RFC 3339, UTC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
