@@ -79,6 +79,62 @@ pub(crate) async fn atomic_write_async(
         .map_err(|e| format!("atomic write task failed: {e}"))?
 }
 
+/// A durable write's temp file older than this is left over from a crash.
+/// Younger ones may belong to a write still in flight and are kept.
+const STALE_TMP_AGE: Duration = Duration::from_secs(60);
+
+/// Whether `candidate` is exactly `<target>.<pid digits>.<32 hex>.tmp`, the
+/// name [`unique_tmp_path`] makes. Never the target itself, the old fixed
+/// `<target>.tmp`, or any other file.
+fn is_durable_tmp_name(target: &std::ffi::OsStr, candidate: &std::ffi::OsStr) -> bool {
+    let (Some(target), Some(candidate)) = (target.to_str(), candidate.to_str()) else {
+        return false;
+    };
+    let Some(rest) = candidate
+        .strip_prefix(target)
+        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((pid, id)) = rest.split_once('.') else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && id.len() == 32
+        && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Removes temp files a crashed durable write of `path` left beside it, so
+/// they never pile up (in a synced backup folder too). Only regular files
+/// with the exact durable temp name and older than [`STALE_TMP_AGE`];
+/// every error is ignored.
+fn remove_stale_temps(path: &Path) {
+    let (Some(dir), Some(target)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !is_durable_tmp_name(target, &entry.file_name()) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age >= STALE_TMP_AGE);
+        if meta.is_file() && stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// A fresh temp path next to `path`: `<file>.<pid>.<random>.tmp`, so no
 /// other process can predict it and plant a link there in advance.
 fn unique_tmp_path(path: &Path) -> PathBuf {
@@ -136,8 +192,10 @@ fn sync_parent_dir(path: &Path) {
 
 /// Writes `content` to `path` so that neither a crash nor a power cut can
 /// leave it empty or half-written, through a fresh unpredictable temp file
-/// (see the module note). Any failure removes the temp file. Blocking.
+/// (see the module note). Any failure removes the temp file, and stale temps
+/// from earlier crashed writes are cleared first. Blocking.
 pub(crate) fn atomic_write_durable(path: &Path, content: &[u8]) -> Result<(), String> {
+    remove_stale_temps(path);
     atomic_write_durable_via(path, &unique_tmp_path(path), content)
 }
 
@@ -481,5 +539,58 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "<html>");
         assert!(test_hooks::leftover_temps(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_durable_tmp_name_matches_only_its_own_pattern() {
+        let target = std::ffi::OsStr::new("journal.json");
+        let made = unique_tmp_path(Path::new("journal.json"));
+        assert!(is_durable_tmp_name(target, made.file_name().unwrap()));
+        let hex = "0123456789abcdef0123456789abcdef";
+        for other in [
+            "journal.json".to_string(),
+            "journal.json.tmp".to_string(),
+            "journal.json.bak.tmp".to_string(),
+            format!("journal.json.12.{hex}"),
+            format!("journal.json..{hex}.tmp"),
+            format!("journal.json.12.{hex}0.tmp"),
+            format!("journal.json.x1.{hex}.tmp"),
+            format!("other.json.12.{hex}.tmp"),
+            format!("journal.jsonx.12.{hex}.tmp"),
+        ] {
+            assert!(
+                !is_durable_tmp_name(target, std::ffi::OsStr::new(&other)),
+                "must not match {other}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_atomic_write_durable_clears_stale_temps_and_nothing_else() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let hex = "0123456789abcdef0123456789abcdef";
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let make = |name: &str, aged: bool| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "x").unwrap();
+            if aged {
+                let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+                f.set_modified(old).unwrap();
+            }
+            p
+        };
+        let stale = make(&format!("journal.json.42.{hex}.tmp"), true);
+        let in_flight = make(&format!("journal.json.43.{hex}.tmp"), false);
+        let fixed = make("journal.json.tmp", true);
+        let other = make(&format!("other.json.42.{hex}.tmp"), true);
+
+        atomic_write_durable(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert!(!stale.exists(), "a crashed write's temp is removed");
+        assert!(in_flight.exists(), "a young temp may be in flight");
+        assert!(fixed.exists(), "not the durable pattern");
+        assert!(other.exists(), "another file's temp");
     }
 }
