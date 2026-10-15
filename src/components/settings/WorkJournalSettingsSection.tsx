@@ -3,8 +3,10 @@ import { BookOpen, FolderOpen, Loader2, Undo2 } from "lucide-react";
 import { useEffect } from "react";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
+import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
 import { WorkJournalCandidateRunRows } from "./WorkJournalCandidateRunRows";
 import { WorkJournalGranolaRow } from "./WorkJournalGranolaRow";
+import { WorkJournalReportFolderRow } from "./WorkJournalReportFolderRow";
 
 /** "15 Oct 2026, 12:34" in the user's locale; the raw text if unparsable. */
 function formatBackupTime(iso: string): string {
@@ -32,7 +34,7 @@ function confirmRestore(file: string): Promise<boolean> {
 /**
  * Work Journal section of Maestro Settings: the backup folder, "Back up now",
  * the last backup time, "Restore from backup" (the folder's backup or a
- * browsed file) and "Undo restore".
+ * browsed file), "Undo restore" and the report folder.
  */
 export function WorkJournalSettingsSection(): JSX.Element {
   const backupFolder = useWorkJournalBackupStore((s) => s.backupFolder);
@@ -45,6 +47,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
   const backUpNow = useWorkJournalBackupStore((s) => s.backUpNow);
   const runError = useWorkJournalCandidateRunStore((s) => s.runError);
   const runSettingsError = useWorkJournalCandidateRunStore((s) => s.settingsError);
+  const reportError = useWorkJournalReportStore((s) => s.error);
   const canUndo = useWorkJournalBackupStore((s) => s.canUndo);
   const restoring = useWorkJournalBackupStore((s) => s.restoring);
   const notice = useWorkJournalBackupStore((s) => s.notice);
@@ -181,8 +184,9 @@ export function WorkJournalSettingsSection(): JSX.Element {
             Undo restore
           </button>
         </div>
+        <WorkJournalReportFolderRow />
         {notice && <output className="block text-[11px] text-maestro-green">{notice}</output>}
-        {[runSettingsError, runError, loadError, error].filter(Boolean).map((text) => (
+        {[runSettingsError, runError, loadError, error, reportError].filter(Boolean).map((text) => (
           <div key={text} role="alert" className="text-[11px] text-maestro-red">
             {text}
           </div>

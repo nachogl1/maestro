@@ -22,6 +22,7 @@ use crate::core::work_journal::{
 use crate::core::work_journal_activity::{
     self, ActivityError, ActivityResult, Candidate, CandidateState,
 };
+use crate::core::work_journal_report::{self, ReportResult};
 use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 
 /// Serialises load-change-save cycles so two commands never interleave and
@@ -387,6 +388,55 @@ pub async fn accept_work_journal_candidate(id: String) -> Result<Option<Candidat
     .map_err(|e| e.to_string())
 }
 
+/// What `work_journal_generate_report` did, tagged by `status` for the
+/// frontend.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReportOutcome {
+    /// The report was written to `path` (replacing the same range's file).
+    Saved { path: String },
+    /// No page in the range has text worth a report; no file was written.
+    NothingToReport,
+    /// No report folder is set yet; the dialog asks for one.
+    NoFolder,
+    /// Another report is still being made; nothing was started.
+    Busy,
+}
+
+/// Maps the core result to the command's outcome.
+fn report_outcome(result: ReportResult) -> ReportOutcome {
+    match result {
+        ReportResult::Saved(path) => ReportOutcome::Saved {
+            path: path.display().to_string(),
+        },
+        ReportResult::NothingToReport => ReportOutcome::NothingToReport,
+        ReportResult::NoFolder => ReportOutcome::NoFolder,
+    }
+}
+
+/// Writes the supervisor report for `from..=to` (`YYYY-MM-DD`, inclusive)
+/// to `<report folder>/work-report_<from>_to_<to>.html` (see
+/// [`work_journal_report`]). One report at a time (its own lock, not the
+/// candidate run's); a second request while one runs gets `Busy`. A missing
+/// report folder is an error and is never created.
+#[tauri::command]
+pub async fn work_journal_generate_report(
+    from: String,
+    to: String,
+) -> Result<ReportOutcome, String> {
+    let Some(_running) = work_journal_report::try_begin_report() else {
+        return Ok(ReportOutcome::Busy);
+    };
+    let journal = with_journal(|path| work_journal::load(&path)).await?;
+    let generated_on = chrono::Local::now()
+        .format("%-d %b %Y at %H:%M")
+        .to_string();
+    work_journal_report::generate_report(&journal, &from, &to, &generated_on)
+        .await
+        .map(report_outcome)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +552,27 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&state).unwrap(),
             serde_json::json!({"canUndo": false})
+        );
+    }
+
+    #[test]
+    fn test_report_outcome_tags_each_case() {
+        let saved = report_outcome(ReportResult::Saved(PathBuf::from("reports/a.html")));
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::json!({"status": "saved", "path": "reports/a.html"})
+        );
+        assert_eq!(
+            serde_json::to_value(report_outcome(ReportResult::NothingToReport)).unwrap(),
+            serde_json::json!({"status": "nothing_to_report"})
+        );
+        assert_eq!(
+            serde_json::to_value(report_outcome(ReportResult::NoFolder)).unwrap(),
+            serde_json::json!({"status": "no_folder"})
+        );
+        assert_eq!(
+            serde_json::to_value(ReportOutcome::Busy).unwrap(),
+            serde_json::json!({"status": "busy"})
         );
     }
 }

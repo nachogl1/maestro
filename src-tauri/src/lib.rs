@@ -310,6 +310,7 @@ pub fn run() {
             commands::work_journal::list_work_journal_candidates,
             commands::work_journal::reject_work_journal_candidate,
             commands::work_journal::accept_work_journal_candidate,
+            commands::work_journal::work_journal_generate_report,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,

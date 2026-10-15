@@ -19,6 +19,9 @@ const askMock = vi.mocked(ask);
 /** In-memory stand-in for `work-journal.json` behind the Tauri commands. */
 let file: WorkJournalFile;
 
+/** The pages the last report request found in `file`. */
+let reportSaw = "";
+
 function page(date: string, title: string): WorkJournalPage {
   return { date, title, body: EMPTY_PAGE_BODY, origin: "auto" };
 }
@@ -63,6 +66,10 @@ function mockBackend(): void {
         file.deleted_dates.push(date);
         return snapshot();
       }
+      case "work_journal_generate_report":
+        // The report reads the file: record what it would see.
+        reportSaw = JSON.stringify(file.pages);
+        return { status: "nothing_to_report" };
       default:
         return undefined;
     }
@@ -289,6 +296,41 @@ describe("WorkJournalPanel", () => {
 
     expect(callsTo("update_work_journal_page")).toHaveLength(1);
     expect(JSON.stringify(callsTo("update_work_journal_page")[0])).toContain("Closing now");
+  });
+
+  it("opens the report dialog, and the report waits for typing not yet saved", async () => {
+    file.settings = { report_folder: "D:\\Reports" };
+    // Page saves land only when released, so a report that did not wait for
+    // the flushed save would read the file without the new text.
+    const backend = invokeMock.getMockImplementation();
+    let releaseSave: () => void = () => {};
+    const saveHeld = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") await saveHeld;
+      return backend?.(cmd, args);
+    });
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    act(() => {
+      pageEditor().commands.insertContent("Shipped the export");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Report" }));
+    expect(screen.getByRole("dialog", { name: "Work report" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(callsTo("update_work_journal_page")).toHaveLength(1));
+    await act(async () => {});
+    expect(callsTo("work_journal_generate_report")).toHaveLength(0);
+    releaseSave();
+
+    expect(await screen.findByText("Nothing to report for these dates.")).toBeInTheDocument();
+    expect(reportSaw).toContain("Shipped the export");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("sends pending body and title saves when the window is closing", async () => {

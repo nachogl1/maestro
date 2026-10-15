@@ -1,6 +1,15 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { CalendarPlus, CalendarSearch, ChevronLeft, ChevronRight, Trash2, X } from "lucide-react";
+import {
+  CalendarPlus,
+  CalendarSearch,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  Trash2,
+  X,
+} from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ReportDialog } from "@/components/workjournal/ReportDialog";
 import { SuggestionsBox } from "@/components/workjournal/SuggestionsBox";
 import {
   canReadWorkJournalBody,
@@ -37,8 +46,8 @@ const ICON_BUTTON =
 /**
  * Right-pane Work Journal view: one day page at a time. The header has
  * previous/next day arrows, the editable title, a jump-to-date picker, "new
- * page for a date" and delete; the page body is a TipTap editor below, and
- * the day's suggestions box under it.
+ * page for a date", delete and Report (the supervisor report dialog); the
+ * page body is a TipTap editor below, and the day's suggestions box under it.
  *
  * Opens on today's page (local date). On open, and whenever the local date
  * changes while open (midnight timer, window focus or visibility, a
@@ -198,6 +207,8 @@ export function WorkJournalPanel() {
     else void handleCreate();
   };
 
+  const [reportOpen, setReportOpen] = useState(false);
+
   const handleDelete = async (): Promise<void> => {
     if (!page) return;
     const confirmed = await ask(
@@ -210,7 +221,7 @@ export function WorkJournalPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Header: arrows, title, jump, new page, delete */}
+      {/* Header: arrows, title, jump, new page, delete, report */}
       <div className="flex shrink-0 items-center gap-1 border-b border-maestro-border px-2 py-1.5">
         <button
           type="button"
@@ -271,7 +282,18 @@ export function WorkJournalPanel() {
         >
           <Trash2 size={14} />
         </button>
+        <button
+          type="button"
+          onClick={() => setReportOpen(true)}
+          className={ICON_BUTTON}
+          aria-label="Report"
+          title="Work report for a date range"
+        >
+          <FileText size={14} />
+        </button>
       </div>
+
+      {reportOpen && <ReportDialog onClose={() => setReportOpen(false)} />}
 
       {formMode && (
         <div className="flex shrink-0 items-center gap-2 border-b border-maestro-border/60 px-3 py-1.5 text-xs text-maestro-muted">
