@@ -1,13 +1,18 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { CalendarPlus, CalendarSearch, ChevronLeft, ChevronRight, Trash2, X } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { WorkJournalEditor } from "@/components/workjournal/WorkJournalEditor";
+import { SuggestionsBox } from "@/components/workjournal/SuggestionsBox";
+import {
+  canReadWorkJournalBody,
+  WorkJournalEditor,
+} from "@/components/workjournal/WorkJournalEditor";
 import {
   defaultWorkJournalTitle,
   isValidJournalDate,
   localDateString,
   msUntilNextLocalMidnight,
 } from "@/lib/workJournalDates";
+import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /**
@@ -32,7 +37,8 @@ const ICON_BUTTON =
 /**
  * Right-pane Work Journal view: one day page at a time. The header has
  * previous/next day arrows, the editable title, a jump-to-date picker, "new
- * page for a date" and delete; the page body is a TipTap editor below.
+ * page for a date" and delete; the page body is a TipTap editor below, and
+ * the day's suggestions box under it.
  *
  * Opens on today's page (local date). On open, and whenever the local date
  * changes while open (midnight timer, window focus or visibility, a
@@ -78,6 +84,8 @@ export function WorkJournalPanel() {
       if (now === knownDateRef.current) return;
       knownDateRef.current = now;
       void ensurePages(now);
+      // The top-bar badge counts the new day's suggestions from now on.
+      void useWorkJournalCandidatesStore.getState().refreshToday();
     };
     let timer: ReturnType<typeof setTimeout>;
     const arm = (): void => {
@@ -345,6 +353,14 @@ export function WorkJournalPanel() {
             </div>
           )}
         </div>
+      )}
+
+      {viewedDate && (
+        <SuggestionsBox
+          date={viewedDate}
+          hasPage={page !== null}
+          readOnly={page !== null && !canReadWorkJournalBody(page.body)}
+        />
       )}
     </div>
   );

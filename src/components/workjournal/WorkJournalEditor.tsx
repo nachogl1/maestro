@@ -1,6 +1,7 @@
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { BackgroundColor, Color, TextStyle } from "@tiptap/extension-text-style";
 import { Fragment, type Node as PmNode, Slice } from "@tiptap/pm/model";
+import type { Transaction } from "@tiptap/pm/state";
 import { EditorContent, getSchema, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useMemo, useRef } from "react";
@@ -9,7 +10,11 @@ import {
   WORK_JOURNAL_TEXT_COLORS,
   WorkJournalToolbar,
 } from "@/components/workjournal/WorkJournalToolbar";
-import { registerWorkJournalEditorFlush, useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import {
+  registerWorkJournalEditorAppend,
+  registerWorkJournalEditorFlush,
+  useWorkJournalStore,
+} from "@/stores/useWorkJournalStore";
 
 /** How long typing must pause before the page body is saved. */
 export const WORK_JOURNAL_SAVE_DEBOUNCE_MS = 400;
@@ -138,18 +143,26 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   // The journal revision this editor was mounted for; see `revision`.
   const revisionRef = useRef(useWorkJournalStore.getState().revision);
 
-  const flush = (): void => {
+  // Sends unsaved text now; resolves true once the backend saved it.
+  const saveNow = (): Promise<boolean> => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
     const body = pendingRef.current;
-    if (!body) return;
+    if (!body) return Promise.resolve(false);
     pendingRef.current = null;
     // The journal was replaced (restore or undo) since this editor mounted:
     // its text belongs to the old journal and must not be saved over the new.
-    if (useWorkJournalStore.getState().revision !== revisionRef.current) return;
-    void useWorkJournalStore.getState().updatePage(dateRef.current, { body });
+    if (useWorkJournalStore.getState().revision !== revisionRef.current) {
+      return Promise.resolve(false);
+    }
+    return useWorkJournalStore.getState().updatePage(dateRef.current, { body });
+  };
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
+  const flush = (): void => {
+    void saveNowRef.current();
   };
   const flushRef = useRef(flush);
   flushRef.current = flush;
@@ -182,6 +195,58 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
 
   // A restore sends unsaved text through this before it replaces the journal.
   useEffect(() => registerWorkJournalEditorFlush(() => flushRef.current()), []);
+
+  // An accepted suggestion lands here: a new paragraph at the end of the
+  // body, saved right away. A trailing empty paragraph (a fresh page's only
+  // line, or an empty last line) is filled instead of leaving a blank line.
+  // When the save fails, the line is taken back out, so a retry cannot add
+  // a second copy.
+  useEffect(() => {
+    if (!editor) return;
+    return registerWorkJournalEditorAppend(date, async (line) => {
+      const { replacing, revision } = useWorkJournalStore.getState();
+      if (editor.isDestroyed || !editor.isEditable || replacing) return "refused";
+      if (revision !== revisionRef.current) return "refused";
+      const doc = editor.state.doc;
+      const last = doc.lastChild;
+      const fill = last?.type.name === "paragraph" && last.content.size === 0;
+      const end = doc.content.size;
+      // Where the line's paragraph starts, kept current while the save runs.
+      let start = fill && last ? end - last.nodeSize : end;
+      const paragraph = { type: "paragraph", content: [{ type: "text", text: line }] };
+      const at = fill ? { from: start, to: end } : end;
+      const inserted = editor
+        .chain()
+        .insertContentAt(at, paragraph, { updateSelection: false })
+        .run();
+      if (!inserted) return "refused";
+      const track = ({ transaction }: { transaction: Transaction }): void => {
+        start = transaction.mapping.map(start, 1);
+      };
+      editor.on("transaction", track);
+      let saved: boolean;
+      try {
+        saved = await saveNowRef.current();
+      } finally {
+        editor.off("transaction", track);
+      }
+      if (saved) return "saved";
+      if (!editor.isDestroyed) {
+        const node = editor.state.doc.nodeAt(start);
+        // Left alone if the user already edited the line meanwhile.
+        if (node?.type.name === "paragraph" && node.textContent === line) {
+          const range = { from: start, to: start + node.nodeSize };
+          const tr = editor.state.tr;
+          if (fill) tr.replaceWith(range.from, range.to, editor.schema.nodes.paragraph.create());
+          else tr.delete(range.from, range.to);
+          editor.view.dispatch(tr);
+          // Puts the page without the line in the store (and on disk) now.
+          void saveNowRef.current();
+        }
+      }
+      return "save_failed";
+    });
+  }, [editor, date]);
 
   // Read-only while a restore or undo replaces the journal. No update event:
   // the text did not change, so nothing must be saved.

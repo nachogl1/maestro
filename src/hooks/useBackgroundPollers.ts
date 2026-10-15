@@ -6,12 +6,14 @@ import { HEALTH_CHECK_INTERVAL_MS } from "@/lib/healthRules";
 import { useGitHubWatchdogStore, watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
+import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
 
 /**
  * App-lifetime background polling, mounted once by `App`: the update
  * auto-check interval, the GitHub watchdog (snapshot listener + keeping the
  * Rust poller's project set in sync with `tabs`), the health checker, the
- * Work Journal daily backup check, the Work Journal candidate run, and the
+ * Work Journal daily backup check, the Work Journal candidate run and its
+ * suggestions badge listeners, and the
  * Claude agent-name sync that keeps terminal titles on agent names.
  */
 export function useBackgroundPollers(tabs: Parameters<typeof watchedProjectsFromTabs>[0]): void {
@@ -62,6 +64,21 @@ export function useBackgroundPollers(tabs: Parameters<typeof watchedProjectsFrom
     return () => {
       clearTimeout(firstRun);
       clearInterval(interval);
+    };
+  }, []);
+
+  // Work Journal suggestions: keep the top-bar badge current whether or not
+  // the pane is open (candidates event, window focus, restore or undo).
+  useEffect(() => {
+    const stopPromise = useWorkJournalCandidatesStore
+      .getState()
+      .initListeners()
+      .catch((err) => {
+        console.error("Failed to initialize Work Journal suggestion listeners:", err);
+        return () => {};
+      });
+    return () => {
+      stopPromise.then((stop) => stop());
     };
   }, []);
 

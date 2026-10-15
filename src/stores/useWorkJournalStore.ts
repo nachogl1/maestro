@@ -61,8 +61,11 @@ interface WorkJournalState {
   goNext: () => void;
   /** Creates a manual page for `date` with the default title and shows it. */
   createPage: (date: string) => Promise<void>;
-  /** Saves a title and/or body change; ignored for a date with no page. */
-  updatePage: (date: string, patch: WorkJournalPagePatch) => Promise<void>;
+  /**
+   * Saves a title and/or body change; ignored for a date with no page.
+   * Resolves true once the backend saved it, false when skipped or failed.
+   */
+  updatePage: (date: string, patch: WorkJournalPagePatch) => Promise<boolean>;
   /** Deletes the page for `date` and shows the nearest remaining page. */
   deletePage: (date: string) => Promise<void>;
   clearError: () => void;
@@ -136,6 +139,49 @@ export function registerWorkJournalEditorFlush(flush: () => void): () => void {
   return () => {
     editorFlushes.delete(flush);
   };
+}
+
+/**
+ * What adding a line did: `saved`; `refused` (no editable editor, nothing
+ * changed); or `save_failed` (the save failed and the line was taken back
+ * out of the editor).
+ */
+export type WorkJournalAppendResult = "saved" | "refused" | "save_failed";
+
+/**
+ * Adds one line as a new paragraph at the end of a page and saves it.
+ * Provided by the open editor for that date.
+ */
+export type WorkJournalLineAppender = (line: string) => Promise<WorkJournalAppendResult>;
+
+/** The open editor's appender per date. */
+const editorAppenders = new Map<string, WorkJournalLineAppender>();
+
+/**
+ * Registers the open editor's appender for `date`, so an accepted
+ * suggestion goes through the editor (which owns the text while mounted)
+ * instead of past it. Returns the unregister function.
+ */
+export function registerWorkJournalEditorAppend(
+  date: string,
+  append: WorkJournalLineAppender,
+): () => void {
+  editorAppenders.set(date, append);
+  return () => {
+    if (editorAppenders.get(date) === append) editorAppenders.delete(date);
+  };
+}
+
+/**
+ * Adds `line` to the end of the page for `date` through its open editor and
+ * saves it. Anything but `saved` leaves the page without the line.
+ */
+export function appendWorkJournalLine(
+  date: string,
+  line: string,
+): Promise<WorkJournalAppendResult> {
+  const append = editorAppenders.get(date);
+  return append ? append(line) : Promise.resolve("refused");
 }
 
 function errorMessage(error: unknown): string {
@@ -240,7 +286,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   updatePage: async (date: string, patch: WorkJournalPagePatch) => {
     // Dropped while a restore or undo replaces the journal: the text belongs to
     // the journal being replaced.
-    if (!get().pages[date] || get().replacing) return;
+    if (!get().pages[date] || get().replacing) return false;
     // Optimistic: the store holds what the user sees right away. The reply
     // is not applied, so an older reply can never overwrite newer typing.
     set((s) => {
@@ -248,6 +294,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       return current ? { pages: { ...s.pages, [date]: { ...current, ...patch } } } : {};
     });
     pendingUpdates.set(date, (pendingUpdates.get(date) ?? 0) + 1);
+    let saved = false;
     const run = async (): Promise<void> => {
       try {
         await invoke<WorkJournalFile>("update_work_journal_page", {
@@ -255,6 +302,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
           title: patch.title ?? null,
           body: patch.body ?? null,
         });
+        saved = true;
       } catch (error) {
         console.error("Failed to save the Work Journal page:", error);
         set({ error: errorMessage(error) });
@@ -273,6 +321,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     saveChains.set(key, queued);
     await queued;
     if (saveChains.get(key) === queued) saveChains.delete(key);
+    return saved;
   },
 
   deletePage: async (date: string) => {

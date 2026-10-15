@@ -19,6 +19,9 @@ use tauri::{AppHandle, Emitter};
 use crate::core::work_journal::{
     self, AutoBackupAfterRestore, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
 };
+use crate::core::work_journal_activity::{
+    self, ActivityError, ActivityResult, Candidate, CandidateState,
+};
 use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 
 /// Serialises load-change-save cycles so two commands never interleave and
@@ -322,6 +325,50 @@ pub async fn work_journal_restore_state() -> Result<WorkJournalRestoreState, Str
     .await
 }
 
+/// Every candidate (pending and rejected) for `date` (`YYYY-MM-DD`); the
+/// suggestions box shows the pending ones.
+#[tauri::command]
+pub async fn list_work_journal_candidates(date: String) -> Result<Vec<Candidate>, String> {
+    work_journal_activity::list_candidates(&work_journal_activity::activity_dir(), &date)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Rejects a candidate: it leaves the suggestions box but stays in the
+/// activity file as rejected, so later runs that day do not propose it again.
+#[tauri::command]
+pub async fn reject_work_journal_candidate(id: String) -> Result<Candidate, String> {
+    work_journal_activity::set_candidate_state(
+        &work_journal_activity::activity_dir(),
+        &id,
+        CandidateState::Rejected,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// A removal of a candidate that is already gone (pruned, or removed by an
+/// earlier accept whose reply was lost) is done, not an error: `None`.
+fn removed_or_gone(result: ActivityResult<Candidate>) -> ActivityResult<Option<Candidate>> {
+    match result {
+        Ok(candidate) => Ok(Some(candidate)),
+        Err(ActivityError::CandidateNotFound(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Accepts a candidate: removes it from the activity file and returns it,
+/// or `None` when it was already gone. The frontend has already added its
+/// line to the page through the open editor; from then on the page text
+/// carries it (and the run reads the page text, so it is not proposed again).
+#[tauri::command]
+pub async fn accept_work_journal_candidate(id: String) -> Result<Option<Candidate>, String> {
+    removed_or_gone(
+        work_journal_activity::remove_candidate(&work_journal_activity::activity_dir(), &id).await,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +446,18 @@ mod tests {
             Some(CandidateRunOutcome::NoProjects)
         );
         assert_eq!(skip_without_projects(&["C:\\git\\p".to_string()]), None);
+    }
+
+    #[test]
+    fn test_accepting_a_candidate_that_is_already_gone_is_done() {
+        assert_eq!(
+            removed_or_gone(Err(ActivityError::CandidateNotFound("x".into()))).unwrap(),
+            None
+        );
+        assert!(matches!(
+            removed_or_gone(Err(ActivityError::Write("disk full".into()))),
+            Err(ActivityError::Write(_))
+        ));
     }
 
     #[test]

@@ -37,14 +37,32 @@ export function useWorkJournalCandidateTimer(tabs: CandidateTimerTabs): void {
     useWorkJournalCandidateRunStore.getState().setProjects(JSON.parse(projectsJson));
   }, [projectsJson]);
 
+  // The schedule is recorded in the store for the suggestions box's "next run".
   useEffect(() => {
-    void useWorkJournalCandidateRunStore.getState().load();
-    const catchUp = setTimeout(runWithOpenProjects, WORK_JOURNAL_CATCH_UP_DELAY_MS);
-    return () => clearTimeout(catchUp);
+    const { load, setSchedule } = useWorkJournalCandidateRunStore.getState();
+    void load();
+    setSchedule({ catchUpPending: true });
+    const catchUp = setTimeout(() => {
+      setSchedule({ catchUpPending: false });
+      runWithOpenProjects();
+    }, WORK_JOURNAL_CATCH_UP_DELAY_MS);
+    return () => {
+      clearTimeout(catchUp);
+      setSchedule({ catchUpPending: false });
+    };
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(runWithOpenProjects, runEveryHours * HOUR_MS);
-    return () => clearInterval(interval);
+    const { setSchedule } = useWorkJournalCandidateRunStore.getState();
+    const period = runEveryHours * HOUR_MS;
+    setSchedule({ nextRunAt: Date.now() + period });
+    const interval = setInterval(() => {
+      setSchedule({ nextRunAt: Date.now() + period });
+      runWithOpenProjects();
+    }, period);
+    return () => {
+      clearInterval(interval);
+      setSchedule({ nextRunAt: null });
+    };
   }, [runEveryHours]);
 }

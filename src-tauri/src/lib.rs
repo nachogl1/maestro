@@ -306,6 +306,9 @@ pub fn run() {
             commands::work_journal::restore_work_journal,
             commands::work_journal::undo_work_journal_restore,
             commands::work_journal::work_journal_restore_state,
+            commands::work_journal::list_work_journal_candidates,
+            commands::work_journal::reject_work_journal_candidate,
+            commands::work_journal::accept_work_journal_candidate,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,

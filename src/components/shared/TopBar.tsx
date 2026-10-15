@@ -21,6 +21,7 @@ import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
 import { ParkedRunsBadge } from "./ParkedRunsBadge";
+import { WorkJournalSuggestionsBadge } from "./WorkJournalSuggestionsBadge";
 
 /** Column counts offered by the eagle view picker (besides automatic). */
 const EAGLE_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6] as const;
@@ -319,7 +320,7 @@ export function TopBar({
           <button
             type="button"
             onClick={onToggleWorkJournalPanel}
-            className={`rounded p-1.5 transition-colors ${
+            className={`relative rounded p-1.5 transition-colors ${
               workJournalPanelOpen
                 ? "text-maestro-accent hover:bg-maestro-accent/10"
                 : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
@@ -328,6 +329,7 @@ export function TopBar({
             title="Work Journal — one page per day"
           >
             <BookOpenCheck size={14} />
+            <WorkJournalSuggestionsBadge />
           </button>
         )}
         {/* Git panel — in eagle view it becomes a per-project carousel
