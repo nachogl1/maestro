@@ -89,8 +89,8 @@ Granola time) are folded in and linked in the Decision trace.
   missing since the last auto-created day, up to today, weekends included.
   Missed weekdays stay empty for the user or candidates to fill.
 - **Delete is final.** A deleted page never comes back on its own. Maestro keeps
-  a list of deleted dates for this. The user can create that date again by
-  hand.
+  a list of deleted dates for this (see the exception below). The user can
+  create that date again by hand.
 - **Weekends.** Saturday and Sunday each get their own page. The title is the
   date, like any other day. The body is pre-filled with "Weekend"; the user
   overwrites it if they worked.
@@ -382,8 +382,8 @@ In `work-journal.json` (backed up):
   editor JSON, lossless), origin (auto or manual). Text and HTML for the AI
   and the report are generated on demand with TipTap's `generateText` and
   `generateHTML`; no second copy is stored.
-- **Deleted dates:** dates whose auto page the user removed. They block
-  auto-creation only.
+- **Deleted dates:** dates whose page the user removed, except manual pages for
+  dates the auto pass has not reached. They block auto-creation only.
 - **Last auto-created date:** where gap-filling starts on the next launch.
 - **Journal settings:** see Settings. The Granola opt-in is one of them.
 
