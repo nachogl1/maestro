@@ -16,6 +16,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Eagle view: a tile-size button makes a terminal 2 wide, 2×2 or 2 tall, and the top bar picks how many columns the grid has.",
       "Alt+Shift+Arrow moves the terminal you are typing in one step in that direction, in both views.",
       "Maestro now checks this fork's releases and can download and install a new build in one click.",
+      "Installing an update now closes all terminals first, so Windows no longer asks for a reboot to finish it.",
       "Every code change merged to main is published as a signed Windows installer automatically.",
       "Work Journal settings: choose a backup folder, back up daily and on demand, see the last backup time.",
       "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
