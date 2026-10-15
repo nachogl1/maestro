@@ -167,6 +167,11 @@ pub struct WorkJournalSettings {
     /// first report, never created by Maestro.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_folder: Option<String>,
+    /// Every project path a candidate run has covered, so later runs still
+    /// cover a project after its tab was closed, or before any tab is open
+    /// again after a restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_projects: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

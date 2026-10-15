@@ -149,6 +149,11 @@ pub struct TerminalRecord {
     /// Last component of the session's project path, `\\?\` stripped. Set
     /// once at open and never changed.
     pub project_name: String,
+    /// The session's project path, `\\?\` stripped, so a candidate run
+    /// covers that project even after its tab was closed. Absent in records
+    /// written before it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     /// The session's branch, or the checked-out git branch when the session
     /// has none; absent outside git and on a detached HEAD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -514,7 +519,7 @@ async fn record_opened(
     dir: &Path,
     launch: &str,
     session_id: u32,
-    project_name: String,
+    project_path: &str,
     branch: Option<String>,
     opened_at: DateTime<Local>,
 ) -> ActivityResult<()> {
@@ -532,7 +537,8 @@ async fn record_opened(
         id: uuid::Uuid::new_v4().to_string(),
         launch_id: launch.to_string(),
         session_id,
-        project_name,
+        project_name: project_name_from_path(project_path),
+        project_path: Some(strip_extended_prefix(project_path)).filter(|p| !p.trim().is_empty()),
         branch,
         opened_at: stamp(opened_at),
         closed_at: None,
@@ -638,7 +644,7 @@ pub async fn note_terminal_opened(config: &SessionConfig) {
         &activity_dir(),
         current_launch_id(),
         session_id,
-        project_name_from_path(&config.project_path),
+        &config.project_path,
         config.branch.clone(),
         Local::now(),
     )
@@ -730,6 +736,7 @@ mod tests {
             launch_id: launch.to_string(),
             session_id,
             project_name: "proj".to_string(),
+            project_path: None,
             branch: Some("main".to_string()),
             opened_at: opened.to_string(),
             closed_at: closed.map(str::to_string),
@@ -765,8 +772,8 @@ mod tests {
     async fn test_terminal_spawned_then_killed_leaves_one_full_record() {
         let dir = tempdir().unwrap();
         let opened = Local::now() - Duration::minutes(10);
-        let name = project_name_from_path(r"\\?\C:\git\maestro");
-        record_opened(dir.path(), LAUNCH, 7, name, Some("feat/x".into()), opened)
+        let path = r"\\?\C:\git\maestro";
+        record_opened(dir.path(), LAUNCH, 7, path, Some("feat/x".into()), opened)
             .await
             .unwrap();
         record_closed(dir.path(), LAUNCH, 7, None, Local::now())
@@ -777,6 +784,7 @@ mod tests {
         assert_eq!(file.terminals.len(), 1);
         let record = &file.terminals[0];
         assert_eq!(record.project_name, "maestro");
+        assert_eq!(record.project_path.as_deref(), Some(r"C:\git\maestro"));
         assert_eq!(record.branch.as_deref(), Some("feat/x"));
         assert_eq!(record.opened_at, stamp(opened));
         assert!(record.closed_at.is_some());
@@ -789,7 +797,7 @@ mod tests {
             dir.path(),
             LAUNCH,
             1,
-            "p".into(),
+            "p",
             Some("main".into()),
             Local::now(),
         )
@@ -806,7 +814,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_before_git_answers_still_ends_closed() {
         let dir = tempdir().unwrap();
-        record_opened(dir.path(), LAUNCH, 3, "proj".into(), None, Local::now())
+        record_opened(dir.path(), LAUNCH, 3, "proj", None, Local::now())
             .await
             .unwrap();
         record_all_closed(dir.path(), LAUNCH, Local::now())
@@ -816,7 +824,7 @@ mod tests {
         record_branch(dir.path(), LAUNCH, 3, "main".into())
             .await
             .unwrap();
-        record_opened(dir.path(), LAUNCH, 3, "proj".into(), None, Local::now())
+        record_opened(dir.path(), LAUNCH, 3, "proj", None, Local::now())
             .await
             .unwrap();
         let file = read_raw(dir.path());
@@ -838,10 +846,10 @@ mod tests {
     #[tokio::test]
     async fn test_same_session_id_in_another_launch_is_a_separate_record() {
         let dir = tempdir().unwrap();
-        record_opened(dir.path(), "old", 1, "a".into(), None, Local::now())
+        record_opened(dir.path(), "old", 1, "a", None, Local::now())
             .await
             .unwrap();
-        record_opened(dir.path(), LAUNCH, 1, "b".into(), None, Local::now())
+        record_opened(dir.path(), LAUNCH, 1, "b", None, Local::now())
             .await
             .unwrap();
         record_closed(dir.path(), LAUNCH, 1, None, Local::now())

@@ -8,11 +8,26 @@ export const WORK_JOURNAL_CATCH_UP_DELAY_MS = 30_000;
 
 const HOUR_MS = 60 * 60 * 1000;
 
-type CandidateTimerTabs = Parameters<typeof watchedProjectsFromTabs>[0];
+type CandidateTimerTabs = ReadonlyArray<
+  Parameters<typeof watchedProjectsFromTabs>[0][number] & {
+    repositories?: ReadonlyArray<{ path: string }>;
+  }
+>;
 
-/** The project paths a run covers: the open tabs' repos, deduplicated. */
+/**
+ * The open tabs' project paths for a run: each tab's selected repo plus every
+ * other repo of a multi-repo tab, deduplicated. The backend adds the projects
+ * earlier runs covered and those of terminals open in the run's window, so
+ * closed tabs are still covered.
+ */
 export function candidateRunProjects(tabs: CandidateTimerTabs): string[] {
-  return watchedProjectsFromTabs(tabs).map((project) => project.repoPath);
+  const paths = watchedProjectsFromTabs(tabs).map((project) => project.repoPath);
+  for (const tab of tabs) {
+    for (const repo of tab.repositories ?? []) {
+      if (!paths.includes(repo.path)) paths.push(repo.path);
+    }
+  }
+  return paths;
 }
 
 /** One run over the projects open right now. */

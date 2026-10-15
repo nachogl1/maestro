@@ -9,8 +9,8 @@
 //! delete), and emits [`CHANGED_EVENT`], so every other window showing the
 //! journal (the pane and the pop-out window) re-reads it.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
@@ -233,8 +233,10 @@ pub enum CandidateRunOutcome {
     },
     /// Another run is still going; nothing was started.
     Busy,
-    /// No project is open, so nothing was collected and `last_run_at` was
-    /// left alone: the time stays covered for the next run that has projects.
+    /// No project is known (none open, none covered by an earlier run, no
+    /// terminal in the window), so nothing was collected and `last_run_at`
+    /// was left alone: the time stays covered for the next run that has
+    /// projects.
     NoProjects,
     /// One or more dates failed with `message`. Candidates of the dates that
     /// succeeded were kept; `last_run_at` stopped at the earliest failed date.
@@ -265,8 +267,8 @@ fn candidate_run_outcome(report: RunReport, last_run_at: String) -> CandidateRun
 }
 
 /// `NoProjects` when no project path is given (blank paths do not count).
-/// Maestro starts with no tabs, so a run then would mark the whole time it
-/// was closed as done without ever collecting it.
+/// A run without projects would mark its whole window as done without ever
+/// collecting it.
 fn skip_without_projects(projects: &[String]) -> Option<CandidateRunOutcome> {
     projects
         .iter()
@@ -274,26 +276,80 @@ fn skip_without_projects(projects: &[String]) -> Option<CandidateRunOutcome> {
         .then_some(CandidateRunOutcome::NoProjects)
 }
 
-/// Runs the Work Journal candidate run over `projects` (their paths): the
+/// The dedupe key of a project path: no Windows `\\?\` prefix, one kind of
+/// separator, no trailing separator. Case is kept, so the result does not
+/// depend on the host OS.
+fn project_key(path: &str) -> String {
+    crate::core::samurai_injector::strip_extended_prefix(path.trim())
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Every project a candidate run covers, in order: the open tabs' repos,
+/// the projects of terminals open inside the run's window, then every
+/// project an earlier run covered. Deduplicated by [`project_key`] (the
+/// first spelling wins, `\\?\` stripped); blank paths are dropped.
+fn run_projects(open: &[String], terminals: &[String], known: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    open.iter()
+        .chain(terminals)
+        .chain(known)
+        .map(|path| crate::core::samurai_injector::strip_extended_prefix(path.trim()))
+        .filter(|path| !path.is_empty() && seen.insert(project_key(path)))
+        .collect()
+}
+
+/// Runs the Work Journal candidate run over every project Maestro knows
+/// (see [`run_projects`]; `projects` are the open tabs' repo paths): the
 /// activity since `last_run_at` (or one interval back) becomes pending
 /// candidates, one headless `claude` call per date that has activity (with
 /// Granola on, per date of the window, see [`work_journal_run`]). Saves
 /// `last_run_at` and emits [`work_journal_run::CANDIDATES_EVENT`] when
 /// candidates were added. Only one run at a time; a second request while one
-/// runs gets `Busy`. With no projects nothing runs (`NoProjects`).
+/// runs gets `Busy`. The covered projects are saved for later runs. With no
+/// project at all nothing runs (`NoProjects`).
 #[tauri::command]
 pub async fn work_journal_run_candidates(
     app: AppHandle,
     projects: Vec<String>,
 ) -> Result<CandidateRunOutcome, String> {
-    if let Some(outcome) = skip_without_projects(&projects) {
-        return Ok(outcome);
-    }
     let Some(_running) = work_journal_run::try_begin_run() else {
         return Ok(CandidateRunOutcome::Busy);
     };
     let journal = with_journal(|path| work_journal::load(&path)).await?;
-    let report = work_journal_run::run_candidates(&journal, &projects, Utc::now()).await;
+    let now = Utc::now();
+    let settings = &journal.settings;
+    let (start, end) = work_journal_run::run_window(
+        settings.last_run_at.as_deref(),
+        settings.run_every_hours,
+        now,
+    );
+    let terminals: Vec<String> = match work_journal_activity::list_terminal_records(
+        &work_journal_activity::activity_dir(),
+        start,
+        end,
+    )
+    .await
+    {
+        Ok(records) => records.into_iter().filter_map(|r| r.project_path).collect(),
+        Err(e) => {
+            log::warn!("Work journal: reading terminal records for the run failed: {e}");
+            Vec::new()
+        }
+    };
+    // A remembered project whose folder is gone is dropped (and so forgotten).
+    let known: Vec<String> = settings
+        .known_projects
+        .iter()
+        .filter(|path| Path::new(path).is_dir())
+        .cloned()
+        .collect();
+    let projects = run_projects(&projects, &terminals, &known);
+    if let Some(outcome) = skip_without_projects(&projects) {
+        return Ok(outcome);
+    }
+    let report = work_journal_run::run_candidates(&journal, &projects, now).await;
     if report.added > 0 {
         let payload = CandidatesAdded {
             dates: report.dates.clone(),
@@ -308,6 +364,7 @@ pub async fn work_journal_run_candidates(
     with_journal(move |path| {
         work_journal::modify(&path, |j| {
             j.settings.last_run_at = Some(saved);
+            j.settings.known_projects = projects;
             Ok(())
         })
     })
@@ -613,6 +670,36 @@ mod tests {
             Some(CandidateRunOutcome::NoProjects)
         );
         assert_eq!(skip_without_projects(&["C:\\git\\p".to_string()]), None);
+    }
+
+    #[test]
+    fn test_run_projects_keep_closed_tabs_and_terminal_projects() {
+        let open = vec![r"C:\git\a".to_string()];
+        let terminals = vec![r"\\?\C:\git\b".to_string(), r"C:\git\a\".to_string()];
+        let known = vec![
+            "C:/git/a".to_string(),
+            r"C:\git\closed".to_string(),
+            " ".to_string(),
+        ];
+        assert_eq!(
+            run_projects(&open, &terminals, &known),
+            vec![
+                r"C:\git\a".to_string(),
+                r"C:\git\b".to_string(),
+                r"C:\git\closed".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_run_projects_with_no_open_tab_still_cover_known_projects() {
+        let projects = run_projects(&[], &[], &["/home/me/repo".to_string()]);
+        assert_eq!(projects, vec!["/home/me/repo".to_string()]);
+        assert_eq!(skip_without_projects(&projects), None);
+        assert_eq!(
+            skip_without_projects(&run_projects(&[], &[], &[])),
+            Some(CandidateRunOutcome::NoProjects)
+        );
     }
 
     #[test]
