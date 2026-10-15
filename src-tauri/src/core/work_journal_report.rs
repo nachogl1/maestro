@@ -573,6 +573,7 @@ mod tests {
                 title: format!("Title {date}"),
                 body,
                 origin: PageOrigin::Auto,
+                rev: 0,
             },
         );
     }

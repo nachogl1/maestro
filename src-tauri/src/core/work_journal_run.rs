@@ -2142,6 +2142,7 @@ mod tests {
                 title: "Thursday".into(),
                 body: json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "08:00 - Standup"}]}]}),
                 origin: PageOrigin::Auto,
+                rev: 0,
             },
         );
 

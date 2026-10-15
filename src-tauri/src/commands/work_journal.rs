@@ -211,16 +211,21 @@ pub async fn create_work_journal_page(
     Ok(journal)
 }
 
-/// Changes the title and/or body of the page for `date`.
+/// Changes the title and/or body of the page for `date`. With `base_rev`
+/// (the page `rev` the change was made on), a page another window saved
+/// since is refused with a `PAGE_CHANGED:` error and nothing is written.
 #[tauri::command]
 pub async fn update_work_journal_page(
     window: WebviewWindow,
     date: String,
     title: Option<String>,
     body: Option<Value>,
+    base_rev: Option<u64>,
 ) -> Result<WorkJournal, String> {
     let journal = with_journal_write(move |path| {
-        work_journal::modify(&path, |j| work_journal::update_page(j, &date, title, body))
+        work_journal::modify(&path, |j| {
+            work_journal::update_page(j, &date, title, body, base_rev)
+        })
     })
     .await?;
     notify_changed(&window, false);
@@ -1027,7 +1032,7 @@ mod tests {
         let update = |since: u64| {
             write_unless_replaced(since, path.clone(), |path| {
                 work_journal::modify(&path, |j| {
-                    work_journal::update_page(j, date, Some("Old text".into()), None)
+                    work_journal::update_page(j, date, Some("Old text".into()), None, None)
                 })
             })
         };
