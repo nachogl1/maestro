@@ -366,7 +366,7 @@ fn flush_line(lines: &mut Vec<String>, current: &mut String) {
 /// True for a model name safe to pass as one argument: letters, digits and
 /// `-._:[]/@` only (for example `sonnet`, `claude-opus-5-5[1m]`), and not
 /// starting with `-` (it would read as a flag).
-fn is_safe_model(model: &str) -> bool {
+pub(crate) fn is_safe_model(model: &str) -> bool {
     !model.starts_with('-')
         && model
             .chars()
@@ -699,8 +699,9 @@ async fn run_claude(args: &[String], input: &str, granola: bool) -> Result<Strin
 }
 
 /// Runs `program` with `input` on stdin and returns its stdout, within
-/// `limit` (see [`exchange`]).
-async fn run_process(
+/// `limit` (see [`exchange`]). Also used by the supervisor report
+/// ([`crate::core::work_journal_report`]).
+pub(crate) async fn run_process(
     program: &str,
     args: &[String],
     input: &str,

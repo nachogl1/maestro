@@ -163,6 +163,10 @@ pub struct WorkJournalSettings {
     /// never allows the Granola tools).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub granola_opt_in: Option<bool>,
+    /// Folder the supervisor report is written to; asked for before the
+    /// first report, never created by Maestro.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_folder: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

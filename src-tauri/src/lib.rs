@@ -310,6 +310,7 @@ pub fn run() {
             commands::work_journal::list_work_journal_candidates,
             commands::work_journal::reject_work_journal_candidate,
             commands::work_journal::accept_work_journal_candidate,
+            commands::work_journal::work_journal_generate_report,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,
@@ -466,6 +467,8 @@ pub fn run() {
             commands::harvest::samurai_harvest_list,
             // Generic "launch a terminal with an initial prompt" injection
             commands::initial_prompt::terminal_arm_initial_prompt,
+            // Injector sidebar tab: one message into many terminals
+            commands::injector::inject_message,
             commands::terminal::terminal_shell_family,
             // CLI commands
             commands::cli::install_cli,

@@ -1,11 +1,9 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   BrainCircuit,
   ChevronDown,
   Code2,
   Expand,
   GitBranch,
-  GitPullRequest,
   Grid2x2,
   Minimize,
   ParkingSquare,
@@ -21,7 +19,6 @@ import { type IconComponent, OpenCodeIcon } from "@/components/icons";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
 import { useDismissable } from "@/hooks/useDismissable";
-import type { BranchPullRequest } from "@/lib/github";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 
 export type SessionStatus =
@@ -42,8 +39,6 @@ interface TerminalHeaderProps {
   status?: SessionStatus;
   provider?: AIProvider;
   branchName?: string;
-  /** PR opened from this branch, when there is one — rendered as a link to GitHub. */
-  pullRequest?: BranchPullRequest | null;
   showLaunch?: boolean;
   isWorktree?: boolean;
   onKill: (sessionId: number) => void;
@@ -96,37 +91,6 @@ interface TerminalHeaderProps {
   showShortcutHints?: boolean;
 }
 
-/**
- * Badge treatment per PR state, in GitHub's own color language so the badge
- * reads the same as the page it links to: open is green, merged is purple,
- * closed is red, and a draft is deliberately colorless — it isn't up for
- * review yet.
- */
-function pullRequestBadgeClass(pr: BranchPullRequest): string {
-  if (pr.isDraft) return "bg-maestro-muted/20 text-maestro-muted";
-  switch (pr.state.toUpperCase()) {
-    case "OPEN":
-      return "bg-maestro-green/15 text-maestro-green";
-    case "MERGED":
-      return "bg-purple-500/15 text-purple-400";
-    default:
-      return "bg-maestro-red/15 text-maestro-red";
-  }
-}
-
-/** Human label for the PR badge tooltip. */
-function pullRequestStateLabel(pr: BranchPullRequest): string {
-  if (pr.isDraft) return "Draft";
-  switch (pr.state.toUpperCase()) {
-    case "OPEN":
-      return "Open";
-    case "MERGED":
-      return "Merged";
-    default:
-      return "Closed";
-  }
-}
-
 const providerConfig: Record<AIProvider, { icon: IconComponent; label: string }> = {
   claude: { icon: BrainCircuit, label: "Claude Code" },
   gemini: { icon: Sparkles, label: "Gemini CLI" },
@@ -141,7 +105,6 @@ export const TerminalHeader = memo(function TerminalHeader({
   status,
   provider = "claude",
   branchName = "...",
-  pullRequest,
   showLaunch = false,
   isWorktree = false,
   onKill,
@@ -422,32 +385,7 @@ export const TerminalHeader = memo(function TerminalHeader({
         >
           <GitBranch size={terminalCount <= 4 ? 10 : 8} />
           <span className={`truncate ${adaptive.branchMaxWidth}`}>{branchName}</span>
-          {(adaptive.showAllElements || terminalCount <= 6) && (
-            <span
-              className={`ml-0.5 rounded font-medium ${adaptive.badgePadding} ${adaptive.badgeSize} ${isWorktree ? "bg-purple-500/15 text-purple-400" : "bg-maestro-accent/15 text-maestro-accent"}`}
-            >
-              {isWorktree ? "worktree" : "checked out"}
-            </span>
-          )}
         </span>
-
-        {/* PR link — the branch's pull request, one click from the terminal to
-            GitHub. Absent when the branch has no PR (or the repo isn't on
-            GitHub / `gh` isn't usable, which look the same from here). */}
-        {pullRequest && (
-          <button
-            type="button"
-            onClick={() => {
-              openUrl(pullRequest.url).catch((err) => console.error("Failed to open PR URL:", err));
-            }}
-            className={`flex shrink-0 items-center gap-0.5 rounded font-medium transition-opacity hover:opacity-75 ${adaptive.badgePadding} ${adaptive.badgeSize} ${pullRequestBadgeClass(pullRequest)}`}
-            title={`${pullRequestStateLabel(pullRequest)} PR #${pullRequest.number}: ${pullRequest.title} — click to open on GitHub`}
-            aria-label={`Open pull request #${pullRequest.number} on GitHub`}
-          >
-            <GitPullRequest size={terminalCount <= 4 ? 10 : 8} />
-            <span>#{pullRequest.number}</span>
-          </button>
-        )}
 
         {/* Launch button (pre-launch only) */}
         {showLaunch && (

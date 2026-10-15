@@ -8,7 +8,6 @@ import { useShallow } from "zustand/react/shallow";
 import { QuickActionsManager } from "@/components/quickactions/QuickActionsManager";
 import { ActivityFeed } from "@/components/session/ActivityFeed";
 import { AgentGraph } from "@/components/session/AgentGraph";
-import { useBranchPullRequest } from "@/hooks/useBranchPullRequest";
 import { useSessionBranch } from "@/hooks/useSessionBranch";
 import { useXtermSession } from "@/hooks/useXtermSession";
 import { renameAgent, sanitizeAgentName } from "@/lib/agentName";
@@ -18,6 +17,7 @@ import { describeSessionContext } from "@/lib/sessionContext";
 import { killSession, writeStdin } from "@/lib/terminal";
 import { DEFAULT_THEME, LIGHT_THEME, toXtermTheme } from "@/lib/terminalTheme";
 import { useActivityStore } from "@/stores/useActivityStore";
+import { isContextAlert, useContextAlertStore } from "@/stores/useContextAlertStore";
 import { type AiMode, type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 import type { ClaudeEvent } from "@/types/claude-events";
@@ -166,10 +166,15 @@ export const TerminalView = memo(function TerminalView({
         branch: sess.branch,
         statusMessage: sess.statusMessage,
         needsInputPrompt: sess.needsInputPrompt,
+        contextPercent: sess.contextPercent,
       };
     }),
   );
   const effectiveStatus = sessionData ? mapStatus(sessionData.status) : status;
+  // Context alert: the frame blinks red once the conversation's context usage
+  // reaches the threshold picked in Settings (null = off).
+  const contextAlertThreshold = useContextAlertStore((s) => s.threshold);
+  const contextAlert = isContextAlert(sessionData?.contextPercent, contextAlertThreshold);
   const effectiveProvider = sessionData ? mapAiMode(sessionData.mode) : "claude";
 
   // Warning flag: user-toggled yellow chrome (header + tab strip), synced via
@@ -230,10 +235,8 @@ export const TerminalView = memo(function TerminalView({
     isActive,
   );
   const effectiveBranch = liveBranch ?? "...";
-  // For the UI badge: show "worktree" if either Maestro created one or the project itself is a worktree.
+  // For the branch tooltip: "worktree" if either Maestro created one or the project itself is a worktree.
   const isWorktree = hasSessionWorktree || isProjectWorktree;
-  // The branch's PR, so the header can hand the user straight to GitHub.
-  const pullRequest = useBranchPullRequest(projectPath, liveBranch, isActive);
 
   // Get terminal settings from store (select individual primitives for granular updates)
   const fontSize = useTerminalSettingsStore((s) => s.settings.fontSize);
@@ -387,14 +390,17 @@ export const TerminalView = memo(function TerminalView({
     // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-focus on a panel full of nested interactive controls (header buttons, tab bar, terminal itself) — not a discrete focusable widget, so there's no sensible single keyboard equivalent.
     // biome-ignore lint/a11y/useKeyWithClickEvents: see noStaticElementInteractions above.
     <div
-      className={`terminal-cell flex h-full flex-col bg-maestro-bg ${cellStatusClass(effectiveStatus)} ${isFocused ? "terminal-cell-focused" : ""}`}
+      className={`terminal-cell flex h-full flex-col bg-maestro-bg ${cellStatusClass(effectiveStatus)} ${isFocused ? "terminal-cell-focused" : ""} ${contextAlert ? "terminal-cell-context-alert" : ""}`}
       // The border is always the project's color, in every view — that is what
       // it means. Status is not carried by the border any more: the status
       // classes still supply the colored glow, and the three-dot indicator in
       // the header says whether the terminal is working or waiting on you.
       // (Previously this was eagle-only and stepped aside for needs-input and
       // error, so the same terminal changed identity depending on its state.)
-      style={projectColor ? { borderColor: projectColor } : undefined}
+      // The one exception is the context alert: a blinking red frame that
+      // takes over the border until the user compacts or hands off.
+      style={projectColor && !contextAlert ? { borderColor: projectColor } : undefined}
+      data-context-alert={contextAlert ? "true" : undefined}
       onClick={onFocus}
     >
       {/* Rich header bar */}
@@ -404,7 +410,6 @@ export const TerminalView = memo(function TerminalView({
         provider={effectiveProvider}
         sessionName={sessionData?.name}
         branchName={effectiveBranch}
-        pullRequest={pullRequest}
         isWorktree={isWorktree}
         onKill={handleKill}
         onRename={handleRename}

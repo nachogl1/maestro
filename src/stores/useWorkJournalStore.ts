@@ -142,6 +142,15 @@ export function registerWorkJournalEditorFlush(flush: () => void): () => void {
 }
 
 /**
+ * Sends every open editor's unsaved text now and resolves once every save
+ * has finished, so a reader of the file (the report) sees the latest typing.
+ */
+export function flushWorkJournalSaves(): Promise<void> {
+  for (const flush of editorFlushes) flush();
+  return allSavesSettled();
+}
+
+/**
  * What adding a line did: `saved`; `refused` (no editable editor, nothing
  * changed); or `save_failed` (the save failed and the line was taken back
  * out of the editor).

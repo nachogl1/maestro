@@ -475,13 +475,41 @@
   animation: samurai-park-shine 2.2s ease-out infinite;
 }
 
+/* Context alert: the conversation's context window is past the threshold
+   picked in Settings. A hard on/off blink of the whole frame (border + glow),
+   deliberately louder than every status glow, because the point is to make
+   the user compact or hand off before the agent runs out of room. The border
+   stays solid red where animations are disabled (Linux, reduced motion). */
+@keyframes context-alert-blink {
+  0%,
+  49% {
+    border-color: rgb(var(--maestro-red));
+    box-shadow:
+      0 0 14px rgb(var(--maestro-red) / 0.7),
+      0 0 28px rgb(var(--maestro-red) / 0.35);
+  }
+  50%,
+  100% {
+    border-color: rgb(var(--maestro-red) / 0.25);
+    box-shadow:
+      0 4px 12px rgba(0, 0, 0, 0.3),
+      0 1px 3px rgba(0, 0, 0, 0.2);
+  }
+}
+
+.terminal-cell.terminal-cell-context-alert {
+  border-color: rgb(var(--maestro-red));
+  animation: context-alert-blink 1s step-end infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
   .animate-edge-dash,
   .animate-thinking-dot,
   .parked-chip-attention,
   .samurai-park-shine,
-  .terminal-cell-starting {
+  .terminal-cell-starting,
+  .terminal-cell-context-alert {
     animation: none;
     transform: none;
   }
@@ -511,6 +539,12 @@
 /* Disable starting-glow animation */
 .platform-linux .terminal-cell-starting {
   animation: none;
+}
+
+/* Context alert keeps its red border, loses the blink */
+.platform-linux .terminal-cell-context-alert {
+  animation: none;
+  box-shadow: none;
 }
 
 /* Disable breathe/glow animations */
