@@ -43,6 +43,8 @@ export function WorkJournalPanel() {
   const viewedDate = useWorkJournalStore((s) => s.viewedDate);
   const loading = useWorkJournalStore((s) => s.loading);
   const error = useWorkJournalStore((s) => s.error);
+  const revision = useWorkJournalStore((s) => s.revision);
+  const replacing = useWorkJournalStore((s) => s.replacing);
   const ensurePages = useWorkJournalStore((s) => s.ensurePages);
   const selectDate = useWorkJournalStore((s) => s.selectDate);
   const goPrev = useWorkJournalStore((s) => s.goPrev);
@@ -218,7 +220,7 @@ export function WorkJournalPanel() {
           onChange={(e) => setTitleDraft(e.target.value)}
           onBlur={commitTitle}
           onKeyDown={handleTitleKey}
-          disabled={!page}
+          disabled={!page || replacing}
           aria-label="Page title"
           placeholder={viewedDate ? defaultWorkJournalTitle(viewedDate) : ""}
           className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-sm font-medium text-maestro-text outline-none hover:border-maestro-border focus:border-maestro-accent disabled:hover:border-transparent"
@@ -317,8 +319,9 @@ export function WorkJournalPanel() {
       {page ? (
         <WorkJournalEditor
           // One editor per date, so each page keeps its own undo history and
-          // the previous page's unsaved text is flushed on the switch.
-          key={page.date}
+          // the previous page's unsaved text is flushed on the switch. A
+          // restore bumps the revision, remounting it with the new body.
+          key={`${page.date}:${revision}`}
           date={page.date}
           initialBody={page.body}
           className="min-h-0 flex-1 overflow-y-auto px-3 py-2"

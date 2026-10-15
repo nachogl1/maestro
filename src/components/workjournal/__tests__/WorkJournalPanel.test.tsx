@@ -3,6 +3,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   EMPTY_PAGE_BODY,
   useWorkJournalStore,
@@ -384,5 +385,219 @@ describe("WorkJournalPanel", () => {
     expect(screen.getByLabelText("Page title")).toHaveValue("Wed 14 Oct 2026");
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
     expect(screen.getByLabelText("Page title")).toHaveValue("auto 2026-10-15");
+  });
+});
+
+describe("WorkJournalPanel restore", () => {
+  const RESTORED_BODY = {
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text: "Restored text" }] }],
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
+    file = {
+      layout_version: 1,
+      pages: { "2026-10-14": page("2026-10-14", "Wed 14 Oct 2026") },
+      deleted_dates: [],
+      last_auto_created_date: "2026-10-14",
+      settings: {},
+    };
+    invokeMock.mockReset();
+    mockBackend();
+    // The restore command, on top of the in-memory backend: the backup holds
+    // a different body for the same date.
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "restore_work_journal") {
+        file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: RESTORED_BODY };
+        return { journal: snapshot(), canUndo: true, autoBackup: "paused" };
+      }
+      if (cmd === "work_journal_restore_state") return { canUndo: false };
+      return backend?.(cmd, args);
+    });
+    useWorkJournalStore.setState({
+      pages: {},
+      viewedDate: null,
+      loading: false,
+      error: null,
+      replacing: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("saves unsaved text before a restore, then shows the restored body without saving the old one", async () => {
+    const { unmount } = render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    act(() => {
+      pageEditor().commands.insertContent("Typed before the restore");
+    });
+    // The debounce has not fired: the text is still unsaved.
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+
+    await act(() => useWorkJournalBackupStore.getState().restore());
+
+    const commands = invokeMock.mock.calls.map(([cmd]) => cmd);
+    const saveAt = commands.indexOf("update_work_journal_page");
+    expect(saveAt).toBeGreaterThanOrEqual(0);
+    expect(saveAt).toBeLessThan(commands.indexOf("restore_work_journal"));
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(await screen.findByText("Restored text")).toBeInTheDocument();
+    expect(screen.queryByText("Typed before the restore")).toBeNull();
+
+    // No late save of the old body: not after the debounce, not on unmount.
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
+    });
+    unmount();
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(file.pages["2026-10-14"].body).toEqual(RESTORED_BODY);
+  });
+
+  /**
+   * Makes `restore_work_journal` stay pending until `settle` is called, like
+   * a slow OneDrive or network backup. `settle(true)` applies the restore,
+   * `settle(false)` fails it.
+   */
+  function slowRestore(): { settle: (ok: boolean) => void } {
+    const withRestore = invokeMock.getMockImplementation();
+    let settle: (ok: boolean) => void = () => {};
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd !== "restore_work_journal") return withRestore?.(cmd, args) as Promise<unknown>;
+      return new Promise((resolve, reject) => {
+        settle = (ok) => {
+          if (!ok) return reject("Failed to write the work journal");
+          resolve(withRestore?.(cmd, args));
+        };
+      });
+    });
+    return { settle: (ok) => settle(ok) };
+  }
+
+  it("saves nothing typed while a slow restore runs, then shows the restored body", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const slow = slowRestore();
+
+    let restoring: Promise<void> = Promise.resolve();
+    await act(async () => {
+      restoring = useWorkJournalBackupStore.getState().restore();
+    });
+    expect(useWorkJournalStore.getState().replacing).toBe(true);
+    expect(pageEditor().isEditable).toBe(false);
+    expect(screen.getByLabelText("Page title")).toBeDisabled();
+
+    // Text reaching the editor anyway (a command, not the keyboard), with the
+    // debounce firing while the restore is still pending.
+    act(() => {
+      pageEditor().commands.insertContent("Too late");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
+    });
+    await act(async () => {
+      await useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Too late" });
+    });
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+
+    await act(async () => {
+      slow.settle(true);
+      await restoring;
+    });
+    expect(await screen.findByText("Restored text")).toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
+    });
+
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+    expect(file.pages["2026-10-14"].body).toEqual(RESTORED_BODY);
+    expect(file.pages["2026-10-14"].title).toBe("Wed 14 Oct 2026");
+    expect(pageEditor().isEditable).toBe(true);
+  });
+
+  it("drops a save made while the pre-restore saves are still landing", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    // The flushed save is slow to land.
+    const withRestore = invokeMock.getMockImplementation();
+    let landSave: () => void = () => {};
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd !== "update_work_journal_page") return withRestore?.(cmd, args) as Promise<unknown>;
+      return new Promise((resolve) => {
+        landSave = () => resolve(withRestore?.(cmd, args));
+      });
+    });
+    act(() => {
+      pageEditor().commands.insertContent("Flushed first");
+    });
+
+    let restoring: Promise<void> = Promise.resolve();
+    await act(async () => {
+      restoring = useWorkJournalBackupStore.getState().restore();
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(callsTo("restore_work_journal")).toEqual([]);
+
+    // A save made during that wait is dropped, not sent unawaited.
+    await act(async () => {
+      void useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Too late" });
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+
+    await act(async () => {
+      landSave();
+      await restoring;
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(callsTo("restore_work_journal")).toHaveLength(1);
+    expect(await screen.findByText("Restored text")).toBeInTheDocument();
+  });
+
+  it("lets editing and saving resume after a slow restore fails", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const slow = slowRestore();
+
+    let restoring: Promise<void> = Promise.resolve();
+    await act(async () => {
+      restoring = useWorkJournalBackupStore.getState().restore();
+    });
+    expect(pageEditor().isEditable).toBe(false);
+    await act(async () => {
+      slow.settle(false);
+      await restoring;
+    });
+
+    expect(useWorkJournalStore.getState().replacing).toBe(false);
+    expect(pageEditor().isEditable).toBe(true);
+    act(() => {
+      pageEditor().commands.insertContent("Kept typing");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Kept typing");
+  });
+
+  it("saves typing made after a restore in the remounted editor", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    await act(() => useWorkJournalBackupStore.getState().restore());
+    await screen.findByText("Restored text");
+
+    act(() => {
+      pageEditor().commands.insertContentAt(pageEditor().state.doc.content.size - 1, " and more");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Restored text and more");
   });
 });
