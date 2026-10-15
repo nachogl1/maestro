@@ -5,6 +5,7 @@ import {
   nearestPageDate,
   useWorkJournalStore,
   WEEKEND_PAGE_BODY,
+  WORK_JOURNAL_SAVE_RETRY_DELAYS_MS,
   type WorkJournalFile,
   type WorkJournalPage,
 } from "../useWorkJournalStore";
@@ -307,6 +308,41 @@ describe("useWorkJournalStore sync (a change made in the other window)", () => {
 
     await useWorkJournalStore.getState().sync(false);
     expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-12");
+  });
+
+  it("failed save is retried and clears on success", async () => {
+    vi.useFakeTimers();
+    try {
+      useWorkJournalStore.setState({ pages: journal([page("2026-10-14")]).pages });
+      const saves = () =>
+        invokeMock.mock.calls.filter(([cmd]) => cmd === "update_work_journal_page");
+      invokeMock.mockRejectedValueOnce(new Error("disk full"));
+      await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("unsaved") });
+      expect(useWorkJournalStore.getState().unsavedDates).toEqual(["2026-10-14"]);
+
+      // Other commands clear the error, never the unsaved mark.
+      invokeMock.mockResolvedValueOnce(journal([page("2026-10-14")]));
+      await useWorkJournalStore.getState().ensurePages("2026-10-14");
+      expect(useWorkJournalStore.getState().error).toBeNull();
+      expect(useWorkJournalStore.getState().unsavedDates).toEqual(["2026-10-14"]);
+
+      // The first retry comes after 5 s and fails again.
+      invokeMock.mockRejectedValueOnce(new Error("disk full"));
+      await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[0]);
+      expect(saves()).toHaveLength(2);
+      expect(useWorkJournalStore.getState().unsavedDates).toEqual(["2026-10-14"]);
+
+      // The next one waits 30 s, sends the kept text and lands.
+      invokeMock.mockResolvedValueOnce(journal([{ ...page("2026-10-14"), body: body("unsaved") }]));
+      await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[1] - 1);
+      expect(saves()).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(saves()).toHaveLength(3);
+      expect(saves()[2][1]).toEqual({ date: "2026-10-14", title: null, body: body("unsaved") });
+      expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("stays on an empty day the user is looking at", async () => {

@@ -50,6 +50,11 @@ interface WorkJournalState {
    * over the new journal.
    */
   replacing: boolean;
+  /**
+   * Sorted dates with text whose last save failed. Only a later save that
+   * lands (or the page going away) clears a date; it is retried meanwhile.
+   */
+  unsavedDates: string[];
   /** Reads the journal file. */
   load: () => Promise<void>;
   /**
@@ -130,6 +135,49 @@ function clearFailedSaves(date: string): void {
   for (const key of [...failedSaves]) if (key.startsWith(`${date}:`)) failedSaves.delete(key);
 }
 
+/** The sorted dates that have a failed save, for `unsavedDates`. */
+function failedDates(): string[] {
+  return [...new Set([...failedSaves].map((key) => key.slice(0, key.indexOf(":"))))].sort();
+}
+
+/**
+ * Waits before each automatic retry of failed saves: 5 s, then every 30 s
+ * until they land.
+ */
+export const WORK_JOURNAL_SAVE_RETRY_DELAYS_MS = [5_000, 30_000];
+
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
+
+/** Arms the next automatic retry, unless one is already waiting. */
+function scheduleRetry(): void {
+  if (retryTimer) return;
+  const delays = WORK_JOURNAL_SAVE_RETRY_DELAYS_MS;
+  retryTimer = setTimeout(
+    () => {
+      retryTimer = null;
+      retryAttempt += 1;
+      // Rearmed when a retry was skipped (say during a restore) rather than failed.
+      void retryWorkJournalSaves().then(() => {
+        if (failedSaves.size > 0) scheduleRetry();
+      });
+    },
+    delays[Math.min(retryAttempt, delays.length - 1)],
+  );
+}
+
+/** Puts `failedSaves` into `unsavedDates`; stops retrying once none are left. */
+function publishFailedSaves(): void {
+  if (failedSaves.size === 0) {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    retryAttempt = 0;
+  }
+  const unsavedDates = failedDates();
+  const current = useWorkJournalStore.getState().unsavedDates;
+  if (unsavedDates.join() !== current.join()) useWorkJournalStore.setState({ unsavedDates });
+}
+
 /** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
 let saveTick = 0;
 const lastLocalSave = new Map<string, number>();
@@ -180,7 +228,31 @@ export function registerWorkJournalEditorFlush(flush: () => void): () => void {
  */
 export function flushWorkJournalSaves(): Promise<void> {
   for (const flush of editorFlushes) flush();
+  void retryWorkJournalSaves();
   return allSavesSettled();
+}
+
+/**
+ * Sends the text of every field whose last save failed again (the store keeps
+ * that text). A field with a save already queued is skipped: that save carries
+ * newer text and clears or keeps the mark itself.
+ */
+export function retryWorkJournalSaves(): Promise<void> {
+  const { pages, updatePage } = useWorkJournalStore.getState();
+  const retries: Promise<boolean>[] = [];
+  for (const key of [...failedSaves]) {
+    if (saveChains.has(key)) continue;
+    const date = key.slice(0, key.indexOf(":"));
+    const page = pages[date];
+    if (!page) continue;
+    const patch: WorkJournalPagePatch = {};
+    for (const field of key.slice(date.length + 1).split(",")) {
+      if (field === "body") patch.body = page.body;
+      if (field === "title") patch.title = page.title;
+    }
+    retries.push(updatePage(date, patch));
+  }
+  return Promise.all(retries).then(() => undefined);
 }
 
 /**
@@ -280,6 +352,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   error: null,
   revision: 0,
   replacing: false,
+  unsavedDates: [],
 
   sync: async (replaced: boolean) => {
     const tick = saveTick;
@@ -307,6 +380,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         }
         return { pages };
       });
+      publishFailedSaves();
+      // Another window just saved, so the disk may take failed saves again.
+      void retryWorkJournalSaves();
     } catch (error) {
       console.error("Failed to re-read the Work Journal:", error);
     }
@@ -391,10 +467,13 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         });
         saved = true;
         failedSaves.delete(chainKey(date, patch));
+        publishFailedSaves();
       } catch (error) {
         console.error("Failed to save the Work Journal page:", error);
         failedSaves.add(chainKey(date, patch));
         set({ error: errorMessage(error) });
+        publishFailedSaves();
+        scheduleRetry();
       } finally {
         const left = (pendingUpdates.get(date) ?? 1) - 1;
         if (left > 0) pendingUpdates.set(date, left);
@@ -426,6 +505,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       // backend would refuse it for a page that no longer exists.
       await savesSettled(date);
       clearFailedSaves(date);
+      publishFailedSaves();
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {
@@ -453,6 +533,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   // The text of failed saves belonged to the replaced journal.
   replaceJournal: (journal: WorkJournalFile) => {
     failedSaves.clear();
+    publishFailedSaves();
     set((s) => ({
       pages: journal.pages,
       revision: s.revision + 1,

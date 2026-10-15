@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo } from "react";
 import { WorkJournalDayList } from "@/components/workjournal/WorkJournalDayList";
 import { WorkJournalPanel } from "@/components/workjournal/WorkJournalPanel";
@@ -57,9 +58,26 @@ export function WorkJournalWindow() {
       return () => {};
     });
     // Typing still waiting for the save debounce is sent before the window goes.
+    // Text that still could not be saved lives only in this window, so the
+    // close is held (the unsaved notice stays up) unless the user lets it go.
     const stopClose = getCurrentWindow()
-      .onCloseRequested(async () => {
+      .onCloseRequested(async (event) => {
         await flushWorkJournalSaves();
+        if (useWorkJournalStore.getState().unsavedDates.length === 0) return;
+        event.preventDefault();
+        const discard = await ask(
+          "Some Work Journal text could not be saved and is still being retried. Close the window anyway and lose it?",
+          {
+            title: "Unsaved Work Journal Text",
+            kind: "warning",
+            okLabel: "Close and lose it",
+            cancelLabel: "Keep open",
+          },
+        ).catch(() => false);
+        if (!discard) return;
+        await getCurrentWindow()
+          .destroy()
+          .catch((err) => console.error("Failed to close the Work Journal window:", err));
       })
       .catch((err) => {
         console.error("Failed to save the Work Journal before its window closes:", err);
