@@ -180,8 +180,25 @@ pub struct WorkJournalSettings {
     /// again after a restart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub known_projects: Vec<String>,
+    /// Dates whose candidate run failed and that the next runs try again,
+    /// keyed by `YYYY-MM-DD` (see [`CandidateRetry`]). Every other date is
+    /// covered up to `last_run_at`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retry_dates: BTreeMap<String, CandidateRetry>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// A date whose candidate run failed: the next runs ask `claude` about it
+/// again, until it succeeds or has failed
+/// [`crate::core::work_journal_run::MAX_DATE_TRIES`] times.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateRetry {
+    /// The date's activity from this instant on (RFC 3339, UTC) is not
+    /// covered yet.
+    pub since: String,
+    /// How many runs failed for the date so far.
+    pub failures: u32,
 }
 
 /// The whole `work-journal.json` file.
@@ -682,11 +699,13 @@ fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, WorkJournalSettin
 ///
 /// Two times are then cleared: the last backup time, so the automatic backup
 /// leaves the backup folder alone until "Back up now", and the last candidate
-/// run time, so an old value never replays days of suggestions.
+/// run time, so an old value never replays days of suggestions. The dates
+/// waiting for a retry go with it.
 fn keep_local_settings(journal: &mut WorkJournal, local_settings: WorkJournalSettings) {
     journal.settings = local_settings;
     journal.settings.last_backup_at = None;
     journal.settings.last_run_at = None;
+    journal.settings.retry_dates.clear();
 }
 
 /// "Restore from backup": replaces the whole journal at `path` with the
@@ -2267,6 +2286,13 @@ mod tests {
         local_journal(&path, &folder);
         modify(&path, |j| {
             j.settings.last_run_at = Some("2026-10-15T10:00:00Z".into());
+            j.settings.retry_dates.insert(
+                "2026-10-14".into(),
+                CandidateRetry {
+                    since: "2026-10-13T22:00:00Z".into(),
+                    failures: 1,
+                },
+            );
             Ok(())
         })
         .unwrap();
@@ -2279,6 +2305,7 @@ mod tests {
         let mut expected = old;
         expected.settings.last_backup_at = None;
         expected.settings.last_run_at = None;
+        expected.settings.retry_dates.clear();
         assert_eq!(saved, expected);
         assert!(saved.settings.last_run_at.is_none());
         assert_eq!(load(&path).unwrap(), expected);
