@@ -221,6 +221,8 @@ pub fn run() {
                             if let Err(e) = manager.kill_all_sessions().await {
                                 log::warn!("Failed to kill sessions during quit: {e}");
                             }
+                            // Work journal: record the close before the app goes.
+                            crate::core::work_journal_activity::close_all_terminals().await;
                             if let Err(e) = win.destroy() {
                                 log::error!("Failed to destroy window during quit: {e}");
                             }
