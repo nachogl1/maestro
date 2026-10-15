@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { emitParticleEffect } from "@/lib/particleEffects";
 import { normalizePath, samePath } from "@/lib/path";
 import {
   epicSlug,
@@ -715,6 +716,11 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   error: null,
 
   parkSession: (sessionId: number) => {
+    // Emitted before the state change so the effect can measure the pane
+    // while it is still on screen.
+    if (!get().parkedSessionIds.includes(sessionId)) {
+      emitParticleEffect({ kind: "park", sessionId });
+    }
     set((state) => {
       const alreadyParked = state.parkedSessionIds.includes(sessionId);
       const hasAttention = state.attentionSessionIds.includes(sessionId);
@@ -741,6 +747,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   },
 
   unparkSession: (sessionId: number) => {
+    if (get().parkedSessionIds.includes(sessionId)) {
+      emitParticleEffect({ kind: "resume", sessionId });
+    }
     set((state) => ({
       parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
     }));

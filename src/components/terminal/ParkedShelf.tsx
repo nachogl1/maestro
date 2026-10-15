@@ -10,7 +10,6 @@ import {
   type SessionConfig,
   useSessionStore,
 } from "@/stores/useSessionStore";
-import { ThinkingIndicator } from "./ThinkingIndicator";
 
 /** Chip status dot colors — mirrors the sidebar's SESSION_STATUS_BADGES palette. */
 const STATUS_DOT: Record<BackendSessionStatus, string> = {
@@ -166,6 +165,8 @@ export function ParkedShelf({
             // terminals in the grid; the attention classes above override it
             // for the few states the dots can't show.
             style={attention ? undefined : { borderColor: projectColor }}
+            // Anchor for the park/resume particle effects (ParticleEffectsLayer).
+            data-parked-session-id={sess.id}
             className={`flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card px-2.5 py-0.5 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
             title={
               runFatal
@@ -178,7 +179,6 @@ export function ParkedShelf({
             <span
               className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[sess.status] ?? STATUS_DOT.Idle}`}
             />
-            <ThinkingIndicator sessionId={sess.id} size={3} />
             {showProjectLabels && (
               <span className="font-bold" style={{ color: projectColor }}>
                 {project}

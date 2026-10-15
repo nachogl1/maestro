@@ -27,6 +27,7 @@ import {
   loadRightPanelWidth,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "./components/shared/PanelResizeHandle";
+import { ParticleEffectsLayer } from "./components/shared/ParticleEffectsLayer";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
 import { type EagleProjectOption, TopBar } from "./components/shared/TopBar";
 import { UtilityPanel, type UtilityPanelKind } from "./components/shared/UtilityPanel";
@@ -755,6 +756,7 @@ function App() {
 
       <UpdateNotification />
       <NotificationToasts />
+      <ParticleEffectsLayer />
     </div>
   );
 }
