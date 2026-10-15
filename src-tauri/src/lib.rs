@@ -291,12 +291,14 @@ pub fn run() {
             commands::agent_names::list_live_agent_names,
             commands::agent_names::rename_agent,
             commands::session_summary::summarize_claude_session,
-            // Work Journal file (load, pages, settings)
+            // Work Journal file (load, pages, settings, backup)
             commands::work_journal::load_work_journal,
             commands::work_journal::create_work_journal_page,
             commands::work_journal::update_work_journal_page,
             commands::work_journal::delete_work_journal_page,
             commands::work_journal::update_work_journal_settings,
+            commands::work_journal::work_journal_backup_now,
+            commands::work_journal::work_journal_backup_if_due,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,

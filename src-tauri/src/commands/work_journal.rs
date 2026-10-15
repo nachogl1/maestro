@@ -1,5 +1,5 @@
 //! Tauri commands for the Work Journal file: load it, and create, update and
-//! delete pages and settings. The file logic lives in
+//! delete pages and settings, and back it up. The file logic lives in
 //! [`crate::core::work_journal`]; these wrappers pick the app-data path,
 //! serialise every read-modify-write, and run the blocking file work off the
 //! async runtime.
@@ -91,4 +91,20 @@ pub async fn update_work_journal_settings(
         work_journal::modify(&path, |j| work_journal::merge_settings(j, settings))
     })
     .await
+}
+
+/// Writes the journal to `<backup folder>/work-journal.json` now and records
+/// `last_backup_at`. Refused when no folder is set or the folder is missing;
+/// the journal is then left untouched.
+#[tauri::command]
+pub async fn work_journal_backup_now() -> Result<WorkJournal, String> {
+    with_journal(|path| work_journal::backup_now(&path, chrono::Utc::now())).await
+}
+
+/// Backs up when a folder is set and the last backup is a day old (or
+/// missing); returns `None` and writes nothing otherwise. Called on start
+/// and by the in-app timer.
+#[tauri::command]
+pub async fn work_journal_backup_if_due() -> Result<Option<WorkJournal>, String> {
+    with_journal(|path| work_journal::backup_if_due(&path, chrono::Utc::now())).await
 }

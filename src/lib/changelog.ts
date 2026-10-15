@@ -17,6 +17,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Alt+Shift+Arrow moves the terminal you are typing in one step in that direction, in both views.",
       "Maestro now checks this fork's releases and can download and install a new build in one click.",
       "Every code change merged to main is published as a signed Windows installer automatically.",
+      "Work Journal settings: choose a backup folder, back up daily and on demand, see the last backup time.",
     ],
   },
   {
