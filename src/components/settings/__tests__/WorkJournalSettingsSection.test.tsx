@@ -518,6 +518,7 @@ describe("WorkJournalSettingsSection restore", () => {
       expect.stringContaining("before the restore"),
       expect.objectContaining({ kind: "warning" }),
     );
+    expect(String(askMock.mock.calls[0][0])).toContain("work-journal.before-undo.json");
     expect(invokeMock).toHaveBeenCalledWith("undo_work_journal_restore");
     expect(useWorkJournalStore.getState().pages).toEqual({ "2026-10-15": before });
     expect(screen.getByRole("button", { name: /Undo restore/ })).toBeDisabled();

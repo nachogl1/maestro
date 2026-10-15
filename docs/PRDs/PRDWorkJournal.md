@@ -338,6 +338,12 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
     pages, deleted dates and last auto-created date from the file.
   - On a new laptop no settings come across: the user sets them again and is
     asked about Granola again.
+  - Undo keeps the journal it replaces as `work-journal.before-undo.json` in
+    the journal folder, so the undo itself can be reversed by hand (no redo
+    button). Only one such copy is kept; the next undo overwrites it. Undo
+    works once: if the safety copy cannot be set aside (for example a
+    program such as antivirus or OneDrive holds it), the undo is refused
+    with an error and nothing changes.
 
 ### Supervisor report
 

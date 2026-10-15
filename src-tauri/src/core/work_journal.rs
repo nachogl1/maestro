@@ -20,7 +20,8 @@
 //!
 //! Restore: [`restore_from`] replaces the whole journal with a backup file
 //! after saving the current one as one safety copy
-//! (`work-journal.before-restore.json`); [`undo_restore`] puts it back.
+//! (`work-journal.before-restore.json`); [`undo_restore`] puts it back once,
+//! keeping the journal it replaces as `work-journal.before-undo.json`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -109,6 +110,14 @@ pub enum WorkJournalError {
     NothingToUndo,
     #[error("The safety copy cannot be read: {0}")]
     SafetyCopyUnreadable(String),
+    #[error(
+        "A copy of your current journal could not be saved before the undo, so nothing was changed: {0}"
+    )]
+    BeforeUndoCopyNotSaved(String),
+    #[error(
+        "The safety copy could not be set aside (another program may be using it), so nothing was changed: {0}"
+    )]
+    SafetyCopyNotSetAside(String),
     /// Message from the shared `atomic_write` helper, which reports `String`.
     #[error("{0}")]
     Write(String),
@@ -593,6 +602,22 @@ pub fn safety_copy_path(path: &Path) -> PathBuf {
     path.with_file_name(SAFETY_COPY_FILE_NAME)
 }
 
+/// The file name of the journal as it was just before the last undo.
+pub const BEFORE_UNDO_FILE_NAME: &str = "work-journal.before-undo.json";
+
+/// `<journal folder>/work-journal.before-undo.json`: the journal an undo
+/// replaced, kept so the undo itself can be reversed by hand. Only one is
+/// kept; the next undo overwrites it. It never offers an undo in the app.
+pub fn before_undo_path(path: &Path) -> PathBuf {
+    path.with_file_name(BEFORE_UNDO_FILE_NAME)
+}
+
+/// Where an undo moves the safety copy it used, under a name that offers no
+/// undo, before deleting it.
+fn consumed_safety_copy_path(path: &Path) -> PathBuf {
+    path.with_file_name("work-journal.safety-copy.consumed.json")
+}
+
 /// True while a safety copy exists AND reads as a journal, so "Undo restore"
 /// has something it can put back. An unreadable safety copy (for example the
 /// bytes of a corrupt journal that was restored over) is kept on disk for
@@ -732,9 +757,20 @@ pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal
 }
 
 /// "Undo restore": puts the safety copy back as the journal (with the same
-/// settings rules as a restore: the current settings stay), then deletes the safety copy, so undo
-/// works once. Without a safety copy there is nothing to undo; an unreadable
-/// one is refused and left on disk.
+/// settings rules as a restore: the current settings stay). Undo works once.
+/// Steps, each stopping with the journal unchanged on failure:
+///
+/// 1. Read the safety copy: missing means nothing to undo; an unreadable one
+///    is refused and left on disk.
+/// 2. Write the current journal's exact bytes to
+///    `work-journal.before-undo.json`, crash-safely, so the undo itself can
+///    be reversed by hand (one such file, overwritten by the next undo).
+/// 3. Move the safety copy aside under a name that offers no undo. If a
+///    program holding it (antivirus, OneDrive) blocks this, the undo is
+///    refused, so a finished undo never leaves "Undo restore" enabled.
+/// 4. Save the journal. If that fails, the safety copy is moved back.
+/// 5. Delete the moved-aside copy; a failure there only logs, since that
+///    file offers no undo.
 pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
     let safety = safety_copy_path(path);
     let mut previous = load_existing(&safety).map_err(|e| match e {
@@ -744,11 +780,22 @@ pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
         WorkJournalError::Read(io) => WorkJournalError::SafetyCopyUnreadable(io.to_string()),
         other => WorkJournalError::SafetyCopyUnreadable(other.to_string()),
     })?;
-    let (_, local_settings) = current_journal(path)?;
+    let (current_bytes, local_settings) = current_journal(path)?;
+    let before_undo = before_undo_path(path);
+    atomic_write_via(&before_undo, &tmp_path(&before_undo), &current_bytes)
+        .map_err(WorkJournalError::BeforeUndoCopyNotSaved)?;
+    let consumed = consumed_safety_copy_path(path);
+    std::fs::rename(&safety, &consumed)
+        .map_err(|e| WorkJournalError::SafetyCopyNotSetAside(e.to_string()))?;
     keep_local_settings(&mut previous, local_settings);
-    save(path, &previous)?;
-    if let Err(e) = std::fs::remove_file(&safety) {
-        log::warn!("Undo restore done, but the safety copy could not be deleted: {e}");
+    if let Err(e) = save(path, &previous) {
+        if let Err(back) = std::fs::rename(&consumed, &safety) {
+            log::warn!("Undo restore failed and the safety copy could not be put back: {back}");
+        }
+        return Err(e);
+    }
+    if let Err(e) = std::fs::remove_file(&consumed) {
+        log::warn!("Undo restore done, but the used safety copy could not be deleted: {e}");
     }
     Ok(previous)
 }
@@ -2284,6 +2331,93 @@ mod tests {
         let err = undo_restore(&path).unwrap_err();
         assert!(matches!(err, WorkJournalError::NothingToUndo), "got: {err}");
         assert_eq!(load(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_undo_keeps_the_journal_it_replaces_as_the_before_undo_copy() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        other_machine_backup(&folder);
+        local_journal(&path, &folder);
+        restore_from(&path, &backup_path(&folder)).unwrap();
+        // Work done after the restore.
+        modify(&path, |j| {
+            j.settings.last_run_at = Some("2026-10-20T10:00:00Z".into());
+            Ok(())
+        })
+        .unwrap();
+        let first_bytes = std::fs::read(&path).unwrap();
+
+        undo_restore(&path).unwrap();
+
+        assert_eq!(BEFORE_UNDO_FILE_NAME, "work-journal.before-undo.json");
+        assert_eq!(std::fs::read(before_undo_path(&path)).unwrap(), first_bytes);
+        assert!(!tmp_path(&before_undo_path(&path)).exists());
+        assert!(!can_undo_restore(&path));
+        assert!(!consumed_safety_copy_path(&path).exists());
+        let err = undo_restore(&path).unwrap_err();
+        assert!(matches!(err, WorkJournalError::NothingToUndo), "got: {err}");
+        assert_eq!(std::fs::read(before_undo_path(&path)).unwrap(), first_bytes);
+
+        // The next restore and undo overwrite the one before-undo copy.
+        restore_from(&path, &backup_path(&folder)).unwrap();
+        let second_bytes = std::fs::read(&path).unwrap();
+        assert_ne!(second_bytes, first_bytes);
+        undo_restore(&path).unwrap();
+        assert_eq!(
+            std::fs::read(before_undo_path(&path)).unwrap(),
+            second_bytes
+        );
+    }
+
+    #[test]
+    fn test_undo_changes_nothing_when_the_safety_copy_cannot_be_set_aside() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        other_machine_backup(&folder);
+        local_journal(&path, &folder);
+        restore_from(&path, &backup_path(&folder)).unwrap();
+        let restored_bytes = std::fs::read(&path).unwrap();
+        // A non-empty folder where the safety copy would move blocks the move,
+        // as a program holding the file would.
+        let consumed = consumed_safety_copy_path(&path);
+        std::fs::create_dir(&consumed).unwrap();
+        std::fs::write(consumed.join("held"), b"x").unwrap();
+
+        let err = undo_restore(&path).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::SafetyCopyNotSetAside(_)),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), restored_bytes);
+        assert!(
+            can_undo_restore(&path),
+            "the undo did not happen, so it stays offered"
+        );
+    }
+
+    #[test]
+    fn test_undo_changes_nothing_when_the_before_undo_copy_cannot_be_saved() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        other_machine_backup(&folder);
+        local_journal(&path, &folder);
+        restore_from(&path, &backup_path(&folder)).unwrap();
+        let restored_bytes = std::fs::read(&path).unwrap();
+        std::fs::create_dir(tmp_path(&before_undo_path(&path))).unwrap();
+
+        let err = undo_restore(&path).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::BeforeUndoCopyNotSaved(_)),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), restored_bytes);
+        assert!(can_undo_restore(&path));
     }
 
     #[test]
