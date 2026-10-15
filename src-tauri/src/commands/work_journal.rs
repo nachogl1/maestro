@@ -9,7 +9,7 @@
 //! delete), and emits [`CHANGED_EVENT`], so every other window showing the
 //! journal (the pane and the pop-out window) re-reads it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -19,7 +19,8 @@ use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, WebviewWindow};
 
 use crate::core::work_journal::{
-    self, AutoBackupAfterRestore, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
+    self, AutoBackupAfterRestore, CandidateRetry, PageOrigin, WorkJournal, WorkJournalError,
+    WorkJournalResult,
 };
 use crate::core::work_journal_activity::{
     self, ActivityError, ActivityResult, Candidate, CandidateState,
@@ -239,7 +240,9 @@ pub enum CandidateRunOutcome {
     /// projects.
     NoProjects,
     /// One or more dates failed with `message`. Candidates of the dates that
-    /// succeeded were kept; `last_run_at` stopped at the earliest failed date.
+    /// succeeded were kept and `last_run_at` still moved on; a failed date is
+    /// tried again by the next runs, up to
+    /// [`work_journal_run::MAX_DATE_TRIES`] times in all.
     Failed {
         message: String,
         added: usize,
@@ -340,15 +343,18 @@ fn plan_run_projects(open: &[String], terminals: &[String], known: &[String]) ->
     RunProjects { run, save }
 }
 
-/// Saves a finished run: the end of its window and the projects to remember.
+/// Saves a finished run: the end of its window, the projects to remember
+/// and the dates to try again.
 fn save_run(
     path: &Path,
     last_run_at: String,
     known_projects: Vec<String>,
+    retry_dates: BTreeMap<String, CandidateRetry>,
 ) -> WorkJournalResult<WorkJournal> {
     work_journal::modify(path, |j| {
         j.settings.last_run_at = Some(last_run_at);
         j.settings.known_projects = known_projects;
+        j.settings.retry_dates = retry_dates;
         Ok(())
     })
 }
@@ -411,7 +417,8 @@ pub async fn work_journal_run_candidates(
         .covered_until
         .to_rfc3339_opts(SecondsFormat::Secs, true);
     let saved = last_run_at.clone();
-    with_journal(move |path| save_run(&path, saved, plan.save)).await?;
+    let retry_dates = report.retry_dates.clone();
+    with_journal(move |path| save_run(&path, saved, plan.save, retry_dates)).await?;
     // From no window: the new candidates and run time are news to all of them.
     let _ = app.emit(
         CHANGED_EVENT,
@@ -666,6 +673,7 @@ mod tests {
             covered_until: chrono::DateTime::parse_from_rfc3339(&at)
                 .unwrap()
                 .with_timezone(&Utc),
+            retry_dates: BTreeMap::new(),
             error: error.map(str::to_string),
         };
 
@@ -760,7 +768,13 @@ mod tests {
 
         let first = plan_run_projects(std::slice::from_ref(&repo), &[], &[]);
         assert_eq!(first.run, vec![repo.clone()]);
-        save_run(&journal, "2026-10-15T10:00:00Z".into(), first.save).unwrap();
+        save_run(
+            &journal,
+            "2026-10-15T10:00:00Z".into(),
+            first.save,
+            BTreeMap::new(),
+        )
+        .unwrap();
 
         let loaded = work_journal::load(&journal).unwrap();
         assert_eq!(

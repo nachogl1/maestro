@@ -20,13 +20,15 @@ use std::collections::{BTreeMap, HashSet};
 use std::process::Stdio;
 use std::time::Duration;
 
-use chrono::{DateTime, Local, NaiveDate, Offset, SubsecRound, TimeDelta, TimeZone, Utc};
+use chrono::{
+    DateTime, Local, NaiveDate, Offset, SecondsFormat, SubsecRound, TimeDelta, TimeZone, Utc,
+};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::core::work_journal::WorkJournal;
+use crate::core::work_journal::{CandidateRetry, WorkJournal};
 use crate::core::work_journal_activity::{
     activity_dir, add_candidates, list_candidates, validate_candidate, Candidate, CandidateSource,
     NewCandidate,
@@ -41,6 +43,10 @@ pub const MAX_RUN_EVERY_HOURS: u32 = 24;
 
 /// How far back a catch-up run reaches at most, however old the last run.
 pub const MAX_CATCH_UP_DAYS: i64 = 7;
+
+/// How many runs in a row may fail for one date before the run gives up on
+/// that date and says so.
+pub const MAX_DATE_TRIES: u32 = 3;
 
 /// Event emitted when a run added candidates; the payload is a
 /// [`CandidatesAdded`].
@@ -307,11 +313,15 @@ pub struct RunReport {
     pub added: usize,
     /// Dates that got candidates, oldest first.
     pub dates: Vec<String>,
-    /// Activity up to this instant is done; the caller saves it as
-    /// `last_run_at`. The window end on success; on a failure, the start of
-    /// the earliest date that failed (never before the window start), so the
-    /// next run repeats that date and the ones after it.
+    /// Activity up to this instant is done, except for `retry_dates`; the
+    /// caller saves it as `last_run_at`. The window end once the run got to
+    /// its dates (a failed date does not hold it back); the window start
+    /// when the run could not start at all.
     pub covered_until: DateTime<Utc>,
+    /// The dates that failed and are tried again by the next runs; the
+    /// caller saves them as the `retry_dates` setting. A date that failed
+    /// [`MAX_DATE_TRIES`] times is not in it any more.
+    pub retry_dates: BTreeMap<String, CandidateRetry>,
     /// Why one or more dates failed, if any did. Candidates of the dates
     /// that succeeded stay.
     pub error: Option<String>,
@@ -676,6 +686,53 @@ fn start_of_local_date(date: &str) -> Option<DateTime<Utc>> {
         .map(|at| at.with_timezone(&Utc))
 }
 
+/// The UTC instant the local day after `date` begins at.
+fn end_of_local_date(date: &str) -> Option<DateTime<Utc>> {
+    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    start_of_local_date(&day.succ_opt()?.format("%Y-%m-%d").to_string())
+}
+
+/// `2026-10-14` as `14 Oct`, for messages the user reads.
+fn short_date(date: &str) -> String {
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map(|day| day.format("%-d %b").to_string())
+        .unwrap_or_else(|_| date.to_string())
+}
+
+/// A saved retry that still applies: the date, where its uncovered
+/// activity starts (never before the catch-up limit) and its failures.
+struct PendingRetry {
+    date: String,
+    since: DateTime<Utc>,
+    failures: u32,
+}
+
+/// The saved retries a run with window end `end` still does. A retry whose
+/// date lies wholly beyond [`MAX_CATCH_UP_DAYS`] is dropped; one whose start
+/// does not parse starts at its date's midnight.
+fn pending_retries(
+    saved: &BTreeMap<String, CandidateRetry>,
+    end: DateTime<Utc>,
+) -> Vec<PendingRetry> {
+    let floor = end - TimeDelta::days(MAX_CATCH_UP_DAYS);
+    saved
+        .iter()
+        .filter_map(|(date, retry)| {
+            let since = DateTime::parse_from_rfc3339(retry.since.trim())
+                .ok()
+                .map(|at| at.with_timezone(&Utc))
+                .or_else(|| start_of_local_date(date))?
+                .max(floor);
+            let day_end = end_of_local_date(date)?;
+            (since < day_end.min(end)).then(|| PendingRetry {
+                date: date.clone(),
+                since,
+                failures: retry.failures,
+            })
+        })
+        .collect()
+}
+
 /// Where a run reads and writes. The app uses [`LiveSources`]; tests pass
 /// fakes.
 trait RunSources {
@@ -904,11 +961,14 @@ async fn run_with<S: RunSources>(
         added: 0,
         dates: Vec::new(),
         covered_until: start,
+        retry_dates: settings.retry_dates.clone(),
         error: None,
     };
+    let retries = pending_retries(&settings.retry_dates, end);
     // One preflight per run, and only for a "yes": a "no" or a choice not
     // made yet never even checks Granola.
-    let granola_url = if start < end && settings.granola_opt_in == Some(true) {
+    let has_work = start < end || !retries.is_empty();
+    let granola_url = if has_work && settings.granola_opt_in == Some(true) {
         sources.granola_url().await
     } else {
         None
@@ -923,6 +983,22 @@ async fn run_with<S: RunSources>(
     };
 
     let mut by_date: BTreeMap<String, Vec<ActivityItem>> = BTreeMap::new();
+    // A date tried again also gets its own activity from before the window
+    // (the part a failed run left uncovered), collected first so it stays
+    // in time order. Its activity inside the window comes below.
+    for retry in &retries {
+        let to = end_of_local_date(&retry.date).map_or(start, |day_end| day_end.min(start));
+        if retry.since < to {
+            for item in sources.collect(retry.since, to, projects).await {
+                if item.date == retry.date {
+                    by_date.entry(item.date.clone()).or_default().push(item);
+                }
+            }
+        }
+        if granola {
+            by_date.entry(retry.date.clone()).or_default();
+        }
+    }
     for item in sources.collect(start, end, projects).await {
         by_date.entry(item.date.clone()).or_default().push(item);
     }
@@ -934,14 +1010,21 @@ async fn run_with<S: RunSources>(
         }
     }
 
-    // A failed date does not stop the run: later dates (today included) still
-    // get their candidates. `covered_until` stops at the earliest failed
-    // date, so it and every later date run again next time; the later dates
-    // then get their own candidates fed back, which bounds repeats.
-    let mut earliest_failed: Option<DateTime<Utc>> = None;
+    // A failed date does not stop the run or hold back the others: the window
+    // counts as covered and only the failed date is remembered, from where
+    // its uncovered activity starts, so the next run asks about that date
+    // alone (a date that already succeeded is never asked again, even once
+    // its candidates left the temporary file). After `MAX_DATE_TRIES`
+    // failures the date is given up with an error the user sees.
+    let mut retry_dates = BTreeMap::new();
     let mut errors: Vec<String> = Vec::new();
     for (date, items) in by_date {
-        let window = granola.then_some((start, end));
+        let previous = retries.iter().find(|retry| retry.date == date);
+        let since = previous.map_or_else(
+            || start_of_local_date(&date).map_or(start, |midnight| midnight.max(start)),
+            |retry| retry.since,
+        );
+        let window = granola.then_some((since.min(start), end));
         match run_date(sources, journal, &args, window, &date, &items).await {
             Ok(0) => {}
             Ok(added) => {
@@ -950,16 +1033,22 @@ async fn run_with<S: RunSources>(
             }
             Err(e) => {
                 log::warn!("Work journal: candidate run for {date} failed: {e}");
-                if earliest_failed.is_none() {
-                    earliest_failed = Some(
-                        start_of_local_date(&date).map_or(start, |midnight| midnight.max(start)),
-                    );
+                let failures = previous.map_or(0, |retry| retry.failures) + 1;
+                if failures >= MAX_DATE_TRIES {
+                    errors.push(format!(
+                        "Could not get suggestions for {} after {failures} tries: {e}",
+                        short_date(&date)
+                    ));
+                } else {
+                    errors.push(format!("Candidate run for {date} failed: {e}"));
+                    let since = since.to_rfc3339_opts(SecondsFormat::Secs, true);
+                    retry_dates.insert(date, CandidateRetry { since, failures });
                 }
-                errors.push(format!("Candidate run for {date} failed: {e}"));
             }
         }
     }
-    report.covered_until = earliest_failed.unwrap_or(end);
+    report.covered_until = end;
+    report.retry_dates = retry_dates;
     if !errors.is_empty() {
         report.error = Some(errors.join("; "));
     }
@@ -1866,6 +1955,23 @@ mod tests {
         preflights: StdMutex<usize>,
         /// The `granola` flag of every `claude` call.
         asked_granola: StdMutex<Vec<bool>>,
+        /// Collect only the items whose local date and time fall inside the
+        /// asked window (off: every item, whatever the window).
+        by_window: bool,
+    }
+
+    /// When `item` happened, read back from its local date and time.
+    fn item_instant(item: &ActivityItem) -> DateTime<Utc> {
+        let at = chrono::NaiveDateTime::parse_from_str(
+            &format!("{} {}", item.date, item.time),
+            "%Y-%m-%d %H:%M",
+        )
+        .unwrap();
+        Local
+            .from_local_datetime(&at)
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     impl RunSources for Fake {
@@ -1876,7 +1982,11 @@ mod tests {
             _projects: &[String],
         ) -> Vec<ActivityItem> {
             self.windows.lock().unwrap().push((start, end));
-            self.items.clone()
+            self.items
+                .iter()
+                .filter(|item| !self.by_window || (start..end).contains(&item_instant(item)))
+                .cloned()
+                .collect()
         }
 
         async fn candidates(&self, date: &str) -> Result<Vec<Candidate>, String> {
@@ -2023,7 +2133,15 @@ mod tests {
         assert_eq!(report.dates, vec!["2026-10-14"]);
         let error = report.error.unwrap();
         assert!(error.contains("2026-10-15") && error.contains("timed out"));
-        assert_eq!(report.covered_until, date_start("2026-10-15", start));
+        assert_eq!(report.covered_until, now());
+        assert_eq!(
+            report.retry_dates.keys().collect::<Vec<_>>(),
+            vec!["2026-10-15"]
+        );
+        assert_eq!(
+            report.retry_dates["2026-10-15"],
+            retry_at(date_start("2026-10-15", start), 1)
+        );
     }
 
     #[tokio::test]
@@ -2042,8 +2160,11 @@ mod tests {
         let report = run_with(&fake, &journal, &[], now()).await;
         assert_eq!(report.added, 0);
         assert!(report.error.is_some());
-        assert_eq!(report.covered_until, date_start("2026-10-14", start));
-        assert!(report.covered_until < now());
+        assert_eq!(report.covered_until, now());
+        assert_eq!(
+            report.retry_dates["2026-10-14"],
+            retry_at(date_start("2026-10-14", start), 1)
+        );
     }
 
     #[tokio::test]
@@ -2066,7 +2187,11 @@ mod tests {
         assert_eq!(report.dates, vec!["2026-10-15"]);
         assert_eq!(fake.added.lock().unwrap()[0].text, "Committed b");
         assert!(report.error.unwrap().contains("2026-10-14"));
-        assert_eq!(report.covered_until, date_start("2026-10-14", start));
+        assert_eq!(report.covered_until, now());
+        assert_eq!(
+            report.retry_dates.keys().collect::<Vec<_>>(),
+            vec!["2026-10-14"]
+        );
     }
 
     #[tokio::test]
@@ -2092,8 +2217,150 @@ mod tests {
             .error
             .unwrap()
             .contains("no line in the expected format"));
-        assert_eq!(report.covered_until, date_start("2026-10-14", start));
+        assert_eq!(report.covered_until, now());
+        assert_eq!(report.retry_dates["2026-10-14"].failures, 1);
         assert!(fake.added.lock().unwrap().is_empty());
+    }
+
+    /// A saved retry starting at `since`, after `failures` failed runs.
+    fn retry_at(since: DateTime<Utc>, failures: u32) -> CandidateRetry {
+        CandidateRetry {
+            since: since.to_rfc3339_opts(SecondsFormat::Secs, true),
+            failures,
+        }
+    }
+
+    /// An item `at` an instant, with its local date and time.
+    fn item_at(at: DateTime<Utc>, text: &str) -> ActivityItem {
+        let local = at.with_timezone(&Local);
+        item(
+            &local.format("%Y-%m-%d").to_string(),
+            &local.format("%H:%M").to_string(),
+            CandidateSource::Git,
+            text,
+        )
+    }
+
+    /// Saves what a run reported, as the run command does.
+    fn save(journal: &mut WorkJournal, report: &RunReport) {
+        journal.settings.last_run_at = Some(report.covered_until.to_rfc3339());
+        journal.settings.retry_dates = report.retry_dates.clone();
+    }
+
+    /// How many `claude` calls were about `date`.
+    fn asked_about(fake: &Fake, date: &str) -> usize {
+        let prefix = format!("Date: {date}\n");
+        fake.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, input)| input.starts_with(&prefix))
+            .count()
+    }
+
+    /// Two days of activity, the older day always failing: `(fake, older
+    /// date, newer date)`.
+    fn failing_day_then_good_day() -> (Fake, String, String) {
+        let a = item_at(now() - TimeDelta::hours(50), "Commit a");
+        let b = item_at(now() - TimeDelta::hours(26), "Commit b");
+        let (day, next) = (a.date.clone(), b.date.clone());
+        assert_ne!(day, next);
+        let mut fake = Fake {
+            items: vec![a, b.clone()],
+            by_window: true,
+            ..Fake::default()
+        };
+        fake.replies
+            .insert(next.clone(), format!("{} - Committed b | git", b.time));
+        (fake, day, next)
+    }
+
+    #[tokio::test]
+    async fn test_a_failing_date_is_retried_alone_and_later_dates_are_asked_once() {
+        let (fake, day, next) = failing_day_then_good_day();
+        let mut journal = journal_with(Some((now() - TimeDelta::days(3)).to_rfc3339()), None);
+
+        let first = run_with(&fake, &journal, &[], now()).await;
+        assert_eq!(
+            first.covered_until,
+            now(),
+            "the failed day does not hold the window"
+        );
+        assert_eq!(first.retry_dates[&day].failures, 1);
+        assert!(!first.retry_dates.contains_key(&next));
+        save(&mut journal, &first);
+
+        // The activity file forgot the newer day's candidate (Fake keeps no
+        // existing candidates): it must still not be proposed again.
+        let second = run_with(&fake, &journal, &[], now() + TimeDelta::hours(1)).await;
+        assert!(second.error.unwrap().contains(&day));
+        assert_eq!(second.retry_dates[&day].failures, 2);
+        assert_eq!(
+            second.retry_dates[&day].since, first.retry_dates[&day].since,
+            "the retry keeps the uncovered start"
+        );
+        assert_eq!(asked_about(&fake, &day), 2);
+        assert_eq!(asked_about(&fake, &next), 1, "the good day is asked once");
+        let added = fake.added.lock().unwrap();
+        assert_eq!(added.len(), 1, "no suggestion comes back as new");
+        assert_eq!(added[0].date, next);
+        // The retry got the failed day's own activity from before the window.
+        let asked = fake.asked.lock().unwrap();
+        assert!(asked[2].1.contains("Commit a"), "{}", asked[2].1);
+    }
+
+    #[tokio::test]
+    async fn test_a_date_is_given_up_after_the_last_try_and_never_asked_again() {
+        let (fake, day, _next) = failing_day_then_good_day();
+        let mut journal = journal_with(Some((now() - TimeDelta::days(3)).to_rfc3339()), None);
+        let mut at = now();
+        for _ in 1..MAX_DATE_TRIES {
+            let report = run_with(&fake, &journal, &[], at).await;
+            assert!(report.retry_dates.contains_key(&day));
+            save(&mut journal, &report);
+            at += TimeDelta::hours(1);
+        }
+
+        let last = run_with(&fake, &journal, &[], at).await;
+        let error = last.error.clone().unwrap();
+        assert!(
+            error.contains(&format!(
+                "Could not get suggestions for {} after {MAX_DATE_TRIES} tries",
+                short_date(&day)
+            )),
+            "{error}"
+        );
+        assert!(last.retry_dates.is_empty());
+        assert_eq!(last.covered_until, at);
+        save(&mut journal, &last);
+        assert_eq!(asked_about(&fake, &day), MAX_DATE_TRIES as usize);
+
+        let after = run_with(&fake, &journal, &[], at + TimeDelta::hours(1)).await;
+        assert!(after.error.is_none());
+        assert_eq!(asked_about(&fake, &day), MAX_DATE_TRIES as usize);
+    }
+
+    #[test]
+    fn test_a_retry_beyond_the_catch_up_limit_is_dropped() {
+        let old = (now() - TimeDelta::days(MAX_CATCH_UP_DAYS + 2))
+            .with_timezone(&Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        let saved =
+            BTreeMap::from([(old.clone(), retry_at(start_of_local_date(&old).unwrap(), 1))]);
+        assert!(pending_retries(&saved, now()).is_empty());
+        let recent = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let saved = BTreeMap::from([(
+            recent.clone(),
+            CandidateRetry {
+                since: "not a time".into(),
+                failures: 2,
+            },
+        )]);
+        let pending = pending_retries(&saved, now());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].since, start_of_local_date(&recent).unwrap());
+        assert_eq!(short_date("2026-10-04"), "4 Oct");
     }
 
     #[tokio::test]
