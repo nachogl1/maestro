@@ -9,7 +9,7 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-15",
-    title: "Move terminals wherever you like, Maestro updates itself",
+    title: "Move terminals anywhere, Maestro updates itself, Work Journal pane",
     items: [
       "Drag a terminal by its title bar: drop it on another pane's edge to move next to it, on the middle to swap, or on the outer edge of the area for a full column or row.",
       "Eagle view: terminals of any project can be mixed in any order — drop on a tile's side to insert, on its middle to swap; Group by project undoes the mixing.",
@@ -17,6 +17,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Alt+Shift+Arrow moves the terminal you are typing in one step in that direction, in both views.",
       "Maestro now checks this fork's releases and can download and install a new build in one click.",
       "Every code change merged to main is published as a signed Windows installer automatically.",
+      "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
     ],
   },

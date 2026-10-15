@@ -1,4 +1,4 @@
-import { BrainCircuit, Rocket, StickyNote, X } from "lucide-react";
+import { BookOpenCheck, BrainCircuit, Rocket, StickyNote, X } from "lucide-react";
 import { lazy, Suspense } from "react";
 import {
   PanelResizeHandle,
@@ -16,7 +16,14 @@ const NotepadPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "notes" | "secondbrain" | "launch";
+// WorkJournalPanel drags in TipTap too, so it is lazy-loaded the same way.
+const WorkJournalPanel = lazy(() =>
+  import("@/components/workjournal/WorkJournalPanel").then((m) => ({
+    default: m.WorkJournalPanel,
+  })),
+);
+
+export type UtilityPanelKind = "notes" | "secondbrain" | "launch" | "workjournal";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
   notes: { title: "Notes", icon: StickyNote },
@@ -25,10 +32,12 @@ const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementT
   secondbrain: { title: "Second Brain", icon: BrainCircuit },
   // Samurai run launcher + active runs (issue #63, PRD §5.8/§9).
   launch: { title: "Launch", icon: Rocket },
+  // One page per day, edited as rich text (Work Journal PRD, "Layout").
+  workjournal: { title: "Work Journal", icon: BookOpenCheck },
 };
 
 /**
- * Right-side panel for the Notes, Second Brain and Launch views, opened from
+ * Right-side panel for the Notes, Second Brain, Launch and Work Journal views, opened from
  * the top-bar buttons. Docked on the right, one panel at a time.
  */
 export function UtilityPanel({
@@ -77,6 +86,11 @@ export function UtilityPanel({
         // scrolls internally, so it skips the padded scroll wrapper.
         <Suspense fallback={<div className="flex-1" />}>
           <NotepadPanel />
+        </Suspense>
+      ) : panel === "workjournal" ? (
+        // Like Notes: a header row plus an editor that scrolls internally.
+        <Suspense fallback={<div className="flex-1" />}>
+          <WorkJournalPanel />
         </Suspense>
       ) : (
         <div className="flex-1 overflow-y-auto px-2.5 py-3">
