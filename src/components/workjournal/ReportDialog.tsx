@@ -2,8 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { FolderOpen, Loader2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useDismissable } from "@/hooks/useDismissable";
 import { isValidJournalDate, localDateString } from "@/lib/workJournalDates";
 import { type ReportOutcome, useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
 import { flushWorkJournalSaves } from "@/stores/useWorkJournalStore";
@@ -16,6 +17,9 @@ export const NOTHING_TO_REPORT = "Nothing to report for these dates.";
 
 /** Shown while the start date is after the end date. */
 export const RANGE_REVERSED = "The start date must not be after the end date.";
+
+/** Where a Generate is: not running, getting the folder ready, or writing the report. */
+type ReportPhase = "idle" | "preparing" | "writing";
 
 /** What the last Generate ended with. */
 type ReportResultState =
@@ -45,20 +49,27 @@ const DATE_INPUT =
  * days ending today), Generate, and the result. Before the first report,
  * Generate asks for the report folder and saves it. The report is written
  * by the backend straight into that folder; "Open folder" reveals the file.
+ * The dialog cannot be closed while a report runs (nothing would cancel it).
  */
 export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
   const [from, setFrom] = useState(() => localDateDaysBefore(new Date(), DEFAULT_RANGE_DAYS - 1));
   const [to, setTo] = useState(() => localDateString(new Date()));
-  const [running, setRunning] = useState(false);
+  const [phase, setPhase] = useState<ReportPhase>("idle");
   const [result, setResult] = useState<ReportResultState | null>(null);
+  // Claimed synchronously on Generate, so a second click before the next
+  // render cannot start a second run.
+  const busyRef = useRef(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const fromRef = useRef<HTMLInputElement>(null);
+  const running = phase !== "idle";
+
+  // Closing is off while a report runs: nothing would cancel it, and its
+  // result would be lost.
+  useDismissable(onClose, { ref: dialogRef, enabled: !running });
 
   useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent): void => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    fromRef.current?.focus();
+  }, []);
 
   const datesValid = isValidJournalDate(from) && isValidJournalDate(to);
   const reversed = datesValid && from > to;
@@ -91,8 +102,20 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
   };
 
   const handleGenerate = async (): Promise<void> => {
-    if (!canGenerate) return;
+    if (!canGenerate || busyRef.current) return;
+    busyRef.current = true;
+    setPhase("preparing");
     setResult(null);
+    try {
+      await generate();
+    } finally {
+      busyRef.current = false;
+      setPhase("idle");
+    }
+  };
+
+  /** One Generate: folder (asked for when unset), pending saves, the report. */
+  const generate = async (): Promise<void> => {
     const store = useWorkJournalReportStore.getState();
     // Read the folder fresh: it may have been chosen in Settings meanwhile.
     if (!(await store.load())) {
@@ -103,7 +126,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
       return;
     }
     if (!useWorkJournalReportStore.getState().reportFolder && !(await pickFolder())) return;
-    setRunning(true);
+    setPhase("writing");
     try {
       // The report reads the file, so typing still waiting to be saved goes in first.
       await flushWorkJournalSaves();
@@ -126,12 +149,8 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
       }
     } catch (error) {
       console.error("Work Journal report failed:", error);
-      setResult({
-        kind: "error",
-        message: `The report could not be made: ${errorMessage(error)}`,
-      });
-    } finally {
-      setRunning(false);
+      // The backend's messages are already plain sentences.
+      setResult({ kind: "error", message: errorMessage(error) });
     }
   };
 
@@ -147,6 +166,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="work-journal-report-title"
@@ -159,7 +179,8 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-1 text-maestro-muted hover:bg-maestro-border/40"
+            disabled={running}
+            className="rounded p-1 text-maestro-muted hover:bg-maestro-border/40 disabled:opacity-40"
             aria-label="Close report dialog"
           >
             <X size={14} />
@@ -171,6 +192,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
             <label className="flex items-center gap-1.5">
               <span>From</span>
               <input
+                ref={fromRef}
                 type="date"
                 value={from}
                 onChange={(e) => setFrom(e.target.value)}
@@ -192,10 +214,10 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
             </label>
           </div>
           {reversed && <p className="text-maestro-red">{RANGE_REVERSED}</p>}
-          {running && (
+          {phase === "writing" && (
             <output className="flex items-center gap-1.5 text-maestro-text">
               <Loader2 size={12} className="animate-spin" />
-              Writing the report… this can take a minute.
+              Writing the report… this can take a minute. You can close this when it is done.
             </output>
           )}
           {result?.kind === "saved" && (
@@ -226,7 +248,8 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
           <button
             type="button"
             onClick={onClose}
-            className="rounded px-3 py-1 text-xs text-maestro-muted hover:bg-maestro-border/40"
+            disabled={running}
+            className="rounded px-3 py-1 text-xs text-maestro-muted hover:bg-maestro-border/40 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {result ? "Close" : "Cancel"}
           </button>

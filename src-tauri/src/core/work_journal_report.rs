@@ -40,12 +40,18 @@ const USER_PROMPT: &str = "Write the work report for the Work Journal pages give
 pub const SYSTEM_PROMPT: &str = "You write a short work report that a developer sends to \
 their supervisor. You are given the developer's Work Journal pages for a date range: each \
 page starts with a line giving its date and title, followed by the page text.\n\
-Summarise everything they did that would make them look good: achievements, results, work \
-delivered, problems fixed, decisions made and help given to others. Group related work by \
-theme or project. Do not write a day-by-day log.\n\
-Facts only: state only what the pages say. You may choose what to emphasise and how to \
-frame it, but never invent, guess or inflate anything. No numbers, names, impact or results \
-that the pages do not state.\n\
+Summarise the work the pages record: work delivered, problems fixed, decisions made and \
+help given to others. Put the strongest items first and group related work by theme or \
+project. Do not write a day-by-day log.\n\
+Facts only, follow these rules exactly:\n\
+- Describe each item in the page's own words or a plain paraphrase of them.\n\
+- Never add significance, impact or quality words the page does not contain: no \
+\"security\", \"critical\", \"major\", \"key\", \"significantly\", \"robust\", \
+\"successfully\" or similar, unless the page itself uses that word.\n\
+- Never add outcomes, numbers, names or reasons that are not written in the pages.\n\
+- You choose which items to include and in which order, but never upgrade an item: a small \
+change stays a small change.\n\
+- When unsure how to describe an item, quote the page's wording.\n\
 Output contract, follow it exactly:\n\
 - Plain text only: no HTML, no markdown emphasis (no ** or _), no tables, no code blocks, \
 no preamble and no closing remarks.\n\
@@ -53,8 +59,8 @@ no preamble and no closing remarks.\n\
 - A line starting with \"- \" is one bullet point.\n\
 - Any other line is paragraph text.\n\
 - Separate blocks with one blank line.\n\
-- Start with a short overview paragraph, then a few sections, each a heading followed by \
-bullets.\n\
+- Start with a one or two sentence overview that only names what was done, then a few \
+sections, each a heading followed by bullets.\n\
 - Write in English, in the first person and the past tense.\n\
 - If the pages hold nothing worth reporting, reply with exactly: NONE";
 
@@ -77,6 +83,12 @@ pub enum ReportError {
     Model(String),
     #[error("Claude could not write the report: {0}")]
     Claude(String),
+    /// The installed `claude` rejected `--safe-mode`; never retried without it.
+    #[error(
+        "Your Claude Code is too old for reports (it does not know --safe-mode). Update Claude \
+         Code and try again."
+    )]
+    CliTooOld,
     #[error("Claude's reply held no report text. Try again.")]
     UnusableReply,
     #[error("The report could not be saved: {0}")]
@@ -98,7 +110,10 @@ pub enum ReportResult {
 /// One page as the report sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportPage {
+    /// The page's date, `YYYY-MM-DD`.
     pub date: String,
+    /// The page's title as the user wrote it; sent with the text, since
+    /// titles are user-written headings.
     pub title: String,
     /// The page's plain text ([`page_text`]), never empty.
     pub text: String,
@@ -107,8 +122,12 @@ pub struct ReportPage {
 /// One block of the report, from the reply contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportBlock {
+    /// A section heading (`# text`).
     Heading(String),
+    /// One list of consecutive bullets (`- `, `* `, `• ` or `1. ` lines),
+    /// markers stripped.
     Bullets(Vec<String>),
+    /// Consecutive plain lines joined into one paragraph.
     Paragraph(String),
 }
 
@@ -123,10 +142,16 @@ pub fn try_begin_report() -> Option<MutexGuard<'static, ()>> {
     REPORT_LOCK.try_lock().ok()
 }
 
-/// `work-report_<from>_to_<to>.html`: one file per range, so the same range
-/// again replaces its file and a different range makes a new one.
-pub fn report_file_name(from: &str, to: &str) -> String {
-    format!("work-report_{from}_to_{to}.html")
+/// `work-report_<from>_to_<to>.html` (dates as `YYYY-MM-DD`): one file per
+/// range, so the same range again replaces its file and a different range
+/// makes a new one. Takes parsed dates, so no unvalidated text can reach the
+/// file name.
+pub fn report_file_name(from: NaiveDate, to: NaiveDate) -> String {
+    format!(
+        "work-report_{}_to_{}.html",
+        from.format("%Y-%m-%d"),
+        to.format("%Y-%m-%d")
+    )
 }
 
 /// Parses a real calendar date written exactly as `YYYY-MM-DD`.
@@ -244,11 +269,41 @@ fn end_block(blocks: &mut Vec<ReportBlock>, current: &mut Option<ReportBlock>) {
     }
 }
 
-/// Parses the reply contract into blocks. `Ok(None)` for `NONE`.
+/// True when the reply says there is nothing to report: its first non-empty
+/// line is `NONE` in any case, trailing punctuation ignored (`None.`,
+/// `none`, or `NONE` followed by an explanation on later lines).
+fn says_none(reply: &str) -> bool {
+    reply
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.trim_end_matches(|c: char| c.is_ascii_punctuation()))
+        .is_some_and(|line| line.trim().eq_ignore_ascii_case("none"))
+}
+
+/// The text of a bullet line without its marker: `- `, `* `, `• ` or a
+/// number followed by `. ` or `) ` (`1. text`); `None` for any other line.
+fn bullet_text(line: &str) -> Option<&str> {
+    for marker in ["- ", "* ", "• "] {
+        if let Some(text) = line.strip_prefix(marker) {
+            return Some(text);
+        }
+    }
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return None;
+    }
+    let rest = &line[digits..];
+    rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))
+}
+
+/// Parses the reply contract into blocks. `Ok(None)` when the reply says
+/// `NONE` (see [`says_none`]).
 ///
 /// - `# text` is a heading (deeper `## text` levels are read as headings
 ///   too, so a stray markdown level never shows its `#` signs).
-/// - `- text` is a bullet; consecutive bullets form one list.
+/// - `- text` is a bullet (`* `, `• ` and `1. ` markers too, stripped);
+///   consecutive bullets form one list.
 /// - Any other line is paragraph text; consecutive lines form one paragraph.
 /// - A blank line ends the block.
 /// - Code fences and lines with no letter or digit (`---`, `***`, a lone
@@ -256,7 +311,7 @@ fn end_block(blocks: &mut Vec<ReportBlock>, current: &mut Option<ReportBlock>) {
 ///
 /// A reply with no block left is an error.
 pub fn parse_reply(reply: &str) -> Result<Option<Vec<ReportBlock>>, ReportError> {
-    if reply.trim() == "NONE" {
+    if says_none(reply) {
         return Ok(None);
     }
     let mut blocks = Vec::new();
@@ -274,7 +329,7 @@ pub fn parse_reply(reply: &str) -> Result<Option<Vec<ReportBlock>>, ReportError>
         if unhashed.len() < line.len() && unhashed.starts_with(' ') {
             end_block(&mut blocks, &mut current);
             blocks.push(ReportBlock::Heading(unhashed.trim().to_string()));
-        } else if let Some(bullet) = line.strip_prefix("- ") {
+        } else if let Some(bullet) = bullet_text(line) {
             let bullet = bullet.trim().to_string();
             match &mut current {
                 Some(ReportBlock::Bullets(items)) => items.push(bullet),
@@ -397,6 +452,18 @@ fn check_folder(folder: &Path) -> Result<(), ReportError> {
     })
 }
 
+/// Maps a failed `claude` call: an older CLI that does not know
+/// `--safe-mode` (`error: unknown option '--safe-mode'`) gets its own plain
+/// message; anything else is [`ReportError::Claude`].
+pub fn claude_error(message: String) -> ReportError {
+    let lower = message.to_lowercase();
+    if lower.contains("unknown option") && lower.contains("--safe-mode") {
+        ReportError::CliTooOld
+    } else {
+        ReportError::Claude(message)
+    }
+}
+
 /// Makes the report for `from..=to` from `journal`: checks the range and
 /// the folder, selects the pages, asks Claude through `ask` (the `claude`
 /// arguments and the stdin input) only when a page qualifies, and writes
@@ -425,12 +492,12 @@ where
     let args = claude_args(journal.settings.model.as_deref()).map_err(ReportError::Model)?;
     let reply = ask(args, build_input(from, to, &pages))
         .await
-        .map_err(ReportError::Claude)?;
+        .map_err(claude_error)?;
     let Some(blocks) = parse_reply(&reply)? else {
         return Ok(ReportResult::NothingToReport);
     };
     let html = render_html(from, to, generated_on, &blocks);
-    let target = folder.join(report_file_name(from, to));
+    let target = folder.join(report_file_name(start, end));
     let mut tmp_name = target.file_name().unwrap_or_default().to_os_string();
     tmp_name.push(".tmp");
     let tmp = target.with_file_name(tmp_name);
@@ -521,11 +588,11 @@ mod tests {
     #[test]
     fn test_report_file_name_is_named_after_the_range() {
         assert_eq!(
-            report_file_name("2026-10-05", "2026-10-16"),
+            report_file_name(day("2026-10-05"), day("2026-10-16")),
             "work-report_2026-10-05_to_2026-10-16.html"
         );
         assert_eq!(
-            report_file_name("2026-10-05", "2026-10-05"),
+            report_file_name(day("2026-10-05"), day("2026-10-05")),
             "work-report_2026-10-05_to_2026-10-05.html"
         );
     }
@@ -634,17 +701,26 @@ mod tests {
     #[test]
     fn test_system_prompt_states_the_rules_and_the_contract() {
         for needle in [
-            "look good",
+            "Put the strongest items first",
             "Do not write a day-by-day log",
-            "state only what the pages say",
-            "never invent",
-            "inflate",
+            "in the page's own words or a plain paraphrase",
+            "Never add significance, impact or quality words",
+            "\"security\"",
+            "\"significantly\"",
+            "unless the page itself uses that word",
+            "Never add outcomes, numbers, names or reasons that are not written",
+            "never upgrade an item",
+            "quote the page's wording",
             "Plain text only",
             "\"# \"",
             "\"- \"",
             "NONE",
         ] {
             assert!(SYSTEM_PROMPT.contains(needle), "missing {needle}");
+        }
+        // The old spin-inviting wording is gone.
+        for gone in ["look good", "how to frame it"] {
+            assert!(!SYSTEM_PROMPT.contains(gone), "still has {gone}");
         }
     }
 
@@ -673,10 +749,85 @@ mod tests {
 
     #[test]
     fn test_parse_reply_none_is_nothing_to_report() {
-        assert_eq!(parse_reply("NONE").unwrap(), None);
-        assert_eq!(parse_reply("  NONE\n").unwrap(), None);
-        // NONE inside other text is just text.
+        for reply in [
+            "NONE",
+            "  NONE\n",
+            "None",
+            "none",
+            "NONE.",
+            "None!",
+            "\n\nNONE\nThe pages only say Weekend.",
+            "none.\n\n# Delivered\n- x",
+        ] {
+            assert_eq!(parse_reply(reply).unwrap(), None, "{reply:?}");
+        }
+        // NONE inside other text, or not on the first line, is just text.
         assert!(parse_reply("NONE of that\n- x").unwrap().is_some());
+        assert!(parse_reply("Overview.\nNONE").unwrap().is_some());
+        assert!(parse_reply("Nonetheless I shipped it.").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_parse_reply_reads_other_bullet_markers_without_the_marker() {
+        let reply = "* Fixed the login bug\n• Shipped the export\n1. Reviewed a PR\n\
+                     12) Helped a teammate\n- Wrote docs";
+        assert_eq!(
+            parse_reply(reply).unwrap().unwrap(),
+            vec![ReportBlock::Bullets(vec![
+                "Fixed the login bug".into(),
+                "Shipped the export".into(),
+                "Reviewed a PR".into(),
+                "Helped a teammate".into(),
+                "Wrote docs".into(),
+            ])]
+        );
+        // A number without its marker, or a marker without a space, is text.
+        assert_eq!(
+            parse_reply("2026 was busy.\n*bold*").unwrap().unwrap(),
+            vec![ReportBlock::Paragraph("2026 was busy. *bold*".into())]
+        );
+    }
+
+    #[test]
+    fn test_an_old_cli_without_safe_mode_gets_a_plain_message() {
+        let err = claude_error(
+            "claude exited with exit code: 1: error: unknown option '--safe-mode'".into(),
+        );
+        assert!(matches!(err, ReportError::CliTooOld));
+        assert_eq!(
+            err.to_string(),
+            "Your Claude Code is too old for reports (it does not know --safe-mode). Update \
+             Claude Code and try again."
+        );
+        // Any other failure keeps its own message, prefixed once.
+        let other = claude_error("claude did not answer within 300s".into());
+        assert_eq!(
+            other.to_string(),
+            "Claude could not write the report: claude did not answer within 300s"
+        );
+        let unrelated = claude_error("error: unknown option '--frobnicate'".into());
+        assert!(matches!(unrelated, ReportError::Claude(_)));
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_an_old_cli_writes_nothing_and_never_retries() {
+        let dir = tempdir().unwrap();
+        let journal = journal_in(dir.path());
+        let fake = FakeClaude::default();
+        let err = generate_report_with(
+            &journal,
+            "2026-10-05",
+            "2026-10-09",
+            "now",
+            fake.ask(Err(
+                "claude exited with exit code: 1: error: unknown option '--safe-mode'",
+            )),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ReportError::CliTooOld));
+        assert_eq!(fake.calls().len(), 1, "no second run without --safe-mode");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
@@ -58,6 +58,34 @@ describe("WorkJournalReportFolderRow", () => {
 
     expect(await screen.findByText("E:\\OneDrive\\Reports")).toBeInTheDocument();
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "load_work_journal")).toHaveLength(1);
+  });
+
+  it("shows the restored journal's report folder after a restore", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_work_journal") return { settings: { report_folder: "D:\\Old" } };
+      if (cmd === "work_journal_restore_state") return { canUndo: false };
+      if (cmd === "restore_work_journal") {
+        return {
+          journal: {
+            layout_version: 1,
+            pages: {},
+            deleted_dates: [],
+            settings: { report_folder: "E:\\Restored" },
+          },
+          canUndo: true,
+          autoBackup: "no_folder",
+        };
+      }
+      throw new Error(`unexpected command ${cmd}`);
+    });
+
+    render(<WorkJournalSettingsSection />);
+    expect(await screen.findByText("D:\\Old")).toBeInTheDocument();
+
+    await act(() => useWorkJournalBackupStore.getState().restore("F:\\backup.json"));
+
+    expect(await screen.findByText("E:\\Restored")).toBeInTheDocument();
+    expect(screen.queryByText("D:\\Old")).toBeNull();
   });
 
   it("shows a failed save in the section's error line", async () => {

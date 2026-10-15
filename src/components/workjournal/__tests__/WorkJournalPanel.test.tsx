@@ -298,8 +298,19 @@ describe("WorkJournalPanel", () => {
     expect(JSON.stringify(callsTo("update_work_journal_page")[0])).toContain("Closing now");
   });
 
-  it("opens the report dialog, and the report sees typing not yet saved", async () => {
+  it("opens the report dialog, and the report waits for typing not yet saved", async () => {
     file.settings = { report_folder: "D:\\Reports" };
+    // Page saves land only when released, so a report that did not wait for
+    // the flushed save would read the file without the new text.
+    const backend = invokeMock.getMockImplementation();
+    let releaseSave: () => void = () => {};
+    const saveHeld = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") await saveHeld;
+      return backend?.(cmd, args);
+    });
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
     act(() => {
@@ -309,6 +320,11 @@ describe("WorkJournalPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Report" }));
     expect(screen.getByRole("dialog", { name: "Work report" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(callsTo("update_work_journal_page")).toHaveLength(1));
+    await act(async () => {});
+    expect(callsTo("work_journal_generate_report")).toHaveLength(0);
+    releaseSave();
 
     expect(await screen.findByText("Nothing to report for these dates.")).toBeInTheDocument();
     expect(reportSaw).toContain("Shipped the export");

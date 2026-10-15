@@ -152,8 +152,9 @@ describe("ReportDialog", () => {
 
     fireEvent.click(generateButton());
 
+    // The backend's message as is, not prefixed a second time.
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The report could not be made: Claude could not write the report: claude did not answer within 300s",
+      /^Claude could not write the report: claude did not answer within 300s$/,
     );
     expect(screen.queryByText(/Saved to/)).toBeNull();
     expect(generateButton()).toBeEnabled();
@@ -168,14 +169,81 @@ describe("ReportDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("already being made");
   });
 
-  it("closes on Cancel and on Escape", () => {
+  it("closes on Cancel, Escape and a click outside, and starts in the From date", () => {
     routeInvoke(FOLDER, () => ({ status: "nothing_to_report" }));
     const onClose = vi.fn();
     render(<ReportDialog onClose={onClose} />);
 
+    expect(screen.getByLabelText("From date")).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.mouseDown(document.body);
 
-    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it("cannot be closed while a report runs, and shows the result when it ends", async () => {
+    let finish: (outcome: unknown) => void = () => {};
+    routeInvoke(
+      FOLDER,
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onClose = vi.fn();
+    render(<ReportDialog onClose={onClose} />);
+
+    fireEvent.click(generateButton());
+    expect(await screen.findByText(/Writing the report/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close report dialog" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.mouseDown(document.body);
+    expect(onClose).not.toHaveBeenCalled();
+
+    finish({ status: "saved", path: SAVED });
+    expect(await screen.findByText(`Saved to ${SAVED}`)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts one run for a double click while the folder is still being read", async () => {
+    let releaseLoad: () => void = () => {};
+    const loadHeld = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_work_journal") {
+        await loadHeld;
+        return { settings: { report_folder: FOLDER } };
+      }
+      if (cmd === "work_journal_generate_report") return { status: "saved", path: SAVED };
+      throw new Error(`unexpected command ${cmd}`);
+    });
+    render(<ReportDialog onClose={vi.fn()} />);
+
+    const button = generateButton();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    releaseLoad();
+
+    expect(await screen.findByText(`Saved to ${SAVED}`)).toBeInTheDocument();
+    expect(commands().filter((cmd) => cmd === "work_journal_generate_report")).toHaveLength(1);
+    expect(commands().filter((cmd) => cmd === "load_work_journal")).toHaveLength(1);
+  });
+
+  it("shows the too-old Claude Code message in plain words", async () => {
+    const tooOld =
+      "Your Claude Code is too old for reports (it does not know --safe-mode). Update Claude Code and try again.";
+    routeInvoke(FOLDER, () => {
+      throw tooOld;
+    });
+    render(<ReportDialog onClose={vi.fn()} />);
+
+    fireEvent.click(generateButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(tooOld);
   });
 });
