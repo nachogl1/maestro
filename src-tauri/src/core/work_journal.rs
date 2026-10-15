@@ -441,10 +441,12 @@ pub fn update_settings(path: &Path, patch: Map<String, Value>) -> WorkJournalRes
 }
 
 /// A folder in the form two folders are compared in: canonicalized when it
-/// exists, `\\?\` stripped, trailing separators dropped, and lowercased on
-/// Windows, where paths ignore case.
+/// exists (else made absolute), `\\?\` stripped, trailing separators dropped,
+/// and lowercased on Windows, where paths ignore case.
 fn comparable_folder(folder: &Path) -> String {
-    let resolved = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+    let resolved = std::fs::canonicalize(folder)
+        .or_else(|_| std::path::absolute(folder))
+        .unwrap_or_else(|_| folder.to_path_buf());
     let text = normalize_extended_path(&resolved.to_string_lossy());
     let text = text.trim_end_matches(['\\', '/']);
     if cfg!(windows) {

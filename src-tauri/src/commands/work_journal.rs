@@ -553,6 +553,12 @@ mod tests {
 
         let failed = backup_if_due_outcome(Err(WorkJournalError::NoBackupFolder));
         assert!(matches!(failed, Err(WorkJournalError::NoBackupFolder)));
+
+        let own_folder = backup_if_due_outcome(Err(WorkJournalError::BackupFolderIsJournalFolder));
+        assert!(matches!(
+            own_folder,
+            Err(WorkJournalError::BackupFolderIsJournalFolder)
+        ));
     }
 
     #[test]
