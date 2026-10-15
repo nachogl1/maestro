@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveDate, SubsecRound, TimeDelta, TimeZone, Utc};
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::Child;
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::core::work_journal::WorkJournal;
@@ -321,13 +322,13 @@ fn parse_line(line: &str, date: &str) -> Option<NewCandidate> {
 }
 
 /// Reads the reply strictly: one candidate per `HH:MM - action | source`
-/// line; other lines are dropped (logged at debug). `NONE` or an empty reply
-/// yields nothing. A line whose text equals (ignoring case and spacing) an
-/// existing candidate's text for `date`, or an earlier line's, is dropped.
+/// line; other lines are dropped (logged at debug). `NONE` yields nothing.
+/// A line whose text equals (ignoring case and spacing) an existing
+/// candidate's text for `date`, or an earlier line's, is dropped.
 ///
-/// A reply with text but not one line in the format and no `NONE` (markdown
-/// bullets, a notice printed instead of an answer) is an error, so the date
-/// is tried again on the next run instead of being marked done.
+/// A reply without one line in the format and without `NONE` (empty,
+/// markdown bullets, a notice printed instead of an answer) is an error, so
+/// the date is tried again on the next run instead of being marked done.
 pub fn parse_reply(
     reply: &str,
     date: &str,
@@ -341,7 +342,6 @@ pub fn parse_reply(
     let mut parsed = Vec::new();
     let mut matched = 0;
     let mut said_none = false;
-    let mut other_text = false;
     for line in reply.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -353,7 +353,6 @@ pub fn parse_reply(
         }
         let Some(candidate) = parse_line(trimmed, date) else {
             log::debug!("Work journal: dropped a candidate reply line that does not match");
-            other_text = true;
             continue;
         };
         matched += 1;
@@ -363,7 +362,7 @@ pub fn parse_reply(
             log::debug!("Work journal: dropped a duplicate candidate for {date}");
         }
     }
-    if matched == 0 && other_text && !said_none {
+    if matched == 0 && !said_none {
         // Only the reply is logged, never the activity sent with it.
         let head: String = reply.trim().chars().take(REPLY_LOG_CHARS).collect();
         log::debug!("Work journal: unusable candidate reply for {date}: {head}");
@@ -436,18 +435,21 @@ async fn run_claude(args: &[String], input: &str) -> Result<String, String> {
     run_process("claude", args, input, RUN_TIMEOUT).await
 }
 
-/// Runs `program` with `input` on stdin and returns its stdout. Sending the
-/// input and waiting for the exit share ONE `timeout`, so a child that never
-/// reads stdin (a pipe holds only a few KB) cannot hold the run (and its
-/// one-run lock) past the limit. The child handle lives only inside the
-/// timed future: on timeout that future is dropped with it, and
-/// `kill_on_drop` kills the child.
+/// Runs `program` with `input` on stdin and returns its stdout, within
+/// `limit` (see [`exchange`]).
 async fn run_process(
     program: &str,
     args: &[String],
     input: &str,
     limit: Duration,
 ) -> Result<String, String> {
+    let mut child = spawn_process(program, args)?;
+    exchange(&mut child, input, limit).await
+}
+
+/// Starts `program` from the temp dir with piped stdio, a hidden console on
+/// Windows, and `kill_on_drop` as a last resort.
+fn spawn_process(program: &str, args: &[String]) -> Result<Child, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(std::env::temp_dir())
@@ -460,40 +462,67 @@ async fn run_process(
         use crate::core::windows_process::TokioCommandExt;
         cmd.hide_console_window();
     }
+    cmd.spawn()
+        .map_err(|e| format!("could not start the claude CLI ({e})"))
+}
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not start the claude CLI ({e})"))?;
+/// Sends `input` to `child`, reads its output and waits for its exit, all
+/// under ONE `timeout`: a child that never reads stdin (a pipe holds only a
+/// few KB) cannot hold the run (and its one-run lock) past `limit`. On
+/// timeout the child is killed here and reaped before returning.
+async fn exchange(child: &mut Child, input: &str, limit: Duration) -> Result<String, String> {
     let stdin = child.stdin.take();
-    // Write and wait side by side, so a child that fills stdout before it
-    // reads stdin cannot deadlock either. `stdin` is dropped after the write,
-    // which closes it and lets the child see the end of the input.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    // Write, read and wait side by side, so a child that fills stdout before
+    // it reads stdin cannot deadlock either. `stdin` is dropped after the
+    // write, which closes it and lets the child see the end of the input.
     let send = async move {
         if let Some(mut stdin) = stdin {
             stdin.write_all(input.as_bytes()).await?;
         }
         Ok::<(), std::io::Error>(())
     };
-    let exchange = async move { tokio::join!(send, child.wait_with_output()) };
-    let (sent, output) = tokio::time::timeout(limit, exchange)
-        .await
-        .map_err(|_| format!("claude did not answer within {}s", limit.as_secs()))?;
-    let output = output.map_err(|e| format!("claude run failed ({e})"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    let read_out = read_all(stdout);
+    let read_err = read_all(stderr);
+    let timed = tokio::time::timeout(limit, async {
+        tokio::join!(send, read_out, read_err, child.wait())
+    })
+    .await;
+    let Ok((sent, stdout, stderr, status)) = timed else {
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(KILL_WAIT, child.wait()).await;
+        return Err(format!("claude did not answer within {}s", limit.as_secs()));
+    };
+    let status = status.map_err(|e| format!("claude run failed ({e})"))?;
+    let stdout = stdout.map_err(|e| format!("claude run failed ({e})"))?;
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(stderr.as_deref().unwrap_or_default());
+        let stdout = String::from_utf8_lossy(&stdout);
         let detail = if stderr.trim().is_empty() {
             stdout
         } else {
             stderr
         };
         let detail: String = one_line(&detail).chars().take(300).collect();
-        return Err(format!("claude exited with {}: {detail}", output.status));
+        return Err(format!("claude exited with {status}: {detail}"));
     }
     // Checked after the exit status, which says more when the child quit
     // early; a reply to half the input is never used.
     sent.map_err(|e| format!("could not send the activity to claude ({e})"))?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// How long a killed child is waited for before giving up on reaping it.
+const KILL_WAIT: Duration = Duration::from_secs(5);
+
+/// Reads a pipe to its end (nothing when the pipe is absent).
+async fn read_all(pipe: Option<impl AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut buf).await?;
+    }
+    Ok(buf)
 }
 
 /// One run over the window from `journal`'s settings at `now`, across
@@ -901,12 +930,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_reply_none_or_empty_yields_nothing() {
+    fn test_parse_reply_none_yields_nothing() {
         assert!(parse_reply("NONE", "2026-10-15", &[]).unwrap().is_empty());
         assert!(parse_reply("  none \n", "2026-10-15", &[])
             .unwrap()
             .is_empty());
-        assert!(parse_reply("", "2026-10-15", &[]).unwrap().is_empty());
         assert!(parse_reply("Nothing new.\nNONE", "2026-10-15", &[])
             .unwrap()
             .is_empty());
@@ -916,6 +944,8 @@ mod tests {
     fn test_parse_reply_without_one_matching_line_is_an_error() {
         let bullets = "- 09:05 - Fixed the login bug | git\n- 10:00 - Ran tests | terminal";
         assert!(parse_reply(bullets, "2026-10-15", &[]).is_err());
+        assert!(parse_reply("", "2026-10-15", &[]).is_err());
+        assert!(parse_reply("  \n\t\n", "2026-10-15", &[]).is_err());
         let notice = "Your session has expired. Please run /login.";
         assert!(parse_reply(notice, "2026-10-15", &[])
             .unwrap_err()
@@ -1218,10 +1248,16 @@ mod tests {
         // Far more than a pipe holds, so the write itself would block.
         let input = "x".repeat(4 * 1024 * 1024);
         let started = std::time::Instant::now();
-        let result = run_process(program, &args, &input, Duration::from_secs(1)).await;
+        let mut child = spawn_process(program, &args).unwrap();
+        let result = exchange(&mut child, &input, Duration::from_secs(1)).await;
         let err = result.unwrap_err();
         assert!(err.contains("did not answer within 1s"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(15));
+        // The child was killed and reaped, not left running.
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "the child is still running after the timeout"
+        );
     }
 
     #[tokio::test]

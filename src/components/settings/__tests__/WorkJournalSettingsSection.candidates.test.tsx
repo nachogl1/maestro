@@ -20,10 +20,15 @@ function journal(settings: WorkJournalCandidateRunSettings) {
   return { layout_version: 1, pages: {}, deleted_dates: [], settings };
 }
 
-/** Routes `invoke` by command name; each handler returns the reply or throws. */
+/**
+ * Routes `invoke` by command name; each handler returns the reply or throws.
+ * The restore-state read the section makes on mount answers "nothing to undo".
+ */
 function routeInvoke(handlers: Record<string, (args?: unknown) => unknown>): void {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
-    const handler = handlers[cmd];
+    const handler =
+      handlers[cmd] ??
+      (cmd === "work_journal_restore_state" ? () => ({ canUndo: false }) : undefined);
     if (!handler) throw new Error(`unexpected command ${cmd}`);
     return handler(args);
   });
@@ -237,6 +242,45 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
       expect(input).toHaveValue(1);
     }
     expect(settingsPatches()).toEqual([]);
+  });
+
+  it("takes the run settings from a restored journal", async () => {
+    routeInvoke({
+      restore_work_journal: () => ({
+        journal: journal({ run_every_hours: 4, model: "haiku" }),
+        canUndo: true,
+        autoBackup: "no_folder",
+      }),
+    });
+    useWorkJournalCandidateRunStore.setState({
+      runEveryHours: 1,
+      model: "",
+      lastRunAt: "2026-10-15T08:00:00Z",
+    });
+
+    await useWorkJournalBackupStore.getState().restore();
+
+    const state = useWorkJournalCandidateRunStore.getState();
+    expect(state.runEveryHours).toBe(4);
+    expect(state.model).toBe("haiku");
+    expect(state.lastRunAt).toBeNull();
+  });
+
+  it("clears an earlier notice when a run then fails", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({}),
+      work_journal_run_candidates: () => {
+        throw new Error("journal locked");
+      },
+    });
+    useWorkJournalCandidateRunStore.setState({ runNotice: RUN_BUSY_NOTICE });
+    render(<WorkJournalSettingsSection />);
+    expect(screen.getByText(RUN_BUSY_NOTICE)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("journal locked");
+    expect(screen.queryByText(RUN_BUSY_NOTICE)).toBeNull();
   });
 
   it("retries reading the run settings on open after the start-up read failed", async () => {

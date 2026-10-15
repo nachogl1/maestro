@@ -53,6 +53,8 @@ interface WorkJournalCandidateRunState {
   setProjects: (projects: string[]) => void;
   /** Reads the run settings from the journal file. */
   load: () => Promise<void>;
+  /** Takes the run settings from a journal the backend just returned (restore, undo). */
+  applySettings: (journal: WorkJournalCandidateRunFile) => void;
   /** One candidate run over `projects` (their paths); skipped while one is running. */
   runNow: (projects: string[]) => Promise<void>;
   /** Saves "run every X hours"; values outside 1–24 are clamped, non-numbers ignored. */
@@ -107,6 +109,9 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
 
   setProjects: (projects: string[]) => set({ projects }),
 
+  applySettings: (journal: WorkJournalCandidateRunFile) =>
+    set({ ...fromJournal(journal), settingsError: null }),
+
   load: async () => {
     try {
       const journal = await invoke<WorkJournalCandidateRunFile>("load_work_journal");
@@ -135,7 +140,7 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
       }
     } catch (error) {
       console.error("Work Journal candidate run failed:", error);
-      set({ runError: `Candidate run failed: ${errorMessage(error)}` });
+      set({ runError: `Candidate run failed: ${errorMessage(error)}`, runNotice: null });
     } finally {
       set({ running: false });
     }

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
+import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { useWorkJournalStore, type WorkJournalFile } from "@/stores/useWorkJournalStore";
 
 /** The Work Journal settings keys the backup uses; other keys stay opaque here. */
@@ -271,6 +272,9 @@ async function replaceWholeJournal(
     await useWorkJournalStore.getState().beginReplace();
     const reply = await run();
     useWorkJournalStore.getState().replaceJournal(reply.journal);
+    // The candidate run's interval, model and (cleared) last run time come
+    // from the restored settings too.
+    useWorkJournalCandidateRunStore.getState().applySettings(reply.journal);
     set({
       ...fromJournal(reply.journal),
       ...WARNINGS_RESET,

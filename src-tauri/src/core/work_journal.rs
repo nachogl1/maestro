@@ -593,9 +593,12 @@ fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, Option<String>)> 
 /// safety copy: the backup folder stays the local one (the file holds the
 /// settings of whoever wrote it), and the last backup time is cleared, so
 /// the automatic backup leaves the backup folder alone until "Back up now".
+/// The last candidate run time is per-machine state too and is cleared, so
+/// an old value from the file never replays days of suggestions.
 fn keep_local_backup_settings(journal: &mut WorkJournal, local_backup_folder: Option<String>) {
     journal.settings.backup_folder = local_backup_folder;
     journal.settings.last_backup_at = None;
+    journal.settings.last_run_at = None;
 }
 
 /// "Restore from backup": replaces the whole journal at `path` with the
@@ -1900,6 +1903,11 @@ mod tests {
         let path = journal_path(&dir.path().join("app"));
         let folder = dir.path().join("OneDrive");
         let backup = other_machine_backup(&folder);
+        // The backup also carries the other machine's last candidate run.
+        let mut with_run: Value = serde_json::from_str(&backup).unwrap();
+        with_run["settings"]["last_run_at"] = json!("2026-09-01T09:00:00Z");
+        let backup = with_run.to_string();
+        std::fs::write(backup_path(&folder), &backup).unwrap();
         let old_bytes = local_journal(&path, &folder);
 
         let saved = restore_from(&path, &backup_path(&folder)).unwrap();
@@ -1907,7 +1915,9 @@ mod tests {
         let mut expected = parse_journal(&backup).unwrap();
         expected.settings.backup_folder = Some(folder.to_string_lossy().into_owned());
         expected.settings.last_backup_at = None;
+        expected.settings.last_run_at = None;
         assert_eq!(saved, expected);
+        assert!(saved.settings.last_run_at.is_none());
         assert_eq!(
             load(&path).unwrap(),
             expected,
@@ -1941,7 +1951,13 @@ mod tests {
         let path = journal_path(&dir.path().join("app"));
         let folder = dir.path().join("OneDrive");
         other_machine_backup(&folder);
-        let old_bytes = local_journal(&path, &folder);
+        local_journal(&path, &folder);
+        modify(&path, |j| {
+            j.settings.last_run_at = Some("2026-10-15T10:00:00Z".into());
+            Ok(())
+        })
+        .unwrap();
+        let old_bytes = std::fs::read(&path).unwrap();
         let old = parse_journal(std::str::from_utf8(&old_bytes).unwrap()).unwrap();
         restore_from(&path, &backup_path(&folder)).unwrap();
 
@@ -1949,7 +1965,9 @@ mod tests {
 
         let mut expected = old;
         expected.settings.last_backup_at = None;
+        expected.settings.last_run_at = None;
         assert_eq!(saved, expected);
+        assert!(saved.settings.last_run_at.is_none());
         assert_eq!(load(&path).unwrap(), expected);
         assert!(saved.pages.contains_key("2026-10-15"));
         assert!(!safety_copy_path(&path).exists(), "undo works once");
