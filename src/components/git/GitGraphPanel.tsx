@@ -290,7 +290,7 @@ export function GitGraphPanel({
         {/* PR Detail panel - full width when shown */}
         {showPRDetail ? (
           <div className="flex min-w-[320px] flex-1 flex-col">
-            <PullRequestDetailPanel repoPath={repoPath} onClose={handleClosePRDetail} />
+            <PullRequestDetailPanel onClose={handleClosePRDetail} />
           </div>
         ) : showIssueDetail ? (
           <div className="flex min-w-[320px] flex-1 flex-col">

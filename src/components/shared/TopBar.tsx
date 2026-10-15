@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Bird,
+  BookOpenCheck,
   BrainCircuit,
   GitMerge,
   Group,
@@ -63,6 +64,9 @@ interface TopBarProps {
   /** Right-side Samurai run launcher panel (issue #63) */
   launchPanelOpen?: boolean;
   onToggleLaunchPanel?: () => void;
+  /** Right-side Work Journal panel: one page per day (issue #309) */
+  workJournalPanelOpen?: boolean;
+  onToggleWorkJournalPanel?: () => void;
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
@@ -90,6 +94,8 @@ export function TopBar({
   onToggleSecondBrainPanel,
   launchPanelOpen = false,
   onToggleLaunchPanel,
+  workJournalPanelOpen = false,
+  onToggleWorkJournalPanel,
   onWatchdogNavigate,
   onParkNavigate,
 }: TopBarProps) {
@@ -307,6 +313,21 @@ export function TopBar({
             title="Samurai launch — start and clean up autonomous epic runs"
           >
             <Rocket size={14} />
+          </button>
+        )}
+        {onToggleWorkJournalPanel && (
+          <button
+            type="button"
+            onClick={onToggleWorkJournalPanel}
+            className={`rounded p-1.5 transition-colors ${
+              workJournalPanelOpen
+                ? "text-maestro-accent hover:bg-maestro-accent/10"
+                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+            }`}
+            aria-label="Work Journal"
+            title="Work Journal — one page per day"
+          >
+            <BookOpenCheck size={14} />
           </button>
         )}
         {/* Git panel — in eagle view it becomes a per-project carousel

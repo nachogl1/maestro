@@ -143,8 +143,6 @@ export interface DiscussionDetail extends DiscussionInfo {
 }
 
 /** Merge method for pull requests. */
-export type MergeMethod = "merge" | "squash" | "rebase";
-
 /** Filter state for PRs. */
 export type PrFilterState = "open" | "closed" | "merged" | "all";
 
@@ -209,14 +207,6 @@ interface GitHubState {
     head: string,
     draft: boolean,
   ) => Promise<PullRequestInfo>;
-  mergePullRequest: (
-    repoPath: string,
-    number: number,
-    method: MergeMethod,
-    deleteBranch: boolean,
-  ) => Promise<void>;
-  closePullRequest: (repoPath: string, number: number) => Promise<void>;
-  commentPullRequest: (repoPath: string, number: number, body: string) => Promise<void>;
   fetchIssues: (repoPath: string, state?: IssueFilterState, search?: string) => Promise<void>;
   fetchDiscussions: (repoPath: string) => Promise<void>;
   fetchIssueDetail: (repoPath: string, number: number) => Promise<void>;
@@ -365,36 +355,6 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
     // Refresh PR list after creation
     await get().fetchPullRequests(repoPath);
     return pr;
-  },
-
-  mergePullRequest: async (
-    repoPath: string,
-    number: number,
-    method: MergeMethod,
-    deleteBranch: boolean,
-  ) => {
-    await invoke("github_merge_pr", {
-      repoPath,
-      number,
-      method,
-      deleteBranch,
-    });
-    // Refresh PR list after merge
-    await get().fetchPullRequests(repoPath);
-    set({ selectedPR: null });
-  },
-
-  closePullRequest: async (repoPath: string, number: number) => {
-    await invoke("github_close_pr", { repoPath, number });
-    // Refresh PR list after close
-    await get().fetchPullRequests(repoPath);
-    set({ selectedPR: null });
-  },
-
-  commentPullRequest: async (repoPath: string, number: number, body: string) => {
-    await invoke("github_comment_pr", { repoPath, number, body });
-    // Refresh PR detail to show the new comment
-    await get().fetchPullRequestDetail(repoPath, number);
   },
 
   fetchIssues: async (repoPath: string, state?: IssueFilterState, search?: string) => {
