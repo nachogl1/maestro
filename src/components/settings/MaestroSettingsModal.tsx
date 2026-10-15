@@ -141,6 +141,12 @@ const CLI_CANCEL_SENTINEL = "CANCELLED_BY_USER";
 
 type CliStatus = { kind: "ok" | "error"; message: string };
 
+/** How long `focusSection` keeps re-scrolling while late-loading rows settle. */
+const FOCUS_SETTLE_MS = 1500;
+
+/** Input that means the user is scrolling themselves, which ends the re-scrolling. */
+const USER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+
 const INTERVAL_OPTIONS = [
   { label: "30 minutes", value: 30 },
   { label: "1 hour", value: 60 },
@@ -152,6 +158,7 @@ const INTERVAL_OPTIONS = [
 export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   const workJournalRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [endpointInput, setEndpointInput] = useState("");
@@ -216,9 +223,26 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
   useDismissable(onClose, { ref: modalRef });
 
   useEffect(() => {
-    if (focusSection === "work-journal") {
-      workJournalRef.current?.scrollIntoView?.({ block: "start" });
+    if (focusSection !== "work-journal") return;
+    const scrollToSection = () => workJournalRef.current?.scrollIntoView?.({ block: "start" });
+    scrollToSection();
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    // Rows above the section (version, update and Samurai settings) arrive
+    // after mount and push it down: keep it pinned while the layout settles,
+    // unless the user scrolls on their own first.
+    const observer = new ResizeObserver(scrollToSection);
+    for (const child of Array.from(content.children)) observer.observe(child);
+    const stop = () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+      for (const type of USER_SCROLL_EVENTS) content.removeEventListener(type, stop);
+    };
+    const timer = window.setTimeout(stop, FOCUS_SETTLE_MS);
+    for (const type of USER_SCROLL_EVENTS) {
+      content.addEventListener(type, stop, { passive: true });
     }
+    return stop;
   }, [focusSection]);
 
   const handleCheckNow = useCallback(() => {
@@ -251,7 +275,7 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
         </div>
 
         {/* Content */}
-        <div className="max-h-[calc(100vh-6rem)] space-y-4 overflow-y-auto p-4">
+        <div ref={contentRef} className="max-h-[calc(100vh-6rem)] space-y-4 overflow-y-auto p-4">
           {/* Version */}
           <div>
             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
