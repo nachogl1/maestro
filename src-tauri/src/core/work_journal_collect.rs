@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::path::Path;
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 
@@ -481,12 +482,19 @@ fn scope_for(project: &str, list: &[WorktreeInfo]) -> ProjectScope {
     if let (Some((owner, rest)), Some(main)) = (owner, main) {
         if !owner.is_main_worktree {
             if is_checkout(main) {
-                path = if rest.is_empty() {
+                let same_place = if rest.is_empty() {
                     main.path.clone()
                 } else {
                     format!("{}/{rest}", main.path)
                 };
-                name = project_name_from_path(&path);
+                name = project_name_from_path(&same_place);
+                // A subfolder only on the worktree's branch is missing in the
+                // main checkout: git and `gh` run from its root instead.
+                path = if rest.is_empty() || Path::new(&same_place).is_dir() {
+                    same_place
+                } else {
+                    main.path.clone()
+                };
             } else if main.is_bare {
                 path = main.path.clone();
                 let folder = project_name_from_path(&path);
@@ -536,20 +544,28 @@ async fn project_scopes<S: ActivitySources>(sources: &S, projects: &[String]) ->
 /// Adds the folders of the window's terminals as conversation roots, missing
 /// ones included (the History listing does not need the folder to exist), so
 /// a worktree removed before the run still yields its conversations. A
-/// folder goes to the project that contains it, else to the project of the
-/// same name, else it is listed on its own under the terminal's project name.
+/// folder goes to the project whose own path contains it (the deepest one),
+/// else to the first project with an extra root containing it, else to the
+/// project of the same name, else it is listed on its own under the
+/// terminal's project name.
 fn add_terminal_folders(scopes: &mut Vec<ProjectScope>, records: &[TerminalRecord]) {
     for record in records {
         let Some(folder) = record.repo_path.as_deref().filter(|p| !p.trim().is_empty()) else {
             continue;
         };
-        let inside = |s: &ProjectScope| {
-            std::iter::once(&s.path)
-                .chain(&s.roots)
-                .any(|root| relative_to(folder, root).is_some())
+        let own = scopes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| relative_to(folder, &s.path).is_some())
+            .max_by_key(|(_, s)| path_key(&s.path).len())
+            .map(|(i, _)| i);
+        let by_root = || {
+            scopes
+                .iter()
+                .position(|s| s.roots.iter().any(|r| relative_to(folder, r).is_some()))
         };
-        if let Some(scope) = scopes.iter_mut().find(|s| inside(s)) {
-            push_root(&mut scope.roots, folder);
+        if let Some(i) = own.or_else(by_root) {
+            push_root(&mut scopes[i].roots, folder);
         } else if let Some(scope) = scopes
             .iter_mut()
             .find(|s| !s.conversations_only && s.name == record.project_name)
@@ -1681,17 +1697,57 @@ mod tests {
 
     #[test]
     fn a_subfolder_of_a_linked_worktree_moves_to_the_same_place_in_the_main_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = path_key(&dir.path().join("mono").to_string_lossy());
+        std::fs::create_dir_all(format!("{main}/app")).unwrap();
         let list = vec![
-            worktree("C:/git/mono", true, false),
+            worktree(&main, true, false),
             worktree(WORKTREE, false, false),
         ];
         let inside = format!("{WORKTREE}/app");
         let scope = scope_for(&inside, &list);
-        assert_eq!(scope.path, "C:/git/mono/app");
+        assert_eq!(scope.path, format!("{main}/app"));
         assert_eq!(scope.name, "app");
         assert_eq!(
             roots(&scope),
-            vec![inside.as_str(), "C:/git/mono", WORKTREE]
+            vec![inside.as_str(), main.as_str(), WORKTREE]
+        );
+    }
+
+    #[test]
+    fn a_worktree_only_subfolder_runs_git_from_the_main_root_but_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = path_key(&dir.path().join("mono").to_string_lossy());
+        std::fs::create_dir_all(&main).unwrap();
+        let list = vec![
+            worktree(&main, true, false),
+            worktree(WORKTREE, false, false),
+        ];
+        let scope = scope_for(&format!("{WORKTREE}/new-app"), &list);
+        assert_eq!(scope.path, main, "new-app is not in the main checkout");
+        assert_eq!(scope.name, "new-app");
+    }
+
+    #[tokio::test]
+    async fn a_terminal_folder_goes_to_the_project_whose_own_path_holds_it() {
+        let list = Ok(vec![worktree("C:/git/mono", true, false)]);
+        let mut fake = Fake::default();
+        fake.worktrees
+            .insert("C:/git/mono/app".into(), list.clone());
+        fake.worktrees.insert("C:/git/mono/web".into(), list);
+        let projects = vec!["C:/git/mono/app".to_string(), "C:/git/mono/web".to_string()];
+        let mut scopes = project_scopes(&fake, &projects).await;
+        let record = TerminalRecord {
+            project_name: "mono".to_string(),
+            repo_path: Some("C:/git/mono/web/src".to_string()),
+            ..terminal("t", 0, None)
+        };
+        add_terminal_folders(&mut scopes, &[record]);
+        assert_eq!(roots(&scopes[0]), vec!["C:/git/mono/app", "C:/git/mono"]);
+        assert_eq!(
+            roots(&scopes[1]),
+            vec!["C:/git/mono/web", "C:/git/mono", "C:/git/mono/web/src"],
+            "web's terminal is web's, not app's (app's roots hold C:/git/mono too)"
         );
     }
 
