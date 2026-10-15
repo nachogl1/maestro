@@ -49,6 +49,12 @@ fn log_level_from_env() -> log::LevelFilter {
 /// command handlers for the terminal, git, and session subsystems.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Windows: an MSI-updater relaunch hands the app a PATH without the
+    // user's entries, so `claude` is "not found" for every child process.
+    // Repair it before anything is spawned (see core::cli_path).
+    #[cfg(windows)]
+    core::cli_path::adopt_user_path();
+
     // `mut` is required on macOS (see the macos-permissions plugin block
     // below); on other platforms the cfg block is removed and `mut` becomes
     // unused, so we silence that warning explicitly.
