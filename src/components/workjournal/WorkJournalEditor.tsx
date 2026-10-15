@@ -183,6 +183,13 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   // A restore sends unsaved text through this before it replaces the journal.
   useEffect(() => registerWorkJournalEditorFlush(() => flushRef.current()), []);
 
+  // Read-only while a restore or undo replaces the journal. No update event:
+  // the text did not change, so nothing must be saved.
+  const replacing = useWorkJournalStore((s) => s.replacing);
+  useEffect(() => {
+    if (editor && editor.isEditable === replacing) editor.setEditable(!replacing, false);
+  }, [editor, replacing]);
+
   // Best effort when the window closes: send the save right away. The OS may
   // still end the process before the backend writes it.
   useEffect(() => {

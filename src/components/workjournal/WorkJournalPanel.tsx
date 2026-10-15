@@ -44,6 +44,7 @@ export function WorkJournalPanel() {
   const loading = useWorkJournalStore((s) => s.loading);
   const error = useWorkJournalStore((s) => s.error);
   const revision = useWorkJournalStore((s) => s.revision);
+  const replacing = useWorkJournalStore((s) => s.replacing);
   const ensurePages = useWorkJournalStore((s) => s.ensurePages);
   const selectDate = useWorkJournalStore((s) => s.selectDate);
   const goPrev = useWorkJournalStore((s) => s.goPrev);
@@ -219,7 +220,7 @@ export function WorkJournalPanel() {
           onChange={(e) => setTitleDraft(e.target.value)}
           onBlur={commitTitle}
           onKeyDown={handleTitleKey}
-          disabled={!page}
+          disabled={!page || replacing}
           aria-label="Page title"
           placeholder={viewedDate ? defaultWorkJournalTitle(viewedDate) : ""}
           className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-sm font-medium text-maestro-text outline-none hover:border-maestro-border focus:border-maestro-accent disabled:hover:border-transparent"

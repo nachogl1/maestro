@@ -5,8 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AUTO_BACKUP_SKIPPED_TITLE,
   AUTO_BACKUP_WARNING_TITLE,
-  RESTORE_NOTICE,
-  UNDO_RESTORE_NOTICE,
+  type AutoBackupAfterRestore,
+  RESTORE_NOTICES,
+  UNDO_RESTORE_NOTICES,
   useWorkJournalBackupStore,
   type WorkJournalBackupFile,
   type WorkJournalBackupSettings,
@@ -27,7 +28,9 @@ function journal(settings: WorkJournalBackupSettings): WorkJournalBackupFile {
 /** Routes `invoke` by command name; each handler returns the reply or throws. */
 function routeInvoke(handlers: Record<string, (args?: unknown) => unknown>): void {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
-    const handler = handlers[cmd];
+    const handler =
+      handlers[cmd] ??
+      (cmd === "work_journal_restore_state" ? () => ({ canUndo: false }) : undefined);
     if (!handler) throw new Error(`unexpected command ${cmd}`);
     return handler(args);
   });
@@ -328,6 +331,7 @@ describe("WorkJournalSettingsSection restore", () => {
         last_auto_created_date: null,
       },
       canUndo,
+      autoBackup: "paused",
     };
   }
 
@@ -409,8 +413,8 @@ describe("WorkJournalSettingsSection restore", () => {
     await screen.findByText("D:\\OneDrive");
     fireEvent.click(screen.getByRole("button", { name: /Restore from backup/ }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent(RESTORE_NOTICE);
-    expect(RESTORE_NOTICE).toBe(
+    expect(await screen.findByRole("status")).toHaveTextContent(RESTORE_NOTICES.paused);
+    expect(RESTORE_NOTICES.paused).toBe(
       "Restored. Automatic backups stay paused until you press Back up now.",
     );
     expect(invokeMock).toHaveBeenCalledWith("restore_work_journal", { file: null });
@@ -435,7 +439,7 @@ describe("WorkJournalSettingsSection restore", () => {
     await screen.findByText(/No backup folder chosen/);
     fireEvent.click(screen.getByRole("button", { name: /Browse/ }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent(RESTORE_NOTICE);
+    expect(await screen.findByRole("status")).toHaveTextContent(RESTORE_NOTICES.paused);
     expect(openMock).toHaveBeenCalledWith(
       expect.objectContaining({
         multiple: false,
@@ -506,8 +510,8 @@ describe("WorkJournalSettingsSection restore", () => {
     await waitFor(() => expect(undo).toBeEnabled());
     fireEvent.click(undo);
 
-    expect(await screen.findByRole("status")).toHaveTextContent(UNDO_RESTORE_NOTICE);
-    expect(UNDO_RESTORE_NOTICE).toContain(
+    expect(await screen.findByRole("status")).toHaveTextContent(UNDO_RESTORE_NOTICES.paused);
+    expect(UNDO_RESTORE_NOTICES.paused).toContain(
       "Automatic backups stay paused until you press Back up now.",
     );
     expect(askMock).toHaveBeenCalledWith(
@@ -554,5 +558,145 @@ describe("WorkJournalSettingsSection restore", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
 
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+});
+
+describe("WorkJournalSettingsSection restore notices and the backup pause", () => {
+  const askMock = vi.mocked(ask);
+  const PAGE_STORE_INITIAL = useWorkJournalStore.getState();
+  const skipped =
+    "Automatic backup skipped: this folder already holds a backup that this Maestro has " +
+    "never written. Press Back up now to replace it, or choose another folder.";
+
+  function restoreReply(autoBackup: AutoBackupAfterRestore, folder?: string) {
+    return {
+      journal: {
+        ...journal(folder ? { backup_folder: folder } : {}),
+        last_auto_created_date: null,
+      },
+      canUndo: true,
+      autoBackup,
+    };
+  }
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openMock.mockReset();
+    messageMock.mockReset();
+    askMock.mockReset();
+    askMock.mockResolvedValue(true);
+    useWorkJournalBackupStore.setState(INITIAL_STATE, true);
+    useWorkJournalStore.setState(PAGE_STORE_INITIAL, true);
+  });
+
+  it.each([
+    [
+      "paused",
+      "D:\\OneDrive",
+      "Restored. Automatic backups stay paused until you press Back up now.",
+    ],
+    ["runs", "D:\\OneDrive", "Restored."],
+    ["no_folder", undefined, "Restored. Choose a backup folder to turn on automatic backups."],
+  ] as const)("words the restore notice for %s", async (autoBackup, folder, text) => {
+    routeInvoke({
+      load_work_journal: () => journal({}),
+      restore_work_journal: () => restoreReply(autoBackup, folder),
+    });
+    openMock.mockResolvedValue("C:\\backup.json");
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText(/No backup folder chosen/);
+    fireEvent.click(screen.getByRole("button", { name: /Browse/ }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(text);
+    expect(screen.getByRole("status").textContent).toBe(text);
+    expect(RESTORE_NOTICES[autoBackup]).toBe(text);
+  });
+
+  it("words the undo notice by what the automatic backup does next", () => {
+    expect(UNDO_RESTORE_NOTICES.paused).toBe(
+      "Restore undone: your journal from before the restore is back. Automatic backups stay " +
+        "paused until you press Back up now.",
+    );
+    expect(UNDO_RESTORE_NOTICES.runs).toBe(
+      "Restore undone: your journal from before the restore is back.",
+    );
+    expect(UNDO_RESTORE_NOTICES.no_folder).toBe(
+      "Restore undone: your journal from before the restore is back. Choose a backup folder " +
+        "to turn on automatic backups.",
+    );
+  });
+
+  it("hides the backup-skipped warning and red line after a restore until Back up now", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      restore_work_journal: () => restoreReply("paused", "D:\\OneDrive"),
+      work_journal_backup_if_due: () => ({ status: "skipped", message: skipped }),
+      work_journal_backup_now: () =>
+        journal({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T12:00:00Z" }),
+    });
+    const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    fireEvent.click(screen.getByRole("button", { name: /Restore from backup/ }));
+    await screen.findByRole("status");
+
+    await act(() => backUpIfDue());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(messageMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(RESTORE_NOTICES.paused);
+
+    // "Back up now" ends the pause; a later skip warns again.
+    fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    await act(() => backUpIfDue());
+    expect(await screen.findByRole("alert")).toHaveTextContent(skipped);
+    expect(messageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("brings the backup-skipped warning back after a folder change", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      restore_work_journal: () => restoreReply("paused", "D:\\OneDrive"),
+      update_work_journal_settings: () => journal({ backup_folder: "E:\\Shared" }),
+      work_journal_backup_if_due: () => ({ status: "skipped", message: skipped }),
+    });
+    openMock.mockResolvedValue("E:\\Shared");
+    const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    fireEvent.click(screen.getByRole("button", { name: /Restore from backup/ }));
+    await screen.findByRole("status");
+    await act(() => backUpIfDue());
+    expect(messageMock).not.toHaveBeenCalled();
+
+    // The folder change runs its own automatic backup, which the guard skips.
+    fireEvent.click(screen.getByRole("button", { name: /Choose folder/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(skipped);
+    await waitFor(() => expect(messageMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("reads Undo again after a failed restore", async () => {
+    let canUndo = false;
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      work_journal_restore_state: () => ({ canUndo }),
+      restore_work_journal: () => {
+        // Failed at the last step: the safety copy was already written.
+        canUndo = true;
+        throw "Failed to write the work journal";
+      },
+    });
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    expect(screen.getByRole("button", { name: /Undo restore/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Restore from backup/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Restore failed:");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Undo restore/ })).toBeEnabled());
+    expect(useWorkJournalStore.getState().replacing).toBe(false);
   });
 });

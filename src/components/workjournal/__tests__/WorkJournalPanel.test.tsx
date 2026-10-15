@@ -412,11 +412,18 @@ describe("WorkJournalPanel restore", () => {
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
       if (cmd === "restore_work_journal") {
         file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: RESTORED_BODY };
-        return { journal: snapshot(), canUndo: true };
+        return { journal: snapshot(), canUndo: true, autoBackup: "paused" };
       }
+      if (cmd === "work_journal_restore_state") return { canUndo: false };
       return backend?.(cmd, args);
     });
-    useWorkJournalStore.setState({ pages: {}, viewedDate: null, loading: false, error: null });
+    useWorkJournalStore.setState({
+      pages: {},
+      viewedDate: null,
+      loading: false,
+      error: null,
+      replacing: false,
+    });
   });
 
   afterEach(() => {
@@ -451,17 +458,56 @@ describe("WorkJournalPanel restore", () => {
     expect(file.pages["2026-10-14"].body).toEqual(RESTORED_BODY);
   });
 
-  it("never saves text typed while the restore was running over the restored page", async () => {
+  /**
+   * Makes `restore_work_journal` stay pending until `settle` is called, like
+   * a slow OneDrive or network backup. `settle(true)` applies the restore,
+   * `settle(false)` fails it.
+   */
+  function slowRestore(): { settle: (ok: boolean) => void } {
+    const withRestore = invokeMock.getMockImplementation();
+    let settle: (ok: boolean) => void = () => {};
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd !== "restore_work_journal") return withRestore?.(cmd, args) as Promise<unknown>;
+      return new Promise((resolve, reject) => {
+        settle = (ok) => {
+          if (!ok) return reject("Failed to write the work journal");
+          resolve(withRestore?.(cmd, args));
+        };
+      });
+    });
+    return { settle: (ok) => settle(ok) };
+  }
+
+  it("saves nothing typed while a slow restore runs, then shows the restored body", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
-    const withRestore = invokeMock.getMockImplementation();
-    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
-      // Typing lands after the flush, while the backend is restoring.
-      if (cmd === "restore_work_journal") pageEditor().commands.insertContent("Too late");
-      return withRestore?.(cmd, args);
-    });
+    const slow = slowRestore();
 
-    await act(() => useWorkJournalBackupStore.getState().restore());
+    let restoring: Promise<void> = Promise.resolve();
+    await act(async () => {
+      restoring = useWorkJournalBackupStore.getState().restore();
+    });
+    expect(useWorkJournalStore.getState().replacing).toBe(true);
+    expect(pageEditor().isEditable).toBe(false);
+    expect(screen.getByLabelText("Page title")).toBeDisabled();
+
+    // Text reaching the editor anyway (a command, not the keyboard), with the
+    // debounce firing while the restore is still pending.
+    act(() => {
+      pageEditor().commands.insertContent("Too late");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
+    });
+    await act(async () => {
+      await useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Too late" });
+    });
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+
+    await act(async () => {
+      slow.settle(true);
+      await restoring;
+    });
     expect(await screen.findByText("Restored text")).toBeInTheDocument();
     await act(async () => {
       vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
@@ -469,6 +515,35 @@ describe("WorkJournalPanel restore", () => {
 
     expect(callsTo("update_work_journal_page")).toEqual([]);
     expect(file.pages["2026-10-14"].body).toEqual(RESTORED_BODY);
+    expect(file.pages["2026-10-14"].title).toBe("Wed 14 Oct 2026");
+    expect(pageEditor().isEditable).toBe(true);
+  });
+
+  it("lets editing and saving resume after a slow restore fails", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const slow = slowRestore();
+
+    let restoring: Promise<void> = Promise.resolve();
+    await act(async () => {
+      restoring = useWorkJournalBackupStore.getState().restore();
+    });
+    expect(pageEditor().isEditable).toBe(false);
+    await act(async () => {
+      slow.settle(false);
+      await restoring;
+    });
+
+    expect(useWorkJournalStore.getState().replacing).toBe(false);
+    expect(pageEditor().isEditable).toBe(true);
+    act(() => {
+      pageEditor().commands.insertContent("Kept typing");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Kept typing");
   });
 
   it("saves typing made after a restore in the remounted editor", async () => {

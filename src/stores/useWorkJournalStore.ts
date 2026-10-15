@@ -44,6 +44,12 @@ interface WorkJournalState {
    * and an editor from an older revision never saves.
    */
   revision: number;
+  /**
+   * True while a restore or undo is replacing the journal: page saves are
+   * dropped and editors are read-only, so nothing typed meanwhile can land
+   * over the new journal.
+   */
+  replacing: boolean;
   /** Reads the journal file. */
   load: () => Promise<void>;
   /** Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). */
@@ -62,7 +68,14 @@ interface WorkJournalState {
   clearError: () => void;
   /** Sends every open editor's unsaved text and waits until all queued saves land. */
   flushPendingSaves: () => Promise<void>;
-  /** Shows a journal that replaced the whole file (restore or undo); bumps `revision`. */
+  /** Starts a restore or undo: sets `replacing` (call after `flushPendingSaves`). */
+  beginReplace: () => void;
+  /** Ends a restore or undo that failed: clears `replacing`; the journal is unchanged. */
+  endReplace: () => void;
+  /**
+   * Shows a journal that replaced the whole file (restore or undo); bumps
+   * `revision` and clears `replacing`.
+   */
   replaceJournal: (journal: WorkJournalFile) => void;
 }
 
@@ -164,6 +177,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   loading: false,
   error: null,
   revision: 0,
+  replacing: false,
 
   load: async () => {
     set({ loading: true, error: null });
@@ -222,7 +236,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   },
 
   updatePage: async (date: string, patch: WorkJournalPagePatch) => {
-    if (!get().pages[date]) return;
+    // Dropped while a restore or undo replaces the journal: the text belongs to
+    // the journal being replaced.
+    if (!get().pages[date] || get().replacing) return;
     // Optimistic: the store holds what the user sees right away. The reply
     // is not applied, so an older reply can never overwrite newer typing.
     set((s) => {
@@ -287,6 +303,15 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
 
   // Every save was settled before the restore, so the reply replaces the
   // pages outright (no merge with local copies).
+  beginReplace: () => set({ replacing: true }),
+
+  endReplace: () => set({ replacing: false }),
+
   replaceJournal: (journal: WorkJournalFile) =>
-    set((s) => ({ pages: journal.pages, revision: s.revision + 1, error: null })),
+    set((s) => ({
+      pages: journal.pages,
+      revision: s.revision + 1,
+      replacing: false,
+      error: null,
+    })),
 }));

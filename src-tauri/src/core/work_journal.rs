@@ -94,6 +94,8 @@ pub enum WorkJournalError {
     BackupTimeNotSaved(String),
     #[error("There is no backup file at {0}.")]
     RestoreFileMissing(String),
+    #[error("The backup {file} cannot be used: {cause}")]
+    RestoreSourceUnusable { file: String, cause: String },
     #[error("No backup folder chosen. Choose one, or use Browse to pick a backup file.")]
     RestoreNoBackupFolder,
     #[error(
@@ -102,6 +104,8 @@ pub enum WorkJournalError {
     SafetyCopyNotSaved(String),
     #[error("There is nothing to undo: no safety copy from an earlier restore exists.")]
     NothingToUndo,
+    #[error("The safety copy cannot be read: {0}")]
+    SafetyCopyUnreadable(String),
     /// Message from the shared `atomic_write` helper, which reports `String`.
     #[error("{0}")]
     Write(String),
@@ -500,10 +504,36 @@ pub fn safety_copy_path(path: &Path) -> PathBuf {
     path.with_file_name(SAFETY_COPY_FILE_NAME)
 }
 
-/// True while a safety copy exists, so "Undo restore" has something to put
-/// back.
-pub fn has_safety_copy(path: &Path) -> bool {
-    safety_copy_path(path).is_file()
+/// True while a safety copy exists AND reads as a journal, so "Undo restore"
+/// has something it can put back. An unreadable safety copy (for example the
+/// bytes of a corrupt journal that was restored over) is kept on disk for
+/// manual recovery, but offers no undo.
+pub fn can_undo_restore(path: &Path) -> bool {
+    load_existing(&safety_copy_path(path)).is_ok()
+}
+
+/// What the automatic backup does after a restore or undo, for the notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoBackupAfterRestore {
+    /// A folder is set and already holds a backup: the automatic backup
+    /// leaves it alone until "Back up now".
+    Paused,
+    /// A folder is set but holds no backup yet: the next automatic backup
+    /// writes one as usual.
+    Runs,
+    /// No folder is set: there is no automatic backup.
+    NoFolder,
+}
+
+/// [`AutoBackupAfterRestore`] for a journal just written by a restore or
+/// undo (whose `last_backup_at` is always cleared).
+pub fn auto_backup_after_restore(journal: &WorkJournal) -> AutoBackupAfterRestore {
+    match configured_backup_folder(journal) {
+        None => AutoBackupAfterRestore::NoFolder,
+        Some(folder) if backup_path(&folder).exists() => AutoBackupAfterRestore::Paused,
+        Some(_) => AutoBackupAfterRestore::Runs,
+    }
 }
 
 /// The file "Restore from backup" reads by default: the backup in the
@@ -569,13 +599,29 @@ fn keep_local_backup_settings(journal: &mut WorkJournal, local_backup_folder: Op
 /// 4. Save the backup's content with the local backup folder and no last
 ///    backup time.
 ///
+/// The safety copy is written before the journal on purpose: whenever the
+/// journal was replaced, the safety copy is the journal from just before.
+/// The cost: a restore that fails at step 4 has already replaced the
+/// previous safety copy (with the current journal, which stays unchanged).
+///
 /// Returns the saved journal.
 pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal> {
-    let mut restored = load_existing(source).map_err(|e| match e {
-        WorkJournalError::Read(io) if io.kind() == std::io::ErrorKind::NotFound => {
-            WorkJournalError::RestoreFileMissing(source.display().to_string())
+    let mut restored = load_existing(source).map_err(|e| {
+        let file = source.display().to_string();
+        match e {
+            WorkJournalError::Read(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                WorkJournalError::RestoreFileMissing(file)
+            }
+            // The bare I/O cause: the read error's own text names the journal.
+            WorkJournalError::Read(io) => WorkJournalError::RestoreSourceUnusable {
+                file,
+                cause: io.to_string(),
+            },
+            other => WorkJournalError::RestoreSourceUnusable {
+                file,
+                cause: other.to_string(),
+            },
         }
-        other => other,
     })?;
     let (current_bytes, local_backup_folder) = current_journal(path)?;
     let safety = safety_copy_path(path);
@@ -591,14 +637,16 @@ pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal
 
 /// "Undo restore": puts the safety copy back as the journal (with the same
 /// two settings rules as a restore), then deletes the safety copy, so undo
-/// works once. Without a safety copy there is nothing to undo.
+/// works once. Without a safety copy there is nothing to undo; an unreadable
+/// one is refused and left on disk.
 pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
     let safety = safety_copy_path(path);
     let mut previous = load_existing(&safety).map_err(|e| match e {
         WorkJournalError::Read(io) if io.kind() == std::io::ErrorKind::NotFound => {
             WorkJournalError::NothingToUndo
         }
-        other => other,
+        WorkJournalError::Read(io) => WorkJournalError::SafetyCopyUnreadable(io.to_string()),
+        other => WorkJournalError::SafetyCopyUnreadable(other.to_string()),
     })?;
     let (_, local_backup_folder) = current_journal(path)?;
     keep_local_backup_settings(&mut previous, local_backup_folder);
@@ -1832,7 +1880,7 @@ mod tests {
     /// safety copy.
     fn assert_restore_changed_nothing(path: &Path, before: &[u8]) {
         assert_eq!(std::fs::read(path).unwrap(), before);
-        assert!(!has_safety_copy(path), "no safety copy written");
+        assert!(!safety_copy_path(path).exists(), "no safety copy written");
         assert!(!tmp_path(&safety_copy_path(path)).exists());
     }
 
@@ -1869,7 +1917,7 @@ mod tests {
             old_bytes,
             "the safety copy equals the old journal"
         );
-        assert!(has_safety_copy(&path));
+        assert!(can_undo_restore(&path));
         assert_eq!(
             std::fs::read_to_string(backup_path(&folder)).unwrap(),
             backup
@@ -1894,7 +1942,8 @@ mod tests {
         assert_eq!(saved, expected);
         assert_eq!(load(&path).unwrap(), expected);
         assert!(saved.pages.contains_key("2026-10-15"));
-        assert!(!has_safety_copy(&path), "undo works once");
+        assert!(!safety_copy_path(&path).exists(), "undo works once");
+        assert!(!can_undo_restore(&path));
 
         let err = undo_restore(&path).unwrap_err();
         assert!(matches!(err, WorkJournalError::NothingToUndo), "got: {err}");
@@ -1932,11 +1981,18 @@ mod tests {
         let err = restore_from(&path, &source).unwrap_err();
 
         assert!(
-            matches!(err, WorkJournalError::NewerLayout { found: 2, .. }),
+            matches!(err, WorkJournalError::RestoreSourceUnusable { .. }),
             "got: {err}"
         );
         assert!(
-            err.to_string().contains("Update Maestro first"),
+            err.to_string().starts_with(&format!(
+                "The backup {} cannot be used: The work journal was saved by a newer Maestro",
+                source.display()
+            )),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().ends_with("Update Maestro first."),
             "got: {err}"
         );
         assert_restore_changed_nothing(&path, &before);
@@ -1952,8 +2008,16 @@ mod tests {
 
         let err = restore_from(&path, &source).unwrap_err();
 
-        assert!(matches!(err, WorkJournalError::Parse(_)), "got: {err}");
+        assert!(
+            matches!(err, WorkJournalError::RestoreSourceUnusable { .. }),
+            "got: {err}"
+        );
         assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert!(
+            err.to_string()
+                .starts_with(&format!("The backup {} cannot be used", source.display())),
+            "got: {err}"
+        );
         assert_restore_changed_nothing(&path, &before);
     }
 
@@ -2057,7 +2121,7 @@ mod tests {
             "got: {err}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert!(!has_safety_copy(&path));
+        assert!(!safety_copy_path(&path).exists());
     }
 
     #[test]
@@ -2094,6 +2158,114 @@ mod tests {
         assert_eq!(saved.pages, parse_journal(&backup).unwrap().pages);
         assert!(saved.settings.backup_folder.is_none());
         assert_eq!(std::fs::read(safety_copy_path(&path)).unwrap(), broken);
+
+        // The corrupt bytes offer no undo, and undo names the safety copy
+        // and never deletes it.
+        assert!(!can_undo_restore(&path));
+        let err = undo_restore(&path).unwrap_err();
+        assert!(
+            matches!(err, WorkJournalError::SafetyCopyUnreadable(_)),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("The safety copy cannot be read: "),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read(safety_copy_path(&path)).unwrap(), broken);
+        assert_eq!(load(&path).unwrap(), saved, "the journal is unchanged");
+    }
+
+    #[test]
+    fn test_restore_that_fails_at_the_save_keeps_the_journal() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        other_machine_backup(&folder);
+        let before = local_journal(&path, &folder);
+        // Block the journal's own temp path: the safety copy lands, the
+        // final save fails.
+        std::fs::create_dir(tmp_path(&path)).unwrap();
+
+        let err = restore_from(&path, &backup_path(&folder)).unwrap_err();
+
+        assert!(matches!(err, WorkJournalError::Write(_)), "got: {err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "journal unchanged");
+        assert_eq!(
+            std::fs::read(safety_copy_path(&path)).unwrap(),
+            before,
+            "the safety copy now equals the current journal"
+        );
+    }
+
+    #[test]
+    fn test_automatic_backup_is_skipped_after_a_restore() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        let backup = other_machine_backup(&folder);
+        local_journal(&path, &folder);
+        let restored = restore_from(&path, &backup_path(&folder)).unwrap();
+        assert_eq!(
+            auto_backup_after_restore(&restored),
+            AutoBackupAfterRestore::Paused
+        );
+
+        let err = backup_if_due(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::AutoBackupWouldReplaceUnknownBackup),
+            "got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&folder)).unwrap(),
+            backup
+        );
+    }
+
+    #[test]
+    fn test_auto_backup_after_restore_tells_the_three_cases_apart() {
+        let dir = tempdir().unwrap();
+        let mut journal = WorkJournal::default();
+        assert_eq!(
+            auto_backup_after_restore(&journal),
+            AutoBackupAfterRestore::NoFolder
+        );
+
+        let folder = dir.path().join("Empty");
+        std::fs::create_dir(&folder).unwrap();
+        journal.settings.backup_folder = Some(folder.to_string_lossy().into_owned());
+        assert_eq!(
+            auto_backup_after_restore(&journal),
+            AutoBackupAfterRestore::Runs
+        );
+
+        std::fs::write(backup_path(&folder), "{}").unwrap();
+        assert_eq!(
+            auto_backup_after_restore(&journal),
+            AutoBackupAfterRestore::Paused
+        );
+    }
+
+    #[test]
+    fn test_restore_from_a_file_that_is_not_text_names_the_file() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let source = dir.path().join("photo.json");
+        std::fs::write(&source, b"\xff\xfe\x00binary").unwrap();
+
+        let err = restore_from(&path, &source).unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.starts_with(&format!("The backup {} cannot be used: ", source.display())),
+            "got: {message}"
+        );
+        assert!(
+            !message.contains("Failed to read the work journal"),
+            "got: {message}"
+        );
+        assert!(!path.exists());
     }
 
     #[test]

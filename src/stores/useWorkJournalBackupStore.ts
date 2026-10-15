@@ -20,20 +20,37 @@ export const AUTO_BACKUP_WARNING_TITLE = "Work Journal backup failed";
 /** Title of the native warning shown when the guard skips an automatic backup. */
 export const AUTO_BACKUP_SKIPPED_TITLE = "Work Journal backup skipped";
 
-/** Shown after a successful restore. */
-export const RESTORE_NOTICE =
-  "Restored. Automatic backups stay paused until you press Back up now.";
+/**
+ * What the automatic backup does after a restore or undo: `paused` (the folder
+ * holds a backup, left alone until "Back up now"), `runs` (the folder holds
+ * none, so the next automatic backup writes one) or `no_folder`.
+ */
+export type AutoBackupAfterRestore = "paused" | "runs" | "no_folder";
 
-/** Shown after a successful undo. */
-export const UNDO_RESTORE_NOTICE =
-  "Restore undone: your journal from before the restore is back. Automatic backups stay paused " +
-  "until you press Back up now.";
+const PAUSED_SENTENCE = "Automatic backups stay paused until you press Back up now.";
+const NO_FOLDER_SENTENCE = "Choose a backup folder to turn on automatic backups.";
+const UNDONE = "Restore undone: your journal from before the restore is back.";
+
+/** Shown after a successful restore, by what the automatic backup does next. */
+export const RESTORE_NOTICES: Record<AutoBackupAfterRestore, string> = {
+  paused: `Restored. ${PAUSED_SENTENCE}`,
+  runs: "Restored.",
+  no_folder: `Restored. ${NO_FOLDER_SENTENCE}`,
+};
+
+/** Shown after a successful undo, by what the automatic backup does next. */
+export const UNDO_RESTORE_NOTICES: Record<AutoBackupAfterRestore, string> = {
+  paused: `${UNDONE} ${PAUSED_SENTENCE}`,
+  runs: UNDONE,
+  no_folder: `${UNDONE} ${NO_FOLDER_SENTENCE}`,
+};
 
 /** The reply of `restore_work_journal` and `undo_work_journal_restore`. */
 export interface WorkJournalRestoreReply {
   journal: WorkJournalFile & WorkJournalBackupFile;
-  /** Whether a safety copy is there for "Undo restore". */
+  /** Whether a readable safety copy is there for "Undo restore". */
   canUndo: boolean;
+  autoBackup: AutoBackupAfterRestore;
 }
 
 /** What `work_journal_backup_if_due` did, tagged by `status`. */
@@ -67,6 +84,12 @@ interface WorkJournalBackupState {
   restoring: boolean;
   /** The success line after a restore or undo; cleared by the next backup or folder change. */
   notice: string | null;
+  /**
+   * True after a restore or undo left the automatic backup paused: its skip
+   * then adds no warning and no red line, since the notice explains it.
+   * Cleared by a successful backup or a folder change.
+   */
+  pausedByRestore: boolean;
   /** Reads the backup settings from the journal file. */
   load: () => Promise<void>;
   /**
@@ -96,8 +119,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Clears both "already warned" flags (a success or a folder change ends the run). */
-const WARNINGS_RESET = { autoFailureWarned: false, autoSkipWarned: false } as const;
+/**
+ * Clears the "already warned" flags and the post-restore pause (a success or
+ * a folder change ends the run).
+ */
+const WARNINGS_RESET = {
+  autoFailureWarned: false,
+  autoSkipWarned: false,
+  pausedByRestore: false,
+} as const;
 
 /** The native warning for an automatic backup; a dialog failure is only logged. */
 async function showWarning(text: string, title: string): Promise<void> {
@@ -133,6 +163,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   canUndo: false,
   restoring: false,
   notice: null,
+  pausedByRestore: false,
 
   load: async () => {
     try {
@@ -191,6 +222,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
     if (outcome?.status === "written") {
       set({ ...fromJournal(outcome.journal), ...WARNINGS_RESET, error: null });
     } else if (outcome?.status === "skipped") {
+      if (get().pausedByRestore) return;
       const warn = !get().autoSkipWarned;
       set({ error: outcome.message, autoSkipWarned: true });
       if (warn) await showWarning(outcome.message, AUTO_BACKUP_SKIPPED_TITLE);
@@ -207,43 +239,48 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   },
 
   restore: (file?: string) =>
-    replaceWholeJournal(set, "Restore failed", RESTORE_NOTICE, () =>
+    replaceWholeJournal(set, get, "Restore failed", RESTORE_NOTICES, () =>
       invoke<WorkJournalRestoreReply>("restore_work_journal", { file: file ?? null }),
     ),
 
   undoRestore: () =>
-    replaceWholeJournal(set, "Undo restore failed", UNDO_RESTORE_NOTICE, () =>
+    replaceWholeJournal(set, get, "Undo restore failed", UNDO_RESTORE_NOTICES, () =>
       invoke<WorkJournalRestoreReply>("undo_work_journal_restore"),
     ),
 }));
 
 /**
  * Runs a restore or undo: saves unsaved editor text first (so it is in the
- * safety copy and no late save lands on the new journal), then shows the new
- * journal in the pane and the settings. The guard's skip warning is marked as
- * shown: the notice already says automatic backups are paused.
+ * safety copy), then drops every page save until the backend answers (so
+ * nothing typed meanwhile lands over the new journal), then shows the new
+ * journal in the pane and the settings. On failure `canUndo` is read again:
+ * a restore that failed at its last step has already written a safety copy.
  */
 async function replaceWholeJournal(
   set: (partial: Partial<WorkJournalBackupState>) => void,
+  get: () => WorkJournalBackupState,
   failure: string,
-  notice: string,
+  notices: Record<AutoBackupAfterRestore, string>,
   run: () => Promise<WorkJournalRestoreReply>,
 ): Promise<void> {
   set({ restoring: true, error: null, notice: null });
   try {
     await useWorkJournalStore.getState().flushPendingSaves();
+    useWorkJournalStore.getState().beginReplace();
     const reply = await run();
     useWorkJournalStore.getState().replaceJournal(reply.journal);
     set({
       ...fromJournal(reply.journal),
+      ...WARNINGS_RESET,
       canUndo: reply.canUndo,
-      autoFailureWarned: false,
-      autoSkipWarned: true,
-      notice,
+      pausedByRestore: reply.autoBackup === "paused",
+      notice: notices[reply.autoBackup] ?? notices.paused,
     });
   } catch (error) {
+    useWorkJournalStore.getState().endReplace();
     console.error(`${failure}:`, error);
     set({ error: `${failure}: ${errorMessage(error)}` });
+    await get().loadRestoreState();
   } finally {
     set({ restoring: false });
   }

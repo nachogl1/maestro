@@ -1,9 +1,8 @@
 //! Tauri commands for the Work Journal file: load it, and create, update and
-//! delete pages and settings, back it up, and restore it from a backup.
-//! The file logic lives in
-//! [`crate::core::work_journal`]; these wrappers pick the app-data path,
-//! serialise every read-modify-write, and run the blocking file work off the
-//! async runtime.
+//! delete pages and settings, back it up, and restore it from a backup. The
+//! file logic lives in [`crate::core::work_journal`]; these wrappers pick the
+//! app-data path, serialise every read-modify-write, and run the blocking
+//! file work off the async runtime.
 //!
 //! Every changing command returns the whole saved journal, so the frontend
 //! never has to guess side effects (for example `deleted_dates` after a
@@ -16,7 +15,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::core::work_journal::{
-    self, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
+    self, AutoBackupAfterRestore, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
 };
 
 /// Serialises load-change-save cycles so two commands never interleave and
@@ -156,13 +155,24 @@ pub async fn work_journal_ensure_pages(today: String) -> Result<WorkJournal, Str
     with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await
 }
 
-/// A restore or undo reply: the whole saved journal, and whether a safety
-/// copy is there for "Undo restore".
+/// A restore or undo reply: the whole saved journal, whether a readable
+/// safety copy is there for "Undo restore", and what the automatic backup
+/// does next (for the notice).
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkJournalRestoreReply {
     pub journal: WorkJournal,
     pub can_undo: bool,
+    pub auto_backup: AutoBackupAfterRestore,
+}
+
+/// Builds the reply for a journal a restore or undo just saved at `path`.
+fn restore_reply(path: &std::path::Path, journal: WorkJournal) -> WorkJournalRestoreReply {
+    WorkJournalRestoreReply {
+        can_undo: work_journal::can_undo_restore(path),
+        auto_backup: work_journal::auto_backup_after_restore(&journal),
+        journal,
+    }
 }
 
 /// Whether "Undo restore" has a safety copy to put back.
@@ -185,10 +195,7 @@ pub async fn restore_work_journal(file: Option<String>) -> Result<WorkJournalRes
             None => work_journal::default_restore_source(&path)?,
         };
         let journal = work_journal::restore_from(&path, &source)?;
-        Ok(WorkJournalRestoreReply {
-            journal,
-            can_undo: work_journal::has_safety_copy(&path),
-        })
+        Ok(restore_reply(&path, journal))
     })
     .await
 }
@@ -199,20 +206,17 @@ pub async fn restore_work_journal(file: Option<String>) -> Result<WorkJournalRes
 pub async fn undo_work_journal_restore() -> Result<WorkJournalRestoreReply, String> {
     with_journal(|path| {
         let journal = work_journal::undo_restore(&path)?;
-        Ok(WorkJournalRestoreReply {
-            journal,
-            can_undo: work_journal::has_safety_copy(&path),
-        })
+        Ok(restore_reply(&path, journal))
     })
     .await
 }
 
-/// Whether "Undo restore" is available (a safety copy exists).
+/// Whether "Undo restore" is available (a readable safety copy exists).
 #[tauri::command]
 pub async fn work_journal_restore_state() -> Result<WorkJournalRestoreState, String> {
     with_journal(|path| {
         Ok(WorkJournalRestoreState {
-            can_undo: work_journal::has_safety_copy(&path),
+            can_undo: work_journal::can_undo_restore(&path),
         })
     })
     .await
@@ -252,9 +256,11 @@ mod tests {
         let reply = WorkJournalRestoreReply {
             journal: WorkJournal::default(),
             can_undo: true,
+            auto_backup: AutoBackupAfterRestore::NoFolder,
         };
         let value = serde_json::to_value(&reply).unwrap();
         assert_eq!(value["canUndo"], true);
+        assert_eq!(value["autoBackup"], "no_folder");
         assert_eq!(value["journal"]["layout_version"], 1);
 
         let state = WorkJournalRestoreState { can_undo: false };
