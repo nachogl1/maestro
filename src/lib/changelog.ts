@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Maestro Settings: hover over any setting (Updates, CLI command, every Samurai threshold, Work Journal, Advanced) for a plain-language explanation of what it does.",
       "Project tabs can no longer be pinned; the pin button and marker on tabs are gone. Pinning terminals is unchanged.",
       "Terminal title bar: the PR number pill and the checked-out / worktree pill are gone; the branch name stays, and hovering it still says whether it is a worktree.",
       "Injector: a new left-sidebar tab (Alt+4) lists every running terminal across your projects — tick some, type one message, and it is typed and submitted into all of them at once.",
