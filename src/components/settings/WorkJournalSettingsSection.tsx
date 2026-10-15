@@ -90,6 +90,8 @@ export function WorkJournalSettingsSection(): JSX.Element {
       if (typeof picked === "string") await chooseFolder(picked);
     } catch (err) {
       console.error("Failed to open the folder picker:", err);
+      const text = err instanceof Error ? err.message : String(err);
+      useWorkJournalBackupStore.setState({ error: `Could not open the folder picker: ${text}` });
     }
   };
 
@@ -109,6 +111,8 @@ export function WorkJournalSettingsSection(): JSX.Element {
       });
     } catch (err) {
       console.error("Failed to open the file picker:", err);
+      const text = err instanceof Error ? err.message : String(err);
+      useWorkJournalBackupStore.setState({ error: `Could not open the file picker: ${text}` });
       return;
     }
     if (typeof picked !== "string" || !(await confirmRestore(picked))) return;
@@ -117,7 +121,9 @@ export function WorkJournalSettingsSection(): JSX.Element {
 
   const handleUndoRestore = async (): Promise<void> => {
     const confirmed = await ask(
-      "Put back your Work Journal from before the restore? Changes made since the restore are lost.",
+      "Put back your Work Journal from before the restore? Changes made since the restore are " +
+        "replaced. Your current journal is kept as work-journal.before-undo.json in " +
+        "Maestro's data folder.",
       { title: "Undo Restore", kind: "warning" },
     ).catch(() => false);
     if (confirmed) await undoRestore();
