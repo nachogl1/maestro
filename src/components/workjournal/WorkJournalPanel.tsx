@@ -2,7 +2,10 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { CalendarPlus, CalendarSearch, ChevronLeft, ChevronRight, Trash2, X } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { SuggestionsBox } from "@/components/workjournal/SuggestionsBox";
-import { WorkJournalEditor } from "@/components/workjournal/WorkJournalEditor";
+import {
+  canReadWorkJournalBody,
+  WorkJournalEditor,
+} from "@/components/workjournal/WorkJournalEditor";
 import {
   defaultWorkJournalTitle,
   isValidJournalDate,
@@ -352,7 +355,13 @@ export function WorkJournalPanel() {
         </div>
       )}
 
-      {viewedDate && <SuggestionsBox date={viewedDate} hasPage={page !== null} />}
+      {viewedDate && (
+        <SuggestionsBox
+          date={viewedDate}
+          hasPage={page !== null}
+          readOnly={page !== null && !canReadWorkJournalBody(page.body)}
+        />
+      )}
     </div>
   );
 }

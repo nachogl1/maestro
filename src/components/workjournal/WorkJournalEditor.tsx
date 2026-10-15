@@ -1,6 +1,7 @@
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { BackgroundColor, Color, TextStyle } from "@tiptap/extension-text-style";
 import { Fragment, type Node as PmNode, Slice } from "@tiptap/pm/model";
+import type { Transaction } from "@tiptap/pm/state";
 import { EditorContent, getSchema, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useMemo, useRef } from "react";
@@ -196,24 +197,54 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   useEffect(() => registerWorkJournalEditorFlush(() => flushRef.current()), []);
 
   // An accepted suggestion lands here: a new paragraph at the end of the
-  // body (replacing a fresh page's lone empty paragraph), saved right away.
+  // body, saved right away. A trailing empty paragraph (a fresh page's only
+  // line, or an empty last line) is filled instead of leaving a blank line.
+  // When the save fails, the line is taken back out, so a retry cannot add
+  // a second copy.
   useEffect(() => {
     if (!editor) return;
-    return registerWorkJournalEditorAppend(date, (line) => {
+    return registerWorkJournalEditorAppend(date, async (line) => {
       const { replacing, revision } = useWorkJournalStore.getState();
-      if (editor.isDestroyed || !editor.isEditable || replacing) return Promise.resolve(false);
-      if (revision !== revisionRef.current) return Promise.resolve(false);
+      if (editor.isDestroyed || !editor.isEditable || replacing) return "refused";
+      if (revision !== revisionRef.current) return "refused";
       const doc = editor.state.doc;
-      const first = doc.firstChild;
-      const loneEmpty =
-        doc.childCount === 1 && first?.type.name === "paragraph" && first.content.size === 0;
+      const last = doc.lastChild;
+      const fill = last?.type.name === "paragraph" && last.content.size === 0;
+      const end = doc.content.size;
+      // Where the line's paragraph starts, kept current while the save runs.
+      let start = fill && last ? end - last.nodeSize : end;
       const paragraph = { type: "paragraph", content: [{ type: "text", text: line }] };
-      const at = loneEmpty ? { from: 0, to: doc.content.size } : doc.content.size;
+      const at = fill ? { from: start, to: end } : end;
       const inserted = editor
         .chain()
         .insertContentAt(at, paragraph, { updateSelection: false })
         .run();
-      return inserted ? saveNowRef.current() : Promise.resolve(false);
+      if (!inserted) return "refused";
+      const track = ({ transaction }: { transaction: Transaction }): void => {
+        start = transaction.mapping.map(start, 1);
+      };
+      editor.on("transaction", track);
+      let saved: boolean;
+      try {
+        saved = await saveNowRef.current();
+      } finally {
+        editor.off("transaction", track);
+      }
+      if (saved) return "saved";
+      if (!editor.isDestroyed) {
+        const node = editor.state.doc.nodeAt(start);
+        // Left alone if the user already edited the line meanwhile.
+        if (node?.type.name === "paragraph" && node.textContent === line) {
+          const range = { from: start, to: start + node.nodeSize };
+          const tr = editor.state.tr;
+          if (fill) tr.replaceWith(range.from, range.to, editor.schema.nodes.paragraph.create());
+          else tr.delete(range.from, range.to);
+          editor.view.dispatch(tr);
+          // Puts the page without the line in the store (and on disk) now.
+          void saveNowRef.current();
+        }
+      }
+      return "save_failed";
     });
   }, [editor, date]);
 

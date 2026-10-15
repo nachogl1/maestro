@@ -142,10 +142,17 @@ export function registerWorkJournalEditorFlush(flush: () => void): () => void {
 }
 
 /**
- * Adds one line as a new paragraph at the end of a page and saves it;
- * resolves true once saved. Provided by the open editor for that date.
+ * What adding a line did: `saved`; `refused` (no editable editor, nothing
+ * changed); or `save_failed` (the save failed and the line was taken back
+ * out of the editor).
  */
-export type WorkJournalLineAppender = (line: string) => Promise<boolean>;
+export type WorkJournalAppendResult = "saved" | "refused" | "save_failed";
+
+/**
+ * Adds one line as a new paragraph at the end of a page and saves it.
+ * Provided by the open editor for that date.
+ */
+export type WorkJournalLineAppender = (line: string) => Promise<WorkJournalAppendResult>;
 
 /** The open editor's appender per date. */
 const editorAppenders = new Map<string, WorkJournalLineAppender>();
@@ -167,12 +174,14 @@ export function registerWorkJournalEditorAppend(
 
 /**
  * Adds `line` to the end of the page for `date` through its open editor and
- * saves it. Resolves false when no editable editor is open for that date or
- * the save failed; the page is then unchanged on disk.
+ * saves it. Anything but `saved` leaves the page without the line.
  */
-export function appendWorkJournalLine(date: string, line: string): Promise<boolean> {
+export function appendWorkJournalLine(
+  date: string,
+  line: string,
+): Promise<WorkJournalAppendResult> {
   const append = editorAppenders.get(date);
-  return append ? append(line) : Promise.resolve(false);
+  return append ? append(line) : Promise.resolve("refused");
 }
 
 function errorMessage(error: unknown): string {

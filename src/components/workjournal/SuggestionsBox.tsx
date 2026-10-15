@@ -19,6 +19,8 @@ export interface SuggestionsBoxProps {
   date: string;
   /** Whether that day has a page; Accept needs one to add the line to. */
   hasPage: boolean;
+  /** The page is shown read-only (this build cannot read it), so Accept cannot add to it. */
+  readOnly?: boolean;
 }
 
 /** "next run" text: "soon" before the start-up catch-up run, HH:MM, or "—" when unknown. */
@@ -35,7 +37,7 @@ function nextRunLabel(catchUpPending: boolean, nextRunAt: number | null): string
  * and a footer "next run · run now". With nothing pending only the footer
  * shows, so "run now" is always reachable.
  */
-export function SuggestionsBox({ date, hasPage }: SuggestionsBoxProps) {
+export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsBoxProps) {
   const candidates = useWorkJournalCandidatesStore((s) => s.byDate[date] ?? NO_CANDIDATES);
   const busyIds = useWorkJournalCandidatesStore((s) => s.busyIds);
   const error = useWorkJournalCandidatesStore((s) => s.error);
@@ -55,6 +57,13 @@ export function SuggestionsBox({ date, hasPage }: SuggestionsBoxProps) {
   }, [date, refresh]);
 
   const pending = candidates.filter((c) => c.state === "pending");
+  const acceptHint = !hasPage
+    ? "Create the page first"
+    : readOnly
+      ? "This page is read-only here"
+      : running
+        ? "Wait for the run to finish"
+        : null;
 
   const runNow = (): void => {
     const store = useWorkJournalCandidateRunStore.getState();
@@ -109,6 +118,12 @@ export function SuggestionsBox({ date, hasPage }: SuggestionsBoxProps) {
         </p>
       )}
 
+      {pending.length > 0 && hasPage && readOnly && (
+        <p className="mt-1 text-[10px] text-maestro-muted">
+          This page is read-only here, so a suggestion cannot be added to it.
+        </p>
+      )}
+
       {pending.length > 0 && (
         <ul className="mt-1.5 flex flex-col gap-1">
           {pending.map((candidate) => {
@@ -127,10 +142,10 @@ export function SuggestionsBox({ date, hasPage }: SuggestionsBoxProps) {
                 <button
                   type="button"
                   onClick={() => void accept(candidate)}
-                  disabled={busy || !hasPage}
+                  disabled={busy || acceptHint !== null}
                   className={`${ICON_BUTTON} hover:text-maestro-green`}
                   aria-label="Accept suggestion"
-                  title={hasPage ? "Accept: add this line to the page" : "Create the page first"}
+                  title={acceptHint ?? "Accept: add this line to the page"}
                 >
                   <Check size={13} />
                 </button>

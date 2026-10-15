@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { localDateString } from "@/lib/workJournalDates";
+import { localDateString, msUntilNextLocalMidnight } from "@/lib/workJournalDates";
+import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { appendWorkJournalLine, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /** Where a candidate's activity came from (backend `CandidateSource`). */
@@ -45,6 +46,15 @@ export const WORK_JOURNAL_SOURCE_LABELS: Record<WorkJournalCandidateSource, stri
 export const ACCEPT_NO_EDITOR_ERROR =
   "Could not add the line: open this day's page (it must be editable) and try again.";
 
+/** Shown when the page save failed during Accept (the line was taken back out). */
+export const ACCEPT_SAVE_FAILED_ERROR = "The line could not be saved; the suggestion stays.";
+
+/**
+ * Slack after local midnight before the badge moves to the new day, so a
+ * timer that fires a moment early still sees the new date.
+ */
+const MIDNIGHT_SLACK_MS = 1_000;
+
 /**
  * The page line for a candidate: `HH:MM - action`, or the text as given when
  * it has no time (an untimed meeting already reads `Meeting - ...`).
@@ -60,6 +70,12 @@ interface WorkJournalCandidatesState {
   today: string;
   /** Ids with an accept or reject in flight (their buttons are disabled). */
   busyIds: string[];
+  /**
+   * Ids whose line is already saved on the page while their removal from
+   * the activity file failed: Accept then only retries the removal, so the
+   * line is never added twice.
+   */
+  landedIds: string[];
   /** The last accept or reject failure; cleared by the next success. */
   error: string | null;
   /** Re-reads the candidates of `date`. */
@@ -77,7 +93,8 @@ interface WorkJournalCandidatesState {
   clearError: () => void;
   /**
    * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`):
-   * the candidates event, window focus, and a journal restore or undo.
+   * the candidates event, window focus, local midnight, and a journal
+   * restore or undo.
    * Also loads today's candidates. Returns the stop function.
    */
   initListeners: () => Promise<UnlistenFn>;
@@ -127,6 +144,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
     byDate: {},
     today: localDateString(new Date()),
     busyIds: [],
+    landedIds: [],
     error: null,
 
     refresh: async (date: string) => {
@@ -152,22 +170,32 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
 
     accept: async (candidate: WorkJournalCandidate) => {
       if (get().busyIds.includes(candidate.id)) return;
+      // A running candidate run read the page before this line; it could
+      // propose the same thing again.
+      if (useWorkJournalCandidateRunStore.getState().running) return;
       setBusy(candidate.id, true);
-      let added = false;
+      let added = get().landedIds.includes(candidate.id);
       try {
-        added = await appendWorkJournalLine(candidate.date, candidateLine(candidate));
         if (!added) {
-          set({ error: ACCEPT_NO_EDITOR_ERROR });
-          return;
+          const result = await appendWorkJournalLine(candidate.date, candidateLine(candidate));
+          if (result !== "saved") {
+            set({
+              error: result === "save_failed" ? ACCEPT_SAVE_FAILED_ERROR : ACCEPT_NO_EDITOR_ERROR,
+            });
+            return;
+          }
+          added = true;
+          set((s) => ({ landedIds: [...s.landedIds, candidate.id] }));
         }
+        // Resolves null when the candidate was already gone: done as well.
         await invoke("accept_work_journal_candidate", { id: candidate.id });
+        set((s) => ({ landedIds: s.landedIds.filter((id) => id !== candidate.id), error: null }));
         drop(candidate);
-        set({ error: null });
       } catch (error) {
         console.error("Failed to accept the Work Journal suggestion:", error);
         set({
           error: added
-            ? `The line was added, but the suggestion stayed: ${errorMessage(error)}`
+            ? `The line is on the page, but the suggestion stayed (Accept again to clear it): ${errorMessage(error)}`
             : `Could not add the line: ${errorMessage(error)}`,
         });
       } finally {
@@ -213,6 +241,15 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
       };
       window.addEventListener("focus", onFocus);
       document.addEventListener("visibilitychange", onVisibility);
+      // Midnight: the badge moves to the new day even with the pane closed.
+      let midnight: ReturnType<typeof setTimeout>;
+      const armMidnight = (): void => {
+        midnight = setTimeout(() => {
+          void get().refreshToday();
+          armMidnight();
+        }, msUntilNextLocalMidnight(new Date()) + MIDNIGHT_SLACK_MS);
+      };
+      armMidnight();
       // A restore or undo replaced the journal: re-read every loaded date.
       const unsubscribe = useWorkJournalStore.subscribe((s, prev) => {
         if (s.revision !== prev.revision) refreshLoaded(Object.keys(get().byDate));
@@ -221,6 +258,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
       return () => {
         unlisten();
         unsubscribe();
+        clearTimeout(midnight);
         window.removeEventListener("focus", onFocus);
         document.removeEventListener("visibilitychange", onVisibility);
       };

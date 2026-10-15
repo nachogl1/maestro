@@ -212,4 +212,26 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     });
     expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toEqual([]);
   });
+  it("moves the badge to the new day at local midnight with no pane open, every day", async () => {
+    vi.setSystemTime(new Date(2026, 9, 14, 23, 59, 50));
+    candidates.push(candidate("n1", "2026-10-15"), candidate("n2", "2026-10-15"));
+    candidates.push(candidate("m1", "2026-10-16"));
+    const stop = await start();
+    await settle();
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(3);
+
+    await act(async () => vi.advanceTimersByTime(11_000));
+    await settle();
+    expect(useWorkJournalCandidatesStore.getState().today).toBe("2026-10-15");
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(2);
+
+    // Re-armed for the next midnight.
+    await act(async () => vi.advanceTimersByTime(24 * 60 * 60 * 1000));
+    await settle();
+    expect(useWorkJournalCandidatesStore.getState().today).toBe("2026-10-16");
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(1);
+
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
