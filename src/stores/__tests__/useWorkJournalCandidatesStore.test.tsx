@@ -6,6 +6,7 @@ import { WorkJournalSuggestionsBadge } from "@/components/shared/WorkJournalSugg
 import { WORK_JOURNAL_CHANGED_EVENT } from "@/lib/workJournalWindow";
 import {
   candidateLine,
+  pendingCountsByDate,
   pendingTodayCount,
   useWorkJournalCandidatesStore,
   WORK_JOURNAL_CANDIDATES_EVENT,
@@ -92,6 +93,13 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
       if (cmd === "list_work_journal_candidates") {
         const date = (args as { date: string }).date;
         return structuredClone(candidates.filter((c) => c.date === date));
+      }
+      if (cmd === "work_journal_pending_counts") {
+        const counts: Record<string, number> = {};
+        for (const c of candidates) {
+          if (c.state === "pending") counts[c.date] = (counts[c.date] ?? 0) + 1;
+        }
+        return counts;
       }
       return undefined;
     });
@@ -202,6 +210,28 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toHaveLength(3);
     expect(useWorkJournalCandidatesStore.getState().byDate["2026-10-13"]).toHaveLength(0);
     expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(2);
+  });
+
+  it("counts every day's pending suggestions in one call, kept current by changes", async () => {
+    await start();
+    await settle();
+    // Yesterday was never opened, yet the day list can show its count.
+    expect(pendingCountsByDate(useWorkJournalCandidatesStore.getState())).toEqual({
+      [TODAY]: 3,
+      "2026-10-13": 1,
+    });
+    expect(listCalls()).toEqual([{ date: TODAY }]);
+
+    // A catch-up run adds two to a day before yesterday.
+    candidates.push(candidate("p1", "2026-10-12"), candidate("p2", "2026-10-12"));
+    await act(async () => {
+      emitChanged?.({ payload: { source: null, replaced: false } });
+    });
+    await settle();
+    expect(pendingCountsByDate(useWorkJournalCandidatesStore.getState())["2026-10-12"]).toBe(2);
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "work_journal_pending_counts"),
+    ).toHaveLength(2);
   });
 
   it("a restore or undo re-reads the loaded dates", async () => {

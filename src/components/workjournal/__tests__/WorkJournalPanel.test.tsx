@@ -735,6 +735,44 @@ describe("WorkJournalPanel and the pop-out window", () => {
     expect(callsTo("update_work_journal_page")).toEqual([]);
   });
 
+  it("keeps text whose save failed when the other window changes the journal", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") throw new Error("disk full");
+      return backend?.(cmd, args);
+    });
+
+    act(() => {
+      pageEditor().commands.insertContent("Not saved yet");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    expect(await screen.findByText("disk full")).toBeInTheDocument();
+
+    // A save in the other window (or a candidate run) makes this one re-read.
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: false }));
+    await waitFor(() => expect(callsTo("load_work_journal")).toHaveLength(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Not saved yet")).toBeInTheDocument();
+
+    // The next keystroke saves it once the disk is back.
+    invokeMock.mockImplementation(backend ?? (async () => undefined));
+    act(() => {
+      pageEditor().commands.insertContent("!");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    await waitFor(() =>
+      expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Not saved yet!"),
+    );
+  });
+
   it("keeps typing not yet saved here; its save wins", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");

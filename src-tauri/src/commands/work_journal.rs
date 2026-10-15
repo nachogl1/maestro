@@ -9,6 +9,7 @@
 //! delete), and emits [`CHANGED_EVENT`], so every other window showing the
 //! journal (the pane and the pop-out window) re-reads it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -420,6 +421,15 @@ pub async fn work_journal_restore_state() -> Result<WorkJournalRestoreState, Str
 #[tauri::command]
 pub async fn list_work_journal_candidates(date: String) -> Result<Vec<Candidate>, String> {
     work_journal_activity::list_candidates(&work_journal_activity::activity_dir(), &date)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pending candidates per date (dates with none left out), for the pop-out
+/// window's day list: one read instead of one list per date.
+#[tauri::command]
+pub async fn work_journal_pending_counts() -> Result<HashMap<String, usize>, String> {
+    work_journal_activity::pending_counts(&work_journal_activity::activity_dir())
         .await
         .map_err(|e| e.to_string())
 }

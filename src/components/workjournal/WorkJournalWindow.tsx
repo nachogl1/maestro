@@ -3,7 +3,10 @@ import { useEffect, useMemo } from "react";
 import { WorkJournalDayList } from "@/components/workjournal/WorkJournalDayList";
 import { WorkJournalPanel } from "@/components/workjournal/WorkJournalPanel";
 import { followWorkJournalRunState } from "@/lib/workJournalWindow";
-import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
+import {
+  pendingCountsByDate,
+  useWorkJournalCandidatesStore,
+} from "@/stores/useWorkJournalCandidatesStore";
 import { flushWorkJournalSaves, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /**
@@ -17,14 +20,12 @@ export function WorkJournalWindow() {
   const viewedDate = useWorkJournalStore((s) => s.viewedDate);
   const selectDate = useWorkJournalStore((s) => s.selectDate);
   const byDate = useWorkJournalCandidatesStore((s) => s.byDate);
-
-  const pendingByDate = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const [date, list] of Object.entries(byDate)) {
-      counts[date] = list.filter((c) => c.state === "pending").length;
-    }
-    return counts;
-  }, [byDate]);
+  const pendingCounts = useWorkJournalCandidatesStore((s) => s.pendingCounts);
+  const pendingByDate = useMemo(
+    () =>
+      pendingCountsByDate({ ...useWorkJournalCandidatesStore.getState(), byDate, pendingCounts }),
+    [byDate, pendingCounts],
+  );
 
   // Same origin as the main window, so its stored theme applies here too.
   useEffect(() => {
@@ -60,7 +61,10 @@ export function WorkJournalWindow() {
       .onCloseRequested(async () => {
         await flushWorkJournalSaves();
       })
-      .catch(() => () => {});
+      .catch((err) => {
+        console.error("Failed to save the Work Journal before its window closes:", err);
+        return () => {};
+      });
     return () => {
       void stopCandidates.then((stop) => stop());
       void stopRunState.then((stop) => stop());

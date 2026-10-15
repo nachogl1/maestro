@@ -107,6 +107,18 @@ export const WEEKEND_PAGE_BODY: JSONContent = {
  */
 const pendingUpdates = new Map<string, number>();
 
+/**
+ * Fields (`<date>:body`, `<date>:title`) whose last save failed. Their text
+ * lives only here until a later save of that field lands, so a journal read
+ * back from disk keeps the local copy of that page.
+ */
+const failedSaves = new Set<string>();
+
+function hasFailedSave(date: string): boolean {
+  for (const key of failedSaves) if (key.startsWith(`${date}:`)) return true;
+  return false;
+}
+
 /** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
 let saveTick = 0;
 const lastLocalSave = new Map<string, number>();
@@ -207,14 +219,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Pages from a backend reply, keeping pages that still have a save in flight. */
+/**
+ * Pages from a backend reply, keeping pages that still have a save in flight
+ * or whose last save failed.
+ */
 function mergePages(
   local: Record<string, WorkJournalPage>,
   incoming: Record<string, WorkJournalPage>,
 ): Record<string, WorkJournalPage> {
   const merged = { ...incoming };
-  for (const date of pendingUpdates.keys()) {
-    if (local[date] && merged[date]) merged[date] = local[date];
+  for (const date of Object.keys(local)) {
+    if (!pendingUpdates.has(date) && !hasFailedSave(date)) continue;
+    if (merged[date]) merged[date] = local[date];
   }
   return merged;
 }
@@ -259,6 +275,12 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         // A save made here after the read started is newer than the reply.
         for (const [date, at] of lastLocalSave) {
           if (at > tick && s.pages[date] && pages[date]) pages[date] = s.pages[date];
+        }
+        // The viewed page was deleted in the other window: show the nearest
+        // one, as a delete here does.
+        const viewed = s.viewedDate;
+        if (viewed && s.pages[viewed] && !pages[viewed]) {
+          return { pages, viewedDate: nearestPageDate(pages, viewed) ?? viewed };
         }
         return { pages };
       });
@@ -345,8 +367,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
           body: patch.body ?? null,
         });
         saved = true;
+        failedSaves.delete(chainKey(date, patch));
       } catch (error) {
         console.error("Failed to save the Work Journal page:", error);
+        failedSaves.add(chainKey(date, patch));
         set({ error: errorMessage(error) });
       } finally {
         const left = (pendingUpdates.get(date) ?? 1) - 1;
@@ -402,11 +426,14 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   // Every save was settled before the restore, so the reply replaces the
   // pages outright (no merge with local copies).
 
-  replaceJournal: (journal: WorkJournalFile) =>
+  // The text of failed saves belonged to the replaced journal.
+  replaceJournal: (journal: WorkJournalFile) => {
+    failedSaves.clear();
     set((s) => ({
       pages: journal.pages,
       revision: s.revision + 1,
       replacing: false,
       error: null,
-    })),
+    }));
+  },
 }));
