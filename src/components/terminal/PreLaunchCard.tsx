@@ -38,6 +38,13 @@ import type { RepositoryInfo, WorkspaceType } from "@/stores/useWorkspaceStore";
 /** Controls how a session's working directory is resolved at launch. */
 export type WorktreeMode = "auto" | "project" | "new";
 
+/** Dropdown entries for the working-directory choice, in display order (first = default). */
+const WORKTREE_MODE_OPTIONS: { mode: WorktreeMode; label: string }[] = [
+  { mode: "new", label: "New Worktree" },
+  { mode: "project", label: "Original Path" },
+  { mode: "auto", label: "Current Worktree" },
+];
+
 export interface SessionSlot {
   id: string;
   mode: AiMode;
@@ -529,8 +536,9 @@ export function PreLaunchCard({
             >
               Window Name <span className="text-maestro-muted/60">(optional)</span>
             </label>
-            {/* Launch sits right after the name input so Tab from the name
-                lands on it and Enter launches. */}
+            {/* Tab order: name → working-directory dropdown (git repos only) →
+                Launch, so the whole row is reachable from the keyboard and
+                Enter on the button launches. */}
             <div className="flex gap-2">
               <input
                 id={`session-name-${slot.id}`}
@@ -541,6 +549,29 @@ export function PreLaunchCard({
                 maxLength={60}
                 className="min-w-0 flex-1 rounded border border-maestro-border bg-maestro-card px-3 py-2 text-sm text-maestro-text outline-none transition-colors placeholder:text-maestro-muted/50 hover:border-maestro-accent/50 focus:border-maestro-accent"
               />
+              {isGitRepo && (
+                <select
+                  aria-label="Working directory"
+                  title={
+                    hasManagedWorktree
+                      ? "Where the session runs: a fresh worktree, the project's own folder, or the worktree it already has"
+                      : "Where the session runs: a fresh worktree or the project's own folder (no managed worktree exists yet for Current Worktree)"
+                  }
+                  value={slot.worktreeMode}
+                  onChange={(e) => onWorktreeModeChange(e.target.value as WorktreeMode)}
+                  className="shrink-0 rounded border border-maestro-border bg-maestro-card px-2 py-2 text-sm text-maestro-text outline-none transition-colors hover:border-maestro-accent/50 focus:border-maestro-accent"
+                >
+                  {WORKTREE_MODE_OPTIONS.map((option) => (
+                    <option
+                      key={option.mode}
+                      value={option.mode}
+                      disabled={option.mode === "auto" && !hasManagedWorktree}
+                    >
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 type="button"
                 onClick={onLaunch}
@@ -1354,45 +1385,6 @@ export function PreLaunchCard({
               </>
             )}
           </div>
-
-          {/* Worktree Mode Selector — only shown for git repos */}
-          {isGitRepo && (
-            <div>
-              {/* Group heading for the worktree mode buttons below — not a control label. */}
-              <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-maestro-muted">
-                Working Directory
-              </span>
-              <div className="flex gap-1">
-                {(["auto", "project", "new"] as WorktreeMode[]).map((m) => {
-                  const labels: Record<WorktreeMode, string> = {
-                    auto: "Current Worktree",
-                    project: "Original Path",
-                    new: "New Worktree",
-                  };
-                  const isActive = slot.worktreeMode === m;
-                  const isDisabled = m === "auto" && !hasManagedWorktree;
-                  return (
-                    <button
-                      key={m}
-                      type="button"
-                      disabled={isDisabled}
-                      onClick={() => !isDisabled && onWorktreeModeChange(m)}
-                      title={isDisabled ? "No managed worktree exists for this project" : undefined}
-                      className={`flex-1 rounded px-2 py-1.5 text-[11px] font-medium transition-colors ${
-                        isDisabled
-                          ? "border border-maestro-border bg-maestro-card text-maestro-muted opacity-40 cursor-not-allowed"
-                          : isActive
-                            ? "bg-maestro-accent text-white"
-                            : "border border-maestro-border bg-maestro-card text-maestro-muted hover:text-maestro-text hover:border-maestro-accent/50"
-                      }`}
-                    >
-                      {labels[m]}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           {/* MCP Servers Selector */}
           <div className="relative" ref={mcpDropdownRef}>
