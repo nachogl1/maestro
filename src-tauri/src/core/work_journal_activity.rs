@@ -125,10 +125,15 @@ pub struct Candidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCandidate {
+    /// The day page it belongs to, `YYYY-MM-DD` (loose forms such as
+    /// `2026-1-5` are accepted and stored zero-padded).
     pub date: String,
+    /// When the activity happened, `HH:MM`; none for an untimed meeting.
     #[serde(default)]
     pub time: Option<String>,
+    /// The proposed line; folded to one line when stored.
     pub text: String,
+    /// Which activity source proposed it.
     pub source: CandidateSource,
 }
 
@@ -141,12 +146,13 @@ pub struct TerminalRecord {
     /// The app launch that opened it. Session ids restart every launch, so
     /// (`launch_id`, `session_id`) is the record's identity.
     pub launch_id: String,
+    /// The PTY session id in that launch (restarts at 1 every launch).
     pub session_id: u32,
     /// Last component of the session's project path, `\\?\` stripped. Set
     /// once at open and never changed.
     pub project_name: String,
     /// The session's branch, or the checked-out git branch when the session
-    /// has none; absent outside git.
+    /// has none; absent outside git and on a detached HEAD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// RFC 3339, local offset.
@@ -583,12 +589,16 @@ async fn record_all_closed(
     Ok(())
 }
 
-/// The checked-out git branch in `dir`, or `None` outside git.
+/// The checked-out git branch in `dir`, or `None` outside git or on a
+/// detached HEAD.
 async fn resolve_branch(dir: &str) -> Option<String> {
+    // `symbolic-ref` fails on a detached HEAD, so no commit hash is ever
+    // stored as a branch name.
     Git::new(dir)
-        .current_branch()
+        .run(&["symbolic-ref", "--short", "HEAD"])
         .await
         .ok()
+        .map(|output| output.trimmed().to_string())
         .filter(|b| !b.is_empty())
 }
 
@@ -1258,6 +1268,10 @@ mod tests {
         let wt = root.path().join("wt-folder");
         let branch = resolve_branch(&wt.to_string_lossy()).await;
         assert_eq!(branch.as_deref(), Some("feat/wt"));
+
+        git(&repo, &["checkout", "-q", "--detach"]);
+        let branch = resolve_branch(&repo.to_string_lossy()).await;
+        assert_eq!(branch, None, "a detached HEAD has no branch name");
     }
 
     #[tokio::test]
