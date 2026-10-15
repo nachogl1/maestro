@@ -28,6 +28,7 @@ import {
   Square,
   Store,
   Sun,
+  Syringe,
   Trash2,
   User,
   Wrench,
@@ -56,17 +57,24 @@ import { useGitStore } from "@/stores/useGitStore";
 import { useMarketplaceStore } from "@/stores/useMarketplaceStore";
 import { useMcpStore } from "@/stores/useMcpStore";
 import { usePluginStore } from "@/stores/usePluginStore";
-import { type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ContextAlertSection } from "./ContextAlertSection";
 import { HistorySection } from "./HistorySection";
+import { InjectorSection } from "./InjectorSection";
 import { NotificationsSettingsSection } from "./NotificationsSettingsSection";
-import { cardClass, divider, SectionHeader } from "./sectionChrome";
+import {
+  badgeBaseClass,
+  cardClass,
+  divider,
+  SESSION_STATUS_BADGES,
+  SectionHeader,
+} from "./sectionChrome";
 
 interface SidebarProps {
   collapsed?: boolean;
   onCollapse?: () => void;
-  /** Active sidebar tab — lifted to App so Alt+1-3 shortcuts can drive it. */
+  /** Active sidebar tab — lifted to App so Alt+1-4 shortcuts can drive it. */
   activeTab: SidebarTabId;
   /** Select a sidebar tab (App persists the choice). */
   onSelectTab: (tab: SidebarTabId) => void;
@@ -257,12 +265,13 @@ export function Sidebar({
 /*  TAB BAR                                                          */
 /* ================================================================ */
 
-export type SidebarTabId = "history" | "infra" | "settings";
+export type SidebarTabId = "history" | "infra" | "settings" | "inject";
 
 export const SIDEBAR_TABS: { id: SidebarTabId; label: string; icon: React.ElementType }[] = [
   { id: "history", label: "History", icon: History },
   { id: "infra", label: "Infra", icon: Package },
   { id: "settings", label: "Settings", icon: Settings },
+  { id: "inject", label: "Inject", icon: Syringe },
 ];
 
 const SIDEBAR_TAB_STORAGE_KEY = "maestro-sidebar-tab";
@@ -277,7 +286,7 @@ export function saveSidebarTab(tab: SidebarTabId): void {
 }
 
 /**
- * State transition for the Alt+1-3 sidebar shortcuts: closed → open on that
+ * State transition for the Alt+1-4 sidebar shortcuts: closed → open on that
  * tab; open on that tab already → close; open on another tab → switch.
  * Returns null when the index doesn't name a tab.
  */
@@ -356,6 +365,9 @@ function ConfigTab({
       // takes: History reuses it to reach a conversation that is already
       // running, instead of dropping it from the list.
       return <HistorySection onLaunch={onHistoryLaunch} onNavigate={onAgentNavigate} />;
+    case "inject":
+      // Injector: one message typed + submitted into every ticked terminal.
+      return <InjectorSection />;
     case "infra":
       return (
         <>
@@ -388,20 +400,6 @@ function ConfigTab({
 }
 
 /* ── 0. Agents ── */
-
-/** Word badge per terminal (session) status. */
-const SESSION_STATUS_BADGES: Record<BackendSessionStatus, { label: string; cls: string }> = {
-  Starting: { label: "STARTING", cls: "bg-orange-500/15 text-orange-400" },
-  Idle: { label: "IDLE", cls: "bg-maestro-muted/15 text-maestro-muted" },
-  Working: { label: "WORKING", cls: "bg-maestro-blue/15 text-maestro-blue" },
-  NeedsInput: { label: "NEEDS INPUT", cls: "bg-maestro-accent/15 text-maestro-accent" },
-  Done: { label: "DONE", cls: "bg-maestro-green/15 text-maestro-green" },
-  Error: { label: "ERROR", cls: "bg-red-500/15 text-red-400" },
-  Timeout: { label: "TIMEOUT", cls: "bg-red-500/15 text-red-400" },
-};
-
-const badgeBaseClass =
-  "shrink-0 whitespace-nowrap rounded px-1 py-px text-[9px] font-bold tracking-wide";
 
 /**
  * Live hierarchical view of every running agent across all open projects:
