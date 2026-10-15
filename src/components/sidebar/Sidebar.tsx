@@ -58,6 +58,7 @@ import { useMcpStore } from "@/stores/useMcpStore";
 import { usePluginStore } from "@/stores/usePluginStore";
 import { type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { ContextAlertSection } from "./ContextAlertSection";
 import { HistorySection } from "./HistorySection";
 import { NotificationsSettingsSection } from "./NotificationsSettingsSection";
 import { cardClass, divider, SectionHeader } from "./sectionChrome";
@@ -375,6 +376,8 @@ function ConfigTab({
           />
           {divider}
           <NotificationsSettingsSection />
+          {divider}
+          <ContextAlertSection />
           {divider}
           <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
           {divider}
