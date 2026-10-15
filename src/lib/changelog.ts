@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal files are written more safely: a power cut right after a save can no longer leave an empty journal, backup or report.",
       "Work Journal: Undo restore now keeps a copy of the journal it replaces (work-journal.before-undo.json in Maestro's data folder) and can only run once.",
       "Work Journal: when the saved report folder is gone, the report dialog now offers to choose a new one, and a folder picker that fails to open in Settings now shows its error.",
       "Work Journal settings hints now say the chosen model also writes the supervisor report.",

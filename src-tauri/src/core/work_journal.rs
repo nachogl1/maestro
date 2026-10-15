@@ -5,8 +5,9 @@
 //! or files.
 //!
 //! - Loading a missing file yields an empty journal and writes nothing.
-//! - Every save goes through the temp-then-rename helper in
-//!   [`crate::core::atomic_write`], so a crash leaves the old or the new file.
+//! - Every save goes through the durable temp-then-rename helper in
+//!   [`crate::core::atomic_write`], so a crash or power cut leaves the old or
+//!   the new file.
 //! - The file records a layout version. A newer one is refused ("update
 //!   Maestro first") without touching the file; an older one is upgraded in
 //!   memory by [`upgrade`] and written back only on the next change.
@@ -32,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::commands::ai_runner::artifact_base_dir;
-use crate::core::atomic_write::{atomic_write_via, rename_with_retry};
+use crate::core::atomic_write::{atomic_write_durable, rename_with_retry};
 use crate::core::samurai_files::normalize_extended_path;
 
 /// Environment variable that overrides the journal's folder.
@@ -266,13 +267,6 @@ pub fn journal_path(base_dir: &Path) -> PathBuf {
     base_dir.join(FILE_NAME)
 }
 
-/// The temp file a save writes before renaming it over `path`.
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    path.with_file_name(name)
-}
-
 /// Loads the journal. A missing file is an empty journal (nothing written).
 /// Never modifies the file, whatever its content.
 pub fn load(path: &Path) -> WorkJournalResult<WorkJournal> {
@@ -342,7 +336,7 @@ pub fn save(path: &Path, journal: &WorkJournal) -> WorkJournalResult<()> {
         std::fs::create_dir_all(parent).map_err(WorkJournalError::CreateDir)?;
     }
     let bytes = serde_json::to_vec_pretty(journal).map_err(WorkJournalError::Serialize)?;
-    atomic_write_via(path, &tmp_path(path), &bytes).map_err(WorkJournalError::Write)
+    atomic_write_durable(path, &bytes).map_err(WorkJournalError::Write)
 }
 
 /// Loads the journal, applies `change`, and saves it only if `change`
@@ -611,7 +605,7 @@ fn write_backup(
     let target = backup_path(folder);
     journal.settings.last_backup_at = Some(now.to_rfc3339_opts(SecondsFormat::Secs, true));
     let bytes = serde_json::to_vec_pretty(&journal).map_err(WorkJournalError::Serialize)?;
-    atomic_write_via(&target, &tmp_path(&target), &bytes).map_err(WorkJournalError::BackupWrite)?;
+    atomic_write_durable(&target, &bytes).map_err(WorkJournalError::BackupWrite)?;
     save(path, &journal).map_err(|e| WorkJournalError::BackupTimeNotSaved(e.to_string()))?;
     Ok(journal)
 }
@@ -774,8 +768,7 @@ pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal
     if let Some(parent) = safety.parent() {
         std::fs::create_dir_all(parent).map_err(WorkJournalError::CreateDir)?;
     }
-    atomic_write_via(&safety, &tmp_path(&safety), &current_bytes)
-        .map_err(WorkJournalError::SafetyCopyNotSaved)?;
+    atomic_write_durable(&safety, &current_bytes).map_err(WorkJournalError::SafetyCopyNotSaved)?;
     keep_local_settings(&mut restored, local_settings);
     save(path, &restored)?;
     Ok(restored)
@@ -835,7 +828,7 @@ pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
     let consumed = consumed_safety_copy_path(path);
     move_file(&safety, &consumed).map_err(WorkJournalError::SafetyCopyNotSetAside)?;
     let before_undo = before_undo_path(path);
-    if let Err(e) = atomic_write_via(&before_undo, &tmp_path(&before_undo), &current_bytes) {
+    if let Err(e) = atomic_write_durable(&before_undo, &current_bytes) {
         let cause = WorkJournalError::BeforeUndoCopyNotSaved(e);
         return Err(put_safety_copy_back(&consumed, &safety, cause));
     }
@@ -935,6 +928,7 @@ pub fn ensure_pages_in_file(path: &Path, today: &str) -> WorkJournalResult<WorkJ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::atomic_write::test_hooks::{block_durable_writes_to, leftover_temps};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1363,13 +1357,11 @@ mod tests {
     fn test_save_writes_through_temp_then_rename() {
         let dir = tempdir().unwrap();
         let path = journal_path(dir.path());
-        let tmp = tmp_path(&path);
-        assert_eq!(tmp.parent(), path.parent(), "temp sits next to the target");
         std::fs::write(&path, r#"{"layout_version": 1}"#).unwrap();
 
-        // Block the temp path: a save that writes the temp first must fail
-        // before it ever touches the real file.
-        std::fs::create_dir(&tmp).unwrap();
+        // Fail the temp-file step: a save that writes the temp first must
+        // fail before it ever touches the real file.
+        let block = block_durable_writes_to(&path);
         let mut journal = WorkJournal::default();
         create_page(
             &mut journal,
@@ -1387,9 +1379,12 @@ mod tests {
         );
 
         // Unblocked, the save lands and the temp file is consumed.
-        std::fs::remove_dir(&tmp).unwrap();
+        drop(block);
         save(&path, &journal).unwrap();
-        assert!(!tmp.exists(), "the rename consumes the temp file");
+        assert!(
+            leftover_temps(dir.path()).is_empty(),
+            "the rename consumes the temp file"
+        );
         assert!(load(&path).unwrap().pages.contains_key("2026-10-14"));
     }
 
@@ -1877,7 +1872,7 @@ mod tests {
         assert_eq!(backed_up, saved, "the backup is the whole saved journal");
         assert_eq!(backed_up.pages["2026-10-15"].body, tiptap_body());
         assert_eq!(load(&path).unwrap(), saved, "the time is saved locally");
-        assert!(!tmp_path(&backup_path(&folder)).exists());
+        assert!(leftover_temps(&folder).is_empty());
 
         // One file, overwritten each time.
         backup_now(&path, at("2026-10-16T08:00:00Z")).unwrap();
@@ -1900,9 +1895,9 @@ mod tests {
         std::fs::write(&target, "previous backup").unwrap();
         let journal_before = std::fs::read_to_string(&path).unwrap();
 
-        // Block the temp path: a backup that writes the temp first must fail
-        // before it touches the previous backup or the journal.
-        std::fs::create_dir(tmp_path(&target)).unwrap();
+        // Fail the temp-file step: a backup that writes the temp first must
+        // fail before it touches the previous backup or the journal.
+        let block = block_durable_writes_to(&target);
         let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
         assert!(
             matches!(err, WorkJournalError::BackupWrite(_)),
@@ -1912,10 +1907,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous backup");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), journal_before);
 
-        std::fs::remove_dir(tmp_path(&target)).unwrap();
+        drop(block);
         backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap();
         assert!(
-            !tmp_path(&target).exists(),
+            leftover_temps(&folder).is_empty(),
             "the rename consumes the temp file"
         );
         assert!(parse_journal(&std::fs::read_to_string(&target).unwrap()).is_ok());
@@ -2100,7 +2095,7 @@ mod tests {
         assert_eq!(std::fs::read(backup_path(&folder)).unwrap(), FOREIGN_BACKUP);
         assert_eq!(std::fs::read(&path).unwrap(), journal_before);
         assert!(load(&path).unwrap().settings.last_backup_at.is_none());
-        assert!(!tmp_path(&backup_path(&folder)).exists());
+        assert!(leftover_temps(&folder).is_empty());
     }
 
     #[test]
@@ -2207,9 +2202,8 @@ mod tests {
         journal_with_backup_folder(&path, &folder);
         let before = std::fs::read(&path).unwrap();
 
-        // Block the journal's own temp path so the local save fails after the
-        // backup has been written.
-        std::fs::create_dir(tmp_path(&path)).unwrap();
+        // Fail the journal's own save after the backup has been written.
+        let _block = block_durable_writes_to(&path);
         let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
 
         assert!(
@@ -2269,7 +2263,7 @@ mod tests {
     fn assert_restore_changed_nothing(path: &Path, before: &[u8]) {
         assert_eq!(std::fs::read(path).unwrap(), before);
         assert!(!safety_copy_path(path).exists(), "no safety copy written");
-        assert!(!tmp_path(&safety_copy_path(path)).exists());
+        assert!(leftover_temps(path.parent().unwrap()).is_empty());
     }
 
     #[test]
@@ -2317,7 +2311,7 @@ mod tests {
             std::fs::read_to_string(backup_path(&folder)).unwrap(),
             backup
         );
-        assert!(!tmp_path(&safety_copy_path(&path)).exists());
+        assert!(leftover_temps(path.parent().unwrap()).is_empty());
     }
 
     #[test]
@@ -2410,7 +2404,7 @@ mod tests {
 
         assert_eq!(BEFORE_UNDO_FILE_NAME, "work-journal.before-undo.json");
         assert_eq!(std::fs::read(before_undo_path(&path)).unwrap(), first_bytes);
-        assert!(!tmp_path(&before_undo_path(&path)).exists());
+        assert!(leftover_temps(path.parent().unwrap()).is_empty());
         assert!(!can_undo_restore(&path));
         assert!(!consumed_safety_copy_path(&path).exists());
         let err = undo_restore(&path).unwrap_err();
@@ -2465,7 +2459,7 @@ mod tests {
         local_journal(&path, &folder);
         restore_from(&path, &backup_path(&folder)).unwrap();
         let restored_bytes = std::fs::read(&path).unwrap();
-        std::fs::create_dir(tmp_path(&before_undo_path(&path))).unwrap();
+        let _block = block_durable_writes_to(&before_undo_path(&path));
 
         let err = undo_restore(&path).unwrap_err();
 
@@ -2487,8 +2481,8 @@ mod tests {
         local_journal(&path, &folder);
         restore_from(&path, &backup_path(&folder)).unwrap();
         let restored_bytes = std::fs::read(&path).unwrap();
-        // A folder at the journal's temp path makes the save fail.
-        std::fs::create_dir(tmp_path(&path)).unwrap();
+        // Failing the journal's temp-file step makes the save fail.
+        let block = block_durable_writes_to(&path);
 
         let err = undo_restore(&path).unwrap_err();
 
@@ -2497,7 +2491,7 @@ mod tests {
         assert!(can_undo_restore(&path), "the safety copy was moved back");
         assert!(!consumed_safety_copy_path(&path).exists());
 
-        std::fs::remove_dir(tmp_path(&path)).unwrap();
+        drop(block);
         undo_restore(&path).unwrap();
         assert!(!can_undo_restore(&path));
     }
@@ -2776,8 +2770,8 @@ mod tests {
         let folder = dir.path().join("OneDrive");
         other_machine_backup(&folder);
         let before = local_journal(&path, &folder);
-        // Block the safety copy's temp path, so its write fails.
-        std::fs::create_dir(tmp_path(&safety_copy_path(&path))).unwrap();
+        // Fail the safety copy's temp-file step, so its write fails.
+        let _block = block_durable_writes_to(&safety_copy_path(&path));
 
         let err = restore_from(&path, &backup_path(&folder)).unwrap_err();
 
@@ -2852,9 +2846,9 @@ mod tests {
         let folder = dir.path().join("OneDrive");
         other_machine_backup(&folder);
         let before = local_journal(&path, &folder);
-        // Block the journal's own temp path: the safety copy lands, the
-        // final save fails.
-        std::fs::create_dir(tmp_path(&path)).unwrap();
+        // Fail the journal's own save: the safety copy lands, the final
+        // save fails.
+        let _block = block_durable_writes_to(&path);
 
         let err = restore_from(&path, &backup_path(&folder)).unwrap_err();
 
