@@ -22,7 +22,11 @@ import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
 import { ParkedRunsBadge } from "./ParkedRunsBadge";
-import { WorkJournalSuggestionsBadge, WorkJournalUnsavedDot } from "./WorkJournalSuggestionsBadge";
+import {
+  useWorkJournalButtonLabel,
+  WorkJournalSuggestionsBadge,
+  WorkJournalUnsavedDot,
+} from "./WorkJournalSuggestionsBadge";
 
 /** Column counts offered by the eagle view picker (besides automatic). */
 const EAGLE_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6] as const;
@@ -107,6 +111,7 @@ export function TopBar({
   onParkNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
+  const workJournalLabel = useWorkJournalButtonLabel();
 
   // Eagle view grid controls: how many columns, and "group by project" to undo
   // the free mixing of projects' terminals (runtime-only store state).
@@ -331,7 +336,7 @@ export function TopBar({
                 ? "text-maestro-accent hover:bg-maestro-accent/10"
                 : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
             }`}
-            aria-label="Work Journal"
+            aria-label={workJournalLabel}
             title="Work Journal — one page per day"
           >
             <BookOpenCheck size={14} />

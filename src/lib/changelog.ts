@@ -12,6 +12,8 @@ export const CHANGELOG: ChangelogEntry[] = [
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
       "Work Journal: edits made in the pane and the pop-out at the same moment no longer overwrite each other (an accepted suggestion is no longer lost); you choose which text to keep, and a title change and a text change on the same page both stay. Text changed in the other window no longer moves your cursor to the end.",
+      "Work Journal files are written more safely: a power cut right after a save can no longer leave an empty journal, backup or report.",
+      "Work Journal is easier to use with a screen reader: the top-bar icon announces waiting suggestions and unsaved changes, the report dialog keeps keyboard focus inside it, and each suggestion's Accept and Reject buttons name the suggestion.",
       "Work Journal reports are limited to 92 days (and a set amount of text) so a run cannot hang for minutes.",
       "Work Journal: while a restore or undo runs, both the pane and the pop-out are frozen (text, toolbar, new page, delete, suggestions), so no edit can land on top of the restored journal.",
       "Work Journal: Undo restore now keeps a copy of the journal it replaces (work-journal.before-undo.json in Maestro's data folder) and can only run once.",
