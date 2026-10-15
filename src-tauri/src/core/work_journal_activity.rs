@@ -149,11 +149,12 @@ pub struct TerminalRecord {
     /// Last component of the session's project path, `\\?\` stripped. Set
     /// once at open and never changed.
     pub project_name: String,
-    /// The session's project path, `\\?\` stripped, so a candidate run
-    /// covers that project even after its tab was closed. Absent in records
-    /// written before it was added.
+    /// The folder the session's shell ran in (its working directory, so the
+    /// selected repo of a multi-repo workspace, else its project path),
+    /// `\\?\` stripped, so a candidate run covers that repo even after its
+    /// tab was closed. Absent in records written before it was added.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_path: Option<String>,
+    pub repo_path: Option<String>,
     /// The session's branch, or the checked-out git branch when the session
     /// has none; absent outside git and on a detached HEAD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,6 +521,7 @@ async fn record_opened(
     launch: &str,
     session_id: u32,
     project_path: &str,
+    repo_path: &str,
     branch: Option<String>,
     opened_at: DateTime<Local>,
 ) -> ActivityResult<()> {
@@ -538,7 +540,7 @@ async fn record_opened(
         launch_id: launch.to_string(),
         session_id,
         project_name: project_name_from_path(project_path),
-        project_path: Some(strip_extended_prefix(project_path)).filter(|p| !p.trim().is_empty()),
+        repo_path: Some(strip_extended_prefix(repo_path)).filter(|p| !p.trim().is_empty()),
         branch,
         opened_at: stamp(opened_at),
         closed_at: None,
@@ -633,6 +635,16 @@ async fn resolve_branch(dir: &str) -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
+/// The folder a terminal's shell runs in: its working directory (for a
+/// multi-repo workspace the selected repo, never a git repo's parent
+/// workspace root), else its project path.
+fn terminal_repo_path(config: &SessionConfig) -> &str {
+    config
+        .working_directory
+        .as_deref()
+        .unwrap_or(&config.project_path)
+}
+
 /// Notes a newly registered terminal. The open record is written first
 /// (name from the session's project path, branch from the session if set),
 /// so a close that follows always finds it; when the session has no branch,
@@ -645,6 +657,7 @@ pub async fn note_terminal_opened(config: &SessionConfig) {
         current_launch_id(),
         session_id,
         &config.project_path,
+        terminal_repo_path(config),
         config.branch.clone(),
         Local::now(),
     )
@@ -736,7 +749,7 @@ mod tests {
             launch_id: launch.to_string(),
             session_id,
             project_name: "proj".to_string(),
-            project_path: None,
+            repo_path: None,
             branch: Some("main".to_string()),
             opened_at: opened.to_string(),
             closed_at: closed.map(str::to_string),
@@ -773,9 +786,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let opened = Local::now() - Duration::minutes(10);
         let path = r"\\?\C:\git\maestro";
-        record_opened(dir.path(), LAUNCH, 7, path, Some("feat/x".into()), opened)
-            .await
-            .unwrap();
+        record_opened(
+            dir.path(),
+            LAUNCH,
+            7,
+            path,
+            path,
+            Some("feat/x".into()),
+            opened,
+        )
+        .await
+        .unwrap();
         record_closed(dir.path(), LAUNCH, 7, None, Local::now())
             .await
             .unwrap();
@@ -784,10 +805,58 @@ mod tests {
         assert_eq!(file.terminals.len(), 1);
         let record = &file.terminals[0];
         assert_eq!(record.project_name, "maestro");
-        assert_eq!(record.project_path.as_deref(), Some(r"C:\git\maestro"));
+        assert_eq!(record.repo_path.as_deref(), Some(r"C:\git\maestro"));
         assert_eq!(record.branch.as_deref(), Some("feat/x"));
         assert_eq!(record.opened_at, stamp(opened));
         assert!(record.closed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_a_multi_repo_terminal_records_the_repo_it_ran_in() {
+        let dir = tempdir().unwrap();
+        let config = SessionConfig {
+            id: 4,
+            mode: crate::core::session_manager::AiMode::Claude,
+            name: None,
+            branch: Some("main".into()),
+            worktree_path: None,
+            project_path: r"\\?\C:\ws".into(),
+            working_directory: Some(r"\\?\C:\ws\api".into()),
+        };
+        record_opened(
+            dir.path(),
+            LAUNCH,
+            config.id,
+            &config.project_path,
+            terminal_repo_path(&config),
+            config.branch.clone(),
+            Local::now(),
+        )
+        .await
+        .unwrap();
+
+        let record = &read_raw(dir.path()).terminals[0];
+        assert_eq!(record.project_name, "ws", "the name stays the workspace's");
+        assert_eq!(record.repo_path.as_deref(), Some(r"C:\ws\api"));
+        let single_repo = SessionConfig {
+            working_directory: None,
+            ..config
+        };
+        assert_eq!(terminal_repo_path(&single_repo), r"\\?\C:\ws");
+    }
+
+    #[test]
+    fn test_an_old_terminal_record_without_a_repo_path_still_parses() {
+        let record: TerminalRecord = serde_json::from_value(serde_json::json!({
+            "id": "t1",
+            "launchId": "l1",
+            "sessionId": 2,
+            "projectName": "maestro",
+            "openedAt": "2026-10-15T09:00:00+01:00"
+        }))
+        .unwrap();
+        assert_eq!(record.repo_path, None);
+        assert_eq!(record.project_name, "maestro");
     }
 
     #[tokio::test]
@@ -797,6 +866,7 @@ mod tests {
             dir.path(),
             LAUNCH,
             1,
+            "p",
             "p",
             Some("main".into()),
             Local::now(),
@@ -814,7 +884,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_before_git_answers_still_ends_closed() {
         let dir = tempdir().unwrap();
-        record_opened(dir.path(), LAUNCH, 3, "proj", None, Local::now())
+        record_opened(dir.path(), LAUNCH, 3, "proj", "proj", None, Local::now())
             .await
             .unwrap();
         record_all_closed(dir.path(), LAUNCH, Local::now())
@@ -824,7 +894,7 @@ mod tests {
         record_branch(dir.path(), LAUNCH, 3, "main".into())
             .await
             .unwrap();
-        record_opened(dir.path(), LAUNCH, 3, "proj", None, Local::now())
+        record_opened(dir.path(), LAUNCH, 3, "proj", "proj", None, Local::now())
             .await
             .unwrap();
         let file = read_raw(dir.path());
@@ -846,10 +916,10 @@ mod tests {
     #[tokio::test]
     async fn test_same_session_id_in_another_launch_is_a_separate_record() {
         let dir = tempdir().unwrap();
-        record_opened(dir.path(), "old", 1, "a", None, Local::now())
+        record_opened(dir.path(), "old", 1, "a", "a", None, Local::now())
             .await
             .unwrap();
-        record_opened(dir.path(), LAUNCH, 1, "b", None, Local::now())
+        record_opened(dir.path(), LAUNCH, 1, "b", "b", None, Local::now())
             .await
             .unwrap();
         record_closed(dir.path(), LAUNCH, 1, None, Local::now())

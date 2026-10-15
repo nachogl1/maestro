@@ -300,8 +300,61 @@ fn run_projects(open: &[String], terminals: &[String], known: &[String]) -> Vec<
         .collect()
 }
 
+/// Whether a remembered project folder is gone for good: it is missing while
+/// its parent folder is there. A folder that cannot be reached right now (an
+/// unplugged drive or an offline share, whose parent is missing too, or any
+/// other error) is not gone; a run only skips it. Blocking.
+fn folder_gone(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            path.parent().is_some_and(|parent| parent.is_dir())
+        }
+        _ => false,
+    }
+}
+
+/// A run's projects: the ones it collects from, and the list saved as
+/// `known_projects` after it.
+#[derive(Debug, PartialEq)]
+struct RunProjects {
+    /// Every listed project whose folder is reachable now.
+    run: Vec<String>,
+    /// Every listed project except those gone for good (see [`folder_gone`]).
+    save: Vec<String>,
+}
+
+/// Plans a run over `open` (the open tabs' repos), `terminals` (the repos of
+/// terminals open inside the window) and `known` (the journal's
+/// `known_projects`), see [`run_projects`]. Checks folders, so it blocks:
+/// run it off the async runtime.
+fn plan_run_projects(open: &[String], terminals: &[String], known: &[String]) -> RunProjects {
+    let save: Vec<String> = run_projects(open, terminals, known)
+        .into_iter()
+        .filter(|path| !folder_gone(Path::new(path)))
+        .collect();
+    let run = save
+        .iter()
+        .filter(|path| Path::new(path).is_dir())
+        .cloned()
+        .collect();
+    RunProjects { run, save }
+}
+
+/// Saves a finished run: the end of its window and the projects to remember.
+fn save_run(
+    path: &Path,
+    last_run_at: String,
+    known_projects: Vec<String>,
+) -> WorkJournalResult<WorkJournal> {
+    work_journal::modify(path, |j| {
+        j.settings.last_run_at = Some(last_run_at);
+        j.settings.known_projects = known_projects;
+        Ok(())
+    })
+}
+
 /// Runs the Work Journal candidate run over every project Maestro knows
-/// (see [`run_projects`]; `projects` are the open tabs' repo paths): the
+/// (see [`plan_run_projects`]; `projects` are the open tabs' repo paths): the
 /// activity since `last_run_at` (or one interval back) becomes pending
 /// candidates, one headless `claude` call per date that has activity (with
 /// Granola on, per date of the window, see [`work_journal_run`]). Saves
@@ -332,24 +385,21 @@ pub async fn work_journal_run_candidates(
     )
     .await
     {
-        Ok(records) => records.into_iter().filter_map(|r| r.project_path).collect(),
+        Ok(records) => records.into_iter().filter_map(|r| r.repo_path).collect(),
         Err(e) => {
             log::warn!("Work journal: reading terminal records for the run failed: {e}");
             Vec::new()
         }
     };
-    // A remembered project whose folder is gone is dropped (and so forgotten).
-    let known: Vec<String> = settings
-        .known_projects
-        .iter()
-        .filter(|path| Path::new(path).is_dir())
-        .cloned()
-        .collect();
-    let projects = run_projects(&projects, &terminals, &known);
-    if let Some(outcome) = skip_without_projects(&projects) {
+    let known = settings.known_projects.clone();
+    let plan =
+        tokio::task::spawn_blocking(move || plan_run_projects(&projects, &terminals, &known))
+            .await
+            .map_err(|e| format!("Work journal task failed: {e}"))?;
+    if let Some(outcome) = skip_without_projects(&plan.run) {
         return Ok(outcome);
     }
-    let report = work_journal_run::run_candidates(&journal, &projects, now).await;
+    let report = work_journal_run::run_candidates(&journal, &plan.run, now).await;
     if report.added > 0 {
         let payload = CandidatesAdded {
             dates: report.dates.clone(),
@@ -361,14 +411,7 @@ pub async fn work_journal_run_candidates(
         .covered_until
         .to_rfc3339_opts(SecondsFormat::Secs, true);
     let saved = last_run_at.clone();
-    with_journal(move |path| {
-        work_journal::modify(&path, |j| {
-            j.settings.last_run_at = Some(saved);
-            j.settings.known_projects = projects;
-            Ok(())
-        })
-    })
-    .await?;
+    with_journal(move |path| save_run(&path, saved, plan.save)).await?;
     // From no window: the new candidates and run time are news to all of them.
     let _ = app.emit(
         CHANGED_EVENT,
@@ -700,6 +743,71 @@ mod tests {
             skip_without_projects(&run_projects(&[], &[], &[])),
             Some(CandidateRunOutcome::NoProjects)
         );
+    }
+
+    /// `dir/name` as a string, created as a folder.
+    fn folder(dir: &Path, name: &str) -> String {
+        let path = dir.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn test_a_saved_run_is_read_back_by_the_next_run_without_open_tabs() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("app").join("work-journal.json");
+        let repo = folder(dir.path(), "closed-tab");
+
+        let first = plan_run_projects(std::slice::from_ref(&repo), &[], &[]);
+        assert_eq!(first.run, vec![repo.clone()]);
+        save_run(&journal, "2026-10-15T10:00:00Z".into(), first.save).unwrap();
+
+        let loaded = work_journal::load(&journal).unwrap();
+        assert_eq!(
+            loaded.settings.last_run_at.as_deref(),
+            Some("2026-10-15T10:00:00Z")
+        );
+        let next = plan_run_projects(&[], &[], &loaded.settings.known_projects);
+        assert_eq!(
+            next.run,
+            vec![repo.clone()],
+            "the closed tab is still covered"
+        );
+        assert_eq!(next.save, vec![repo]);
+    }
+
+    #[test]
+    fn test_an_unreachable_folder_is_skipped_but_kept_and_a_gone_one_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = folder(dir.path(), "here");
+        let unreachable = dir
+            .path()
+            .join("unplugged-drive")
+            .join("repo")
+            .to_string_lossy()
+            .into_owned();
+        let gone = dir.path().join("deleted").to_string_lossy().into_owned();
+
+        let plan = plan_run_projects(
+            std::slice::from_ref(&here),
+            &[],
+            &[unreachable.clone(), gone],
+        );
+
+        assert_eq!(plan.run, vec![here.clone()]);
+        assert_eq!(plan.save, vec![here, unreachable]);
+    }
+
+    #[test]
+    fn test_an_old_journal_without_known_projects_still_parses() {
+        let text = serde_json::json!({
+            "layout_version": 1,
+            "settings": {"last_run_at": "2026-10-15T10:00:00Z", "run_every_hours": 2}
+        })
+        .to_string();
+        let journal = work_journal::parse_journal(&text).unwrap();
+        assert!(journal.settings.known_projects.is_empty());
+        assert_eq!(journal.settings.run_every_hours, Some(2));
     }
 
     #[test]

@@ -886,7 +886,7 @@ mod tests {
             launch_id: "launch".to_string(),
             session_id: 1,
             project_name: "proj".to_string(),
-            project_path: None,
+            repo_path: None,
             branch: Some("main".to_string()),
             opened_at: stamp(opened),
             closed_at: closed.map(stamp),

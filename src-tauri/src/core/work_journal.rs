@@ -615,6 +615,27 @@ fn keep_local_backup_settings(journal: &mut WorkJournal, local_backup_folder: Op
     journal.settings.last_run_at = None;
 }
 
+/// Keeps this machine's remembered candidate-run projects through a restore
+/// or undo: the local list first, then any path from the file not in it yet.
+fn keep_local_known_projects(journal: &mut WorkJournal, local: Vec<String>) {
+    let from_file = std::mem::take(&mut journal.settings.known_projects);
+    let mut merged = local;
+    for path in from_file {
+        if !merged.contains(&path) {
+            merged.push(path);
+        }
+    }
+    journal.settings.known_projects = merged;
+}
+
+/// The local journal's remembered projects; none when it is missing or
+/// unreadable.
+fn local_known_projects(path: &Path) -> Vec<String> {
+    load_existing(path)
+        .map(|j| j.settings.known_projects)
+        .unwrap_or_default()
+}
+
 /// "Restore from backup": replaces the whole journal at `path` with the
 /// backup at `source` (never a merge). Steps, each stopping with nothing
 /// else changed on failure:
@@ -658,6 +679,7 @@ pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal
     atomic_write_via(&safety, &tmp_path(&safety), &current_bytes)
         .map_err(WorkJournalError::SafetyCopyNotSaved)?;
     keep_local_backup_settings(&mut restored, local_backup_folder);
+    keep_local_known_projects(&mut restored, local_known_projects(path));
     save(path, &restored)?;
     Ok(restored)
 }
@@ -677,6 +699,7 @@ pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
     })?;
     let (_, local_backup_folder) = current_journal(path)?;
     keep_local_backup_settings(&mut previous, local_backup_folder);
+    keep_local_known_projects(&mut previous, local_known_projects(path));
     save(path, &previous)?;
     if let Err(e) = std::fs::remove_file(&safety) {
         log::warn!("Undo restore done, but the safety copy could not be deleted: {e}");
@@ -1990,6 +2013,30 @@ mod tests {
             backup
         );
         assert!(!tmp_path(&safety_copy_path(&path)).exists());
+    }
+
+    #[test]
+    fn test_restore_and_undo_keep_the_local_known_projects() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        other_machine_backup(&folder);
+        local_journal(&path, &folder);
+        let local = vec![r"C:\git\closed-tab".to_string()];
+        let known = local.clone();
+        modify(&path, |j| {
+            j.settings.known_projects = known;
+            Ok(())
+        })
+        .unwrap();
+
+        let restored = restore_from(&path, &backup_path(&folder)).unwrap();
+        assert_eq!(restored.settings.known_projects, local);
+        assert_eq!(load(&path).unwrap().settings.known_projects, local);
+
+        let undone = undo_restore(&path).unwrap();
+        assert_eq!(undone.settings.known_projects, local);
+        assert_eq!(load(&path).unwrap().settings.known_projects, local);
     }
 
     #[test]
