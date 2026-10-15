@@ -21,4 +21,5 @@ pub mod system;
 pub mod terminal;
 pub mod update;
 pub mod usage;
+pub mod work_journal;
 pub mod worktree;
