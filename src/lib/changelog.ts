@@ -9,8 +9,12 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-15",
-    title: "Maestro updates itself",
+    title: "Move terminals wherever you like, Maestro updates itself",
     items: [
+      "Drag a terminal by its title bar: drop it on another pane's edge to move next to it, on the middle to swap, or on the outer edge of the area for a full column or row.",
+      "Eagle view: terminals of any project can be mixed in any order — drop on a tile's side to insert, on its middle to swap; Group by project undoes the mixing.",
+      "Eagle view: a tile-size button makes a terminal 2 wide, 2×2 or 2 tall, and the top bar picks how many columns the grid has.",
+      "Alt+Shift+Arrow moves the terminal you are typing in one step in that direction, in both views.",
       "Maestro now checks this fork's releases and can download and install a new build in one click.",
       "Every code change merged to main is published as a signed Windows installer automatically.",
     ],
