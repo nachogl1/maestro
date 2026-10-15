@@ -33,7 +33,6 @@ function buildTab(overrides: Partial<WorkspaceTab> = {}): WorkspaceTab {
     repositories: [],
     selectedRepoPath: null,
     worktreeBasePath: null,
-    pinned: false,
     ...overrides,
   };
 }

@@ -84,7 +84,6 @@ function App() {
   const closeTab = useWorkspaceStore((s) => s.closeTab);
   const reorderTabs = useWorkspaceStore((s) => s.reorderTabs);
   const moveTab = useWorkspaceStore((s) => s.moveTab);
-  const toggleTabPin = useWorkspaceStore((s) => s.toggleTabPin);
   const setSessionsLaunched = useWorkspaceStore((s) => s.setSessionsLaunched);
   const setSelectedRepo = useWorkspaceStore((s) => s.setSelectedRepo);
   const rehydrateRepositories = useWorkspaceStore((s) => s.rehydrateRepositories);
@@ -540,7 +539,6 @@ function App() {
           name: t.name,
           active: t.active,
           color: projectColors.get(t.name) ?? projectColorFor(t.name),
-          pinned: t.pinned,
         }))}
         onSelectTab={selectTab}
         onCloseTab={handleCloseTab}
@@ -549,7 +547,6 @@ function App() {
         sidebarOpen={sidebarOpen}
         onReorderTab={reorderTabs}
         onMoveTab={moveTab}
-        onTogglePinTab={toggleTabPin}
       />
 
       {/* Main area: sidebar + content */}
