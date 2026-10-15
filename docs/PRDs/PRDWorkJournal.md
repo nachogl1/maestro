@@ -182,6 +182,16 @@ Granola time) are folded in and linked in the Decision trace.
     is itself gone is dropped. The list is this machine's own and is kept through
     restore and undo. Coverage of a project starts once a run sees it after this
     change.
+  - Confirmed by the coordinator, flagged for the user (2026-10-15): a
+    recorded folder inside a linked git worktree (new terminals default to a new
+    worktree) is collected as the same place in its main repository, under the
+    main project's name, so a worktree is not a project of its own (a bare
+    repository's worktrees are collected under the bare repository, named
+    without `.git`; a folder inside the main checkout or a submodule stays as
+    it is). Every worktree of a project, and every folder a terminal ran in
+    during the window (a removed worktree included), is searched for Claude
+    conversations, as History does. The folder itself stays as recorded in
+    `known_projects` and is dropped once the worktree is removed.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
   day. They are not part of `work-journal.json` and are not backed up. The user
@@ -297,7 +307,9 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   are not in it; they live in the temporary file described under Candidates.
 - **Safe write:** every save writes a temporary file first and then swaps it
   in, using the existing helper (`src-tauri/src/core/atomic_write.rs`), so a
-  crash cannot leave a half-written journal.
+  crash cannot leave a half-written journal. The temporary file is flushed to
+  disk before the swap, so a power cut cannot empty it; it gets a fresh
+  unpredictable name, and stale temps from earlier crashes are cleaned up.
 - **Layout version:** the file records its layout version number.
 - **Backup folder:** picked by the user in settings. It can be a OneDrive,
   Dropbox or network folder; the cloud sync provides the off-machine copy for
@@ -424,6 +436,9 @@ skipped for that run but kept; one whose parent folder still exists but which
 is itself gone is dropped. The list is this machine's own and is kept through
 restore and undo. Coverage of a project starts once a run sees it after this
 change.
+A recorded worktree folder is collected as its main repository and named
+after it; every worktree of a project is searched for Claude conversations
+(flagged for the user, see Candidates).
 
 An accepted candidate becomes ordinary page text in `work-journal.json`.
 
@@ -481,8 +496,9 @@ to their own Claude setup.
 - **Terminal sessions need new persistent capture.** Today they are
   memory-only with ids reassigned each launch; without new capture, the
   "terminal sessions" source yields nothing after a restart.
-- **History listing cap.** The 50-sessions-per-project cap may not cover a
-  busy day across many projects (not verified).
+- **History listing cap.** The Work Journal reads up to 500 conversations per
+  project (History shows 50), across the repo and all its worktrees; a longer
+  catch-up window could still exceed it (not verified).
 - **Transcript retention** is outside this repo; how long Claude keeps
   `~/.claude/projects` transcripts was not verified.
 

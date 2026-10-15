@@ -4,7 +4,8 @@
 //!
 //! - **Claude conversations** from the History listing, labelled with the AI
 //!   name and two-sentence summary History already caches (the cache is only
-//!   read; the summariser is never run here).
+//!   read; the summariser is never run here). Like History, the listing also
+//!   covers the repo's worktrees, which Maestro keeps outside the repo.
 //! - **Git commits** made by the repo's configured user.
 //! - **PRs and issues** through the GitHub CLI, skipped silently when `gh` is
 //!   not signed in or a repo has no GitHub remote.
@@ -15,24 +16,35 @@
 //! activity happened, in local time, so a catch-up window that crosses
 //! midnight yields items on two dates.
 //!
+//! A project path inside a linked worktree is collected as its main
+//! repository (path and name), with every worktree folder as an extra root
+//! for conversations; `git log --all` from the main repository already
+//! covers the worktrees' branches.
+//!
 //! Every source is reached through [`ActivitySources`], so tests use fakes
 //! and never touch `gh`, the network or app data. A failing source is logged
 //! and skipped; the collection itself never fails.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::path::Path;
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 
-use crate::commands::claude_sessions::{list_claude_sessions, ClaudeSessionInfo};
+use crate::commands::claude_sessions::{list_claude_sessions_up_to, ClaudeSessionInfo};
 use crate::commands::git::git_user_config;
 use crate::commands::github::{github_auth_status, github_list_issues, github_list_prs};
 use crate::commands::session_summary::{cached_session_summaries, SessionSummary};
 use crate::core::work_journal_activity::{
     activity_dir, list_terminal_records, project_name_from_path, CandidateSource, TerminalRecord,
 };
-use crate::git::{CommitInfo, Git, GitUserConfig};
+use crate::git::{CommitInfo, Git, GitUserConfig, WorktreeInfo};
 use crate::github::{IssueInfo, PullRequestInfo};
+
+/// Claude conversations read per project (the main repo plus all its
+/// worktrees). History shows 50; a catch-up window across a repo and its
+/// worktrees can hold more, and the newest are kept first.
+const CLAUDE_SESSION_LIMIT: usize = 500;
 
 /// PRs or issues read per `gh` query.
 const GITHUB_LIST_LIMIT: u32 = 100;
@@ -72,7 +84,12 @@ pub struct ActivityItem {
 /// Where the collection reads each source from. The app uses
 /// [`LiveSources`]; tests pass fakes.
 trait ActivitySources {
-    async fn claude_sessions(&self, project: &str) -> Result<Vec<ClaudeSessionInfo>, String>;
+    async fn claude_sessions(
+        &self,
+        project: &str,
+        extra_roots: &[String],
+    ) -> Result<Vec<ClaudeSessionInfo>, String>;
+    async fn worktrees(&self, project: &str) -> Result<Vec<WorktreeInfo>, String>;
     async fn session_summaries(&self) -> HashMap<String, SessionSummary>;
     async fn git_user(&self, project: &str) -> Result<GitUserConfig, String>;
     async fn git_commits(
@@ -97,12 +114,20 @@ trait ActivitySources {
 struct LiveSources;
 
 impl ActivitySources for LiveSources {
-    async fn claude_sessions(&self, project: &str) -> Result<Vec<ClaudeSessionInfo>, String> {
-        // The History listing returns at most 50 sessions per project (the
-        // most recently active ones). A window near "now" is covered unless
-        // more than 50 conversations in one project were active since it
-        // began; older windows can lose sessions (PRD "Known risks").
-        let listing = list_claude_sessions(project.to_string(), None).await?;
+    async fn claude_sessions(
+        &self,
+        project: &str,
+        extra_roots: &[String],
+    ) -> Result<Vec<ClaudeSessionInfo>, String> {
+        // At most CLAUDE_SESSION_LIMIT sessions per project (the most
+        // recently active ones). A window near "now" is covered unless more
+        // were active since it began (PRD "Known risks").
+        let listing = list_claude_sessions_up_to(
+            project.to_string(),
+            extra_roots.to_vec(),
+            CLAUDE_SESSION_LIMIT,
+        )
+        .await?;
         if listing.truncated {
             log::debug!(
                 "Work journal: History listing for {project} truncated to {} of {} sessions",
@@ -111,6 +136,13 @@ impl ActivitySources for LiveSources {
             );
         }
         Ok(listing.sessions)
+    }
+
+    async fn worktrees(&self, project: &str) -> Result<Vec<WorktreeInfo>, String> {
+        Git::new(project)
+            .worktree_list()
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn session_summaries(&self) -> HashMap<String, SessionSummary> {
@@ -317,8 +349,17 @@ where
         return Vec::new();
     }
     let mut found: Vec<Found> = Vec::new();
+    let records = match sources.terminal_records(window.start, window.end).await {
+        Ok(records) => records,
+        Err(e) => {
+            log::warn!("Work journal: reading terminal records failed: {e}");
+            Vec::new()
+        }
+    };
 
-    if !projects.is_empty() {
+    let mut scopes = project_scopes(sources, projects).await;
+    add_terminal_folders(&mut scopes, &records);
+    if !scopes.is_empty() {
         let summaries = sources.session_summaries().await;
         // `gh` sign-in is per user, not per repo: ask once.
         let signed_in = match sources.github_signed_in().await {
@@ -331,14 +372,22 @@ where
         if !signed_in {
             log::debug!("Work journal: gh is not signed in, skipping GitHub");
         }
-        for project in projects {
-            let name = project_name_from_path(project);
+        for scope in &scopes {
+            let project = scope.path.as_str();
+            let name = scope.name.as_str();
+            let repo = !scope.conversations_only;
             let (claude, git, github) = tokio::join!(
-                claude_items(sources, project, &name, &summaries, window),
-                git_items(sources, project, &name, window),
+                claude_items(sources, scope, &summaries, window),
                 async {
-                    if signed_in {
-                        github_items(sources, project, &name, window).await
+                    if repo {
+                        git_items(sources, project, name, window).await
+                    } else {
+                        Vec::new()
+                    }
+                },
+                async {
+                    if repo && signed_in {
+                        github_items(sources, project, name, window).await
                     } else {
                         Vec::new()
                     }
@@ -350,10 +399,7 @@ where
         }
     }
 
-    match sources.terminal_records(window.start, window.end).await {
-        Ok(records) => found.extend(records.iter().filter_map(|r| terminal_item(r, window))),
-        Err(e) => log::warn!("Work journal: reading terminal records failed: {e}"),
-    }
+    found.extend(records.iter().filter_map(|r| terminal_item(r, window)));
 
     // Two paths of one repo (a worktree, a nested folder) report the same
     // commit, PR or conversation: list it once.
@@ -361,6 +407,179 @@ where
     found.retain(|f| seen.insert((format!("{:?}", f.item.source), f.item.key.clone())));
     found.sort_by_key(|f| f.at);
     found.into_iter().map(|f| f.item).collect()
+}
+
+/// One project to collect from: where git, `gh` and the History listing
+/// run, the name its items carry, and the extra folders searched for its
+/// conversations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectScope {
+    /// The given path, or for one inside a linked worktree the same place in
+    /// the main checkout (or the bare repository).
+    path: String,
+    /// The project name on its items.
+    name: String,
+    /// Extra roots for the History listing: the given paths and every
+    /// checkout of the repo (Maestro keeps worktrees outside the repo, where
+    /// the listing's own path sweep cannot reach them).
+    roots: Vec<String>,
+    /// A terminal folder outside every project (a removed worktree): only
+    /// its conversations are listed; git and `gh` would fail there.
+    conversations_only: bool,
+}
+
+/// A path for comparing: no Windows `\\?\` prefix, one kind of separator, no
+/// trailing separator.
+fn path_key(path: &str) -> String {
+    crate::core::samurai_injector::strip_extended_prefix(path.trim())
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Whether two paths name the same folder (ASCII case ignored, so a drive
+/// letter spelled `c:` or `C:` matches).
+fn same_path(a: &str, b: &str) -> bool {
+    path_key(a).eq_ignore_ascii_case(&path_key(b))
+}
+
+/// The part of `path` below `base` (`""` when they are the same folder), or
+/// `None` when `path` is not inside `base`.
+fn relative_to(path: &str, base: &str) -> Option<String> {
+    let (path, base) = (path_key(path), path_key(base));
+    let head = path.get(..base.len())?;
+    let rest = &path[base.len()..];
+    (head.eq_ignore_ascii_case(&base) && (rest.is_empty() || rest.starts_with('/')))
+        .then(|| rest.trim_start_matches('/').to_string())
+}
+
+/// Whether a `git worktree list` entry is a real checkout: not bare and not
+/// a hidden git dir (a submodule lists `super/.git/modules/<name>` as its
+/// main worktree).
+fn is_checkout(entry: &WorktreeInfo) -> bool {
+    !entry.is_bare && !path_key(&entry.path).split('/').any(|part| part == ".git")
+}
+
+/// Adds `root` to `roots` unless it is already there.
+fn push_root(roots: &mut Vec<String>, root: &str) {
+    if !roots.iter().any(|r| same_path(r, root)) {
+        roots.push(root.to_string());
+    }
+}
+
+/// Where `project` is collected from, given its repo's `git worktree list`:
+/// only a path inside a LINKED worktree moves, to the same subfolder of the
+/// main checkout, or to the bare repository (named without `.git`). A path
+/// inside the main checkout, a submodule or anything unclear stays put.
+fn scope_for(project: &str, list: &[WorktreeInfo]) -> ProjectScope {
+    let mut path = project.to_string();
+    let mut name = project_name_from_path(project);
+    let owner = list
+        .iter()
+        .filter_map(|w| relative_to(project, &w.path).map(|rest| (w, rest)))
+        .max_by_key(|(w, _)| path_key(&w.path).len());
+    let main = list.iter().find(|w| w.is_main_worktree);
+    if let (Some((owner, rest)), Some(main)) = (owner, main) {
+        if !owner.is_main_worktree {
+            if is_checkout(main) {
+                let same_place = if rest.is_empty() {
+                    main.path.clone()
+                } else {
+                    format!("{}/{rest}", main.path)
+                };
+                name = project_name_from_path(&same_place);
+                // A subfolder only on the worktree's branch is missing in the
+                // main checkout: git and `gh` run from its root instead.
+                path = if rest.is_empty() || Path::new(&same_place).is_dir() {
+                    same_place
+                } else {
+                    main.path.clone()
+                };
+            } else if main.is_bare {
+                path = main.path.clone();
+                let folder = project_name_from_path(&path);
+                name = folder
+                    .strip_suffix(".git")
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(&folder)
+                    .to_string();
+            }
+        }
+    }
+    let mut roots = vec![project.to_string()];
+    for entry in list.iter().filter(|w| is_checkout(w)) {
+        push_root(&mut roots, &entry.path);
+    }
+    ProjectScope {
+        path,
+        name,
+        roots,
+        conversations_only: false,
+    }
+}
+
+/// `projects` as scopes (see [`scope_for`]), in order, each place listed
+/// once with the union of its roots. A path whose worktrees cannot be
+/// listed (not a git repo, git missing) stays as it is.
+async fn project_scopes<S: ActivitySources>(sources: &S, projects: &[String]) -> Vec<ProjectScope> {
+    let mut scopes: Vec<ProjectScope> = Vec::new();
+    for project in projects {
+        let list = sources.worktrees(project).await.unwrap_or_else(|e| {
+            log::debug!("Work journal: listing worktrees of {project} failed: {e}");
+            Vec::new()
+        });
+        let scope = scope_for(project, &list);
+        match scopes.iter_mut().find(|s| same_path(&s.path, &scope.path)) {
+            Some(known) => {
+                for root in &scope.roots {
+                    push_root(&mut known.roots, root);
+                }
+            }
+            None => scopes.push(scope),
+        }
+    }
+    scopes
+}
+
+/// Adds the folders of the window's terminals as conversation roots, missing
+/// ones included (the History listing does not need the folder to exist), so
+/// a worktree removed before the run still yields its conversations. A
+/// folder goes to the project whose own path contains it (the deepest one),
+/// else to the first project with an extra root containing it, else to the
+/// project of the same name, else it is listed on its own under the
+/// terminal's project name.
+fn add_terminal_folders(scopes: &mut Vec<ProjectScope>, records: &[TerminalRecord]) {
+    for record in records {
+        let Some(folder) = record.repo_path.as_deref().filter(|p| !p.trim().is_empty()) else {
+            continue;
+        };
+        let own = scopes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| relative_to(folder, &s.path).is_some())
+            .max_by_key(|(_, s)| path_key(&s.path).len())
+            .map(|(i, _)| i);
+        let by_root = || {
+            scopes
+                .iter()
+                .position(|s| s.roots.iter().any(|r| relative_to(folder, r).is_some()))
+        };
+        if let Some(i) = own.or_else(by_root) {
+            push_root(&mut scopes[i].roots, folder);
+        } else if let Some(scope) = scopes
+            .iter_mut()
+            .find(|s| !s.conversations_only && s.name == record.project_name)
+        {
+            push_root(&mut scope.roots, folder);
+        } else {
+            scopes.push(ProjectScope {
+                path: folder.to_string(),
+                name: record.project_name.clone(),
+                roots: Vec::new(),
+                conversations_only: true,
+            });
+        }
+    }
 }
 
 fn parse_time(value: &str) -> Option<DateTime<Utc>> {
@@ -378,15 +597,15 @@ fn one_line(text: &str) -> String {
 /// timed by their start when it is inside, else by their last activity.
 async fn claude_items<S: ActivitySources, Tz: TimeZone>(
     sources: &S,
-    project: &str,
-    name: &str,
+    scope: &ProjectScope,
     summaries: &HashMap<String, SessionSummary>,
     window: &Window<Tz>,
 ) -> Vec<Found>
 where
     Tz::Offset: Display,
 {
-    let sessions = match sources.claude_sessions(project).await {
+    let name = scope.name.as_str();
+    let sessions = match sources.claude_sessions(&scope.path, &scope.roots).await {
         Ok(sessions) => sessions,
         Err(e) => {
             log::warn!("Work journal: listing Claude sessions for {name} failed: {e}");
@@ -720,6 +939,8 @@ mod tests {
         prs: HashMap<String, Result<Vec<(String, PullRequestInfo)>, String>>,
         issues: HashMap<String, Result<Vec<(String, IssueInfo)>, String>>,
         terminals: Option<Result<Vec<TerminalRecord>, String>>,
+        worktrees: HashMap<String, Result<Vec<WorktreeInfo>, String>>,
+        session_calls: Mutex<Vec<(String, Vec<String>)>>,
         gh_searches: Mutex<Vec<String>>,
         commit_windows: Mutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
     }
@@ -741,11 +962,27 @@ mod tests {
     }
 
     impl ActivitySources for Fake {
-        async fn claude_sessions(&self, project: &str) -> Result<Vec<ClaudeSessionInfo>, String> {
+        async fn claude_sessions(
+            &self,
+            project: &str,
+            extra_roots: &[String],
+        ) -> Result<Vec<ClaudeSessionInfo>, String> {
+            self.session_calls
+                .lock()
+                .unwrap()
+                .push((project.to_string(), extra_roots.to_vec()));
             self.sessions
                 .get(project)
                 .cloned()
                 .unwrap_or(Ok(Vec::new()))
+        }
+
+        /// No entry: not a git repository (the path is used as it is).
+        async fn worktrees(&self, project: &str) -> Result<Vec<WorktreeInfo>, String> {
+            self.worktrees
+                .get(project)
+                .cloned()
+                .unwrap_or_else(|| Err("not a git repository".to_string()))
         }
 
         async fn session_summaries(&self) -> HashMap<String, SessionSummary> {
@@ -823,6 +1060,16 @@ mod tests {
             cwd_exists: false,
             resumable: false,
             resume_blocked_reason: None,
+        }
+    }
+
+    fn worktree(path: &str, main: bool, bare: bool) -> WorktreeInfo {
+        WorktreeInfo {
+            path: path.to_string(),
+            head: "abc".to_string(),
+            branch: None,
+            is_bare: bare,
+            is_main_worktree: main,
         }
     }
 
@@ -1296,6 +1543,265 @@ mod tests {
                 CandidateSource::Git,
                 CandidateSource::Claude
             ]
+        );
+    }
+
+    /// A main repo `C:/git/proj` (as git spells it) with a Maestro worktree
+    /// outside it and one that was removed but not yet pruned.
+    const WORKTREE: &str = "C:/data/worktrees/proj-1a2b/main-417b4ed5";
+    const REMOVED: &str = "C:/data/worktrees/proj-1a2b/gone-99";
+
+    fn proj_worktrees() -> Result<Vec<WorktreeInfo>, String> {
+        Ok(vec![
+            worktree("C:/git/proj", true, false),
+            worktree(WORKTREE, false, false),
+            worktree(REMOVED, false, false),
+        ])
+    }
+
+    #[tokio::test]
+    async fn worktree_folders_are_passed_as_extra_roots() {
+        let mut fake = Fake::default();
+        fake.worktrees.insert(PROJECT.into(), proj_worktrees());
+        fake.sessions
+            .insert(PROJECT.into(), Ok(vec![session("in-worktree", 10, 20)]));
+        let items = collect(&fake, &[PROJECT]).await;
+        assert_eq!(
+            texts(&items),
+            vec!["Claude conversation: prompt of in-worktree"]
+        );
+        assert_eq!(
+            *fake.session_calls.lock().unwrap(),
+            vec![(
+                PROJECT.to_string(),
+                vec![
+                    PROJECT.to_string(),
+                    WORKTREE.to_string(),
+                    REMOVED.to_string()
+                ]
+            )],
+            "the open tab's own spelling is kept; every worktree is a root"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worktree_path_collapses_to_its_main_repo_and_name() {
+        let mut fake = Fake::default();
+        fake.worktrees.insert(PROJECT.into(), proj_worktrees());
+        fake.worktrees.insert(WORKTREE.into(), proj_worktrees());
+        fake.sessions
+            .insert("C:/git/proj".into(), Ok(vec![session("s", 10, 20)]));
+        fake.users.insert("C:/git/proj".into(), me());
+        fake.commits.insert(
+            "C:/git/proj".into(),
+            Ok(vec![commit(
+                "c1",
+                "Me Myself",
+                "me@example.com",
+                at(30),
+                "worktree commit",
+            )]),
+        );
+
+        let items = collect(&fake, &[WORKTREE]).await;
+        assert_eq!(
+            texts(&items),
+            vec!["Claude conversation: prompt of s", "worktree commit"]
+        );
+        assert!(
+            items.iter().all(|i| i.project == "proj"),
+            "labelled with the main repo, not main-417b4ed5"
+        );
+        assert_eq!(
+            fake.session_calls.lock().unwrap()[0].0,
+            "C:/git/proj",
+            "conversations are listed from the main repo"
+        );
+
+        // The main repo and its worktree are one project: listed once.
+        fake.session_calls.lock().unwrap().clear();
+        fake.gh_searches.lock().unwrap().clear();
+        let items = collect(&fake, &[WORKTREE, PROJECT]).await;
+        assert_eq!(items.len(), 2, "each conversation and commit listed once");
+        assert_eq!(fake.session_calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            fake.gh_searches.lock().unwrap().len(),
+            4,
+            "one project's gh queries"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_whose_worktrees_cannot_be_listed_is_collected_as_it_is() {
+        let mut fake = Fake::default();
+        fake.sessions
+            .insert(OTHER.into(), Ok(vec![session("plain", 10, 20)]));
+        let items = collect(&fake, &[OTHER]).await;
+        assert_eq!(texts(&items), vec!["Claude conversation: prompt of plain"]);
+        assert_eq!(items[0].project, "other");
+        assert_eq!(
+            *fake.session_calls.lock().unwrap(),
+            vec![(OTHER.to_string(), vec![OTHER.to_string()])]
+        );
+    }
+
+    fn roots(scope: &ProjectScope) -> Vec<&str> {
+        scope.roots.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn a_submodule_checkout_stays_put() {
+        // git lists a submodule's hidden git dir as its main worktree.
+        let list = vec![worktree("C:/super/.git/modules/mod", true, false)];
+        let scope = scope_for("C:/super/mod", &list);
+        assert_eq!(scope.path, "C:/super/mod");
+        assert_eq!(scope.name, "mod");
+        assert_eq!(roots(&scope), vec!["C:/super/mod"]);
+    }
+
+    #[tokio::test]
+    async fn worktrees_of_a_bare_repo_are_one_project_named_without_git() {
+        let list = vec![
+            worktree("C:/repos/proj.git", true, true),
+            worktree("C:/wt/a", false, false),
+            worktree("C:/wt/b", false, false),
+        ];
+        let scope = scope_for("C:/wt/a", &list);
+        assert_eq!(scope.path, "C:/repos/proj.git");
+        assert_eq!(scope.name, "proj");
+        assert_eq!(roots(&scope), vec!["C:/wt/a", "C:/wt/b"]);
+
+        let mut fake = Fake::default();
+        fake.worktrees.insert("C:/wt/a".into(), Ok(list.clone()));
+        fake.worktrees.insert("C:/wt/b".into(), Ok(list));
+        let projects = vec!["C:/wt/a".to_string(), "C:/wt/b".to_string()];
+        let scopes = project_scopes(&fake, &projects).await;
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(roots(&scopes[0]), vec!["C:/wt/a", "C:/wt/b"]);
+    }
+
+    #[test]
+    fn a_subfolder_of_the_main_checkout_keeps_its_own_path_and_name() {
+        let list = vec![
+            worktree("C:/git/mono", true, false),
+            worktree(WORKTREE, false, false),
+        ];
+        let scope = scope_for(r"C:\git\mono\app", &list);
+        assert_eq!(scope.path, r"C:\git\mono\app");
+        assert_eq!(scope.name, "app");
+        assert_eq!(
+            roots(&scope),
+            vec![r"C:\git\mono\app", "C:/git/mono", WORKTREE]
+        );
+    }
+
+    #[test]
+    fn a_subfolder_of_a_linked_worktree_moves_to_the_same_place_in_the_main_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = path_key(&dir.path().join("mono").to_string_lossy());
+        std::fs::create_dir_all(format!("{main}/app")).unwrap();
+        let list = vec![
+            worktree(&main, true, false),
+            worktree(WORKTREE, false, false),
+        ];
+        let inside = format!("{WORKTREE}/app");
+        let scope = scope_for(&inside, &list);
+        assert_eq!(scope.path, format!("{main}/app"));
+        assert_eq!(scope.name, "app");
+        assert_eq!(
+            roots(&scope),
+            vec![inside.as_str(), main.as_str(), WORKTREE]
+        );
+    }
+
+    #[test]
+    fn a_worktree_only_subfolder_runs_git_from_the_main_root_but_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = path_key(&dir.path().join("mono").to_string_lossy());
+        std::fs::create_dir_all(&main).unwrap();
+        let list = vec![
+            worktree(&main, true, false),
+            worktree(WORKTREE, false, false),
+        ];
+        let scope = scope_for(&format!("{WORKTREE}/new-app"), &list);
+        assert_eq!(scope.path, main, "new-app is not in the main checkout");
+        assert_eq!(scope.name, "new-app");
+    }
+
+    #[tokio::test]
+    async fn a_terminal_folder_goes_to_the_project_whose_own_path_holds_it() {
+        let list = Ok(vec![worktree("C:/git/mono", true, false)]);
+        let mut fake = Fake::default();
+        fake.worktrees
+            .insert("C:/git/mono/app".into(), list.clone());
+        fake.worktrees.insert("C:/git/mono/web".into(), list);
+        let projects = vec!["C:/git/mono/app".to_string(), "C:/git/mono/web".to_string()];
+        let mut scopes = project_scopes(&fake, &projects).await;
+        let record = TerminalRecord {
+            project_name: "mono".to_string(),
+            repo_path: Some("C:/git/mono/web/src".to_string()),
+            ..terminal("t", 0, None)
+        };
+        add_terminal_folders(&mut scopes, &[record]);
+        assert_eq!(roots(&scopes[0]), vec!["C:/git/mono/app", "C:/git/mono"]);
+        assert_eq!(
+            roots(&scopes[1]),
+            vec!["C:/git/mono/web", "C:/git/mono", "C:/git/mono/web/src"],
+            "web's terminal is web's, not app's (app's roots hold C:/git/mono too)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_worktree_of_a_terminal_still_yields_its_conversations() {
+        let gone = "C:/data/worktrees/proj-1a2b/old-1";
+        let elsewhere = "C:/data/worktrees/side-9/old-2";
+        let mut fake = Fake::default();
+        fake.worktrees.insert(PROJECT.into(), proj_worktrees());
+        fake.users.insert(PROJECT.into(), me());
+        fake.users.insert(elsewhere.into(), me());
+        fake.sessions.insert(
+            PROJECT.into(),
+            Ok(vec![session("in-gone-worktree", 10, 20)]),
+        );
+        fake.sessions.insert(
+            elsewhere.into(),
+            Ok(vec![session("in-side-worktree", 30, 40)]),
+        );
+        let record = |id: &str, project: &str, folder: &str| TerminalRecord {
+            project_name: project.to_string(),
+            repo_path: Some(folder.to_string()),
+            ..terminal(id, -30, Some(-20))
+        };
+        fake.terminals = Some(Ok(vec![
+            record("t1", "proj", gone),
+            record("t2", "side", elsewhere),
+        ]));
+
+        let items = collect(&fake, &[PROJECT]).await;
+
+        let claude: Vec<(&str, &str)> = items
+            .iter()
+            .filter(|i| i.source == CandidateSource::Claude)
+            .map(|i| (i.text.as_str(), i.project.as_str()))
+            .collect();
+        assert_eq!(
+            claude,
+            vec![
+                ("Claude conversation: prompt of in-gone-worktree", "proj"),
+                ("Claude conversation: prompt of in-side-worktree", "side"),
+            ]
+        );
+        let calls = fake.session_calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(
+            calls[0].1.iter().any(|r| r == gone),
+            "the removed worktree is searched with its project: {calls:?}"
+        );
+        assert_eq!(calls[1], (elsewhere.to_string(), Vec::new()));
+        assert_eq!(
+            fake.commit_windows.lock().unwrap().len(),
+            1,
+            "no git log in a terminal folder of its own, which may be gone"
         );
     }
 
