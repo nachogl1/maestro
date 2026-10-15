@@ -27,6 +27,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: suggested lines from your activity appear under the page with a source tag — accept adds the line to the page, reject hides it; the pane icon counts today's suggestions.",
       "Work Journal: if Granola is connected in your Claude setup and you say yes once, suggestions also cover your meetings; change the choice in Settings.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
+      "Parked terminals stop popping back out for nothing: the CLI's 60-second idle reminder, sign-in notices, finished background agents and usage-limit auto-resumes no longer unpark a terminal — only a real question, permission prompt, finished or failed run does.",
     ],
   },
   {

@@ -800,15 +800,50 @@ async fn handle_hook_post_tool(
     StatusCode::OK
 }
 
+/// What one Notification hook means for the status indicator, decided by its
+/// `notification_type` (see [`classify_notification`]).
+#[derive(Debug, PartialEq, Eq)]
+enum NotificationKind {
+    /// The CLI is blocked on the human right now → NeedsInput.
+    Wait,
+    /// The `idle_prompt` reminder: Claude finished ~60s ago and nothing was
+    /// typed since. Not a new wait — the Stop hook announced that turn end.
+    IdleReminder,
+    /// Purely informational (sign-in done, a background agent finished, an
+    /// MCP elicitation round-tripped, a usage-limit wait resumed by itself):
+    /// nobody has to do anything, so it must not touch the status.
+    Informational,
+}
+
+/// Sorts a Notification by `notification_type`. Unknown or absent types are
+/// treated as a wait, which is what every Notification used to mean — the
+/// safe default when a new kind of prompt appears.
+fn classify_notification(notification_type: &str) -> NotificationKind {
+    match notification_type {
+        "idle_prompt" => NotificationKind::IdleReminder,
+        "auth_success"
+        | "elicitation_complete"
+        | "elicitation_response"
+        | "agent_completed"
+        | "quota_auto_resume_fired" => NotificationKind::Informational,
+        _ => NotificationKind::Wait,
+    }
+}
+
 /// Handle the Notification hook callback.
 ///
-/// Claude Code fires Notification precisely when it is waiting on the human:
-/// permission prompts ("Claude needs your permission to use Bash") and the
-/// idle-prompt reminder (input sat unanswered for 60+ seconds). Both mean
-/// NeedsInput. This is the reliable mid-turn needs-input signal issue #105
-/// classes 1 and 3 were missing: a permission prompt produces PTY output
-/// (which the frontend heuristic read as "Working") but, before this hook,
-/// no event at all.
+/// Claude Code fires Notification when it is waiting on the human — permission
+/// prompts ("Claude needs your permission to use Bash"), MCP elicitation
+/// dialogs — and that means NeedsInput. This is the reliable mid-turn
+/// needs-input signal issue #105 classes 1 and 3 were missing: a permission
+/// prompt produces PTY output (which the frontend heuristic read as "Working")
+/// but, before this hook, no event at all.
+///
+/// Not every Notification is a wait, though, and treating them all as one is
+/// what kept pulling parked terminals back into the grid with nothing to do:
+/// the 60s `idle_prompt` reminder is forwarded as the wire-only
+/// "IdleReminder" (the frontend repaints but never auto-unparks on it), and
+/// the informational types are dropped outright.
 async fn handle_hook_notification(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -834,10 +869,27 @@ async fn handle_hook_notification(
         .unwrap_or("Claude is waiting for your input")
         .to_string();
 
+    let notification_type = payload
+        .extra
+        .get("notification_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     info!(
-        "[HOOK] notification: maestro_session={}, message={}",
-        maestro_session_id, message
+        "[HOOK] notification: maestro_session={}, type={}, message={}",
+        maestro_session_id, notification_type, message
     );
+
+    match classify_notification(notification_type) {
+        NotificationKind::Informational => return StatusCode::OK,
+        NotificationKind::IdleReminder => {
+            // No shield stamp: the shield guards a permission prompt against
+            // its gated tool's late PreToolUse, and a reminder gates nothing.
+            emit_hook_status(&state, maestro_session_id, "IdleReminder", &message, None).await;
+            return StatusCode::OK;
+        }
+        NotificationKind::Wait => {}
+    }
 
     // Issue #109: stamp the shield BEFORE emitting, so the gated tool's late
     // async PreToolUse can never slip between the emit and the stamp.
@@ -1403,6 +1455,102 @@ mod tests {
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].status, "NeedsInput");
         assert_eq!(emitted[0].message, "Claude is waiting for your input");
+    }
+
+    #[test]
+    fn notification_kind_table() {
+        for wait in [
+            "permission_prompt",
+            "elicitation_dialog",
+            "elicitation_url_dialog",
+            "agent_needs_input",
+            "quota_auto_resume_stale",
+            "quota_auto_resume_disabled",
+            "some_future_prompt",
+            "",
+        ] {
+            assert_eq!(
+                classify_notification(wait),
+                NotificationKind::Wait,
+                "{wait}"
+            );
+        }
+        assert_eq!(
+            classify_notification("idle_prompt"),
+            NotificationKind::IdleReminder
+        );
+        for info in [
+            "auth_success",
+            "elicitation_complete",
+            "elicitation_response",
+            "agent_completed",
+            "quota_auto_resume_fired",
+        ] {
+            assert_eq!(
+                classify_notification(info),
+                NotificationKind::Informational,
+                "{info}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_hook_forwards_idle_prompt_as_reminder_without_shield() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, state) = start_test_http_server_with_state("inst-secret", emit_fn).await;
+        state
+            .session_projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let body = serde_json::json!({
+            "session_id": "claude-uuid",
+            "hook_event_name": "Notification",
+            "notification_type": "idle_prompt",
+            "message": "Claude is waiting for your input",
+        });
+        assert_eq!(
+            post_hook(addr, "/hook/notification", Some("inst-secret"), body).await,
+            200
+        );
+
+        {
+            let emitted = events.lock().unwrap();
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].status, "IdleReminder");
+            assert_eq!(emitted[0].message, "Claude is waiting for your input");
+            assert!(emitted[0].needs_input_prompt.is_none());
+        }
+        // A reminder gates no tool, so it must not arm the issue-#109 shield.
+        assert!(state.notified_at.read().await.get(&1).is_none());
+    }
+
+    #[tokio::test]
+    async fn notification_hook_drops_informational_types() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, state) = start_test_http_server_with_state("inst-secret", emit_fn).await;
+        state
+            .session_projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        for notification_type in ["auth_success", "agent_completed", "quota_auto_resume_fired"] {
+            let body = serde_json::json!({
+                "session_id": "claude-uuid",
+                "hook_event_name": "Notification",
+                "notification_type": notification_type,
+                "message": "Background agent finished",
+            });
+            assert_eq!(
+                post_hook(addr, "/hook/notification", Some("inst-secret"), body).await,
+                200
+            );
+        }
+
+        assert!(events.lock().unwrap().is_empty());
+        assert!(state.notified_at.read().await.get(&1).is_none());
     }
 
     #[tokio::test]

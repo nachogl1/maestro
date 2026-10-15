@@ -192,7 +192,55 @@ describe("resolveStatusEvent: signal → state table", () => {
       incoming: "NeedsInput",
       expected: "NeedsInput",
     },
+    // IdleReminder (Notification idle_prompt): repaints a lost or overwritten
+    // turn end, dropped on Done/Error and while subagents still run.
+    {
+      name: "Idle reminder onto Working (turn end lost or overwritten)",
+      existing: "Working",
+      incoming: "IdleReminder",
+      expected: "NeedsInput",
+    },
+    {
+      name: "Idle reminder onto Idle",
+      existing: "Idle",
+      incoming: "IdleReminder",
+      expected: "NeedsInput",
+    },
+    {
+      name: "Idle reminder dropped on Done",
+      existing: "Done",
+      incoming: "IdleReminder",
+      expected: null,
+    },
+    {
+      name: "Idle reminder dropped on Error",
+      existing: "Error",
+      incoming: "IdleReminder",
+      expected: null,
+    },
+    {
+      name: "Idle reminder dropped while subagents run",
+      existing: "Working",
+      incoming: "IdleReminder",
+      subagents: 1,
+      expected: null,
+    },
   ];
+
+  it("the idle reminder is marked so it never auto-unparks", () => {
+    const resolved = resolveStatusEvent(
+      { status: "IdleReminder" as BackendSessionStatus, message: "msg" },
+      "Working",
+      0,
+    );
+    expect(resolved?.suppressAutoUnpark).toBe(true);
+    const stop = resolveStatusEvent(
+      { status: "AwaitingInput" as BackendSessionStatus, message: "msg" },
+      "Working",
+      0,
+    );
+    expect(stop?.suppressAutoUnpark).toBeUndefined();
+  });
 
   it.each(rows)("$name", ({ existing, incoming, subagents, reportedThisTurn, expected }) => {
     const resolved = resolveStatusEvent(
