@@ -26,7 +26,7 @@ type ReportResultState =
   | { kind: "saved"; path: string }
   | { kind: "nothing" }
   | { kind: "error"; message: string }
-  // The saved folder is gone: Generate waits until another is chosen.
+  // The saved folder is gone: offers "Choose folder" next to the message.
   | { kind: "folder_missing"; message: string }
   | { kind: "folder_chosen"; path: string };
 
@@ -52,8 +52,8 @@ const DATE_INPUT =
  * days ending today), Generate, and the result. Before the first report,
  * Generate asks for the report folder and saves it. The report is written
  * by the backend straight into that folder; "Open folder" reveals the file.
- * When the saved folder is gone, the dialog offers "Choose folder" and
- * Generate waits until one is chosen (it never starts a report by itself).
+ * When the saved folder is gone, the dialog offers "Choose folder"; choosing
+ * one never starts a report by itself.
  * The dialog cannot be closed while a report runs (nothing would cancel it).
  */
 export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
@@ -78,7 +78,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
 
   const datesValid = isValidJournalDate(from) && isValidJournalDate(to);
   const reversed = datesValid && from > to;
-  const canGenerate = datesValid && !reversed && !running && result?.kind !== "folder_missing";
+  const canGenerate = datesValid && !reversed && !running;
 
   /** Asks for the report folder and saves it; null when cancelled or not saved. */
   const pickFolder = async (): Promise<string | null> => {

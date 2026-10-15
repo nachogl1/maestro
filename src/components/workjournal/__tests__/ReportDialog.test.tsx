@@ -149,7 +149,6 @@ describe("ReportDialog", () => {
     fireEvent.click(generateButton());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(GONE);
-    expect(generateButton()).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
 
@@ -172,7 +171,7 @@ describe("ReportDialog", () => {
     expect(runs).toBe(2);
   });
 
-  it("keeps Generate off when the new-folder picker is cancelled", async () => {
+  it("keeps the message and Generate on when the new-folder picker is cancelled", async () => {
     routeInvoke("D:\\Old", () => ({ status: "folder_missing", message: "The folder is gone." }));
     openMock.mockResolvedValue(null);
     render(<ReportDialog onClose={vi.fn()} />);
@@ -182,7 +181,7 @@ describe("ReportDialog", () => {
 
     await waitFor(() => expect(openMock).toHaveBeenCalled());
     expect(screen.getByRole("alert")).toHaveTextContent("The folder is gone.");
-    expect(generateButton()).toBeDisabled();
+    expect(generateButton()).toBeEnabled();
     expect(commands()).not.toContain("update_work_journal_settings");
   });
 
