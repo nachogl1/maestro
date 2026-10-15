@@ -36,7 +36,10 @@ export function useAgentNameSync(): void {
 
     const tick = async () => {
       const terminals = claudeTerminals();
-      if (terminals.some((t) => t.conversationId)) {
+      // Every Claude terminal is a candidate: the backend matches a live
+      // claude to its terminal by process tree, so a conversation id (which
+      // only the SessionStart hook reports) is not required.
+      if (terminals.length > 0) {
         try {
           const live = await listLiveAgentNames();
           if (stopped) return;
