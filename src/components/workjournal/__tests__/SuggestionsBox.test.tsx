@@ -184,7 +184,11 @@ describe("SuggestionsBox", () => {
 
   it("names each row's Accept and Reject buttons after its suggestion, cut to 60 characters", async () => {
     const long = "A".repeat(80);
-    candidates = [candidate("n1", "Merged the login fix"), candidate("n2", long)];
+    candidates = [
+      candidate("n1", "Merged the login fix"),
+      candidate("n2", long),
+      candidate("n3", `${"B".repeat(50)}😀 tail`),
+    ];
     render(<WorkJournalPanel />);
     await screen.findByText("14:05 - Merged the login fix");
 
@@ -202,6 +206,11 @@ describe("SuggestionsBox", () => {
     expect(cut).toHaveLength(60);
     expect(within(box()).getByRole("button", { name: `Accept suggestion: ${cut}` })).toBeVisible();
     expect(within(box()).getByRole("button", { name: `Reject suggestion: ${cut}` })).toBeVisible();
+    // An emoji at the cut is kept whole, not split into half a surrogate pair.
+    const emojiCut = `14:05 - ${"B".repeat(50)}😀…`;
+    expect(
+      within(box()).getByRole("button", { name: `Accept suggestion: ${emojiCut}` }),
+    ).toBeVisible();
   });
 
   it("maps every source to its exact tag", async () => {

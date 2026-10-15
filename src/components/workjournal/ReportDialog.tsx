@@ -51,7 +51,9 @@ function localDateDaysBefore(now: Date, days: number): string {
 }
 
 /** What Tab can land on inside the dialog. */
-const FOCUSABLE = "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])";
+const FOCUSABLE =
+  "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), " +
+  "select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])";
 
 const DATE_INPUT =
   "rounded border border-maestro-border bg-maestro-card px-1.5 py-0.5 text-xs text-maestro-text outline-none focus:border-maestro-accent";
@@ -89,7 +91,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
     fromRef.current?.focus();
     const handleKeyDown = (e: KeyboardEvent): void => {
       const dialog = dialogRef.current;
-      if (e.key !== "Tab" || !dialog) return;
+      if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey || !dialog) return;
       const items = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE));
       const first = items[0];
       const last = items[items.length - 1];

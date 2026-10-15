@@ -264,6 +264,9 @@ describe("ReportDialog", () => {
     expect(close).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(generateButton()).toHaveFocus();
+    // Ctrl+Tab (next project) is not the dialog's to handle.
+    fireEvent.keyDown(document, { key: "Tab", ctrlKey: true });
+    expect(generateButton()).toHaveFocus();
     // Focus that escaped to the page is pulled back in.
     opener.focus();
     fireEvent.keyDown(document, { key: "Tab" });

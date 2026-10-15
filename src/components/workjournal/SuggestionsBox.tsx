@@ -62,8 +62,11 @@ const LABEL_TEXT_MAX = 60;
 
 /** The suggestion's line for its button labels, cut to {@link LABEL_TEXT_MAX} characters. */
 function labelText(candidate: WorkJournalCandidate): string {
-  const line = candidateLine(candidate);
-  return line.length > LABEL_TEXT_MAX ? `${line.slice(0, LABEL_TEXT_MAX - 1)}…` : line;
+  // Code points, so an emoji is never cut in half.
+  const chars = Array.from(candidateLine(candidate));
+  return chars.length > LABEL_TEXT_MAX
+    ? `${chars.slice(0, LABEL_TEXT_MAX - 1).join("")}…`
+    : chars.join("");
 }
 
 /** "next run" text: "soon" before the start-up catch-up run, HH:MM, or "—" when unknown. */
