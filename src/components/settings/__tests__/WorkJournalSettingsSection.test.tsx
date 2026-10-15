@@ -1,19 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { message, open } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AUTO_BACKUP_WARNING_TITLE,
   useWorkJournalBackupStore,
+  type WorkJournalBackupFile,
   type WorkJournalBackupSettings,
 } from "@/stores/useWorkJournalBackupStore";
 import { WorkJournalSettingsSection } from "../WorkJournalSettingsSection";
 
 const invokeMock = vi.mocked(invoke);
 const openMock = vi.mocked(open);
+const messageMock = vi.mocked(message);
 
 const INITIAL_STATE = useWorkJournalBackupStore.getState();
 
-function journal(settings: WorkJournalBackupSettings) {
+function journal(settings: WorkJournalBackupSettings): WorkJournalBackupFile {
   return { layout_version: 1, pages: {}, deleted_dates: [], settings };
 }
 
@@ -34,6 +37,7 @@ describe("WorkJournalSettingsSection", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     openMock.mockReset();
+    messageMock.mockReset();
     useWorkJournalBackupStore.setState(INITIAL_STATE, true);
   });
 
@@ -76,7 +80,7 @@ describe("WorkJournalSettingsSection", () => {
     routeInvoke({
       load_work_journal: () => journal({ backup_folder: "D:\\Gone", last_backup_at: lastBackupAt }),
       work_journal_backup_now: () => {
-        throw "The backup folder D:\\Gone does not exist.";
+        throw "Backup failed: the backup folder D:\\Gone does not exist.";
       },
     });
 
@@ -84,9 +88,47 @@ describe("WorkJournalSettingsSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Backup failed: The backup folder D:\\Gone does not exist.",
+      "Backup failed: the backup folder D:\\Gone does not exist.",
     );
     expect(screen.getByText(`Last backup: ${shownTime(lastBackupAt)}`)).toBeInTheDocument();
+    expect(messageMock).not.toHaveBeenCalled();
+  });
+
+  it("shows why a backup was skipped to protect an existing backup", async () => {
+    const skipped =
+      "Backup skipped: this folder already holds a backup and the journal here is empty. " +
+      "Restore from it first, or choose another folder.";
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      work_journal_backup_now: () => {
+        throw skipped;
+      },
+    });
+
+    render(<WorkJournalSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(skipped);
+    expect(screen.getByText("Never backed up")).toBeInTheDocument();
+  });
+
+  it("clears an earlier load error once a load succeeds", async () => {
+    let fail = true;
+    routeInvoke({
+      load_work_journal: () => {
+        if (fail) throw "Failed to read the work journal: busy";
+        return journal({ backup_folder: "D:\\OneDrive" });
+      },
+    });
+
+    const { unmount } = render(<WorkJournalSettingsSection />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("busy");
+    unmount();
+
+    fail = false;
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("saves a chosen folder through the settings patch and backs up to it", async () => {
@@ -123,20 +165,67 @@ describe("WorkJournalSettingsSection", () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 
-  it("shows an automatic backup failure in the section", async () => {
+  it("shows an automatic backup failure in the section and warns once per failure run", async () => {
+    const failure = "Backup failed: the backup folder D:\\Gone does not exist.";
+    let ifDueFails = true;
     routeInvoke({
       load_work_journal: () => journal({ backup_folder: "D:\\Gone" }),
       work_journal_backup_if_due: () => {
-        throw "The backup folder D:\\Gone does not exist.";
+        if (ifDueFails) throw failure;
+        return journal({ backup_folder: "D:\\Gone", last_backup_at: "2026-10-15T09:00:00Z" });
       },
     });
+    const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
 
     render(<WorkJournalSettingsSection />);
     await screen.findByText("D:\\Gone");
-    await act(() => useWorkJournalBackupStore.getState().backUpIfDue());
+    await act(() => backUpIfDue());
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Automatic backup failed: The backup folder D:\\Gone does not exist.",
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(`Automatic backup: ${failure}`);
+    expect(messageMock).toHaveBeenCalledTimes(1);
+    expect(messageMock).toHaveBeenCalledWith(failure, {
+      title: AUTO_BACKUP_WARNING_TITLE,
+      kind: "warning",
+    });
+
+    // The hourly retry fails again: no second warning.
+    await act(() => backUpIfDue());
+    expect(messageMock).toHaveBeenCalledTimes(1);
+
+    // A success ends the run; the next failure warns again.
+    ifDueFails = false;
+    await act(() => backUpIfDue());
+    expect(screen.queryByRole("alert")).toBeNull();
+    ifDueFails = true;
+    await act(() => backUpIfDue());
+    expect(messageMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns again after the folder changes", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\Gone" }),
+      work_journal_backup_if_due: () => {
+        throw "Backup failed: the backup folder D:\\Gone does not exist.";
+      },
+      update_work_journal_settings: () => journal({ backup_folder: "E:\\Other" }),
+      work_journal_backup_now: () => {
+        throw "Backup failed: the backup folder E:\\Other does not exist.";
+      },
+    });
+    openMock.mockResolvedValue("E:\\Other");
+    const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\Gone");
+    await act(() => backUpIfDue());
+    expect(messageMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Choose folder/ }));
+    await screen.findByText("E:\\Other");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("work_journal_backup_now"));
+    expect(messageMock).toHaveBeenCalledTimes(1);
+
+    await act(() => backUpIfDue());
+    expect(messageMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -72,8 +72,22 @@ pub enum WorkJournalError {
     Serialize(#[source] serde_json::Error),
     #[error("No backup folder chosen. Pick one in Settings to enable the backup.")]
     NoBackupFolder,
-    #[error("The backup folder {0} does not exist. Choose another folder or create it again.")]
+    #[error(
+        "Backup failed: the backup folder {0} does not exist. Choose another folder or create \
+         it again."
+    )]
     BackupFolderMissing(String),
+    #[error("Backup failed: {0} is a file, not a folder. Choose a folder for the backup.")]
+    BackupFolderNotAFolder(String),
+    #[error(
+        "Backup skipped: this folder already holds a backup and the journal here is empty. \
+         Restore from it first, or choose another folder."
+    )]
+    BackupWouldOverwriteWithEmpty,
+    #[error("Backup failed: {0}")]
+    BackupWrite(String),
+    #[error("Backup written, but the backup time could not be saved: {0}")]
+    BackupTimeNotSaved(String),
     /// Message from the shared `atomic_write` helper, which reports `String`.
     #[error("{0}")]
     Write(String),
@@ -404,6 +418,10 @@ pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Optio
 /// Checks the folder exists (never creates it, unlike [`save`]), writes the
 /// backup crash-safely, then saves the local journal with the new
 /// `last_backup_at`. The backup carries that same time.
+///
+/// An empty local journal never replaces an existing backup file (a new
+/// machine pointed at the old machine's folder would otherwise wipe the only
+/// copy). Only the file's existence is checked; the backup is never read.
 fn write_backup(
     path: &Path,
     mut journal: WorkJournal,
@@ -411,15 +429,21 @@ fn write_backup(
     now: DateTime<Utc>,
 ) -> WorkJournalResult<WorkJournal> {
     if !folder.is_dir() {
-        return Err(WorkJournalError::BackupFolderMissing(
-            folder.display().to_string(),
-        ));
+        let shown = folder.display().to_string();
+        return Err(if folder.exists() {
+            WorkJournalError::BackupFolderNotAFolder(shown)
+        } else {
+            WorkJournalError::BackupFolderMissing(shown)
+        });
+    }
+    let target = backup_path(folder);
+    if journal.pages.is_empty() && target.exists() {
+        return Err(WorkJournalError::BackupWouldOverwriteWithEmpty);
     }
     journal.settings.last_backup_at = Some(now.to_rfc3339_opts(SecondsFormat::Secs, true));
     let bytes = serde_json::to_vec_pretty(&journal).map_err(WorkJournalError::Serialize)?;
-    let target = backup_path(folder);
-    atomic_write_via(&target, &tmp_path(&target), &bytes).map_err(WorkJournalError::Write)?;
-    save(path, &journal)?;
+    atomic_write_via(&target, &tmp_path(&target), &bytes).map_err(WorkJournalError::BackupWrite)?;
+    save(path, &journal).map_err(|e| WorkJournalError::BackupTimeNotSaved(e.to_string()))?;
     Ok(journal)
 }
 
@@ -930,7 +954,11 @@ mod tests {
         // before it touches the previous backup or the journal.
         std::fs::create_dir(tmp_path(&target)).unwrap();
         let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
-        assert!(matches!(err, WorkJournalError::Write(_)), "got: {err}");
+        assert!(
+            matches!(err, WorkJournalError::BackupWrite(_)),
+            "got: {err}"
+        );
+        assert!(err.to_string().starts_with("Backup failed: "), "got: {err}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous backup");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), journal_before);
 
@@ -1015,5 +1043,130 @@ mod tests {
             next_day.settings.last_backup_at.as_deref(),
             Some("2026-10-16T08:00:00Z")
         );
+    }
+
+    /// An empty journal (no pages) with `backup_folder` set, saved at `path`.
+    fn empty_journal_with_backup_folder(path: &Path, folder: &Path) {
+        let patch = json!({ "backup_folder": folder.to_string_lossy() });
+        modify(path, |j| {
+            merge_settings(j, patch.as_object().unwrap().clone())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_empty_journal_never_replaces_an_existing_backup() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        // The old machine's backup; deliberately not valid JSON, since the
+        // guard must only check that the file exists, never read it.
+        let old_backup = b"old machine backup \x00 bytes";
+        std::fs::write(backup_path(&folder), old_backup).unwrap();
+        empty_journal_with_backup_folder(&path, &folder);
+        let journal_before = std::fs::read(&path).unwrap();
+
+        let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+        assert!(
+            matches!(err, WorkJournalError::BackupWouldOverwriteWithEmpty),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().starts_with("Backup skipped: "),
+            "got: {err}"
+        );
+        let err = backup_if_due(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+        assert!(matches!(
+            err,
+            WorkJournalError::BackupWouldOverwriteWithEmpty
+        ));
+
+        assert_eq!(std::fs::read(backup_path(&folder)).unwrap(), old_backup);
+        assert_eq!(std::fs::read(&path).unwrap(), journal_before);
+        assert!(load(&path).unwrap().settings.last_backup_at.is_none());
+        assert!(!tmp_path(&backup_path(&folder)).exists());
+    }
+
+    #[test]
+    fn test_empty_journal_is_backed_up_when_the_folder_has_no_backup() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("fresh");
+        std::fs::create_dir(&folder).unwrap();
+        empty_journal_with_backup_folder(&path, &folder);
+
+        let saved = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap();
+
+        let backup = std::fs::read_to_string(backup_path(&folder)).unwrap();
+        assert_eq!(parse_journal(&backup).unwrap(), saved);
+        assert!(saved.pages.is_empty());
+    }
+
+    #[test]
+    fn test_journal_with_pages_overwrites_an_existing_backup() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(backup_path(&folder), "older backup").unwrap();
+        journal_with_backup_folder(&path, &folder);
+
+        let saved = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap();
+
+        let backup = std::fs::read_to_string(backup_path(&folder)).unwrap();
+        assert_eq!(parse_journal(&backup).unwrap(), saved);
+        assert!(saved.pages.contains_key("2026-10-15"));
+    }
+
+    #[test]
+    fn test_backup_folder_that_is_a_file_says_so() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let not_a_folder = dir.path().join("backup.txt");
+        std::fs::write(&not_a_folder, "a file").unwrap();
+        journal_with_backup_folder(&path, &not_a_folder);
+        let before = std::fs::read(&path).unwrap();
+
+        let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::BackupFolderNotAFolder(_)),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("is a file, not a folder"),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&not_a_folder).unwrap(), "a file");
+    }
+
+    #[test]
+    fn test_backup_written_but_time_not_saved_is_reported_as_such() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("backup");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        let before = std::fs::read(&path).unwrap();
+
+        // Block the journal's own temp path so the local save fails after the
+        // backup has been written.
+        std::fs::create_dir(tmp_path(&path)).unwrap();
+        let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::BackupTimeNotSaved(_)),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("Backup written, but the backup time could not be saved"),
+            "got: {err}"
+        );
+        let backup = std::fs::read_to_string(backup_path(&folder)).unwrap();
+        assert!(parse_journal(&backup).is_ok(), "the backup itself landed");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }

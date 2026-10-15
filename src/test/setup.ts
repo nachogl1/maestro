@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
   save: vi.fn(),
   ask: vi.fn(),
+  message: vi.fn(),
 }));
 
 // Mock @tauri-apps/plugin-clipboard-manager

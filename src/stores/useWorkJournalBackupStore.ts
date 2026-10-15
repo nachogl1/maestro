@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
 
 /** The Work Journal settings keys the backup uses; other keys stay opaque here. */
@@ -12,13 +13,24 @@ export interface WorkJournalBackupFile {
   settings: WorkJournalBackupSettings;
 }
 
+/** Title of the native warning shown when an automatic backup fails. */
+export const AUTO_BACKUP_WARNING_TITLE = "Work Journal backup failed";
+
 interface WorkJournalBackupState {
   /** Folder the daily backup is written to; null while none is chosen. */
   backupFolder: string | null;
   /** RFC 3339 time of the last successful backup; null when never. */
   lastBackupAt: string | null;
-  /** The last load or backup failure (manual or automatic); cleared on success. */
+  /** The last failure to read the journal settings; cleared by a successful load. */
+  loadError: string | null;
+  /** The last backup or folder-save failure (manual or automatic); cleared on success. */
   error: string | null;
+  /**
+   * True once the native warning was shown for the current run of automatic
+   * failures, so hourly retries do not warn again. Reset by a successful
+   * backup or a folder change.
+   */
+  autoFailureWarned: boolean;
   /** True while a manual backup is running. */
   backingUp: boolean;
   /** Reads the backup settings from the journal file. */
@@ -52,16 +64,18 @@ function fromJournal(
 export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, get) => ({
   backupFolder: null,
   lastBackupAt: null,
+  loadError: null,
   error: null,
+  autoFailureWarned: false,
   backingUp: false,
 
   load: async () => {
     try {
       const journal = await invoke<WorkJournalBackupFile>("load_work_journal");
-      set(fromJournal(journal));
+      set({ ...fromJournal(journal), loadError: null });
     } catch (error) {
       console.error("Failed to load the Work Journal settings:", error);
-      set({ error: errorMessage(error) });
+      set({ loadError: errorMessage(error) });
     }
   },
 
@@ -70,7 +84,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
       const journal = await invoke<WorkJournalBackupFile>("update_work_journal_settings", {
         settings: { backup_folder: folder },
       });
-      set({ ...fromJournal(journal), error: null });
+      set({ ...fromJournal(journal), error: null, autoFailureWarned: false });
     } catch (error) {
       console.error("Failed to save the Work Journal backup folder:", error);
       set({ error: `Could not save the backup folder: ${errorMessage(error)}` });
@@ -79,26 +93,38 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
     await get().backUpNow();
   },
 
+  // Failures stay inline only: the user is looking at the section.
   backUpNow: async () => {
     set({ backingUp: true });
     try {
       const journal = await invoke<WorkJournalBackupFile>("work_journal_backup_now");
-      set({ ...fromJournal(journal), error: null });
+      set({ ...fromJournal(journal), error: null, autoFailureWarned: false });
     } catch (error) {
       console.error("Work Journal backup failed:", error);
-      set({ error: `Backup failed: ${errorMessage(error)}` });
+      set({ error: errorMessage(error) });
     } finally {
       set({ backingUp: false });
     }
   },
 
+  // Failures also raise one native warning per run of failures, since the
+  // user may never open Settings.
   backUpIfDue: async () => {
     try {
       const journal = await invoke<WorkJournalBackupFile | null>("work_journal_backup_if_due");
-      if (journal) set({ ...fromJournal(journal), error: null });
+      if (journal) set({ ...fromJournal(journal), error: null, autoFailureWarned: false });
     } catch (error) {
       console.error("Automatic Work Journal backup failed:", error);
-      set({ error: `Automatic backup failed: ${errorMessage(error)}` });
+      const text = errorMessage(error);
+      const warn = !get().autoFailureWarned;
+      set({ error: `Automatic backup: ${text}`, autoFailureWarned: true });
+      if (warn) {
+        try {
+          await message(text, { title: AUTO_BACKUP_WARNING_TITLE, kind: "warning" });
+        } catch (dialogError) {
+          console.error("Failed to show the Work Journal backup warning:", dialogError);
+        }
+      }
     }
   },
 }));

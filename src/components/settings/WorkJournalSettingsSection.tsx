@@ -14,9 +14,10 @@ function formatBackupTime(iso: string): string {
  * Work Journal section of Maestro Settings: the backup folder, "Back up now"
  * and the last backup time. Restore rows join this section later.
  */
-export function WorkJournalSettingsSection() {
+export function WorkJournalSettingsSection(): JSX.Element {
   const backupFolder = useWorkJournalBackupStore((s) => s.backupFolder);
   const lastBackupAt = useWorkJournalBackupStore((s) => s.lastBackupAt);
+  const loadError = useWorkJournalBackupStore((s) => s.loadError);
   const error = useWorkJournalBackupStore((s) => s.error);
   const backingUp = useWorkJournalBackupStore((s) => s.backingUp);
   const load = useWorkJournalBackupStore((s) => s.load);
@@ -84,11 +85,11 @@ export function WorkJournalSettingsSection() {
             Back up now
           </button>
         </div>
-        {error && (
-          <div role="alert" className="text-[11px] text-maestro-red">
-            {error}
+        {[loadError, error].filter(Boolean).map((text) => (
+          <div key={text} role="alert" className="text-[11px] text-maestro-red">
+            {text}
           </div>
-        )}
+        ))}
       </div>
     </div>
   );

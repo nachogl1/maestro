@@ -1,13 +1,10 @@
 import { useEffect, useMemo } from "react";
 import { useAgentNameSync } from "@/hooks/useAgentNameSync";
+import { useWorkJournalBackupTimer } from "@/hooks/useWorkJournalBackupTimer";
 import { HEALTH_CHECK_INTERVAL_MS } from "@/lib/healthRules";
 import { useGitHubWatchdogStore, watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
-import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
-
-/** How often the Work Journal backup checks whether its daily backup is due. */
-const WORK_JOURNAL_BACKUP_CHECK_MS = 60 * 60 * 1000;
 
 /**
  * App-lifetime background polling, mounted once by `App`: the update
@@ -67,15 +64,6 @@ export function useBackgroundPollers(tabs: Parameters<typeof watchedProjectsFrom
     };
   }, []);
 
-  // Work Journal backup: once on start, then hourly. The backend backs up
-  // only when a folder is set and the last backup is a day old, so most
-  // checks write nothing.
-  useEffect(() => {
-    const runCheck = () => void useWorkJournalBackupStore.getState().backUpIfDue();
-    runCheck();
-    const interval = setInterval(runCheck, WORK_JOURNAL_BACKUP_CHECK_MS);
-    return () => clearInterval(interval);
-  }, []);
-
+  useWorkJournalBackupTimer();
   useAgentNameSync();
 }
