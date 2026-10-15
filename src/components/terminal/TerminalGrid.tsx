@@ -96,7 +96,7 @@ import {
   updateRatio,
 } from "./splitTree";
 import { TerminalView } from "./TerminalView";
-import { SessionStatusDot, ThinkingIndicator } from "./ThinkingIndicator";
+import { SessionStatusDot } from "./ThinkingIndicator";
 
 export { MAX_RETAINED_PARKED_SAMURAI_TILES } from "@/hooks/useSamuraiAutoPark";
 
@@ -2565,12 +2565,7 @@ function ZoomTab({
     >
       <span className="font-mono text-[10px] opacity-60">{index + 1}</span>
       <span className="max-w-[180px] truncate">{label}</span>
-      {hasSession && sessionId !== null && (
-        <>
-          <ThinkingIndicator sessionId={sessionId} size={3} />
-          <SessionStatusDot sessionId={sessionId} />
-        </>
-      )}
+      {hasSession && sessionId !== null && <SessionStatusDot sessionId={sessionId} />}
     </button>
   );
 }

@@ -32,6 +32,8 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: a Report button writes an achievement-focused HTML summary of any date range to a folder you choose once.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
       "Settings: a Context alert picks the context usage (50–95%, or Off) at which a Claude terminal's frame blinks red, so you can compact or hand off before it runs out.",
+      "Parking a terminal now dissolves it into its shelf chip in a stream of particles, restoring it streams them back, and a terminal that asks for your input flares yellow around its edges; off when your OS asks for reduced motion.",
+      "The three rippling status dots are gone from terminal tabs, title bars and the parked shelf; the single colour dot on tabs and the coloured title-bar underline still show the state.",
     ],
   },
   {
