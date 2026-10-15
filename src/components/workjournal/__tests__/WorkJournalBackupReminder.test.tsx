@@ -1,9 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WORK_JOURNAL_CHANGED_EVENT,
+  WORK_JOURNAL_OPEN_SETTINGS_EVENT,
   WORK_JOURNAL_WINDOW_LABEL,
   type WorkJournalChangedPayload,
 } from "@/lib/workJournalWindow";
@@ -18,16 +19,11 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+const mainWindow = vi.hoisted(() => ({ unminimize: vi.fn(), setFocus: vi.fn() }));
+
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: vi.fn(() => ({ label: "main" })),
-  WebviewWindow: vi.fn(),
-}));
-
-// Settings itself has its own tests; here only whether it opens, and where.
-vi.mock("@/components/settings/MaestroSettingsModal", () => ({
-  MaestroSettingsModal: ({ focusSection }: { focusSection?: string }) => (
-    <div role="dialog" aria-label="Maestro Settings" data-focus={focusSection} />
-  ),
+  WebviewWindow: { getByLabel: vi.fn(async () => mainWindow) },
 }));
 
 const invokeMock = vi.mocked(invoke);
@@ -107,15 +103,41 @@ describe("WorkJournalBackupReminder", () => {
     expect(screen.queryByText(BACKUP_REMINDER_TEXT)).not.toBeInTheDocument();
   });
 
-  it("opens Settings at the Work Journal section", async () => {
+  it("opens Settings at the Work Journal section in the main window", async () => {
     render(<WorkJournalBackupReminder />);
     await screen.findByText(BACKUP_REMINDER_TEXT);
 
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
-    expect(screen.getByRole("dialog", { name: "Maestro Settings" })).toHaveAttribute(
-      "data-focus",
-      "work-journal",
-    );
+    expect(useWorkJournalBackupStore.getState().settingsRequested).toBe(true);
+    expect(emitTo).not.toHaveBeenCalled();
+  });
+
+  it("asks the main window to open Settings from the pop-out window, and focuses it", async () => {
+    vi.mocked(emitTo).mockClear();
+    render(<WorkJournalBackupReminder inWindow />);
+    await screen.findByText(BACKUP_REMINDER_TEXT);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+    await waitFor(() => expect(mainWindow.setFocus).toHaveBeenCalled());
+    expect(emitTo).toHaveBeenCalledWith("main", WORK_JOURNAL_OPEN_SETTINGS_EVENT);
+    expect(useWorkJournalBackupStore.getState().settingsRequested).toBe(false);
+  });
+
+  it("re-reads on a change only while no folder is set, or after a whole-journal replace", async () => {
+    settings = { backup_folder: "D:\\Backups" };
+    render(<WorkJournalBackupReminder />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const reads = (): number =>
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "load_work_journal").length;
+    expect(reads()).toBe(1);
+
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: false }));
+    expect(reads()).toBe(1);
+
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: true }));
+    expect(reads()).toBe(2);
   });
 
   it("goes away once a folder is chosen here or in the other window", async () => {

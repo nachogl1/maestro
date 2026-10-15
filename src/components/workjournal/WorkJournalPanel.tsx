@@ -379,7 +379,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         </output>
       )}
 
-      <WorkJournalBackupReminder />
+      <WorkJournalBackupReminder inWindow={inWindow} />
 
       {reportOpen && <ReportDialog onClose={() => setReportOpen(false)} />}
 

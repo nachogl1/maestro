@@ -40,6 +40,7 @@ import {
 } from "./components/sidebar/Sidebar";
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
 import { UpdateNotification } from "./components/update/UpdateNotification";
+import { WorkJournalSettingsHost } from "./components/workjournal/WorkJournalSettingsHost";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useAppListeners } from "./hooks/useAppListeners";
 import { useBackgroundPollers } from "./hooks/useBackgroundPollers";
@@ -758,6 +759,7 @@ function App() {
       <UpdateNotification />
       <NotificationToasts />
       <ParticleEffectsLayer />
+      <WorkJournalSettingsHost />
     </div>
   );
 }
