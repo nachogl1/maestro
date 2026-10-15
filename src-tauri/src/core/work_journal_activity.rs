@@ -411,7 +411,6 @@ pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> ActivityResul
 }
 
 /// Sets one candidate's state; errors if no candidate has that id.
-#[allow(dead_code)] // first used by issue #314 (accept / reject)
 pub async fn set_candidate_state(
     dir: &Path,
     id: &str,
@@ -430,6 +429,23 @@ pub async fn set_candidate_state(
     let updated = candidate.clone();
     save(dir, &mut file, now, launch).await?;
     Ok(updated)
+}
+
+/// Removes one candidate and returns it; errors if no candidate has that id.
+/// Used on accept: the accepted line lives in the page text from then on.
+pub async fn remove_candidate(dir: &Path, id: &str) -> ActivityResult<Candidate> {
+    let now = Utc::now();
+    let launch = current_launch_id();
+    let _guard = FILE_LOCK.lock().await;
+    let mut file = load(dir, now, launch).await?;
+    let index = file
+        .candidates
+        .iter()
+        .position(|c| c.id == id)
+        .ok_or_else(|| ActivityError::CandidateNotFound(id.to_string()))?;
+    let removed = file.candidates.remove(index);
+    save(dir, &mut file, now, launch).await?;
+    Ok(removed)
 }
 
 /// Every candidate (pending and rejected) for one `YYYY-MM-DD` date.
@@ -1127,6 +1143,48 @@ mod tests {
         assert_eq!(listed[0].state, CandidateState::Rejected);
         assert!(matches!(
             set_candidate_state(dir.path(), "nope", CandidateState::Pending).await,
+            Err(ActivityError::CandidateNotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_remove_candidate_drops_only_that_one_and_returns_it() {
+        let dir = tempdir().unwrap();
+        let added = add_candidates(
+            dir.path(),
+            vec![
+                new_candidate("2026-10-15", Some("09:00"), "keep"),
+                new_candidate("2026-10-15", Some("10:00"), "accept me"),
+            ],
+        )
+        .await
+        .unwrap();
+        let removed = remove_candidate(dir.path(), &added[1].id).await.unwrap();
+        assert_eq!(removed, added[1]);
+        let listed = list_candidates(dir.path(), "2026-10-15").await.unwrap();
+        assert_eq!(listed, vec![added[0].clone()]);
+        assert_eq!(read_raw(dir.path()).candidates, vec![added[0].clone()]);
+    }
+
+    #[tokio::test]
+    async fn test_remove_candidate_errors_on_unknown_id_and_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let added = add_candidates(dir.path(), vec![new_candidate("2026-10-15", None, "x")])
+            .await
+            .unwrap();
+        let before = std::fs::read_to_string(file_path(dir.path())).unwrap();
+        assert!(matches!(
+            remove_candidate(dir.path(), "nope").await,
+            Err(ActivityError::CandidateNotFound(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(file_path(dir.path())).unwrap(),
+            before
+        );
+        // Removing twice: the second is unknown.
+        remove_candidate(dir.path(), &added[0].id).await.unwrap();
+        assert!(matches!(
+            remove_candidate(dir.path(), &added[0].id).await,
             Err(ActivityError::CandidateNotFound(_))
         ));
     }

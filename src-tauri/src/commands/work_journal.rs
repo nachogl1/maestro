@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter};
 use crate::core::work_journal::{
     self, AutoBackupAfterRestore, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
 };
+use crate::core::work_journal_activity::{self, Candidate, CandidateState};
 use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 
 /// Serialises load-change-save cycles so two commands never interleave and
@@ -320,6 +321,39 @@ pub async fn work_journal_restore_state() -> Result<WorkJournalRestoreState, Str
         })
     })
     .await
+}
+
+/// Every candidate (pending and rejected) for `date` (`YYYY-MM-DD`); the
+/// suggestions box shows the pending ones.
+#[tauri::command]
+pub async fn list_work_journal_candidates(date: String) -> Result<Vec<Candidate>, String> {
+    work_journal_activity::list_candidates(&work_journal_activity::activity_dir(), &date)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Rejects a candidate: it leaves the suggestions box but stays in the
+/// activity file as rejected, so later runs that day do not propose it again.
+#[tauri::command]
+pub async fn reject_work_journal_candidate(id: String) -> Result<Candidate, String> {
+    work_journal_activity::set_candidate_state(
+        &work_journal_activity::activity_dir(),
+        &id,
+        CandidateState::Rejected,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Accepts a candidate: removes it from the activity file and returns it.
+/// The frontend has already added its line to the page through the open
+/// editor; from then on the page text carries it (and the run reads the page
+/// text, so it is not proposed again).
+#[tauri::command]
+pub async fn accept_work_journal_candidate(id: String) -> Result<Candidate, String> {
+    work_journal_activity::remove_candidate(&work_journal_activity::activity_dir(), &id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -79,6 +79,26 @@ describe("useWorkJournalCandidateTimer", () => {
     expect(runCalls()).toHaveLength(2);
   });
 
+  it("records the schedule for the suggestions box: soon, then the next interval run", async () => {
+    vi.setSystemTime(new Date(2026, 9, 15, 9, 0, 0));
+    const start = Date.now();
+    const { unmount } = renderHook(() => useWorkJournalCandidateTimer(TABS));
+    await act(async () => {});
+    // Run every 2 hours (from the loaded settings) restarts the interval.
+    expect(useWorkJournalCandidateRunStore.getState().catchUpPending).toBe(true);
+    expect(useWorkJournalCandidateRunStore.getState().nextRunAt).toBe(start + 2 * HOUR_MS);
+
+    await act(async () => vi.advanceTimersByTime(WORK_JOURNAL_CATCH_UP_DELAY_MS));
+    expect(useWorkJournalCandidateRunStore.getState().catchUpPending).toBe(false);
+
+    await act(async () => vi.advanceTimersByTime(2 * HOUR_MS - WORK_JOURNAL_CATCH_UP_DELAY_MS));
+    expect(runCalls()).toHaveLength(2);
+    expect(useWorkJournalCandidateRunStore.getState().nextRunAt).toBe(start + 4 * HOUR_MS);
+
+    unmount();
+    expect(useWorkJournalCandidateRunStore.getState().nextRunAt).toBeNull();
+  });
+
   it("uses the tabs open at the time of each run", async () => {
     const { rerender } = renderHook(({ tabs }) => useWorkJournalCandidateTimer(tabs), {
       initialProps: { tabs: TABS },

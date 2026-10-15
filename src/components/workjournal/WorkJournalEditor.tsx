@@ -9,7 +9,11 @@ import {
   WORK_JOURNAL_TEXT_COLORS,
   WorkJournalToolbar,
 } from "@/components/workjournal/WorkJournalToolbar";
-import { registerWorkJournalEditorFlush, useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import {
+  registerWorkJournalEditorAppend,
+  registerWorkJournalEditorFlush,
+  useWorkJournalStore,
+} from "@/stores/useWorkJournalStore";
 
 /** How long typing must pause before the page body is saved. */
 export const WORK_JOURNAL_SAVE_DEBOUNCE_MS = 400;
@@ -138,18 +142,26 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   // The journal revision this editor was mounted for; see `revision`.
   const revisionRef = useRef(useWorkJournalStore.getState().revision);
 
-  const flush = (): void => {
+  // Sends unsaved text now; resolves true once the backend saved it.
+  const saveNow = (): Promise<boolean> => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
     const body = pendingRef.current;
-    if (!body) return;
+    if (!body) return Promise.resolve(false);
     pendingRef.current = null;
     // The journal was replaced (restore or undo) since this editor mounted:
     // its text belongs to the old journal and must not be saved over the new.
-    if (useWorkJournalStore.getState().revision !== revisionRef.current) return;
-    void useWorkJournalStore.getState().updatePage(dateRef.current, { body });
+    if (useWorkJournalStore.getState().revision !== revisionRef.current) {
+      return Promise.resolve(false);
+    }
+    return useWorkJournalStore.getState().updatePage(dateRef.current, { body });
+  };
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
+  const flush = (): void => {
+    void saveNowRef.current();
   };
   const flushRef = useRef(flush);
   flushRef.current = flush;
@@ -182,6 +194,28 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
 
   // A restore sends unsaved text through this before it replaces the journal.
   useEffect(() => registerWorkJournalEditorFlush(() => flushRef.current()), []);
+
+  // An accepted suggestion lands here: a new paragraph at the end of the
+  // body (replacing a fresh page's lone empty paragraph), saved right away.
+  useEffect(() => {
+    if (!editor) return;
+    return registerWorkJournalEditorAppend(date, (line) => {
+      const { replacing, revision } = useWorkJournalStore.getState();
+      if (editor.isDestroyed || !editor.isEditable || replacing) return Promise.resolve(false);
+      if (revision !== revisionRef.current) return Promise.resolve(false);
+      const doc = editor.state.doc;
+      const first = doc.firstChild;
+      const loneEmpty =
+        doc.childCount === 1 && first?.type.name === "paragraph" && first.content.size === 0;
+      const paragraph = { type: "paragraph", content: [{ type: "text", text: line }] };
+      const at = loneEmpty ? { from: 0, to: doc.content.size } : doc.content.size;
+      const inserted = editor
+        .chain()
+        .insertContentAt(at, paragraph, { updateSelection: false })
+        .run();
+      return inserted ? saveNowRef.current() : Promise.resolve(false);
+    });
+  }, [editor, date]);
 
   // Read-only while a restore or undo replaces the journal. No update event:
   // the text did not change, so nothing must be saved.

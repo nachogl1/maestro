@@ -49,8 +49,14 @@ interface WorkJournalCandidateRunState {
   settingsError: string | null;
   /** The open projects' paths, kept current by the background timer for "Run now". */
   projects: string[];
+  /** When the background timer's next interval run fires (epoch ms); null when not scheduled. */
+  nextRunAt: number | null;
+  /** True while the start-up catch-up run is still waiting to fire. */
+  catchUpPending: boolean;
   /** Replaces `projects`. */
   setProjects: (projects: string[]) => void;
+  /** Records what the background timer has scheduled. */
+  setSchedule: (schedule: { nextRunAt?: number | null; catchUpPending?: boolean }) => void;
   /** Reads the run settings from the journal file. */
   load: () => Promise<void>;
   /** Takes the run settings from a journal the backend just returned (restore, undo). */
@@ -106,8 +112,12 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
   runNotice: null,
   settingsError: null,
   projects: [],
+  nextRunAt: null,
+  catchUpPending: false,
 
   setProjects: (projects: string[]) => set({ projects }),
+
+  setSchedule: (schedule) => set(schedule),
 
   applySettings: (journal: WorkJournalCandidateRunFile) =>
     set({ ...fromJournal(journal), settingsError: null }),
