@@ -18,6 +18,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Maestro now checks this fork's releases and can download and install a new build in one click.",
       "Every code change merged to main is published as a signed Windows installer automatically.",
       "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
+      "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
     ],
   },
   {

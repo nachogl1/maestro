@@ -8,7 +8,6 @@ import {
   GitPullRequest,
   HelpCircle,
   Loader2,
-  MessageSquare,
   X,
   XCircle,
 } from "lucide-react";
@@ -16,7 +15,6 @@ import { useState } from "react";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { CommentList } from "../shared/CommentList";
 import { MarkdownBody } from "../shared/MarkdownBody";
-import { MergePRModal } from "./MergePRModal";
 import { type NormalizedCheck, normalizeCheck } from "./prChecks";
 
 /** Icon + tint for one check's normalized state. */
@@ -63,17 +61,12 @@ function checksSummaryLabel(summary: {
 const CHECKS_COLLAPSE_THRESHOLD = 6;
 
 interface PullRequestDetailPanelProps {
-  repoPath: string;
   onClose: () => void;
 }
 
-export function PullRequestDetailPanel({ repoPath, onClose }: PullRequestDetailPanelProps) {
-  const { selectedPR, isLoadingPRDetail, closePullRequest, commentPullRequest } = useGitHubStore();
+export function PullRequestDetailPanel({ onClose }: PullRequestDetailPanelProps) {
+  const { selectedPR, isLoadingPRDetail } = useGitHubStore();
 
-  const [showMergeModal, setShowMergeModal] = useState(false);
-  const [commentText, setCommentText] = useState("");
-  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
-  const [isClosing, setIsClosing] = useState(false);
   const [showAllChecks, setShowAllChecks] = useState(false);
 
   if (isLoadingPRDetail) {
@@ -88,7 +81,6 @@ export function PullRequestDetailPanel({ repoPath, onClose }: PullRequestDetailP
     return null;
   }
 
-  const isOpen = selectedPR.state.toUpperCase() === "OPEN";
   const isMerged = selectedPR.state.toUpperCase() === "MERGED";
   const isClosed = selectedPR.state.toUpperCase() === "CLOSED";
 
@@ -101,35 +93,6 @@ export function PullRequestDetailPanel({ repoPath, onClose }: PullRequestDetailP
 
   const handleOpenCheckUrl = (url: string) => {
     openUrl(url).catch((err) => console.error("Failed to open check URL:", err));
-  };
-
-  const handleClose = async () => {
-    if (!window.confirm("Are you sure you want to close this pull request?")) {
-      return;
-    }
-    setIsClosing(true);
-    try {
-      await closePullRequest(repoPath, selectedPR.number);
-    } catch (err) {
-      console.error("Failed to close PR:", err);
-      window.alert(`Failed to close PR: ${err}`);
-    } finally {
-      setIsClosing(false);
-    }
-  };
-
-  const handleComment = async () => {
-    if (!commentText.trim()) return;
-    setIsSubmittingComment(true);
-    try {
-      await commentPullRequest(repoPath, selectedPR.number, commentText);
-      setCommentText("");
-    } catch (err) {
-      console.error("Failed to add comment:", err);
-      window.alert(`Failed to add comment: ${err}`);
-    } finally {
-      setIsSubmittingComment(false);
-    }
   };
 
   return (
@@ -301,11 +264,6 @@ export function PullRequestDetailPanel({ repoPath, onClose }: PullRequestDetailP
           </div>
         )}
 
-        {/* Body */}
-        <div className="mb-3 rounded bg-maestro-surface p-2">
-          <MarkdownBody content={selectedPR.body} />
-        </div>
-
         {/* Open on GitHub */}
         <a
           href={selectedPR.url}
@@ -317,6 +275,11 @@ export function PullRequestDetailPanel({ repoPath, onClose }: PullRequestDetailP
           View on GitHub
         </a>
 
+        {/* Body */}
+        <div className="mb-3 rounded bg-maestro-surface p-2">
+          <MarkdownBody content={selectedPR.body} />
+        </div>
+
         {/* Comments */}
         {selectedPR.comments.length > 0 && (
           <div className="mb-3">
@@ -324,71 +287,6 @@ export function PullRequestDetailPanel({ repoPath, onClose }: PullRequestDetailP
           </div>
         )}
       </div>
-
-      {/* Actions */}
-      {isOpen && (
-        <div className="shrink-0 border-t border-maestro-border p-3">
-          {/* Comment input */}
-          <div className="mb-2 flex items-center gap-2">
-            <input
-              type="text"
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-              placeholder="Add a comment..."
-              className="flex-1 rounded border border-maestro-border bg-maestro-surface px-2 py-1 text-xs text-maestro-text placeholder:text-maestro-muted"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleComment();
-                }
-              }}
-            />
-            <button
-              type="button"
-              onClick={handleComment}
-              disabled={!commentText.trim() || isSubmittingComment}
-              className="rounded bg-maestro-surface p-1.5 text-maestro-muted hover:bg-maestro-border hover:text-maestro-text disabled:opacity-50"
-            >
-              {isSubmittingComment ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <MessageSquare size={12} />
-              )}
-            </button>
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowMergeModal(true)}
-              disabled={selectedPR.mergeable === "CONFLICTING"}
-              className="flex flex-1 items-center justify-center gap-1 rounded bg-green-600 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
-            >
-              <GitMerge size={12} />
-              Merge
-            </button>
-            <button
-              type="button"
-              onClick={handleClose}
-              disabled={isClosing}
-              className="flex items-center justify-center gap-1 rounded bg-maestro-surface px-3 py-1.5 text-xs font-medium text-maestro-muted hover:bg-maestro-border hover:text-maestro-text disabled:opacity-50"
-            >
-              {isClosing ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Merge modal */}
-      {showMergeModal && (
-        <MergePRModal
-          repoPath={repoPath}
-          prNumber={selectedPR.number}
-          onClose={() => setShowMergeModal(false)}
-        />
-      )}
     </div>
   );
 }
