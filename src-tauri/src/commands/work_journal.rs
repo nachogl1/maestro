@@ -11,7 +11,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
@@ -55,6 +57,115 @@ fn notify_changed(window: &WebviewWindow, replaced: bool) {
     let _ = window.emit(CHANGED_EVENT, payload);
 }
 
+/// Emitted before a restore or undo replaces the journal (`active: true`),
+/// so every other window sends its unsaved text and stops editing, and after
+/// one that failed (`active: false`), so they edit again. A successful one
+/// ends with [`CHANGED_EVENT`] (`replaced: true`) instead.
+pub const REPLACING_EVENT: &str = "work-journal:replacing";
+
+/// Payload of [`REPLACING_EVENT`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JournalReplacing {
+    /// Label of the window that started the restore or undo.
+    pub source: Option<String>,
+    /// The journal is about to be replaced; false: the replace failed.
+    pub active: bool,
+}
+
+/// Tells every window that `window`'s restore or undo starts or failed.
+fn notify_replacing(window: &WebviewWindow, active: bool) {
+    let payload = JournalReplacing {
+        source: Some(window.label().to_string()),
+        active,
+    };
+    let _ = window.emit(REPLACING_EVENT, payload);
+}
+
+/// How long a restore or undo waits after [`REPLACING_EVENT`] before it
+/// starts: the other windows' unsaved text lands meanwhile, so it is in the
+/// safety copy. A save arriving later is refused, never written over.
+const REPLACE_GRACE: Duration = Duration::from_millis(300);
+
+/// Restores and undos running now; page writes are refused while it is
+/// above zero.
+static REPLACES_RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+/// Bumped when a restore or undo starts. A write that began before it and
+/// only gets [`JOURNAL_LOCK`] after it is refused too, since its text
+/// belongs to the replaced journal.
+static REPLACE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Marks a restore or undo as running until dropped.
+struct ReplaceGuard;
+
+impl ReplaceGuard {
+    fn begin() -> Self {
+        REPLACES_RUNNING.fetch_add(1, Ordering::SeqCst);
+        REPLACE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        ReplaceGuard
+    }
+}
+
+impl Drop for ReplaceGuard {
+    fn drop(&mut self) {
+        REPLACES_RUNNING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn replace_generation() -> u64 {
+    REPLACE_GENERATION.load(Ordering::SeqCst)
+}
+
+/// Refuses a write while a restore or undo runs, or when one started since
+/// `since` (the generation when the write began).
+fn refuse_while_replacing(since: u64) -> WorkJournalResult<()> {
+    if REPLACES_RUNNING.load(Ordering::SeqCst) > 0 || replace_generation() != since {
+        return Err(WorkJournalError::RestoreInProgress);
+    }
+    Ok(())
+}
+
+/// Runs a page write `op` on `path` unless a restore or undo refuses it (see
+/// [`refuse_while_replacing`]). Call it with [`JOURNAL_LOCK`] held.
+fn write_unless_replaced<T>(
+    since: u64,
+    path: PathBuf,
+    op: impl FnOnce(PathBuf) -> WorkJournalResult<T>,
+) -> WorkJournalResult<T> {
+    refuse_while_replacing(since)?;
+    op(path)
+}
+
+/// [`with_journal`] for a page write, which a restore or undo refuses. The
+/// check runs under the lock, so a write that waited for a restore cannot
+/// land on the restored journal.
+async fn with_journal_write<T: Send + 'static>(
+    op: impl FnOnce(PathBuf) -> WorkJournalResult<T> + Send + 'static,
+) -> Result<T, String> {
+    let since = replace_generation();
+    with_journal(move |path| write_unless_replaced(since, path, op)).await
+}
+
+/// Runs a restore or undo `op`: tells every other window first and gives
+/// them [`REPLACE_GRACE`] to send their unsaved text, then replaces the
+/// journal while page writes are refused. On failure the windows are told
+/// to edit again.
+async fn replace_journal<T: Send + 'static>(
+    window: &WebviewWindow,
+    op: impl FnOnce(PathBuf) -> WorkJournalResult<T> + Send + 'static,
+) -> Result<T, String> {
+    notify_replacing(window, true);
+    tokio::time::sleep(REPLACE_GRACE).await;
+    let result = {
+        let _replacing = ReplaceGuard::begin();
+        with_journal(op).await
+    };
+    if result.is_err() {
+        notify_replacing(window, false);
+    }
+    result
+}
+
 /// `<work journal dir>/work-journal.json` (see
 /// [`work_journal::work_journal_dir`] for the devtest override).
 fn journal_path() -> PathBuf {
@@ -90,7 +201,7 @@ pub async fn create_work_journal_page(
     origin: Option<PageOrigin>,
 ) -> Result<WorkJournal, String> {
     let origin = origin.unwrap_or(PageOrigin::Manual);
-    let journal = with_journal(move |path| {
+    let journal = with_journal_write(move |path| {
         work_journal::modify(&path, |j| {
             work_journal::create_page(j, &date, title, body, origin)
         })
@@ -108,7 +219,7 @@ pub async fn update_work_journal_page(
     title: Option<String>,
     body: Option<Value>,
 ) -> Result<WorkJournal, String> {
-    let journal = with_journal(move |path| {
+    let journal = with_journal_write(move |path| {
         work_journal::modify(&path, |j| work_journal::update_page(j, &date, title, body))
     })
     .await?;
@@ -125,7 +236,7 @@ pub async fn delete_work_journal_page(
     date: String,
     today: Option<String>,
 ) -> Result<WorkJournal, String> {
-    let journal = with_journal(move |path| {
+    let journal = with_journal_write(move |path| {
         work_journal::modify(&path, |j| {
             work_journal::delete_page(j, &date, today.as_deref())
         })
@@ -487,7 +598,7 @@ pub async fn restore_work_journal(
     window: WebviewWindow,
     file: Option<String>,
 ) -> Result<WorkJournalRestoreReply, String> {
-    let reply = with_journal(move |path| {
+    let reply = replace_journal(&window, move |path| {
         let source = match file {
             Some(file) => PathBuf::from(file),
             None => work_journal::default_restore_source(&path)?,
@@ -507,7 +618,7 @@ pub async fn restore_work_journal(
 pub async fn undo_work_journal_restore(
     window: WebviewWindow,
 ) -> Result<WorkJournalRestoreReply, String> {
-    let reply = with_journal(|path| {
+    let reply = replace_journal(&window, |path| {
         let journal = work_journal::undo_restore(&path)?;
         Ok(restore_reply(&path, journal))
     })
@@ -900,6 +1011,60 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&from_backend).unwrap(),
             serde_json::json!({"source": null, "replaced": false})
+        );
+    }
+
+    #[test]
+    fn test_update_page_is_refused_while_the_replacing_flag_is_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-journal.json");
+        let date = "2026-10-15";
+        work_journal::modify(&path, |j| {
+            let body = serde_json::json!({"type": "doc"});
+            work_journal::create_page(j, date, "Restored".into(), body, PageOrigin::Manual)
+        })
+        .unwrap();
+        let update = |since: u64| {
+            write_unless_replaced(since, path.clone(), |path| {
+                work_journal::modify(&path, |j| {
+                    work_journal::update_page(j, date, Some("Old text".into()), None)
+                })
+            })
+        };
+        let title = || work_journal::load(&path).unwrap().pages[date].title.clone();
+
+        let before = replace_generation();
+        let replacing = ReplaceGuard::begin();
+        assert!(matches!(
+            update(replace_generation()),
+            Err(WorkJournalError::RestoreInProgress)
+        ));
+        drop(replacing);
+        // A write that began before the restore stays refused after it.
+        assert!(matches!(
+            update(before),
+            Err(WorkJournalError::RestoreInProgress)
+        ));
+        assert_eq!(title(), "Restored");
+
+        update(replace_generation()).unwrap();
+        assert_eq!(title(), "Old text");
+        // The frontend matches this code (`WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE`).
+        assert!(WorkJournalError::RestoreInProgress
+            .to_string()
+            .starts_with("RESTORE_IN_PROGRESS: "));
+    }
+
+    #[test]
+    fn test_replacing_event_names_the_source_window() {
+        assert_eq!(REPLACING_EVENT, "work-journal:replacing");
+        let replacing = JournalReplacing {
+            source: Some("main".to_string()),
+            active: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&replacing).unwrap(),
+            serde_json::json!({"source": "main", "active": true})
         );
     }
 
