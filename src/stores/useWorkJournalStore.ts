@@ -38,6 +38,12 @@ interface WorkJournalState {
   viewedDate: string | null;
   loading: boolean;
   error: string | null;
+  /**
+   * Bumped when the whole journal is replaced (restore or undo). The pane puts
+   * it in each editor's React key, so open editors remount with the new body,
+   * and an editor from an older revision never saves.
+   */
+  revision: number;
   /** Reads the journal file. */
   load: () => Promise<void>;
   /** Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). */
@@ -54,6 +60,10 @@ interface WorkJournalState {
   /** Deletes the page for `date` and shows the nearest remaining page. */
   deletePage: (date: string) => Promise<void>;
   clearError: () => void;
+  /** Sends every open editor's unsaved text and waits until all queued saves land. */
+  flushPendingSaves: () => Promise<void>;
+  /** Shows a journal that replaced the whole file (restore or undo); bumps `revision`. */
+  replaceJournal: (journal: WorkJournalFile) => void;
 }
 
 /** A new weekday page's body: what an empty TipTap editor returns. */
@@ -92,6 +102,25 @@ function savesSettled(date: string): Promise<void> {
     .filter(([key]) => key.startsWith(`${date}:`))
     .map(([, chain]) => chain);
   return Promise.all(queued).then(() => undefined);
+}
+
+/** Resolves once every save queued so far, for any date, has finished. */
+function allSavesSettled(): Promise<void> {
+  return Promise.all([...saveChains.values()]).then(() => undefined);
+}
+
+/** Each open editor's "send my unsaved text now" function. */
+const editorFlushes = new Set<() => void>();
+
+/**
+ * Registers an open editor's flush, so a restore can save typing that is
+ * still waiting for the debounce. Returns the unregister function.
+ */
+export function registerWorkJournalEditorFlush(flush: () => void): () => void {
+  editorFlushes.add(flush);
+  return () => {
+    editorFlushes.delete(flush);
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -134,6 +163,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   viewedDate: null,
   loading: false,
   error: null,
+  revision: 0,
 
   load: async () => {
     set({ loading: true, error: null });
@@ -249,4 +279,14 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  flushPendingSaves: async () => {
+    for (const flush of editorFlushes) flush();
+    await allSavesSettled();
+  },
+
+  // Every save was settled before the restore, so the reply replaces the
+  // pages outright (no merge with local copies).
+  replaceJournal: (journal: WorkJournalFile) =>
+    set((s) => ({ pages: journal.pages, revision: s.revision + 1, error: null })),
 }));

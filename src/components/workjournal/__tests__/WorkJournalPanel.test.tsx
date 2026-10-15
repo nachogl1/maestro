@@ -3,6 +3,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   EMPTY_PAGE_BODY,
   useWorkJournalStore,
@@ -384,5 +385,106 @@ describe("WorkJournalPanel", () => {
     expect(screen.getByLabelText("Page title")).toHaveValue("Wed 14 Oct 2026");
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
     expect(screen.getByLabelText("Page title")).toHaveValue("auto 2026-10-15");
+  });
+});
+
+describe("WorkJournalPanel restore", () => {
+  const RESTORED_BODY = {
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text: "Restored text" }] }],
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
+    file = {
+      layout_version: 1,
+      pages: { "2026-10-14": page("2026-10-14", "Wed 14 Oct 2026") },
+      deleted_dates: [],
+      last_auto_created_date: "2026-10-14",
+      settings: {},
+    };
+    invokeMock.mockReset();
+    mockBackend();
+    // The restore command, on top of the in-memory backend: the backup holds
+    // a different body for the same date.
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "restore_work_journal") {
+        file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: RESTORED_BODY };
+        return { journal: snapshot(), canUndo: true };
+      }
+      return backend?.(cmd, args);
+    });
+    useWorkJournalStore.setState({ pages: {}, viewedDate: null, loading: false, error: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("saves unsaved text before a restore, then shows the restored body without saving the old one", async () => {
+    const { unmount } = render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    act(() => {
+      pageEditor().commands.insertContent("Typed before the restore");
+    });
+    // The debounce has not fired: the text is still unsaved.
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+
+    await act(() => useWorkJournalBackupStore.getState().restore());
+
+    const commands = invokeMock.mock.calls.map(([cmd]) => cmd);
+    const saveAt = commands.indexOf("update_work_journal_page");
+    expect(saveAt).toBeGreaterThanOrEqual(0);
+    expect(saveAt).toBeLessThan(commands.indexOf("restore_work_journal"));
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(await screen.findByText("Restored text")).toBeInTheDocument();
+    expect(screen.queryByText("Typed before the restore")).toBeNull();
+
+    // No late save of the old body: not after the debounce, not on unmount.
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
+    });
+    unmount();
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(file.pages["2026-10-14"].body).toEqual(RESTORED_BODY);
+  });
+
+  it("never saves text typed while the restore was running over the restored page", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const withRestore = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      // Typing lands after the flush, while the backend is restoring.
+      if (cmd === "restore_work_journal") pageEditor().commands.insertContent("Too late");
+      return withRestore?.(cmd, args);
+    });
+
+    await act(() => useWorkJournalBackupStore.getState().restore());
+    expect(await screen.findByText("Restored text")).toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS * 2);
+    });
+
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+    expect(file.pages["2026-10-14"].body).toEqual(RESTORED_BODY);
+  });
+
+  it("saves typing made after a restore in the remounted editor", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    await act(() => useWorkJournalBackupStore.getState().restore());
+    await screen.findByText("Restored text");
+
+    act(() => {
+      pageEditor().commands.insertContentAt(pageEditor().state.doc.content.size - 1, " and more");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Restored text and more");
   });
 });

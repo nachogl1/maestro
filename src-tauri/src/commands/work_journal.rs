@@ -1,5 +1,6 @@
 //! Tauri commands for the Work Journal file: load it, and create, update and
-//! delete pages and settings, and back it up. The file logic lives in
+//! delete pages and settings, back it up, and restore it from a backup.
+//! The file logic lives in
 //! [`crate::core::work_journal`]; these wrappers pick the app-data path,
 //! serialise every read-modify-write, and run the blocking file work off the
 //! async runtime.
@@ -155,6 +156,68 @@ pub async fn work_journal_ensure_pages(today: String) -> Result<WorkJournal, Str
     with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await
 }
 
+/// A restore or undo reply: the whole saved journal, and whether a safety
+/// copy is there for "Undo restore".
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkJournalRestoreReply {
+    pub journal: WorkJournal,
+    pub can_undo: bool,
+}
+
+/// Whether "Undo restore" has a safety copy to put back.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkJournalRestoreState {
+    pub can_undo: bool,
+}
+
+/// "Restore from backup": replaces the whole journal with the backup file
+/// `file`, or with the backup in the configured folder when `file` is
+/// `None`, after saving the current journal as the safety copy. Keeps the
+/// local backup folder and clears the last backup time, so automatic
+/// backups leave the backup folder alone until "Back up now".
+#[tauri::command]
+pub async fn restore_work_journal(file: Option<String>) -> Result<WorkJournalRestoreReply, String> {
+    with_journal(move |path| {
+        let source = match file {
+            Some(file) => PathBuf::from(file),
+            None => work_journal::default_restore_source(&path)?,
+        };
+        let journal = work_journal::restore_from(&path, &source)?;
+        Ok(WorkJournalRestoreReply {
+            journal,
+            can_undo: work_journal::has_safety_copy(&path),
+        })
+    })
+    .await
+}
+
+/// "Undo restore": puts the safety copy back and deletes it (undo works
+/// once). Refused when there is no safety copy.
+#[tauri::command]
+pub async fn undo_work_journal_restore() -> Result<WorkJournalRestoreReply, String> {
+    with_journal(|path| {
+        let journal = work_journal::undo_restore(&path)?;
+        Ok(WorkJournalRestoreReply {
+            journal,
+            can_undo: work_journal::has_safety_copy(&path),
+        })
+    })
+    .await
+}
+
+/// Whether "Undo restore" is available (a safety copy exists).
+#[tauri::command]
+pub async fn work_journal_restore_state() -> Result<WorkJournalRestoreState, String> {
+    with_journal(|path| {
+        Ok(WorkJournalRestoreState {
+            can_undo: work_journal::has_safety_copy(&path),
+        })
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +245,22 @@ mod tests {
 
         let failed = backup_if_due_outcome(Err(WorkJournalError::NoBackupFolder));
         assert!(matches!(failed, Err(WorkJournalError::NoBackupFolder)));
+    }
+
+    #[test]
+    fn test_restore_replies_use_camel_case_for_the_frontend() {
+        let reply = WorkJournalRestoreReply {
+            journal: WorkJournal::default(),
+            can_undo: true,
+        };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["canUndo"], true);
+        assert_eq!(value["journal"]["layout_version"], 1);
+
+        let state = WorkJournalRestoreState { can_undo: false };
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            serde_json::json!({"canUndo": false})
+        );
     }
 }

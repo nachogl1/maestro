@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
+import { useWorkJournalStore, type WorkJournalFile } from "@/stores/useWorkJournalStore";
 
 /** The Work Journal settings keys the backup uses; other keys stay opaque here. */
 export interface WorkJournalBackupSettings {
@@ -18,6 +19,22 @@ export const AUTO_BACKUP_WARNING_TITLE = "Work Journal backup failed";
 
 /** Title of the native warning shown when the guard skips an automatic backup. */
 export const AUTO_BACKUP_SKIPPED_TITLE = "Work Journal backup skipped";
+
+/** Shown after a successful restore. */
+export const RESTORE_NOTICE =
+  "Restored. Automatic backups stay paused until you press Back up now.";
+
+/** Shown after a successful undo. */
+export const UNDO_RESTORE_NOTICE =
+  "Restore undone: your journal from before the restore is back. Automatic backups stay paused " +
+  "until you press Back up now.";
+
+/** The reply of `restore_work_journal` and `undo_work_journal_restore`. */
+export interface WorkJournalRestoreReply {
+  journal: WorkJournalFile & WorkJournalBackupFile;
+  /** Whether a safety copy is there for "Undo restore". */
+  canUndo: boolean;
+}
 
 /** What `work_journal_backup_if_due` did, tagged by `status`. */
 export type BackupIfDueOutcome =
@@ -44,6 +61,12 @@ interface WorkJournalBackupState {
   autoSkipWarned: boolean;
   /** True while a manual backup is running. */
   backingUp: boolean;
+  /** True while a safety copy exists, so "Undo restore" can put it back. */
+  canUndo: boolean;
+  /** True while a restore or undo is running. */
+  restoring: boolean;
+  /** The success line after a restore or undo; cleared by the next backup or folder change. */
+  notice: string | null;
   /** Reads the backup settings from the journal file. */
   load: () => Promise<void>;
   /**
@@ -57,6 +80,16 @@ interface WorkJournalBackupState {
   backUpNow: () => Promise<void>;
   /** Start-up and timer check: the backend backs up only when a folder is set and it is due. */
   backUpIfDue: () => Promise<void>;
+  /** Reads whether a safety copy exists (enables "Undo restore"). */
+  loadRestoreState: () => Promise<void>;
+  /**
+   * "Restore from backup": `file`, or the backup in the configured folder when
+   * omitted. Unsaved editor text is saved first; the pane then shows the
+   * restored journal.
+   */
+  restore: (file?: string) => Promise<void>;
+  /** "Undo restore": puts the safety copy back. */
+  undoRestore: () => Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
@@ -97,6 +130,9 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   autoFailureWarned: false,
   autoSkipWarned: false,
   backingUp: false,
+  canUndo: false,
+  restoring: false,
+  notice: null,
 
   load: async () => {
     try {
@@ -114,7 +150,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
       const journal = await invoke<WorkJournalBackupFile>("update_work_journal_settings", {
         settings: { backup_folder: folder, last_backup_at: null },
       });
-      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null });
+      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null, notice: null });
     } catch (error) {
       console.error("Failed to save the Work Journal backup folder:", error);
       set({ error: `Could not save the backup folder: ${errorMessage(error)}` });
@@ -129,7 +165,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
     set({ backingUp: true });
     try {
       const journal = await invoke<WorkJournalBackupFile>("work_journal_backup_now");
-      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null });
+      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null, notice: null });
     } catch (error) {
       console.error("Work Journal backup failed:", error);
       set({ error: errorMessage(error) });
@@ -160,4 +196,55 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
       if (warn) await showWarning(outcome.message, AUTO_BACKUP_SKIPPED_TITLE);
     }
   },
+
+  loadRestoreState: async () => {
+    try {
+      const state = await invoke<{ canUndo: boolean }>("work_journal_restore_state");
+      set({ canUndo: state.canUndo });
+    } catch (error) {
+      console.error("Failed to read the Work Journal restore state:", error);
+    }
+  },
+
+  restore: (file?: string) =>
+    replaceWholeJournal(set, "Restore failed", RESTORE_NOTICE, () =>
+      invoke<WorkJournalRestoreReply>("restore_work_journal", { file: file ?? null }),
+    ),
+
+  undoRestore: () =>
+    replaceWholeJournal(set, "Undo restore failed", UNDO_RESTORE_NOTICE, () =>
+      invoke<WorkJournalRestoreReply>("undo_work_journal_restore"),
+    ),
 }));
+
+/**
+ * Runs a restore or undo: saves unsaved editor text first (so it is in the
+ * safety copy and no late save lands on the new journal), then shows the new
+ * journal in the pane and the settings. The guard's skip warning is marked as
+ * shown: the notice already says automatic backups are paused.
+ */
+async function replaceWholeJournal(
+  set: (partial: Partial<WorkJournalBackupState>) => void,
+  failure: string,
+  notice: string,
+  run: () => Promise<WorkJournalRestoreReply>,
+): Promise<void> {
+  set({ restoring: true, error: null, notice: null });
+  try {
+    await useWorkJournalStore.getState().flushPendingSaves();
+    const reply = await run();
+    useWorkJournalStore.getState().replaceJournal(reply.journal);
+    set({
+      ...fromJournal(reply.journal),
+      canUndo: reply.canUndo,
+      autoFailureWarned: false,
+      autoSkipWarned: true,
+      notice,
+    });
+  } catch (error) {
+    console.error(`${failure}:`, error);
+    set({ error: `${failure}: ${errorMessage(error)}` });
+  } finally {
+    set({ restoring: false });
+  }
+}
