@@ -77,4 +77,14 @@ describe("MaestroSettingsModal tooltips", () => {
     ).toMatch(/Adds the maestro command/);
     expect(hoverText(screen.getByRole("button", { name: /Advanced/ }))).toMatch(/most people/);
   });
+
+  it("explains the Work Journal settings in hover tooltips", async () => {
+    render(<MaestroSettingsModal onClose={() => {}} />);
+
+    expect(hoverText(await screen.findByText("Run every"))).toMatch(/How often/);
+    expect(hoverText(screen.getByText("Model"))).toMatch(/suggestions and the supervisor report/);
+    expect(hoverText(screen.getByText("Granola meeting notes"))).toMatch(/meetings/);
+    expect(hoverText(screen.getByText("Backup folder"))).toMatch(/safety net/);
+    expect(hoverText(screen.getByText("Report folder"))).toBeTruthy();
+  });
 });

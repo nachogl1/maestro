@@ -20,7 +20,7 @@ export function WorkJournalGranolaRow(): JSX.Element {
       className="flex items-center gap-2 text-xs"
       title="When Granola is connected in your Claude setup, suggestions also cover your meetings. Notes are sent to Claude and not stored."
     >
-      <label htmlFor="work-journal-granola" className="flex-1 text-maestro-muted">
+      <label htmlFor="work-journal-granola" className="flex-1 cursor-help text-maestro-muted">
         Granola meeting notes
       </label>
       <select

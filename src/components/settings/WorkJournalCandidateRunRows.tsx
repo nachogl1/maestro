@@ -19,7 +19,8 @@ const HINTS = {
     "How often Claude looks through your recent activity and suggests lines for today's " +
     `journal page. Between 1 and ${MAX_RUN_EVERY_HOURS} hours.`,
   model:
-    "Which Claude model writes the suggestions. Leave it empty to use the same model your " +
+    "Which Claude model writes the suggestions and the supervisor report. Leave it empty to " +
+    "use the same model your " +
     "Claude setup uses by default.",
   runNow: "Look for journal suggestions right away instead of waiting for the next scheduled run.",
 };

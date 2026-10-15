@@ -190,6 +190,12 @@ Granola time) are folded in and linked in the Decision trace.
   - **Catch-up on start:** the first run after Maestro starts covers activity
     since the last run (for example commits made from another tool while
     Maestro was closed). Nothing runs while Maestro is closed.
+  - **A failing day (fix, 2026-10-15):** a day whose run fails does not hold
+    back the others: the run's window still counts as covered, and only the
+    failed day is remembered in `work-journal.json` settings (`retry_dates`:
+    the day and where its uncovered activity starts), so later runs ask about
+    that day alone. After three failed tries the day is given up and the run
+    reports "Could not get suggestions for 14 Oct after 3 tries".
   - **Headless run:** the run reuses the History-summary pattern, a headless
     `claude -p` with no built-in tools, no saved session
     (`--no-session-persistence`), a temp-dir working directory and a timeout
