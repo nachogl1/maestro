@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal suggestion runs no longer see your personal Claude instructions, hooks or settings, and a Granola run can reach only Granola, not your other MCP servers.",
       "Issue map: the 'data problems' footer now opens by itself and explains each problem in plain words — which issues and links, what it changes on the map, and how to fix it on GitHub. The saved HTML map says the same.",
       "Maestro Settings: hover over any setting (Updates, CLI command, every Samurai threshold, Work Journal, Advanced) for a plain-language explanation of what it does.",
       "Project tabs can no longer be pinned; the pin button and marker on tabs are gone. Pinning terminals is unchanged.",

@@ -64,15 +64,22 @@ pub const GRANOLA_TOOLS: [&str; 2] = ["mcp__granola__list_meetings", "mcp__grano
 
 /// Granola tools a Granola run denies by name, so a user's own "always
 /// allow" rule for one of them never reaches the run (a deny beats an
-/// allow): transcripts, attachments, search, sign-out and switching
-/// workspace.
-pub const GRANOLA_DENIED_TOOLS: [&str; 5] = [
+/// allow): transcripts, attachments, search, sign-out, switching
+/// workspace, meeting folders and account info.
+pub const GRANOLA_DENIED_TOOLS: [&str; 7] = [
     "mcp__granola__get_meeting_transcript",
     "mcp__granola__get_meeting_attachment",
     "mcp__granola__sign_out",
     "mcp__granola__switch_workspace",
     "mcp__granola__query_granola_meetings",
+    "mcp__granola__list_meeting_folders",
+    "mcp__granola__get_account_info",
 ];
+
+/// Granola's official MCP server (the URL the PRD's setup command adds),
+/// used when the user's `granola` line in `claude mcp list` names no
+/// `https://` URL of its own.
+pub const GRANOLA_URL: &str = "https://mcp.granola.ai/mcp";
 
 /// How far before the run's window a meeting may start and still count, so
 /// a meeting whose notes were not written yet at the last run is read once
@@ -82,8 +89,10 @@ const MEETING_LOOKBACK: TimeDelta = TimeDelta::hours(3);
 /// The positional prompt; the run's real input goes in on stdin.
 const USER_PROMPT: &str = "Write Work Journal lines for the activity given on stdin.";
 
-/// A full `--system-prompt` (not an appended one), so the user's own
-/// CLAUDE.md never reaches the run and breaks the reply format (issue #97).
+/// A full `--system-prompt` (not an appended one), replacing Claude Code's
+/// default prompt. It does NOT keep the user's own CLAUDE.md out (checked
+/// with Claude Code 2.1.300); `--safe-mode` or `--setting-sources ""` does
+/// (see [`claude_args`]), or it breaks the reply format (issue #97).
 pub const SYSTEM_PROMPT: &str = "You write a developer's Work Journal. You are given what \
 they did on one day (one activity per line: time, source tag, project, text), what is \
 already on that day's journal page, and the lines already suggested or rejected for that \
@@ -130,46 +139,62 @@ pub fn system_prompt(granola: bool) -> String {
     }
 }
 
-/// True when `claude mcp list` output says the `granola` server is
+/// The `<target>` when `claude mcp list` output says the `granola` server is
 /// connected: its line is `granola: <target> - <tick> Connected`, where the
 /// tick is U+2714. The CLI prints U+221A instead when it thinks the console
 /// has no Unicode (as for a child of a GUI app on Windows, seen with Claude
 /// Code 2.1.300), so both count. Any other status (`! Needs
 /// authentication`, `<cross> Failed to connect`, `! Connected - tools fetch
 /// failed`), another server, or no `granola` line at all is "not
-/// connected".
-pub fn parse_granola_connected(output: &str) -> bool {
-    output.lines().any(|line| {
-        let Some((name, rest)) = line.trim().split_once(": ") else {
-            return false;
-        };
-        let Some((_, status)) = rest.rsplit_once(" - ") else {
-            return false;
-        };
-        name.trim() == "granola"
-            && matches!(status.trim(), "\u{2714} Connected" | "\u{221A} Connected")
+/// connected" (`None`).
+fn connected_granola_target(output: &str) -> Option<&str> {
+    output.lines().find_map(|line| {
+        let (name, rest) = line.trim().split_once(": ")?;
+        let (target, status) = rest.rsplit_once(" - ")?;
+        (name.trim() == "granola"
+            && matches!(status.trim(), "\u{2714} Connected" | "\u{221A} Connected"))
+        .then(|| target.trim())
     })
+}
+
+/// The URL a Granola run reaches Granola at, from `claude mcp list` output:
+/// the user's own server (`granola: <url> (HTTP) - <tick> Connected`) when
+/// it is an `https://` URL, so the run reuses their stored sign-in, else
+/// [`GRANOLA_URL`]. `None` when Granola is not connected.
+pub fn parse_granola_url(output: &str) -> Option<String> {
+    let target = connected_granola_target(output)?;
+    let own = target
+        .strip_suffix(" (HTTP)")
+        .map(str::trim)
+        .filter(|url| url.starts_with("https://") && !url.contains(char::is_whitespace));
+    Some(own.unwrap_or(GRANOLA_URL).to_string())
 }
 
 /// The preflight: runs `claude mcp list` and says whether Granola is
 /// connected. Every failure (no CLI, a timeout, an error exit) is "not
 /// connected"; nothing but that outcome is logged.
 pub async fn granola_preflight() -> bool {
+    granola_preflight_url().await.is_some()
+}
+
+/// [`granola_preflight`], giving the URL to reach Granola at (see
+/// [`parse_granola_url`]); `None` = not connected.
+pub async fn granola_preflight_url() -> Option<String> {
     let args = ["mcp".to_string(), "list".to_string()];
     match run_process("claude", &args, "", PREFLIGHT_TIMEOUT, false).await {
         Ok(output) => {
-            let connected = parse_granola_connected(&output);
-            let outcome = if connected {
+            let url = parse_granola_url(&output);
+            let outcome = if url.is_some() {
                 "connected"
             } else {
                 "not connected"
             };
             log::info!("Work journal: Granola preflight: {outcome}");
-            connected
+            url
         }
         Err(_) => {
             log::info!("Work journal: Granola preflight: failed");
-            false
+            None
         }
     }
 }
@@ -379,25 +404,46 @@ pub(crate) fn is_safe_model(model: &str) -> bool {
 /// (bare mode never reads stored sign-ins) and never an appended system
 /// prompt. The input goes in on stdin.
 ///
-/// `--tools ""` removes the built-in tools only, not the user's MCP
-/// servers. So with `granola` off, `--strict-mcp-config` (and no
-/// `--mcp-config`) loads no MCP server at all. With `granola` on, the
-/// servers stay, the system prompt carries the Granola rules, the two
-/// [`GRANOLA_TOOLS`] are allowed, the [`GRANOLA_DENIED_TOOLS`] are denied by
-/// name, and `--permission-mode dontAsk` denies everything not allowed
-/// (instead of the user's own default mode). `--allowedTools` and
-/// `--disallowedTools` take several values, so `--permission-mode` follows
-/// them and ends the list before the prompt.
-pub fn claude_args(model: Option<&str>, granola: bool) -> Result<Vec<String>, String> {
-    let mut args: Vec<String> = ["-p", "--tools", "", "--no-session-persistence"]
+/// `granola` is the URL to reach Granola at (`None` = Granola off). The
+/// user's own setup never reaches a run (checked with Claude Code 2.1.300;
+/// `--system-prompt` alone lets the user's CLAUDE.md in):
+/// - Granola off: `--safe-mode` (no CLAUDE.md, hooks, skills, plugins or
+///   MCP servers; sign-in and model selection still work), as the report
+///   run does, plus `--strict-mcp-config`.
+/// - Granola on: `--safe-mode` would turn Granola off too (it drops even a
+///   server given by `--mcp-config`), so `--setting-sources ""` instead: no
+///   CLAUDE.md, and no user, project or local settings (so no hooks,
+///   plugins or "always allow" rules). `--strict-mcp-config` with an
+///   `--mcp-config` naming only the `granola` server at `granola` (which
+///   reuses the stored sign-in) loads no other MCP server. The system prompt
+///   carries the Granola rules, the two [`GRANOLA_TOOLS`] are allowed, the
+///   [`GRANOLA_DENIED_TOOLS`] are denied by name, and `--permission-mode
+///   dontAsk` denies everything not allowed. `--mcp-config`,
+///   `--allowedTools` and `--disallowedTools` take several values, so each
+///   is followed by another flag, and `--permission-mode` ends the lists
+///   before the prompt.
+pub fn claude_args(model: Option<&str>, granola: Option<&str>) -> Result<Vec<String>, String> {
+    let confine: &[&str] = match granola {
+        None => &["--safe-mode"],
+        Some(_) => &["--setting-sources", ""],
+    };
+    let mut args: Vec<String> = ["-p"]
         .iter()
+        .chain(confine)
+        .chain(&[
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+        ])
         .map(|arg| arg.to_string())
         .collect();
-    if !granola {
-        args.push("--strict-mcp-config".to_string());
+    if let Some(url) = granola {
+        args.push("--mcp-config".to_string());
+        args.push(granola_mcp_config(url));
     }
     args.push("--system-prompt".to_string());
-    args.push(system_prompt(granola));
+    args.push(system_prompt(granola.is_some()));
     if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
         if !is_safe_model(model) {
             return Err(format!(
@@ -408,7 +454,7 @@ pub fn claude_args(model: Option<&str>, granola: bool) -> Result<Vec<String>, St
         args.push("--model".to_string());
         args.push(model.to_string());
     }
-    if granola {
+    if granola.is_some() {
         args.push("--allowedTools".to_string());
         args.extend(GRANOLA_TOOLS.iter().map(|tool| tool.to_string()));
         args.push("--disallowedTools".to_string());
@@ -418,6 +464,12 @@ pub fn claude_args(model: Option<&str>, granola: bool) -> Result<Vec<String>, St
     }
     args.push(USER_PROMPT.to_string());
     Ok(args)
+}
+
+/// The `--mcp-config` JSON for a Granola run: only the `granola` HTTP
+/// server at `url`.
+fn granola_mcp_config(url: &str) -> String {
+    serde_json::json!({ "mcpServers": { "granola": { "type": "http", "url": url } } }).to_string()
 }
 
 /// The tag a source has in prompts and replies.
@@ -641,8 +693,9 @@ trait RunSources {
         granola: bool,
     ) -> Result<String, String>;
     async fn add(&self, new: Vec<NewCandidate>) -> Result<usize, String>;
-    /// The Granola preflight (see [`granola_preflight`]).
-    async fn granola_connected(&self) -> bool;
+    /// The Granola preflight (see [`granola_preflight_url`]): the URL to
+    /// reach Granola at, `None` = not connected.
+    async fn granola_url(&self) -> Option<String>;
 }
 
 /// The real sources: activity collection, the activity file and `claude`.
@@ -680,8 +733,8 @@ impl RunSources for LiveSources {
             .map_err(|e| e.to_string())
     }
 
-    async fn granola_connected(&self) -> bool {
-        granola_preflight().await
+    async fn granola_url(&self) -> Option<String> {
+        granola_preflight_url().await
     }
 }
 
@@ -694,7 +747,23 @@ async fn run_claude(args: &[String], input: &str, granola: bool) -> Result<Strin
     if granola {
         run_process("claude", args, input, GRANOLA_RUN_TIMEOUT, false).await
     } else {
-        run_process("claude", args, input, RUN_TIMEOUT, true).await
+        run_process("claude", args, input, RUN_TIMEOUT, true)
+            .await
+            .map_err(safe_mode_error)
+    }
+}
+
+/// Maps a failed run of a `claude` too old for `--safe-mode` (`error:
+/// unknown option '--safe-mode'`) to a plain "update Claude Code" message;
+/// any other error is kept. Never retried without `--safe-mode`.
+fn safe_mode_error(message: String) -> String {
+    let lower = message.to_lowercase();
+    if lower.contains("unknown option") && lower.contains("--safe-mode") {
+        "Your Claude Code is too old for Work Journal suggestions (it does not know \
+         --safe-mode). Update Claude Code and try again."
+            .to_string()
+    } else {
+        message
     }
 }
 
@@ -831,9 +900,13 @@ async fn run_with<S: RunSources>(
     };
     // One preflight per run, and only for a "yes": a "no" or a choice not
     // made yet never even checks Granola.
-    let granola =
-        start < end && settings.granola_opt_in == Some(true) && sources.granola_connected().await;
-    let args = match claude_args(settings.model.as_deref(), granola) {
+    let granola_url = if start < end && settings.granola_opt_in == Some(true) {
+        sources.granola_url().await
+    } else {
+        None
+    };
+    let granola = granola_url.is_some();
+    let args = match claude_args(settings.model.as_deref(), granola_url.as_deref()) {
         Ok(args) => args,
         Err(e) => {
             report.error = Some(e);
@@ -1082,11 +1155,12 @@ mod tests {
 
     #[test]
     fn test_claude_args_without_model_use_the_default_model() {
-        let args = claude_args(None, false).unwrap();
+        let args = claude_args(None, None).unwrap();
         assert_eq!(
             args,
             vec![
                 "-p",
+                "--safe-mode",
                 "--tools",
                 "",
                 "--no-session-persistence",
@@ -1096,22 +1170,22 @@ mod tests {
                 USER_PROMPT
             ]
         );
-        assert_eq!(claude_args(Some("  "), false).unwrap(), args);
+        assert_eq!(claude_args(Some("  "), None).unwrap(), args);
     }
 
     #[test]
     fn test_claude_args_with_model_pass_it() {
-        let args = claude_args(Some(" sonnet "), false).unwrap();
+        let args = claude_args(Some(" sonnet "), None).unwrap();
         let at = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[at + 1], "sonnet");
         assert_eq!(args.last().unwrap(), USER_PROMPT);
-        assert!(claude_args(Some("claude-opus-5-5[1m]"), false).is_ok());
+        assert!(claude_args(Some("claude-opus-5-5[1m]"), None).is_ok());
     }
 
     #[test]
     fn test_claude_args_never_bare_or_appended() {
         for model in [None, Some("haiku")] {
-            let args = claude_args(model, false).unwrap();
+            let args = claude_args(model, None).unwrap();
             assert!(!args.iter().any(|a| a == "--bare"));
             assert!(!args.iter().any(|a| a == "--append-system-prompt"));
             assert!(args.iter().any(|a| a == "--no-session-persistence"));
@@ -1120,10 +1194,10 @@ mod tests {
 
     #[test]
     fn test_claude_args_refuse_an_unsafe_model_name() {
-        let err = claude_args(Some("sonnet & calc"), false).unwrap_err();
+        let err = claude_args(Some("sonnet & calc"), None).unwrap_err();
         assert!(err.contains("not a valid model name"));
-        assert!(claude_args(Some("--bare"), false).is_err());
-        assert!(claude_args(Some("-p"), false).is_err());
+        assert!(claude_args(Some("--bare"), None).is_err());
+        assert!(claude_args(Some("-p"), None).is_err());
     }
 
     #[test]
@@ -1144,7 +1218,7 @@ mod tests {
     #[test]
     fn test_claude_args_without_granola_have_no_granola_flags_and_no_mcp_servers() {
         for model in [None, Some("haiku")] {
-            let args = claude_args(model, false).unwrap();
+            let args = claude_args(model, None).unwrap();
             assert!(!args.iter().any(|a| a.contains("granola")), "{args:?}");
             assert!(!args.iter().any(|a| a == "--allowedTools"));
             assert!(!args.iter().any(|a| a == "--disallowedTools"));
@@ -1152,6 +1226,11 @@ mod tests {
             assert!(!args.iter().any(|a| a == "dontAsk"));
             assert!(!args.iter().any(|a| a == "--mcp-config"));
             assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+            assert!(
+                args.iter().any(|a| a == "--safe-mode"),
+                "no CLAUDE.md, hooks, plugins or MCP servers"
+            );
+            assert!(!args.iter().any(|a| a == "--setting-sources"));
             assert!(args.contains(&SYSTEM_PROMPT.to_string()));
             assert_eq!(args.last().unwrap(), USER_PROMPT);
         }
@@ -1180,13 +1259,13 @@ mod tests {
             lines.push(fake.asked.lock().unwrap()[0].clone());
         }
         assert!(lines.iter().all(|line| *line == lines[0]), "{lines:?}");
-        assert_eq!(lines[0].0, claude_args(None, false).unwrap());
+        assert_eq!(lines[0].0, claude_args(None, None).unwrap());
         assert!(!lines[0].1.contains("Meetings window"));
     }
 
     #[test]
     fn test_claude_args_with_granola_allow_exactly_the_two_read_tools() {
-        let args = claude_args(Some("sonnet"), true).unwrap();
+        let args = claude_args(Some("sonnet"), Some(GRANOLA_URL)).unwrap();
         let at = args.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(
             args[at..],
@@ -1200,6 +1279,8 @@ mod tests {
                 "mcp__granola__sign_out",
                 "mcp__granola__switch_workspace",
                 "mcp__granola__query_granola_meetings",
+                "mcp__granola__list_meeting_folders",
+                "mcp__granola__get_account_info",
                 "--permission-mode",
                 "dontAsk",
                 USER_PROMPT,
@@ -1212,9 +1293,28 @@ mod tests {
         for denied in GRANOLA_DENIED_TOOLS {
             assert!(!allowed.iter().any(|a| *a == denied));
         }
+        assert_eq!(
+            args[..9],
+            [
+                "-p",
+                "--setting-sources",
+                "",
+                "--tools",
+                "",
+                "--no-session-persistence",
+                "--strict-mcp-config",
+                "--mcp-config",
+                r#"{"mcpServers":{"granola":{"type":"http","url":"https://mcp.granola.ai/mcp"}}}"#,
+            ],
+            "no settings files or CLAUDE.md, and Granola is the only MCP server"
+        );
+        assert_eq!(
+            args[9], "--system-prompt",
+            "a flag ends the --mcp-config list"
+        );
         assert!(
-            !args.iter().any(|a| a == "--strict-mcp-config"),
-            "Granola is an MCP server, so the servers load"
+            !args.iter().any(|a| a == "--safe-mode"),
+            "safe mode would drop the Granola server too"
         );
         let tools = args.iter().position(|a| a == "--tools").unwrap();
         assert_eq!(args[tools + 1], "", "--tools \"\" is kept");
@@ -1224,6 +1324,35 @@ mod tests {
         assert_eq!(args[model + 1], "sonnet");
         let prompt = args.iter().position(|a| a == "--system-prompt").unwrap();
         assert_eq!(args[prompt + 1], system_prompt(true));
+    }
+
+    #[test]
+    fn test_claude_args_with_granola_use_the_url_given() {
+        let args = claude_args(None, Some("https://eu.granola.example/mcp")).unwrap();
+        let at = args.iter().position(|a| a == "--mcp-config").unwrap();
+        let config: Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(
+            config,
+            serde_json::json!({ "mcpServers": { "granola": {
+                "type": "http", "url": "https://eu.granola.example/mcp"
+            } } })
+        );
+    }
+
+    #[test]
+    fn test_an_old_cli_without_safe_mode_gets_a_plain_message() {
+        let err = safe_mode_error(
+            "claude exited with exit code: 1: error: unknown option '--safe-mode'".into(),
+        );
+        assert_eq!(
+            err,
+            "Your Claude Code is too old for Work Journal suggestions (it does not know \
+             --safe-mode). Update Claude Code and try again."
+        );
+        let other = "claude did not answer within 180s".to_string();
+        assert_eq!(safe_mode_error(other.clone()), other);
+        let unrelated = "error: unknown option '--frobnicate'".to_string();
+        assert_eq!(safe_mode_error(unrelated.clone()), unrelated);
     }
 
     #[test]
@@ -1390,6 +1519,10 @@ mod tests {
 
     // --- Granola: preflight ---
 
+    fn parse_granola_connected(output: &str) -> bool {
+        connected_granola_target(output).is_some()
+    }
+
     #[test]
     fn test_parse_granola_connected_reads_the_mcp_list_line() {
         let connected = "Checking MCP server health\u{2026}\n\n\
@@ -1404,6 +1537,34 @@ mod tests {
         assert!(parse_granola_connected(
             "granola: https://mcp.granola.ai/mcp (HTTP) - \u{2714} Connected\r\n"
         ));
+    }
+
+    #[test]
+    fn test_parse_granola_url_takes_the_users_own_https_url() {
+        let output = "playwright: npx @playwright/mcp@latest - \u{2714} Connected\n\
+            granola: https://eu.granola.example/mcp (HTTP) - \u{2714} Connected\n";
+        assert_eq!(
+            parse_granola_url(output).as_deref(),
+            Some("https://eu.granola.example/mcp")
+        );
+        for fallback in [
+            "granola: https://mcp.granola.ai/mcp (HTTP) - \u{221A} Connected",
+            "granola: npx granola-proxy - \u{2714} Connected",
+            "granola: https://mcp.granola.ai/sse (SSE) - \u{2714} Connected",
+            "granola: http://localhost:9000/mcp (HTTP) - \u{2714} Connected",
+        ] {
+            assert_eq!(
+                parse_granola_url(fallback).as_deref(),
+                Some(GRANOLA_URL),
+                "{fallback:?}"
+            );
+        }
+        assert_eq!(
+            parse_granola_url(
+                "granola: https://mcp.granola.ai/mcp (HTTP) - ! Needs authentication"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1733,9 +1894,9 @@ mod tests {
             Ok(count)
         }
 
-        async fn granola_connected(&self) -> bool {
+        async fn granola_url(&self) -> Option<String> {
             *self.preflights.lock().unwrap() += 1;
-            self.granola
+            self.granola.then(|| GRANOLA_URL.to_string())
         }
     }
 
@@ -2015,7 +2176,7 @@ mod tests {
             assert!(report.error.is_none());
             assert_eq!(*fake.preflights.lock().unwrap(), 0, "{opt_in:?}");
             let asked = fake.asked.lock().unwrap();
-            assert_eq!(asked[0].0, claude_args(None, false).unwrap());
+            assert_eq!(asked[0].0, claude_args(None, None).unwrap());
             assert_eq!(*fake.asked_granola.lock().unwrap(), vec![false]);
             let added = fake.added.lock().unwrap();
             assert_eq!(added.len(), 1, "the granola line is not accepted");
@@ -2043,7 +2204,7 @@ mod tests {
         assert_eq!(*fake.preflights.lock().unwrap(), 1);
         assert_eq!(
             fake.asked.lock().unwrap()[0].0,
-            claude_args(None, false).unwrap()
+            claude_args(None, None).unwrap()
         );
         assert_eq!(*fake.asked_granola.lock().unwrap(), vec![false]);
     }
@@ -2068,7 +2229,7 @@ mod tests {
         assert_eq!(*fake.preflights.lock().unwrap(), 1);
         let asked = fake.asked.lock().unwrap();
         assert_eq!(asked.len(), 1, "a date without other activity still runs");
-        assert_eq!(asked[0].0, claude_args(None, true).unwrap());
+        assert_eq!(asked[0].0, claude_args(None, Some(GRANOLA_URL)).unwrap());
         assert!(asked[0].1.starts_with(&format!("Date: {today}")));
         assert!(asked[0]
             .1
