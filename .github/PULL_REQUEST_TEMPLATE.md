@@ -12,7 +12,7 @@ Closes #
 ## Test evidence  (tick what you ran; delete N/A lines)
 **Frontend** — [ ] `npm run test`  [ ] `npx @biomejs/biome check .`
 **Rust** (from `src-tauri/`) — [ ] `cargo test --workspace`  [ ] `cargo clippy`  [ ] `cargo fmt --check`
-**CI** — [ ] all checks green (ci.yml + pr-checks.yml)
+**CI** — [ ] all checks green (pr-checks.yml)
 **Manual** — [ ] opened the app, verified the issue's acceptance criteria
 
 ## UI changes  (delete if none)
