@@ -488,15 +488,48 @@ describe("PreLaunchCard keyboard launch flow", () => {
     vi.clearAllMocks();
   });
 
-  it("puts the launch button directly after the name input in tab order", () => {
+  it("tabs from the name input to the working-directory dropdown, then Launch", () => {
     const { container } = render(<PreLaunchCard {...props} />);
+    const focusable = Array.from(
+      container.querySelectorAll<HTMLElement>("input, button:not([disabled]), select, textarea"),
+    );
+    const nameInput = screen.getByLabelText(/Window Name/);
+    const dirSelect = screen.getByRole("combobox", { name: "Working directory" });
+    const launchButton = screen.getByRole("button", { name: "Launch Session" });
+
+    expect(focusable.indexOf(dirSelect)).toBe(focusable.indexOf(nameInput) + 1);
+    expect(focusable.indexOf(launchButton)).toBe(focusable.indexOf(dirSelect) + 1);
+  });
+
+  it("puts the launch button directly after the name input when the project is not a git repo", () => {
+    const { container } = render(<PreLaunchCard {...props} isGitRepo={false} />);
     const focusable = Array.from(
       container.querySelectorAll<HTMLElement>("input, button:not([disabled]), select, textarea"),
     );
     const nameInput = screen.getByLabelText(/Window Name/);
     const launchButton = screen.getByRole("button", { name: "Launch Session" });
 
+    expect(screen.queryByRole("combobox", { name: "Working directory" })).toBeNull();
     expect(focusable.indexOf(launchButton)).toBe(focusable.indexOf(nameInput) + 1);
+  });
+
+  it("lists New Worktree first and reports a change of working directory", () => {
+    render(<PreLaunchCard {...props} slot={{ ...slot, worktreeMode: "new" }} />);
+    const dirSelect = screen.getByRole("combobox", { name: "Working directory" });
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+
+    expect(options).toEqual(["New Worktree", "Original Path", "Current Worktree"]);
+    expect(dirSelect).toHaveValue("new");
+    expect(screen.getByRole("option", { name: "Current Worktree" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "New Worktree" })).toBeNull();
+
+    fireEvent.change(dirSelect, { target: { value: "project" } });
+    expect(props.onWorktreeModeChange).toHaveBeenCalledWith("project");
+  });
+
+  it("enables Current Worktree only when a managed worktree exists", () => {
+    render(<PreLaunchCard {...props} hasManagedWorktree />);
+    expect(screen.getByRole("option", { name: "Current Worktree" })).not.toBeDisabled();
   });
 
   it("launches when the launch button is clicked", () => {
