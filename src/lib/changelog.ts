@@ -31,6 +31,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: if Granola is connected in your Claude setup and you say yes once, suggestions also cover your meetings; change the choice in Settings.",
       "Work Journal: a Report button writes an achievement-focused HTML summary of any date range to a folder you choose once.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
+      "Parked terminals stop popping back out for nothing: the CLI's 60-second idle reminder, sign-in notices, finished background agents and usage-limit auto-resumes no longer unpark a terminal — only a real question, permission prompt, finished or failed run does.",
       "Settings: a Context alert picks the context usage (50–95%, or Off) at which a Claude terminal's frame blinks red, so you can compact or hand off before it runs out.",
     ],
   },

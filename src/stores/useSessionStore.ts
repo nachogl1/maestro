@@ -125,8 +125,10 @@ interface SessionStatusPayload {
  * current state (see resolveStatusEvent):
  * - "AwaitingInput": Stop hook — the agent ended its turn, user's move.
  * - "SessionEnded": SessionEnd hook — the claude process exited.
+ * - "IdleReminder": Notification hook `idle_prompt` — the CLI reminding that
+ *   it finished ~60s ago and nothing was typed since. A reminder, never news.
  */
-type WireOnlyStatus = "AwaitingInput" | "SessionEnded";
+type WireOnlyStatus = "AwaitingInput" | "SessionEnded" | "IdleReminder";
 
 /**
  * Raw wire payload for `session-status-changed`. Wire-only statuses are
@@ -142,6 +144,13 @@ interface ResolvedStatus {
   status: BackendSessionStatus;
   statusMessage?: string;
   needsInputPrompt?: string;
+  /**
+   * True when the signal repeats something the user was already told (the
+   * idle reminder): it may repaint the status, but it must not pull a parked
+   * session back into the grid — the Stop that ended the turn already did,
+   * and the user parked it again on purpose.
+   */
+  suppressAutoUnpark?: boolean;
 }
 
 /**
@@ -169,12 +178,19 @@ interface ResolvedStatus {
  * 2. "SessionEnded" (SessionEnd hook, the claude process exited): whatever
  *    the session showed is stale → Idle, clearing any needs-input prompt.
  *    Done/Error survive — the user still wants to see the outcome.
- * 3. "NeedsInput" (Notification hook, AskUserQuestion, or the MCP tool):
- *    dropped on Done/Error — the CLI's 60s idle-prompt reminder fires after
- *    every turn and must not repaint a finished session red. Timeout is
- *    deliberately NOT protected: an explicit needs-input proves the CLI is
- *    alive, recovering a false startup timeout.
- * 4. Everything else applies verbatim (last writer wins).
+ * 3. "IdleReminder" (Notification hook `idle_prompt`, ~60s after a turn ends
+ *    with nothing typed since): dropped on Done/Error, and dropped while
+ *    background subagents still run (the session IS working); otherwise it
+ *    repaints NeedsInput — recovering a turn end that was lost or overwritten
+ *    by a late async tool hook — but with `suppressAutoUnpark`, because the
+ *    turn end itself already brought the session back once and a reminder
+ *    is not a new reason to pull it out of the parking tray.
+ * 4. "NeedsInput" (Notification hook, AskUserQuestion, or the MCP tool):
+ *    dropped on Done/Error — a prompt reminder after the agent reported must
+ *    not repaint a finished session red. Timeout is deliberately NOT
+ *    protected: an explicit needs-input proves the CLI is alive, recovering
+ *    a false startup timeout.
+ * 5. Everything else applies verbatim (last writer wins).
  */
 export function resolveStatusEvent(
   payload: Pick<RawSessionStatusPayload, "status" | "message" | "needs_input_prompt">,
@@ -212,6 +228,21 @@ export function resolveStatusEvent(
       return null;
     }
     return { status: "Idle", statusMessage: payload.message, needsInputPrompt: undefined };
+  }
+
+  if (payload.status === "IdleReminder") {
+    if (existingStatus !== undefined && terminal.includes(existingStatus)) {
+      return null;
+    }
+    if (runningSubagents > 0) {
+      return null;
+    }
+    return {
+      status: "NeedsInput",
+      statusMessage: payload.message,
+      needsInputPrompt: payload.needs_input_prompt,
+      suppressAutoUnpark: true,
+    };
   }
 
   if (payload.status === "NeedsInput") {
@@ -1103,12 +1134,14 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               (s) => s.id === session_id && samePath(s.project_path, project_path),
             );
 
-            // Subagent count is only consulted for the Stop-hook signal.
-            // Bounded by SUBAGENT_STALE_MS (and the watchdog armed below), so
-            // a completion event that never arrives cannot pin the session at
-            // Working (issue #77 cause 4).
+            // Subagent count is only consulted for the Stop-hook signal and
+            // the idle reminder. Bounded by SUBAGENT_STALE_MS (and the
+            // watchdog armed below), so a completion event that never arrives
+            // cannot pin the session at Working (issue #77 cause 4).
             const runningSubagents =
-              event.payload.status === "AwaitingInput" ? countRunningSubagents(session_id) : 0;
+              event.payload.status === "AwaitingInput" || event.payload.status === "IdleReminder"
+                ? countRunningSubagents(session_id)
+                : 0;
 
             // Same-turn terminal bookkeeping (issue #77 cause 1): the Stop
             // hook consumes the mark of the turn it closes; every other
@@ -1172,11 +1205,14 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               // it. Edge-triggered on purpose — if the user re-parks the
               // still-stopped session, repeated events for the same status are
               // not a new transition and must not undo that manual choice.
+              // Reminders (`suppressAutoUnpark`) never count either: they
+              // repeat a turn end the user already saw and parked away.
               const current = state.sessions.find(
                 (s) => s.id === session_id && samePath(s.project_path, project_path),
               );
               const autoUnpark =
                 current !== undefined &&
+                !resolved.suppressAutoUnpark &&
                 READY_FOR_USER_STATUSES.includes(resolved.status) &&
                 current.status !== resolved.status &&
                 state.parkedSessionIds.includes(session_id);
