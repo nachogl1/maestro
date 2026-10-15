@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -251,13 +251,18 @@ pub fn modify(
 
 /// Accepts only a real calendar date written as `YYYY-MM-DD`.
 fn validate_date(date: &str) -> WorkJournalResult<()> {
+    parse_date(date).map(|_| ())
+}
+
+/// Parses a real calendar date written exactly as `YYYY-MM-DD`.
+fn parse_date(date: &str) -> WorkJournalResult<NaiveDate> {
     let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| WorkJournalError::InvalidDate(date.to_string()))?;
     // parse_from_str accepts "2026-1-5"; keep the key canonical.
     if parsed.format("%Y-%m-%d").to_string() != date {
         return Err(WorkJournalError::InvalidDate(date.to_string()));
     }
-    Ok(())
+    Ok(parsed)
 }
 
 /// Adds a page for `date`. Refused when that date already has a page.
@@ -329,6 +334,83 @@ pub fn merge_settings(
     journal.settings =
         serde_json::from_value(Value::Object(merged)).map_err(WorkJournalError::InvalidSettings)?;
     Ok(())
+}
+
+/// The default page title, e.g. `Wed 14 Oct 2026`: short weekday, day without
+/// a leading zero, short month, year. Always English: chrono's plain
+/// `format` never uses the system locale.
+pub fn default_title(date: NaiveDate) -> String {
+    date.format("%a %-d %b %Y").to_string()
+}
+
+/// The body of a new weekday page: what TipTap's `editor.getJSON()` returns
+/// for an empty editor.
+pub fn empty_page_body() -> Value {
+    serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]})
+}
+
+/// The body of a new Saturday or Sunday page: one paragraph saying `Weekend`.
+pub fn weekend_page_body() -> Value {
+    serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Weekend"}]}]
+    })
+}
+
+/// Makes sure every day has its page, up to `today` (`YYYY-MM-DD`).
+///
+/// - No `last_auto_created_date` yet (first run): only today's page.
+/// - Otherwise every date from the day after `last_auto_created_date` up to
+///   today inclusive.
+/// - Dates in `deleted_dates` and dates that already have a page (manual or
+///   auto) are skipped; gap-filling still moves past them.
+/// - New pages are auto pages with the [`default_title`]; Saturday and Sunday
+///   get [`weekend_page_body`], other days [`empty_page_body`].
+/// - `last_auto_created_date` moves forward to today, never backwards (a
+///   clock set back creates nothing).
+///
+/// Returns whether the journal changed.
+pub fn ensure_pages(journal: &mut WorkJournal, today: &str) -> WorkJournalResult<bool> {
+    let today = parse_date(today)?;
+    let anchor = match journal.last_auto_created_date.as_deref().map(parse_date) {
+        Some(Ok(anchor)) => Some(anchor),
+        Some(Err(_)) => {
+            log::warn!("Ignoring an invalid last auto-created date in the work journal");
+            None
+        }
+        None => None,
+    };
+    let first = match anchor {
+        Some(anchor) if anchor >= today => return Ok(false),
+        Some(anchor) => anchor.succ_opt().unwrap_or(today),
+        None => today,
+    };
+
+    for date in first.iter_days().take_while(|d| *d <= today) {
+        let key = date.format("%Y-%m-%d").to_string();
+        if journal.pages.contains_key(&key) || journal.deleted_dates.contains(&key) {
+            continue;
+        }
+        let body = match date.weekday() {
+            Weekday::Sat | Weekday::Sun => weekend_page_body(),
+            _ => empty_page_body(),
+        };
+        create_page(journal, &key, default_title(date), body, PageOrigin::Auto)?;
+    }
+    journal.last_auto_created_date = Some(today.format("%Y-%m-%d").to_string());
+    Ok(true)
+}
+
+/// Loads the journal at `path`, runs [`ensure_pages`] for `today`, and saves
+/// only when something changed. Returns the (saved) journal. An invalid
+/// `today` is refused before the file is read.
+pub fn ensure_pages_in_file(path: &Path, today: &str) -> WorkJournalResult<WorkJournal> {
+    validate_date(today)?;
+    let mut journal = load(path)?;
+    if ensure_pages(&mut journal, today)? {
+        save(path, &journal)?;
+    }
+    Ok(journal)
 }
 
 #[cfg(test)]
@@ -714,5 +796,301 @@ mod tests {
             "The work journal was saved by a newer Maestro (layout version 3, this version \
              reads up to 1). Update Maestro first."
         );
+    }
+
+    fn day(date: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap()
+    }
+
+    fn journal_anchored_at(date: &str) -> WorkJournal {
+        WorkJournal {
+            last_auto_created_date: Some(date.to_string()),
+            ..WorkJournal::default()
+        }
+    }
+
+    #[test]
+    fn test_ensure_first_run_creates_only_today() {
+        let mut journal = WorkJournal::default();
+
+        let changed = ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+        assert!(changed);
+        assert_eq!(journal.pages.len(), 1, "no back-fill on the first run");
+        let page = &journal.pages["2026-10-14"];
+        assert_eq!(page.date, "2026-10-14");
+        assert_eq!(page.title, "Wed 14 Oct 2026");
+        assert_eq!(page.body, empty_page_body());
+        assert_eq!(page.origin, PageOrigin::Auto);
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-14")
+        );
+    }
+
+    #[test]
+    fn test_ensure_gap_fills_three_days_with_weekend_bodies() {
+        // Last auto-created on Friday; today is Monday.
+        let mut journal = journal_anchored_at("2026-10-16");
+
+        ensure_pages(&mut journal, "2026-10-19").unwrap();
+
+        let dates: Vec<&str> = journal.pages.keys().map(String::as_str).collect();
+        assert_eq!(dates, ["2026-10-17", "2026-10-18", "2026-10-19"]);
+        let sat = &journal.pages["2026-10-17"];
+        assert_eq!(sat.title, "Sat 17 Oct 2026");
+        assert_eq!(sat.body, weekend_page_body());
+        let sun = &journal.pages["2026-10-18"];
+        assert_eq!(sun.title, "Sun 18 Oct 2026");
+        assert_eq!(sun.body, weekend_page_body());
+        let mon = &journal.pages["2026-10-19"];
+        assert_eq!(mon.title, "Mon 19 Oct 2026");
+        assert_eq!(mon.body, empty_page_body());
+        assert!(journal.pages.values().all(|p| p.origin == PageOrigin::Auto));
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-19")
+        );
+    }
+
+    #[test]
+    fn test_ensure_gap_fills_weekdays_with_empty_bodies() {
+        let mut journal = journal_anchored_at("2026-10-12");
+
+        ensure_pages(&mut journal, "2026-10-15").unwrap();
+
+        let dates: Vec<&str> = journal.pages.keys().map(String::as_str).collect();
+        assert_eq!(dates, ["2026-10-13", "2026-10-14", "2026-10-15"]);
+        assert!(journal.pages.values().all(|p| p.body == empty_page_body()));
+    }
+
+    #[test]
+    fn test_ensure_never_recreates_a_deleted_date_and_still_advances() {
+        let mut journal = journal_anchored_at("2026-10-12");
+        journal.deleted_dates.insert("2026-10-13".to_string());
+
+        ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+        assert!(!journal.pages.contains_key("2026-10-13"));
+        assert!(journal.pages.contains_key("2026-10-14"));
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-14")
+        );
+
+        // The next day's run starts after the anchor, so the deleted day stays gone.
+        ensure_pages(&mut journal, "2026-10-15").unwrap();
+        let dates: Vec<&str> = journal.pages.keys().map(String::as_str).collect();
+        assert_eq!(dates, ["2026-10-14", "2026-10-15"]);
+        assert!(journal.deleted_dates.contains("2026-10-13"));
+    }
+
+    #[test]
+    fn test_ensure_anchors_on_last_auto_date_not_newest_page() {
+        // Yesterday's auto page was deleted; the newest remaining page is older.
+        let mut journal = journal_anchored_at("2026-10-13");
+        create_page(
+            &mut journal,
+            "2026-10-12",
+            "Mon 12 Oct 2026".into(),
+            empty_page_body(),
+            PageOrigin::Auto,
+        )
+        .unwrap();
+        journal.deleted_dates.insert("2026-10-13".to_string());
+
+        ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+        assert!(!journal.pages.contains_key("2026-10-13"));
+        assert!(journal.pages.contains_key("2026-10-14"));
+    }
+
+    #[test]
+    fn test_ensure_deleted_today_on_first_run_is_skipped_but_anchored() {
+        let mut journal = WorkJournal::default();
+        journal.deleted_dates.insert("2026-10-14".to_string());
+
+        assert!(ensure_pages(&mut journal, "2026-10-14").unwrap());
+
+        assert!(journal.pages.is_empty());
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-14")
+        );
+    }
+
+    #[test]
+    fn test_ensure_leaves_existing_manual_and_auto_pages_untouched() {
+        let mut journal = journal_anchored_at("2026-10-12");
+        let manual_body = json!({"type": "doc", "content": [{"type": "paragraph",
+            "content": [{"type": "text", "text": "My notes"}]}]});
+        create_page(
+            &mut journal,
+            "2026-10-13",
+            "My own title".into(),
+            manual_body.clone(),
+            PageOrigin::Manual,
+        )
+        .unwrap();
+        create_page(
+            &mut journal,
+            "2026-10-14",
+            "Edited auto title".into(),
+            json!({"v": 1}),
+            PageOrigin::Auto,
+        )
+        .unwrap();
+
+        ensure_pages(&mut journal, "2026-10-15").unwrap();
+
+        let manual = &journal.pages["2026-10-13"];
+        assert_eq!(manual.title, "My own title");
+        assert_eq!(manual.body, manual_body);
+        assert_eq!(manual.origin, PageOrigin::Manual);
+        let auto = &journal.pages["2026-10-14"];
+        assert_eq!(auto.title, "Edited auto title");
+        assert_eq!(auto.body, json!({"v": 1}));
+        assert!(journal.pages.contains_key("2026-10-15"));
+        assert_eq!(journal.pages.len(), 3);
+    }
+
+    #[test]
+    fn test_ensure_midnight_rollover_creates_only_the_new_day() {
+        let mut journal = WorkJournal::default();
+        ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+        assert!(ensure_pages(&mut journal, "2026-10-15").unwrap());
+
+        let dates: Vec<&str> = journal.pages.keys().map(String::as_str).collect();
+        assert_eq!(dates, ["2026-10-14", "2026-10-15"]);
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-15")
+        );
+    }
+
+    #[test]
+    fn test_ensure_same_day_or_clock_set_back_changes_nothing() {
+        let mut journal = journal_anchored_at("2026-10-14");
+        let before = journal.clone();
+
+        assert!(!ensure_pages(&mut journal, "2026-10-14").unwrap());
+        assert!(!ensure_pages(&mut journal, "2026-10-10").unwrap());
+
+        assert_eq!(journal, before, "the anchor never moves backwards");
+    }
+
+    #[test]
+    fn test_ensure_gap_fill_crosses_month_and_year() {
+        let mut journal = journal_anchored_at("2026-12-30");
+
+        ensure_pages(&mut journal, "2027-01-02").unwrap();
+
+        let titles: Vec<&str> = journal.pages.values().map(|p| p.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Thu 31 Dec 2026", "Fri 1 Jan 2027", "Sat 2 Jan 2027"]
+        );
+        assert_eq!(journal.pages["2027-01-02"].body, weekend_page_body());
+    }
+
+    #[test]
+    fn test_ensure_rejects_invalid_today() {
+        let mut journal = journal_anchored_at("2026-10-12");
+        let before = journal.clone();
+        for bad in ["2026-10-5", "2026-02-30", "15/10/2026", "", "today"] {
+            let err = ensure_pages(&mut journal, bad).unwrap_err();
+            assert!(matches!(err, WorkJournalError::InvalidDate(_)), "{bad}");
+        }
+        assert_eq!(journal, before);
+    }
+
+    #[test]
+    fn test_ensure_treats_an_invalid_anchor_as_first_run() {
+        let mut journal = journal_anchored_at("not-a-date");
+
+        ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+        assert_eq!(journal.pages.len(), 1);
+        assert!(journal.pages.contains_key("2026-10-14"));
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-14")
+        );
+    }
+
+    #[test]
+    fn test_default_title_single_digit_day_has_no_leading_zero() {
+        assert_eq!(default_title(day("2026-10-05")), "Mon 5 Oct 2026");
+        assert_eq!(default_title(day("2026-03-01")), "Sun 1 Mar 2026");
+    }
+
+    #[test]
+    fn test_default_title_for_each_weekday() {
+        let expected = [
+            ("2026-10-12", "Mon 12 Oct 2026"),
+            ("2026-10-13", "Tue 13 Oct 2026"),
+            ("2026-10-14", "Wed 14 Oct 2026"),
+            ("2026-10-15", "Thu 15 Oct 2026"),
+            ("2026-10-16", "Fri 16 Oct 2026"),
+            ("2026-10-17", "Sat 17 Oct 2026"),
+            ("2026-10-18", "Sun 18 Oct 2026"),
+        ];
+        for (date, title) in expected {
+            assert_eq!(default_title(day(date)), title);
+        }
+    }
+
+    #[test]
+    fn test_page_bodies_match_tiptap_json() {
+        assert_eq!(
+            empty_page_body(),
+            json!({"type": "doc", "content": [{"type": "paragraph"}]})
+        );
+        assert_eq!(
+            weekend_page_body(),
+            json!({"type": "doc", "content": [{"type": "paragraph",
+                "content": [{"type": "text", "text": "Weekend"}]}]})
+        );
+    }
+
+    #[test]
+    fn test_ensure_in_file_saves_and_returns_the_journal() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("work-journal"));
+
+        let journal = ensure_pages_in_file(&path, "2026-10-14").unwrap();
+
+        assert!(journal.pages.contains_key("2026-10-14"));
+        assert_eq!(
+            load(&path).unwrap(),
+            journal,
+            "the returned journal is the saved one"
+        );
+    }
+
+    #[test]
+    fn test_ensure_in_file_does_not_save_when_nothing_changed() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(dir.path());
+        // Compact JSON: any save would rewrite it pretty-printed.
+        let text = r#"{"layout_version":1,"last_auto_created_date":"2026-10-14"}"#;
+        std::fs::write(&path, text).unwrap();
+
+        let journal = ensure_pages_in_file(&path, "2026-10-14").unwrap();
+
+        assert!(journal.pages.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn test_ensure_in_file_rejects_invalid_today_without_writing() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(dir.path());
+
+        let err = ensure_pages_in_file(&path, "2026-13-01").unwrap_err();
+
+        assert!(matches!(err, WorkJournalError::InvalidDate(_)));
+        assert!(!path.exists());
     }
 }

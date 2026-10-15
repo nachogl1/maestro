@@ -297,6 +297,7 @@ pub fn run() {
             commands::work_journal::update_work_journal_page,
             commands::work_journal::delete_work_journal_page,
             commands::work_journal::update_work_journal_settings,
+            commands::work_journal::work_journal_ensure_pages,
             // Session commands (new)
             commands::session::get_sessions,
             commands::session::create_session,

@@ -92,3 +92,12 @@ pub async fn update_work_journal_settings(
     })
     .await
 }
+
+/// Makes sure every day has its page up to `today` (`YYYY-MM-DD`, the
+/// caller's local date): gap-fills from the last auto-created date, skips
+/// deleted dates and existing pages, and saves only when something changed.
+/// Returns the journal.
+#[tauri::command]
+pub async fn work_journal_ensure_pages(today: String) -> Result<WorkJournal, String> {
+    with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await
+}
