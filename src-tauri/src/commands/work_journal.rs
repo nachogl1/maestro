@@ -258,6 +258,23 @@ pub async fn work_journal_run_candidates(
     Ok(candidate_run_outcome(report, last_run_at))
 }
 
+/// Whether Granola is connected in the user's Claude setup, for the
+/// suggestions box's one-time opt-in question.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct GranolaStatus {
+    pub connected: bool,
+}
+
+/// Runs the Granola preflight (`claude mcp list`; see
+/// [`work_journal_run::granola_preflight`]). Reads no meeting; any failure
+/// is "not connected", never an error.
+#[tauri::command]
+pub async fn work_journal_granola_status() -> Result<GranolaStatus, String> {
+    Ok(GranolaStatus {
+        connected: work_journal_run::granola_preflight().await,
+    })
+}
+
 /// A restore or undo reply: the whole saved journal, whether a readable
 /// safety copy is there for "Undo restore", and what the automatic backup
 /// does next (for the notice).
@@ -432,6 +449,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CandidateRunOutcome::NoProjects).unwrap(),
             serde_json::json!({"status": "no_projects"})
+        );
+    }
+
+    #[test]
+    fn test_granola_status_is_a_connected_flag() {
+        assert_eq!(
+            serde_json::to_value(GranolaStatus { connected: true }).unwrap(),
+            serde_json::json!({"connected": true})
         );
     }
 

@@ -158,6 +158,11 @@ pub struct WorkJournalSettings {
     /// When the last candidate run's window ended (RFC 3339, UTC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<String>,
+    /// Whether candidate runs may read the user's Granola meeting notes:
+    /// absent = not asked yet, `true` = yes, `false` = no (the run then
+    /// never allows the Granola tools).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granola_opt_in: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -1560,6 +1565,39 @@ mod tests {
     }
 
     #[test]
+    fn test_granola_opt_in_is_unset_yes_or_no_and_patched_alone() {
+        let mut journal =
+            parse_journal(r#"{"layout_version": 1, "settings": {"model": "haiku"}}"#).unwrap();
+        assert_eq!(
+            journal.settings.granola_opt_in, None,
+            "absent = not asked yet"
+        );
+
+        let patch = |value: Value| Map::from_iter([("granola_opt_in".to_string(), value)]);
+        merge_settings(&mut journal, patch(json!(true))).unwrap();
+        assert_eq!(journal.settings.granola_opt_in, Some(true));
+        assert_eq!(
+            journal.settings.model.as_deref(),
+            Some("haiku"),
+            "other keys kept"
+        );
+        assert!(
+            journal.settings.extra.is_empty(),
+            "a named field, not an extra key"
+        );
+        assert_eq!(
+            serde_json::to_value(&journal.settings).unwrap()["granola_opt_in"],
+            json!(true)
+        );
+
+        merge_settings(&mut journal, patch(json!(false))).unwrap();
+        assert_eq!(journal.settings.granola_opt_in, Some(false));
+        merge_settings(&mut journal, patch(Value::Null)).unwrap();
+        assert_eq!(journal.settings.granola_opt_in, None);
+        assert!(merge_settings(&mut journal, patch(json!("yes"))).is_err());
+    }
+
+    #[test]
     fn test_backup_now_writes_the_journal_and_records_the_time() {
         let dir = tempdir().unwrap();
         let path = journal_path(&dir.path().join("app"));
@@ -1924,8 +1962,8 @@ mod tests {
             "the journal equals the backup"
         );
         assert_eq!(
-            saved.settings.extra["granola_opt_in"],
-            json!(true),
+            saved.settings.granola_opt_in,
+            Some(true),
             "other settings come from the backup"
         );
         assert!(

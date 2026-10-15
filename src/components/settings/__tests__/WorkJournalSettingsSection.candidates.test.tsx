@@ -298,3 +298,67 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+describe("WorkJournalSettingsSection Granola row", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useWorkJournalBackupStore.setState(BACKUP_INITIAL, true);
+    useWorkJournalCandidateRunStore.setState(RUN_INITIAL, true);
+  });
+
+  function granolaSelect(): HTMLSelectElement {
+    return screen.getByLabelText("Granola meeting notes") as HTMLSelectElement;
+  }
+
+  it("shows Not asked yet until a choice is made, then saves only granola_opt_in", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({}),
+      update_work_journal_settings: (args) =>
+        journal((args as { settings: WorkJournalCandidateRunSettings }).settings),
+    });
+    render(<WorkJournalSettingsSection />);
+
+    expect(granolaSelect()).toHaveValue("unset");
+    expect(screen.getByRole("option", { name: "Not asked yet" })).toBeDisabled();
+
+    fireEvent.change(granolaSelect(), { target: { value: "yes" } });
+    await waitFor(() => expect(granolaSelect()).toHaveValue("yes"));
+    expect(screen.queryByRole("option", { name: "Not asked yet" })).toBeNull();
+
+    fireEvent.change(granolaSelect(), { target: { value: "no" } });
+    await waitFor(() => expect(granolaSelect()).toHaveValue("no"));
+
+    expect(settingsPatches()).toEqual([
+      { settings: { granola_opt_in: true } },
+      { settings: { granola_opt_in: false } },
+    ]);
+  });
+
+  it.each([
+    [true, "yes"],
+    [false, "no"],
+  ])("shows a saved choice of %s", async (optIn, shown) => {
+    routeInvoke({ load_work_journal: () => journal({ granola_opt_in: optIn }) });
+    await useWorkJournalCandidateRunStore.getState().load();
+    render(<WorkJournalSettingsSection />);
+    expect(granolaSelect()).toHaveValue(shown);
+    expect(screen.queryByRole("option", { name: "Not asked yet" })).toBeNull();
+  });
+
+  it("shows an error and keeps the choice when the save fails", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({}),
+      update_work_journal_settings: () => {
+        throw new Error("disk full");
+      },
+    });
+    render(<WorkJournalSettingsSection />);
+
+    fireEvent.change(granolaSelect(), { target: { value: "yes" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save the Granola choice: disk full",
+    );
+    expect(granolaSelect()).toHaveValue("unset");
+  });
+});

@@ -303,6 +303,7 @@ pub fn run() {
             commands::work_journal::work_journal_backup_if_due,
             commands::work_journal::work_journal_ensure_pages,
             commands::work_journal::work_journal_run_candidates,
+            commands::work_journal::work_journal_granola_status,
             commands::work_journal::restore_work_journal,
             commands::work_journal::undo_work_journal_restore,
             commands::work_journal::work_journal_restore_state,
