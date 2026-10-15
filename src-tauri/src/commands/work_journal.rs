@@ -174,8 +174,11 @@ pub enum CandidateRunOutcome {
     },
     /// Another run is still going; nothing was started.
     Busy,
-    /// The run stopped early with `message`. Candidates of the dates before
-    /// the failure were kept, and `last_run_at` only moved past those dates.
+    /// No project is open, so nothing was collected and `last_run_at` was
+    /// left alone: the time stays covered for the next run that has projects.
+    NoProjects,
+    /// One or more dates failed with `message`. Candidates of the dates that
+    /// succeeded were kept; `last_run_at` stopped at the earliest failed date.
     Failed {
         message: String,
         added: usize,
@@ -202,17 +205,30 @@ fn candidate_run_outcome(report: RunReport, last_run_at: String) -> CandidateRun
     }
 }
 
+/// `NoProjects` when no project path is given (blank paths do not count).
+/// Maestro starts with no tabs, so a run then would mark the whole time it
+/// was closed as done without ever collecting it.
+fn skip_without_projects(projects: &[String]) -> Option<CandidateRunOutcome> {
+    projects
+        .iter()
+        .all(|path| path.trim().is_empty())
+        .then_some(CandidateRunOutcome::NoProjects)
+}
+
 /// Runs the Work Journal candidate run over `projects` (their paths): the
 /// activity since `last_run_at` (or one interval back) becomes pending
 /// candidates, one headless `claude` call per date that has activity. Saves
 /// `last_run_at` and emits [`work_journal_run::CANDIDATES_EVENT`] when
 /// candidates were added. Only one run at a time; a second request while one
-/// runs gets `Busy`.
+/// runs gets `Busy`. With no projects nothing runs (`NoProjects`).
 #[tauri::command]
 pub async fn work_journal_run_candidates(
     app: AppHandle,
     projects: Vec<String>,
 ) -> Result<CandidateRunOutcome, String> {
+    if let Some(outcome) = skip_without_projects(&projects) {
+        return Ok(outcome);
+    }
     let Some(_running) = work_journal_run::try_begin_run() else {
         return Ok(CandidateRunOutcome::Busy);
     };
@@ -299,5 +315,22 @@ mod tests {
             serde_json::to_value(CandidateRunOutcome::Busy).unwrap(),
             serde_json::json!({"status": "busy"})
         );
+        assert_eq!(
+            serde_json::to_value(CandidateRunOutcome::NoProjects).unwrap(),
+            serde_json::json!({"status": "no_projects"})
+        );
+    }
+
+    #[test]
+    fn test_a_run_without_projects_is_skipped() {
+        assert_eq!(
+            skip_without_projects(&[]),
+            Some(CandidateRunOutcome::NoProjects)
+        );
+        assert_eq!(
+            skip_without_projects(&[" ".to_string()]),
+            Some(CandidateRunOutcome::NoProjects)
+        );
+        assert_eq!(skip_without_projects(&["C:\\git\\p".to_string()]), None);
     }
 }

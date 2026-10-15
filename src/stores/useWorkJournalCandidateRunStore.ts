@@ -23,7 +23,14 @@ export interface WorkJournalCandidateRunFile {
 export type CandidateRunOutcome =
   | { status: "ran"; added: number; dates: string[]; lastRunAt: string }
   | { status: "busy" }
+  | { status: "no_projects" }
   | { status: "failed"; message: string; added: number; dates: string[]; lastRunAt: string };
+
+/** Shown when a run is asked for while another one is going. */
+export const RUN_BUSY_NOTICE = "A run is already in progress.";
+
+/** Shown when a run is asked for with no project open (nothing is collected then). */
+export const RUN_NO_PROJECTS_NOTICE = "No project is open, so there was nothing to look at.";
 
 interface WorkJournalCandidateRunState {
   /** Hours between runs while Maestro is open (1–24). */
@@ -36,6 +43,8 @@ interface WorkJournalCandidateRunState {
   running: boolean;
   /** The last run failure; cleared by a successful run. */
   runError: string | null;
+  /** Why the last request did not run (busy, no project open); cleared by the next run. */
+  runNotice: string | null;
   /** The last failure to read or save the run settings; cleared on success. */
   settingsError: string | null;
   /** The open projects' paths, kept current by the background timer for "Run now". */
@@ -92,6 +101,7 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
   lastRunAt: null,
   running: false,
   runError: null,
+  runNotice: null,
   settingsError: null,
   projects: [],
 
@@ -115,9 +125,13 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
         projects,
       });
       if (outcome?.status === "ran") {
-        set({ lastRunAt: outcome.lastRunAt, runError: null });
+        set({ lastRunAt: outcome.lastRunAt, runError: null, runNotice: null });
       } else if (outcome?.status === "failed") {
-        set({ lastRunAt: outcome.lastRunAt, runError: outcome.message });
+        set({ lastRunAt: outcome.lastRunAt, runError: outcome.message, runNotice: null });
+      } else if (outcome?.status === "busy") {
+        set({ runNotice: RUN_BUSY_NOTICE });
+      } else if (outcome?.status === "no_projects") {
+        set({ runNotice: RUN_NO_PROJECTS_NOTICE });
       }
     } catch (error) {
       console.error("Work Journal candidate run failed:", error);

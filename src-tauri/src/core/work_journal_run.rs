@@ -103,11 +103,11 @@ pub struct RunReport {
     pub dates: Vec<String>,
     /// Activity up to this instant is done; the caller saves it as
     /// `last_run_at`. The window end on success; on a failure, the start of
-    /// the date that failed (never before the window start), so the next run
-    /// repeats that date and the ones after it.
+    /// the earliest date that failed (never before the window start), so the
+    /// next run repeats that date and the ones after it.
     pub covered_until: DateTime<Utc>,
-    /// Why the run stopped early, if it did. Candidates of the dates before
-    /// the failure stay.
+    /// Why one or more dates failed, if any did. Candidates of the dates
+    /// that succeeded stay.
     pub error: Option<String>,
 }
 
@@ -122,8 +122,10 @@ pub fn effective_run_every_hours(setting: Option<u32>) -> u32 {
 
 /// The run's half-open UTC window `[start, end)`. `end` is `now` (whole
 /// seconds, so the next window starts exactly where this one ended). `start`
-/// is `last_run_at` when it parses and is before `now`, else one run
-/// interval back; never more than [`MAX_CATCH_UP_DAYS`] back.
+/// is `last_run_at` when it parses and is not after `now` (equal = an empty
+/// window: nothing to do), else (missing, unparsable, or in the future after
+/// a clock change) one run interval back; never more than
+/// [`MAX_CATCH_UP_DAYS`] back.
 pub fn run_window(
     last_run_at: Option<&str>,
     run_every_hours: Option<u32>,
@@ -134,7 +136,7 @@ pub fn run_window(
     let start = last_run_at
         .and_then(|at| DateTime::parse_from_rfc3339(at.trim()).ok())
         .map(|at| at.with_timezone(&Utc))
-        .filter(|at| *at < end)
+        .filter(|at| *at <= end)
         .unwrap_or(end - interval);
     (start.max(end - TimeDelta::days(MAX_CATCH_UP_DAYS)), end)
 }
@@ -183,11 +185,13 @@ fn flush_line(lines: &mut Vec<String>, current: &mut String) {
 }
 
 /// True for a model name safe to pass as one argument: letters, digits and
-/// `-._:[]/@` only (for example `sonnet`, `claude-opus-5-5[1m]`).
+/// `-._:[]/@` only (for example `sonnet`, `claude-opus-5-5[1m]`), and not
+/// starting with `-` (it would read as a flag).
 fn is_safe_model(model: &str) -> bool {
-    model
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-._:[]/@".contains(c))
+    !model.starts_with('-')
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._:[]/@".contains(c))
 }
 
 /// The `claude` arguments for one run: print mode, no built-in tools, no
@@ -320,30 +324,56 @@ fn parse_line(line: &str, date: &str) -> Option<NewCandidate> {
 /// line; other lines are dropped (logged at debug). `NONE` or an empty reply
 /// yields nothing. A line whose text equals (ignoring case and spacing) an
 /// existing candidate's text for `date`, or an earlier line's, is dropped.
-pub fn parse_reply(reply: &str, date: &str, existing: &[Candidate]) -> Vec<NewCandidate> {
+///
+/// A reply with text but not one line in the format and no `NONE` (markdown
+/// bullets, a notice printed instead of an answer) is an error, so the date
+/// is tried again on the next run instead of being marked done.
+pub fn parse_reply(
+    reply: &str,
+    date: &str,
+    existing: &[Candidate],
+) -> Result<Vec<NewCandidate>, String> {
     let mut seen: HashSet<String> = existing
         .iter()
         .filter(|c| c.date == date)
         .map(|c| dedupe_key(&c.text))
         .collect();
     let mut parsed = Vec::new();
+    let mut matched = 0;
+    let mut said_none = false;
+    let mut other_text = false;
     for line in reply.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("NONE") {
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("NONE") {
+            said_none = true;
             continue;
         }
         let Some(candidate) = parse_line(trimmed, date) else {
             log::debug!("Work journal: dropped a candidate reply line that does not match");
+            other_text = true;
             continue;
         };
+        matched += 1;
         if seen.insert(dedupe_key(&candidate.text)) {
             parsed.push(candidate);
         } else {
             log::debug!("Work journal: dropped a duplicate candidate for {date}");
         }
     }
-    parsed
+    if matched == 0 && other_text && !said_none {
+        // Only the reply is logged, never the activity sent with it.
+        let head: String = reply.trim().chars().take(REPLY_LOG_CHARS).collect();
+        log::debug!("Work journal: unusable candidate reply for {date}: {head}");
+        return Err("claude's reply had no line in the expected format".to_string());
+    }
+    Ok(parsed)
 }
+
+/// How much of an unusable reply is logged (at debug only).
+const REPLY_LOG_CHARS: usize = 200;
 
 /// The UTC instant local midnight of `date` begins at.
 fn start_of_local_date(date: &str) -> Option<DateTime<Utc>> {
@@ -403,7 +433,22 @@ impl RunSources for LiveSources {
 /// picked up), `input` on stdin, a timeout and a hidden console on Windows.
 /// The child is killed if the run is dropped or times out.
 async fn run_claude(args: &[String], input: &str) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new("claude");
+    run_process("claude", args, input, RUN_TIMEOUT).await
+}
+
+/// Runs `program` with `input` on stdin and returns its stdout. Sending the
+/// input and waiting for the exit share ONE `timeout`, so a child that never
+/// reads stdin (a pipe holds only a few KB) cannot hold the run (and its
+/// one-run lock) past the limit. The child handle lives only inside the
+/// timed future: on timeout that future is dropped with it, and
+/// `kill_on_drop` kills the child.
+async fn run_process(
+    program: &str,
+    args: &[String],
+    input: &str,
+    limit: Duration,
+) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
@@ -419,16 +464,21 @@ async fn run_claude(args: &[String], input: &str) -> Result<String, String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start the claude CLI ({e})"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
-            .await
-            .map_err(|e| format!("could not send the activity to claude ({e})"))?;
-    }
-    let output = tokio::time::timeout(RUN_TIMEOUT, child.wait_with_output())
+    let stdin = child.stdin.take();
+    // Write and wait side by side, so a child that fills stdout before it
+    // reads stdin cannot deadlock either. `stdin` is dropped after the write,
+    // which closes it and lets the child see the end of the input.
+    let send = async move {
+        if let Some(mut stdin) = stdin {
+            stdin.write_all(input.as_bytes()).await?;
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    let exchange = async move { tokio::join!(send, child.wait_with_output()) };
+    let (sent, output) = tokio::time::timeout(limit, exchange)
         .await
-        .map_err(|_| format!("claude did not answer within {}s", RUN_TIMEOUT.as_secs()))?
-        .map_err(|e| format!("claude run failed ({e})"))?;
+        .map_err(|_| format!("claude did not answer within {}s", limit.as_secs()))?;
+    let output = output.map_err(|e| format!("claude run failed ({e})"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -440,6 +490,9 @@ async fn run_claude(args: &[String], input: &str) -> Result<String, String> {
         let detail: String = one_line(&detail).chars().take(300).collect();
         return Err(format!("claude exited with {}: {detail}", output.status));
     }
+    // Checked after the exit status, which says more when the child quit
+    // early; a reply to half the input is never used.
+    sent.map_err(|e| format!("could not send the activity to claude ({e})"))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -485,6 +538,12 @@ async fn run_with<S: RunSources>(
         by_date.entry(item.date.clone()).or_default().push(item);
     }
 
+    // A failed date does not stop the run: later dates (today included) still
+    // get their candidates. `covered_until` stops at the earliest failed
+    // date, so it and every later date run again next time; the later dates
+    // then get their own candidates fed back, which bounds repeats.
+    let mut earliest_failed: Option<DateTime<Utc>> = None;
+    let mut errors: Vec<String> = Vec::new();
     for (date, items) in by_date {
         match run_date(sources, journal, &args, &date, &items).await {
             Ok(0) => {}
@@ -494,14 +553,19 @@ async fn run_with<S: RunSources>(
             }
             Err(e) => {
                 log::warn!("Work journal: candidate run for {date} failed: {e}");
-                report.covered_until =
-                    start_of_local_date(&date).map_or(start, |midnight| midnight.max(start));
-                report.error = Some(format!("Candidate run for {date} failed: {e}"));
-                return report;
+                if earliest_failed.is_none() {
+                    earliest_failed = Some(
+                        start_of_local_date(&date).map_or(start, |midnight| midnight.max(start)),
+                    );
+                }
+                errors.push(format!("Candidate run for {date} failed: {e}"));
             }
         }
     }
-    report.covered_until = end;
+    report.covered_until = earliest_failed.unwrap_or(end);
+    if !errors.is_empty() {
+        report.error = Some(errors.join("; "));
+    }
     report
 }
 
@@ -521,7 +585,7 @@ async fn run_date<S: RunSources>(
         .unwrap_or_default();
     let input = build_prompt(date, items, &page, &existing);
     let reply = sources.ask_claude(args, &input).await?;
-    let valid: Vec<NewCandidate> = parse_reply(&reply, date, &existing)
+    let valid: Vec<NewCandidate> = parse_reply(&reply, date, &existing)?
         .iter()
         .filter_map(|candidate| match validate_candidate(candidate) {
             Ok(valid) => Some(valid),
@@ -600,11 +664,15 @@ mod tests {
         let future = (now() + TimeDelta::hours(2)).to_rfc3339();
         let interval = (now() - TimeDelta::hours(2), now());
         assert_eq!(run_window(Some(&future), Some(2), now()), interval);
+        assert_eq!(run_window(Some("yesterday"), Some(2), now()), interval);
+    }
+
+    #[test]
+    fn test_run_window_is_empty_when_the_last_run_is_now() {
         assert_eq!(
             run_window(Some(&now().to_rfc3339()), Some(2), now()),
-            interval
+            (now(), now())
         );
-        assert_eq!(run_window(Some("yesterday"), Some(2), now()), interval);
     }
 
     #[test]
@@ -714,6 +782,8 @@ mod tests {
     fn test_claude_args_refuse_an_unsafe_model_name() {
         let err = claude_args(Some("sonnet & calc")).unwrap_err();
         assert!(err.contains("not a valid model name"));
+        assert!(claude_args(Some("--bare")).is_err());
+        assert!(claude_args(Some("-p")).is_err());
     }
 
     #[test]
@@ -789,7 +859,7 @@ mod tests {
     fn test_parse_reply_reads_valid_lines() {
         let reply =
             "09:05 - Fixed the login bug | git\n14:30 - Merged the PR for the backup | GitHub\n";
-        let parsed = parse_reply(reply, "2026-10-15", &[]);
+        let parsed = parse_reply(reply, "2026-10-15", &[]).unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -820,7 +890,7 @@ mod tests {
                      25:00 - Not a time | git\n\
                      11:00 - Reviewed a PR - with a dash | a | claude\n\
                      12:00 - Ran the tests | Terminal";
-        let parsed = parse_reply(reply, "2026-10-15", &[]);
+        let parsed = parse_reply(reply, "2026-10-15", &[]).unwrap();
         let texts: Vec<&str> = parsed.iter().map(|c| c.text.as_str()).collect();
         assert_eq!(
             texts,
@@ -832,9 +902,35 @@ mod tests {
 
     #[test]
     fn test_parse_reply_none_or_empty_yields_nothing() {
-        assert!(parse_reply("NONE", "2026-10-15", &[]).is_empty());
-        assert!(parse_reply("  none \n", "2026-10-15", &[]).is_empty());
-        assert!(parse_reply("", "2026-10-15", &[]).is_empty());
+        assert!(parse_reply("NONE", "2026-10-15", &[]).unwrap().is_empty());
+        assert!(parse_reply("  none \n", "2026-10-15", &[])
+            .unwrap()
+            .is_empty());
+        assert!(parse_reply("", "2026-10-15", &[]).unwrap().is_empty());
+        assert!(parse_reply("Nothing new.\nNONE", "2026-10-15", &[])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_parse_reply_without_one_matching_line_is_an_error() {
+        let bullets = "- 09:05 - Fixed the login bug | git\n- 10:00 - Ran tests | terminal";
+        assert!(parse_reply(bullets, "2026-10-15", &[]).is_err());
+        let notice = "Your session has expired. Please run /login.";
+        assert!(parse_reply(notice, "2026-10-15", &[])
+            .unwrap_err()
+            .contains("expected format"));
+    }
+
+    #[test]
+    fn test_parse_reply_with_only_duplicates_is_not_an_error() {
+        let existing = vec![candidate(
+            "2026-10-15",
+            "Fixed the login bug",
+            CandidateState::Pending,
+        )];
+        let parsed = parse_reply("09:05 - Fixed the login bug | git", "2026-10-15", &existing);
+        assert!(parsed.unwrap().is_empty());
     }
 
     #[test]
@@ -850,7 +946,7 @@ mod tests {
         let reply = "09:05 - fixed the  login bug | git\n\
                      12:00 - Ran the tests | terminal\n\
                      12:05 - Ran the tests | terminal";
-        let parsed = parse_reply(reply, "2026-10-15", &existing);
+        let parsed = parse_reply(reply, "2026-10-15", &existing).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].text, "Ran the tests");
         assert_eq!(parsed[0].time.as_deref(), Some("12:00"));
@@ -989,6 +1085,11 @@ mod tests {
         assert!(!asked[0].1.contains("08:00 - Standup"));
     }
 
+    /// The start of `date` as a run starting at `start` records it.
+    fn date_start(date: &str, start: DateTime<Utc>) -> DateTime<Utc> {
+        start_of_local_date(date).unwrap().max(start)
+    }
+
     #[tokio::test]
     async fn test_run_failure_keeps_earlier_dates_and_resumes_at_the_failed_date() {
         let mut fake = Fake {
@@ -1009,14 +1110,81 @@ mod tests {
         assert_eq!(report.dates, vec!["2026-10-14"]);
         let error = report.error.unwrap();
         assert!(error.contains("2026-10-15") && error.contains("timed out"));
-        assert_eq!(
-            Some(report.covered_until),
-            start_of_local_date("2026-10-15").map(|m| m.max(start))
-        );
+        assert_eq!(report.covered_until, date_start("2026-10-15", start));
     }
 
     #[tokio::test]
-    async fn test_run_failure_on_the_first_date_covers_nothing() {
+    async fn test_run_failure_on_the_first_date_covers_from_that_date_start() {
+        let fake = Fake {
+            items: vec![item(
+                "2026-10-14",
+                "11:05",
+                CandidateSource::Git,
+                "Commit b",
+            )],
+            ..Fake::default()
+        };
+        let start = now() - TimeDelta::days(2);
+        let journal = journal_with(Some(start.to_rfc3339()), None);
+        let report = run_with(&fake, &journal, &[], now()).await;
+        assert_eq!(report.added, 0);
+        assert!(report.error.is_some());
+        assert_eq!(report.covered_until, date_start("2026-10-14", start));
+        assert!(report.covered_until < now());
+    }
+
+    #[tokio::test]
+    async fn test_run_failure_on_the_first_date_still_runs_the_later_dates() {
+        let mut fake = Fake {
+            items: vec![
+                item("2026-10-14", "23:10", CandidateSource::Git, "Commit a"),
+                item("2026-10-15", "09:05", CandidateSource::Git, "Commit b"),
+            ],
+            ..Fake::default()
+        };
+        fake.replies
+            .insert("2026-10-15".into(), "09:05 - Committed b | git".into());
+        let start = now() - TimeDelta::days(2);
+        let journal = journal_with(Some(start.to_rfc3339()), None);
+
+        let report = run_with(&fake, &journal, &[], now()).await;
+
+        assert_eq!(report.added, 1);
+        assert_eq!(report.dates, vec!["2026-10-15"]);
+        assert_eq!(fake.added.lock().unwrap()[0].text, "Committed b");
+        assert!(report.error.unwrap().contains("2026-10-14"));
+        assert_eq!(report.covered_until, date_start("2026-10-14", start));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_an_unusable_reply_fails_that_date() {
+        let mut fake = Fake {
+            items: vec![item(
+                "2026-10-14",
+                "11:05",
+                CandidateSource::Git,
+                "Commit b",
+            )],
+            ..Fake::default()
+        };
+        fake.replies.insert(
+            "2026-10-14".into(),
+            "Here you go:\n- 11:05 - Committed b | git".into(),
+        );
+        let start = now() - TimeDelta::days(2);
+        let journal = journal_with(Some(start.to_rfc3339()), None);
+        let report = run_with(&fake, &journal, &[], now()).await;
+        assert_eq!(report.added, 0);
+        assert!(report
+            .error
+            .unwrap()
+            .contains("no line in the expected format"));
+        assert_eq!(report.covered_until, date_start("2026-10-14", start));
+        assert!(fake.added.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_run_with_last_run_now_does_nothing() {
         let fake = Fake {
             items: vec![item(
                 "2026-10-15",
@@ -1026,12 +1194,34 @@ mod tests {
             )],
             ..Fake::default()
         };
-        let start = now() - TimeDelta::hours(1);
-        let report = run_with(&fake, &journal_with(None, None), &[], now()).await;
-        assert_eq!(report.added, 0);
-        assert!(report.error.is_some());
-        assert!(report.covered_until <= now());
-        assert!(report.covered_until >= start);
+        let journal = journal_with(Some(now().to_rfc3339()), None);
+        let report = run_with(&fake, &journal, &[], now()).await;
+        // The fake ignores the window, so it is checked directly.
+        assert_eq!(*fake.windows.lock().unwrap(), vec![(now(), now())]);
+        assert_eq!(report.covered_until, now());
+    }
+
+    // --- run_process ---
+
+    /// A program that never reads its stdin and lives well past the limit.
+    fn idle_program() -> (&'static str, Vec<String>) {
+        if cfg!(windows) {
+            ("ping", vec!["-n".into(), "30".into(), "127.0.0.1".into()])
+        } else {
+            ("sleep", vec!["30".into()])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_process_times_out_when_the_child_never_reads_stdin() {
+        let (program, args) = idle_program();
+        // Far more than a pipe holds, so the write itself would block.
+        let input = "x".repeat(4 * 1024 * 1024);
+        let started = std::time::Instant::now();
+        let result = run_process(program, &args, &input, Duration::from_secs(1)).await;
+        let err = result.unwrap_err();
+        assert!(err.contains("did not answer within 1s"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(15));
     }
 
     #[tokio::test]

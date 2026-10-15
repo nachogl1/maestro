@@ -1,6 +1,7 @@
 import { Loader2, Play } from "lucide-react";
 import { type KeyboardEvent, useEffect, useState } from "react";
 import {
+  clampRunEveryHours,
   MAX_RUN_EVERY_HOURS,
   useWorkJournalCandidateRunStore,
 } from "@/stores/useWorkJournalCandidateRunStore";
@@ -28,6 +29,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
   const model = useWorkJournalCandidateRunStore((s) => s.model);
   const lastRunAt = useWorkJournalCandidateRunStore((s) => s.lastRunAt);
   const running = useWorkJournalCandidateRunStore((s) => s.running);
+  const runNotice = useWorkJournalCandidateRunStore((s) => s.runNotice);
   const settingsError = useWorkJournalCandidateRunStore((s) => s.settingsError);
   const load = useWorkJournalCandidateRunStore((s) => s.load);
   const runNow = useWorkJournalCandidateRunStore((s) => s.runNow);
@@ -46,14 +48,20 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
     if (settingsError) void load();
   }, []);
 
+  // After a commit the field always shows the clamped value, and once saved
+  // the stored one (the store keeps the old value when the save fails).
   const commitHours = (): void => {
     const hours = Number(hoursDraft);
     if (hoursDraft.trim() === "" || !Number.isFinite(hours)) {
       setHoursDraft(String(runEveryHours));
       return;
     }
-    if (hours === runEveryHours) return;
-    void setRunEveryHours(hours);
+    const clamped = clampRunEveryHours(hours);
+    setHoursDraft(String(clamped));
+    if (clamped === runEveryHours) return;
+    void setRunEveryHours(clamped).then(() => {
+      setHoursDraft(String(useWorkJournalCandidateRunStore.getState().runEveryHours));
+    });
   };
 
   const commitModel = (): void => {
@@ -114,6 +122,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
           Run now
         </button>
       </div>
+      {runNotice && <p className="text-[10px] text-maestro-muted">{runNotice}</p>}
     </>
   );
 }

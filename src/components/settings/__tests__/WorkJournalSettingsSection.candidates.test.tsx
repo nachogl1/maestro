@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   type CandidateRunOutcome,
+  RUN_BUSY_NOTICE,
+  RUN_NO_PROJECTS_NOTICE,
   useWorkJournalCandidateRunStore,
   type WorkJournalCandidateRunSettings,
 } from "@/stores/useWorkJournalCandidateRunStore";
@@ -191,7 +193,7 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
-  it("leaves the state alone when another run is busy", async () => {
+  it("says so when another run is busy, and leaves the rest alone", async () => {
     routeInvoke({
       load_work_journal: () => journal({}),
       work_journal_run_candidates: () => ({ status: "busy" }),
@@ -200,9 +202,41 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run now" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled());
+    expect(await screen.findByText(RUN_BUSY_NOTICE)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
     expect(screen.getByText("Last run: never")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says so when no project is open, and the next good run clears it", async () => {
+    let outcome: CandidateRunOutcome = { status: "no_projects" };
+    routeInvoke({
+      load_work_journal: () => journal({}),
+      work_journal_run_candidates: () => outcome,
+    });
+    render(<WorkJournalSettingsSection />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(RUN_NO_PROJECTS_NOTICE)).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("work_journal_run_candidates", { projects: [] });
+    expect(screen.getByText("Last run: never")).toBeInTheDocument();
+
+    outcome = { status: "ran", added: 0, dates: [], lastRunAt: "2026-10-15T13:00:00Z" };
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await waitFor(() => expect(screen.queryByText(RUN_NO_PROJECTS_NOTICE)).toBeNull());
+  });
+
+  it("shows the clamped value when the typed hours clamp to the current setting", async () => {
+    routeInvoke({ load_work_journal: () => journal({}) });
+    render(<WorkJournalSettingsSection />);
+    const input = screen.getByLabelText("Run every");
+
+    for (const typed of ["0", "-5", "1.4"]) {
+      fireEvent.change(input, { target: { value: typed } });
+      fireEvent.blur(input);
+      expect(input).toHaveValue(1);
+    }
+    expect(settingsPatches()).toEqual([]);
   });
 
   it("retries reading the run settings on open after the start-up read failed", async () => {
