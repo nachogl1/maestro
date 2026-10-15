@@ -872,10 +872,21 @@ fn parse_session_file(path: &Path) -> Option<ClaudeSessionInfo> {
 
 /// Scans every transcript directory belonging to `canonical_project` and builds
 /// the listing. Split out of the command so tests can point it at a tempdir.
+#[cfg(test)]
 fn collect_sessions(
     root: &Path,
     canonical_project: &str,
     extra_roots: &[String],
+) -> ClaudeSessionListing {
+    collect_sessions_up_to(root, canonical_project, extra_roots, MAX_SESSIONS_RETURNED)
+}
+
+/// [`collect_sessions`] returning at most `limit` sessions (newest first).
+fn collect_sessions_up_to(
+    root: &Path,
+    canonical_project: &str,
+    extra_roots: &[String],
+    limit: usize,
 ) -> ClaudeSessionListing {
     let mut by_id: HashMap<String, ClaudeSessionInfo> = HashMap::new();
     let mut unreadable = 0usize;
@@ -924,7 +935,7 @@ fn collect_sessions(
     sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
     let total_found = sessions.len();
-    sessions.truncate(MAX_SESSIONS_RETURNED);
+    sessions.truncate(limit);
 
     ClaudeSessionListing {
         truncated: total_found > sessions.len(),
@@ -987,6 +998,22 @@ pub async fn list_claude_sessions(
     project_path: String,
     extra_roots: Option<Vec<String>>,
 ) -> Result<ClaudeSessionListing, String> {
+    list_claude_sessions_up_to(
+        project_path,
+        extra_roots.unwrap_or_default(),
+        MAX_SESSIONS_RETURNED,
+    )
+    .await
+}
+
+/// [`list_claude_sessions`] returning at most `limit` sessions, for callers
+/// that need more than History shows (the Work Journal reads every
+/// conversation of a catch-up window across a repo and all its worktrees).
+pub async fn list_claude_sessions_up_to(
+    project_path: String,
+    extra_roots: Vec<String>,
+    limit: usize,
+) -> Result<ClaudeSessionListing, String> {
     // Canonicalize + recursive transcript scan are blocking std::fs work;
     // keep them off the async runtime.
     tokio::task::spawn_blocking(move || -> Result<ClaudeSessionListing, String> {
@@ -999,10 +1026,11 @@ pub async fn list_claude_sessions(
             return Ok(ClaudeSessionListing::default());
         }
 
-        Ok(collect_sessions(
+        Ok(collect_sessions_up_to(
             &root,
             &canonical,
-            &extra_roots.unwrap_or_default(),
+            &extra_roots,
+            limit,
         ))
     })
     .await
@@ -1746,6 +1774,38 @@ mod tests {
         assert_eq!(listing.total_found, 1);
         assert!(!listing.truncated);
         assert_eq!(listing.unreadable, 0);
+    }
+
+    #[test]
+    fn listing_returns_at_most_the_given_limit_newest_first() {
+        let root = projects_root();
+        for n in 1..=3 {
+            let id = format!("aaaaaaaa-0000-0000-0000-00000000000{n}");
+            write_transcript(
+                &dir_for(root.path(), "/repo"),
+                &format!("{id}.jsonl"),
+                &[transcript_with_cwd(
+                    &id,
+                    "/repo",
+                    "hello",
+                    &format!("2026-01-0{n}T00:00:00.000Z"),
+                )],
+            );
+        }
+        let listing = collect_sessions_up_to(root.path(), "/repo", &[], 2);
+        assert_eq!(listing.sessions.len(), 2);
+        assert_eq!(listing.total_found, 3);
+        assert!(listing.truncated);
+        assert_eq!(
+            listing.sessions[0].session_id,
+            "aaaaaaaa-0000-0000-0000-000000000003"
+        );
+        assert_eq!(
+            collect_sessions_up_to(root.path(), "/repo", &[], 500)
+                .sessions
+                .len(),
+            3
+        );
     }
 
     #[test]

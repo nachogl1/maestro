@@ -184,11 +184,14 @@ Granola time) are folded in and linked in the Decision trace.
     change.
   - Confirmed by the coordinator, flagged for the user (2026-10-15): a
     recorded folder inside a linked git worktree (new terminals default to a new
-    worktree) is collected as its main repository, under the main project's
-    name, so a worktree is not a project of its own. Every worktree of a
-    project is searched for Claude conversations, as History does. The folder
-    itself stays as recorded in `known_projects` and is dropped once the
-    worktree is removed.
+    worktree) is collected as the same place in its main repository, under the
+    main project's name, so a worktree is not a project of its own (a bare
+    repository's worktrees are collected under the bare repository, named
+    without `.git`; a folder inside the main checkout or a submodule stays as
+    it is). Every worktree of a project, and every folder a terminal ran in
+    during the window (a removed worktree included), is searched for Claude
+    conversations, as History does. The folder itself stays as recorded in
+    `known_projects` and is dropped once the worktree is removed.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
   day. They are not part of `work-journal.json` and are not backed up. The user
@@ -479,8 +482,9 @@ to their own Claude setup.
 - **Terminal sessions need new persistent capture.** Today they are
   memory-only with ids reassigned each launch; without new capture, the
   "terminal sessions" source yields nothing after a restart.
-- **History listing cap.** The 50-sessions-per-project cap may not cover a
-  busy day across many projects (not verified).
+- **History listing cap.** The Work Journal reads up to 500 conversations per
+  project (History shows 50), across the repo and all its worktrees; a longer
+  catch-up window could still exceed it (not verified).
 - **Transcript retention** is outside this repo; how long Claude keeps
   `~/.claude/projects` transcripts was not verified.
 
