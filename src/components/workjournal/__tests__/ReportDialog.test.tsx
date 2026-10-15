@@ -4,7 +4,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
-import { NOTHING_TO_REPORT, RANGE_REVERSED, ReportDialog } from "../ReportDialog";
+import { NOTHING_TO_REPORT, RANGE_REVERSED, RANGE_TOO_LONG, ReportDialog } from "../ReportDialog";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: vi.fn(() => Promise.resolve()),
@@ -77,6 +77,22 @@ describe("ReportDialog", () => {
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-10-16" } });
 
     expect(screen.getByText(RANGE_REVERSED)).toBeInTheDocument();
+    expect(generateButton()).toBeDisabled();
+    fireEvent.click(generateButton());
+    expect(commands()).not.toContain("work_journal_generate_report");
+  });
+
+  it("refuses a range longer than 92 days, both ends included", () => {
+    routeInvoke(FOLDER, () => ({ status: "saved", path: SAVED }));
+    render(<ReportDialog onClose={vi.fn()} />);
+
+    // 16 Jul to 15 Oct 2026 is exactly 92 days.
+    fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-07-16" } });
+    expect(screen.queryByText(RANGE_TOO_LONG)).not.toBeInTheDocument();
+    expect(generateButton()).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-07-15" } });
+    expect(screen.getByText("Choose a range of at most 92 days.")).toBeInTheDocument();
     expect(generateButton()).toBeDisabled();
     fireEvent.click(generateButton());
     expect(commands()).not.toContain("work_journal_generate_report");

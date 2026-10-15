@@ -358,6 +358,10 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 ### Supervisor report
 
 - **Date range:** two date pickers, from and to, with no preset buttons.
+  Decided during the 2026-10-15 audit fixes, flagged for the user to confirm: a
+  range is limited to 92 days (both ends counted) and to 200,000 characters of
+  page text; a longer range is refused with a plain message before Claude is
+  asked, and the dialog disables Generate for ranges over 92 days.
 - **Content:** an achievement-focused summary of everything in the range,
   "everything I did that would make me look good, summarised". Not a raw
   day-by-day log.

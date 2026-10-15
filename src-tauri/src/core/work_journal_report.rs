@@ -31,6 +31,15 @@ use crate::core::work_journal_run::{is_safe_model, page_text, run_process};
 /// date, anything past this is a hung CLI.
 pub const REPORT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The longest range one report covers, in days, both ends included (about
+/// a quarter): longer ranges risk running past [`REPORT_TIMEOUT`] while the
+/// dialog cannot be closed. The report dialog checks the same limit.
+pub const MAX_REPORT_DAYS: i64 = 92;
+
+/// The most text one report sends to Claude, in characters: more risks the
+/// timeout or the model's context.
+pub const MAX_REPORT_INPUT_CHARS: usize = 200_000;
+
 /// The positional prompt; the pages go in on stdin.
 const USER_PROMPT: &str = "Write the work report for the Work Journal pages given on stdin.";
 
@@ -71,6 +80,10 @@ pub enum ReportError {
     InvalidDate(String),
     #[error("The start date {from} is after the end date {to}.")]
     RangeReversed { from: String, to: String },
+    #[error("Choose a range of at most {max} days.")]
+    RangeTooLong { max: i64 },
+    #[error("That range holds too much text for one report; pick a shorter range.")]
+    InputTooLarge,
     #[error(
         "The report folder {0} does not exist. Choose another folder in Settings or create it \
          again."
@@ -165,7 +178,8 @@ fn parse_date(date: &str) -> Result<NaiveDate, ReportError> {
     Ok(parsed)
 }
 
-/// The inclusive range `from..=to`; both `YYYY-MM-DD`, `from` not after `to`.
+/// The inclusive range `from..=to`; both `YYYY-MM-DD`, `from` not after `to`,
+/// at most [`MAX_REPORT_DAYS`] days.
 pub fn parse_range(from: &str, to: &str) -> Result<(NaiveDate, NaiveDate), ReportError> {
     let start = parse_date(from)?;
     let end = parse_date(to)?;
@@ -173,6 +187,11 @@ pub fn parse_range(from: &str, to: &str) -> Result<(NaiveDate, NaiveDate), Repor
         return Err(ReportError::RangeReversed {
             from: from.to_string(),
             to: to.to_string(),
+        });
+    }
+    if (end - start).num_days() + 1 > MAX_REPORT_DAYS {
+        return Err(ReportError::RangeTooLong {
+            max: MAX_REPORT_DAYS,
         });
     }
     Ok((start, end))
@@ -465,7 +484,8 @@ pub fn claude_error(message: String) -> ReportError {
 }
 
 /// Makes the report for `from..=to` from `journal`: checks the range and
-/// the folder, selects the pages, asks Claude through `ask` (the `claude`
+/// the folder, selects the pages, refuses an input over
+/// [`MAX_REPORT_INPUT_CHARS`], asks Claude through `ask` (the `claude`
 /// arguments and the stdin input) only when a page qualifies, and writes
 /// the file crash-safely (temp file, then rename over the same range's
 /// file). `generated_on` is the generated-on text shown in the report.
@@ -490,9 +510,11 @@ where
         return Ok(ReportResult::NothingToReport);
     }
     let args = claude_args(journal.settings.model.as_deref()).map_err(ReportError::Model)?;
-    let reply = ask(args, build_input(from, to, &pages))
-        .await
-        .map_err(claude_error)?;
+    let input = build_input(from, to, &pages);
+    if input.chars().count() > MAX_REPORT_INPUT_CHARS {
+        return Err(ReportError::InputTooLarge);
+    }
+    let reply = ask(args, input).await.map_err(claude_error)?;
     let Some(blocks) = parse_reply(&reply)? else {
         return Ok(ReportResult::NothingToReport);
     };
@@ -1213,6 +1235,56 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(fake.calls()[0].0, claude_args(Some("haiku")).unwrap());
+    }
+
+    #[test]
+    fn test_parse_range_allows_at_most_the_day_cap_inclusive() {
+        assert_eq!(
+            parse_range("2026-01-01", "2026-04-02").unwrap(),
+            (day("2026-01-01"), day("2026-04-02")),
+            "92 days, both ends included"
+        );
+        let err = parse_range("2026-01-01", "2026-04-03").unwrap_err();
+        assert!(
+            matches!(err, ReportError::RangeTooLong { max: 92 }),
+            "{err}"
+        );
+        assert_eq!(err.to_string(), "Choose a range of at most 92 days.");
+    }
+
+    #[tokio::test]
+    async fn test_generate_refuses_a_too_long_range_or_too_much_text_without_asking() {
+        let dir = tempdir().unwrap();
+        let mut journal = journal_in(dir.path());
+        let fake = FakeClaude::default();
+
+        let err = generate_report_with(
+            &journal,
+            "2026-01-01",
+            "2026-10-09",
+            "now",
+            fake.ask(Ok(REPLY)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ReportError::RangeTooLong { .. }), "{err}");
+
+        let long = "x".repeat(MAX_REPORT_INPUT_CHARS);
+        add_page(&mut journal, "2026-10-08", body(&[&long]));
+        let err = generate_report_with(
+            &journal,
+            "2026-10-05",
+            "2026-10-09",
+            "now",
+            fake.ask(Ok(REPLY)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ReportError::InputTooLarge), "{err}");
+        assert!(err.to_string().contains("pick a shorter range"), "{err}");
+
+        assert!(fake.calls().is_empty(), "Claude is never asked");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
