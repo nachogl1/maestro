@@ -57,6 +57,15 @@ function useGranolaQuestion(): boolean {
   return connected && granolaOptIn === null;
 }
 
+/** How much of a suggestion's line its Accept and Reject labels quote. */
+const LABEL_TEXT_MAX = 60;
+
+/** The suggestion's line for its button labels, cut to {@link LABEL_TEXT_MAX} characters. */
+function labelText(candidate: WorkJournalCandidate): string {
+  const line = candidateLine(candidate);
+  return line.length > LABEL_TEXT_MAX ? `${line.slice(0, LABEL_TEXT_MAX - 1)}…` : line;
+}
+
 /** "next run" text: "soon" before the start-up catch-up run, HH:MM, or "—" when unknown. */
 function nextRunLabel(catchUpPending: boolean, nextRunAt: number | null): string {
   if (catchUpPending) return "soon";
@@ -205,6 +214,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
         <ul className="mt-1.5 flex flex-col gap-1">
           {pending.map((candidate) => {
             const busy = busyIds.includes(candidate.id);
+            const label = labelText(candidate);
             return (
               <li
                 key={candidate.id}
@@ -221,7 +231,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                   onClick={() => void accept(candidate)}
                   disabled={busy || acceptHint !== null}
                   className={`${ICON_BUTTON} hover:text-maestro-green`}
-                  aria-label="Accept suggestion"
+                  aria-label={`Accept suggestion: ${label}`}
                   title={acceptHint ?? "Accept: add this line to the page"}
                 >
                   <Check size={13} />
@@ -231,7 +241,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                   onClick={() => void reject(candidate)}
                   disabled={busy || replacing}
                   className={`${ICON_BUTTON} hover:text-maestro-red`}
-                  aria-label="Reject suggestion"
+                  aria-label={`Reject suggestion: ${label}`}
                   title="Reject: hide it for today"
                 >
                   <X size={13} />

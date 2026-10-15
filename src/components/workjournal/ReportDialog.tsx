@@ -44,6 +44,9 @@ function localDateDaysBefore(now: Date, days: number): string {
   return localDateString(new Date(now.getFullYear(), now.getMonth(), now.getDate() - days));
 }
 
+/** What Tab can land on inside the dialog. */
+const FOCUSABLE = "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
 const DATE_INPUT =
   "rounded border border-maestro-border bg-maestro-card px-1.5 py-0.5 text-xs text-maestro-text outline-none focus:border-maestro-accent";
 
@@ -66,14 +69,46 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
   const busyRef = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const fromRef = useRef<HTMLInputElement>(null);
+  // What had focus when the dialog opened; it gets focus back on close.
+  const returnFocusRef = useRef<Element | null>(document.activeElement);
   const running = phase !== "idle";
 
   // Closing is off while a report runs: nothing would cancel it, and its
   // result would be lost.
   useDismissable(onClose, { ref: dialogRef, enabled: !running });
 
+  // The dialog is modal: Tab and Shift+Tab cycle inside it, never reaching
+  // the page behind, and focus goes back where it was on close.
   useEffect(() => {
     fromRef.current?.focus();
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      const dialog = dialogRef.current;
+      if (e.key !== "Tab" || !dialog) return;
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (!first || !last) {
+        // Everything is disabled while a report runs: hold focus on the dialog.
+        e.preventDefault();
+        dialog.focus();
+      } else if (!dialog.contains(active) || active === dialog) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      const opener = returnFocusRef.current;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
   }, []);
 
   const datesValid = isValidJournalDate(from) && isValidJournalDate(to);
@@ -189,6 +224,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
         role="dialog"
         aria-modal="true"
         aria-labelledby="work-journal-report-title"
+        tabIndex={-1}
         className="w-full max-w-sm rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-maestro-border px-4 py-3">

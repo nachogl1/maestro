@@ -234,6 +234,30 @@ describe("ReportDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps Tab inside the dialog and gives focus back to the opener on close", () => {
+    routeInvoke(FOLDER, () => ({ status: "nothing_to_report" }));
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { unmount } = render(<ReportDialog onClose={vi.fn()} />);
+
+    const close = screen.getByRole("button", { name: "Close report dialog" });
+    // Tab off the last button wraps to the first; Shift+Tab off the first wraps back.
+    generateButton().focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(generateButton()).toHaveFocus();
+    // Focus that escaped to the page is pulled back in.
+    opener.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
+
+    unmount();
+    expect(opener).toHaveFocus();
+    opener.remove();
+  });
+
   it("cannot be closed while a report runs, and shows the result when it ends", async () => {
     let finish: (outcome: unknown) => void = () => {};
     routeInvoke(
