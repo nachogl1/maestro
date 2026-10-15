@@ -5,7 +5,7 @@ import { FolderOpen, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
-import { isValidJournalDate, localDateString } from "@/lib/workJournalDates";
+import { daysBetween, isValidJournalDate, localDateString } from "@/lib/workJournalDates";
 import { type ReportOutcome, useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
 import { flushWorkJournalSaves } from "@/stores/useWorkJournalStore";
 
@@ -17,6 +17,12 @@ export const NOTHING_TO_REPORT = "Nothing to report for these dates.";
 
 /** Shown while the start date is after the end date. */
 export const RANGE_REVERSED = "The start date must not be after the end date.";
+
+/** The longest range one report covers, both ends included (the backend's MAX_REPORT_DAYS). */
+export const MAX_REPORT_DAYS = 92;
+
+/** Shown while the range is longer than MAX_REPORT_DAYS (the backend's own wording). */
+export const RANGE_TOO_LONG = `Choose a range of at most ${MAX_REPORT_DAYS} days.`;
 
 /** Where a Generate is: not running, getting the folder ready, or writing the report. */
 type ReportPhase = "idle" | "preparing" | "writing";
@@ -78,7 +84,8 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
 
   const datesValid = isValidJournalDate(from) && isValidJournalDate(to);
   const reversed = datesValid && from > to;
-  const canGenerate = datesValid && !reversed && !running;
+  const tooLong = datesValid && !reversed && daysBetween(from, to) + 1 > MAX_REPORT_DAYS;
+  const canGenerate = datesValid && !reversed && !tooLong && !running;
 
   /** Asks for the report folder and saves it; null when cancelled or not saved. */
   const pickFolder = async (): Promise<string | null> => {
@@ -233,6 +240,7 @@ export function ReportDialog({ onClose }: ReportDialogProps): JSX.Element {
             </label>
           </div>
           {reversed && <p className="text-maestro-red">{RANGE_REVERSED}</p>}
+          {tooLong && <p className="text-maestro-red">{RANGE_TOO_LONG}</p>}
           {phase === "writing" && (
             <output className="flex items-center gap-1.5 text-maestro-text">
               <Loader2 size={12} className="animate-spin" />

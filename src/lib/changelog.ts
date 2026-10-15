@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal reports are limited to 92 days (and a set amount of text) so a run cannot hang for minutes.",
       "Work Journal: while a restore or undo runs, both the pane and the pop-out are frozen (text, toolbar, new page, delete, suggestions), so no edit can land on top of the restored journal.",
       "Work Journal: Undo restore now keeps a copy of the journal it replaces (work-journal.before-undo.json in Maestro's data folder) and can only run once.",
       "Work Journal: when the saved report folder is gone, the report dialog now offers to choose a new one, and a folder picker that fails to open in Settings now shows its error.",
