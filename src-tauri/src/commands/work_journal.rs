@@ -822,6 +822,26 @@ mod tests {
     }
 
     #[test]
+    fn test_a_removed_worktree_from_a_terminal_record_is_skipped_and_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = folder(dir.path(), "repo");
+        let worktrees = folder(dir.path(), "worktrees");
+        let removed = Path::new(&worktrees)
+            .join("main-417b4ed5")
+            .to_string_lossy()
+            .into_owned();
+
+        let plan = plan_run_projects(
+            std::slice::from_ref(&repo),
+            std::slice::from_ref(&removed),
+            std::slice::from_ref(&removed),
+        );
+
+        assert_eq!(plan.run, vec![repo.clone()]);
+        assert_eq!(plan.save, vec![repo]);
+    }
+
+    #[test]
     fn test_an_old_journal_without_known_projects_still_parses() {
         let text = serde_json::json!({
             "layout_version": 1,

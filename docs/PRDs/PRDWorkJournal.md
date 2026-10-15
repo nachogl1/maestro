@@ -182,6 +182,13 @@ Granola time) are folded in and linked in the Decision trace.
     is itself gone is dropped. The list is this machine's own and is kept through
     restore and undo. Coverage of a project starts once a run sees it after this
     change.
+  - Confirmed by the coordinator, flagged for the user (2026-10-15): a
+    recorded folder inside a linked git worktree (new terminals default to a new
+    worktree) is collected as its main repository, under the main project's
+    name, so a worktree is not a project of its own. Every worktree of a
+    project is searched for Claude conversations, as History does. The folder
+    itself stays as recorded in `known_projects` and is dropped once the
+    worktree is removed.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
   day. They are not part of `work-journal.json` and are not backed up. The user
@@ -412,6 +419,9 @@ skipped for that run but kept; one whose parent folder still exists but which
 is itself gone is dropped. The list is this machine's own and is kept through
 restore and undo. Coverage of a project starts once a run sees it after this
 change.
+A recorded worktree folder is collected as its main repository and named
+after it; every worktree of a project is searched for Claude conversations
+(flagged for the user, see Candidates).
 
 An accepted candidate becomes ordinary page text in `work-journal.json`.
 
