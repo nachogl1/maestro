@@ -16,7 +16,9 @@ import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidates
  * suggestions badge listeners, and the
  * Claude agent-name sync that keeps terminal titles on agent names.
  */
-export function useBackgroundPollers(tabs: Parameters<typeof watchedProjectsFromTabs>[0]): void {
+export function useBackgroundPollers(
+  tabs: Parameters<typeof useWorkJournalCandidateTimer>[0],
+): void {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
   const autoCheckEnabled = useUpdateStore((s) => s.autoCheckEnabled);
   const checkIntervalMinutes = useUpdateStore((s) => s.checkIntervalMinutes);

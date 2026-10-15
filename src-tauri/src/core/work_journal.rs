@@ -167,6 +167,11 @@ pub struct WorkJournalSettings {
     /// first report, never created by Maestro.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_folder: Option<String>,
+    /// Every project path a candidate run has covered, so later runs still
+    /// cover a project after its tab was closed, or before any tab is open
+    /// again after a restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_projects: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -1989,6 +1994,35 @@ mod tests {
             backup
         );
         assert!(!tmp_path(&safety_copy_path(&path)).exists());
+    }
+
+    #[test]
+    fn test_restore_and_undo_keep_the_local_known_projects() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        let mut backup: Value = serde_json::from_str(&other_machine_backup(&folder)).unwrap();
+        backup["settings"]["known_projects"] = json!([r"Z:\OtherMachine\repo"]);
+        std::fs::write(backup_path(&folder), backup.to_string()).unwrap();
+        local_journal(&path, &folder);
+        let local = vec![r"C:\git\closed-tab".to_string()];
+        let known = local.clone();
+        modify(&path, |j| {
+            j.settings.known_projects = known;
+            Ok(())
+        })
+        .unwrap();
+
+        let restored = restore_from(&path, &backup_path(&folder)).unwrap();
+        assert_eq!(
+            restored.settings.known_projects, local,
+            "the local list is kept and the file's list is ignored"
+        );
+        assert_eq!(load(&path).unwrap().settings.known_projects, local);
+
+        let undone = undo_restore(&path).unwrap();
+        assert_eq!(undone.settings.known_projects, local);
+        assert_eq!(load(&path).unwrap().settings.known_projects, local);
     }
 
     #[test]

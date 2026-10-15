@@ -168,6 +168,17 @@ Granola time) are folded in and linked in the Decision trace.
     memory only, and ids are reassigned each launch. The journal keeps a small
     record per terminal: project name, branch, opened-at and closed-at. Nothing
     typed in the terminal is stored.
+  - Confirmed by the coordinator, flagged for the user (2026-10-15): each
+    terminal record also stores the folder the shell ran in (for a multi-repo
+    workspace, the selected repo), and `work-journal.json` gains a
+    `known_projects` list in its settings: every project a candidate run has
+    covered. A run covers the open tabs (every repo of a multi-repo tab), the
+    repos of terminals open inside its window, and `known_projects`, so a closed
+    tab is still covered. A remembered folder that cannot be reached right now is
+    skipped for that run but kept; one whose parent folder still exists but which
+    is itself gone is dropped. The list is this machine's own and is kept through
+    restore and undo. Coverage of a project starts once a run sees it after this
+    change.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
   day. They are not part of `work-journal.json` and are not backed up. The user
@@ -369,6 +380,18 @@ In a temporary file, deleted after a day (not backed up):
 - **Terminal-session record:** per terminal, project name, branch, opened-at
   and closed-at. Nothing typed in the terminal is stored.
 
+Confirmed by the coordinator, flagged for the user (2026-10-15): each
+terminal record also stores the folder the shell ran in (for a multi-repo
+workspace, the selected repo), and `work-journal.json` gains a
+`known_projects` list in its settings: every project a candidate run has
+covered. A run covers the open tabs (every repo of a multi-repo tab), the
+repos of terminals open inside its window, and `known_projects`, so a closed
+tab is still covered. A remembered folder that cannot be reached right now is
+skipped for that run but kept; one whose parent folder still exists but which
+is itself gone is dropped. The list is this machine's own and is kept through
+restore and undo. Coverage of a project starts once a run sees it after this
+change.
+
 An accepted candidate becomes ordinary page text in `work-journal.json`.
 
 ## Settings
@@ -441,7 +464,9 @@ Every item that was once an assumption was confirmed by the user on
    feeding today's page and today's candidates; no edit-before-accept;
    catch-up on start. Confirmed.
 3. Terminal record fields: project name, branch, opened-at, closed-at.
-   Confirmed.
+   Confirmed. Since 2026-10-15 also the folder the shell ran in, with a
+   `known_projects` list in the journal settings (confirmed by the
+   coordinator, flagged for the user; see Candidates).
 4. Granola: opt-in stored in the journal file; "No" never calls Granola; no
    note text in logs; `query_granola_meetings` not used. Confirmed.
 5. Backup and restore details (safe backup write, last backup time and visible
