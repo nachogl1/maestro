@@ -405,12 +405,25 @@ pub fn update_page(
     Ok(())
 }
 
-/// Removes a page and records its date in `deleted_dates`.
+/// Removes a page and, when needed, records its date in `deleted_dates` so the
+/// auto-creation pass never brings it back.
+///
+/// The date is recorded when the page was auto-created, or when the
+/// auto-creation pass has already reached it (on or before
+/// `last_auto_created_date`). A manual page for a date the pass has not
+/// reached yet is simply removed, so that day's automatic page still appears.
 pub fn delete_page(journal: &mut WorkJournal, date: &str) -> WorkJournalResult<()> {
-    if journal.pages.remove(date).is_none() {
+    let Some(page) = journal.pages.remove(date) else {
         return Err(WorkJournalError::PageNotFound(date.to_string()));
+    };
+    // ISO dates compare correctly as strings.
+    let already_reached = journal
+        .last_auto_created_date
+        .as_deref()
+        .is_some_and(|last| date <= last);
+    if page.origin == PageOrigin::Auto || already_reached {
+        journal.deleted_dates.insert(date.to_string());
     }
-    journal.deleted_dates.insert(date.to_string());
     Ok(())
 }
 
@@ -1021,6 +1034,55 @@ mod tests {
         let reloaded = load(&path).unwrap();
         assert!(reloaded.deleted_dates.contains("2026-10-14"));
         assert!(reloaded.pages.is_empty());
+    }
+
+    #[test]
+    fn test_deleting_a_future_manual_page_does_not_block_its_auto_page() {
+        let mut journal = journal_anchored_at("2026-10-15");
+        create_page(
+            &mut journal,
+            "2026-10-20",
+            "t".into(),
+            json!({}),
+            PageOrigin::Manual,
+        )
+        .unwrap();
+
+        delete_page(&mut journal, "2026-10-20").unwrap();
+
+        assert!(!journal.deleted_dates.contains("2026-10-20"));
+        ensure_pages(&mut journal, "2026-10-20").unwrap();
+        let page = &journal.pages["2026-10-20"];
+        assert_eq!(page.origin, PageOrigin::Auto);
+    }
+
+    #[test]
+    fn test_deleting_todays_auto_page_still_blocks_it() {
+        let mut journal = WorkJournal::default();
+        ensure_pages(&mut journal, "2026-10-15").unwrap();
+
+        delete_page(&mut journal, "2026-10-15").unwrap();
+
+        assert!(journal.deleted_dates.contains("2026-10-15"));
+        ensure_pages(&mut journal, "2026-10-15").unwrap();
+        assert!(!journal.pages.contains_key("2026-10-15"));
+    }
+
+    #[test]
+    fn test_deleting_a_past_manual_page_still_blocks_it() {
+        let mut journal = journal_anchored_at("2026-10-15");
+        create_page(
+            &mut journal,
+            "2026-10-10",
+            "t".into(),
+            json!({}),
+            PageOrigin::Manual,
+        )
+        .unwrap();
+
+        delete_page(&mut journal, "2026-10-10").unwrap();
+
+        assert!(journal.deleted_dates.contains("2026-10-10"));
     }
 
     #[test]

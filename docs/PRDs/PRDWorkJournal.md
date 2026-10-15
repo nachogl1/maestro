@@ -109,6 +109,9 @@ Granola time) are folded in and linked in the Decision trace.
     it come back.
   - **Title language:** English on every machine, not the system date format.
     Translation is not part of v1.
+- Decided during the 2026-10-15 audit fixes, flagged for the user to confirm:
+  deleting a manual page for a future date does not block that date's
+  automatic page.
 
 ### Editing
 
