@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
@@ -13,17 +14,22 @@ import {
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   EMPTY_PAGE_BODY,
+  retryWorkJournalSaves,
   useWorkJournalStore,
+  WORK_JOURNAL_SAVE_RETRY_DELAYS_MS,
   type WorkJournalFile,
   type WorkJournalPage,
 } from "@/stores/useWorkJournalStore";
 import { WORK_JOURNAL_SAVE_DEBOUNCE_MS } from "../WorkJournalEditor";
 import { WorkJournalPanel } from "../WorkJournalPanel";
+import { WorkJournalWindow } from "../WorkJournalWindow";
 
 vi.mock("@tauri-apps/api/event", () => ({
   emitTo: vi.fn(() => Promise.resolve()),
   listen: vi.fn(async () => () => {}),
 }));
+
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: vi.fn() }));
 
 vi.mock("@tauri-apps/api/webviewWindow", () => {
   const WebviewWindow = vi.fn(function (this: { once: unknown }) {
@@ -32,6 +38,12 @@ vi.mock("@tauri-apps/api/webviewWindow", () => {
   WebviewWindow.getByLabel = vi.fn(async () => null);
   return { WebviewWindow, getCurrentWebviewWindow: vi.fn(() => ({ label: "main" })) };
 });
+
+// The backup reminder reads the journal and follows changes on its own; it
+// has its own tests, and here it would add reads and listeners.
+vi.mock("../WorkJournalBackupReminder", () => ({
+  WorkJournalBackupReminder: () => <div data-testid="backup-reminder" />,
+}));
 
 const invokeMock = vi.mocked(invoke);
 const askMock = vi.mocked(ask);
@@ -138,6 +150,7 @@ describe("WorkJournalPanel", () => {
 
     expect(await screen.findByDisplayValue("Wed 14 Oct 2026")).toBeInTheDocument();
     expect(callsTo("work_journal_ensure_pages")).toEqual([{ today: "2026-10-14" }]);
+    expect(screen.getByTestId("backup-reminder")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next day" })).toBeDisabled();
   });
 
@@ -317,6 +330,39 @@ describe("WorkJournalPanel", () => {
 
     expect(callsTo("update_work_journal_page")).toHaveLength(1);
     expect(JSON.stringify(callsTo("update_work_journal_page")[0])).toContain("Closing now");
+  });
+
+  it("save failure on unmount stays visible after the pane reopens", async () => {
+    const { unmount } = render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") throw new Error("file locked");
+      return backend?.(cmd, args);
+    });
+
+    act(() => {
+      pageEditor().commands.insertContent("Typed before closing");
+    });
+    // The closing pane's flush fails; nothing on screen shows the error now.
+    unmount();
+    await act(async () => {});
+
+    // Reopening ensures the day pages again, which clears the error banner,
+    // but not the unsaved notice.
+    render(<WorkJournalPanel />);
+    expect(
+      await screen.findByText("Unsaved changes, retrying (Wed 14 Oct 2026)"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Typed before closing")).toBeInTheDocument();
+
+    // The disk is back: the automatic retry saves the text and the notice goes.
+    invokeMock.mockImplementation(backend ?? (async () => undefined));
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[0]);
+    });
+    await waitFor(() => expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument());
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed before closing");
   });
 
   it("opens the report dialog, and the report waits for typing not yet saved", async () => {
@@ -789,5 +835,94 @@ describe("WorkJournalPanel and the pop-out window", () => {
       vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
     });
     expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pane");
+  });
+});
+
+describe("WorkJournalWindow closing", () => {
+  /** The pop-out's close-requested handler, as the window API would call it. */
+  let closeRequested: (event: { preventDefault: () => void }) => Promise<void>;
+  const destroy = vi.fn(async () => {});
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
+    file = {
+      layout_version: 1,
+      pages: { "2026-10-14": page("2026-10-14", "Wed 14 Oct 2026") },
+      deleted_dates: [],
+      last_auto_created_date: "2026-10-14",
+      settings: {},
+    };
+    invokeMock.mockReset();
+    askMock.mockReset();
+    destroy.mockClear();
+    mockBackend();
+    closeRequested = async () => {};
+    vi.mocked(getCurrentWindow).mockReturnValue({
+      onCloseRequested: vi.fn(async (handler: typeof closeRequested) => {
+        closeRequested = handler;
+        return () => {};
+      }),
+      destroy,
+    } as unknown as ReturnType<typeof getCurrentWindow>);
+    useWorkJournalStore.setState({ pages: {}, viewedDate: null, loading: false, error: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("pop-out close is blocked while a flush failed", async () => {
+    render(<WorkJournalWindow />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") throw new Error("disk full");
+      return backend?.(cmd, args);
+    });
+    act(() => {
+      pageEditor().commands.insertContent("Typed in the pop-out");
+    });
+
+    // The close-time flush fails and the user keeps the window.
+    askMock.mockResolvedValueOnce(false);
+    const preventDefault = vi.fn();
+    await act(async () => closeRequested({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(destroy).not.toHaveBeenCalled();
+    expect(screen.getByText(/Unsaved changes, retrying/)).toBeInTheDocument();
+
+    // With the disk back, the next close saves the text and lets the window go.
+    invokeMock.mockImplementation(backend ?? (async () => undefined));
+    const preventAgain = vi.fn();
+    await act(async () => closeRequested({ preventDefault: preventAgain }));
+    expect(preventAgain).not.toHaveBeenCalled();
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pop-out");
+  });
+
+  it("closes and drops the unsaved text after Close and lose it", async () => {
+    render(<WorkJournalWindow />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") throw new Error("disk full");
+      return backend?.(cmd, args);
+    });
+    act(() => {
+      pageEditor().commands.insertContent("Given up");
+    });
+
+    askMock.mockResolvedValueOnce(true);
+    const preventDefault = vi.fn();
+    await act(async () => closeRequested({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledTimes(1);
+
+    // Leaves the store clean for the next test, as the window would be gone.
+    invokeMock.mockImplementation(backend ?? (async () => undefined));
+    await act(async () => {
+      await retryWorkJournalSaves();
+    });
   });
 });

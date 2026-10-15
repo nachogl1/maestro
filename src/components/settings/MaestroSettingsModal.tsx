@@ -131,6 +131,8 @@ const HINTS = {
 
 interface MaestroSettingsModalProps {
   onClose: () => void;
+  /** A section to scroll into view on open; the top of the settings otherwise. */
+  focusSection?: "work-journal";
 }
 
 /** Sentinel the backend returns when the user dismisses the admin auth prompt.
@@ -147,8 +149,9 @@ const INTERVAL_OPTIONS = [
   { label: "24 hours", value: 1440 },
 ];
 
-export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
+export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const workJournalRef = useRef<HTMLDivElement>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [endpointInput, setEndpointInput] = useState("");
@@ -211,6 +214,12 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
 
   // Close on outside click or Escape
   useDismissable(onClose, { ref: modalRef });
+
+  useEffect(() => {
+    if (focusSection === "work-journal") {
+      workJournalRef.current?.scrollIntoView?.({ block: "start" });
+    }
+  }, [focusSection]);
 
   const handleCheckNow = useCallback(() => {
     checkForUpdates();
@@ -452,7 +461,9 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
             </div>
           </div>
 
-          <WorkJournalSettingsSection />
+          <div ref={workJournalRef}>
+            <WorkJournalSettingsSection />
+          </div>
 
           {/* Advanced */}
           <div>

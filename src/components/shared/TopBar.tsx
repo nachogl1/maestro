@@ -22,7 +22,7 @@ import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
 import { ParkedRunsBadge } from "./ParkedRunsBadge";
-import { WorkJournalSuggestionsBadge } from "./WorkJournalSuggestionsBadge";
+import { WorkJournalSuggestionsBadge, WorkJournalUnsavedDot } from "./WorkJournalSuggestionsBadge";
 
 /** Column counts offered by the eagle view picker (besides automatic). */
 const EAGLE_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6] as const;
@@ -336,6 +336,7 @@ export function TopBar({
           >
             <BookOpenCheck size={14} />
             <WorkJournalSuggestionsBadge />
+            <WorkJournalUnsavedDot />
           </button>
         )}
         {onToggleInjectPanel && (

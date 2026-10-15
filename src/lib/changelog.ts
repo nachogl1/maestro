@@ -11,6 +11,8 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal: until you pick a backup folder, the pane and its own window show a one-line reminder with an Open Settings button; close it to hide it in that window until it closes or Maestro restarts.",
+      "Work Journal: text that could not be saved is kept, retried automatically, and flagged in the pane, the pop-out and on the top-bar icon until it lands; if the other window changed the same text you choose which to keep, and the pop-out asks before closing while text is still unsaved.",
       "Work Journal suggestions now cover every project Maestro has seen in a tab or terminal since this update, including closed tabs and every repo of a multi-repo project, not only the tabs open right now.",
       "Terminal title bar: the name now follows the Claude agent's real name even when Claude was started by hand in the terminal or its start-up hooks were missing, so the header and Claude's own status bar agree without re-saving the name.",
       "Work Journal suggestion runs no longer see your personal Claude instructions, hooks or settings, and a Granola run can reach only Granola, not your other MCP servers.",
@@ -34,6 +36,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: a toolbar for bold, italic, headings, lists, links, text colour, highlight and tick-box checklists.",
       "Work Journal settings: restore the journal from a backup file, with a safety copy and an Undo restore button.",
       "Work Journal: restoring a backup (or undoing a restore) keeps this computer's own settings — Granola choice, folders, model and schedule.",
+      "Work Journal settings: the journal's own folder is refused as the backup folder, since a backup there would only overwrite the journal with itself.",
       "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
       "Work Journal settings: choose how often Claude looks for journal suggestions and which model it uses, and run it now.",
       "Work Journal: suggested lines from your activity appear under the page with a source tag — accept adds the line to the page, reject hides it; the pane icon counts today's suggestions.",

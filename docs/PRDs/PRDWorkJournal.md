@@ -311,6 +311,9 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   - Maestro records the last successful backup time and shows it next to the
     button. A failed backup (for example, folder missing) shows a visible
     error instead of failing silently.
+- Decided during the 2026-10-15 audit fixes, flagged for the user to confirm:
+  the backup folder may not be the journal's own folder (exact match only; a
+  parent folder is allowed); restore is unchanged.
 
 ### Restore
 

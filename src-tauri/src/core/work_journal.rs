@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 
 use crate::commands::ai_runner::artifact_base_dir;
 use crate::core::atomic_write::atomic_write_via;
+use crate::core::samurai_files::normalize_extended_path;
 
 /// Environment variable that overrides the journal's folder.
 pub const DIR_ENV_VAR: &str = "MAESTRO_WORK_JOURNAL_DIR";
@@ -83,6 +84,8 @@ pub enum WorkJournalError {
     BackupFolderMissing(String),
     #[error("Backup failed: {0} is a file, not a folder. Choose a folder for the backup.")]
     BackupFolderNotAFolder(String),
+    #[error("The backup folder cannot be the journal's own folder. Choose a different folder.")]
+    BackupFolderIsJournalFolder,
     #[error(
         "Automatic backup skipped: this folder already holds a backup that this Maestro has \
          never written. Press Back up now to replace it, or choose another folder."
@@ -446,6 +449,48 @@ pub fn merge_settings(
     Ok(())
 }
 
+/// [`merge_settings`] on the journal at `path`, saved. A `backup_folder` that
+/// is the journal's own folder is refused and nothing is saved.
+pub fn update_settings(path: &Path, patch: Map<String, Value>) -> WorkJournalResult<WorkJournal> {
+    let folder = patch
+        .get("backup_folder")
+        .and_then(Value::as_str)
+        .filter(|folder| !folder.trim().is_empty());
+    if let Some(folder) = folder {
+        ensure_not_journal_folder(path, Path::new(folder))?;
+    }
+    modify(path, |j| merge_settings(j, patch))
+}
+
+/// A folder in the form two folders are compared in: canonicalized when it
+/// exists (else made absolute), `\\?\` stripped, trailing separators dropped,
+/// and lowercased on Windows, where paths ignore case.
+fn comparable_folder(folder: &Path) -> String {
+    let resolved = std::fs::canonicalize(folder)
+        .or_else(|_| std::path::absolute(folder))
+        .unwrap_or_else(|_| folder.to_path_buf());
+    let text = normalize_extended_path(&resolved.to_string_lossy());
+    let text = text.trim_end_matches(['\\', '/']);
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.to_string()
+    }
+}
+
+/// Refuses `folder` as the backup folder when it is the folder holding the
+/// journal at `path`: the backup would overwrite the live file with itself,
+/// so there would be no second copy.
+fn ensure_not_journal_folder(path: &Path, folder: &Path) -> WorkJournalResult<()> {
+    let Some(journal_folder) = path.parent() else {
+        return Ok(());
+    };
+    if comparable_folder(folder) == comparable_folder(journal_folder) {
+        return Err(WorkJournalError::BackupFolderIsJournalFolder);
+    }
+    Ok(())
+}
+
 /// `<folder>/work-journal.json`, the one backup file (overwritten each time).
 pub fn backup_path(folder: &Path) -> PathBuf {
     folder.join(FILE_NAME)
@@ -504,6 +549,8 @@ pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Optio
     if !backup_due(last_backup_at, now) {
         return Ok(None);
     }
+    // Before the guard, which would mistake the journal itself for a backup.
+    ensure_not_journal_folder(path, &folder)?;
     let never_backed_up = !matches!(last_backup_at, Some(at) if !at.trim().is_empty());
     if never_backed_up && backup_path(&folder).exists() {
         return Err(WorkJournalError::AutoBackupWouldReplaceUnknownBackup);
@@ -511,9 +558,10 @@ pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Optio
     write_backup(path, journal, &folder, now).map(Some)
 }
 
-/// Checks the folder exists (never creates it, unlike [`save`]), writes the
-/// backup crash-safely, then saves the local journal with the new
-/// `last_backup_at`. The backup carries that same time.
+/// Checks the folder exists (never creates it, unlike [`save`]) and is not
+/// the journal's own folder, writes the backup crash-safely, then saves the
+/// local journal with the new `last_backup_at`. The backup carries that same
+/// time.
 fn write_backup(
     path: &Path,
     mut journal: WorkJournal,
@@ -528,6 +576,7 @@ fn write_backup(
             WorkJournalError::BackupFolderMissing(shown)
         });
     }
+    ensure_not_journal_folder(path, folder)?;
     let target = backup_path(folder);
     journal.settings.last_backup_at = Some(now.to_rfc3339_opts(SecondsFormat::Secs, true));
     let bytes = serde_json::to_vec_pretty(&journal).map_err(WorkJournalError::Serialize)?;
@@ -1713,6 +1762,83 @@ mod tests {
 
         assert!(!folder.exists(), "a backup never creates the folder");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn test_backup_into_the_journal_folder_is_refused_and_changes_nothing() {
+        let dir = tempdir().unwrap();
+        let app = dir.path().join("app");
+        let path = journal_path(&app);
+        // Saved before the settings guard existed: write_backup must refuse too.
+        journal_with_backup_folder(&path, &app);
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+        assert!(
+            matches!(err, WorkJournalError::BackupFolderIsJournalFolder),
+            "got: {err}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "The backup folder cannot be the journal's own folder. Choose a different folder."
+        );
+        let err = backup_if_due(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+        assert!(matches!(err, WorkJournalError::BackupFolderIsJournalFolder));
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(load(&path).unwrap().settings.last_backup_at.is_none());
+        assert_eq!(std::fs::read_dir(&app).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn test_settings_refuse_the_journal_folder_and_keep_the_previous_one() {
+        let dir = tempdir().unwrap();
+        let app = dir.path().join("app");
+        let path = journal_path(&app);
+        let other = dir.path().join("OneDrive");
+        std::fs::create_dir(&other).unwrap();
+        let choose = |folder: String| {
+            let patch = json!({ "backup_folder": folder, "last_backup_at": null });
+            update_settings(&path, patch.as_object().unwrap().clone())
+        };
+
+        // A different folder is saved and backs up as before.
+        let saved = choose(other.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(
+            saved.settings.backup_folder.as_deref(),
+            Some(other.to_string_lossy().as_ref())
+        );
+        backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap();
+        assert!(backup_path(&other).exists());
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        // The journal's folder, however it is spelled, is refused unsaved.
+        let mut spellings = vec![
+            app.to_string_lossy().into_owned(),
+            format!("{}{}", app.display(), std::path::MAIN_SEPARATOR),
+            app.join("..").join("app").to_string_lossy().into_owned(),
+        ];
+        if cfg!(windows) {
+            spellings.push(app.to_string_lossy().to_uppercase());
+        }
+        for spelling in spellings {
+            let err = choose(spelling.clone()).unwrap_err();
+            assert!(
+                matches!(err, WorkJournalError::BackupFolderIsJournalFolder),
+                "{spelling}: got {err}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                before,
+                "{spelling}"
+            );
+        }
+        let kept = load(&path).unwrap().settings;
+        assert_eq!(
+            kept.backup_folder.as_deref(),
+            Some(other.to_string_lossy().as_ref())
+        );
+        assert!(kept.last_backup_at.is_some());
     }
 
     #[test]
