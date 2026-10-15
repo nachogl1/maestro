@@ -306,7 +306,7 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
     directly to the backup file elsewhere are overwritten by the next backup.
   - The same version check runs when Maestro loads its own local file after an
     update.
-- Confirmed by the user (2026-10-15):
+- Decided during the 2026-10-15 audit fixes, flagged for the user to confirm:
   - Journal settings are per-machine. Restore and undo keep this computer's
     settings (Granola choice, folders, model, schedule) and take only the
     pages, deleted dates and last auto-created date from the file.
