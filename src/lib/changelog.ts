@@ -34,6 +34,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: a toolbar for bold, italic, headings, lists, links, text colour, highlight and tick-box checklists.",
       "Work Journal settings: restore the journal from a backup file, with a safety copy and an Undo restore button.",
       "Work Journal: restoring a backup (or undoing a restore) keeps this computer's own settings — Granola choice, folders, model and schedule.",
+      "Work Journal settings: the journal's own folder is refused as the backup folder, since a backup there would only overwrite the journal with itself.",
       "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
       "Work Journal settings: choose how often Claude looks for journal suggestions and which model it uses, and run it now.",
       "Work Journal: suggested lines from your activity appear under the page with a source tag — accept adds the line to the page, reject hides it; the pane icon counts today's suggestions.",
