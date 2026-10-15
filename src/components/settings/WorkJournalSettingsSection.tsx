@@ -90,6 +90,8 @@ export function WorkJournalSettingsSection(): JSX.Element {
       if (typeof picked === "string") await chooseFolder(picked);
     } catch (err) {
       console.error("Failed to open the folder picker:", err);
+      const text = err instanceof Error ? err.message : String(err);
+      useWorkJournalBackupStore.setState({ error: `Could not open the folder picker: ${text}` });
     }
   };
 
@@ -109,6 +111,8 @@ export function WorkJournalSettingsSection(): JSX.Element {
       });
     } catch (err) {
       console.error("Failed to open the file picker:", err);
+      const text = err instanceof Error ? err.message : String(err);
+      useWorkJournalBackupStore.setState({ error: `Could not open the file picker: ${text}` });
       return;
     }
     if (typeof picked !== "string" || !(await confirmRestore(picked))) return;

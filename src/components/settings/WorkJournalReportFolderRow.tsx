@@ -27,6 +27,10 @@ export function WorkJournalReportFolderRow(): JSX.Element {
       if (typeof picked === "string") await chooseFolder(picked);
     } catch (err) {
       console.error("Failed to open the folder picker:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      useWorkJournalReportStore.setState({
+        error: `Could not open the folder picker: ${message}`,
+      });
     }
   };
 
