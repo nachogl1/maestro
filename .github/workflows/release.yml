@@ -71,10 +71,10 @@ jobs:
           echo "Release version: $version"
 
       - name: Install frontend dependencies
-        shell: bash
-        run: |
-          rm -f package-lock.json
-          npm install
+        # npm ci keeps the lockfile's @tauri-apps/* versions, which match the
+        # Rust crates in Cargo.lock; a fresh npm install pulls newer minors and
+        # the Tauri CLI refuses to build on the mismatch.
+        run: npm ci
 
       - name: Build MCP server sidecar
         shell: bash
