@@ -193,9 +193,21 @@ describe("IssueMapModal", () => {
     await screen.findByTestId("issue-node-2");
     expect(screen.getByText(/An issue's level is 1 \+ the highest level/)).toBeInTheDocument();
     const problems = screen.getByTestId("issue-map-problems");
-    expect(within(problems).getByText(/2 data problems \(links dropped/)).toBeInTheDocument();
-    expect(within(problems).getByText("#3: section says #4, GitHub does not")).toBeInTheDocument();
-    expect(within(problems).getByText("#3: blocked by epic #4, link dropped")).toBeInTheDocument();
+    // Open by default, so the user sees what is wrong without hunting for a fold-out.
+    expect(problems).toHaveAttribute("open");
+    expect(
+      within(problems).getByText(/2 data problems: some "blocked by" links/),
+    ).toBeInTheDocument();
+    expect(
+      within(problems).getByText('#3 "Ship it": its two "blocked by" sources disagree'),
+    ).toBeInTheDocument();
+    expect(
+      within(problems).getByText(
+        '#3 "Ship it" is blocked by #4 "Epic: all of it", which is an epic: link dropped',
+      ),
+    ).toBeInTheDocument();
+    expect(problems.textContent).toContain("Epics are containers, not work");
+    expect(problems.textContent).toContain("Fix: On GitHub, make the section and the relation");
   });
 
   it("says 'No data problems' when every link was kept", async () => {

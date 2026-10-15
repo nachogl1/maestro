@@ -191,10 +191,15 @@ describe("buildIssueMapHtml", () => {
   it("lists the data problems in a collapsible footer, or says there are none", () => {
     const html = buildIssueMapHtml(map, OPTIONS);
     expect(html).toContain(
-      "<details><summary>2 data problems (links dropped or sources disagreeing)",
+      "<details open><summary>⚠ 2 data problems: some &quot;blocked by&quot; links",
     );
-    expect(html).toContain("<li>#3: section says #4, GitHub does not</li>");
-    expect(html).toContain("<li>#3: blocked by epic #4, link dropped</li>");
+    expect(html).toContain(
+      "<li><b>#3 &quot;Ship it&quot;: its two &quot;blocked by&quot; sources disagree</b><br>",
+    );
+    expect(html).toContain("<br><b>Fix:</b> On GitHub, make the section and the relation name");
+    expect(html).toContain(
+      "<li><b>#3 &quot;Ship it&quot; is blocked by #4 &quot;Epic&quot;, which is an epic: link dropped</b><br>Epics are containers",
+    );
     const clean = buildIssueMapHtml(buildIssueMap([issues[0]], {}), OPTIONS);
     expect(clean).toContain("No data problems.");
     expect(clean).not.toContain("<details>");
