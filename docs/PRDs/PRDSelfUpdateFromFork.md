@@ -29,9 +29,10 @@ the fork's work.
 - **Updater endpoint and key.** `tauri.conf.json` points at
   `nachogl1/maestro/releases/latest/download/latest.json` and carries the
   fork's own minisign public key. The private key lives in the repo secrets
-  `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty)
-  and in the maintainer's `~/.tauri/maestro-fork.key`. Losing it means
-  installed apps stop accepting updates until they are reinstalled by hand.
+  `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and
+  in the maintainer's `~/.tauri/maestro-fork.key` with its password in
+  `~/.tauri/maestro-fork.key.password`. Losing them means installed apps stop
+  accepting updates until they are reinstalled by hand.
 - **Release workflow** (`.github/workflows/release.yml`). Runs on push to
   `main` (docs-only pushes skipped) and on manual dispatch, one run at a time.
   The job only runs for `main`, so a manual run from another branch cannot
