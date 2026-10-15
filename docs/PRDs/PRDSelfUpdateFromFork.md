@@ -66,10 +66,11 @@ the fork's work.
 
 ## Risks
 
-- The updater exits the app right after starting `msiexec`, before the app's
-  own terminal cleanup runs. If a Claude session still has the bundled MCP
-  server exe open, Windows may ask for a reboot to finish the update.
-  Pre-existing behaviour, tracked as a follow-up.
+- The updater exits the app right after starting `msiexec`, so the cleanup
+  that follows the install call never runs on Windows. Fixed in #324: the
+  updater's before-exit hook now kills every terminal (and the Claude CLIs and
+  bundled MCP server exe in their process trees) before `msiexec` starts, so
+  no file is still open and Windows does not ask for a reboot.
 - Renaming the workflow file resets the run number and versions would go
   backwards; bump `MINOR` in `tauri.conf.json` if that is ever needed.
 - The `latest` release on GitHub is the newest non-draft, non-prerelease
