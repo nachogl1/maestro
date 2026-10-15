@@ -96,7 +96,7 @@ function App() {
   const retryAfterFDAGrant = useFDAStore((s) => s.retryAfterGrant);
   const multiProjectRef = useRef<MultiProjectViewHandle>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // Active left-sidebar tab — lifted out of Sidebar so Alt+1-4 can drive it.
+  // Active left-sidebar tab — lifted out of Sidebar so Alt+1-3 can drive it.
   const [sidebarTab, setSidebarTab] = useState<SidebarTabId>(loadSavedSidebarTab);
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   // Git-panel tab (commits/branches/…) is deliberately a single app-level
@@ -410,7 +410,7 @@ function App() {
     saveSidebarTab(tab);
   }, []);
 
-  // Alt+1-4: open the sidebar on tab N; pressing the active tab's shortcut
+  // Alt+1-3: open the sidebar on tab N; pressing the active tab's shortcut
   // again closes the sidebar (per-tab toggle, no separate pane toggle).
   const handleSidebarTabShortcut = useCallback(
     (index: number) => {
@@ -595,6 +595,8 @@ function App() {
               onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
               workJournalPanelOpen={utilityPanel === "workjournal"}
               onToggleWorkJournalPanel={() => handleToggleUtilityPanel("workjournal")}
+              injectPanelOpen={utilityPanel === "inject"}
+              onToggleInjectPanel={() => handleToggleUtilityPanel("inject")}
               onWatchdogNavigate={handleWatchdogNavigate}
               onParkNavigate={handleParkNavigate}
             />
@@ -714,7 +716,6 @@ function App() {
           {/* Bottom action bar */}
           <div className="bg-maestro-bg">
             <BottomBar
-              inGridView={activeTabSessionsLaunched}
               slotCount={activeTabSlotCount}
               launchedCount={activeTabLaunchedCount}
               onLaunchAll={() => {

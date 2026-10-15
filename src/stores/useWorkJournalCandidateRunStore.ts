@@ -31,8 +31,9 @@ export type CandidateRunOutcome =
 /** Shown when a run is asked for while another one is going. */
 export const RUN_BUSY_NOTICE = "A run is already in progress.";
 
-/** Shown when a run is asked for with no project open (nothing is collected then). */
-export const RUN_NO_PROJECTS_NOTICE = "No project is open, so there was nothing to look at.";
+/** Shown when a run is asked for before any project was opened (nothing is collected then). */
+export const RUN_NO_PROJECTS_NOTICE =
+  "No project has been opened in Maestro yet, so there was nothing to look at.";
 
 export interface WorkJournalCandidateRunState {
   /** Hours between runs while Maestro is open (1–24). */

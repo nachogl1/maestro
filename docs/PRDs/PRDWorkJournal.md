@@ -168,6 +168,17 @@ Granola time) are folded in and linked in the Decision trace.
     memory only, and ids are reassigned each launch. The journal keeps a small
     record per terminal: project name, branch, opened-at and closed-at. Nothing
     typed in the terminal is stored.
+  - Confirmed by the coordinator, flagged for the user (2026-10-15): each
+    terminal record also stores the folder the shell ran in (for a multi-repo
+    workspace, the selected repo), and `work-journal.json` gains a
+    `known_projects` list in its settings: every project a candidate run has
+    covered. A run covers the open tabs (every repo of a multi-repo tab), the
+    repos of terminals open inside its window, and `known_projects`, so a closed
+    tab is still covered. A remembered folder that cannot be reached right now is
+    skipped for that run but kept; one whose parent folder still exists but which
+    is itself gone is dropped. The list is this machine's own and is kept through
+    restore and undo. Coverage of a project starts once a run sees it after this
+    change.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
   day. They are not part of `work-journal.json` and are not backed up. The user
@@ -186,6 +197,13 @@ Granola time) are folded in and linked in the Decision trace.
     candidate and report runs must pass their own `--system-prompt`, as History
     summaries do (`src-tauri/src/commands/session_summary.rs:42`), or reply
     parsing breaks.
+  - **Keep the user's setup out (checked live, Claude Code 2.1.300):**
+    `--system-prompt` alone does not keep CLAUDE.md out. Runs without Granola
+    pass `--safe-mode` (no CLAUDE.md, hooks, skills, plugins or MCP servers).
+    Safe mode also drops a server given by `--mcp-config`, so Granola runs pass
+    `--setting-sources ""` instead (no CLAUDE.md and no settings files) plus
+    `--strict-mcp-config` with an `--mcp-config` naming only the user's
+    `granola` server, which reuses the stored sign-in.
 
 ### Granola connector (optional, free tier)
 
@@ -205,6 +223,8 @@ Granola time) are folded in and linked in the Decision trace.
   `--permission-mode dontAsk` so every other tool is denied. Never allow
   `sign_out`, `switch_workspace`, `get_meeting_transcript` (paid) or
   `get_meeting_attachment`. Wildcards like `mcp__granola__*` are not used.
+  Every other Granola tool (search, folders, account info) is denied by
+  name, and no other MCP server is loaded (see Candidates).
 - **What Granola gives:** meeting id, title, date, attendees, private notes and
   summarised notes, for the last 30 days on the free tier. The hands-on test
   (2026-10-14) also saw a `meeting_at` field in `list_meetings`, which the
@@ -306,6 +326,12 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
     directly to the backup file elsewhere are overwritten by the next backup.
   - The same version check runs when Maestro loads its own local file after an
     update.
+- Decided during the 2026-10-15 audit fixes, flagged for the user to confirm:
+  - Journal settings are per-machine. Restore and undo keep this computer's
+    settings (Granola choice, folders, model, schedule) and take only the
+    pages, deleted dates and last auto-created date from the file.
+  - On a new laptop no settings come across: the user sets them again and is
+    asked about Granola again.
 
 ### Supervisor report
 
@@ -362,6 +388,18 @@ In a temporary file, deleted after a day (not backed up):
   Kept for same-day duplicate removal. Never holds Granola note excerpts.
 - **Terminal-session record:** per terminal, project name, branch, opened-at
   and closed-at. Nothing typed in the terminal is stored.
+
+Confirmed by the coordinator, flagged for the user (2026-10-15): each
+terminal record also stores the folder the shell ran in (for a multi-repo
+workspace, the selected repo), and `work-journal.json` gains a
+`known_projects` list in its settings: every project a candidate run has
+covered. A run covers the open tabs (every repo of a multi-repo tab), the
+repos of terminals open inside its window, and `known_projects`, so a closed
+tab is still covered. A remembered folder that cannot be reached right now is
+skipped for that run but kept; one whose parent folder still exists but which
+is itself gone is dropped. The list is this machine's own and is kept through
+restore and undo. Coverage of a project starts once a run sees it after this
+change.
 
 An accepted candidate becomes ordinary page text in `work-journal.json`.
 
@@ -435,7 +473,9 @@ Every item that was once an assumption was confirmed by the user on
    feeding today's page and today's candidates; no edit-before-accept;
    catch-up on start. Confirmed.
 3. Terminal record fields: project name, branch, opened-at, closed-at.
-   Confirmed.
+   Confirmed. Since 2026-10-15 also the folder the shell ran in, with a
+   `known_projects` list in the journal settings (confirmed by the
+   coordinator, flagged for the user; see Candidates).
 4. Granola: opt-in stored in the journal file; "No" never calls Granola; no
    note text in logs; `query_granola_meetings` not used. Confirmed.
 5. Backup and restore details (safe backup write, last backup time and visible

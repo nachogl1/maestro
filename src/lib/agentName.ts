@@ -63,6 +63,12 @@ export function defaultAgentName(
 export interface LiveAgentName {
   session_id: string;
   name: string;
+  /**
+   * The Maestro terminal this claude runs in, found by the backend from the
+   * process tree (a shell Maestro spawned is among the claude process's
+   * ancestors). Null for a claude started outside Maestro.
+   */
+  maestro_session: number | null;
 }
 
 /** Every live Claude agent's name, from Claude Code's session registry. */
@@ -87,6 +93,12 @@ export interface AgentTerminal {
 /**
  * Titles to change so each Claude terminal shows its live agent name.
  *
+ * A terminal is matched to its live agent by the process tree first (the
+ * backend says which terminal each claude runs in), so the title follows
+ * the real name even when no SessionStart hook ever reported a conversation
+ * id — a claude typed by hand, or a launch whose hooks config was not
+ * written. The conversation id is the fallback.
+ *
  * Only a CHANGE of the live name renames the title (`lastSeen` remembers the
  * last name seen per terminal and is updated in place). A title the user
  * just edited therefore survives while Claude has not applied the matching
@@ -99,10 +111,15 @@ export function agentTitleUpdates(
   lastSeen: Map<number, string>,
 ): Array<{ sessionId: number; name: string }> {
   const nameByConversation = new Map(live.map((a) => [a.session_id, a.name]));
+  const nameBySession = new Map<number, string>();
+  for (const agent of live) {
+    if (agent.maestro_session != null) nameBySession.set(agent.maestro_session, agent.name);
+  }
   const updates: Array<{ sessionId: number; name: string }> = [];
   for (const terminal of terminals) {
-    if (!terminal.conversationId) continue;
-    const name = nameByConversation.get(terminal.conversationId);
+    const name =
+      nameBySession.get(terminal.sessionId) ??
+      (terminal.conversationId ? nameByConversation.get(terminal.conversationId) : undefined);
     if (!name || lastSeen.get(terminal.sessionId) === name) continue;
     lastSeen.set(terminal.sessionId, name);
     if (terminal.title !== name) updates.push({ sessionId: terminal.sessionId, name });

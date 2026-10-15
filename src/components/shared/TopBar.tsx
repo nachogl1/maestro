@@ -11,12 +11,13 @@ import {
   Rocket,
   Square,
   StickyNote,
+  Syringe,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
-import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
@@ -68,6 +69,9 @@ interface TopBarProps {
   /** Right-side Work Journal panel: one page per day (issue #309) */
   workJournalPanelOpen?: boolean;
   onToggleWorkJournalPanel?: () => void;
+  /** Right-side Injector panel: one message into many terminals */
+  injectPanelOpen?: boolean;
+  onToggleInjectPanel?: () => void;
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
@@ -97,6 +101,8 @@ export function TopBar({
   onToggleLaunchPanel,
   workJournalPanelOpen = false,
   onToggleWorkJournalPanel,
+  injectPanelOpen = false,
+  onToggleInjectPanel,
   onWatchdogNavigate,
   onParkNavigate,
 }: TopBarProps) {
@@ -331,6 +337,25 @@ export function TopBar({
             <BookOpenCheck size={14} />
             <WorkJournalSuggestionsBadge />
             <WorkJournalUnsavedDot />
+          </button>
+        )}
+        {onToggleInjectPanel && (
+          <button
+            type="button"
+            onClick={onToggleInjectPanel}
+            className={`rounded p-1.5 transition-colors ${
+              injectPanelOpen
+                ? "text-maestro-accent hover:bg-maestro-accent/10"
+                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+            }`}
+            aria-label="Injector"
+            title={titleWithShortcut(
+              "Injector — type one message into many terminals",
+              altLabel(),
+              "4",
+            )}
+          >
+            <Syringe size={14} />
           </button>
         )}
         {/* Git panel — in eagle view it becomes a per-project carousel
