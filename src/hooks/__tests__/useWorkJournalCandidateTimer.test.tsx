@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  candidateRunProjects,
   useWorkJournalCandidateTimer,
   WORK_JOURNAL_CATCH_UP_DELAY_MS,
 } from "@/hooks/useWorkJournalCandidateTimer";
@@ -108,5 +109,23 @@ describe("useWorkJournalCandidateTimer", () => {
 
     await act(async () => vi.advanceTimersByTime(WORK_JOURNAL_CATCH_UP_DELAY_MS));
     expect(runCalls()).toEqual([{ projects: ["/home/me/c"] }]);
+  });
+
+  it("passes every repo of a multi-repo tab, not only the selected one", () => {
+    const tabs: Tabs = [
+      {
+        name: "ws",
+        projectPath: "C:\\ws",
+        selectedRepoPath: "C:\\ws\\api",
+        repositories: [{ path: "C:\\ws" }, { path: "C:\\ws\\api" }, { path: "C:\\ws\\web" }],
+      },
+      { name: "b", projectPath: "C:\\git\\b", selectedRepoPath: null },
+    ];
+    expect(candidateRunProjects(tabs)).toEqual([
+      "C:\\ws\\api",
+      "C:\\git\\b",
+      "C:\\ws",
+      "C:\\ws\\web",
+    ]);
   });
 });
