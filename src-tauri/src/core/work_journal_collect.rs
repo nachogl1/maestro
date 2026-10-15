@@ -52,9 +52,11 @@ const GITHUB_QUERIES: [(&str, bool); 2] = [("author:@me", true), ("assignee:@me"
 pub struct ActivityItem {
     /// Which source it came from (its source tag).
     pub source: CandidateSource,
-    /// Local date it happened, `YYYY-MM-DD`.
+    /// Local date it happened, `YYYY-MM-DD`. Every item's date and time lie
+    /// inside the collected window (a terminal opened before it is timed at
+    /// the window start).
     pub date: String,
-    /// Local time it happened, `HH:MM`.
+    /// Local time it happened, `HH:MM`, inside the window like `date`.
     pub time: String,
     /// One line describing it.
     pub text: String,
@@ -642,7 +644,8 @@ fn note_truncated(len: usize, what: &str, name: &str, search: &str) {
 }
 
 /// A terminal that ran in the window, timed by when it was opened. One
-/// opened before the window says "since <date time>", so a terminal left
+/// opened before the window is timed at the window start, so its item stays
+/// on the window's day, and says "since <date time>", so a terminal left
 /// open overnight is not mistaken for one opened that day.
 fn terminal_item<Tz: TimeZone>(record: &TerminalRecord, window: &Window<Tz>) -> Option<Found>
 where
@@ -668,7 +671,7 @@ where
     };
     Some(window.item(
         CandidateSource::Terminal,
-        opened,
+        opened.max(window.start),
         record.id.clone(),
         format!("Terminal in {place} {span}"),
         &record.project_name,
@@ -1010,6 +1013,8 @@ mod tests {
                 "user.email=me@example.com",
                 "-c",
                 "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
             ])
             .args(args)
             .env("GIT_AUTHOR_DATE", &date)
@@ -1105,7 +1110,7 @@ mod tests {
         assert_eq!(
             times(&items),
             vec![
-                ("2026-10-15", "22:00"),
+                ("2026-10-15", "23:00"),
                 ("2026-10-15", "23:30"),
                 ("2026-10-16", "00:30"),
             ]
@@ -1245,10 +1250,10 @@ mod tests {
             ]
         );
         assert!(items.iter().all(|i| i.source == CandidateSource::Terminal));
-        // Timed by the real open, even when that is before the window.
+        // Opened before the window: timed at its start, text keeps the open.
         assert_eq!(
             times(&items),
-            vec![("2026-10-15", "10:30"), ("2026-10-15", "11:30")]
+            vec![("2026-10-15", "11:00"), ("2026-10-15", "11:30")]
         );
         assert_eq!(items[0].key, "earlier");
     }
