@@ -13,6 +13,17 @@ function formatRunTime(iso: string): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** Hover help for the rows, in plain language. */
+const HINTS = {
+  runEvery:
+    "How often Claude looks through your recent activity and suggests lines for today's " +
+    `journal page. Between 1 and ${MAX_RUN_EVERY_HOURS} hours.`,
+  model:
+    "Which Claude model writes the suggestions. Leave it empty to use the same model your " +
+    "Claude setup uses by default.",
+  runNow: "Look for journal suggestions right away instead of waiting for the next scheduled run.",
+};
+
 /** Commits the field on Enter by blurring it. */
 function blurOnEnter(event: KeyboardEvent<HTMLInputElement>): void {
   if (event.key === "Enter") event.currentTarget.blur();
@@ -75,8 +86,8 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
 
   return (
     <>
-      <div className="flex items-center gap-2 text-xs">
-        <label htmlFor="work-journal-run-every" className="flex-1 text-maestro-muted">
+      <div className="flex items-center gap-2 text-xs" title={HINTS.runEvery}>
+        <label htmlFor="work-journal-run-every" className="flex-1 cursor-help text-maestro-muted">
           Run every
         </label>
         <input
@@ -93,8 +104,8 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
         />
         <span className="shrink-0 text-maestro-muted">hours</span>
       </div>
-      <div className="flex items-center gap-2 text-xs">
-        <label htmlFor="work-journal-model" className="shrink-0 text-maestro-muted">
+      <div className="flex items-center gap-2 text-xs" title={HINTS.model}>
+        <label htmlFor="work-journal-model" className="shrink-0 cursor-help text-maestro-muted">
           Model
         </label>
         <input
@@ -116,6 +127,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
           type="button"
           onClick={handleRunNow}
           disabled={running}
+          title={HINTS.runNow}
           className="flex items-center gap-1 rounded border border-maestro-accent/50 bg-maestro-accent/10 px-3 py-1 text-[11px] font-medium text-maestro-accent hover:bg-maestro-accent/20 disabled:opacity-50"
         >
           {running ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}

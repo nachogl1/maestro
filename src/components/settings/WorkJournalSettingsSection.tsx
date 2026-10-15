@@ -22,6 +22,24 @@ function backupFileIn(folder: string): string {
   return `${base}work-journal.json`;
 }
 
+/** Hover help for the section's rows and buttons, in plain language. */
+const HINTS = {
+  section:
+    "The Work Journal is your day-by-day diary of work in Maestro, with suggested lines " +
+    "written by Claude from your activity.",
+  backupFolder:
+    "The folder where a copy of your whole journal is saved once a day, as a safety net. " +
+    "Pick one to turn the daily backup on.",
+  backUpNow: "Save a copy of your journal to the backup folder right away.",
+  restore:
+    "Replace your current journal with the copy saved in the backup folder. A safety copy " +
+    "is kept so you can undo.",
+  browse:
+    "Pick any Work Journal backup file on your computer and replace your current journal " +
+    "with it. A safety copy is kept so you can undo.",
+  undo: "Put your journal back to how it was just before the last restore.",
+};
+
 /** Asks before a restore replaces the whole journal; a dialog failure counts as "no". */
 function confirmRestore(file: string): Promise<boolean> {
   return ask(
@@ -109,13 +127,17 @@ export function WorkJournalSettingsSection(): JSX.Element {
     <div>
       <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
         <BookOpen size={13} className="text-maestro-accent" />
-        Work Journal
+        <span className="cursor-help" title={HINTS.section}>
+          Work Journal
+        </span>
       </div>
       <div className="space-y-1.5 px-1">
         <WorkJournalCandidateRunRows />
         <WorkJournalGranolaRow />
         <div className="flex items-center gap-2 text-xs">
-          <span className="shrink-0 text-maestro-muted">Backup folder</span>
+          <span className="shrink-0 cursor-help text-maestro-muted" title={HINTS.backupFolder}>
+            Backup folder
+          </span>
           <span
             className="min-w-0 flex-1 truncate text-right text-[11px] text-maestro-text"
             title={backupFolder ?? undefined}
@@ -125,6 +147,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
           <button
             type="button"
             onClick={() => void handleChooseFolder()}
+            title={HINTS.backupFolder}
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40"
           >
             <FolderOpen size={11} />
@@ -144,6 +167,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
             type="button"
             onClick={() => void backUpNow()}
             disabled={!backupFolder || backingUp}
+            title={HINTS.backUpNow}
             className="flex items-center gap-1 rounded border border-maestro-accent/50 bg-maestro-accent/10 px-3 py-1 text-[11px] font-medium text-maestro-accent hover:bg-maestro-accent/20 disabled:opacity-50"
           >
             {backingUp && <Loader2 size={11} className="animate-spin" />}
@@ -158,7 +182,11 @@ export function WorkJournalSettingsSection(): JSX.Element {
             type="button"
             onClick={() => void handleRestoreDefault()}
             disabled={!backupFolder || busy}
-            title={backupFolder ? backupFileIn(backupFolder) : "Choose a backup folder first"}
+            title={
+              backupFolder
+                ? `${HINTS.restore}\nBackup file: ${backupFileIn(backupFolder)}`
+                : `${HINTS.restore}\nChoose a backup folder first.`
+            }
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
           >
             {restoring && <Loader2 size={11} className="animate-spin" />}
@@ -168,7 +196,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
             type="button"
             onClick={() => void handleBrowseRestore()}
             disabled={busy}
-            title="Restore from any Work Journal backup file"
+            title={HINTS.browse}
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
           >
             <FolderOpen size={11} />
@@ -178,6 +206,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
             type="button"
             onClick={() => void handleUndoRestore()}
             disabled={!canUndo || busy}
+            title={HINTS.undo}
             className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
           >
             <Undo2 size={11} />
