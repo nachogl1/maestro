@@ -109,13 +109,7 @@ pub async fn spawn_shell(
         None
     };
     let pm = state.inner().clone();
-    let session_id = pm
-        .spawn_shell(app_handle, canonical_cwd.clone(), env)
-        .await?;
-    // Work journal: note where and when it opened (never what is typed), in
-    // the background so the launch is never slowed or failed by it.
-    work_journal_activity::note_terminal_opened(session_id, canonical_cwd);
-    Ok(session_id)
+    pm.spawn_shell(app_handle, canonical_cwd, env).await
 }
 
 /// Exposes `ProcessManager::write_stdin` to the frontend.
@@ -212,7 +206,6 @@ pub async fn kill_session(
     // Work journal: close this terminal's record (background, log-only).
     work_journal_activity::note_terminal_closed(
         session_id,
-        removed.as_ref().map(|s| s.project_path.clone()),
         removed.as_ref().and_then(|s| s.branch.clone()),
     );
     if let Some(session) = removed {

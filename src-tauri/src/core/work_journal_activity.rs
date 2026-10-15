@@ -16,6 +16,7 @@
 //! Every function takes the base directory so tests can point it at a temp
 //! dir; the app passes [`activity_dir`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -24,22 +25,58 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::commands::ai_runner::artifact_base_dir;
-use crate::core::samurai_files::canonical_key;
 use crate::core::samurai_injector::strip_extended_prefix;
+use crate::core::session_manager::SessionConfig;
 use crate::git::Git;
 
 /// File name inside the work-journal app-data folder.
 const ACTIVITY_FILE: &str = "activity.json";
 
+/// Where an unparseable `activity.json` is moved before starting afresh.
+const DAMAGED_FILE: &str = "activity.json.damaged";
+
 /// How long an entry is kept after it stops being current.
 const RETENTION_HOURS: i64 = 24;
 
-/// Project name used when no path is known for a terminal.
+/// Project name used when a path has no usable last component.
 const UNKNOWN_PROJECT: &str = "unknown";
 
 /// Serialises every read-modify-write of the file inside this process, so two
 /// terminals opening at once cannot drop each other's record.
 static FILE_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Errors from reading, changing or saving the activity file.
+#[derive(Debug, thiserror::Error)]
+pub enum ActivityError {
+    #[error("Failed to read {path:?}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Failed to create the work journal folder {path:?}: {source}")]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Failed to serialize the activity file: {0}")]
+    Serialize(#[source] serde_json::Error),
+    /// Message from the shared `atomic_write` helper, which reports `String`.
+    #[error("{0}")]
+    Write(String),
+    #[error("Candidate date '{0}' is not YYYY-MM-DD")]
+    InvalidDate(String),
+    #[error("Candidate time '{0}' is not HH:MM")]
+    InvalidTime(String),
+    #[error("Candidate text is empty")]
+    EmptyText,
+    #[error("No work journal candidate with id {0}")]
+    CandidateNotFound(String),
+}
+
+/// Result type for activity-file operations.
+pub type ActivityResult<T> = Result<T, ActivityError>;
 
 /// Where a candidate's activity came from (one source tag each).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +102,7 @@ pub enum CandidateState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Candidate {
+    /// Unique id (UUID v4), made when the candidate is added.
     pub id: String,
     /// The day page it belongs to, ISO `YYYY-MM-DD`.
     pub date: String,
@@ -73,7 +111,9 @@ pub struct Candidate {
     pub time: Option<String>,
     /// One line of text.
     pub text: String,
+    /// Which activity source proposed it (its source tag).
     pub source: CandidateSource,
+    /// Pending (waiting for the user) or rejected.
     pub state: CandidateState,
     /// When the candidate was added (RFC 3339) — the pruning clock.
     pub created_at: String,
@@ -96,18 +136,24 @@ pub struct NewCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalRecord {
+    /// Unique id (UUID v4), made when the record is created.
     pub id: String,
     /// The app launch that opened it. Session ids restart every launch, so
     /// (`launch_id`, `session_id`) is the record's identity.
     pub launch_id: String,
     pub session_id: u32,
+    /// Last component of the session's project path, `\\?\` stripped. Set
+    /// once at open and never changed.
     pub project_name: String,
+    /// The session's branch, or the checked-out git branch when the session
+    /// has none; absent outside git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// RFC 3339, local offset.
     pub opened_at: String,
-    /// RFC 3339, local offset. Absent while open, and for a terminal whose
-    /// app launch ended without closing it (crash, force-quit).
+    /// RFC 3339, local offset. Absent while open. For a terminal whose app
+    /// launch ended without closing it, filled with an estimate by the next
+    /// launch (see [`close_stale`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
 }
@@ -166,41 +212,111 @@ fn expired(stamp: &str, now: DateTime<Utc>) -> bool {
     }
 }
 
-/// Drops every expired entry. A terminal still open in `launch` is kept; any
-/// other terminal ages from its close (or, if it never closed, its open).
+/// Drops every expired entry. A terminal ages from its close; one with no
+/// close is kept if it belongs to `launch` (still open), and otherwise ages
+/// from its open (only reachable when [`close_stale`] could not read it).
 /// Returns whether anything was removed.
 fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
     let before = file.candidates.len() + file.terminals.len();
     file.candidates.retain(|c| !expired(&c.created_at, now));
-    file.terminals.retain(|t| {
-        if t.closed_at.is_none() && t.launch_id == launch {
-            return true;
-        }
-        !expired(t.closed_at.as_deref().unwrap_or(&t.opened_at), now)
+    file.terminals.retain(|t| match t.closed_at.as_deref() {
+        Some(closed) => !expired(closed, now),
+        None if t.launch_id == launch => true,
+        None => !expired(&t.opened_at, now),
     });
     before != file.candidates.len() + file.terminals.len()
+}
+
+/// Closes every record left open by another app launch (a crash, a
+/// force-kill, or a quit that skipped the close handler such as macOS
+/// Cmd+Q). The real close time is unknown, so it is estimated:
+///
+/// - `bound` is the file's last-modified time as this launch first saw it,
+///   before this launch wrote anything. The earlier launch cannot have run
+///   a terminal much past its last write to this file, so it is a bounded,
+///   plausible end time — not an exact one.
+/// - It is floored at the record's own open time, so a close never precedes
+///   its open. With no `bound` (no file yet) the close equals the open.
+///
+/// Without this, such a record would be listed as still running in every
+/// later time window. Returns whether anything was closed.
+fn close_stale(file: &mut ActivityFile, launch: &str, bound: Option<DateTime<Utc>>) -> bool {
+    let mut changed = false;
+    for record in file
+        .terminals
+        .iter_mut()
+        .filter(|t| t.launch_id != launch && t.closed_at.is_none())
+    {
+        let Some(opened) = parse_stamp(&record.opened_at) else {
+            continue; // unreadable: prune removes it
+        };
+        let end = bound.map_or(opened, |b| b.max(opened));
+        record.closed_at = Some(stamp(end.with_timezone(&Local)));
+        changed = true;
+    }
+    changed
+}
+
+/// The file's modification time as this process first saw it, i.e. before
+/// this launch wrote to it. Remembered per path for the process lifetime.
+fn pre_launch_mtime(path: &Path) -> Option<DateTime<Utc>> {
+    type Seen = std::sync::Mutex<HashMap<PathBuf, Option<DateTime<Utc>>>>;
+    static SEEN: OnceLock<Seen> = OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *seen.entry(path.to_path_buf()).or_insert_with(|| {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from)
+    })
 }
 
 fn file_path(dir: &Path) -> PathBuf {
     dir.join(ACTIVITY_FILE)
 }
 
-/// Reads the file, pruned. A missing file is empty; an unparseable one is
-/// logged and treated as empty (it only holds day-old scratch data, and the
-/// next write replaces it). Persists the prune when it removed anything.
-/// Callers hold [`FILE_LOCK`].
-async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> Result<ActivityFile, String> {
+/// Moves an unparseable file aside to [`DAMAGED_FILE`] (replacing an older
+/// damaged copy) so it can be inspected, and logs it.
+async fn set_aside_damaged(dir: &Path, error: &serde_json::Error) {
     let path = file_path(dir);
+    let damaged = dir.join(DAMAGED_FILE);
+    match tokio::fs::rename(&path, &damaged).await {
+        Ok(()) => log::warn!(
+            "work journal: {path:?} is unreadable ({error}); moved it to {damaged:?} and started afresh"
+        ),
+        Err(e) => log::warn!(
+            "work journal: {path:?} is unreadable ({error}) and could not be moved to {damaged:?} ({e}); starting afresh"
+        ),
+    }
+}
+
+/// Reads the file, closes stale records and prunes. A missing file is
+/// empty; an unparseable one is set aside and treated as empty. When
+/// anything changed, writes it back; a failed write-back is logged and the
+/// cleaned data is still returned. Callers hold [`FILE_LOCK`].
+async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> ActivityResult<ActivityFile> {
+    let path = file_path(dir);
+    let bound = pre_launch_mtime(&path);
     let mut file = match tokio::fs::read_to_string(&path).await {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-            log::warn!("work journal: {path:?} is unreadable ({e}); starting it afresh");
-            ActivityFile::default()
-        }),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(file) => file,
+            Err(e) => {
+                set_aside_damaged(dir, &e).await;
+                ActivityFile::default()
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => ActivityFile::default(),
-        Err(e) => return Err(format!("failed to read {path:?}: {e}")),
+        Err(source) => return Err(ActivityError::Read { path, source }),
     };
-    if prune(&mut file, now, launch) {
-        save(dir, &mut file, now, launch).await?;
+    let closed = close_stale(&mut file, launch, bound);
+    let pruned = prune(&mut file, now, launch);
+    if closed || pruned {
+        if let Err(e) = save(dir, &mut file, now, launch).await {
+            log::warn!("work journal: could not write back the cleaned activity file: {e}");
+        }
     }
     Ok(file)
 }
@@ -212,54 +328,72 @@ async fn save(
     file: &mut ActivityFile,
     now: DateTime<Utc>,
     launch: &str,
-) -> Result<(), String> {
+) -> ActivityResult<()> {
     prune(file, now, launch);
     tokio::fs::create_dir_all(dir)
         .await
-        .map_err(|e| format!("failed to create {dir:?}: {e}"))?;
+        .map_err(|source| ActivityError::CreateDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
     let path = file_path(dir);
     let tmp = dir.join(format!("{ACTIVITY_FILE}.tmp.{}", std::process::id()));
-    let json = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
+    let json = serde_json::to_vec_pretty(file).map_err(ActivityError::Serialize)?;
     let result = crate::core::atomic_write::atomic_write_async(path, tmp.clone(), json).await;
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result
+    result.map_err(ActivityError::Write)
 }
 
-#[allow(dead_code)] // reached through `add_candidates` (issue #313)
-fn validate_new(candidate: &NewCandidate) -> Result<(String, Option<String>), String> {
-    NaiveDate::parse_from_str(&candidate.date, "%Y-%m-%d")
-        .map_err(|_| format!("candidate date '{}' is not YYYY-MM-DD", candidate.date))?;
-    if let Some(time) = &candidate.time {
-        NaiveTime::parse_from_str(time, "%H:%M")
-            .map_err(|_| format!("candidate time '{time}' is not HH:MM"))?;
-    }
+/// Checks one new candidate and returns it normalised: `date` as
+/// `YYYY-MM-DD` and `time` as `HH:MM` (zero-padded, so `2026-1-5` and `9:5`
+/// become `2026-01-05` and `09:05`), text folded to one non-empty line. Use
+/// it to drop bad lines before [`add_candidates`], which rejects a whole
+/// batch if any one is invalid.
+#[allow(dead_code)] // first used by issue #313 (scheduled candidate run)
+pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandidate> {
+    let date = NaiveDate::parse_from_str(&candidate.date, "%Y-%m-%d")
+        .map_err(|_| ActivityError::InvalidDate(candidate.date.clone()))?;
+    let time = match &candidate.time {
+        Some(time) => Some(
+            NaiveTime::parse_from_str(time, "%H:%M")
+                .map_err(|_| ActivityError::InvalidTime(time.clone()))?
+                .format("%H:%M")
+                .to_string(),
+        ),
+        None => None,
+    };
     let text = candidate
         .text
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     if text.is_empty() {
-        return Err("candidate text is empty".to_string());
+        return Err(ActivityError::EmptyText);
     }
-    Ok((text, candidate.time.clone()))
+    Ok(NewCandidate {
+        date: date.format("%Y-%m-%d").to_string(),
+        time,
+        text,
+        source: candidate.source,
+    })
 }
 
 /// Adds candidates (all pending) and returns them with their new ids.
 /// Nothing is written if any candidate is invalid.
 #[allow(dead_code)] // first used by issue #313 (scheduled candidate run)
-pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> Result<Vec<Candidate>, String> {
+pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> ActivityResult<Vec<Candidate>> {
     let now = Local::now();
     let mut added = Vec::with_capacity(new.len());
     for candidate in &new {
-        let (text, time) = validate_new(candidate)?;
+        let valid = validate_candidate(candidate)?;
         added.push(Candidate {
             id: uuid::Uuid::new_v4().to_string(),
-            date: candidate.date.clone(),
-            time,
-            text,
-            source: candidate.source,
+            date: valid.date,
+            time: valid.time,
+            text: valid.text,
+            source: valid.source,
             state: CandidateState::Pending,
             created_at: stamp(now),
         });
@@ -279,7 +413,7 @@ pub async fn set_candidate_state(
     dir: &Path,
     id: &str,
     state: CandidateState,
-) -> Result<Candidate, String> {
+) -> ActivityResult<Candidate> {
     let now = Utc::now();
     let launch = current_launch_id();
     let _guard = FILE_LOCK.lock().await;
@@ -288,7 +422,7 @@ pub async fn set_candidate_state(
         .candidates
         .iter_mut()
         .find(|c| c.id == id)
-        .ok_or_else(|| format!("no work journal candidate with id {id}"))?;
+        .ok_or_else(|| ActivityError::CandidateNotFound(id.to_string()))?;
     candidate.state = state;
     let updated = candidate.clone();
     save(dir, &mut file, now, launch).await?;
@@ -297,7 +431,7 @@ pub async fn set_candidate_state(
 
 /// Every candidate (pending and rejected) for one `YYYY-MM-DD` date.
 #[allow(dead_code)] // first used by issues #313 and #314
-pub async fn list_candidates(dir: &Path, date: &str) -> Result<Vec<Candidate>, String> {
+pub async fn list_candidates(dir: &Path, date: &str) -> ActivityResult<Vec<Candidate>> {
     let _guard = FILE_LOCK.lock().await;
     let file = load(dir, Utc::now(), current_launch_id()).await?;
     Ok(file
@@ -307,34 +441,43 @@ pub async fn list_candidates(dir: &Path, date: &str) -> Result<Vec<Candidate>, S
         .collect())
 }
 
-/// Terminal records that were open at any moment in `[from, to]`: opened by
-/// `to`, and not closed before `from` (a record with no close counts as
-/// still running).
+/// Whether a record was running at some moment in the half-open window
+/// `[start, end)`: the record covers `[opened, closed)`, or is still running
+/// with no close. A record that opens and closes in the same second is a
+/// point at its open time. A terminal closed exactly on a window boundary is
+/// therefore listed in one window only.
+fn in_window(record: &TerminalRecord, start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
+    let Some(opened) = parse_stamp(&record.opened_at) else {
+        return false;
+    };
+    match record.closed_at.as_deref() {
+        None => opened < end,
+        Some(closed) => match parse_stamp(closed) {
+            Some(closed) if closed > opened => opened < end && closed > start,
+            Some(_) => start <= opened && opened < end,
+            None => false,
+        },
+    }
+}
+
+/// Terminal records that were running at any moment in `[start, end)`.
 #[allow(dead_code)] // first used by issue #308 (activity time window)
 pub async fn list_terminal_records(
     dir: &Path,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-) -> Result<Vec<TerminalRecord>, String> {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> ActivityResult<Vec<TerminalRecord>> {
     let _guard = FILE_LOCK.lock().await;
     let file = load(dir, Utc::now(), current_launch_id()).await?;
     Ok(file
         .terminals
         .into_iter()
-        .filter(|t| {
-            let opened_by_end = parse_stamp(&t.opened_at).is_some_and(|o| o <= to);
-            let open_at_start = match t.closed_at.as_deref() {
-                None => true,
-                Some(c) => parse_stamp(c).is_some_and(|c| c >= from),
-            };
-            opened_by_end && open_at_start
-        })
+        .filter(|t| in_window(t, start, end))
         .collect())
 }
 
-/// Records a terminal opening. If its close was already recorded (the close
-/// raced ahead of this write), only the open time and any missing details
-/// are filled in.
+/// Records a terminal opening. A record that already exists for this
+/// session is left untouched, so a closed record is never reopened.
 async fn record_opened(
     dir: &Path,
     launch: &str,
@@ -342,78 +485,72 @@ async fn record_opened(
     project_name: String,
     branch: Option<String>,
     opened_at: DateTime<Local>,
-) -> Result<(), String> {
+) -> ActivityResult<()> {
     let now = Utc::now();
     let _guard = FILE_LOCK.lock().await;
     let mut file = load(dir, now, launch).await?;
-    match file
+    if file
         .terminals
-        .iter_mut()
-        .find(|t| t.launch_id == launch && t.session_id == session_id)
+        .iter()
+        .any(|t| t.launch_id == launch && t.session_id == session_id)
     {
-        Some(existing) => {
-            existing.opened_at = stamp(opened_at);
-            if existing.project_name == UNKNOWN_PROJECT {
-                existing.project_name = project_name;
-            }
-            if existing.branch.is_none() {
-                existing.branch = branch;
-            }
-        }
-        None => file.terminals.push(TerminalRecord {
-            id: uuid::Uuid::new_v4().to_string(),
-            launch_id: launch.to_string(),
-            session_id,
-            project_name,
-            branch,
-            opened_at: stamp(opened_at),
-            closed_at: None,
-        }),
+        return Ok(());
     }
+    file.terminals.push(TerminalRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        launch_id: launch.to_string(),
+        session_id,
+        project_name,
+        branch,
+        opened_at: stamp(opened_at),
+        closed_at: None,
+    });
     save(dir, &mut file, now, launch).await
 }
 
-/// Records a terminal closing. `project_path` and `branch` come from the
-/// session registry when it still knows the session; they replace what was
-/// guessed at open time. A close with no open record creates one that opens
-/// and closes at the same moment.
+/// Fills in a record's branch from git once it answers, if it still has
+/// none. Never touches the close time.
+async fn record_branch(
+    dir: &Path,
+    launch: &str,
+    session_id: u32,
+    branch: String,
+) -> ActivityResult<()> {
+    let now = Utc::now();
+    let _guard = FILE_LOCK.lock().await;
+    let mut file = load(dir, now, launch).await?;
+    let Some(record) = file
+        .terminals
+        .iter_mut()
+        .find(|t| t.launch_id == launch && t.session_id == session_id && t.branch.is_none())
+    else {
+        return Ok(());
+    };
+    record.branch = Some(branch);
+    save(dir, &mut file, now, launch).await
+}
+
+/// Records a terminal closing; `branch` comes from the session registry
+/// when it still knows one. Does nothing when no open record exists.
 async fn record_closed(
     dir: &Path,
     launch: &str,
     session_id: u32,
-    project_path: Option<&str>,
     branch: Option<String>,
     closed_at: DateTime<Local>,
-) -> Result<(), String> {
+) -> ActivityResult<()> {
     let now = Utc::now();
     let _guard = FILE_LOCK.lock().await;
     let mut file = load(dir, now, launch).await?;
-    let index = match file
+    let Some(record) = file
         .terminals
-        .iter()
-        .position(|t| t.launch_id == launch && t.session_id == session_id)
-    {
-        Some(index) => index,
-        None => {
-            file.terminals.push(TerminalRecord {
-                id: uuid::Uuid::new_v4().to_string(),
-                launch_id: launch.to_string(),
-                session_id,
-                project_name: UNKNOWN_PROJECT.to_string(),
-                branch: None,
-                opened_at: stamp(closed_at),
-                closed_at: None,
-            });
-            file.terminals.len() - 1
-        }
+        .iter_mut()
+        .find(|t| t.launch_id == launch && t.session_id == session_id && t.closed_at.is_none())
+    else {
+        log::debug!("work journal: no open record for terminal {session_id}; nothing to close");
+        return Ok(());
     };
-    let record = &mut file.terminals[index];
-    if record.closed_at.is_none() {
-        record.closed_at = Some(stamp(closed_at));
-    }
-    if let Some(path) = project_path {
-        record.project_name = project_name_from_path(path);
-    }
+    record.closed_at = Some(stamp(closed_at));
     if branch.is_some() {
         record.branch = branch;
     }
@@ -426,7 +563,7 @@ async fn record_all_closed(
     dir: &Path,
     launch: &str,
     closed_at: DateTime<Local>,
-) -> Result<(), String> {
+) -> ActivityResult<()> {
     let now = Utc::now();
     let _guard = FILE_LOCK.lock().await;
     let mut file = load(dir, now, launch).await?;
@@ -445,71 +582,60 @@ async fn record_all_closed(
     Ok(())
 }
 
-/// Project name and branch for a terminal's working directory, from git: the
-/// project is the folder holding the shared `.git` (so a worktree reports
-/// its main repo, not the worktree folder) and the branch is the checked-out
-/// one. Outside a git repo, the folder name and no branch.
-async fn resolve_project_and_branch(cwd: &str) -> (String, Option<String>) {
-    let git = Git::new(cwd);
-    let branch = git.current_branch().await.ok().filter(|b| !b.is_empty());
-    let project = match git.run(&["rev-parse", "--git-common-dir"]).await {
-        Ok(output) => {
-            let common = Path::new(cwd).join(output.trimmed());
-            canonical_key(&common).ok().and_then(|common| {
-                let common = Path::new(&common);
-                (common.file_name()? == ".git")
-                    .then(|| common.parent())
-                    .flatten()
-                    .map(|repo| project_name_from_path(&repo.to_string_lossy()))
-            })
-        }
-        Err(_) => None,
-    };
-    (
-        project.unwrap_or_else(|| project_name_from_path(cwd)),
-        branch,
-    )
+/// The checked-out git branch in `dir`, or `None` outside git.
+async fn resolve_branch(dir: &str) -> Option<String> {
+    Git::new(dir)
+        .current_branch()
+        .await
+        .ok()
+        .filter(|b| !b.is_empty())
 }
 
-/// Notes a newly spawned terminal in the background, so a launch is never
-/// delayed or failed by the journal; errors are only logged.
-pub fn note_terminal_opened(session_id: u32, cwd: Option<String>) {
-    let opened_at = Local::now();
+/// Notes a newly registered terminal. The open record is written first
+/// (name from the session's project path, branch from the session if set),
+/// so a close that follows always finds it; when the session has no branch,
+/// git is asked in the background and the record updated when it answers.
+/// Errors are only logged: a launch never fails because of the journal.
+pub async fn note_terminal_opened(config: &SessionConfig) {
+    let session_id = config.id;
+    let opened = record_opened(
+        &activity_dir(),
+        current_launch_id(),
+        session_id,
+        project_name_from_path(&config.project_path),
+        config.branch.clone(),
+        Local::now(),
+    )
+    .await;
+    if let Err(e) = opened {
+        log::warn!("work journal: could not record terminal {session_id} opening: {e}");
+        return;
+    }
+    if config.branch.is_some() {
+        return;
+    }
+    let cwd = config
+        .working_directory
+        .clone()
+        .unwrap_or_else(|| config.project_path.clone());
     tauri::async_runtime::spawn(async move {
-        let (project, branch) = match cwd.as_deref() {
-            Some(dir) => resolve_project_and_branch(dir).await,
-            None => (UNKNOWN_PROJECT.to_string(), None),
+        let Some(branch) = resolve_branch(&cwd).await else {
+            return;
         };
-        let launch = current_launch_id();
-        if let Err(e) = record_opened(
-            &activity_dir(),
-            launch,
-            session_id,
-            project,
-            branch,
-            opened_at,
-        )
-        .await
+        if let Err(e) =
+            record_branch(&activity_dir(), current_launch_id(), session_id, branch).await
         {
-            log::warn!("work journal: could not record terminal {session_id} opening: {e}");
+            log::warn!("work journal: could not record terminal {session_id} branch: {e}");
         }
     });
 }
 
 /// Notes a killed terminal in the background; errors are only logged.
-pub fn note_terminal_closed(session_id: u32, project_path: Option<String>, branch: Option<String>) {
+pub fn note_terminal_closed(session_id: u32, branch: Option<String>) {
     let closed_at = Local::now();
     tauri::async_runtime::spawn(async move {
         let launch = current_launch_id();
-        if let Err(e) = record_closed(
-            &activity_dir(),
-            launch,
-            session_id,
-            project_path.as_deref(),
-            branch,
-            closed_at,
-        )
-        .await
+        if let Err(e) = record_closed(&activity_dir(), launch, session_id, branch, closed_at).await
         {
             log::warn!("work journal: could not record terminal {session_id} closing: {e}");
         }
@@ -549,6 +675,14 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(file_path(dir)).unwrap()).unwrap()
     }
 
+    fn set_mtime(dir: &Path, at: DateTime<Local>) {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(file_path(dir))
+            .unwrap();
+        file.set_modified(at.into()).unwrap();
+    }
+
     fn terminal(
         launch: &str,
         session_id: u32,
@@ -570,6 +704,18 @@ mod tests {
         stamp(Local::now() - Duration::hours(hours))
     }
 
+    fn candidate_created(id: &str, created_at: &str) -> Candidate {
+        Candidate {
+            id: id.into(),
+            date: "2026-10-14".into(),
+            time: Some("09:00".into()),
+            text: "t".into(),
+            source: CandidateSource::Git,
+            state: CandidateState::Pending,
+            created_at: created_at.into(),
+        }
+    }
+
     #[test]
     fn test_project_name_strips_extended_prefix_and_trailing_separator() {
         assert_eq!(project_name_from_path(r"\\?\C:\git\maestro"), "maestro");
@@ -583,26 +729,13 @@ mod tests {
     async fn test_terminal_spawned_then_killed_leaves_one_full_record() {
         let dir = tempdir().unwrap();
         let opened = Local::now() - Duration::minutes(10);
-        record_opened(
-            dir.path(),
-            LAUNCH,
-            7,
-            "guess".into(),
-            Some("feat/x".into()),
-            opened,
-        )
-        .await
-        .unwrap();
-        record_closed(
-            dir.path(),
-            LAUNCH,
-            7,
-            Some(r"\\?\C:\git\maestro"),
-            None,
-            Local::now(),
-        )
-        .await
-        .unwrap();
+        let name = project_name_from_path(r"\\?\C:\git\maestro");
+        record_opened(dir.path(), LAUNCH, 7, name, Some("feat/x".into()), opened)
+            .await
+            .unwrap();
+        record_closed(dir.path(), LAUNCH, 7, None, Local::now())
+            .await
+            .unwrap();
 
         let file = read_raw(dir.path());
         assert_eq!(file.terminals.len(), 1);
@@ -614,7 +747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_close_uses_registry_branch_when_known() {
+    async fn test_close_uses_registry_branch_and_keeps_the_name() {
         let dir = tempdir().unwrap();
         record_opened(
             dir.path(),
@@ -626,47 +759,44 @@ mod tests {
         )
         .await
         .unwrap();
-        record_closed(
-            dir.path(),
-            LAUNCH,
-            1,
-            None,
-            Some("feat/y".into()),
-            Local::now(),
-        )
-        .await
-        .unwrap();
+        record_closed(dir.path(), LAUNCH, 1, Some("feat/y".into()), Local::now())
+            .await
+            .unwrap();
         let record = &read_raw(dir.path()).terminals[0];
         assert_eq!(record.branch.as_deref(), Some("feat/y"));
-        assert_eq!(
-            record.project_name, "p",
-            "no registry path keeps the open-time name"
-        );
+        assert_eq!(record.project_name, "p", "the name never changes at close");
     }
 
     #[tokio::test]
-    async fn test_close_racing_ahead_of_open_still_yields_one_record() {
+    async fn test_close_before_git_answers_still_ends_closed() {
         let dir = tempdir().unwrap();
-        let opened = Local::now() - Duration::seconds(5);
-        record_closed(dir.path(), LAUNCH, 3, Some("/x/proj"), None, Local::now())
+        record_opened(dir.path(), LAUNCH, 3, "proj".into(), None, Local::now())
             .await
             .unwrap();
-        record_opened(
-            dir.path(),
-            LAUNCH,
-            3,
-            "proj".into(),
-            Some("main".into()),
-            opened,
-        )
-        .await
-        .unwrap();
+        record_all_closed(dir.path(), LAUNCH, Local::now())
+            .await
+            .unwrap();
+        // git answers late; the late open must not reopen the record.
+        record_branch(dir.path(), LAUNCH, 3, "main".into())
+            .await
+            .unwrap();
+        record_opened(dir.path(), LAUNCH, 3, "proj".into(), None, Local::now())
+            .await
+            .unwrap();
         let file = read_raw(dir.path());
         assert_eq!(file.terminals.len(), 1);
         let record = &file.terminals[0];
-        assert_eq!(record.opened_at, stamp(opened));
         assert!(record.closed_at.is_some());
         assert_eq!(record.branch.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn test_close_for_unknown_terminal_creates_nothing() {
+        let dir = tempdir().unwrap();
+        record_closed(dir.path(), LAUNCH, 42, Some("main".into()), Local::now())
+            .await
+            .unwrap();
+        assert!(!file_path(dir.path()).exists());
     }
 
     #[tokio::test]
@@ -678,24 +808,22 @@ mod tests {
         record_opened(dir.path(), LAUNCH, 1, "b".into(), None, Local::now())
             .await
             .unwrap();
-        record_closed(dir.path(), LAUNCH, 1, None, None, Local::now())
+        record_closed(dir.path(), LAUNCH, 1, None, Local::now())
             .await
             .unwrap();
         let file = read_raw(dir.path());
         assert_eq!(file.terminals.len(), 2);
-        let old = file
+        let mine = file
             .terminals
             .iter()
-            .find(|t| t.launch_id == "old")
+            .find(|t| t.launch_id == LAUNCH)
             .unwrap();
-        assert!(
-            old.closed_at.is_none(),
-            "closing in this launch never touches another launch"
-        );
+        assert_eq!(mine.project_name, "b");
+        assert!(mine.closed_at.is_some());
     }
 
     #[tokio::test]
-    async fn test_close_all_closes_only_this_launch_open_records() {
+    async fn test_close_all_closes_this_launch_open_records() {
         let dir = tempdir().unwrap();
         let earlier = hours_ago(1);
         write_raw(
@@ -705,7 +833,6 @@ mod tests {
                 terminals: vec![
                     terminal(LAUNCH, 1, &earlier, None),
                     terminal(LAUNCH, 2, &earlier, Some(&earlier)),
-                    terminal("old", 1, &earlier, None),
                 ],
             },
         );
@@ -713,16 +840,68 @@ mod tests {
             .await
             .unwrap();
         let file = read_raw(dir.path());
-        let get = |launch: &str, id: u32| {
-            file.terminals
-                .iter()
-                .find(|t| t.launch_id == launch && t.session_id == id)
-                .unwrap()
-                .clone()
-        };
-        assert!(get(LAUNCH, 1).closed_at.is_some());
-        assert_eq!(get(LAUNCH, 2).closed_at.as_deref(), Some(earlier.as_str()));
-        assert!(get("old", 1).closed_at.is_none());
+        assert!(file.terminals[0].closed_at.is_some());
+        assert_eq!(
+            file.terminals[1].closed_at.as_deref(),
+            Some(earlier.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stale_open_record_from_another_launch_is_closed_at_file_mtime() {
+        let dir = tempdir().unwrap();
+        let last_write = Local::now() - Duration::hours(1);
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                candidates: vec![],
+                terminals: vec![
+                    terminal("crashed", 1, &hours_ago(3), None),
+                    terminal(current_launch_id(), 2, &hours_ago(3), None),
+                ],
+            },
+        );
+        set_mtime(dir.path(), last_write);
+
+        let start = (Local::now() - Duration::minutes(30)).with_timezone(&Utc);
+        let end = (Local::now() + Duration::minutes(1)).with_timezone(&Utc);
+        let listed = list_terminal_records(dir.path(), start, end).await.unwrap();
+        let sessions: Vec<u32> = listed.iter().map(|t| t.session_id).collect();
+        assert_eq!(sessions, vec![2], "the stale record is no longer running");
+
+        let file = read_raw(dir.path());
+        let stale = file.terminals.iter().find(|t| t.session_id == 1).unwrap();
+        let closed = parse_stamp(stale.closed_at.as_deref().unwrap()).unwrap();
+        let expected = last_write.with_timezone(&Utc);
+        assert!(
+            (closed - expected).num_seconds().abs() <= 1,
+            "closed at {closed}"
+        );
+        let current = file.terminals.iter().find(|t| t.session_id == 2).unwrap();
+        assert!(
+            current.closed_at.is_none(),
+            "this launch's record stays open"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stale_close_is_floored_at_the_open_time() {
+        let dir = tempdir().unwrap();
+        let opened = hours_ago(1);
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                candidates: vec![],
+                terminals: vec![terminal("crashed", 1, &opened, None)],
+            },
+        );
+        set_mtime(dir.path(), Local::now() - Duration::hours(2));
+        let _guard = FILE_LOCK.lock().await;
+        let file = load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert_eq!(
+            file.terminals[0].closed_at.as_deref(),
+            Some(opened.as_str())
+        );
     }
 
     #[test]
@@ -732,24 +911,8 @@ mod tests {
         let fresh = hours_ago(23);
         let mut file = ActivityFile {
             candidates: vec![
-                Candidate {
-                    id: "old".into(),
-                    date: "2026-10-14".into(),
-                    time: None,
-                    text: "t".into(),
-                    source: CandidateSource::Claude,
-                    state: CandidateState::Pending,
-                    created_at: old.clone(),
-                },
-                Candidate {
-                    id: "fresh".into(),
-                    date: "2026-10-14".into(),
-                    time: None,
-                    text: "t".into(),
-                    source: CandidateSource::Claude,
-                    state: CandidateState::Rejected,
-                    created_at: fresh.clone(),
-                },
+                candidate_created("old", &old),
+                candidate_created("fresh", &fresh),
             ],
             terminals: vec![
                 // Open in this launch for 30 hours: kept.
@@ -758,9 +921,9 @@ mod tests {
                 terminal(LAUNCH, 2, &hours_ago(30), Some(&old)),
                 // Opened long ago but closed recently: kept.
                 terminal(LAUNCH, 3, &hours_ago(30), Some(&fresh)),
-                // Left open by an earlier launch, opened 25 hours ago: pruned.
+                // Another launch, no close, opened 25 hours ago: pruned.
                 terminal("old", 4, &old, None),
-                // Left open by an earlier launch, opened recently: kept.
+                // Another launch, no close, opened recently: kept.
                 terminal("old", 5, &fresh, None),
                 // Unreadable time: pruned.
                 terminal("old", 6, "not a time", Some("not a time")),
@@ -800,16 +963,29 @@ mod tests {
         );
     }
 
-    fn candidate_created(id: &str, created_at: &str) -> Candidate {
-        Candidate {
-            id: id.into(),
-            date: "2026-10-14".into(),
-            time: Some("09:00".into()),
-            text: "t".into(),
-            source: CandidateSource::Git,
-            state: CandidateState::Pending,
-            created_at: created_at.into(),
-        }
+    #[tokio::test]
+    async fn test_load_returns_pruned_data_when_write_back_fails() {
+        let dir = tempdir().unwrap();
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                candidates: vec![candidate_created("old", &hours_ago(25))],
+                terminals: vec![],
+            },
+        );
+        // A folder where the temp file must go makes the write-back fail.
+        let tmp = dir
+            .path()
+            .join(format!("{ACTIVITY_FILE}.tmp.{}", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+
+        let _guard = FILE_LOCK.lock().await;
+        let file = load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert!(
+            file.candidates.is_empty(),
+            "the read still returns pruned data"
+        );
+        assert_eq!(read_raw(dir.path()).candidates.len(), 1, "the write failed");
     }
 
     #[tokio::test]
@@ -882,6 +1058,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_loose_date_and_time_are_stored_normalised() {
+        let dir = tempdir().unwrap();
+        let added = add_candidates(
+            dir.path(),
+            vec![new_candidate("2026-1-5", Some("9:5"), "x")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(added[0].date, "2026-01-05");
+        assert_eq!(added[0].time.as_deref(), Some("09:05"));
+        let listed = list_candidates(dir.path(), "2026-01-05").await.unwrap();
+        assert_eq!(listed.len(), 1, "an exact-string lookup finds it");
+    }
+
+    #[test]
+    fn test_validate_candidate_normalises_and_reports_each_problem() {
+        let ok =
+            validate_candidate(&new_candidate("2026-10-5", Some("7:00"), "  a \n b ")).unwrap();
+        assert_eq!(ok.date, "2026-10-05");
+        assert_eq!(ok.time.as_deref(), Some("07:00"));
+        assert_eq!(ok.text, "a b");
+        assert!(matches!(
+            validate_candidate(&new_candidate("15/10/2026", None, "x")),
+            Err(ActivityError::InvalidDate(_))
+        ));
+        assert!(matches!(
+            validate_candidate(&new_candidate("2026-10-15", Some("2pm"), "x")),
+            Err(ActivityError::InvalidTime(_))
+        ));
+        assert!(matches!(
+            validate_candidate(&new_candidate("2026-10-15", None, "   ")),
+            Err(ActivityError::EmptyText)
+        ));
+    }
+
+    #[tokio::test]
     async fn test_add_candidates_rejects_bad_input_and_writes_nothing() {
         let dir = tempdir().unwrap();
         for bad in [
@@ -907,11 +1119,10 @@ mod tests {
         assert_eq!(updated.state, CandidateState::Rejected);
         let listed = list_candidates(dir.path(), "2026-10-15").await.unwrap();
         assert_eq!(listed[0].state, CandidateState::Rejected);
-        assert!(
-            set_candidate_state(dir.path(), "nope", CandidateState::Pending)
-                .await
-                .is_err()
-        );
+        assert!(matches!(
+            set_candidate_state(dir.path(), "nope", CandidateState::Pending).await,
+            Err(ActivityError::CandidateNotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -919,42 +1130,73 @@ mod tests {
         let dir = tempdir().unwrap();
         // Use the current launch so the open record survives pruning.
         let launch = current_launch_id();
-        let now = Local::now();
-        let base = now - Duration::hours(12);
-        let rel = |h: i64| base + Duration::hours(h);
+        let base = Local::now() - Duration::hours(12);
+        let rel = |h: i64| stamp(base + Duration::hours(h));
         write_raw(
             dir.path(),
             &ActivityFile {
                 candidates: vec![],
                 terminals: vec![
                     // Before the window.
-                    terminal(launch, 1, &stamp(rel(0)), Some(&stamp(rel(1)))),
+                    terminal(launch, 1, &rel(0), Some(&rel(1))),
                     // Overlaps the window start.
-                    terminal(launch, 2, &stamp(rel(1)), Some(&stamp(rel(3)))),
+                    terminal(launch, 2, &rel(1), Some(&rel(3))),
                     // Inside the window.
-                    terminal(launch, 3, &stamp(rel(3)), Some(&stamp(rel(4)))),
+                    terminal(launch, 3, &rel(3), Some(&rel(4))),
                     // Still open.
-                    terminal(launch, 4, &stamp(rel(4)), None),
+                    terminal(launch, 4, &rel(4), None),
                     // After the window.
-                    terminal(launch, 5, &stamp(rel(6)), Some(&stamp(rel(7)))),
+                    terminal(launch, 5, &rel(6), Some(&rel(7))),
                 ],
             },
         );
-        let from = rel(2).with_timezone(&Utc);
-        let to = rel(5).with_timezone(&Utc);
-        let records = list_terminal_records(dir.path(), from, to).await.unwrap();
+        let start = (base + Duration::hours(2)).with_timezone(&Utc);
+        let end = (base + Duration::hours(5)).with_timezone(&Utc);
+        let records = list_terminal_records(dir.path(), start, end).await.unwrap();
         let sessions: Vec<u32> = records.iter().map(|t| t.session_id).collect();
         assert_eq!(sessions, vec![2, 3, 4]);
     }
 
+    #[test]
+    fn test_window_is_half_open_at_the_boundaries() {
+        // Whole seconds, the precision the file stores.
+        let t = parse_stamp(&hours_ago(2)).unwrap().with_timezone(&Local);
+        let boundary = t.with_timezone(&Utc);
+        let before = (t - Duration::hours(1)).with_timezone(&Utc);
+        let after = (t + Duration::hours(1)).with_timezone(&Utc);
+        let earlier = stamp(t - Duration::minutes(30));
+        let later = stamp(t + Duration::minutes(30));
+
+        // Closed exactly on the boundary: only the earlier window.
+        let closed_on = terminal(LAUNCH, 1, &earlier, Some(&stamp(t)));
+        assert!(in_window(&closed_on, before, boundary));
+        assert!(!in_window(&closed_on, boundary, after));
+
+        // Opened exactly on the boundary: only the later window.
+        let opened_on = terminal(LAUNCH, 2, &stamp(t), Some(&later));
+        assert!(!in_window(&opened_on, before, boundary));
+        assert!(in_window(&opened_on, boundary, after));
+
+        // Opened and closed in the same second, on the boundary: one window.
+        let point = terminal(LAUNCH, 3, &stamp(t), Some(&stamp(t)));
+        assert!(!in_window(&point, before, boundary));
+        assert!(in_window(&point, boundary, after));
+    }
+
     #[tokio::test]
-    async fn test_corrupt_file_is_treated_as_empty() {
+    async fn test_damaged_file_is_set_aside_and_treated_as_empty() {
         let dir = tempdir().unwrap();
+        let damaged = dir.path().join(DAMAGED_FILE);
+        std::fs::write(&damaged, "an older damaged copy").unwrap();
         std::fs::write(file_path(dir.path()), "{ not json").unwrap();
+
         assert!(list_candidates(dir.path(), "2026-10-15")
             .await
             .unwrap()
             .is_empty());
+        assert_eq!(std::fs::read_to_string(&damaged).unwrap(), "{ not json");
+        assert!(!file_path(dir.path()).exists());
+
         add_candidates(dir.path(), vec![new_candidate("2026-10-15", None, "x")])
             .await
             .unwrap();
@@ -963,15 +1205,9 @@ mod tests {
 
     #[test]
     fn test_serialized_shape_uses_lowercase_tags_and_omits_empty_fields() {
-        let candidate = Candidate {
-            id: "c".into(),
-            date: "2026-10-15".into(),
-            time: None,
-            text: "t".into(),
-            source: CandidateSource::Github,
-            state: CandidateState::Pending,
-            created_at: "2026-10-15T10:00:00+01:00".into(),
-        };
+        let mut candidate = candidate_created("c", "2026-10-15T10:00:00+01:00");
+        candidate.source = CandidateSource::Github;
+        candidate.time = None;
         let json = serde_json::to_value(&candidate).unwrap();
         assert_eq!(json["source"], "github");
         assert_eq!(json["state"], "pending");
@@ -992,7 +1228,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_reports_main_repo_name_for_a_worktree() {
+    async fn test_resolve_branch_reads_the_checked_out_branch() {
         let root = tempdir().unwrap();
         let repo = root.path().join("myrepo");
         std::fs::create_dir(&repo).unwrap();
@@ -1016,23 +1252,16 @@ mod tests {
             &["worktree", "add", "-q", "-b", "feat/wt", "../wt-folder"],
         );
 
-        let (project, branch) = resolve_project_and_branch(&repo.to_string_lossy()).await;
-        assert_eq!(project, "myrepo");
+        let branch = resolve_branch(&repo.to_string_lossy()).await;
         assert_eq!(branch.as_deref(), Some("main"));
-
         let wt = root.path().join("wt-folder");
-        let (project, branch) = resolve_project_and_branch(&wt.to_string_lossy()).await;
-        assert_eq!(project, "myrepo", "a worktree reports its main repo");
+        let branch = resolve_branch(&wt.to_string_lossy()).await;
         assert_eq!(branch.as_deref(), Some("feat/wt"));
     }
 
     #[tokio::test]
-    async fn test_resolve_outside_git_uses_folder_name() {
+    async fn test_resolve_branch_outside_git_is_none() {
         let root = tempdir().unwrap();
-        let plain = root.path().join("plain-folder");
-        std::fs::create_dir(&plain).unwrap();
-        let (project, branch) = resolve_project_and_branch(&plain.to_string_lossy()).await;
-        assert_eq!(project, "plain-folder");
-        assert_eq!(branch, None);
+        assert_eq!(resolve_branch(&root.path().to_string_lossy()).await, None);
     }
 }
