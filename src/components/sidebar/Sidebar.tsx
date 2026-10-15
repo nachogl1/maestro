@@ -28,7 +28,6 @@ import {
   Square,
   Store,
   Sun,
-  Syringe,
   Trash2,
   User,
   Wrench,
@@ -61,7 +60,6 @@ import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ContextAlertSection } from "./ContextAlertSection";
 import { HistorySection } from "./HistorySection";
-import { InjectorSection } from "./InjectorSection";
 import { NotificationsSettingsSection } from "./NotificationsSettingsSection";
 import {
   badgeBaseClass,
@@ -265,13 +263,12 @@ export function Sidebar({
 /*  TAB BAR                                                          */
 /* ================================================================ */
 
-export type SidebarTabId = "history" | "infra" | "settings" | "inject";
+export type SidebarTabId = "history" | "infra" | "settings";
 
 export const SIDEBAR_TABS: { id: SidebarTabId; label: string; icon: React.ElementType }[] = [
   { id: "history", label: "History", icon: History },
   { id: "infra", label: "Infra", icon: Package },
   { id: "settings", label: "Settings", icon: Settings },
-  { id: "inject", label: "Inject", icon: Syringe },
 ];
 
 const SIDEBAR_TAB_STORAGE_KEY = "maestro-sidebar-tab";
@@ -286,7 +283,7 @@ export function saveSidebarTab(tab: SidebarTabId): void {
 }
 
 /**
- * State transition for the Alt+1-4 sidebar shortcuts: closed → open on that
+ * State transition for the Alt+1-3 sidebar shortcuts: closed → open on that
  * tab; open on that tab already → close; open on another tab → switch.
  * Returns null when the index doesn't name a tab.
  */
@@ -365,9 +362,6 @@ function ConfigTab({
       // takes: History reuses it to reach a conversation that is already
       // running, instead of dropping it from the list.
       return <HistorySection onLaunch={onHistoryLaunch} onNavigate={onAgentNavigate} />;
-    case "inject":
-      // Injector: one message typed + submitted into every ticked terminal.
-      return <InjectorSection />;
     case "infra":
       return (
         <>

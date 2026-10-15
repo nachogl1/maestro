@@ -23,6 +23,8 @@ pub(crate) fn run_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
     // This prevents status pollution between different app instances
     let instance_id = uuid::Uuid::new_v4().to_string();
     log::info!("Maestro instance ID: {}", instance_id);
+    #[cfg(windows)]
+    crate::core::cli_path::log_adopted_path();
 
     let (event_bus, tees) = events::build_event_bus(app);
     terminal::setup_terminal(app, instance_id, event_bus, &tees)?;

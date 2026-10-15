@@ -33,7 +33,7 @@ function renderAppKeyboard(overrides: Partial<Parameters<typeof useAppKeyboard>[
 // regardless of what isMac() reports for the test environment.
 const MOD = { ctrlKey: true, metaKey: true };
 
-describe("useAppKeyboard sidebar tabs (Alt+1-4)", () => {
+describe("useAppKeyboard sidebar tabs (Alt+1-3) and the Injector panel (Alt+4)", () => {
   it("fires onSidebarTab with the pressed tab index", () => {
     const { onSidebarTab } = renderAppKeyboard();
 
@@ -42,7 +42,15 @@ describe("useAppKeyboard sidebar tabs (Alt+1-4)", () => {
       expect(ev.defaultPrevented).toBe(true);
     }
 
-    expect(onSidebarTab.mock.calls.map((c) => c[0])).toEqual([1, 2, 3, 4]);
+    expect(onSidebarTab.mock.calls.map((c) => c[0])).toEqual([1, 2, 3]);
+  });
+
+  it("maps Alt+4 to the right-side Injector panel, not a sidebar tab", () => {
+    const { onSidebarTab, onToggleUtilityPanel } = renderAppKeyboard();
+    const ev = dispatch({ key: "4", code: "Digit4", altKey: true });
+    expect(ev.defaultPrevented).toBe(true);
+    expect(onToggleUtilityPanel.mock.calls.map((c) => c[0])).toEqual(["inject"]);
+    expect(onSidebarTab).not.toHaveBeenCalled();
   });
 
   it("ignores numpad digits so Windows Alt-code entry keeps working", () => {

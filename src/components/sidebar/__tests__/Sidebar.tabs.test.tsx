@@ -177,9 +177,9 @@ describe("Sidebar tab bar", () => {
     useSessionSummaryStore.setState({ entries: {} });
   });
 
-  it("renders the four tabs with History active by default", () => {
+  it("renders the three tabs with History active by default", () => {
     render(<ControlledSidebar />);
-    for (const label of ["History", "Infra", "Settings", "Inject"]) {
+    for (const label of ["History", "Infra", "Settings"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     // The General tab is gone: its Agents + Git Repository cards live under Settings.
@@ -483,11 +483,8 @@ describe("sidebarTabShortcutTransition (Alt+1-4 toggle semantics)", () => {
     });
   });
 
-  it("opens the Inject tab on index 4", () => {
-    expect(sidebarTabShortcutTransition(true, "history", 4)).toEqual({
-      open: true,
-      tab: "inject",
-    });
+  it("names no tab on index 4 (the Injector moved to the right-side panels)", () => {
+    expect(sidebarTabShortcutTransition(true, "history", 4)).toBeNull();
   });
 
   it("returns null for an index that names no tab", () => {
