@@ -43,7 +43,7 @@ describe("defaultAgentName", () => {
 });
 
 describe("agentTitleUpdates", () => {
-  const live = [{ session_id: "conv-1", name: "maestro-42" }];
+  const live = [{ session_id: "conv-1", name: "maestro-42", maestro_session: null }];
 
   it("renames a title that differs from the live agent name", () => {
     const lastSeen = new Map<number, string>();
@@ -61,7 +61,7 @@ describe("agentTitleUpdates", () => {
     const pending = [{ sessionId: 1, title: "reviewer", conversationId: "conv-1" }];
     expect(agentTitleUpdates(pending, live, lastSeen)).toEqual([]);
     // Claude resolved a collision by picking another name: follow it.
-    const applied = [{ session_id: "conv-1", name: "reviewer-2" }];
+    const applied = [{ session_id: "conv-1", name: "reviewer-2", maestro_session: null }];
     expect(agentTitleUpdates(pending, applied, lastSeen)).toEqual([
       { sessionId: 1, name: "reviewer-2" },
     ]);
@@ -77,5 +77,33 @@ describe("agentTitleUpdates", () => {
       new Map(),
     );
     expect(updates).toEqual([]);
+  });
+
+  it("matches a terminal by process tree when no conversation id was ever reported", () => {
+    // No SessionStart hook fired (hooks config missing, or claude typed by
+    // hand), so the terminal knows no conversation id — the backend still
+    // says which terminal the claude process runs in.
+    const placed = [{ session_id: "conv-9", name: "main-57d2975f-92", maestro_session: 3 }];
+    const updates = agentTitleUpdates(
+      [{ sessionId: 3, title: "maestro-51", conversationId: undefined }],
+      placed,
+      new Map(),
+    );
+    expect(updates).toEqual([{ sessionId: 3, name: "main-57d2975f-92" }]);
+  });
+
+  it("prefers the process-tree match over a stale conversation id", () => {
+    // The terminal's last known conversation belongs to a claude that has
+    // since been replaced by another one in the same terminal.
+    const two = [
+      { session_id: "conv-old", name: "old-agent", maestro_session: null },
+      { session_id: "conv-new", name: "new-agent", maestro_session: 3 },
+    ];
+    const updates = agentTitleUpdates(
+      [{ sessionId: 3, title: "old-agent", conversationId: "conv-old" }],
+      two,
+      new Map(),
+    );
+    expect(updates).toEqual([{ sessionId: 3, name: "new-agent" }]);
   });
 });
