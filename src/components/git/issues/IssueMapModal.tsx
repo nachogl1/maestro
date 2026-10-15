@@ -9,6 +9,7 @@ import {
   ENCODING_EXPLANATION,
   EPICS_COLUMN,
   edgeKey,
+  explainProblem,
   HINT,
   type IssueMapKind,
   type IssueMapNode,
@@ -27,12 +28,13 @@ import {
   MAP_NODE_H,
   MAP_NODE_W,
   nodeText,
+  PROBLEMS_EXPLANATION,
   packIssueMap,
-  problemText,
   START_HIDDEN_KINDS,
   START_HIDDEN_STATUSES,
   STATUS_META,
   STATUS_ORDER,
+  titleLookup,
   walk,
 } from "@/lib/issueMap";
 import { buildIssueMapHtml } from "@/lib/issueMapHtml";
@@ -247,6 +249,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   }, [isLoading, error]);
 
   const map = useMemo(() => buildIssueMap(issues, links), [issues, links]);
+  const titleOf = useMemo(() => titleLookup(map.nodes), [map.nodes]);
   const byNumber = useMemo(() => new Map(map.nodes.map((n) => [n.number, n])), [map]);
 
   const logins = useMemo(() => {
@@ -915,15 +918,23 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           {map.problems.length === 0 ? (
             <span data-testid="issue-map-problems"> No data problems.</span>
           ) : (
-            <details data-testid="issue-map-problems" className="mt-1">
-              <summary className="cursor-pointer">
-                {map.problems.length} data problem{map.problems.length === 1 ? "" : "s"} (links
-                dropped or sources disagreeing)
+            <details data-testid="issue-map-problems" className="mt-1" open>
+              <summary className="cursor-pointer font-semibold text-maestro-yellow">
+                ⚠ {map.problems.length} data problem{map.problems.length === 1 ? "" : "s"}:{" "}
+                {PROBLEMS_EXPLANATION}
               </summary>
-              <ul className="mt-1 max-h-24 list-disc overflow-auto pl-4">
+              <ul className="mt-1 max-h-40 list-disc overflow-auto pl-4">
                 {map.problems.map((p) => {
-                  const text = problemText(p);
-                  return <li key={text}>{text}</li>;
+                  const { headline, effect, fix } = explainProblem(p, titleOf);
+                  return (
+                    <li key={headline} className="mb-1">
+                      <span className="text-maestro-text">{headline}</span>
+                      <br />
+                      {effect}
+                      <br />
+                      <span className="text-maestro-text">Fix:</span> {fix}
+                    </li>
+                  );
                 })}
               </ul>
             </details>

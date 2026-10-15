@@ -553,26 +553,117 @@ export function descriptionText(body: string): string {
   return truncate(text, DESCRIPTION_MAX);
 }
 
-const list = (numbers: number[]) => numbers.map((n) => `#${n}`).join(", ");
+/** What the footer's data-problem line says after the count. */
+export const PROBLEMS_EXPLANATION =
+  'some "blocked by" links could not be drawn, or two sources disagree. Each one says what ' +
+  "it changes on the map and how to fix it on GitHub.";
 
-/** One footer line per data problem; the modal and the export print the same. */
-export function problemText(problem: IssueLinkProblem): string {
+/** Looks up an issue's title for the problem texts; undefined when it is not on the map. */
+export type IssueTitleLookup = (number: number) => string | undefined;
+
+/** A plain-language account of one data problem, for the footer and the export. */
+export interface IssueProblemExplanation {
+  /** Which issue and what was found, one line. */
+  headline: string;
+  /** What the map did about it and what that changes on the map. */
+  effect: string;
+  /** What to change on GitHub so the problem goes away. */
+  fix: string;
+}
+
+/** The issues the map was built from, as a title lookup for the problem texts. */
+export function titleLookup(nodes: IssueMapNode[]): IssueTitleLookup {
+  const titles = new Map(nodes.map((n) => [n.number, n.title]));
+  return (number) => titles.get(number);
+}
+
+const NO_TITLE: IssueTitleLookup = () => undefined;
+
+/** `#12 "Its title"`, or just `#12` when the title is unknown. */
+const ref = (number: number, titleOf: IssueTitleLookup): string => {
+  const title = titleOf(number);
+  return title === undefined ? `#${number}` : `#${number} "${title}"`;
+};
+
+const list = (numbers: number[], titleOf: IssueTitleLookup) =>
+  numbers.map((n) => ref(n, titleOf)).join(", ");
+
+/**
+ * Explain one data problem in plain language: what was found, what the map did
+ * about it, and what fixes it on GitHub. The modal and the export print the same.
+ */
+export function explainProblem(
+  problem: IssueLinkProblem,
+  titleOf: IssueTitleLookup = NO_TITLE,
+): IssueProblemExplanation {
   switch (problem.kind) {
     case "disagreement": {
       const { number, sectionOnly, nativeOnly } = problem;
+      const issue = ref(number, titleOf);
+      const section = `the "### Blocked by" section in the body of ${issue}`;
+      let found: string;
       if (sectionOnly.length > 0 && nativeOnly.length > 0) {
-        return `#${number}: section says ${list(sectionOnly)}, GitHub says ${list(nativeOnly)}`;
+        found =
+          `${section} names ${list(sectionOnly, titleOf)} but GitHub's own blocked-by relation ` +
+          `does not, and the relation names ${list(nativeOnly, titleOf)} but the section does not`;
+      } else if (sectionOnly.length > 0) {
+        found = `${section} names ${list(sectionOnly, titleOf)} but GitHub's own blocked-by relation does not`;
+      } else {
+        found = `GitHub's own blocked-by relation of ${issue} names ${list(nativeOnly, titleOf)} but ${section} does not`;
       }
-      if (sectionOnly.length > 0) {
-        return `#${number}: section says ${list(sectionOnly)}, GitHub does not`;
-      }
-      return `#${number}: GitHub says ${list(nativeOnly)}, section does not`;
+      return {
+        headline: `${issue}: its two "blocked by" sources disagree`,
+        effect:
+          `${found}. The map keeps every blocker from either source, so nothing is missing ` +
+          "here, but one of the two sources is out of date.",
+        fix:
+          "On GitHub, make the section and the relation name the same blockers, or delete the " +
+          "section and keep only the relation.",
+      };
     }
-    case "epic":
-      return `#${problem.blocked}: blocked by epic #${problem.blocker}, link dropped`;
-    case "not-loaded":
-      return `#${problem.blocked}: blocked by #${problem.blocker} which was not loaded, link dropped`;
-    default:
-      return `#${problem.blocked}: blocked by #${problem.blocker} closes a cycle, link dropped`;
+    case "epic": {
+      const blocked = ref(problem.blocked, titleOf);
+      const blocker = ref(problem.blocker, titleOf);
+      return {
+        headline: `${blocked} is blocked by ${blocker}, which is an epic: link dropped`,
+        effect:
+          "Epics are containers, not work, so they sit in their own column and never block " +
+          `anything. Without this link ${blocked} may sit at a lower level than it should.`,
+        fix:
+          `On GitHub, block ${blocked} by the concrete issue inside the epic it really waits ` +
+          "for, and remove the link to the epic.",
+      };
+    }
+    case "not-loaded": {
+      const blocked = ref(problem.blocked, titleOf);
+      return {
+        headline: `${blocked} is blocked by #${problem.blocker}, which is not on the map: link dropped`,
+        effect:
+          `#${problem.blocker} is not among the issues the map loaded. It is probably a pull ` +
+          "request, an issue in another repository, a typo, or an issue beyond the " +
+          `${MAP_ISSUE_LIMIT}-issue load limit. Without this link ${blocked} may sit at a lower ` +
+          "level than it should.",
+        fix:
+          `Open #${problem.blocker} on GitHub. If it is a real issue of this repository, the ` +
+          "map hit its load limit; otherwise point the link at the right issue or remove it.",
+      };
+    }
+    default: {
+      const blocked = ref(problem.blocked, titleOf);
+      const blocker = ref(problem.blocker, titleOf);
+      return {
+        headline: `${blocked} is blocked by ${blocker}, which closes a loop: link dropped`,
+        effect:
+          `Following the blocked-by links from ${blocker} leads back to ${blocked}, so neither ` +
+          "could ever open. The map drops this one link to break the loop; the other links in " +
+          "the loop stay.",
+        fix: "Decide which of the two really goes first and remove the link that points the wrong way.",
+      };
+    }
   }
+}
+
+/** The one-line headline of a data problem (see `explainProblem`). */
+export function problemText(problem: IssueLinkProblem, titleOf?: IssueTitleLookup): string {
+  return explainProblem(problem, titleOf).headline;
 }

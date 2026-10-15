@@ -6,6 +6,7 @@ import {
   descriptionText,
   ENCODING_EXPLANATION,
   edgePath,
+  explainProblem,
   KIND_FILL,
   KIND_META,
   KIND_ORDER,
@@ -22,6 +23,7 @@ import {
   problemText,
   STATUS_META,
   statusIcon,
+  titleLookup,
   walk,
 } from "../issueMap";
 
@@ -220,27 +222,69 @@ describe("buildIssueMap", () => {
   });
 
   it("lists the dropped links and the disagreement as footer problems", () => {
-    expect(map.problems.map(problemText)).toEqual([
-      "#3: section says #2, #4, #9, GitHub does not",
-      "#3: blocked by epic #9, link dropped",
-      "#8: blocked by #77 which was not loaded, link dropped",
+    expect(map.problems.map((p) => problemText(p))).toEqual([
+      '#3: its two "blocked by" sources disagree',
+      "#3 is blocked by #9, which is an epic: link dropped",
+      "#8 is blocked by #77, which is not on the map: link dropped",
     ]);
     const disagree = buildIssueMap([issue({ number: 1 }), issue({ number: 2 })], {
       2: link({ number: 2, blockedBy: [1], body: "### Blocked by\n#1 #5" }),
     });
-    expect(disagree.problems.map(problemText)).toEqual([
-      "#2: section says #5, GitHub does not",
-      "#2: blocked by #5 which was not loaded, link dropped",
+    expect(disagree.problems.map((p) => problemText(p))).toEqual([
+      '#2: its two "blocked by" sources disagree',
+      "#2 is blocked by #5, which is not on the map: link dropped",
     ]);
     expect(
       problemText({ kind: "disagreement", number: 7, sectionOnly: [1, 2], nativeOnly: [3] }),
-    ).toBe("#7: section says #1, #2, GitHub says #3");
-    expect(problemText({ kind: "disagreement", number: 7, sectionOnly: [], nativeOnly: [3] })).toBe(
-      "#7: GitHub says #3, section does not",
-    );
+    ).toBe('#7: its two "blocked by" sources disagree');
     expect(problemText({ kind: "cycle", blocked: 1, blocker: 3 })).toBe(
-      "#1: blocked by #3 closes a cycle, link dropped",
+      "#1 is blocked by #3, which closes a loop: link dropped",
     );
+  });
+
+  it("explains each problem with titles, what it changes on the map and how to fix it", () => {
+    const titleOf = titleLookup(map.nodes);
+    const [disagreement, epic, notLoaded] = map.problems.map((p) => explainProblem(p, titleOf));
+    expect(disagreement.headline).toBe('#3 "Issue 3": its two "blocked by" sources disagree');
+    expect(disagreement.effect).toContain(
+      `the "### Blocked by" section in the body of #3 "Issue 3" names #2 "Second step with a very long title indeed", #4 "Decide the shape", #9 "Epic: everything" but GitHub's own blocked-by relation does not`,
+    );
+    expect(disagreement.effect).toContain("The map keeps every blocker from either source");
+    expect(disagreement.fix).toContain("make the section and the relation name the same blockers");
+
+    expect(epic.headline).toBe(
+      '#3 "Issue 3" is blocked by #9 "Epic: everything", which is an epic: link dropped',
+    );
+    expect(epic.effect).toContain("Epics are containers, not work");
+    expect(epic.fix).toContain('block #3 "Issue 3" by the concrete issue inside the epic');
+
+    expect(notLoaded.headline).toBe(
+      '#8 "Issue 8" is blocked by #77, which is not on the map: link dropped',
+    );
+    expect(notLoaded.effect).toContain("#77 is not among the issues the map loaded");
+    expect(notLoaded.effect).toContain("1000-issue load limit");
+    expect(notLoaded.fix).toContain("Open #77 on GitHub");
+
+    const both = explainProblem({
+      kind: "disagreement",
+      number: 7,
+      sectionOnly: [1],
+      nativeOnly: [3],
+    });
+    expect(both.effect).toContain(
+      "names #1 but GitHub's own blocked-by relation does not, and the relation names #3 but the section does not",
+    );
+    const nativeOnly = explainProblem({
+      kind: "disagreement",
+      number: 7,
+      sectionOnly: [],
+      nativeOnly: [3],
+    });
+    expect(nativeOnly.effect).toContain("GitHub's own blocked-by relation of #7 names #3 but the");
+
+    const cycle = explainProblem({ kind: "cycle", blocked: 1, blocker: 3 }, titleOf);
+    expect(cycle.effect).toContain("leads back to #1");
+    expect(cycle.fix).toContain("remove the link that points the wrong way");
   });
 
   it("drops the edge that closes a cycle and still levels the rest", () => {
