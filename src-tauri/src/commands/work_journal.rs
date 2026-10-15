@@ -220,7 +220,8 @@ fn skip_without_projects(projects: &[String]) -> Option<CandidateRunOutcome> {
 
 /// Runs the Work Journal candidate run over `projects` (their paths): the
 /// activity since `last_run_at` (or one interval back) becomes pending
-/// candidates, one headless `claude` call per date that has activity. Saves
+/// candidates, one headless `claude` call per date that has activity (with
+/// Granola on, per date of the window, see [`work_journal_run`]). Saves
 /// `last_run_at` and emits [`work_journal_run::CANDIDATES_EVENT`] when
 /// candidates were added. Only one run at a time; a second request while one
 /// runs gets `Busy`. With no projects nothing runs (`NoProjects`).
