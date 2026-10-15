@@ -28,9 +28,6 @@ vi.mock("@/hooks/useXtermSession", () => ({
 vi.mock("@/hooks/useSessionBranch", () => ({
   useSessionBranch: () => null,
 }));
-vi.mock("@/hooks/useBranchPullRequest", () => ({
-  useBranchPullRequest: () => null,
-}));
 vi.mock("@/lib/git", () => ({
   isGitWorktree: vi.fn(async () => false),
 }));
