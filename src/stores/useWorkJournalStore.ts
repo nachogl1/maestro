@@ -52,6 +52,12 @@ interface WorkJournalState {
   replacing: boolean;
   /** Reads the journal file. */
   load: () => Promise<void>;
+  /**
+   * Re-reads the journal after another window (or the backend) changed it;
+   * `replaced` when that was a restore or undo. No loading state, so the
+   * page stays on screen.
+   */
+  sync: (replaced: boolean) => Promise<void>;
   /** Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). */
   ensurePages: (today: string) => Promise<void>;
   selectDate: (date: string) => void;
@@ -100,6 +106,10 @@ export const WEEKEND_PAGE_BODY: JSONContent = {
  * body back into the store.
  */
 const pendingUpdates = new Map<string, number>();
+
+/** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
+let saveTick = 0;
+const lastLocalSave = new Map<string, number>();
 
 /**
  * The last queued backend write per date and field (`<date>:body`,
@@ -236,6 +246,27 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   revision: 0,
   replacing: false,
 
+  sync: async (replaced: boolean) => {
+    const tick = saveTick;
+    try {
+      const journal = await invoke<WorkJournalFile>("load_work_journal");
+      if (replaced) {
+        get().replaceJournal(journal);
+        return;
+      }
+      set((s) => {
+        const pages = mergePages(s.pages, journal.pages);
+        // A save made here after the read started is newer than the reply.
+        for (const [date, at] of lastLocalSave) {
+          if (at > tick && s.pages[date] && pages[date]) pages[date] = s.pages[date];
+        }
+        return { pages };
+      });
+    } catch (error) {
+      console.error("Failed to re-read the Work Journal:", error);
+    }
+  },
+
   load: async () => {
     set({ loading: true, error: null });
     try {
@@ -303,6 +334,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       return current ? { pages: { ...s.pages, [date]: { ...current, ...patch } } } : {};
     });
     pendingUpdates.set(date, (pendingUpdates.get(date) ?? 0) + 1);
+    saveTick += 1;
+    lastLocalSave.set(date, saveTick);
     let saved = false;
     const run = async (): Promise<void> => {
       try {

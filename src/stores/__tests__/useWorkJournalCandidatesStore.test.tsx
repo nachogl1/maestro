@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkJournalSuggestionsBadge } from "@/components/shared/WorkJournalSuggestionsBadge";
+import { WORK_JOURNAL_CHANGED_EVENT } from "@/lib/workJournalWindow";
 import {
   candidateLine,
   pendingTodayCount,
@@ -24,6 +25,9 @@ const TODAY = "2026-10-14";
 
 let candidates: WorkJournalCandidate[];
 let emit: ((event: { payload: { dates: string[]; added: number } }) => void) | null;
+let emitChanged:
+  | ((event: { payload: { source: string | null; replaced: boolean } }) => void)
+  | null;
 const unlisten = vi.fn();
 
 function candidate(
@@ -81,6 +85,7 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
       candidate("y", "2026-10-13"),
     ];
     emit = null;
+    emitChanged = null;
     unlisten.mockReset();
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
@@ -92,6 +97,10 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     });
     listenMock.mockReset();
     listenMock.mockImplementation(async (event, handler) => {
+      if (event === WORK_JOURNAL_CHANGED_EVENT) {
+        emitChanged = handler as typeof emitChanged;
+        return unlisten;
+      }
       expect(event).toBe(WORK_JOURNAL_CANDIDATES_EVENT);
       emit = handler as typeof emit;
       return unlisten;
@@ -179,6 +188,20 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     await settle();
     expect(useWorkJournalCandidatesStore.getState().today).toBe("2026-10-15");
     expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(1);
+  });
+
+  it("an accept or reject in the other window re-reads the loaded dates", async () => {
+    await start();
+    await act(async () => useWorkJournalCandidatesStore.getState().refresh("2026-10-13"));
+    expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toHaveLength(4);
+    candidates = candidates.filter((c) => c.id !== "a" && c.id !== "y");
+    await act(async () => {
+      emitChanged?.({ payload: { source: "work-journal", replaced: false } });
+    });
+    await settle();
+    expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toHaveLength(3);
+    expect(useWorkJournalCandidatesStore.getState().byDate["2026-10-13"]).toHaveLength(0);
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(2);
   });
 
   it("a restore or undo re-reads the loaded dates", async () => {

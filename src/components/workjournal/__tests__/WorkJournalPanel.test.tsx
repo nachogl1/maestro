@@ -1,8 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  WORK_JOURNAL_CHANGED_EVENT,
+  WORK_JOURNAL_WINDOW_LABEL,
+  type WorkJournalChangedPayload,
+} from "@/lib/workJournalWindow";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   EMPTY_PAGE_BODY,
@@ -13,8 +20,22 @@ import {
 import { WORK_JOURNAL_SAVE_DEBOUNCE_MS } from "../WorkJournalEditor";
 import { WorkJournalPanel } from "../WorkJournalPanel";
 
+vi.mock("@tauri-apps/api/event", () => ({
+  emitTo: vi.fn(() => Promise.resolve()),
+  listen: vi.fn(async () => () => {}),
+}));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => {
+  const WebviewWindow = vi.fn(function (this: { once: unknown }) {
+    this.once = vi.fn();
+  }) as unknown as { getByLabel: unknown };
+  WebviewWindow.getByLabel = vi.fn(async () => null);
+  return { WebviewWindow, getCurrentWebviewWindow: vi.fn(() => ({ label: "main" })) };
+});
+
 const invokeMock = vi.mocked(invoke);
 const askMock = vi.mocked(ask);
+const listenMock = vi.mocked(listen);
 
 /** In-memory stand-in for `work-journal.json` behind the Tauri commands. */
 let file: WorkJournalFile;
@@ -641,5 +662,94 @@ describe("WorkJournalPanel restore", () => {
 
     expect(callsTo("update_work_journal_page")).toHaveLength(1);
     expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Restored text and more");
+  });
+});
+
+describe("WorkJournalPanel and the pop-out window", () => {
+  const OTHER_BODY = {
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text: "Typed in the window" }] }],
+  };
+
+  /** Delivers a `work-journal:changed` event as the backend would. */
+  let changed: (payload: WorkJournalChangedPayload) => void;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
+    file = {
+      layout_version: 1,
+      pages: { "2026-10-14": page("2026-10-14", "Wed 14 Oct 2026") },
+      deleted_dates: [],
+      last_auto_created_date: "2026-10-14",
+      settings: {},
+    };
+    invokeMock.mockReset();
+    mockBackend();
+    vi.mocked(WebviewWindow).mockClear();
+    changed = () => {};
+    listenMock.mockImplementation(async (event, handler) => {
+      if (event === WORK_JOURNAL_CHANGED_EVENT) {
+        changed = (payload) => (handler as (e: { payload: unknown }) => void)({ payload });
+      }
+      return () => {};
+    });
+    useWorkJournalStore.setState({ pages: {}, viewedDate: null, loading: false, error: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens the journal in its own window from the pop-out button", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    fireEvent.click(screen.getByRole("button", { name: "Pop out" }));
+    await waitFor(() => expect(WebviewWindow).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(WebviewWindow).mock.calls[0][0]).toBe(WORK_JOURNAL_WINDOW_LABEL);
+  });
+
+  it("has no pop-out button inside the pop-out window", async () => {
+    render(<WorkJournalPanel inWindow />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    expect(screen.queryByRole("button", { name: "Pop out" })).not.toBeInTheDocument();
+  });
+
+  it("shows an edit and a title change made in the other window, without saving them back", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    file.pages["2026-10-14"] = {
+      ...file.pages["2026-10-14"],
+      title: "Release day",
+      body: OTHER_BODY,
+    };
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: false }));
+
+    expect(await screen.findByText("Typed in the window")).toBeInTheDocument();
+    expect(screen.getByLabelText("Page title")).toHaveValue("Release day");
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+  });
+
+  it("keeps typing not yet saved here; its save wins", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    act(() => {
+      pageEditor().commands.insertContent("Typed in the pane");
+    });
+    file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: OTHER_BODY };
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: false }));
+    await waitFor(() => expect(callsTo("load_work_journal")).toHaveLength(1));
+
+    expect(screen.queryByText("Typed in the window")).not.toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pane");
   });
 });

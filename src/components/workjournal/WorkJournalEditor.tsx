@@ -248,6 +248,23 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
     });
   }, [editor, date]);
 
+  // The other window (pane or pop-out) changed this page: show its text. The
+  // stored body only differs from the editor's when it came from elsewhere,
+  // since this editor's own saves put its text in the store. Skipped while
+  // typing here waits to be saved; that save is newer and wins. No update
+  // event and no undo step, so nothing is saved back.
+  const storedBody = useWorkJournalStore((s) => s.pages[date]?.body);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !storedBody || pendingRef.current) return;
+    if (!canReadWorkJournalBody(storedBody)) return;
+    if (JSON.stringify(storedBody) === JSON.stringify(editor.getJSON())) return;
+    editor
+      .chain()
+      .setMeta("addToHistory", false)
+      .setContent(storedBody, { emitUpdate: false })
+      .run();
+  }, [editor, storedBody]);
+
   // Read-only while a restore or undo replaces the journal. No update event:
   // the text did not change, so nothing must be saved.
   const replacing = useWorkJournalStore((s) => s.replacing);

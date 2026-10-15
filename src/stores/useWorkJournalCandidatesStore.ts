@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { localDateString, msUntilNextLocalMidnight } from "@/lib/workJournalDates";
+import { listenWorkJournalChanged } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { appendWorkJournalLine, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
@@ -92,8 +93,9 @@ interface WorkJournalCandidatesState {
   reject: (candidate: WorkJournalCandidate) => Promise<void>;
   clearError: () => void;
   /**
-   * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`):
-   * the candidates event, window focus, local midnight, and a journal
+   * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`,
+   * and in the pop-out window): the candidates event, an accept or reject
+   * in the other window, window focus, local midnight, and a journal
    * restore or undo.
    * Also loads today's candidates. Returns the stop function.
    */
@@ -234,6 +236,11 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         WORK_JOURNAL_CANDIDATES_EVENT,
         (event) => refreshLoaded(event.payload?.dates ?? []),
       );
+      // The pane and the pop-out window each keep a copy: re-read it when the
+      // other one accepted or rejected (or anything else changed).
+      const unlistenChanged = await listenWorkJournalChanged(() =>
+        refreshLoaded(Object.keys(get().byDate)),
+      );
       // Back to the window: the date may have changed while it was away.
       const onFocus = (): void => void get().refreshToday();
       const onVisibility = (): void => {
@@ -257,6 +264,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
       void get().refreshToday();
       return () => {
         unlisten();
+        unlistenChanged();
         unsubscribe();
         clearTimeout(midnight);
         window.removeEventListener("focus", onFocus);
