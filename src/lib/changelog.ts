@@ -9,8 +9,9 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-15",
-    title: "Move terminals anywhere, Maestro updates itself, Work Journal pane",
+    title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Injector: a new left-sidebar tab (Alt+4) lists every running terminal across your projects — tick some, type one message, and it is typed and submitted into all of them at once.",
       "New terminal: the working-directory choice (New Worktree, Original Path, Current Worktree) is now a dropdown between the name box and Launch, reachable with Tab; New Worktree is the default and the three old buttons are gone.",
       "Drag a terminal by its title bar: drop it on another pane's edge to move next to it, on the middle to swap, or on the outer edge of the area for a full column or row.",
       "Eagle view: terminals of any project can be mixed in any order — drop on a tile's side to insert, on its middle to swap; Group by project undoes the mixing.",

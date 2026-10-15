@@ -35,7 +35,7 @@ import {
 const invokeMock = vi.mocked(invoke);
 
 /**
- * The active tab is lifted to App (so Alt+1-3 shortcuts can drive it); this
+ * The active tab is lifted to App (so Alt+1-4 shortcuts can drive it); this
  * harness recreates App's side of the contract: state + persistence.
  */
 function ControlledSidebar(
@@ -177,9 +177,9 @@ describe("Sidebar tab bar", () => {
     useSessionSummaryStore.setState({ entries: {} });
   });
 
-  it("renders the three tabs with History active by default", () => {
+  it("renders the four tabs with History active by default", () => {
     render(<ControlledSidebar />);
-    for (const label of ["History", "Infra", "Settings"]) {
+    for (const label of ["History", "Infra", "Settings", "Inject"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     // The General tab is gone: its Agents + Git Repository cards live under Settings.
@@ -461,7 +461,7 @@ describe("Sidebar tab bar", () => {
   });
 });
 
-describe("sidebarTabShortcutTransition (Alt+1-3 toggle semantics)", () => {
+describe("sidebarTabShortcutTransition (Alt+1-4 toggle semantics)", () => {
   it("opens the sidebar on the requested tab when closed", () => {
     expect(sidebarTabShortcutTransition(false, "settings", 1)).toEqual({
       open: true,
@@ -483,8 +483,15 @@ describe("sidebarTabShortcutTransition (Alt+1-3 toggle semantics)", () => {
     });
   });
 
+  it("opens the Inject tab on index 4", () => {
+    expect(sidebarTabShortcutTransition(true, "history", 4)).toEqual({
+      open: true,
+      tab: "inject",
+    });
+  });
+
   it("returns null for an index that names no tab", () => {
-    expect(sidebarTabShortcutTransition(true, "history", 4)).toBeNull();
+    expect(sidebarTabShortcutTransition(true, "history", 5)).toBeNull();
     expect(sidebarTabShortcutTransition(false, "history", 0)).toBeNull();
   });
 });

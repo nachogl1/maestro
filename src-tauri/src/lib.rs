@@ -466,6 +466,8 @@ pub fn run() {
             commands::harvest::samurai_harvest_list,
             // Generic "launch a terminal with an initial prompt" injection
             commands::initial_prompt::terminal_arm_initial_prompt,
+            // Injector sidebar tab: one message into many terminals
+            commands::injector::inject_message,
             commands::terminal::terminal_shell_family,
             // CLI commands
             commands::cli::install_cli,

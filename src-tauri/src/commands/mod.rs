@@ -10,6 +10,7 @@ pub mod github;
 pub mod harvest;
 pub mod hooks;
 pub mod initial_prompt;
+pub mod injector;
 pub mod marketplace;
 pub mod mcp;
 pub mod plugin;

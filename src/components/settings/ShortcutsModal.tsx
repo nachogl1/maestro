@@ -25,6 +25,7 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         { keys: [alt, "1"], description: "History tab (press again to close)" },
         { keys: [alt, "2"], description: "Infra tab (press again to close)" },
         { keys: [alt, "3"], description: "Settings tab (press again to close)" },
+        { keys: [alt, "4"], description: "Inject tab (press again to close)" },
       ],
     },
     {
