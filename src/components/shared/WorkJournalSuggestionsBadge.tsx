@@ -5,6 +5,20 @@ import {
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /**
+ * The top-bar Work Journal button's accessible name. The button's label hides
+ * its badge and dot from screen readers, so it says what they show, e.g.
+ * "Work Journal, 3 suggestions waiting, unsaved changes".
+ */
+export function useWorkJournalButtonLabel(): string {
+  const count = useWorkJournalCandidatesStore(pendingTodayCount);
+  const unsaved = useWorkJournalStore((s) => s.unsavedDates.length > 0);
+  let label = "Work Journal";
+  if (count > 0) label += `, ${count} ${count === 1 ? "suggestion" : "suggestions"} waiting`;
+  if (unsaved) label += ", unsaved changes";
+  return label;
+}
+
+/**
  * Count badge on the top-bar Work Journal button: today's pending
  * suggestions. Other days and rejected ones do not count; renders nothing at
  * zero. The parent button must be `relative`.
