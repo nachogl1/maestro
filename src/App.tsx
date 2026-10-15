@@ -595,6 +595,8 @@ function App() {
               onToggleSecondBrainPanel={() => handleToggleUtilityPanel("secondbrain")}
               launchPanelOpen={utilityPanel === "launch"}
               onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
+              workJournalPanelOpen={utilityPanel === "workjournal"}
+              onToggleWorkJournalPanel={() => handleToggleUtilityPanel("workjournal")}
               onWatchdogNavigate={handleWatchdogNavigate}
               onParkNavigate={handleParkNavigate}
             />

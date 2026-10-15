@@ -81,6 +81,21 @@ function mockInvoke() {
         return [];
       case "samurai_harvest_list":
         return [];
+      case "work_journal_ensure_pages":
+        return {
+          layout_version: 1,
+          pages: {
+            "2026-10-14": {
+              date: "2026-10-14",
+              title: "Wed 14 Oct 2026",
+              body: { type: "doc", content: [{ type: "paragraph" }] },
+              origin: "auto",
+            },
+          },
+          deleted_dates: [],
+          last_auto_created_date: "2026-10-14",
+          settings: {},
+        };
       case "samurai_files_list":
         return {
           // Issue #140: the panel renders one card per run / PR review, so
@@ -129,6 +144,7 @@ describe("UtilityPanel", () => {
   // boundary clears well within the default timeout.
   beforeAll(async () => {
     await import("@/components/notepad/NotepadPanel");
+    await import("@/components/workjournal/WorkJournalPanel");
   });
 
   beforeEach(() => {
@@ -187,6 +203,21 @@ describe("UtilityPanel", () => {
     expect(screen.queryByRole("button", { name: "Run preflight" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
     expect(await screen.findByText("No active runs. Launch one above.")).toBeInTheDocument();
+  });
+
+  it("renders the Work Journal panel on today's page", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
+    try {
+      render(
+        <UtilityPanel panel="workjournal" width={560} onResize={() => {}} onClose={() => {}} />,
+      );
+      expect(screen.getByText("Work Journal")).toBeInTheDocument();
+      // Lazy-loaded like Notes (TipTap), so the page arrives after the header.
+      expect(await screen.findByDisplayValue("Wed 14 Oct 2026")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("calls onClose from the header close button", () => {

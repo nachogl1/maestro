@@ -525,25 +525,6 @@ pub struct IssueFilter {
     pub search: Option<String>,
 }
 
-/// Merge method for pull requests.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MergeMethod {
-    Merge,
-    Squash,
-    Rebase,
-}
-
-impl MergeMethod {
-    fn as_flag(&self) -> &'static str {
-        match self {
-            MergeMethod::Merge => "--merge",
-            MergeMethod::Squash => "--squash",
-            MergeMethod::Rebase => "--rebase",
-        }
-    }
-}
-
 /// Options for creating a pull request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePullRequestOptions {
@@ -1006,39 +987,6 @@ impl GitHub {
             review_decision: detail.review_decision,
             checks_summary: detail.checks_summary,
         })
-    }
-
-    /// Merges a pull request.
-    pub async fn merge_pull_request(
-        &self,
-        number: u64,
-        method: MergeMethod,
-        delete_branch: bool,
-    ) -> Result<(), GitHubError> {
-        let number_str = number.to_string();
-        let mut args = vec!["pr", "merge", &number_str, method.as_flag()];
-
-        if delete_branch {
-            args.push("--delete-branch");
-        }
-
-        self.run(&args).await?;
-        Ok(())
-    }
-
-    /// Closes a pull request without merging.
-    pub async fn close_pull_request(&self, number: u64) -> Result<(), GitHubError> {
-        let number_str = number.to_string();
-        self.run(&["pr", "close", &number_str]).await?;
-        Ok(())
-    }
-
-    /// Adds a comment to a pull request.
-    pub async fn comment_pull_request(&self, number: u64, body: &str) -> Result<(), GitHubError> {
-        let number_str = number.to_string();
-        self.run(&["pr", "comment", &number_str, "--body", body])
-            .await?;
-        Ok(())
     }
 
     /// Lists issues with optional filtering.
@@ -1618,13 +1566,6 @@ mod tests {
         );
         assert_eq!(issue_assignee_args("7", &[], &r).len(), 5);
         assert_eq!(issue_assignee_args("7", &a, &[]).len(), 5);
-    }
-
-    #[test]
-    fn test_merge_method_flag() {
-        assert_eq!(MergeMethod::Merge.as_flag(), "--merge");
-        assert_eq!(MergeMethod::Squash.as_flag(), "--squash");
-        assert_eq!(MergeMethod::Rebase.as_flag(), "--rebase");
     }
 
     #[test]
