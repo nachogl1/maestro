@@ -265,6 +265,26 @@ fn parse_date(date: &str) -> WorkJournalResult<NaiveDate> {
     Ok(parsed)
 }
 
+/// Earliest and latest years a day-page lifecycle date may have. A wider
+/// range would let one bad date (e.g. `9999-12-31`, or a damaged epoch anchor
+/// `1970-01-01`) build tens of thousands of pages under the journal lock.
+const DAY_PAGE_YEARS: std::ops::RangeInclusive<i32> = 2000..=2100;
+
+/// Parses a day-page lifecycle date (`today` or the stored anchor): exactly
+/// `YYYY-MM-DD` with a four-digit year inside [`DAY_PAGE_YEARS`].
+fn parse_day_page_date(date: &str) -> WorkJournalResult<NaiveDate> {
+    let invalid = || WorkJournalError::InvalidDate(date.to_string());
+    // chrono's `%Y` also accepts signed years like `+262142-12-31`.
+    if date.len() != 10 || !date.as_bytes()[..4].iter().all(u8::is_ascii_digit) {
+        return Err(invalid());
+    }
+    let parsed = parse_date(date)?;
+    if !DAY_PAGE_YEARS.contains(&parsed.year()) {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+
 /// Adds a page for `date`. Refused when that date already has a page.
 pub fn create_page(
     journal: &mut WorkJournal,
@@ -368,11 +388,17 @@ pub fn weekend_page_body() -> Value {
 ///   get [`weekend_page_body`], other days [`empty_page_body`].
 /// - `last_auto_created_date` moves forward to today, never backwards (a
 ///   clock set back creates nothing).
+/// - `today` must be `YYYY-MM-DD` with a year in 2000..=2100; a stored anchor
+///   outside that is treated as damaged (first-run behaviour).
 ///
 /// Returns whether the journal changed.
 pub fn ensure_pages(journal: &mut WorkJournal, today: &str) -> WorkJournalResult<bool> {
-    let today = parse_date(today)?;
-    let anchor = match journal.last_auto_created_date.as_deref().map(parse_date) {
+    let today = parse_day_page_date(today)?;
+    let anchor = match journal
+        .last_auto_created_date
+        .as_deref()
+        .map(parse_day_page_date)
+    {
         Some(Ok(anchor)) => Some(anchor),
         Some(Err(_)) => {
             log::warn!("Ignoring an invalid last auto-created date in the work journal");
@@ -405,7 +431,7 @@ pub fn ensure_pages(journal: &mut WorkJournal, today: &str) -> WorkJournalResult
 /// only when something changed. Returns the (saved) journal. An invalid
 /// `today` is refused before the file is read.
 pub fn ensure_pages_in_file(path: &Path, today: &str) -> WorkJournalResult<WorkJournal> {
-    validate_date(today)?;
+    parse_day_page_date(today)?;
     let mut journal = load(path)?;
     if ensure_pages(&mut journal, today)? {
         save(path, &journal)?;
@@ -998,7 +1024,17 @@ mod tests {
     fn test_ensure_rejects_invalid_today() {
         let mut journal = journal_anchored_at("2026-10-12");
         let before = journal.clone();
-        for bad in ["2026-10-5", "2026-02-30", "15/10/2026", "", "today"] {
+        for bad in [
+            "2026-10-5",
+            "2026-02-30",
+            "15/10/2026",
+            "",
+            "today",
+            "+262142-12-31",
+            "9999-12-31",
+            "1999-12-31",
+            "2101-01-01",
+        ] {
             let err = ensure_pages(&mut journal, bad).unwrap_err();
             assert!(matches!(err, WorkJournalError::InvalidDate(_)), "{bad}");
         }
@@ -1013,6 +1049,46 @@ mod tests {
 
         assert_eq!(journal.pages.len(), 1);
         assert!(journal.pages.contains_key("2026-10-14"));
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-14")
+        );
+    }
+
+    #[test]
+    fn test_ensure_treats_an_out_of_range_anchor_as_first_run() {
+        for damaged in ["1970-01-01", "+262142-12-31", "9999-12-31"] {
+            let mut journal = journal_anchored_at(damaged);
+
+            ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+            let dates: Vec<&str> = journal.pages.keys().map(String::as_str).collect();
+            assert_eq!(dates, ["2026-10-14"], "{damaged}");
+            assert_eq!(
+                journal.last_auto_created_date.as_deref(),
+                Some("2026-10-14")
+            );
+        }
+    }
+
+    #[test]
+    fn test_ensure_ignores_a_future_manual_page_when_gap_filling() {
+        // The wrong rule "start after max(anchor, newest page)" would create nothing.
+        let mut journal = journal_anchored_at("2026-10-12");
+        create_page(
+            &mut journal,
+            "2026-10-20",
+            "Planned".into(),
+            json!({"v": 1}),
+            PageOrigin::Manual,
+        )
+        .unwrap();
+
+        ensure_pages(&mut journal, "2026-10-14").unwrap();
+
+        let dates: Vec<&str> = journal.pages.keys().map(String::as_str).collect();
+        assert_eq!(dates, ["2026-10-13", "2026-10-14", "2026-10-20"]);
+        assert_eq!(journal.pages["2026-10-20"].title, "Planned");
         assert_eq!(
             journal.last_auto_created_date.as_deref(),
             Some("2026-10-14")
