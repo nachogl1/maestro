@@ -24,7 +24,7 @@ use crate::core::work_journal::{
 use crate::core::work_journal_activity::{
     self, ActivityError, ActivityResult, Candidate, CandidateState,
 };
-use crate::core::work_journal_report::{self, ReportResult};
+use crate::core::work_journal_report::{self, ReportError, ReportResult};
 use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 
 /// Serialises load-change-save cycles so two commands never interleave and
@@ -593,6 +593,9 @@ pub enum ReportOutcome {
     NothingToReport,
     /// No report folder is set yet; the dialog asks for one.
     NoFolder,
+    /// The saved report folder is gone or is a file; the dialog offers to
+    /// choose another. `message` is a plain sentence naming the folder.
+    FolderMissing { message: String },
     /// Another report is still being made; nothing was started.
     Busy,
 }
@@ -608,11 +611,25 @@ fn report_outcome(result: ReportResult) -> ReportOutcome {
     }
 }
 
+/// Maps a failed report: a missing (or not-a-folder) report folder becomes
+/// the `FolderMissing` outcome so the dialog can offer the picker; any
+/// other failure stays a plain error message.
+fn report_error_outcome(error: ReportError) -> Result<ReportOutcome, String> {
+    match error {
+        ReportError::FolderMissing(_) | ReportError::FolderNotAFolder(_) => {
+            Ok(ReportOutcome::FolderMissing {
+                message: error.to_string(),
+            })
+        }
+        other => Err(other.to_string()),
+    }
+}
+
 /// Writes the supervisor report for `from..=to` (`YYYY-MM-DD`, inclusive)
 /// to `<report folder>/work-report_<from>_to_<to>.html` (see
 /// [`work_journal_report`]). One report at a time (its own lock, not the
 /// candidate run's); a second request while one runs gets `Busy`. A missing
-/// report folder is an error and is never created.
+/// report folder is never created; it comes back as `FolderMissing`.
 #[tauri::command]
 pub async fn work_journal_generate_report(
     from: String,
@@ -628,7 +645,7 @@ pub async fn work_journal_generate_report(
     work_journal_report::generate_report(&journal, &from, &to, &generated_on)
         .await
         .map(report_outcome)
-        .map_err(|e| e.to_string())
+        .or_else(report_error_outcome)
 }
 
 #[cfg(test)]
@@ -889,6 +906,25 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ReportOutcome::Busy).unwrap(),
             serde_json::json!({"status": "busy"})
+        );
+    }
+
+    #[test]
+    fn test_report_error_outcome_tags_a_missing_folder_and_keeps_other_errors() {
+        for error in [
+            ReportError::FolderMissing("C:/gone".into()),
+            ReportError::FolderNotAFolder("C:/a-file".into()),
+        ] {
+            let text = error.to_string();
+            let value = serde_json::to_value(report_error_outcome(error).unwrap()).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"status": "folder_missing", "message": text})
+            );
+        }
+        assert_eq!(
+            report_error_outcome(ReportError::UnusableReply).unwrap_err(),
+            ReportError::UnusableReply.to_string()
         );
     }
 }

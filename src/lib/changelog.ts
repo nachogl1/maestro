@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal: when the saved report folder is gone, the report dialog now offers to choose a new one, and a folder picker that fails to open in Settings now shows its error.",
       "Work Journal settings hints now say the chosen model also writes the supervisor report.",
       "Work Journal: today's page is now created when Maestro starts and again at midnight, even while the Work Journal pane is closed.",
       "Work Journal: deleting a page you created for a future date no longer stops that day's page from appearing.",

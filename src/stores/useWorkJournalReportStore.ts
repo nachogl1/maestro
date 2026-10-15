@@ -16,6 +16,7 @@ export type ReportOutcome =
   | { status: "saved"; path: string }
   | { status: "nothing_to_report" }
   | { status: "no_folder" }
+  | { status: "folder_missing"; message: string }
   | { status: "busy" };
 
 interface WorkJournalReportState {

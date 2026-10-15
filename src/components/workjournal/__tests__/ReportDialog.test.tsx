@@ -133,6 +133,59 @@ describe("ReportDialog", () => {
     expect(openMock).not.toHaveBeenCalled();
   });
 
+  it("offers a new folder when the saved one is gone, without starting a report", async () => {
+    const GONE =
+      "The report folder D:\\Old does not exist. Choose another folder in Settings or create it again.";
+    let runs = 0;
+    routeInvoke("D:\\Old", () => {
+      runs += 1;
+      return runs === 1
+        ? { status: "folder_missing", message: GONE }
+        : { status: "saved", path: SAVED };
+    });
+    openMock.mockResolvedValue(FOLDER);
+    render(<ReportDialog onClose={vi.fn()} />);
+
+    fireEvent.click(generateButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(GONE);
+    expect(generateButton()).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(
+      await screen.findByText(
+        `Reports will be saved to ${FOLDER}. Press Generate to make the report.`,
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("update_work_journal_settings", {
+      settings: { report_folder: FOLDER },
+    });
+    expect(useWorkJournalReportStore.getState().reportFolder).toBe(FOLDER);
+    // Choosing the folder does not run the report.
+    expect(runs).toBe(1);
+    expect(generateButton()).toBeEnabled();
+
+    fireEvent.click(generateButton());
+
+    expect(await screen.findByText(`Saved to ${SAVED}`)).toBeInTheDocument();
+    expect(runs).toBe(2);
+  });
+
+  it("keeps Generate off when the new-folder picker is cancelled", async () => {
+    routeInvoke("D:\\Old", () => ({ status: "folder_missing", message: "The folder is gone." }));
+    openMock.mockResolvedValue(null);
+    render(<ReportDialog onClose={vi.fn()} />);
+
+    fireEvent.click(generateButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => expect(openMock).toHaveBeenCalled());
+    expect(screen.getByRole("alert")).toHaveTextContent("The folder is gone.");
+    expect(generateButton()).toBeDisabled();
+    expect(commands()).not.toContain("update_work_journal_settings");
+  });
+
   it("says when there is nothing to report", async () => {
     routeInvoke(FOLDER, () => ({ status: "nothing_to_report" }));
     render(<ReportDialog onClose={vi.fn()} />);

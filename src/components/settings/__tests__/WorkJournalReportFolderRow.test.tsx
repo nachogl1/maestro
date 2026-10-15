@@ -88,6 +88,19 @@ describe("WorkJournalReportFolderRow", () => {
     expect(screen.queryByText("D:\\Old")).toBeNull();
   });
 
+  it("shows a folder picker that fails to open in the section's error line", async () => {
+    routeInvoke({});
+    openMock.mockRejectedValue(new Error("no window"));
+
+    render(<WorkJournalSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Choose report folder" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not open the folder picker: no window",
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("update_work_journal_settings", expect.anything());
+  });
+
   it("shows a failed save in the section's error line", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "load_work_journal") return { settings: {} };
