@@ -487,26 +487,16 @@ describe("useWorkJournalStore failed-save retries", () => {
     return answer;
   }
 
-  /** The backend refuses page saves, as while a restore runs. */
-  let restoring = false;
-
   /** Reads the journal, then a body save is refused because a restore runs. */
   async function refusedSave(text: string): Promise<void> {
     await useWorkJournalStore.getState().load();
-    const backend = invokeMock.getMockImplementation();
-    invokeMock.mockImplementation(async (cmd: string, args?: unknown) =>
-      cmd === "update_work_journal_page" && restoring
-        ? Promise.reject(
-            `${WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE} The Work Journal is being restored`,
-          )
-        : backend?.(cmd, args),
-    );
     failing = false;
-    restoring = true;
-    // This window has not heard of the restore yet: the backend refuses it.
-    expect(await useWorkJournalStore.getState().updatePage(DATE, { body: body(text) })).toBe(false);
-    // Then the replacing event arrives.
+    const refuse = holdRefusedSave();
+    const saving = useWorkJournalStore.getState().updatePage(DATE, { body: body(text) });
+    // The replacing event arrives while the save is on its way.
     useWorkJournalStore.setState({ replacing: true });
+    refuse();
+    expect(await saving).toBe(false);
   }
 
   it("a save attempted while the replacing event is active is dropped and not retried", async () => {
@@ -534,12 +524,80 @@ describe("useWorkJournalStore failed-save retries", () => {
 
   it("text a restore refused is saved when the restore fails", async () => {
     await refusedSave("typed during the restore");
-    restoring = false;
     useWorkJournalStore.getState().endReplace();
     await vi.advanceTimersByTimeAsync(0);
     expect(saves()).toHaveLength(2);
     expect(disk.pages[DATE].body).toEqual(body("typed during the restore"));
     expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+  });
+
+  /** Holds the next page save; `refuse()` answers it with the restore refusal. */
+  function holdRefusedSave(): () => void {
+    let refuse = (): void => {};
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementationOnce(async (cmd: string, args?: unknown) =>
+      cmd === "update_work_journal_page"
+        ? new Promise((_resolve, reject) => {
+            refuse = () => reject(`${WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE} restoring`);
+          })
+        : backend?.(cmd, args),
+    );
+    return () => refuse();
+  }
+
+  it("a refused save is forgotten when the restore lands before the reply", async () => {
+    await useWorkJournalStore.getState().load();
+    failing = false;
+    const refuse = holdRefusedSave();
+    const saving = useWorkJournalStore.getState().updatePage(DATE, { body: body("old journal") });
+
+    useWorkJournalStore.setState({ replacing: true });
+    useWorkJournalStore
+      .getState()
+      .replaceJournal(journal([{ ...page(DATE), body: body("restored") }]));
+    refuse();
+    expect(await saving).toBe(false);
+
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+    await retryWorkJournalSaves();
+    await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[1] * 3);
+    expect(saves()).toHaveLength(1);
+  });
+
+  it("a refused save is marked and retried when the failed restore unfroze the window first", async () => {
+    await useWorkJournalStore.getState().load();
+    failing = false;
+    const refuse = holdRefusedSave();
+    const saving = useWorkJournalStore.getState().updatePage(DATE, { body: body("kept") });
+
+    // The restore starts, fails, and the unfreeze arrives before the reply.
+    useWorkJournalStore.setState({ replacing: true });
+    useWorkJournalStore.getState().endReplace();
+    refuse();
+    expect(await saving).toBe(false);
+
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([DATE]);
+    expect(useWorkJournalStore.getState().error).toBeNull();
+    await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[0]);
+    expect(disk.pages[DATE].body).toEqual(body("kept"));
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+  });
+
+  it("New page and Delete show a restore refusal without its code", async () => {
+    await useWorkJournalStore.getState().load();
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) =>
+      cmd === "create_work_journal_page" || cmd === "delete_work_journal_page"
+        ? Promise.reject(
+            `${WORK_JOURNAL_RESTORE_IN_PROGRESS_CODE} The Work Journal is being restored`,
+          )
+        : backend?.(cmd, args),
+    );
+    await useWorkJournalStore.getState().createPage("2026-10-20");
+    expect(useWorkJournalStore.getState().error).toBe("The Work Journal is being restored");
+    // A failed delete reads the journal back; the error stays.
+    await useWorkJournalStore.getState().deletePage(DATE);
+    expect(useWorkJournalStore.getState().error).toBe("The Work Journal is being restored");
   });
 
   it("an unreadable restored journal unfreezes the window without the old pages", async () => {
