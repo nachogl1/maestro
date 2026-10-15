@@ -13,6 +13,22 @@ function formatRunTime(iso: string): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/**
+ * "Last run: <when it started> (covered up to <how far it got>)". The start time
+ * counts failed runs too; "not recorded" for a journal from before it was kept.
+ * The "covered up to" part is left out when it reads the same as the start time.
+ */
+function lastRunLabel(lastAttemptAt: string | null, lastRunAt: string | null): string {
+  const attempt = lastAttemptAt
+    ? formatRunTime(lastAttemptAt)
+    : lastRunAt
+      ? "not recorded"
+      : "never";
+  const coveredTime = lastRunAt ? formatRunTime(lastRunAt) : null;
+  const covered = coveredTime && coveredTime !== attempt ? ` (covered up to ${coveredTime})` : "";
+  return `Last run: ${attempt}${covered}`;
+}
+
 /** Hover help for the rows, in plain language. */
 const HINTS = {
   runEvery:
@@ -40,6 +56,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
   const runEveryHours = useWorkJournalCandidateRunStore((s) => s.runEveryHours);
   const model = useWorkJournalCandidateRunStore((s) => s.model);
   const lastRunAt = useWorkJournalCandidateRunStore((s) => s.lastRunAt);
+  const lastAttemptAt = useWorkJournalCandidateRunStore((s) => s.lastAttemptAt);
   const running = useWorkJournalCandidateRunStore((s) => s.running);
   const runNotice = useWorkJournalCandidateRunStore((s) => s.runNotice);
   const settingsError = useWorkJournalCandidateRunStore((s) => s.settingsError);
@@ -122,7 +139,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
       </div>
       <div className="flex items-center gap-2">
         <span className="flex-1 text-[10px] text-maestro-muted">
-          {`Last run: ${lastRunAt ? formatRunTime(lastRunAt) : "never"}`}
+          {lastRunLabel(lastAttemptAt, lastRunAt)}
         </span>
         <button
           type="button"

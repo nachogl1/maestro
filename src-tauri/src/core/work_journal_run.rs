@@ -325,6 +325,10 @@ pub struct RunReport {
     /// Why one or more dates failed, if any did. Candidates of the dates
     /// that succeeded stay.
     pub error: Option<String>,
+    /// Where the window would have started without the
+    /// [`MAX_CATCH_UP_DAYS`] cap; set only when the cap cut it, so the
+    /// activity from here up to the window start was skipped.
+    pub truncated_from: Option<DateTime<Utc>>,
 }
 
 /// "Run every X hours" as used: absent or 0 is the default, more than
@@ -348,13 +352,35 @@ pub fn run_window(
     now: DateTime<Utc>,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
     let end = now.trunc_subsecs(0);
+    let start = uncapped_start(last_run_at, run_every_hours, end);
+    (start.max(end - TimeDelta::days(MAX_CATCH_UP_DAYS)), end)
+}
+
+/// [`run_window`]'s start before the [`MAX_CATCH_UP_DAYS`] cap, for a
+/// window ending at `end`.
+fn uncapped_start(
+    last_run_at: Option<&str>,
+    run_every_hours: Option<u32>,
+    end: DateTime<Utc>,
+) -> DateTime<Utc> {
     let interval = TimeDelta::hours(i64::from(effective_run_every_hours(run_every_hours)));
-    let start = last_run_at
+    last_run_at
         .and_then(|at| DateTime::parse_from_rfc3339(at.trim()).ok())
         .map(|at| at.with_timezone(&Utc))
         .filter(|at| *at <= end)
-        .unwrap_or(end - interval);
-    (start.max(end - TimeDelta::days(MAX_CATCH_UP_DAYS)), end)
+        .unwrap_or(end - interval)
+}
+
+/// Where the window of [`run_window`] would have started without the
+/// [`MAX_CATCH_UP_DAYS`] cap, when the cap cut it; `None` otherwise.
+pub fn catch_up_truncated_from(
+    last_run_at: Option<&str>,
+    run_every_hours: Option<u32>,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let (start, end) = run_window(last_run_at, run_every_hours, now);
+    let wanted = uncapped_start(last_run_at, run_every_hours, end);
+    (wanted < start).then_some(wanted)
 }
 
 /// A page's plain text: every text node of its TipTap JSON, each paragraph,
@@ -966,6 +992,11 @@ async fn run_with<S: RunSources>(
         covered_until: start,
         retry_dates: settings.retry_dates.clone(),
         error: None,
+        truncated_from: catch_up_truncated_from(
+            settings.last_run_at.as_deref(),
+            settings.run_every_hours,
+            now,
+        ),
     };
     let retries = pending_retries(&settings.retry_dates, end);
     // One preflight per run, and only for a "yes": a "no" or a choice not
@@ -1248,6 +1279,30 @@ mod tests {
         assert_eq!(
             run_window(Some(&long_ago), None, now()),
             (now() - TimeDelta::days(MAX_CATCH_UP_DAYS), now())
+        );
+    }
+
+    #[test]
+    fn test_catch_up_is_marked_truncated_only_when_the_cap_cuts_it() {
+        let ten_days_ago = now() - TimeDelta::days(10);
+        assert_eq!(
+            catch_up_truncated_from(Some(&ten_days_ago.to_rfc3339()), None, now()),
+            Some(ten_days_ago)
+        );
+        let six_days_ago = (now() - TimeDelta::days(6)).to_rfc3339();
+        assert_eq!(
+            catch_up_truncated_from(Some(&six_days_ago), None, now()),
+            None
+        );
+        let at_the_cap = (now() - TimeDelta::days(MAX_CATCH_UP_DAYS)).to_rfc3339();
+        assert_eq!(
+            catch_up_truncated_from(Some(&at_the_cap), None, now()),
+            None
+        );
+        assert_eq!(catch_up_truncated_from(None, Some(24), now()), None);
+        assert_eq!(
+            catch_up_truncated_from(Some("yesterday"), None, now()),
+            None
         );
     }
 
@@ -2569,6 +2624,20 @@ mod tests {
         );
         // The fake has no replies: a timeout is the date's second try.
         assert_eq!(report.retry_dates[&day].failures, 2);
+    }
+
+    #[tokio::test]
+    async fn test_run_report_names_the_skipped_start_only_when_capped() {
+        let ten_days_ago = now() - TimeDelta::days(10);
+        let journal = journal_with(Some(ten_days_ago.to_rfc3339()), None);
+        let report = run_with(&Fake::default(), &journal, &[], now()).await;
+        assert_eq!(report.truncated_from, Some(ten_days_ago));
+        assert_eq!(report.covered_until, now());
+
+        let two_days_ago = (now() - TimeDelta::days(2)).to_rfc3339();
+        let journal = journal_with(Some(two_days_ago), None);
+        let report = run_with(&Fake::default(), &journal, &[], now()).await;
+        assert_eq!(report.truncated_from, None);
     }
 
     #[tokio::test]

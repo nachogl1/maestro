@@ -194,6 +194,11 @@ pub struct WorkJournalSettings {
     /// When the last candidate run's window ended (RFC 3339, UTC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<String>,
+    /// When the last candidate run started (RFC 3339, UTC), set before it
+    /// runs, so a failed run counts too. Only for display; the schedule
+    /// goes by `last_run_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<String>,
     /// Whether candidate runs may read the user's Granola meeting notes:
     /// absent = not asked yet, `true` = yes, `false` = no (the run then
     /// never allows the Granola tools).
@@ -801,11 +806,12 @@ fn current_journal(path: &Path) -> WorkJournalResult<CurrentJournal> {
 /// Two times are then cleared: the last backup time, so the automatic backup
 /// leaves the backup folder alone until "Back up now", and the last candidate
 /// run time, so an old value never replays days of suggestions. The dates
-/// waiting for a retry go with it.
+/// waiting for a retry and the last run attempt time go with it.
 fn keep_local_settings(journal: &mut WorkJournal, local_settings: WorkJournalSettings) {
     journal.settings = local_settings;
     journal.settings.last_backup_at = None;
     journal.settings.last_run_at = None;
+    journal.settings.last_attempt_at = None;
     journal.settings.retry_dates.clear();
 }
 
@@ -2617,6 +2623,7 @@ mod tests {
         local_journal(&path, &folder);
         modify(&path, |j| {
             j.settings.last_run_at = Some("2026-10-15T10:00:00Z".into());
+            j.settings.last_attempt_at = Some("2026-10-15T09:59:00Z".into());
             j.settings.retry_dates.insert(
                 "2026-10-14".into(),
                 CandidateRetry {
@@ -2636,11 +2643,13 @@ mod tests {
         let mut expected = old;
         expected.settings.last_backup_at = None;
         expected.settings.last_run_at = None;
+        expected.settings.last_attempt_at = None;
         expected.settings.retry_dates.clear();
         expected.pages = with_revs_of(expected.pages, &saved);
         expected.next_rev = saved.next_rev;
         assert_eq!(saved, expected);
         assert!(saved.settings.last_run_at.is_none());
+        assert!(saved.settings.last_attempt_at.is_none());
         assert_eq!(load(&path).unwrap(), expected);
         assert!(saved.pages.contains_key("2026-10-15"));
         assert!(!safety_copy_path(&path).exists(), "undo works once");

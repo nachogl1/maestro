@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
+  CATCH_UP_TRUNCATED_NOTICE,
   type CandidateRunOutcome,
   RUN_BUSY_NOTICE,
   RUN_NO_PROJECTS_NOTICE,
@@ -130,6 +131,7 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
 
   it("runs with the open projects' paths and shows the new last run time", async () => {
     const lastRunAt = "2026-10-15T12:34:00Z";
+    const lastAttemptAt = "2026-10-15T12:33:00Z";
     let finish: (outcome: CandidateRunOutcome) => void = () => {};
     routeInvoke({
       load_work_journal: () => journal({}),
@@ -148,15 +150,20 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
       projects: ["C:\\git\\a", "C:\\git\\b\\repo"],
     });
 
-    finish({ status: "ran", added: 2, dates: ["2026-10-15"], lastRunAt });
+    finish({ status: "ran", added: 2, dates: ["2026-10-15"], lastRunAt, lastAttemptAt });
 
-    expect(await screen.findByText(`Last run: ${shownTime(lastRunAt)}`)).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        `Last run: ${shownTime(lastAttemptAt)} (covered up to ${shownTime(lastRunAt)})`,
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows a failed run in the section's error line, with the time it got to", async () => {
+  it("shows a failed run in the section's error line, with when it ran and how far it got", async () => {
     const lastRunAt = "2026-10-15T00:00:00Z";
+    const lastAttemptAt = "2026-10-15T14:00:00Z";
     routeInvoke({
       load_work_journal: () => journal({}),
       work_journal_run_candidates: () => ({
@@ -165,6 +172,7 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
         added: 1,
         dates: ["2026-10-14"],
         lastRunAt,
+        lastAttemptAt,
       }),
     });
     render(<WorkJournalSettingsSection />);
@@ -174,7 +182,32 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Candidate run for 2026-10-15 failed: claude did not answer within 180s",
     );
-    expect(screen.getByText(`Last run: ${shownTime(lastRunAt)}`)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Last run: ${shownTime(lastAttemptAt)} (covered up to ${shownTime(lastRunAt)})`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(CATCH_UP_TRUNCATED_NOTICE)).toBeNull();
+  });
+
+  it("says when a catch-up skipped days older than the 7-day limit", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({}),
+      work_journal_run_candidates: () => ({
+        status: "ran",
+        added: 0,
+        dates: [],
+        lastRunAt: "2026-10-15T12:00:00Z",
+        lastAttemptAt: "2026-10-15T12:00:00Z",
+        truncatedFrom: "2026-10-05T09:00:00Z",
+      }),
+    });
+    render(<WorkJournalSettingsSection />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+
+    expect(await screen.findByText(CATCH_UP_TRUNCATED_NOTICE)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows a command error and clears it after the next good run", async () => {
@@ -183,7 +216,13 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
       load_work_journal: () => journal({}),
       work_journal_run_candidates: () => {
         if (fail) throw new Error("journal locked");
-        return { status: "ran", added: 0, dates: [], lastRunAt: "2026-10-15T13:00:00Z" };
+        return {
+          status: "ran",
+          added: 0,
+          dates: [],
+          lastRunAt: "2026-10-15T13:00:00Z",
+          lastAttemptAt: "2026-10-15T13:00:00Z",
+        };
       },
     });
     render(<WorkJournalSettingsSection />);
@@ -226,7 +265,13 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     expect(invokeMock).toHaveBeenCalledWith("work_journal_run_candidates", { projects: [] });
     expect(screen.getByText("Last run: never")).toBeInTheDocument();
 
-    outcome = { status: "ran", added: 0, dates: [], lastRunAt: "2026-10-15T13:00:00Z" };
+    outcome = {
+      status: "ran",
+      added: 0,
+      dates: [],
+      lastRunAt: "2026-10-15T13:00:00Z",
+      lastAttemptAt: "2026-10-15T13:00:00Z",
+    };
     fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     await waitFor(() => expect(screen.queryByText(RUN_NO_PROJECTS_NOTICE)).toBeNull());
   });
@@ -256,6 +301,7 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
       runEveryHours: 1,
       model: "",
       lastRunAt: "2026-10-15T08:00:00Z",
+      lastAttemptAt: "2026-10-15T08:00:00Z",
     });
 
     await useWorkJournalBackupStore.getState().restore();
@@ -264,6 +310,7 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     expect(state.runEveryHours).toBe(4);
     expect(state.model).toBe("haiku");
     expect(state.lastRunAt).toBeNull();
+    expect(state.lastAttemptAt).toBeNull();
   });
 
   it("clears an earlier notice when a run then fails", async () => {
@@ -294,8 +341,49 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Run every")).toHaveValue(6));
     expect(screen.getByLabelText("Model")).toHaveValue("haiku");
-    expect(screen.getByText(`Last run: ${shownTime("2026-10-15T08:00:00Z")}`)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Last run: not recorded (covered up to ${shownTime("2026-10-15T08:00:00Z")})`,
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reads the last run's start time from the journal", async () => {
+    routeInvoke({
+      load_work_journal: () =>
+        journal({
+          last_run_at: "2026-10-15T00:00:00Z",
+          last_attempt_at: "2026-10-15T15:00:00Z",
+        }),
+    });
+    useWorkJournalCandidateRunStore.setState({ settingsError: "Could not read the run settings" });
+
+    render(<WorkJournalSettingsSection />);
+
+    expect(
+      await screen.findByText(
+        `Last run: ${shownTime("2026-10-15T15:00:00Z")} (covered up to ${shownTime("2026-10-15T00:00:00Z")})`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves out the covered-up-to time when it reads the same as the start time", async () => {
+    routeInvoke({
+      load_work_journal: () =>
+        journal({
+          last_run_at: "2026-10-15T15:00:10Z",
+          last_attempt_at: "2026-10-15T15:00:00Z",
+        }),
+    });
+    useWorkJournalCandidateRunStore.setState({ settingsError: "Could not read the run settings" });
+
+    render(<WorkJournalSettingsSection />);
+
+    expect(
+      await screen.findByText(`Last run: ${shownTime("2026-10-15T15:00:00Z")}`),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/covered up to/)).toBeNull();
   });
 });
 

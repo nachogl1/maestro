@@ -1,0 +1,15 @@
+{
+  "identifier": "work-journal",
+  "description": "Minimal capabilities for the pop-out Work Journal window. core:default = Tauri's basic getters, including get_all_windows for WebviewWindow.getByLabel('main'). core:event:default = listen/emitTo for syncing with the main window and the backend's work-journal events. core:window:allow-destroy = closing the window after onCloseRequested (and its 'close anyway' answer). core:window:allow-unminimize + core:window:allow-set-focus = bringing the main window forward when the backup reminder opens Settings there. dialog:allow-open = the report folder picker. dialog:allow-message = ask() for unsaved text and message() for backup warnings (both use the message command). opener:allow-reveal-item-in-dir = showing a written report in the file explorer. App commands are not ACL-checked (no app manifest), so they need no entry here.",
+  "windows": ["work-journal"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-destroy",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-focus",
+    "dialog:allow-open",
+    "dialog:allow-message",
+    "opener:allow-reveal-item-in-dir"
+  ]
+}

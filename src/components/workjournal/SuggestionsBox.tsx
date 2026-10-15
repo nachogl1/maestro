@@ -181,11 +181,8 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
         </div>
       )}
 
-      {(runNotice || runError) && (
-        <p className={`mt-1 text-[10px] ${runError ? "text-maestro-red" : "text-maestro-muted"}`}>
-          {runError ?? runNotice}
-        </p>
-      )}
+      {runNotice && <p className="mt-1 text-[10px] text-maestro-muted">{runNotice}</p>}
+      {runError && <p className="mt-1 text-[10px] text-maestro-red">{runError}</p>}
 
       {error && (
         <div className="mt-1 flex items-start gap-1 text-[10px] text-maestro-red">

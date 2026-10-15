@@ -182,6 +182,16 @@ Granola time) are folded in and linked in the Decision trace.
     is itself gone is dropped. The list is this machine's own and is kept through
     restore and undo. Coverage of a project starts once a run sees it after this
     change.
+  - Confirmed by the coordinator, flagged for the user (2026-10-15): a
+    recorded folder inside a linked git worktree (new terminals default to a new
+    worktree) is collected as the same place in its main repository, under the
+    main project's name, so a worktree is not a project of its own (a bare
+    repository's worktrees are collected under the bare repository, named
+    without `.git`; a folder inside the main checkout or a submodule stays as
+    it is). Every worktree of a project, and every folder a terminal ran in
+    during the window (a removed worktree included), is searched for Claude
+    conversations, as History does. The folder itself stays as recorded in
+    `known_projects` and is dropped once the worktree is removed.
 - **Temporary file (user decision):** pending and rejected candidates and the
   terminal-session record live in a temporary file that is deleted after a
   day. They are not part of `work-journal.json` and are not backed up. The user
@@ -189,7 +199,13 @@ Granola time) are folded in and linked in the Decision trace.
   day too, even if never seen.
   - **Catch-up on start:** the first run after Maestro starts covers activity
     since the last run (for example commits made from another tool while
-    Maestro was closed). Nothing runs while Maestro is closed.
+    Maestro was closed). Nothing runs while Maestro is closed. Decided during
+    the 2026-10-15 audit fixes, flagged for the user to confirm: catch-up
+    covers at most 7 days. When the cap cuts a catch-up short, the run says so
+    once, in the suggestions box and in Settings: "Only the last 7 days were
+    checked; earlier activity was skipped." Settings shows "Last run: <when
+    the last run started> (covered up to <how far it got>)"; a failed run
+    still updates the start time.
   - **A failing day (fix, 2026-10-15):** a day whose run fails does not hold
     back the others: the run's window still counts as covered, and only the
     failed day is remembered in `work-journal.json` settings (`retry_dates`:
@@ -432,6 +448,9 @@ skipped for that run but kept; one whose parent folder still exists but which
 is itself gone is dropped. The list is this machine's own and is kept through
 restore and undo. Coverage of a project starts once a run sees it after this
 change.
+A recorded worktree folder is collected as its main repository and named
+after it; every worktree of a project is searched for Claude conversations
+(flagged for the user, see Candidates).
 
 An accepted candidate becomes ordinary page text in `work-journal.json`.
 
@@ -489,8 +508,9 @@ to their own Claude setup.
 - **Terminal sessions need new persistent capture.** Today they are
   memory-only with ids reassigned each launch; without new capture, the
   "terminal sessions" source yields nothing after a restart.
-- **History listing cap.** The 50-sessions-per-project cap may not cover a
-  busy day across many projects (not verified).
+- **History listing cap.** The Work Journal reads up to 500 conversations per
+  project (History shows 50), across the repo and all its worktrees; a longer
+  catch-up window could still exceed it (not verified).
 - **Transcript retention** is outside this repo; how long Claude keeps
   `~/.claude/projects` transcripts was not verified.
 

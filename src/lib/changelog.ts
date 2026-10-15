@@ -12,6 +12,9 @@ export const CHANGELOG: ChangelogEntry[] = [
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
       "Work Journal: edits made in the pane and the pop-out at the same moment no longer overwrite each other (an accepted suggestion is no longer lost); you choose which text to keep, and a title change and a text change on the same page both stay. Text changed in the other window no longer moves your cursor to the end.",
+      "Work Journal says when a catch-up skipped activity older than 7 days, and Settings now shows when the last suggestion run actually happened next to how far it got.",
+      "Work Journal: the pop-out window now gets only the permissions it needs (no clipboard reading, updater or window creation).",
+      "Work Journal suggestions now include Claude conversations held in worktrees, labelled with the main project's name.",
       "Work Journal files are written more safely: a power cut right after a save can no longer leave an empty journal, backup or report.",
       "Work Journal is easier to use with a screen reader: the top-bar icon announces waiting suggestions and unsaved changes, the report dialog keeps keyboard focus inside it, and each suggestion's Accept and Reject buttons name the suggestion.",
       "Work Journal reports are limited to 92 days (and a set amount of text) so a run cannot hang for minutes.",
