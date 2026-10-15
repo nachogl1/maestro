@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   daysBetween,
   defaultWorkJournalTitle,
@@ -8,11 +8,23 @@ import {
   msUntilNextLocalMidnight,
 } from "../workJournalDates";
 
+// CI runs in UTC, where the local and UTC dates always match. Switch to a zone
+// behind UTC before any Date is made (Node re-reads TZ when it is assigned),
+// so the local-vs-UTC test below can fail if the helper used the UTC date.
+const ORIGINAL_TZ = process.env.TZ;
+process.env.TZ = "America/Los_Angeles";
+afterAll(() => {
+  if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+  else process.env.TZ = ORIGINAL_TZ;
+});
+
 describe("workJournalDates", () => {
   it("builds the local date, not the UTC one", () => {
-    // 00:30 local on 15 Oct is still 14 Oct in UTC east of Greenwich; the
-    // local parts must win either way.
-    expect(localDateString(new Date(2026, 9, 15, 0, 30))).toBe("2026-10-15");
+    // 22:30 on 14 Oct in Los Angeles is already 15 Oct in UTC.
+    const lateEvening = new Date(2026, 9, 14, 22, 30);
+    expect(lateEvening.getTimezoneOffset()).not.toBe(0);
+    expect(lateEvening.toISOString().slice(0, 10)).toBe("2026-10-15");
+    expect(localDateString(lateEvening)).toBe("2026-10-14");
     expect(localDateString(new Date(2026, 0, 5, 23, 59))).toBe("2026-01-05");
   });
 

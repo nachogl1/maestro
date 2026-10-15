@@ -73,6 +73,27 @@ export const WEEKEND_PAGE_BODY: JSONContent = {
  */
 const pendingUpdates = new Map<string, number>();
 
+/**
+ * The last queued backend write per date and field (`<date>:body`,
+ * `<date>:title`). Each save waits for the previous one of the same field,
+ * so the backend writes them in the order they were made and the newest
+ * text wins on disk. Title and body saves touch different fields, so they
+ * do not wait for each other.
+ */
+const saveChains = new Map<string, Promise<void>>();
+
+function chainKey(date: string, patch: WorkJournalPagePatch): string {
+  return `${date}:${Object.keys(patch).sort().join(",")}`;
+}
+
+/** Resolves once every save queued so far for `date` has finished. */
+function savesSettled(date: string): Promise<void> {
+  const queued = [...saveChains.entries()]
+    .filter(([key]) => key.startsWith(`${date}:`))
+    .map(([, chain]) => chain);
+  return Promise.all(queued).then(() => undefined);
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -171,26 +192,39 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   },
 
   updatePage: async (date: string, patch: WorkJournalPagePatch) => {
-    const page = get().pages[date];
-    if (!page) return;
+    if (!get().pages[date]) return;
     // Optimistic: the store holds what the user sees right away. The reply
     // is not applied, so an older reply can never overwrite newer typing.
-    set((s) => ({ pages: { ...s.pages, [date]: { ...page, ...patch } } }));
+    set((s) => {
+      const current = s.pages[date];
+      return current ? { pages: { ...s.pages, [date]: { ...current, ...patch } } } : {};
+    });
     pendingUpdates.set(date, (pendingUpdates.get(date) ?? 0) + 1);
-    try {
-      await invoke<WorkJournalFile>("update_work_journal_page", {
-        date,
-        title: patch.title ?? null,
-        body: patch.body ?? null,
-      });
-    } catch (error) {
-      console.error("Failed to save the Work Journal page:", error);
-      set({ error: errorMessage(error) });
-    } finally {
-      const left = (pendingUpdates.get(date) ?? 1) - 1;
-      if (left > 0) pendingUpdates.set(date, left);
-      else pendingUpdates.delete(date);
-    }
+    const run = async (): Promise<void> => {
+      try {
+        await invoke<WorkJournalFile>("update_work_journal_page", {
+          date,
+          title: patch.title ?? null,
+          body: patch.body ?? null,
+        });
+      } catch (error) {
+        console.error("Failed to save the Work Journal page:", error);
+        set({ error: errorMessage(error) });
+      } finally {
+        const left = (pendingUpdates.get(date) ?? 1) - 1;
+        if (left > 0) pendingUpdates.set(date, left);
+        else pendingUpdates.delete(date);
+      }
+    };
+    // Queue behind the previous save of this field (run never rejects). With
+    // nothing queued it starts at once, so a flush on window close is sent
+    // before the page goes away.
+    const key = chainKey(date, patch);
+    const previous = saveChains.get(key);
+    const queued = previous ? previous.then(run) : run();
+    saveChains.set(key, queued);
+    await queued;
+    if (saveChains.get(key) === queued) saveChains.delete(key);
   },
 
   deletePage: async (date: string) => {
@@ -202,6 +236,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     delete remaining[date];
     set({ pages: remaining, viewedDate: nearestPageDate(remaining, date) ?? date, error: null });
     try {
+      // A save queued just before the delete must land first, or the
+      // backend would refuse it for a page that no longer exists.
+      await savesSettled(date);
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {

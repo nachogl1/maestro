@@ -219,7 +219,24 @@ describe("WorkJournalPanel", () => {
     ]);
   });
 
-  it("jumps to a date and offers to create a page when it has none", async () => {
+  it("jumps only on Enter, not on each partial value while typing", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump to date" }));
+    const input = screen.getByLabelText("Date to jump to");
+    // Typing "1" of "12" in the day field already reports 1 Oct.
+    fireEvent.change(input, { target: { value: "2026-10-01" } });
+    expect(screen.getByLabelText("Page title")).toHaveValue("Wed 14 Oct 2026");
+    expect(screen.getByLabelText("Date to jump to")).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "2026-10-12" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByLabelText("Page title")).toHaveValue("Mon 12 Oct 2026");
+    expect(screen.queryByLabelText("Date to jump to")).toBeNull();
+  });
+
+  it("jumps with Go and offers to create a page when the day has none", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
@@ -227,10 +244,127 @@ describe("WorkJournalPanel", () => {
     fireEvent.change(screen.getByLabelText("Date to jump to"), {
       target: { value: "2026-10-01" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     expect(screen.getByText("No page for Thu 1 Oct 2026.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Create a page for this day" }));
+    const create = screen.getByRole("button", { name: "Create a page for this day" });
+    // A double-click sends one create; the button is disabled while it runs.
+    fireEvent.click(create);
+    fireEvent.click(create);
     expect(await screen.findByDisplayValue("Thu 1 Oct 2026")).toBeInTheDocument();
+    expect(callsTo("create_work_journal_page")).toHaveLength(1);
+  });
+
+  it("does not recreate a deleted page, but new page for a date does", async () => {
+    askMock.mockResolvedValue(true);
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+    await screen.findByDisplayValue("Tue 13 Oct 2026");
+    await act(async () => {
+      await useWorkJournalStore.getState().ensurePages("2026-10-14");
+    });
+    expect(file.pages["2026-10-14"]).toBeUndefined();
+    expect(screen.getByRole("button", { name: "Next day" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "New page for a date" }));
+    fireEvent.change(screen.getByLabelText("Date for the new page"), {
+      target: { value: "2026-10-14" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByDisplayValue("Wed 14 Oct 2026")).toBeInTheDocument();
+    expect(file.pages["2026-10-14"].origin).toBe("manual");
+  });
+
+  it("saves unsaved text when the pane closes", async () => {
+    const { unmount } = render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    act(() => {
+      pageEditor().commands.insertContent("Closing now");
+    });
+    unmount();
+
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(JSON.stringify(callsTo("update_work_journal_page")[0])).toContain("Closing now");
+  });
+
+  it("sends pending body and title saves when the window is closing", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    act(() => {
+      pageEditor().commands.insertContent("Before quit");
+    });
+    fireEvent.change(screen.getByLabelText("Page title"), { target: { value: "Quit day" } });
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+
+    const saves = callsTo("update_work_journal_page") as Array<Record<string, unknown>>;
+    expect(saves.some((a) => JSON.stringify(a.body).includes("Before quit"))).toBe(true);
+    expect(saves.some((a) => a.title === "Quit day")).toBe(true);
+  });
+
+  it("shows a body it cannot read as read-only and never saves it", async () => {
+    file.pages["2026-10-14"].body = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "From a newer build", marks: [{ type: "highlight" }] }],
+        },
+      ],
+    };
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    expect(screen.getByLabelText("Unreadable Work Journal page")).toHaveTextContent(
+      "From a newer build",
+    );
+    expect(screen.queryByLabelText("Work Journal page")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(callsTo("update_work_journal_page")).toEqual([]);
+  });
+
+  it("ensures the new day's page on window focus after sleeping through midnight", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    // The PC slept: the clock jumps to the next morning without timers firing.
+    vi.setSystemTime(new Date(2026, 9, 15, 8, 0, 0));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(callsTo("work_journal_ensure_pages")).toEqual([
+      { today: "2026-10-14" },
+      { today: "2026-10-15" },
+    ]);
+
+    // A second focus on the same day does not ask again.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(callsTo("work_journal_ensure_pages")).toHaveLength(2);
+  });
+
+  it("notices a changed date within a minute, even without focus", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    // A clock or time-zone change moves the local date.
+    vi.setSystemTime(new Date(2026, 9, 15, 9, 0, 0));
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(callsTo("work_journal_ensure_pages")).toEqual([
+      { today: "2026-10-14" },
+      { today: "2026-10-15" },
+    ]);
   });
 
   it("creates the new day's page at local midnight while open", async () => {

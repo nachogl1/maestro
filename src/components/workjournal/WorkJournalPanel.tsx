@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { CalendarPlus, CalendarSearch, ChevronLeft, ChevronRight, Trash2, X } from "lucide-react";
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { WorkJournalEditor } from "@/components/workjournal/WorkJournalEditor";
 import {
   defaultWorkJournalTitle,
@@ -16,6 +16,13 @@ import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
  */
 const MIDNIGHT_SLACK_MS = 1_000;
 
+/**
+ * How often the local date is compared while open. A cheap string compare
+ * that catches what the midnight timer misses: a PC that slept through
+ * midnight (timers pause) or a clock or time-zone change.
+ */
+const DATE_CHECK_INTERVAL_MS = 60_000;
+
 /** Which date form is open under the header, if any. */
 type DateFormMode = "jump" | "new";
 
@@ -27,8 +34,9 @@ const ICON_BUTTON =
  * previous/next day arrows, the editable title, a jump-to-date picker, "new
  * page for a date" and delete; the page body is a TipTap editor below.
  *
- * Opens on today's page (local date). On open and at every local midnight
- * while open, it asks the backend to create any missing day pages.
+ * Opens on today's page (local date). On open, and whenever the local date
+ * changes while open (midnight timer, window focus or visibility, a
+ * once-a-minute check), it asks the backend to create any missing day pages.
  */
 export function WorkJournalPanel() {
   const pages = useWorkJournalStore((s) => s.pages);
@@ -49,25 +57,46 @@ export function WorkJournalPanel() {
   const hasPrev = viewedDate !== null && dates.some((d) => d < viewedDate);
   const hasNext = viewedDate !== null && dates.some((d) => d > viewedDate);
 
+  // The local date the day pages were last ensured for.
+  const knownDateRef = useRef<string | null>(null);
+
   // Open on today's page and make sure every day up to today has one.
   useEffect(() => {
     const today = localDateString(new Date());
+    knownDateRef.current = today;
     selectDate(today);
     void ensurePages(today);
   }, [selectDate, ensurePages]);
 
-  // While open, create the new day's page at each local midnight. The view
-  // stays where the user is; the arrows reach the new page.
+  // While open, create the new day's page when the local date changes. The
+  // view stays where the user is; the arrows reach the new page.
   useEffect(() => {
+    const checkDate = (): void => {
+      const now = localDateString(new Date());
+      if (now === knownDateRef.current) return;
+      knownDateRef.current = now;
+      void ensurePages(now);
+    };
     let timer: ReturnType<typeof setTimeout>;
     const arm = (): void => {
       timer = setTimeout(() => {
-        void ensurePages(localDateString(new Date()));
+        checkDate();
         arm();
       }, msUntilNextLocalMidnight(new Date()) + MIDNIGHT_SLACK_MS);
     };
     arm();
-    return () => clearTimeout(timer);
+    const interval = setInterval(checkDate, DATE_CHECK_INTERVAL_MS);
+    const onVisibility = (): void => {
+      if (document.visibilityState === "visible") checkDate();
+    };
+    window.addEventListener("focus", checkDate);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+      window.removeEventListener("focus", checkDate);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [ensurePages]);
 
   // Title draft: committed on blur or Enter, reverted on Escape.
@@ -86,6 +115,20 @@ export function WorkJournalPanel() {
     }
     void updatePage(page.date, { title: next });
   };
+
+  // Best effort when the window closes: save a title still being edited. The
+  // OS may still end the process before the backend writes it.
+  const commitTitleRef = useRef(commitTitle);
+  commitTitleRef.current = commitTitle;
+  useEffect(() => {
+    const onLeave = (): void => commitTitleRef.current();
+    window.addEventListener("beforeunload", onLeave);
+    window.addEventListener("pagehide", onLeave);
+    return () => {
+      window.removeEventListener("beforeunload", onLeave);
+      window.removeEventListener("pagehide", onLeave);
+    };
+  }, []);
 
   const handleTitleKey = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") {
@@ -106,19 +149,43 @@ export function WorkJournalPanel() {
     setFormDate(viewedDate ?? "");
   };
 
-  const handleJump = (value: string): void => {
-    setFormDate(value);
-    if (!isValidJournalDate(value)) return;
-    selectDate(value);
+  // Jump only on Enter or Go: the date input reports a value on every typed
+  // digit (typing "12" in the day field passes through "01" first).
+  const canJump = isValidJournalDate(formDate);
+  const handleJump = (): void => {
+    if (!canJump) return;
+    selectDate(formDate);
     setFormMode(null);
   };
 
+  // One create at a time, so a double-click cannot send two.
+  const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
+  const runCreate = async (date: string): Promise<void> => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    try {
+      await createPage(date);
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
+  };
+
   const newDateTaken = formDate !== "" && pages[formDate] !== undefined;
-  const canCreate = isValidJournalDate(formDate) && !newDateTaken;
+  const canCreate = isValidJournalDate(formDate) && !newDateTaken && !creating;
   const handleCreate = async (): Promise<void> => {
     if (!canCreate) return;
     setFormMode(null);
-    await createPage(formDate);
+    await runCreate(formDate);
+  };
+
+  const handleFormKey = (e: KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (formMode === "jump") handleJump();
+    else void handleCreate();
   };
 
   const handleDelete = async (): Promise<void> => {
@@ -202,12 +269,21 @@ export function WorkJournalPanel() {
           <input
             type="date"
             value={formDate}
-            onChange={(e) =>
-              formMode === "jump" ? handleJump(e.target.value) : setFormDate(e.target.value)
-            }
+            onChange={(e) => setFormDate(e.target.value)}
+            onKeyDown={handleFormKey}
             aria-label={formMode === "jump" ? "Date to jump to" : "Date for the new page"}
             className="rounded border border-maestro-border bg-maestro-card px-1.5 py-0.5 text-xs text-maestro-text outline-none focus:border-maestro-accent"
           />
+          {formMode === "jump" && (
+            <button
+              type="button"
+              onClick={handleJump}
+              disabled={!canJump}
+              className="rounded bg-maestro-card px-2 py-0.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Go
+            </button>
+          )}
           {formMode === "new" && (
             <>
               <button
@@ -256,8 +332,9 @@ export function WorkJournalPanel() {
               <p className="text-xs">No page for {defaultWorkJournalTitle(viewedDate)}.</p>
               <button
                 type="button"
-                onClick={() => void createPage(viewedDate)}
-                className="flex items-center gap-1 rounded bg-maestro-card px-2 py-1 text-xs text-maestro-text transition-colors hover:bg-maestro-border"
+                onClick={() => void runCreate(viewedDate)}
+                disabled={creating}
+                className="flex items-center gap-1 rounded bg-maestro-card px-2 py-1 text-xs text-maestro-text transition-colors hover:bg-maestro-border disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <CalendarPlus size={12} />
                 <span>Create a page for this day</span>

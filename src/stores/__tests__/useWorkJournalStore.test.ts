@@ -85,6 +85,63 @@ describe("useWorkJournalStore", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it("chains saves for a date so the backend writes them in order", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14")]).pages });
+    let releaseFirst: () => void = () => {};
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseFirst = () => resolve(journal([page("2026-10-14")]));
+        }),
+    );
+    invokeMock.mockResolvedValue(journal([page("2026-10-14")]));
+    const bodyA = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "A" }] }],
+    };
+    const bodyB = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "B" }] }],
+    };
+
+    const first = useWorkJournalStore.getState().updatePage("2026-10-14", { body: bodyA });
+    const second = useWorkJournalStore.getState().updatePage("2026-10-14", { body: bodyB });
+    await Promise.resolve();
+    // The second save waits until the first one has been written.
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    const bodies = invokeMock.mock.calls.map(([, args]) => (args as { body: unknown }).body);
+    expect(bodies).toEqual([bodyA, bodyB]);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(bodyB);
+  });
+
+  it("a reply never overwrites a page whose save is still in flight", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14")]).pages });
+    let releaseSave: () => void = () => {};
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseSave = () => resolve(journal([page("2026-10-14")]));
+        }),
+    );
+    const typed = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "new" }] }],
+    };
+    const save = useWorkJournalStore.getState().updatePage("2026-10-14", { body: typed });
+
+    // A load reply with the old body lands while the save is still in flight.
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-14"), page("2026-10-15")]));
+    await useWorkJournalStore.getState().load();
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(typed);
+    expect(useWorkJournalStore.getState().pages["2026-10-15"]).toBeDefined();
+
+    releaseSave();
+    await save;
+  });
+
   it("deletePage removes the page and shows the nearest one", async () => {
     useWorkJournalStore.setState({
       pages: journal([page("2026-10-10"), page("2026-10-13"), page("2026-10-14")]).pages,
