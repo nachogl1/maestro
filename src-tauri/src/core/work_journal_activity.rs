@@ -120,8 +120,6 @@ pub struct Candidate {
 }
 
 /// The caller-supplied part of a new candidate; it always starts pending.
-// First used by the candidate run (issue #313 scheduled candidate run).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCandidate {
@@ -358,7 +356,6 @@ async fn save(
 /// become `2026-01-05` and `09:05`), text folded to one non-empty line. Use
 /// it to drop bad lines before [`add_candidates`], which rejects a whole
 /// batch if any one is invalid.
-#[allow(dead_code)] // first used by issue #313 (scheduled candidate run)
 pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandidate> {
     let date = NaiveDate::parse_from_str(&candidate.date, "%Y-%m-%d")
         .map_err(|_| ActivityError::InvalidDate(candidate.date.clone()))?;
@@ -389,7 +386,6 @@ pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandida
 
 /// Adds candidates (all pending) and returns them with their new ids.
 /// Nothing is written if any candidate is invalid.
-#[allow(dead_code)] // first used by issue #313 (scheduled candidate run)
 pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> ActivityResult<Vec<Candidate>> {
     let now = Local::now();
     let mut added = Vec::with_capacity(new.len());
@@ -437,7 +433,6 @@ pub async fn set_candidate_state(
 }
 
 /// Every candidate (pending and rejected) for one `YYYY-MM-DD` date.
-#[allow(dead_code)] // first used by issues #313 and #314
 pub async fn list_candidates(dir: &Path, date: &str) -> ActivityResult<Vec<Candidate>> {
     let _guard = FILE_LOCK.lock().await;
     let file = load(dir, Utc::now(), current_launch_id()).await?;

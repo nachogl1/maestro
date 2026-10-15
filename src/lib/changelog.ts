@@ -22,6 +22,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: a toolbar for bold, italic, headings, lists, links, text colour, highlight and tick-box checklists.",
       "Work Journal settings: restore the journal from a backup file, with a safety copy and an Undo restore button.",
       "Work Journal: a new right-side pane with one page per day — browse days, edit the title and text, add or delete a page.",
+      "Work Journal settings: choose how often Claude looks for journal suggestions and which model it uses, and run it now.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
     ],
   },
