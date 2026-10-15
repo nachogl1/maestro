@@ -224,7 +224,9 @@ describe("WorkJournalPanel", () => {
 
     expect(await screen.findByDisplayValue("Tue 13 Oct 2026")).toBeInTheDocument();
     expect(askMock).toHaveBeenCalledTimes(1);
-    expect(callsTo("delete_work_journal_page")).toEqual([{ date: "2026-10-14" }]);
+    expect(callsTo("delete_work_journal_page")).toEqual([
+      { date: "2026-10-14", today: "2026-10-14" },
+    ]);
     expect(file.pages["2026-10-14"]).toBeUndefined();
   });
 
