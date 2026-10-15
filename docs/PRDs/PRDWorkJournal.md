@@ -339,11 +339,13 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   - On a new laptop no settings come across: the user sets them again and is
     asked about Granola again.
   - Undo keeps the journal it replaces as `work-journal.before-undo.json` in
-    the journal folder, so the undo itself can be reversed by hand (no redo
-    button). Only one such copy is kept; the next undo overwrites it. Undo
-    works once: if the safety copy cannot be set aside (for example a
-    program such as antivirus or OneDrive holds it), the undo is refused
-    with an error and nothing changes.
+    Maestro's data folder (next to the journal, not the backup folder), so
+    the undo itself can be reversed by hand (no redo button). Only one such
+    copy is kept; the next undo overwrites it. Undo works once: the safety
+    copy is set aside first, and if that is blocked (for example antivirus
+    or OneDrive holds it) the undo is refused with an error and nothing
+    changes. If a later step fails, the safety copy is put back and the
+    journal is unchanged.
 
 ### Supervisor report
 
