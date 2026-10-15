@@ -2,6 +2,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen } from "lucide-react";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
 
+/** Hover help for the row, in plain language. */
+const REPORT_FOLDER_HINT =
+  "The folder where the supervisor report is saved: a web page that sums up a range of " +
+  "days from your journal.";
+
 /**
  * The "Report folder" row of the Work Journal settings section: where the
  * supervisor report is saved, and "Choose folder". The folder comes from
@@ -27,7 +32,9 @@ export function WorkJournalReportFolderRow(): JSX.Element {
 
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="shrink-0 text-maestro-muted">Report folder</span>
+      <span className="shrink-0 cursor-help text-maestro-muted" title={REPORT_FOLDER_HINT}>
+        Report folder
+      </span>
       <span
         className="min-w-0 flex-1 truncate text-right text-[11px] text-maestro-text"
         title={reportFolder ?? undefined}
@@ -38,6 +45,7 @@ export function WorkJournalReportFolderRow(): JSX.Element {
         type="button"
         onClick={() => void handleChooseFolder()}
         aria-label="Choose report folder"
+        title={REPORT_FOLDER_HINT}
         className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40"
       >
         <FolderOpen size={11} />

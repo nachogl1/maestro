@@ -17,7 +17,6 @@ import {
 import { memo, useCallback, useRef, useState } from "react";
 import { type IconComponent, OpenCodeIcon } from "@/components/icons";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
-import { ThinkingIndicator } from "@/components/terminal/ThinkingIndicator";
 import { useDismissable } from "@/hooks/useDismissable";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 
@@ -177,7 +176,6 @@ export const TerminalHeader = memo(function TerminalHeader({
       return {
         headerHeight: "h-10",
         providerIconSize: 20,
-        thinkingDotSize: 4,
         sessionLabelSize: "text-sm",
         badgeSize: "text-xs",
         badgePadding: "px-2 py-0.5",
@@ -193,7 +191,6 @@ export const TerminalHeader = memo(function TerminalHeader({
       return {
         headerHeight: "h-12",
         providerIconSize: 28,
-        thinkingDotSize: 5,
         sessionLabelSize: "text-base",
         badgeSize: "text-xs",
         badgePadding: "px-2.5 py-1",
@@ -207,7 +204,6 @@ export const TerminalHeader = memo(function TerminalHeader({
       return {
         headerHeight: "h-10",
         providerIconSize: 24,
-        thinkingDotSize: 4.5,
         sessionLabelSize: "text-sm",
         badgeSize: "text-xs",
         badgePadding: "px-2 py-0.5",
@@ -221,7 +217,6 @@ export const TerminalHeader = memo(function TerminalHeader({
       return {
         headerHeight: "h-9",
         providerIconSize: 20,
-        thinkingDotSize: 4,
         sessionLabelSize: "text-[13px]",
         badgeSize: "text-[11px]",
         badgePadding: "px-2 py-0.5",
@@ -235,7 +230,6 @@ export const TerminalHeader = memo(function TerminalHeader({
       return {
         headerHeight: "h-8",
         providerIconSize: 18,
-        thinkingDotSize: 3.5,
         sessionLabelSize: "text-xs",
         badgeSize: "text-[10px]",
         badgePadding: "px-1.5 py-0.5",
@@ -249,7 +243,6 @@ export const TerminalHeader = memo(function TerminalHeader({
       return {
         headerHeight: "h-7",
         providerIconSize: 16,
-        thinkingDotSize: 3,
         sessionLabelSize: "text-[11px]",
         badgeSize: "text-[9px]",
         badgePadding: "px-1.5 py-px",
@@ -264,7 +257,7 @@ export const TerminalHeader = memo(function TerminalHeader({
   const adaptive = getAdaptiveClasses();
 
   // Status-colored underline: blue while the agent works, red when it
-  // waits for the user's input (same palette as ThinkingIndicator's dots).
+  // waits for the user's input (same palette as the tab status dot).
   const statusBorder =
     status === "working"
       ? "border-maestro-blue/70"
@@ -319,12 +312,6 @@ export const TerminalHeader = memo(function TerminalHeader({
             <ChevronDown size={9} className="text-maestro-muted/60" />
           )}
         </button>
-
-        {/* What this terminal is doing, in the one place every zoomed-out view
-            shows: blue dots ripple while it works, red while it waits on you.
-            Sits left of the project name so a wall of tiles can be scanned
-            down a single column. */}
-        <ThinkingIndicator sessionId={sessionId} size={adaptive.thinkingDotSize} />
 
         {/* Project label (eagle view) — bold, in the project's assigned color */}
         {projectLabel && (

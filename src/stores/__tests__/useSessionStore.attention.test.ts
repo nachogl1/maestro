@@ -34,7 +34,7 @@ function session(
 /** Captured `session-status-changed` handler, so tests can emit events. */
 let emitStatus: (
   sessionId: number,
-  status: BackendSessionStatus | "AwaitingInput",
+  status: BackendSessionStatus | "AwaitingInput" | "IdleReminder",
   projectPath?: string,
 ) => void;
 
@@ -280,6 +280,34 @@ describe("useSessionStore auto-unpark attention", () => {
     expect(state.parkedSessionIds).toEqual([]);
     expect(state.attentionSessionIds).toEqual([1]);
     expect(state.sessions[0].status).toBe("NeedsInput");
+  });
+
+  /**
+   * The CLI's 60s idle reminder repeats a turn end the user already saw. It
+   * may repaint the status (so the shelf chip still turns red if the real
+   * turn end was lost), but it must not pull the session out of the tray.
+   */
+  it("the idle reminder repaints a parked session but does not auto-unpark it", () => {
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    useSessionStore.getState().parkSession(1);
+
+    emitStatus(1, "IdleReminder");
+
+    const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([]);
+    expect(state.sessions[0].status).toBe("NeedsInput");
+  });
+
+  it("the idle reminder leaves a parked session that reported Done untouched", () => {
+    useSessionStore.setState({ sessions: [session(1, "Done")] });
+    useSessionStore.getState().parkSession(1);
+
+    emitStatus(1, "IdleReminder");
+
+    const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.sessions[0].status).toBe("Done");
   });
 
   it("fetchSessions prunes attention ids absent from the fetched list", async () => {

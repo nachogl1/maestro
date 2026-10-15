@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Maestro Settings: hover over any setting (Updates, CLI command, every Samurai threshold, Work Journal, Advanced) for a plain-language explanation of what it does.",
       "Project tabs can no longer be pinned; the pin button and marker on tabs are gone. Pinning terminals is unchanged.",
       "Terminal title bar: the PR number pill and the checked-out / worktree pill are gone; the branch name stays, and hovering it still says whether it is a worktree.",
       "Injector: a new left-sidebar tab (Alt+4) lists every running terminal across your projects — tick some, type one message, and it is typed and submitted into all of them at once.",
@@ -32,7 +33,10 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: a Report button writes an achievement-focused HTML summary of any date range to a folder you choose once.",
       "Work Journal: the pop-out button opens the journal in its own window with a list of days (weekends dimmed); edits and accepted suggestions show in both the pane and the window.",
       "The Git pane's pull request view is read-only: the Merge, Close and comment controls are gone, and the View on GitHub link now sits above the description.",
+      "Parked terminals stop popping back out for nothing: the CLI's 60-second idle reminder, sign-in notices, finished background agents and usage-limit auto-resumes no longer unpark a terminal — only a real question, permission prompt, finished or failed run does.",
       "Settings: a Context alert picks the context usage (50–95%, or Off) at which a Claude terminal's frame blinks red, so you can compact or hand off before it runs out.",
+      "Parking a terminal now dissolves it into its shelf chip in a stream of particles, restoring it streams them back, and a terminal that asks for your input flares yellow around its edges; off when your OS asks for reduced motion.",
+      "The three rippling status dots are gone from terminal tabs, title bars and the parked shelf; the single colour dot on tabs and the coloured title-bar underline still show the state.",
     ],
   },
   {

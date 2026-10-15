@@ -391,6 +391,10 @@ export const TerminalView = memo(function TerminalView({
     // biome-ignore lint/a11y/useKeyWithClickEvents: see noStaticElementInteractions above.
     <div
       className={`terminal-cell flex h-full flex-col bg-maestro-bg ${cellStatusClass(effectiveStatus)} ${isFocused ? "terminal-cell-focused" : ""} ${contextAlert ? "terminal-cell-context-alert" : ""}`}
+      // Anchor for the park/resume/needs-input particle effects
+      // (ParticleEffectsLayer). Carried in every view, unlike the grid
+      // wrapper's data-session-id, which only exists in eagle mode.
+      data-particle-session-id={sessionId}
       // The border is always the project's color, in every view — that is what
       // it means. Status is not carried by the border any more: the status
       // classes still supply the colored glow, and the three-dot indicator in

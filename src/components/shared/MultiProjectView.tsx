@@ -41,7 +41,7 @@ import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ParkedShelf } from "../terminal/ParkedShelf";
 import { TerminalGrid, type TerminalGridHandle } from "../terminal/TerminalGrid";
-import { SessionStatusDot, ThinkingIndicator } from "../terminal/ThinkingIndicator";
+import { SessionStatusDot } from "../terminal/ThinkingIndicator";
 import { EagleGridResizer } from "./EagleGridResizer";
 import { IdleLandingView } from "./IdleLandingView";
 
@@ -883,7 +883,6 @@ function EagleZoomTab({
         {projectName}
       </span>
       <span className="max-w-[180px] truncate">{label}</span>
-      <ThinkingIndicator sessionId={sessionId} size={3} />
       <SessionStatusDot sessionId={sessionId} />
     </button>
   );
