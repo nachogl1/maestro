@@ -66,7 +66,7 @@ export function WorkJournalWindow() {
         if (useWorkJournalStore.getState().unsavedDates.length === 0) return;
         event.preventDefault();
         const discard = await ask(
-          "Some Work Journal text could not be saved and is still being retried. Close the window anyway and lose it?",
+          "Some Work Journal text is not saved yet: saving failed, or the other window changed the same text. Close the window anyway and lose it?",
           {
             title: "Unsaved Work Journal Text",
             kind: "warning",

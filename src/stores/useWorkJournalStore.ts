@@ -191,21 +191,31 @@ function fieldsJson(key: string, page: WorkJournalPage | undefined): string {
 /**
  * Takes in a journal read from the backend before it is merged: failed saves
  * of a page that is gone are dropped, and a failed field the other window
- * changed since becomes a conflict.
+ * changed since becomes a conflict. `tick` is `saveTick` when the read
+ * started: a date saved here since then may be older in the reply than on
+ * disk, so it keeps what the save put there and is not checked.
  */
-function absorbDiskPages(incoming: Record<string, WorkJournalPage>): void {
+function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number): void {
+  const savedSince = (date: string): boolean => (lastLocalSave.get(date) ?? 0) > tick;
   for (const key of [...failedSaves]) {
-    const page = incoming[keyDate(key)];
+    const date = keyDate(key);
+    if (savedSince(date)) continue;
+    const page = incoming[date];
     if (!page) {
       forgetFailedSave(key);
       continue;
     }
+    // A failure whose disk text was never read here cannot be checked, so
+    // it is not retried on its own.
     const base = failedBases.get(key);
-    // The text the failure was based on was never read here: start from this read.
-    if (base === undefined) failedBases.set(key, fieldsJson(key, page));
-    else if (base !== fieldsJson(key, page)) conflictSaves.add(key);
+    if (base === undefined || base !== fieldsJson(key, page)) conflictSaves.add(key);
   }
-  diskPages = incoming;
+  const next = { ...incoming };
+  for (const date of Object.keys(diskPages)) {
+    if (!savedSince(date)) continue;
+    next[date] = diskPages[date];
+  }
+  diskPages = next;
   publishFailedSaves();
 }
 
@@ -480,15 +490,19 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
 
   sync: async (replaced: boolean) => {
     const tick = saveTick;
+    const { revision } = get();
     try {
       const journal = await invoke<WorkJournalFile>("load_work_journal");
+      // A restore or undo happened (or is running) since the read started:
+      // the reply may hold the journal it replaced.
+      if (get().revision !== revision || get().replacing) return;
       if (replaced) {
         get().replaceJournal(journal);
         return;
       }
       // Pages deleted in the other window take their failed saves along; a
       // field it changed since a failed save here is no longer retried.
-      absorbDiskPages(journal.pages);
+      absorbDiskPages(journal.pages, tick);
       set((s) => {
         const pages = mergePages(s.pages, journal.pages);
         // A save made here after the read started is newer than the reply.
@@ -513,9 +527,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
 
   load: async () => {
     set({ loading: true, error: null });
+    const tick = saveTick;
     try {
       const journal = await invoke<WorkJournalFile>("load_work_journal");
-      absorbDiskPages(journal.pages);
+      absorbDiskPages(journal.pages, tick);
       set((s) => ({ pages: mergePages(s.pages, journal.pages), loading: false }));
     } catch (error) {
       console.error("Failed to load the Work Journal:", error);
@@ -525,9 +540,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
 
   ensurePages: async (today: string) => {
     set({ loading: true, error: null });
+    const tick = saveTick;
     try {
       const journal = await invoke<WorkJournalFile>("work_journal_ensure_pages", { today });
-      absorbDiskPages(journal.pages);
+      absorbDiskPages(journal.pages, tick);
       set((s) => ({ pages: mergePages(s.pages, journal.pages), loading: false }));
     } catch (error) {
       console.error("Failed to create the Work Journal day pages:", error);
@@ -555,6 +571,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
 
   createPage: async (date: string) => {
     set({ error: null });
+    const tick = saveTick;
     try {
       const journal = await invoke<WorkJournalFile>("create_work_journal_page", {
         date,
@@ -562,7 +579,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         body: isWeekend(date) ? WEEKEND_PAGE_BODY : EMPTY_PAGE_BODY,
         origin: "manual",
       });
-      absorbDiskPages(journal.pages);
+      absorbDiskPages(journal.pages, tick);
       set((s) => ({ pages: mergePages(s.pages, journal.pages), viewedDate: date }));
     } catch (error) {
       console.error("Failed to create the Work Journal page:", error);
@@ -640,8 +657,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       await savesSettled(date);
       clearFailedSaves(date);
       publishFailedSaves();
+      const tick = saveTick;
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
-      absorbDiskPages(journal.pages);
+      absorbDiskPages(journal.pages, tick);
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {
       console.error("Failed to delete the Work Journal page:", error);

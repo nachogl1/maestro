@@ -334,6 +334,8 @@ describe("useWorkJournalStore failed-save retries", () => {
   /** The backend's file; `failing` makes every page save fail. */
   let disk: WorkJournalFile;
   let failing: boolean;
+  /** When set, the next read waits for it and answers with what it gives. */
+  let heldRead: Promise<WorkJournalFile> | null;
 
   function saves(): unknown[] {
     return invokeMock.mock.calls
@@ -352,7 +354,13 @@ describe("useWorkJournalStore failed-save retries", () => {
     invokeMock.mockReset();
     disk = journal([page(DATE)]);
     failing = true;
+    heldRead = null;
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "load_work_journal" && heldRead) {
+        const read = heldRead;
+        heldRead = null;
+        return read;
+      }
       if (cmd === "update_work_journal_page") {
         if (failing) throw new Error("disk full");
         const a = args as { date: string; title: string | null; body: WorkJournalPage["body"] };
@@ -462,6 +470,70 @@ describe("useWorkJournalStore failed-save retries", () => {
     await newer;
     expect(saves()).toHaveLength(2);
     expect(disk.pages[DATE].body).toEqual(body("second"));
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+  });
+
+  /** Holds the next read; returns its answer function. */
+  function holdRead(): (reply: WorkJournalFile) => void {
+    let answer: (reply: WorkJournalFile) => void = () => {};
+    heldRead = new Promise((resolve) => {
+      answer = resolve;
+    });
+    return answer;
+  }
+
+  it("a sync reply that started before a restore is dropped", async () => {
+    await useWorkJournalStore.getState().load();
+    const before = structuredClone(disk);
+    const answer = holdRead();
+    const syncing = useWorkJournalStore.getState().sync(false);
+
+    useWorkJournalStore
+      .getState()
+      .replaceJournal(journal([{ ...page(DATE), body: body("restored") }]));
+    answer(before);
+    await syncing;
+    expect(useWorkJournalStore.getState().pages[DATE].body).toEqual(body("restored"));
+  });
+
+  it("a late read does not create a false conflict", async () => {
+    await useWorkJournalStore.getState().load();
+    const preSave = structuredClone(disk);
+    const answer = holdRead();
+    const syncing = useWorkJournalStore.getState().sync(false);
+
+    // Saved while the read is on its way, then the next save fails.
+    failing = false;
+    await useWorkJournalStore.getState().updatePage(DATE, { body: body("saved") });
+    failing = true;
+    await useWorkJournalStore.getState().updatePage(DATE, { body: body("failed") });
+
+    // The read answers with the disk from before the first save.
+    answer(preSave);
+    await syncing;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useWorkJournalStore.getState().conflictDates).toEqual([]);
+
+    // So the retry still goes out and lands.
+    failing = false;
+    await vi.advanceTimersByTimeAsync(WORK_JOURNAL_SAVE_RETRY_DELAYS_MS[0]);
+    expect(disk.pages[DATE].body).toEqual(body("failed"));
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+  });
+
+  it("treats a failure with no known disk text as a conflict", async () => {
+    // The page was never read from the backend in this window.
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-20")]).pages });
+    disk.pages["2026-10-20"] = page("2026-10-20");
+    await useWorkJournalStore.getState().updatePage("2026-10-20", { body: body("mine") });
+    failing = false;
+
+    await useWorkJournalStore.getState().sync(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useWorkJournalStore.getState().conflictDates).toEqual(["2026-10-20"]);
+    expect(saves()).toHaveLength(1);
+
+    discardWorkJournalConflicts();
     expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
   });
 
