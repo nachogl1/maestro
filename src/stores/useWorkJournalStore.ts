@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { JSONContent } from "@tiptap/react";
 import { create } from "zustand";
-import { daysBetween, defaultWorkJournalTitle, isWeekend } from "@/lib/workJournalDates";
+import {
+  daysBetween,
+  defaultWorkJournalTitle,
+  isWeekend,
+  localDateString,
+} from "@/lib/workJournalDates";
 
 /** How a page came to exist (backend `PageOrigin`). */
 export type WorkJournalPageOrigin = "auto" | "manual";
@@ -673,7 +678,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       clearFailedSaves(date);
       publishFailedSaves();
       const tick = saveTick;
-      const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
+      const journal = await invoke<WorkJournalFile>("delete_work_journal_page", {
+        date,
+        today: localDateString(new Date()),
+      });
       absorbDiskPages(journal.pages, tick);
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {

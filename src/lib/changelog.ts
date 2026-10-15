@@ -12,6 +12,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
       "Work Journal: today's page is now created when Maestro starts and again at midnight, even while the Work Journal pane is closed.",
+      "Work Journal: deleting a page you created for a future date no longer stops that day's page from appearing.",
       "Work Journal: until you pick a backup folder, the pane and its own window show a one-line reminder with an Open Settings button; close it to hide it in that window until it closes or Maestro restarts.",
       "Work Journal: text that could not be saved is kept, retried automatically, and flagged in the pane, the pop-out and on the top-bar icon until it lands; if the other window changed the same text you choose which to keep, and the pop-out asks before closing while text is still unsaved.",
       "Work Journal suggestions now cover every project Maestro has seen in a tab or terminal since this update, including closed tabs and every repo of a multi-repo project, not only the tabs open right now.",
