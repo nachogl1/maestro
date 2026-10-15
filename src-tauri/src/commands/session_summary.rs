@@ -79,6 +79,23 @@ fn load_cache(path: &Path) -> HashMap<String, CacheEntry> {
         .unwrap_or_default()
 }
 
+/// Every cached name and summary, keyed by session id. Reads the cache file
+/// only and never runs the summariser (blocking file read). Used by the Work
+/// Journal's activity collection; an entry may predate the conversation's
+/// newest messages.
+pub fn cached_session_summaries() -> HashMap<String, SessionSummary> {
+    load_cache(&cache_path())
+        .into_iter()
+        .map(|(id, entry)| {
+            let summary = SessionSummary {
+                name: entry.name,
+                summary: entry.summary,
+            };
+            (id, summary)
+        })
+        .collect()
+}
+
 /// Returns the conversation's name and two-sentence summary, from the cache
 /// when the transcript has not changed since, otherwise from a fresh
 /// headless Haiku run.
