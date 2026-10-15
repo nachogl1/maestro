@@ -279,6 +279,17 @@ export function workJournalBodyBaseRev(date: string): number | undefined {
   return failedRevs.get(`${date}:body`) ?? useWorkJournalStore.getState().pages[date]?.rev;
 }
 
+/**
+ * Forgets the rev history of `date`: its page is gone, and a page made
+ * again for that date starts a history of its own.
+ */
+function forgetRevs(date: string): void {
+  for (const map of [revCopies, ownSaveRevs]) {
+    for (const key of [...map.keys()]) if (key.startsWith(`${date}@`)) map.delete(key);
+  }
+  for (const key of [...fieldRevs.keys()]) if (key.startsWith(`${date}:`)) fieldRevs.delete(key);
+}
+
 /** Forgets every rev mapping: the journal was replaced. */
 function clearRevMaps(): void {
   revCopies.clear();
@@ -319,6 +330,7 @@ function fieldsJson(key: string, page: WorkJournalPage | undefined): string {
  * disk, so it keeps what the save put there and is not checked.
  */
 function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number): void {
+  for (const date of Object.keys(diskPages)) if (!incoming[date]) forgetRevs(date);
   for (const page of Object.values(incoming)) rememberRevCopy(page);
   const savedSince = (date: string): boolean => (lastLocalSave.get(date) ?? 0) > tick;
   for (const key of [...failedSaves]) {
@@ -784,8 +796,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     if (!get().pages[date] || get().replacing) return false;
     // The journal this text belongs to (see `revision`).
     const { revision } = get();
-    // The copy of the page this text was made on.
-    const callerBase = baseRev ?? get().pages[date]?.rev;
+    const key = chainKey(date, patch);
+    // The copy of the page this text was made on: while this field's save
+    // failed, the copy that save was made on (the stored rev may be newer).
+    const callerBase = baseRev ?? failedRevs.get(key) ?? get().pages[date]?.rev;
     // Optimistic: the store holds what the user sees right away. The reply
     // is not applied, so an older reply can never overwrite newer typing.
     set((s) => {
@@ -796,7 +810,6 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     saveTick += 1;
     lastLocalSave.set(date, saveTick);
     let saved = false;
-    const key = chainKey(date, patch);
     const send = (base: number | undefined): Promise<WorkJournalFile | undefined> =>
       invoke<WorkJournalFile | undefined>("update_work_journal_page", {
         date,
@@ -811,7 +824,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       rememberRevCopy(page);
       const rev = page?.rev;
       if (rev === undefined) return Number.NaN;
-      if (base !== undefined) setRevEntry(ownSaveRevs, `${date}@${base}`, rev);
+      if (base !== undefined && rev !== base) setRevEntry(ownSaveRevs, `${date}@${base}`, rev);
       return rev;
     };
     const run = async (): Promise<void> => {
@@ -820,6 +833,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       const sentBase = resolveBaseRev(date, key, callerBase);
       // Set when the other window changed this field since `sentBase`.
       let conflict = false;
+      // Set when the save went on top of a newer copy this window has not shown.
+      let resent = false;
       try {
         let rev = Number.NaN;
         let base = sentBase;
@@ -834,6 +849,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
             // save of the other field). When this field was left alone, this
             // text goes on top of that copy; otherwise it is a conflict.
             const fresh = (await invoke<WorkJournalFile>("load_work_journal")).pages[date];
+            // A restore or undo landed meanwhile: the text belongs to the old journal.
+            if (get().revision !== revision) throw error;
             rememberRevCopy(fresh);
             const made = revCopies.get(`${date}@${sentBase}`);
             if (
@@ -847,7 +864,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
             base = fresh.rev;
           }
         }
-        if (base !== sentBase && !Number.isNaN(rev)) {
+        resent = base !== sentBase;
+        if (resent && !Number.isNaN(rev)) {
           setRevEntry(fieldRevs, `${key}@${sentBase}`, rev);
         }
         saved = true;
@@ -868,9 +886,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         publishFailedSaves();
       } catch (error) {
         const refused = isRestoreRefusal(error);
-        // A restore or undo refused it and has landed since: the text
-        // belonged to the replaced journal.
-        if (refused && get().revision !== revision) return;
+        // A restore or undo refused it, or one landed since the page was
+        // found changed: the text belonged to the replaced journal.
+        const replaced = refused || isPageChangedRefusal(error);
+        if (replaced && get().revision !== revision) return;
         failedSaves.add(key);
         if (!failedRevs.has(key) && sentBase !== undefined) failedRevs.set(key, sentBase);
         if (!failedBases.has(key)) {
@@ -909,6 +928,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         const left = (pendingUpdates.get(date) ?? 1) - 1;
         if (left > 0) pendingUpdates.set(date, left);
         else pendingUpdates.delete(date);
+        // Shows here the other window's change this save went on top of.
+        if (resent) void get().sync(false);
       }
     };
     // Queue behind the previous save of this field (run never rejects). With
@@ -935,6 +956,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       // backend would refuse it for a page that no longer exists.
       await savesSettled(date);
       clearFailedSaves(date);
+      forgetRevs(date);
       publishFailedSaves();
       const tick = saveTick;
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", {
