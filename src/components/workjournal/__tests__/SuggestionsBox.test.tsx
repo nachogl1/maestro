@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { JSONContent } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
+import {
+  CATCH_UP_TRUNCATED_NOTICE,
+  type CandidateRunOutcome,
+  useWorkJournalCandidateRunStore,
+} from "@/stores/useWorkJournalCandidateRunStore";
 import {
   ACCEPT_NO_EDITOR_ERROR,
   ACCEPT_SAVE_FAILED_ERROR,
@@ -35,6 +39,8 @@ let acceptHook: (() => Promise<void>) | null;
 let acceptGone: boolean;
 /** What the Granola preflight answers. */
 let granolaConnected: boolean;
+/** What a candidate run answers. */
+let runOutcome: CandidateRunOutcome;
 
 function paragraph(text: string): JSONContent {
   return { type: "paragraph", content: [{ type: "text", text }] };
@@ -96,7 +102,7 @@ function mockBackend(): void {
         return found;
       }
       case "work_journal_run_candidates":
-        return { status: "ran", added: 0, dates: [], lastRunAt: "2026-10-14T10:00:00Z" };
+        return runOutcome;
       case "work_journal_granola_status":
         return { connected: granolaConnected };
       case "update_work_journal_settings":
@@ -143,6 +149,13 @@ describe("SuggestionsBox", () => {
     saveHook = null;
     acceptHook = null;
     acceptGone = false;
+    runOutcome = {
+      status: "ran",
+      added: 0,
+      dates: [],
+      lastRunAt: "2026-10-14T10:00:00Z",
+      lastAttemptAt: "2026-10-14T10:00:00Z",
+    };
     invokeMock.mockReset();
     mockBackend();
     useWorkJournalStore.setState({
@@ -353,6 +366,40 @@ describe("SuggestionsBox", () => {
     expect(
       within(box()).getByText("No project is open, so there was nothing to look at."),
     ).toBeInTheDocument();
+  });
+
+  it("says once when a catch-up skipped older days, next to a failure, and the next run clears it", async () => {
+    candidates = [];
+    runOutcome = {
+      status: "failed",
+      message: "Candidate run for 2026-10-13 failed: claude did not answer within 180s",
+      added: 0,
+      dates: [],
+      lastRunAt: "2026-10-14T10:00:00Z",
+      lastAttemptAt: "2026-10-14T10:00:00Z",
+      truncatedFrom: "2026-10-04T09:00:00Z",
+    };
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue(`Page ${TODAY}`);
+
+    fireEvent.click(within(box()).getByRole("button", { name: "run now" }));
+
+    expect(await within(box()).findByText(CATCH_UP_TRUNCATED_NOTICE)).toBeInTheDocument();
+    expect(
+      within(box()).getByText(
+        "Candidate run for 2026-10-13 failed: claude did not answer within 180s",
+      ),
+    ).toBeInTheDocument();
+
+    runOutcome = {
+      status: "ran",
+      added: 0,
+      dates: [],
+      lastRunAt: "2026-10-14T11:00:00Z",
+      lastAttemptAt: "2026-10-14T11:00:00Z",
+    };
+    fireEvent.click(within(box()).getByRole("button", { name: "run now" }));
+    await waitFor(() => expect(within(box()).queryByText(CATCH_UP_TRUNCATED_NOTICE)).toBeNull());
   });
   /** Clicks a box row's button. */
   function clickRow(text: string, button: "Accept suggestion" | "Reject suggestion"): void {

@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal says when a catch-up skipped activity older than 7 days, and Settings now shows when the last suggestion run actually happened next to how far it got.",
       "Work Journal is easier to use with a screen reader: the top-bar icon announces waiting suggestions and unsaved changes, the report dialog keeps keyboard focus inside it, and each suggestion's Accept and Reject buttons name the suggestion.",
       "Work Journal reports are limited to 92 days (and a set amount of text) so a run cannot hang for minutes.",
       "Work Journal: while a restore or undo runs, both the pane and the pop-out are frozen (text, toolbar, new page, delete, suggestions), so no edit can land on top of the restored journal.",
