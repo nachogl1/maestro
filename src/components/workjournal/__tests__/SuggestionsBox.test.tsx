@@ -15,6 +15,7 @@ import {
   type WorkJournalFile,
   type WorkJournalPage,
 } from "@/stores/useWorkJournalStore";
+import { GRANOLA_OPT_IN_QUESTION } from "../SuggestionsBox";
 import { WorkJournalPanel } from "../WorkJournalPanel";
 
 const invokeMock = vi.mocked(invoke);
@@ -32,6 +33,8 @@ let saveHook: (() => Promise<void>) | null;
 let acceptHook: (() => Promise<void>) | null;
 /** When true, the accept command answers null (the candidate was already gone). */
 let acceptGone: boolean;
+/** What the Granola preflight answers. */
+let granolaConnected: boolean;
 
 function paragraph(text: string): JSONContent {
   return { type: "paragraph", content: [{ type: "text", text }] };
@@ -94,6 +97,11 @@ function mockBackend(): void {
       }
       case "work_journal_run_candidates":
         return { status: "ran", added: 0, dates: [], lastRunAt: "2026-10-14T10:00:00Z" };
+      case "work_journal_granola_status":
+        return { connected: granolaConnected };
+      case "update_work_journal_settings":
+        file.settings = { ...file.settings, ...(a.settings as Record<string, unknown>) };
+        return structuredClone(file);
       default:
         return undefined;
     }
@@ -470,5 +478,129 @@ describe("SuggestionsBox", () => {
     await act(async () => useWorkJournalCandidatesStore.getState().accept(candidates[0]));
     expect(callsTo("update_work_journal_page")).toEqual([]);
     expect(callsTo("accept_work_journal_candidate")).toEqual([]);
+  });
+});
+
+describe("SuggestionsBox Granola opt-in question", () => {
+  beforeEach(() => {
+    file = {
+      layout_version: 1,
+      pages: { [TODAY]: page(TODAY) },
+      deleted_dates: [],
+      last_auto_created_date: TODAY,
+      settings: {},
+    };
+    candidates = [];
+    saveHook = null;
+    acceptHook = null;
+    acceptGone = false;
+    granolaConnected = true;
+    invokeMock.mockReset();
+    mockBackend();
+    useWorkJournalStore.setState({
+      pages: {},
+      viewedDate: null,
+      loading: false,
+      error: null,
+      replacing: false,
+    });
+    useWorkJournalCandidatesStore.setState(CANDIDATES_INITIAL, true);
+    useWorkJournalCandidateRunStore.setState(
+      { ...RUN_INITIAL, settingsLoaded: true, granolaOptIn: null },
+      true,
+    );
+  });
+
+  async function renderPanel(): Promise<void> {
+    render(<WorkJournalPanel />);
+    await screen.findByRole("region", { name: "Suggestions" });
+  }
+
+  it("asks once when Granola is connected and the choice was never made", async () => {
+    await renderPanel();
+    expect(await within(box()).findByText(GRANOLA_OPT_IN_QUESTION)).toBeInTheDocument();
+    expect(within(box()).getByRole("button", { name: "Yes" })).toBeEnabled();
+    expect(within(box()).getByRole("button", { name: "No" })).toBeEnabled();
+    act(() => useWorkJournalCandidateRunStore.setState({ running: true }));
+    act(() => useWorkJournalCandidateRunStore.setState({ running: false }));
+    expect(callsTo("work_journal_granola_status")).toHaveLength(1);
+    expect(callsTo("update_work_journal_settings")).toEqual([]);
+  });
+
+  it.each([
+    ["Yes", true],
+    ["No", false],
+  ])("%s saves only granola_opt_in and hides the question for good", async (label, value) => {
+    await renderPanel();
+    await within(box()).findByText(GRANOLA_OPT_IN_QUESTION);
+
+    fireEvent.click(within(box()).getByRole("button", { name: label }));
+
+    await waitFor(() =>
+      expect(within(box()).queryByText(GRANOLA_OPT_IN_QUESTION)).not.toBeInTheDocument(),
+    );
+    expect(callsTo("update_work_journal_settings")).toEqual([
+      { settings: { granola_opt_in: value } },
+    ]);
+    expect(useWorkJournalCandidateRunStore.getState().granolaOptIn).toBe(value);
+    expect(file.settings).toEqual({ granola_opt_in: value });
+  });
+
+  it("keeps the question with a hint when the choice cannot be saved", async () => {
+    await renderPanel();
+    await within(box()).findByText(GRANOLA_OPT_IN_QUESTION);
+    invokeMock.mockImplementationOnce(async () => {
+      throw new Error("disk full");
+    });
+
+    fireEvent.click(within(box()).getByRole("button", { name: "Yes" }));
+
+    expect(
+      await within(box()).findByText("Could not save your choice. Try again."),
+    ).toBeInTheDocument();
+    expect(within(box()).getByText(GRANOLA_OPT_IN_QUESTION)).toBeInTheDocument();
+  });
+
+  it.each([true, false])("never asks once the choice is %s", async (optIn) => {
+    useWorkJournalCandidateRunStore.setState({ granolaOptIn: optIn });
+    await renderPanel();
+    await act(async () => {});
+    expect(within(box()).queryByText(GRANOLA_OPT_IN_QUESTION)).not.toBeInTheDocument();
+    expect(callsTo("work_journal_granola_status")).toEqual([]);
+  });
+
+  it("does not ask when Granola is not connected", async () => {
+    granolaConnected = false;
+    await renderPanel();
+    await waitFor(() => expect(callsTo("work_journal_granola_status")).toHaveLength(1));
+    await act(async () => {});
+    expect(within(box()).queryByText(GRANOLA_OPT_IN_QUESTION)).not.toBeInTheDocument();
+  });
+
+  it("does not ask when the check fails", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "work_journal_granola_status") throw new Error("no claude");
+      if (cmd === "load_work_journal" || cmd === "work_journal_ensure_pages") {
+        return structuredClone(file);
+      }
+      if (cmd === "list_work_journal_candidates") return [];
+      return undefined;
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    await renderPanel();
+    await waitFor(() => expect(callsTo("work_journal_granola_status")).toHaveLength(1));
+    await act(async () => {});
+    expect(within(box()).queryByText(GRANOLA_OPT_IN_QUESTION)).not.toBeInTheDocument();
+    consoleError.mockRestore();
+  });
+
+  it("waits for the run settings before checking", async () => {
+    useWorkJournalCandidateRunStore.setState({ settingsLoaded: false });
+    await renderPanel();
+    await act(async () => {});
+    expect(callsTo("work_journal_granola_status")).toEqual([]);
+
+    act(() => useWorkJournalCandidateRunStore.setState({ settingsLoaded: true }));
+    expect(await within(box()).findByText(GRANOLA_OPT_IN_QUESTION)).toBeInTheDocument();
   });
 });

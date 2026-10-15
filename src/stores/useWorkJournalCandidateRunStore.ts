@@ -12,6 +12,8 @@ export interface WorkJournalCandidateRunSettings {
   run_every_hours?: number | null;
   model?: string | null;
   last_run_at?: string | null;
+  /** Whether runs may read Granola meeting notes; absent means not asked yet. */
+  granola_opt_in?: boolean | null;
 }
 
 /** The part of `work-journal.json` (as the backend returns it) the candidate run reads. */
@@ -39,6 +41,10 @@ interface WorkJournalCandidateRunState {
   model: string;
   /** RFC 3339 time the last run's window ended; null when never. */
   lastRunAt: string | null;
+  /** The Granola opt-in: true = yes, false = no, null = not asked yet. */
+  granolaOptIn: boolean | null;
+  /** True once the settings were read (or saved) at least once. */
+  settingsLoaded: boolean;
   /** True while a run started from here is going. */
   running: boolean;
   /** The last run failure; cleared by a successful run. */
@@ -67,6 +73,8 @@ interface WorkJournalCandidateRunState {
   setRunEveryHours: (hours: number) => Promise<void>;
   /** Saves the model; blank means the user's default model. */
   setModel: (model: string) => Promise<void>;
+  /** Saves the Granola opt-in (Yes or No). */
+  setGranolaOptIn: (optIn: boolean) => Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
@@ -83,11 +91,17 @@ export function clampRunEveryHours(hours: number | null | undefined): number {
 
 function fromJournal(
   journal: WorkJournalCandidateRunFile,
-): Pick<WorkJournalCandidateRunState, "runEveryHours" | "model" | "lastRunAt"> {
+): Pick<
+  WorkJournalCandidateRunState,
+  "runEveryHours" | "model" | "lastRunAt" | "granolaOptIn" | "settingsLoaded"
+> {
+  const granolaOptIn = journal.settings.granola_opt_in;
   return {
     runEveryHours: clampRunEveryHours(journal.settings.run_every_hours),
     model: journal.settings.model ?? "",
     lastRunAt: journal.settings.last_run_at || null,
+    granolaOptIn: typeof granolaOptIn === "boolean" ? granolaOptIn : null,
+    settingsLoaded: true,
   };
 }
 
@@ -107,6 +121,8 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
   runEveryHours: DEFAULT_RUN_EVERY_HOURS,
   model: "",
   lastRunAt: null,
+  granolaOptIn: null,
+  settingsLoaded: false,
   running: false,
   runError: null,
   runNotice: null,
@@ -176,6 +192,16 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
     } catch (error) {
       console.error("Failed to save the Work Journal model:", error);
       set({ settingsError: `Could not save the model: ${errorMessage(error)}` });
+    }
+  },
+
+  setGranolaOptIn: async (optIn: boolean) => {
+    try {
+      const journal = await patchSettings({ granola_opt_in: optIn });
+      set({ ...fromJournal(journal), settingsError: null });
+    } catch (error) {
+      console.error("Failed to save the Work Journal Granola choice:", error);
+      set({ settingsError: `Could not save the Granola choice: ${errorMessage(error)}` });
     }
   },
 }));

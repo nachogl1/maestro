@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { WorkJournalCandidateRunRows } from "./WorkJournalCandidateRunRows";
+import { WorkJournalGranolaRow } from "./WorkJournalGranolaRow";
 
 /** "15 Oct 2026, 12:34" in the user's locale; the raw text if unparsable. */
 function formatBackupTime(iso: string): string {
@@ -109,6 +110,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
       </div>
       <div className="space-y-1.5 px-1">
         <WorkJournalCandidateRunRows />
+        <WorkJournalGranolaRow />
         <div className="flex items-center gap-2 text-xs">
           <span className="shrink-0 text-maestro-muted">Backup folder</span>
           <span

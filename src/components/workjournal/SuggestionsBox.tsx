@@ -1,5 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Check, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import {
   candidateLine,
@@ -21,6 +22,38 @@ export interface SuggestionsBoxProps {
   hasPage: boolean;
   /** The page is shown read-only (this build cannot read it), so Accept cannot add to it. */
   readOnly?: boolean;
+}
+
+/** The one-time Granola opt-in question (PRD "Granola connector"). */
+export const GRANOLA_OPT_IN_QUESTION =
+  "Use your Granola meeting notes for suggestions? Notes are sent to Claude and not stored.";
+
+/** What `work_journal_granola_status` answers. */
+interface GranolaStatus {
+  connected: boolean;
+}
+
+/**
+ * Whether to ask the Granola question: once per mount, only after the run
+ * settings were read and while the choice was never made, ask the backend
+ * whether Granola is connected (it runs `claude mcp list`; no meeting is
+ * read). Any failure counts as not connected.
+ */
+function useGranolaQuestion(): boolean {
+  const granolaOptIn = useWorkJournalCandidateRunStore((s) => s.granolaOptIn);
+  const settingsLoaded = useWorkJournalCandidateRunStore((s) => s.settingsLoaded);
+  const checked = useRef(false);
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!settingsLoaded || granolaOptIn !== null || checked.current) return;
+    checked.current = true;
+    invoke<GranolaStatus>("work_journal_granola_status")
+      .then((status) => setConnected(status?.connected === true))
+      .catch((error) => console.error("Failed to check whether Granola is connected:", error));
+  }, [settingsLoaded, granolaOptIn]);
+
+  return connected && granolaOptIn === null;
 }
 
 /** "next run" text: "soon" before the start-up catch-up run, HH:MM, or "—" when unknown. */
@@ -51,6 +84,10 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
   const runError = useWorkJournalCandidateRunStore((s) => s.runError);
   const nextRunAt = useWorkJournalCandidateRunStore((s) => s.nextRunAt);
   const catchUpPending = useWorkJournalCandidateRunStore((s) => s.catchUpPending);
+  const setGranolaOptIn = useWorkJournalCandidateRunStore((s) => s.setGranolaOptIn);
+  const askGranola = useGranolaQuestion();
+  const [granolaSaving, setGranolaSaving] = useState(false);
+  const [granolaSaveFailed, setGranolaSaveFailed] = useState(false);
 
   useEffect(() => {
     void refresh(date);
@@ -68,6 +105,13 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
   const runNow = (): void => {
     const store = useWorkJournalCandidateRunStore.getState();
     void store.runNow(store.projects);
+  };
+
+  const answerGranola = async (optIn: boolean): Promise<void> => {
+    setGranolaSaving(true);
+    await setGranolaOptIn(optIn);
+    setGranolaSaving(false);
+    setGranolaSaveFailed(useWorkJournalCandidateRunStore.getState().granolaOptIn === null);
   };
 
   return (
@@ -91,6 +135,35 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
           </button>
         </span>
       </div>
+
+      {askGranola && (
+        <div className="mt-1.5 rounded-md border border-maestro-accent/40 bg-maestro-accent/10 px-1.5 py-1 text-[11px] text-maestro-text">
+          <p>{GRANOLA_OPT_IN_QUESTION}</p>
+          <div className="mt-1 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void answerGranola(true)}
+              disabled={granolaSaving}
+              className="rounded border border-maestro-accent/50 px-2 text-maestro-accent hover:bg-maestro-accent/20 disabled:opacity-50"
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              onClick={() => void answerGranola(false)}
+              disabled={granolaSaving}
+              className="rounded border border-maestro-border px-2 text-maestro-muted hover:bg-maestro-card disabled:opacity-50"
+            >
+              No
+            </button>
+            {granolaSaveFailed && (
+              <span className="text-[10px] text-maestro-red">
+                Could not save your choice. Try again.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {(runNotice || runError) && (
         <p className={`mt-1 text-[10px] ${runError ? "text-maestro-red" : "text-maestro-muted"}`}>
