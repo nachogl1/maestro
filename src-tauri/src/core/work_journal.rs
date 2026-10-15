@@ -127,6 +127,11 @@ pub enum WorkJournalError {
     /// Message from the shared `atomic_write` helper, which reports `String`.
     #[error("{0}")]
     Write(String),
+    /// A page or candidate write arrived while a restore or undo replaces the
+    /// journal (or began before one): it belongs to the replaced journal. The
+    /// frontend matches the `RESTORE_IN_PROGRESS:` code at the start.
+    #[error("RESTORE_IN_PROGRESS: The Work Journal is being restored; this change was not saved.")]
+    RestoreInProgress,
 }
 
 /// Result type for Work Journal operations.

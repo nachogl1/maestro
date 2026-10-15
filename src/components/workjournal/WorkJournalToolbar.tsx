@@ -69,6 +69,11 @@ export function normalizeLinkHref(raw: string): string {
 
 interface WorkJournalToolbarProps {
   editor: Editor;
+  /**
+   * Every button is off and no option row shows (a restore or undo is
+   * replacing the journal). TipTap runs commands even on a read-only editor.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -77,7 +82,7 @@ interface WorkJournalToolbarProps {
  * colour and highlight on the selection. No font family or size controls.
  * Colour, highlight and link options open in a row under the buttons.
  */
-export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
+export function WorkJournalToolbar({ editor, disabled = false }: WorkJournalToolbarProps) {
   const state = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -100,7 +105,8 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
     }),
   });
 
-  const [row, setRow] = useState<WorkJournalToolbarRow | null>(null);
+  const [openRow, setRow] = useState<WorkJournalToolbarRow | null>(null);
+  const row = disabled ? null : openRow;
   const [linkDraft, setLinkDraft] = useState("");
   const [linkRejected, setLinkRejected] = useState(false);
 
@@ -175,6 +181,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
         className="flex flex-wrap items-center gap-0.5 px-2 py-1"
       >
         <ToolButton
+          disabled={disabled}
           label="Bold"
           active={state.bold}
           onClick={() => editor.chain().focus().toggleBold().run()}
@@ -182,6 +189,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Bold size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Italic"
           active={state.italic}
           onClick={() => editor.chain().focus().toggleItalic().run()}
@@ -189,6 +197,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Italic size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Underline"
           active={state.underline}
           onClick={() => editor.chain().focus().toggleUnderline().run()}
@@ -196,6 +205,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Underline size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Strikethrough"
           active={state.strike}
           onClick={() => editor.chain().focus().toggleStrike().run()}
@@ -204,6 +214,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
         </ToolButton>
         <ToolDivider />
         <ToolButton
+          disabled={disabled}
           label="Heading 1"
           active={state.h1}
           onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
@@ -211,6 +222,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Heading1 size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Heading 2"
           active={state.h2}
           onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
@@ -218,6 +230,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Heading2 size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Heading 3"
           active={state.h3}
           onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
@@ -226,6 +239,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
         </ToolButton>
         <ToolDivider />
         <ToolButton
+          disabled={disabled}
           label="Bullet list"
           active={state.bulletList}
           onClick={() => editor.chain().focus().toggleBulletList().run()}
@@ -233,6 +247,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <List size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Numbered list"
           active={state.orderedList}
           onClick={() => editor.chain().focus().toggleOrderedList().run()}
@@ -240,6 +255,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <ListOrdered size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Checklist"
           active={state.taskList}
           onClick={() => editor.chain().focus().toggleTaskList().run()}
@@ -248,6 +264,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
         </ToolButton>
         <ToolDivider />
         <ToolButton
+          disabled={disabled}
           label="Link"
           active={state.link || row === "link"}
           onClick={() => toggleRow("link")}
@@ -255,6 +272,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Link size={14} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Text colour"
           active={row === "color"}
           expands
@@ -263,6 +281,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <Baseline size={14} style={state.color ? { color: state.color } : undefined} />
         </ToolButton>
         <ToolButton
+          disabled={disabled}
           label="Highlight"
           active={row === "highlight"}
           expands
@@ -343,6 +362,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
 interface ToolButtonProps {
   label: string;
   active: boolean;
+  disabled: boolean;
   /** The button opens an option row: `active` is reported as expanded, not pressed. */
   expands?: boolean;
   onClick: () => void;
@@ -350,17 +370,25 @@ interface ToolButtonProps {
 }
 
 /** An icon button that keeps the editor's selection (no focus steal on press). */
-function ToolButton({ label, active, expands = false, onClick, children }: ToolButtonProps) {
+function ToolButton({
+  label,
+  active,
+  disabled,
+  expands = false,
+  onClick,
+  children,
+}: ToolButtonProps) {
   return (
     <button
       type="button"
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
+      disabled={disabled}
       aria-label={label}
       aria-pressed={expands ? undefined : active}
       aria-expanded={expands ? active : undefined}
       title={label}
-      className={`${TOOL_BUTTON} ${active ? TOOL_BUTTON_ACTIVE : ""}`}
+      className={`${TOOL_BUTTON} ${active ? TOOL_BUTTON_ACTIVE : ""} disabled:cursor-not-allowed disabled:opacity-40`}
     >
       {children}
     </button>
