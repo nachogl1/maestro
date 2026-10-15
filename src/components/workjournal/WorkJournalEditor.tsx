@@ -1,9 +1,14 @@
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { BackgroundColor, Color, TextStyle } from "@tiptap/extension-text-style";
+import { Fragment, type Node as PmNode, Slice } from "@tiptap/pm/model";
 import { EditorContent, getSchema, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useMemo, useRef } from "react";
-import { WorkJournalToolbar } from "@/components/workjournal/WorkJournalToolbar";
+import {
+  WORK_JOURNAL_HIGHLIGHT_COLORS,
+  WORK_JOURNAL_TEXT_COLORS,
+  WorkJournalToolbar,
+} from "@/components/workjournal/WorkJournalToolbar";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /** How long typing must pause before the page body is saved. */
@@ -24,6 +29,65 @@ const WORK_JOURNAL_EXTENSIONS = [
 ];
 
 const WORK_JOURNAL_SCHEMA = getSchema(WORK_JOURNAL_EXTENSIONS);
+
+/** A CSS value without spaces or case, so `rgba(1, 2, 3)` matches `RGBA(1,2,3)`. */
+function cssValueKey(value: string): string {
+  return value
+    .replace(/!important/i, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+const PALETTE_TEXT_COLORS = new Set(WORK_JOURNAL_TEXT_COLORS.map((c) => cssValueKey(c.value)));
+const PALETTE_HIGHLIGHTS = new Set(WORK_JOURNAL_HIGHLIGHT_COLORS.map((c) => cssValueKey(c.value)));
+
+/**
+ * Drops pasted or dropped text and background colours that are not the
+ * toolbar's own: text copied from a web page or document carries inline
+ * colours (often near-black text or a white box) that would be stored for
+ * good. Palette colours stay, so copying between Work Journal pages keeps
+ * them. The style text is edited as written, not re-serialised, because the
+ * colour extensions read the value exactly as written.
+ */
+export function stripForeignPastedColors(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const el of Array.from(doc.body.querySelectorAll("[style]"))) {
+    const kept = (el.getAttribute("style") ?? "").split(";").filter((decl) => {
+      const colon = decl.indexOf(":");
+      if (colon === -1) return false;
+      const prop = decl.slice(0, colon).trim().toLowerCase();
+      const value = cssValueKey(decl.slice(colon + 1));
+      if (prop === "color") return PALETTE_TEXT_COLORS.has(value);
+      if (prop === "background-color") return PALETTE_HIGHLIGHTS.has(value);
+      // The shorthand also sets a background colour; the toolbar never writes it.
+      return prop !== "background";
+    });
+    if (kept.length > 0) el.setAttribute("style", kept.join(";"));
+    else el.removeAttribute("style");
+  }
+  return doc.body.innerHTML;
+}
+
+/**
+ * Removes `textStyle` marks left with no value: any pasted span with a style
+ * (say `font-weight`) becomes one, with empty colour attributes once the
+ * colours are stripped.
+ */
+function dropEmptyTextStyles(fragment: Fragment): Fragment {
+  const nodes: PmNode[] = [];
+  fragment.forEach((node) => {
+    if (node.isText) {
+      const marks = node.marks.filter(
+        (m) =>
+          m.type.name !== "textStyle" || Object.values(m.attrs).some((v) => v != null && v !== ""),
+      );
+      nodes.push(node.mark(marks));
+    } else {
+      nodes.push(node.copy(dropEmptyTextStyles(node.content)));
+    }
+  });
+  return Fragment.from(nodes);
+}
 
 /**
  * Whether this build's editor can load `body` exactly. TipTap silently swaps
@@ -94,6 +158,10 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
       timerRef.current = setTimeout(() => flushRef.current(), WORK_JOURNAL_SAVE_DEBOUNCE_MS);
     },
     editorProps: {
+      // Also runs for HTML dropped onto the page.
+      transformPastedHTML: stripForeignPastedColors,
+      transformPasted: (slice) =>
+        new Slice(dropEmptyTextStyles(slice.content), slice.openStart, slice.openEnd),
       attributes: {
         class: "focus:outline-none",
         "aria-label": "Work Journal page",

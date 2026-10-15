@@ -22,16 +22,19 @@ interface WorkJournalSwatch {
   value: string;
 }
 
-/** Text colours: mid tones that read on the dark theme (and hold on the light one). */
+/**
+ * Text colours. Stored as fixed values (not theme-aware), so each one keeps
+ * at least 3:1 contrast on both the dark and the light page backgrounds.
+ */
 export const WORK_JOURNAL_TEXT_COLORS: WorkJournalSwatch[] = [
-  { name: "Red", value: "#ef4444" },
-  { name: "Orange", value: "#f97316" },
-  { name: "Yellow", value: "#eab308" },
-  { name: "Green", value: "#22c55e" },
-  { name: "Blue", value: "#3b82f6" },
-  { name: "Purple", value: "#a855f7" },
-  { name: "Pink", value: "#ec4899" },
-  { name: "Grey", value: "#9ca3af" },
+  { name: "Red", value: "#dc2626" },
+  { name: "Orange", value: "#ea580c" },
+  { name: "Gold", value: "#a16207" },
+  { name: "Green", value: "#16a34a" },
+  { name: "Blue", value: "#2563eb" },
+  { name: "Purple", value: "#9333ea" },
+  { name: "Pink", value: "#db2777" },
+  { name: "Grey", value: "#6b7280" },
 ];
 
 /** Highlights: translucent, so the page's own text colour stays readable on top. */
@@ -54,10 +57,14 @@ const TOOL_BUTTON_ACTIVE = "bg-maestro-card text-maestro-accent";
 const ROW_BUTTON =
   "rounded bg-maestro-card px-2 py-0.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border";
 
-/** Adds `https://` to a bare address such as `example.com`; keeps any given scheme. */
-function normalizeLinkHref(raw: string): string {
+/**
+ * Adds `https://` to an address without a scheme, such as `example.com` or
+ * `localhost:3000` (a host and port is not a scheme). Keeps `scheme://…` and
+ * `mailto:`.
+ */
+export function normalizeLinkHref(raw: string): string {
   const href = raw.trim();
-  return /^[a-z][a-z0-9+.-]*:/i.test(href) ? href : `https://${href}`;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(href) || /^mailto:/i.test(href) ? href : `https://${href}`;
 }
 
 interface WorkJournalToolbarProps {
@@ -85,6 +92,9 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
       orderedList: e.isActive("orderedList"),
       taskList: e.isActive("taskList"),
       link: e.isActive("link"),
+      // A link needs selected text or an existing link under the cursor;
+      // otherwise setLink would only arm a stored mark and nothing shows.
+      canLink: !e.state.selection.empty || e.isActive("link"),
       color: (e.getAttributes("textStyle").color as string | undefined) ?? null,
       backgroundColor: (e.getAttributes("textStyle").backgroundColor as string | undefined) ?? null,
     }),
@@ -92,20 +102,40 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
 
   const [row, setRow] = useState<WorkJournalToolbarRow | null>(null);
   const [linkDraft, setLinkDraft] = useState("");
+  const [linkRejected, setLinkRejected] = useState(false);
 
   const toggleRow = (next: WorkJournalToolbarRow): void => {
     if (next === "link") {
       setLinkDraft((editor.getAttributes("link").href as string | undefined) ?? "");
+      setLinkRejected(false);
     }
     setRow((prev) => (prev === next ? null : next));
   };
 
+  const closeRow = (): void => {
+    setRow(null);
+    editor.commands.focus();
+  };
+
+  const canApplyLink = linkDraft.trim() === "" || state.canLink;
+
+  // The box stays open, with the typed address, unless the link was applied.
   const applyLink = (): void => {
     const href = linkDraft.trim();
-    const chain = editor.chain().focus().extendMarkRange("link");
-    if (href) chain.setLink({ href: normalizeLinkHref(href) }).run();
-    else chain.unsetLink().run();
-    setRow(null);
+    if (!href) {
+      if (state.link) editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      setRow(null);
+      return;
+    }
+    if (!state.canLink) return;
+    const applied = editor
+      .chain()
+      .focus()
+      .extendMarkRange("link")
+      .setLink({ href: normalizeLinkHref(href) })
+      .run();
+    if (applied) setRow(null);
+    else setLinkRejected(true);
   };
 
   const removeLink = (): void => {
@@ -119,8 +149,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
       applyLink();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      setRow(null);
-      editor.commands.focus();
+      closeRow();
     }
   };
 
@@ -225,12 +254,18 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
         >
           <Link size={14} />
         </ToolButton>
-        <ToolButton label="Text colour" active={row === "color"} onClick={() => toggleRow("color")}>
+        <ToolButton
+          label="Text colour"
+          active={row === "color"}
+          expands
+          onClick={() => toggleRow("color")}
+        >
           <Baseline size={14} style={state.color ? { color: state.color } : undefined} />
         </ToolButton>
         <ToolButton
           label="Highlight"
           active={row === "highlight"}
+          expands
           onClick={() => toggleRow("highlight")}
         >
           <Highlighter
@@ -251,6 +286,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
             </span>
           )}
           onPick={setColor}
+          onClose={closeRow}
         />
       )}
 
@@ -263,6 +299,7 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
             <span className="block h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: s.value }} />
           )}
           onPick={setHighlight}
+          onClose={closeRow}
         />
       )}
 
@@ -271,7 +308,10 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
           <input
             type="text"
             value={linkDraft}
-            onChange={(e) => setLinkDraft(e.target.value)}
+            onChange={(e) => {
+              setLinkDraft(e.target.value);
+              setLinkRejected(false);
+            }}
             onKeyDown={handleLinkKey}
             // biome-ignore lint/a11y/noAutofocus: the row opens on a click to type the address.
             autoFocus
@@ -279,7 +319,12 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
             placeholder="https://…"
             className="min-w-0 flex-1 rounded border border-maestro-border bg-maestro-card px-1.5 py-0.5 text-xs text-maestro-text outline-none focus:border-maestro-accent"
           />
-          <button type="button" onClick={applyLink} className={ROW_BUTTON}>
+          <button
+            type="button"
+            onClick={applyLink}
+            disabled={!canApplyLink}
+            className={`${ROW_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
+          >
             Apply
           </button>
           {state.link && (
@@ -287,6 +332,8 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
               Remove link
             </button>
           )}
+          {!canApplyLink && <span>Select some text to link.</span>}
+          {linkRejected && <span className="text-maestro-red">That address cannot be a link.</span>}
         </div>
       )}
     </div>
@@ -296,19 +343,22 @@ export function WorkJournalToolbar({ editor }: WorkJournalToolbarProps) {
 interface ToolButtonProps {
   label: string;
   active: boolean;
+  /** The button opens an option row: `active` is reported as expanded, not pressed. */
+  expands?: boolean;
   onClick: () => void;
   children: ReactNode;
 }
 
 /** An icon button that keeps the editor's selection (no focus steal on press). */
-function ToolButton({ label, active, onClick, children }: ToolButtonProps) {
+function ToolButton({ label, active, expands = false, onClick, children }: ToolButtonProps) {
   return (
     <button
       type="button"
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       aria-label={label}
-      aria-pressed={active}
+      aria-pressed={expands ? undefined : active}
+      aria-expanded={expands ? active : undefined}
       title={label}
       className={`${TOOL_BUTTON} ${active ? TOOL_BUTTON_ACTIVE : ""}`}
     >
@@ -327,13 +377,21 @@ interface SwatchRowProps {
   current: string | null;
   renderSwatch: (swatch: WorkJournalSwatch) => ReactNode;
   onPick: (value: string | null) => void;
+  /** Escape inside the row closes it. */
+  onClose: () => void;
 }
 
 /** A row of colour swatches plus "None", applied to the current selection. */
-function SwatchRow({ kind, swatches, current, renderSwatch, onPick }: SwatchRowProps) {
+function SwatchRow({ kind, swatches, current, renderSwatch, onPick, onClose }: SwatchRowProps) {
   return (
     <fieldset
       aria-label={`${kind} options`}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
       className="flex flex-wrap items-center gap-1 px-3 pb-1.5"
     >
       {swatches.map((s) => (
@@ -357,6 +415,7 @@ function SwatchRow({ kind, swatches, current, renderSwatch, onPick }: SwatchRowP
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => onPick(null)}
         aria-label={`${kind} none`}
+        aria-pressed={current === null}
         title="None"
         className="rounded border border-maestro-border px-1.5 py-0.5 text-xs text-maestro-muted transition-colors hover:border-maestro-text hover:text-maestro-text"
       >

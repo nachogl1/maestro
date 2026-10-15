@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { Editor, JSONContent } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import { EMPTY_PAGE_BODY, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 import {
   canReadWorkJournalBody,
+  stripForeignPastedColors,
   WORK_JOURNAL_SAVE_DEBOUNCE_MS,
   WorkJournalEditor,
 } from "../WorkJournalEditor";
@@ -162,6 +163,67 @@ describe("WorkJournalEditor formatting", () => {
     const styled = screen.getByText("Red on yellow");
     expect(styled.style.color).not.toBe("");
     expect(styled.style.backgroundColor).not.toBe("");
+  });
+});
+
+describe("WorkJournalEditor paste", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    updatePage.mockClear();
+    useWorkJournalStore.setState({ updatePage });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("drops text and background colours copied from elsewhere, keeping other formatting", async () => {
+    render(<WorkJournalEditor date="2026-10-15" initialBody={EMPTY_PAGE_BODY} />);
+
+    act(() => {
+      pageEditor().view.pasteHTML(
+        '<p><span style="color: rgb(31, 35, 40); background-color: rgb(255, 255, 255); ' +
+          'font-weight: 700">Copied</span> <span style="background: white">boxed</span></p>',
+      );
+    });
+
+    const saved = JSON.stringify(await lastSavedBody());
+    expect(saved).toContain("Copied");
+    expect(saved).toContain("boxed");
+    expect(saved).not.toContain("textStyle");
+    expect(saved).not.toContain("rgb(");
+    expect(saved).not.toContain("white");
+    expect(saved).toContain('"type":"bold"');
+  });
+
+  it("keeps the toolbar's own colours when pasting between pages", async () => {
+    render(<WorkJournalEditor date="2026-10-15" initialBody={EMPTY_PAGE_BODY} />);
+
+    act(() => {
+      pageEditor().view.pasteHTML(
+        '<p><span style="color: #dc2626; background-color: rgba(234, 179, 8, 0.35)">Ours</span></p>',
+      );
+    });
+
+    const text = (await lastSavedBody()).content?.[0].content?.[0];
+    expect(text?.marks).toEqual([
+      {
+        type: "textStyle",
+        attrs: expect.objectContaining({
+          color: "#dc2626",
+          backgroundColor: "rgba(234, 179, 8, 0.35)",
+        }),
+      },
+    ]);
+  });
+
+  it("strips only the colour declarations from a style attribute", () => {
+    expect(
+      stripForeignPastedColors(
+        '<span style="color: red; font-style: italic; background-color: #fff">x</span>',
+      ),
+    ).toBe('<span style=" font-style: italic">x</span>');
+    expect(stripForeignPastedColors('<span style="color: red">x</span>')).toBe("<span>x</span>");
   });
 });
 
