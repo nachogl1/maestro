@@ -12,6 +12,7 @@ use crate::core::session_manager::SessionManager;
 use crate::core::status_server::StatusServer;
 use crate::core::supervisor::Supervisor;
 use crate::core::transcript_watcher::TranscriptWatcher;
+use crate::core::work_journal_activity;
 use crate::core::{BackendCapabilities, BackendType, ProcessManager, PtyError};
 
 /// Backend information returned to the frontend.
@@ -202,6 +203,11 @@ pub async fn kill_session(
     // lifetime and `get_sessions` kept reporting it — masked only by the
     // mount-time `kill_all_sessions` wipe.
     let removed = session_mgr.remove_session(session_id);
+    // Work journal: close this terminal's record (background, log-only).
+    work_journal_activity::note_terminal_closed(
+        session_id,
+        removed.as_ref().and_then(|s| s.branch.clone()),
+    );
     if let Some(session) = removed {
         log::debug!(
             "killed session {session_id} in {} — registry entry removed",
@@ -302,6 +308,8 @@ pub async fn kill_all_sessions(
     let pm = state.inner().clone();
     let killed = pm.kill_all_sessions().await?;
     let cleared = session_state.clear_all();
+    // Work journal: every PTY died, so close every open terminal record.
+    work_journal_activity::close_all_terminals().await;
     // Release every transcript watcher too: watchers are capped, and a
     // frontend reload that leaks them eventually starves new sessions of
     // their activity feed.
