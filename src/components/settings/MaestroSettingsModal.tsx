@@ -15,6 +15,7 @@ import { useDismissable } from "@/hooks/useDismissable";
 import { formatTimeAgo } from "@/lib/format";
 import type { SamuraiConfig } from "@/lib/samurai";
 import { useUpdateStore } from "@/stores/useUpdateStore";
+import { WorkJournalSettingsSection } from "./WorkJournalSettingsSection";
 
 const SAMURAI_FIELDS: { key: keyof SamuraiConfig; label: string }[] = [
   { key: "handoff_context_pct", label: "Handoff trigger (context %)" },
@@ -142,7 +143,7 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
         </div>
 
         {/* Content */}
-        <div className="space-y-4 p-4">
+        <div className="max-h-[calc(100vh-6rem)] space-y-4 overflow-y-auto p-4">
           {/* Version */}
           <div>
             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
@@ -338,6 +339,8 @@ export function MaestroSettingsModal({ onClose }: MaestroSettingsModalProps) {
                   )}
             </div>
           </div>
+
+          <WorkJournalSettingsSection />
 
           {/* Advanced */}
           <div>
