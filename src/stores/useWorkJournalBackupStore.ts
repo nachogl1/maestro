@@ -92,6 +92,22 @@ interface WorkJournalBackupState {
    * Cleared by a successful backup or a folder change.
    */
   pausedByRestore: boolean;
+  /**
+   * True once the user closed the Work Journal's "no backup folder" reminder.
+   * In memory only, so the reminder is back on the next launch while no
+   * folder is set.
+   */
+  reminderDismissed: boolean;
+  /** Hides the "no backup folder" reminder for the rest of this app session. */
+  dismissReminder: () => void;
+  /**
+   * True while the main window shows Maestro Settings opened from the
+   * reminder (scrolled to the Work Journal section).
+   */
+  settingsRequested: boolean;
+  /** Opens Maestro Settings at the Work Journal section (main window only). */
+  openSettings: () => void;
+  closeSettings: () => void;
   /** Reads the backup settings from the journal file. */
   load: () => Promise<void>;
   /**
@@ -166,6 +182,13 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   restoring: false,
   notice: null,
   pausedByRestore: false,
+  reminderDismissed: false,
+
+  dismissReminder: () => set({ reminderDismissed: true }),
+
+  settingsRequested: false,
+  openSettings: () => set({ settingsRequested: true }),
+  closeSettings: () => set({ settingsRequested: false }),
 
   load: async () => {
     try {

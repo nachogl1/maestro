@@ -1,5 +1,6 @@
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   useWorkJournalCandidateRunStore,
   type WorkJournalCandidateRunState,
@@ -26,6 +27,12 @@ export const WORK_JOURNAL_RUN_NOW_EVENT = "work-journal:run-now";
 export const WORK_JOURNAL_RUN_STATE_REQUEST_EVENT = "work-journal:run-state-request";
 /** Main window → pop-out window: the candidate-run state, whenever it changes. */
 export const WORK_JOURNAL_RUN_STATE_EVENT = "work-journal:run-state";
+/**
+ * Pop-out window → main window: open Maestro Settings at the Work Journal
+ * section. Settings opens only in the main window, so the pop-out's own
+ * copies of other stores never write stale values back.
+ */
+export const WORK_JOURNAL_OPEN_SETTINGS_EVENT = "work-journal:open-settings";
 
 /** Payload of {@link WORK_JOURNAL_CHANGED_EVENT}. */
 export interface WorkJournalChangedPayload {
@@ -110,6 +117,9 @@ export async function serveWorkJournalWindow(runNow: () => void): Promise<Unlist
   };
   const stopRunNow = await listen(WORK_JOURNAL_RUN_NOW_EVENT, () => runNow());
   const stopRequest = await listen(WORK_JOURNAL_RUN_STATE_REQUEST_EVENT, send);
+  const stopSettings = await listen(WORK_JOURNAL_OPEN_SETTINGS_EVENT, () =>
+    useWorkJournalBackupStore.getState().openSettings(),
+  );
   // The pop-out window can change the run settings (the Granola question).
   const stopChanged = await listenWorkJournalChanged(() => {
     void useWorkJournalCandidateRunStore.getState().load();
@@ -118,6 +128,7 @@ export async function serveWorkJournalWindow(runNow: () => void): Promise<Unlist
   return () => {
     stopRunNow();
     stopRequest();
+    stopSettings();
     stopChanged();
     unsubscribe();
   };
@@ -140,4 +151,16 @@ export async function followWorkJournalRunState(): Promise<UnlistenFn> {
   });
   await emitTo("main", WORK_JOURNAL_RUN_STATE_REQUEST_EVENT).catch(() => {});
   return stop;
+}
+
+/**
+ * Pop-out window side: asks the main window to open Maestro Settings at the
+ * Work Journal section, and brings the main window forward to show it.
+ */
+export async function openWorkJournalSettingsInMainWindow(): Promise<void> {
+  await emitTo("main", WORK_JOURNAL_OPEN_SETTINGS_EVENT);
+  const main = await WebviewWindow.getByLabel("main");
+  if (!main) return;
+  await main.unminimize();
+  await main.setFocus();
 }
