@@ -24,9 +24,9 @@ use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, SecondsFormat, Utc
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::commands::ai_runner::artifact_base_dir;
 use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::session_manager::SessionConfig;
+use crate::core::work_journal::work_journal_dir;
 use crate::git::Git;
 
 /// File name inside the work-journal app-data folder.
@@ -168,9 +168,10 @@ pub struct ActivityFile {
     pub terminals: Vec<TerminalRecord>,
 }
 
-/// The app-data folder that holds `activity.json`.
+/// The folder that holds `activity.json`: the Work Journal's folder, so it
+/// follows the same `MAESTRO_WORK_JOURNAL_DIR` override as `work-journal.json`.
 pub fn activity_dir() -> PathBuf {
-    artifact_base_dir("work-journal")
+    work_journal_dir()
 }
 
 /// This app launch's id, made once per process.
