@@ -459,6 +459,20 @@ pub async fn list_candidates(dir: &Path, date: &str) -> ActivityResult<Vec<Candi
         .collect())
 }
 
+/// How many pending candidates each date has (dates with none are left
+/// out), in one read for the pop-out window's day list.
+pub async fn pending_counts(dir: &Path) -> ActivityResult<HashMap<String, usize>> {
+    let _guard = FILE_LOCK.lock().await;
+    let file = load(dir, Utc::now(), current_launch_id()).await?;
+    let mut counts = HashMap::new();
+    for candidate in file.candidates {
+        if candidate.state == CandidateState::Pending {
+            *counts.entry(candidate.date).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
+}
+
 /// Whether a record was running at some moment in the half-open window
 /// `[start, end)`: the record covers `[opened, closed)`, or is still running
 /// with no close. A record that opens and closes in the same second is a
@@ -1127,6 +1141,29 @@ mod tests {
             assert!(add_candidates(dir.path(), vec![ok, bad]).await.is_err());
         }
         assert!(!file_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn test_pending_counts_count_pending_candidates_per_date() {
+        let dir = tempdir().unwrap();
+        let added = add_candidates(
+            dir.path(),
+            vec![
+                new_candidate("2026-10-14", Some("09:00"), "a"),
+                new_candidate("2026-10-14", Some("10:00"), "b"),
+                new_candidate("2026-10-15", Some("11:00"), "c"),
+                new_candidate("2026-10-15", Some("12:00"), "rejected"),
+            ],
+        )
+        .await
+        .unwrap();
+        set_candidate_state(dir.path(), &added[3].id, CandidateState::Rejected)
+            .await
+            .unwrap();
+        let counts = pending_counts(dir.path()).await.unwrap();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts["2026-10-14"], 2);
+        assert_eq!(counts["2026-10-15"], 1);
     }
 
     #[tokio::test]

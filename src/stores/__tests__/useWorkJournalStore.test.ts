@@ -168,3 +168,155 @@ describe("useWorkJournalStore", () => {
     expect(useWorkJournalStore.getState().loading).toBe(false);
   });
 });
+
+describe("useWorkJournalStore sync (a change made in the other window)", () => {
+  function body(text: string): WorkJournalPage["body"] {
+    return { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] };
+  }
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useWorkJournalStore.setState({
+      pages: {},
+      viewedDate: null,
+      loading: false,
+      error: null,
+      revision: 0,
+      replacing: false,
+    });
+  });
+
+  it("takes the other window's text", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14")]).pages });
+    invokeMock.mockResolvedValueOnce(journal([{ ...page("2026-10-14"), body: body("theirs") }]));
+
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("theirs"));
+    expect(useWorkJournalStore.getState().revision).toBe(0);
+  });
+
+  it("keeps a save made here after the read started", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14")]).pages });
+    let answerRead: (j: WorkJournalFile) => void = () => {};
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "load_work_journal") {
+        return new Promise((resolve) => {
+          answerRead = resolve as typeof answerRead;
+        });
+      }
+      return Promise.resolve(journal([{ ...page("2026-10-14"), body: body("mine") }]));
+    });
+
+    const syncing = useWorkJournalStore.getState().sync(false);
+    // Saved (and confirmed) while the read is still on its way.
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("mine") });
+    answerRead(journal([{ ...page("2026-10-14"), body: body("older disk copy") }]));
+    await syncing;
+
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("mine"));
+  });
+
+  it("keeps text whose save failed until a later save lands", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14")]).pages });
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    expect(
+      await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("unsaved") }),
+    ).toBe(false);
+
+    invokeMock.mockResolvedValueOnce(journal([{ ...page("2026-10-14"), body: body("disk") }]));
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("unsaved"));
+
+    // The retry lands: from now on the other window's text is taken again.
+    invokeMock.mockResolvedValueOnce(journal([{ ...page("2026-10-14"), body: body("unsaved") }]));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("unsaved") });
+    invokeMock.mockResolvedValueOnce(journal([{ ...page("2026-10-14"), body: body("theirs") }]));
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("theirs"));
+  });
+
+  it("a failed title save keeps only the title local; the body still takes the other window's edits", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14", "Old")]).pages });
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Mine" });
+
+    invokeMock.mockResolvedValueOnce(
+      journal([{ ...page("2026-10-14", "Theirs"), body: body("their text") }]),
+    );
+    await useWorkJournalStore.getState().sync(false);
+    const synced = useWorkJournalStore.getState().pages["2026-10-14"];
+    expect(synced.title).toBe("Mine");
+    expect(synced.body).toEqual(body("their text"));
+
+    // A later title save lands and clears the mark.
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-14", "Mine")]));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Mine" });
+  });
+
+  it("a deleted page forgets its failed saves, so a page made again takes the disk copy", async () => {
+    useWorkJournalStore.setState({
+      pages: journal([page("2026-10-13"), page("2026-10-14")]).pages,
+    });
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("lost") });
+
+    // Deleted here.
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-13")]));
+    await useWorkJournalStore.getState().deletePage("2026-10-14");
+    useWorkJournalStore.setState((s) => ({
+      pages: { ...s.pages, "2026-10-14": { ...page("2026-10-14"), body: body("stale") } },
+    }));
+    invokeMock.mockResolvedValueOnce(
+      journal([page("2026-10-13"), { ...page("2026-10-14"), body: body("new page") }]),
+    );
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("new page"));
+
+    // Deleted in the other window.
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("lost again") });
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-13")]));
+    await useWorkJournalStore.getState().sync(false);
+    invokeMock.mockResolvedValueOnce(
+      journal([page("2026-10-13"), { ...page("2026-10-14"), body: body("made again") }]),
+    );
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("made again"));
+  });
+
+  it("a restore or undo in the other window replaces the journal and bumps the revision", async () => {
+    useWorkJournalStore.setState({
+      pages: journal([page("2026-10-13"), page("2026-10-14")]).pages,
+      viewedDate: "2026-10-14",
+    });
+    invokeMock.mockResolvedValueOnce(journal([{ ...page("2026-10-14"), body: body("restored") }]));
+
+    await useWorkJournalStore.getState().sync(true);
+    const state = useWorkJournalStore.getState();
+    expect(Object.keys(state.pages)).toEqual(["2026-10-14"]);
+    expect(state.pages["2026-10-14"].body).toEqual(body("restored"));
+    expect(state.revision).toBe(1);
+  });
+
+  it("moves to the nearest page when the other window deleted the viewed one", async () => {
+    useWorkJournalStore.setState({
+      pages: journal([page("2026-10-12"), page("2026-10-14")]).pages,
+      viewedDate: "2026-10-14",
+    });
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-12")]));
+
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-12");
+  });
+
+  it("stays on an empty day the user is looking at", async () => {
+    useWorkJournalStore.setState({
+      pages: journal([page("2026-10-12")]).pages,
+      viewedDate: "2026-10-20",
+    });
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-12")]));
+
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-20");
+  });
+});

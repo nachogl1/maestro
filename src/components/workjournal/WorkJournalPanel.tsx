@@ -4,6 +4,7 @@ import {
   CalendarSearch,
   ChevronLeft,
   ChevronRight,
+  ExternalLink,
   FileText,
   Trash2,
   X,
@@ -21,6 +22,7 @@ import {
   localDateString,
   msUntilNextLocalMidnight,
 } from "@/lib/workJournalDates";
+import { listenWorkJournalChanged, openWorkJournalWindow } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
@@ -43,17 +45,24 @@ type DateFormMode = "jump" | "new";
 const ICON_BUTTON =
   "rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
 
+export interface WorkJournalPanelProps {
+  /** Shown inside the pop-out window, which has no pop-out button of its own. */
+  inWindow?: boolean;
+}
+
 /**
  * Right-pane Work Journal view: one day page at a time. The header has
  * previous/next day arrows, the editable title, a jump-to-date picker, "new
- * page for a date", delete and Report (the supervisor report dialog); the
- * page body is a TipTap editor below, and the day's suggestions box under it.
+ * page for a date", delete, Report (the supervisor report dialog) and
+ * pop-out (the journal in its own window); the page body is a TipTap editor
+ * below, and the day's suggestions box under it.
  *
  * Opens on today's page (local date). On open, and whenever the local date
  * changes while open (midnight timer, window focus or visibility, a
  * once-a-minute check), it asks the backend to create any missing day pages.
+ * A change made in the other window (pane or pop-out) is re-read at once.
  */
-export function WorkJournalPanel() {
+export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
   const pages = useWorkJournalStore((s) => s.pages);
   const viewedDate = useWorkJournalStore((s) => s.viewedDate);
   const loading = useWorkJournalStore((s) => s.loading);
@@ -68,6 +77,7 @@ export function WorkJournalPanel() {
   const updatePage = useWorkJournalStore((s) => s.updatePage);
   const deletePage = useWorkJournalStore((s) => s.deletePage);
   const clearError = useWorkJournalStore((s) => s.clearError);
+  const sync = useWorkJournalStore((s) => s.sync);
 
   const page = viewedDate ? (pages[viewedDate] ?? null) : null;
   const dates = Object.keys(pages);
@@ -117,6 +127,18 @@ export function WorkJournalPanel() {
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [ensurePages]);
+
+  // The pane and the pop-out window share the journal file: re-read it when
+  // the other one (or a candidate run) changed it.
+  useEffect(() => {
+    const stop = listenWorkJournalChanged((change) => void sync(change.replaced)).catch((err) => {
+      console.error("Failed to follow Work Journal changes:", err);
+      return () => {};
+    });
+    return () => {
+      void stop.then((fn) => fn());
+    };
+  }, [sync]);
 
   // Title draft: committed on blur or Enter, reverted on Escape.
   const [titleDraft, setTitleDraft] = useState("");
@@ -291,6 +313,21 @@ export function WorkJournalPanel() {
         >
           <FileText size={14} />
         </button>
+        {!inWindow && (
+          <button
+            type="button"
+            onClick={() =>
+              void openWorkJournalWindow().catch((err) =>
+                console.error("Failed to open the Work Journal window:", err),
+              )
+            }
+            className={ICON_BUTTON}
+            aria-label="Pop out"
+            title="Open the journal in its own window"
+          >
+            <ExternalLink size={14} />
+          </button>
+        )}
       </div>
 
       {reportOpen && <ReportDialog onClose={() => setReportOpen(false)} />}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { serveWorkJournalWindow } from "@/lib/workJournalWindow";
 import { watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 
@@ -49,6 +50,17 @@ export function useWorkJournalCandidateTimer(tabs: CandidateTimerTabs): void {
     return () => {
       clearTimeout(catchUp);
       setSchedule({ catchUpPending: false });
+    };
+  }, []);
+
+  // The pop-out window's "run now" runs here, and it sees this run state.
+  useEffect(() => {
+    const stop = serveWorkJournalWindow(runWithOpenProjects).catch((err) => {
+      console.error("Failed to serve the Work Journal window:", err);
+      return () => {};
+    });
+    return () => {
+      void stop.then((fn) => fn());
     };
   }, []);
 

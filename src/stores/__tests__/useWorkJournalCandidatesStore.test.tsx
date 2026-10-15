@@ -3,8 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkJournalSuggestionsBadge } from "@/components/shared/WorkJournalSuggestionsBadge";
+import { WORK_JOURNAL_CHANGED_EVENT } from "@/lib/workJournalWindow";
 import {
   candidateLine,
+  pendingCountsByDate,
   pendingTodayCount,
   useWorkJournalCandidatesStore,
   WORK_JOURNAL_CANDIDATES_EVENT,
@@ -24,6 +26,9 @@ const TODAY = "2026-10-14";
 
 let candidates: WorkJournalCandidate[];
 let emit: ((event: { payload: { dates: string[]; added: number } }) => void) | null;
+let emitChanged:
+  | ((event: { payload: { source: string | null; replaced: boolean } }) => void)
+  | null;
 const unlisten = vi.fn();
 
 function candidate(
@@ -81,6 +86,7 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
       candidate("y", "2026-10-13"),
     ];
     emit = null;
+    emitChanged = null;
     unlisten.mockReset();
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
@@ -88,10 +94,21 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
         const date = (args as { date: string }).date;
         return structuredClone(candidates.filter((c) => c.date === date));
       }
+      if (cmd === "work_journal_pending_counts") {
+        const counts: Record<string, number> = {};
+        for (const c of candidates) {
+          if (c.state === "pending") counts[c.date] = (counts[c.date] ?? 0) + 1;
+        }
+        return counts;
+      }
       return undefined;
     });
     listenMock.mockReset();
     listenMock.mockImplementation(async (event, handler) => {
+      if (event === WORK_JOURNAL_CHANGED_EVENT) {
+        emitChanged = handler as typeof emitChanged;
+        return unlisten;
+      }
       expect(event).toBe(WORK_JOURNAL_CANDIDATES_EVENT);
       emit = handler as typeof emit;
       return unlisten;
@@ -179,6 +196,42 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     await settle();
     expect(useWorkJournalCandidatesStore.getState().today).toBe("2026-10-15");
     expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(1);
+  });
+
+  it("an accept or reject in the other window re-reads the loaded dates", async () => {
+    await start();
+    await act(async () => useWorkJournalCandidatesStore.getState().refresh("2026-10-13"));
+    expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toHaveLength(4);
+    candidates = candidates.filter((c) => c.id !== "a" && c.id !== "y");
+    await act(async () => {
+      emitChanged?.({ payload: { source: "work-journal", replaced: false } });
+    });
+    await settle();
+    expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toHaveLength(3);
+    expect(useWorkJournalCandidatesStore.getState().byDate["2026-10-13"]).toHaveLength(0);
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(2);
+  });
+
+  it("counts every day's pending suggestions in one call, kept current by changes", async () => {
+    await start();
+    await settle();
+    // Yesterday was never opened, yet the day list can show its count.
+    expect(pendingCountsByDate(useWorkJournalCandidatesStore.getState())).toEqual({
+      [TODAY]: 3,
+      "2026-10-13": 1,
+    });
+    expect(listCalls()).toEqual([{ date: TODAY }]);
+
+    // A catch-up run adds two to a day before yesterday.
+    candidates.push(candidate("p1", "2026-10-12"), candidate("p2", "2026-10-12"));
+    await act(async () => {
+      emitChanged?.({ payload: { source: null, replaced: false } });
+    });
+    await settle();
+    expect(pendingCountsByDate(useWorkJournalCandidatesStore.getState())["2026-10-12"]).toBe(2);
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "work_journal_pending_counts"),
+    ).toHaveLength(2);
   });
 
   it("a restore or undo re-reads the loaded dates", async () => {

@@ -52,6 +52,12 @@ interface WorkJournalState {
   replacing: boolean;
   /** Reads the journal file. */
   load: () => Promise<void>;
+  /**
+   * Re-reads the journal after another window (or the backend) changed it;
+   * `replaced` when that was a restore or undo. No loading state, so the
+   * page stays on screen.
+   */
+  sync: (replaced: boolean) => Promise<void>;
   /** Auto-creates missing day pages up to `today` (local `YYYY-MM-DD`). */
   ensurePages: (today: string) => Promise<void>;
   selectDate: (date: string) => void;
@@ -100,6 +106,33 @@ export const WEEKEND_PAGE_BODY: JSONContent = {
  * body back into the store.
  */
 const pendingUpdates = new Map<string, number>();
+
+/**
+ * Fields (`<date>:body`, `<date>:title`) whose last save failed. Their text
+ * lives only here until a later save of that field lands, so a journal read
+ * back from disk keeps the local copy of that page.
+ */
+const failedSaves = new Set<string>();
+
+/** The page fields (`body`, `title`) of `date` whose last save failed. */
+function failedFields(date: string): Set<string> {
+  const fields = new Set<string>();
+  for (const key of failedSaves) {
+    if (key.startsWith(`${date}:`)) {
+      for (const field of key.slice(date.length + 1).split(",")) fields.add(field);
+    }
+  }
+  return fields;
+}
+
+/** Forgets the failed saves of `date`: its page is gone, so their text is too. */
+function clearFailedSaves(date: string): void {
+  for (const key of [...failedSaves]) if (key.startsWith(`${date}:`)) failedSaves.delete(key);
+}
+
+/** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
+let saveTick = 0;
+const lastLocalSave = new Map<string, number>();
 
 /**
  * The last queued backend write per date and field (`<date>:body`,
@@ -197,14 +230,26 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Pages from a backend reply, keeping pages that still have a save in flight. */
+/**
+ * Pages from a backend reply, keeping pages that still have a save in flight
+ * and the fields whose last save failed.
+ */
 function mergePages(
   local: Record<string, WorkJournalPage>,
   incoming: Record<string, WorkJournalPage>,
 ): Record<string, WorkJournalPage> {
   const merged = { ...incoming };
-  for (const date of pendingUpdates.keys()) {
-    if (local[date] && merged[date]) merged[date] = local[date];
+  for (const date of Object.keys(local)) {
+    if (!merged[date]) continue;
+    if (pendingUpdates.has(date)) {
+      merged[date] = local[date];
+      continue;
+    }
+    // Only the field whose save failed stays local; the other one takes
+    // the incoming text.
+    const failed = failedFields(date);
+    if (failed.has("body")) merged[date] = { ...merged[date], body: local[date].body };
+    if (failed.has("title")) merged[date] = { ...merged[date], title: local[date].title };
   }
   return merged;
 }
@@ -235,6 +280,37 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   error: null,
   revision: 0,
   replacing: false,
+
+  sync: async (replaced: boolean) => {
+    const tick = saveTick;
+    try {
+      const journal = await invoke<WorkJournalFile>("load_work_journal");
+      if (replaced) {
+        get().replaceJournal(journal);
+        return;
+      }
+      set((s) => {
+        const pages = mergePages(s.pages, journal.pages);
+        // A save made here after the read started is newer than the reply.
+        for (const [date, at] of lastLocalSave) {
+          if (at > tick && s.pages[date] && pages[date]) pages[date] = s.pages[date];
+        }
+        // Pages deleted in the other window take their failed saves along.
+        for (const date of Object.keys(s.pages)) {
+          if (!journal.pages[date]) clearFailedSaves(date);
+        }
+        // The viewed page was deleted in the other window: show the nearest
+        // one, as a delete here does.
+        const viewed = s.viewedDate;
+        if (viewed && s.pages[viewed] && !pages[viewed]) {
+          return { pages, viewedDate: nearestPageDate(pages, viewed) ?? viewed };
+        }
+        return { pages };
+      });
+    } catch (error) {
+      console.error("Failed to re-read the Work Journal:", error);
+    }
+  },
 
   load: async () => {
     set({ loading: true, error: null });
@@ -303,6 +379,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       return current ? { pages: { ...s.pages, [date]: { ...current, ...patch } } } : {};
     });
     pendingUpdates.set(date, (pendingUpdates.get(date) ?? 0) + 1);
+    saveTick += 1;
+    lastLocalSave.set(date, saveTick);
     let saved = false;
     const run = async (): Promise<void> => {
       try {
@@ -312,8 +390,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
           body: patch.body ?? null,
         });
         saved = true;
+        failedSaves.delete(chainKey(date, patch));
       } catch (error) {
         console.error("Failed to save the Work Journal page:", error);
+        failedSaves.add(chainKey(date, patch));
         set({ error: errorMessage(error) });
       } finally {
         const left = (pendingUpdates.get(date) ?? 1) - 1;
@@ -345,6 +425,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       // A save queued just before the delete must land first, or the
       // backend would refuse it for a page that no longer exists.
       await savesSettled(date);
+      clearFailedSaves(date);
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {
@@ -369,11 +450,14 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   // Every save was settled before the restore, so the reply replaces the
   // pages outright (no merge with local copies).
 
-  replaceJournal: (journal: WorkJournalFile) =>
+  // The text of failed saves belonged to the replaced journal.
+  replaceJournal: (journal: WorkJournalFile) => {
+    failedSaves.clear();
     set((s) => ({
       pages: journal.pages,
       revision: s.revision + 1,
       replacing: false,
       error: null,
-    })),
+    }));
+  },
 }));

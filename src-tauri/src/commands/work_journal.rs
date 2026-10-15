@@ -6,15 +6,17 @@
 //!
 //! Every changing command returns the whole saved journal, so the frontend
 //! never has to guess side effects (for example `deleted_dates` after a
-//! delete).
+//! delete), and emits [`CHANGED_EVENT`], so every other window showing the
+//! journal (the pane and the pop-out window) re-reads it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, WebviewWindow};
 
 use crate::core::work_journal::{
     self, AutoBackupAfterRestore, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
@@ -28,6 +30,29 @@ use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
 /// Serialises load-change-save cycles so two commands never interleave and
 /// lose a write.
 static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
+
+/// Emitted after every command that changed the journal file or the
+/// candidates, so the pane and the pop-out window show the same data.
+pub const CHANGED_EVENT: &str = "work-journal:changed";
+
+/// Payload of [`CHANGED_EVENT`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JournalChanged {
+    /// Label of the window whose command made the change (it already shows
+    /// it); `None` when the backend made it on its own (a candidate run).
+    pub source: Option<String>,
+    /// The whole journal was replaced (restore or undo), not edited.
+    pub replaced: bool,
+}
+
+/// Tells every window that `window`'s command changed the journal.
+fn notify_changed(window: &WebviewWindow, replaced: bool) {
+    let payload = JournalChanged {
+        source: Some(window.label().to_string()),
+        replaced,
+    };
+    let _ = window.emit(CHANGED_EVENT, payload);
+}
 
 /// `<work journal dir>/work-journal.json` (see
 /// [`work_journal::work_journal_dir`] for the devtest override).
@@ -57,50 +82,66 @@ pub async fn load_work_journal() -> Result<WorkJournal, String> {
 /// `origin` defaults to manual.
 #[tauri::command]
 pub async fn create_work_journal_page(
+    window: WebviewWindow,
     date: String,
     title: String,
     body: Value,
     origin: Option<PageOrigin>,
 ) -> Result<WorkJournal, String> {
     let origin = origin.unwrap_or(PageOrigin::Manual);
-    with_journal(move |path| {
+    let journal = with_journal(move |path| {
         work_journal::modify(&path, |j| {
             work_journal::create_page(j, &date, title, body, origin)
         })
     })
-    .await
+    .await?;
+    notify_changed(&window, false);
+    Ok(journal)
 }
 
 /// Changes the title and/or body of the page for `date`.
 #[tauri::command]
 pub async fn update_work_journal_page(
+    window: WebviewWindow,
     date: String,
     title: Option<String>,
     body: Option<Value>,
 ) -> Result<WorkJournal, String> {
-    with_journal(move |path| {
+    let journal = with_journal(move |path| {
         work_journal::modify(&path, |j| work_journal::update_page(j, &date, title, body))
     })
-    .await
+    .await?;
+    notify_changed(&window, false);
+    Ok(journal)
 }
 
 /// Deletes the page for `date` and records the date in `deleted_dates`.
 #[tauri::command]
-pub async fn delete_work_journal_page(date: String) -> Result<WorkJournal, String> {
-    with_journal(move |path| work_journal::modify(&path, |j| work_journal::delete_page(j, &date)))
-        .await
+pub async fn delete_work_journal_page(
+    window: WebviewWindow,
+    date: String,
+) -> Result<WorkJournal, String> {
+    let journal = with_journal(move |path| {
+        work_journal::modify(&path, |j| work_journal::delete_page(j, &date))
+    })
+    .await?;
+    notify_changed(&window, false);
+    Ok(journal)
 }
 
 /// Shallow-merges `settings` into the journal settings: each top-level key
 /// sent overwrites or adds that key; keys not sent are kept.
 #[tauri::command]
 pub async fn update_work_journal_settings(
+    window: WebviewWindow,
     settings: Map<String, Value>,
 ) -> Result<WorkJournal, String> {
-    with_journal(move |path| {
+    let journal = with_journal(move |path| {
         work_journal::modify(&path, |j| work_journal::merge_settings(j, settings))
     })
-    .await
+    .await?;
+    notify_changed(&window, false);
+    Ok(journal)
 }
 
 /// "Back up now": writes the journal to `<backup folder>/work-journal.json`
@@ -108,8 +149,10 @@ pub async fn update_work_journal_settings(
 /// override of the automatic guard). Refused when no folder is set or the
 /// folder is missing; the journal is then left untouched.
 #[tauri::command]
-pub async fn work_journal_backup_now() -> Result<WorkJournal, String> {
-    with_journal(|path| work_journal::backup_now(&path, chrono::Utc::now())).await
+pub async fn work_journal_backup_now(window: WebviewWindow) -> Result<WorkJournal, String> {
+    let journal = with_journal(|path| work_journal::backup_now(&path, chrono::Utc::now())).await?;
+    notify_changed(&window, false);
+    Ok(journal)
 }
 
 /// What the automatic backup did, tagged by `status` for the frontend.
@@ -148,20 +191,32 @@ fn backup_if_due_outcome(
 /// [`work_journal::backup_if_due`]); that comes back as `Skipped`. Called on
 /// start, by the in-app timer and after a folder is chosen.
 #[tauri::command]
-pub async fn work_journal_backup_if_due() -> Result<BackupIfDueOutcome, String> {
-    with_journal(|path| {
+pub async fn work_journal_backup_if_due(
+    window: WebviewWindow,
+) -> Result<BackupIfDueOutcome, String> {
+    let outcome = with_journal(|path| {
         backup_if_due_outcome(work_journal::backup_if_due(&path, chrono::Utc::now()))
     })
-    .await
+    .await?;
+    if matches!(outcome, BackupIfDueOutcome::Written { .. }) {
+        notify_changed(&window, false);
+    }
+    Ok(outcome)
 }
 
 /// Makes sure every day has its page up to `today` (`YYYY-MM-DD`, the
 /// caller's local date): gap-fills from the last auto-created date, skips
 /// deleted dates and existing pages, and saves only when something changed.
-/// Returns the journal.
+/// Returns the journal. Always notifies: the other windows only re-read it.
 #[tauri::command]
-pub async fn work_journal_ensure_pages(today: String) -> Result<WorkJournal, String> {
-    with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await
+pub async fn work_journal_ensure_pages(
+    window: WebviewWindow,
+    today: String,
+) -> Result<WorkJournal, String> {
+    let journal =
+        with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await?;
+    notify_changed(&window, false);
+    Ok(journal)
 }
 
 /// What a candidate run did, tagged by `status` for the frontend.
@@ -257,6 +312,14 @@ pub async fn work_journal_run_candidates(
         })
     })
     .await?;
+    // From no window: the new candidates and run time are news to all of them.
+    let _ = app.emit(
+        CHANGED_EVENT,
+        JournalChanged {
+            source: None,
+            replaced: false,
+        },
+    );
     Ok(candidate_run_outcome(report, last_run_at))
 }
 
@@ -310,8 +373,11 @@ pub struct WorkJournalRestoreState {
 /// local backup folder and clears the last backup time, so automatic
 /// backups leave the backup folder alone until "Back up now".
 #[tauri::command]
-pub async fn restore_work_journal(file: Option<String>) -> Result<WorkJournalRestoreReply, String> {
-    with_journal(move |path| {
+pub async fn restore_work_journal(
+    window: WebviewWindow,
+    file: Option<String>,
+) -> Result<WorkJournalRestoreReply, String> {
+    let reply = with_journal(move |path| {
         let source = match file {
             Some(file) => PathBuf::from(file),
             None => work_journal::default_restore_source(&path)?,
@@ -319,18 +385,24 @@ pub async fn restore_work_journal(file: Option<String>) -> Result<WorkJournalRes
         let journal = work_journal::restore_from(&path, &source)?;
         Ok(restore_reply(&path, journal))
     })
-    .await
+    .await?;
+    notify_changed(&window, true);
+    Ok(reply)
 }
 
 /// "Undo restore": puts the safety copy back and deletes it (undo works
 /// once). Refused when there is no safety copy.
 #[tauri::command]
-pub async fn undo_work_journal_restore() -> Result<WorkJournalRestoreReply, String> {
-    with_journal(|path| {
+pub async fn undo_work_journal_restore(
+    window: WebviewWindow,
+) -> Result<WorkJournalRestoreReply, String> {
+    let reply = with_journal(|path| {
         let journal = work_journal::undo_restore(&path)?;
         Ok(restore_reply(&path, journal))
     })
-    .await
+    .await?;
+    notify_changed(&window, true);
+    Ok(reply)
 }
 
 /// Whether "Undo restore" is available (a readable safety copy exists).
@@ -353,17 +425,31 @@ pub async fn list_work_journal_candidates(date: String) -> Result<Vec<Candidate>
         .map_err(|e| e.to_string())
 }
 
+/// Pending candidates per date (dates with none left out), for the pop-out
+/// window's day list: one read instead of one list per date.
+#[tauri::command]
+pub async fn work_journal_pending_counts() -> Result<HashMap<String, usize>, String> {
+    work_journal_activity::pending_counts(&work_journal_activity::activity_dir())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Rejects a candidate: it leaves the suggestions box but stays in the
 /// activity file as rejected, so later runs that day do not propose it again.
 #[tauri::command]
-pub async fn reject_work_journal_candidate(id: String) -> Result<Candidate, String> {
-    work_journal_activity::set_candidate_state(
+pub async fn reject_work_journal_candidate(
+    window: WebviewWindow,
+    id: String,
+) -> Result<Candidate, String> {
+    let candidate = work_journal_activity::set_candidate_state(
         &work_journal_activity::activity_dir(),
         &id,
         CandidateState::Rejected,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    notify_changed(&window, false);
+    Ok(candidate)
 }
 
 /// A removal of a candidate that is already gone (pruned, or removed by an
@@ -381,11 +467,16 @@ fn removed_or_gone(result: ActivityResult<Candidate>) -> ActivityResult<Option<C
 /// line to the page through the open editor; from then on the page text
 /// carries it (and the run reads the page text, so it is not proposed again).
 #[tauri::command]
-pub async fn accept_work_journal_candidate(id: String) -> Result<Option<Candidate>, String> {
-    removed_or_gone(
+pub async fn accept_work_journal_candidate(
+    window: WebviewWindow,
+    id: String,
+) -> Result<Option<Candidate>, String> {
+    let removed = removed_or_gone(
         work_journal_activity::remove_candidate(&work_journal_activity::activity_dir(), &id).await,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    notify_changed(&window, false);
+    Ok(removed)
 }
 
 /// What `work_journal_generate_report` did, tagged by `status` for the
@@ -552,6 +643,27 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&state).unwrap(),
             serde_json::json!({"canUndo": false})
+        );
+    }
+
+    #[test]
+    fn test_changed_event_names_the_source_window() {
+        assert_eq!(CHANGED_EVENT, "work-journal:changed");
+        let changed = JournalChanged {
+            source: Some("work-journal".to_string()),
+            replaced: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&changed).unwrap(),
+            serde_json::json!({"source": "work-journal", "replaced": true})
+        );
+        let from_backend = JournalChanged {
+            source: None,
+            replaced: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&from_backend).unwrap(),
+            serde_json::json!({"source": null, "replaced": false})
         );
     }
 

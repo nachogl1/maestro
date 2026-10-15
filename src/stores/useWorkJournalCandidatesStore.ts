@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { localDateString, msUntilNextLocalMidnight } from "@/lib/workJournalDates";
+import { listenWorkJournalChanged } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { appendWorkJournalLine, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
@@ -78,6 +79,10 @@ interface WorkJournalCandidatesState {
   landedIds: string[];
   /** The last accept or reject failure; cleared by the next success. */
   error: string | null;
+  /** Pending candidates per date over the whole activity file (dates with none left out). */
+  pendingCounts: Record<string, number>;
+  /** Re-reads `pendingCounts` in one backend call. */
+  refreshCounts: () => Promise<void>;
   /** Re-reads the candidates of `date`. */
   refresh: (date: string) => Promise<void>;
   /** Re-reads today's candidates (local date now), for the badge. */
@@ -92,12 +97,25 @@ interface WorkJournalCandidatesState {
   reject: (candidate: WorkJournalCandidate) => Promise<void>;
   clearError: () => void;
   /**
-   * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`):
-   * the candidates event, window focus, local midnight, and a journal
+   * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`,
+   * and in the pop-out window): the candidates event, an accept or reject
+   * in the other window, window focus, local midnight, and a journal
    * restore or undo.
    * Also loads today's candidates. Returns the stop function.
    */
   initListeners: () => Promise<UnlistenFn>;
+}
+
+/**
+ * Pending suggestions per date for the day list: the loaded lists (kept
+ * current by accept and reject here) over the backend's per-date counts.
+ */
+export function pendingCountsByDate(state: WorkJournalCandidatesState): Record<string, number> {
+  const counts = { ...state.pendingCounts };
+  for (const [date, list] of Object.entries(state.byDate)) {
+    counts[date] = list.filter((c) => c.state === "pending").length;
+  }
+  return counts;
 }
 
 /** Today's pending candidates: the Work Journal button's badge count. */
@@ -114,6 +132,9 @@ function errorMessage(error: unknown): string {
  * a slow read can never put back a candidate that was accepted meanwhile.
  */
 const requestSeq = new Map<string, number>();
+
+/** The latest counts request; an older reply is dropped. */
+let countsSeq = 0;
 
 function nextSeq(date: string): number {
   const seq = (requestSeq.get(date) ?? 0) + 1;
@@ -146,6 +167,18 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
     busyIds: [],
     landedIds: [],
     error: null,
+    pendingCounts: {},
+
+    refreshCounts: async () => {
+      const seq = ++countsSeq;
+      try {
+        const counts = await invoke<Record<string, number>>("work_journal_pending_counts");
+        if (seq !== countsSeq) return;
+        set({ pendingCounts: counts && typeof counts === "object" ? counts : {} });
+      } catch (error) {
+        console.error("Failed to count the Work Journal suggestions:", error);
+      }
+    },
 
     refresh: async (date: string) => {
       const seq = nextSeq(date);
@@ -229,10 +262,16 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         if (today !== get().today) set({ today });
         const wanted = new Set([today, ...dates.filter((d) => loaded[d] !== undefined)]);
         for (const date of wanted) void get().refresh(date);
+        void get().refreshCounts();
       };
       const unlisten = await listen<CandidatesAddedPayload>(
         WORK_JOURNAL_CANDIDATES_EVENT,
         (event) => refreshLoaded(event.payload?.dates ?? []),
+      );
+      // The pane and the pop-out window each keep a copy: re-read it when the
+      // other one accepted or rejected (or anything else changed).
+      const unlistenChanged = await listenWorkJournalChanged(() =>
+        refreshLoaded(Object.keys(get().byDate)),
       );
       // Back to the window: the date may have changed while it was away.
       const onFocus = (): void => void get().refreshToday();
@@ -255,8 +294,10 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         if (s.revision !== prev.revision) refreshLoaded(Object.keys(get().byDate));
       });
       void get().refreshToday();
+      void get().refreshCounts();
       return () => {
         unlisten();
+        unlistenChanged();
         unsubscribe();
         clearTimeout(midnight);
         window.removeEventListener("focus", onFocus);
