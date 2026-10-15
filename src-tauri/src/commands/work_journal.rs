@@ -495,7 +495,7 @@ fn save_run(
 }
 
 /// Saves when a candidate run started, before it runs, so the time shows
-/// even when the run then fails.
+/// even when the run then fails. The caller logs a failure and runs anyway.
 fn save_attempt(path: &Path, last_attempt_at: String) -> WorkJournalResult<WorkJournal> {
     work_journal::modify(path, |j| {
         j.settings.last_attempt_at = Some(last_attempt_at);
@@ -551,7 +551,10 @@ pub async fn work_journal_run_candidates(
     }
     let last_attempt_at = now.to_rfc3339_opts(SecondsFormat::Secs, true);
     let attempt = last_attempt_at.clone();
-    with_journal(move |path| save_attempt(&path, attempt)).await?;
+    // Only for display: a failed save is logged and the run goes on.
+    if let Err(e) = with_journal(move |path| save_attempt(&path, attempt)).await {
+        log::warn!("Work journal: saving the run start time failed: {e}");
+    }
     let report = work_journal_run::run_candidates(&journal, &plan.run, now).await;
     if report.added > 0 {
         let payload = CandidatesAdded {
@@ -1018,6 +1021,17 @@ mod tests {
             after.settings.last_run_at.as_deref(),
             Some("2026-10-15T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn test_a_failed_attempt_save_is_an_error_the_caller_can_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-folder");
+        std::fs::write(&blocker, "x").unwrap();
+        let journal = blocker.join("work-journal.json");
+
+        assert!(save_attempt(&journal, "2026-10-15T12:00:00Z".into()).is_err());
+        assert!(!journal.exists());
     }
 
     #[test]

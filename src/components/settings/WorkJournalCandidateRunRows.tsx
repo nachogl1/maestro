@@ -16,6 +16,7 @@ function formatRunTime(iso: string): string {
 /**
  * "Last run: <when it started> (covered up to <how far it got>)". The start time
  * counts failed runs too; "not recorded" for a journal from before it was kept.
+ * The "covered up to" part is left out when it reads the same as the start time.
  */
 function lastRunLabel(lastAttemptAt: string | null, lastRunAt: string | null): string {
   const attempt = lastAttemptAt
@@ -23,7 +24,8 @@ function lastRunLabel(lastAttemptAt: string | null, lastRunAt: string | null): s
     : lastRunAt
       ? "not recorded"
       : "never";
-  const covered = lastRunAt ? ` (covered up to ${formatRunTime(lastRunAt)})` : "";
+  const coveredTime = lastRunAt ? formatRunTime(lastRunAt) : null;
+  const covered = coveredTime && coveredTime !== attempt ? ` (covered up to ${coveredTime})` : "";
   return `Last run: ${attempt}${covered}`;
 }
 

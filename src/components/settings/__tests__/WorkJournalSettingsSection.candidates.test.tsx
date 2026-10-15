@@ -367,6 +367,24 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("leaves out the covered-up-to time when it reads the same as the start time", async () => {
+    routeInvoke({
+      load_work_journal: () =>
+        journal({
+          last_run_at: "2026-10-15T15:00:10Z",
+          last_attempt_at: "2026-10-15T15:00:00Z",
+        }),
+    });
+    useWorkJournalCandidateRunStore.setState({ settingsError: "Could not read the run settings" });
+
+    render(<WorkJournalSettingsSection />);
+
+    expect(
+      await screen.findByText(`Last run: ${shownTime("2026-10-15T15:00:00Z")}`),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/covered up to/)).toBeNull();
+  });
 });
 
 describe("WorkJournalSettingsSection Granola row", () => {
