@@ -789,6 +789,18 @@ impl ProcessManager {
             .collect()
     }
 
+    /// Every tracked session with the PID of the shell backing it.
+    ///
+    /// Used by the agent-name lookup to tell which terminal a live claude
+    /// process runs in, by walking the process's ancestors to one of these.
+    pub fn session_pids(&self) -> Vec<(u32, i32)> {
+        self.inner
+            .sessions
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().child_pid))
+            .collect()
+    }
+
     /// PID of the shell backing `session_id`, if that session is still
     /// tracked. Used by the Samurai watchdog to anchor its claude-descendant
     /// liveness check.
