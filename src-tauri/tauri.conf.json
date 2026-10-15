@@ -38,9 +38,7 @@
       ]
     },
     "updater": {
-      "endpoints": [
-        "https://github.com/nachogl1/maestro/releases/latest/download/latest.json"
-      ],
+      "endpoints": ["https://github.com/nachogl1/maestro/releases/latest/download/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMyNDU0MURFMzFGMThDRjIKUldUeWpQRXgza0ZGd3ZNMGlWYjZrd0dDSEJ0dCtHY09mSVBUZzdnMG96c2ZiWVNGUEhaOWYySTQK"
     }
   },
@@ -54,15 +52,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/maestro-mcp-server"
-    ],
+    "externalBin": ["binaries/maestro-mcp-server"],
     "linux": {
       "deb": {
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0"
-        ]
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
       }
     },
     "macOS": {
