@@ -12,6 +12,7 @@ import {
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ReportDialog } from "@/components/workjournal/ReportDialog";
 import { SuggestionsBox } from "@/components/workjournal/SuggestionsBox";
+import { WorkJournalBackupReminder } from "@/components/workjournal/WorkJournalBackupReminder";
 import {
   canReadWorkJournalBody,
   WorkJournalEditor,
@@ -377,6 +378,8 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
           )}
         </output>
       )}
+
+      <WorkJournalBackupReminder />
 
       {reportOpen && <ReportDialog onClose={() => setReportOpen(false)} />}
 

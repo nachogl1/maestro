@@ -39,6 +39,10 @@ vi.mock("@tauri-apps/api/webviewWindow", () => {
   return { WebviewWindow, getCurrentWebviewWindow: vi.fn(() => ({ label: "main" })) };
 });
 
+// The backup reminder reads the journal and follows changes on its own; it
+// has its own tests, and here it would add reads and listeners.
+vi.mock("../WorkJournalBackupReminder", () => ({ WorkJournalBackupReminder: () => null }));
+
 const invokeMock = vi.mocked(invoke);
 const askMock = vi.mocked(ask);
 const listenMock = vi.mocked(listen);

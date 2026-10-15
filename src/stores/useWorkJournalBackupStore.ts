@@ -92,6 +92,14 @@ interface WorkJournalBackupState {
    * Cleared by a successful backup or a folder change.
    */
   pausedByRestore: boolean;
+  /**
+   * True once the user closed the Work Journal's "no backup folder" reminder.
+   * In memory only, so the reminder is back on the next launch while no
+   * folder is set.
+   */
+  reminderDismissed: boolean;
+  /** Hides the "no backup folder" reminder for the rest of this app session. */
+  dismissReminder: () => void;
   /** Reads the backup settings from the journal file. */
   load: () => Promise<void>;
   /**
@@ -166,6 +174,9 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   restoring: false,
   notice: null,
   pausedByRestore: false,
+  reminderDismissed: false,
+
+  dismissReminder: () => set({ reminderDismissed: true }),
 
   load: async () => {
     try {
