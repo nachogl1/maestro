@@ -66,10 +66,12 @@ interface WorkJournalState {
   /** Deletes the page for `date` and shows the nearest remaining page. */
   deletePage: (date: string) => Promise<void>;
   clearError: () => void;
-  /** Sends every open editor's unsaved text and waits until all queued saves land. */
-  flushPendingSaves: () => Promise<void>;
-  /** Starts a restore or undo: sets `replacing` (call after `flushPendingSaves`). */
-  beginReplace: () => void;
+  /**
+   * Starts a restore or undo: sends every open editor's unsaved text, sets
+   * `replacing` (so every later save is dropped), then waits until all
+   * queued saves have landed.
+   */
+  beginReplace: () => Promise<void>;
   /** Ends a restore or undo that failed: clears `replacing`; the journal is unchanged. */
   endReplace: () => void;
   /**
@@ -296,16 +298,18 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 
-  flushPendingSaves: async () => {
+  // The flag is set before the wait, so a save made while earlier ones settle
+  // is dropped rather than sent unawaited.
+  beginReplace: async () => {
     for (const flush of editorFlushes) flush();
+    set({ replacing: true });
     await allSavesSettled();
   },
 
+  endReplace: () => set({ replacing: false }),
+
   // Every save was settled before the restore, so the reply replaces the
   // pages outright (no merge with local copies).
-  beginReplace: () => set({ replacing: true }),
-
-  endReplace: () => set({ replacing: false }),
 
   replaceJournal: (journal: WorkJournalFile) =>
     set((s) => ({

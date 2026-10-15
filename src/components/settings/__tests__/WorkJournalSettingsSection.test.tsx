@@ -700,3 +700,51 @@ describe("WorkJournalSettingsSection restore notices and the backup pause", () =
     expect(useWorkJournalStore.getState().replacing).toBe(false);
   });
 });
+
+describe("WorkJournalSettingsSection failed restore after a paused restore", () => {
+  const askMock = vi.mocked(ask);
+  const PAGE_STORE_INITIAL = useWorkJournalStore.getState();
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    messageMock.mockReset();
+    askMock.mockReset();
+    askMock.mockResolvedValue(true);
+    useWorkJournalBackupStore.setState(INITIAL_STATE, true);
+    useWorkJournalStore.setState(PAGE_STORE_INITIAL, true);
+  });
+
+  it("keeps the paused notice when a later restore fails", async () => {
+    let fail = false;
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      restore_work_journal: () => {
+        if (fail) throw "There is no backup file at D:\\OneDrive\\work-journal.json.";
+        return {
+          journal: { ...journal({ backup_folder: "D:\\OneDrive" }), last_auto_created_date: null },
+          canUndo: true,
+          autoBackup: "paused",
+        };
+      },
+      work_journal_backup_if_due: () => ({
+        status: "skipped",
+        message: "Automatic backup skipped",
+      }),
+    });
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    fireEvent.click(screen.getByRole("button", { name: /Restore from backup/ }));
+    expect(await screen.findByRole("status")).toHaveTextContent(RESTORE_NOTICES.paused);
+
+    fail = true;
+    fireEvent.click(screen.getByRole("button", { name: /Restore from backup/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Restore failed:");
+    expect(screen.getByRole("status")).toHaveTextContent(RESTORE_NOTICES.paused);
+
+    // Still paused and still explained: the skip adds no warning.
+    await act(() => useWorkJournalBackupStore.getState().backUpIfDue());
+    expect(messageMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(RESTORE_NOTICES.paused);
+  });
+});

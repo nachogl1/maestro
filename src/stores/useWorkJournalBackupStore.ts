@@ -263,10 +263,12 @@ async function replaceWholeJournal(
   notices: Record<AutoBackupAfterRestore, string>,
   run: () => Promise<WorkJournalRestoreReply>,
 ): Promise<void> {
+  // Kept for a failure: an earlier "paused" notice still explains why
+  // automatic backups are paused.
+  const previousNotice = get().notice;
   set({ restoring: true, error: null, notice: null });
   try {
-    await useWorkJournalStore.getState().flushPendingSaves();
-    useWorkJournalStore.getState().beginReplace();
+    await useWorkJournalStore.getState().beginReplace();
     const reply = await run();
     useWorkJournalStore.getState().replaceJournal(reply.journal);
     set({
@@ -279,7 +281,7 @@ async function replaceWholeJournal(
   } catch (error) {
     useWorkJournalStore.getState().endReplace();
     console.error(`${failure}:`, error);
-    set({ error: `${failure}: ${errorMessage(error)}` });
+    set({ error: `${failure}: ${errorMessage(error)}`, notice: previousNotice });
     await get().loadRestoreState();
   } finally {
     set({ restoring: false });

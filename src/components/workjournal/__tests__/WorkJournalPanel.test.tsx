@@ -519,6 +519,44 @@ describe("WorkJournalPanel restore", () => {
     expect(pageEditor().isEditable).toBe(true);
   });
 
+  it("drops a save made while the pre-restore saves are still landing", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    // The flushed save is slow to land.
+    const withRestore = invokeMock.getMockImplementation();
+    let landSave: () => void = () => {};
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd !== "update_work_journal_page") return withRestore?.(cmd, args) as Promise<unknown>;
+      return new Promise((resolve) => {
+        landSave = () => resolve(withRestore?.(cmd, args));
+      });
+    });
+    act(() => {
+      pageEditor().commands.insertContent("Flushed first");
+    });
+
+    let restoring: Promise<void> = Promise.resolve();
+    await act(async () => {
+      restoring = useWorkJournalBackupStore.getState().restore();
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(callsTo("restore_work_journal")).toEqual([]);
+
+    // A save made during that wait is dropped, not sent unawaited.
+    await act(async () => {
+      void useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Too late" });
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+
+    await act(async () => {
+      landSave();
+      await restoring;
+    });
+    expect(callsTo("update_work_journal_page")).toHaveLength(1);
+    expect(callsTo("restore_work_journal")).toHaveLength(1);
+    expect(await screen.findByText("Restored text")).toBeInTheDocument();
+  });
+
   it("lets editing and saving resume after a slow restore fails", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
