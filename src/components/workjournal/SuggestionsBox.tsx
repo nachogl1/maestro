@@ -8,6 +8,7 @@ import {
   WORK_JOURNAL_SOURCE_LABELS,
   type WorkJournalCandidate,
 } from "@/stores/useWorkJournalCandidatesStore";
+import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /** Stable empty list, so the selector does not return a new array each render. */
 const NO_CANDIDATES: WorkJournalCandidate[] = [];
@@ -78,6 +79,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
   const accept = useWorkJournalCandidatesStore((s) => s.accept);
   const reject = useWorkJournalCandidatesStore((s) => s.reject);
   const clearError = useWorkJournalCandidatesStore((s) => s.clearError);
+  const replacing = useWorkJournalStore((s) => s.replacing);
 
   const running = useWorkJournalCandidateRunStore((s) => s.running);
   const runNotice = useWorkJournalCandidateRunStore((s) => s.runNotice);
@@ -98,9 +100,11 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
     ? "Create the page first"
     : readOnly
       ? "This page is read-only here"
-      : running
-        ? "Wait for the run to finish"
-        : null;
+      : replacing
+        ? "Wait for the restore to finish"
+        : running
+          ? "Wait for the run to finish"
+          : null;
 
   const runNow = (): void => {
     const store = useWorkJournalCandidateRunStore.getState();
@@ -225,7 +229,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                 <button
                   type="button"
                   onClick={() => void reject(candidate)}
-                  disabled={busy}
+                  disabled={busy || replacing}
                   className={`${ICON_BUTTON} hover:text-maestro-red`}
                   aria-label="Reject suggestion"
                   title="Reject: hide it for today"

@@ -22,7 +22,11 @@ import {
   localDateString,
   msUntilNextLocalMidnight,
 } from "@/lib/workJournalDates";
-import { listenWorkJournalChanged, openWorkJournalWindow } from "@/lib/workJournalWindow";
+import {
+  listenWorkJournalChanged,
+  listenWorkJournalReplacing,
+  openWorkJournalWindow,
+} from "@/lib/workJournalWindow";
 import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
 import {
   discardWorkJournalConflicts,
@@ -84,6 +88,8 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
   const deletePage = useWorkJournalStore((s) => s.deletePage);
   const clearError = useWorkJournalStore((s) => s.clearError);
   const sync = useWorkJournalStore((s) => s.sync);
+  const beginReplace = useWorkJournalStore((s) => s.beginReplace);
+  const endReplace = useWorkJournalStore((s) => s.endReplace);
 
   const page = viewedDate ? (pages[viewedDate] ?? null) : null;
   const dates = Object.keys(pages);
@@ -145,6 +151,22 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
       void stop.then((fn) => fn());
     };
   }, [sync]);
+
+  // A restore or undo started in the other window freezes this one too: its
+  // unsaved text is sent first (into the safety copy), then nothing is saved
+  // until the restored journal is read back (`sync(true)`) or the restore fails.
+  useEffect(() => {
+    const stop = listenWorkJournalReplacing((active) => {
+      if (active) void beginReplace();
+      else endReplace();
+    }).catch((err) => {
+      console.error("Failed to follow Work Journal restores:", err);
+      return () => {};
+    });
+    return () => {
+      void stop.then((fn) => fn());
+    };
+  }, [beginReplace, endReplace]);
 
   // Title draft: committed on blur or Enter, reverted on Escape.
   const [titleDraft, setTitleDraft] = useState("");
@@ -221,7 +243,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
   };
 
   const newDateTaken = formDate !== "" && pages[formDate] !== undefined;
-  const canCreate = isValidJournalDate(formDate) && !newDateTaken && !creating;
+  const canCreate = isValidJournalDate(formDate) && !newDateTaken && !creating && !replacing;
   const handleCreate = async (): Promise<void> => {
     if (!canCreate) return;
     setFormMode(null);
@@ -294,6 +316,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         <button
           type="button"
           onClick={() => toggleForm("new")}
+          disabled={replacing}
           className={`${ICON_BUTTON} ${formMode === "new" ? "text-maestro-accent" : ""}`}
           aria-label="New page for a date"
           title="New page for a date"
@@ -303,7 +326,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         <button
           type="button"
           onClick={() => void handleDelete()}
-          disabled={!page}
+          disabled={!page || replacing}
           className={`${ICON_BUTTON} hover:text-maestro-red`}
           aria-label="Delete page"
           title="Delete page"
@@ -451,7 +474,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
               <button
                 type="button"
                 onClick={() => void runCreate(viewedDate)}
-                disabled={creating}
+                disabled={creating || replacing}
                 className="flex items-center gap-1 rounded bg-maestro-card px-2 py-1 text-xs text-maestro-text transition-colors hover:bg-maestro-border disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <CalendarPlus size={12} />

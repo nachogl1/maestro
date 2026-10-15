@@ -436,6 +436,13 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * The backend's refusal of a write while a restore or undo replaces the
+ * journal (`WorkJournalError::RestoreInProgress`), matched by its text.
+ */
+export const WORK_JOURNAL_RESTORE_IN_PROGRESS_ERROR =
+  "The Work Journal is being restored; this change was not saved.";
+
+/**
  * Pages from a backend reply, keeping pages that still have a save in flight
  * and the fields whose last save failed.
  */
@@ -494,8 +501,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     try {
       const journal = await invoke<WorkJournalFile>("load_work_journal");
       // A restore or undo happened (or is running) since the read started:
-      // the reply may hold the journal it replaced.
-      if (get().revision !== revision || get().replacing) return;
+      // the reply may hold the journal it replaced. The read that follows a
+      // finished one (`replaced`) is what ends `replacing` here.
+      if (get().revision !== revision || (get().replacing && !replaced)) return;
       if (replaced) {
         get().replaceJournal(journal);
         return;
@@ -616,6 +624,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         if (disk) diskPages = { ...diskPages, [date]: { ...disk, ...patch } };
         publishFailedSaves();
       } catch (error) {
+        // A restore or undo in another window refused it: dropped like a save
+        // made while `replacing` (no error, no retry; the text belongs to the
+        // journal being replaced).
+        if (errorMessage(error) === WORK_JOURNAL_RESTORE_IN_PROGRESS_ERROR) return;
         console.error("Failed to save the Work Journal page:", error);
         const key = chainKey(date, patch);
         failedSaves.add(key);

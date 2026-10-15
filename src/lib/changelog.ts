@@ -11,6 +11,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
+      "Work Journal: while a restore or undo runs, both the pane and the pop-out are frozen (text, toolbar, new page, delete, suggestions), so no edit can land on top of the restored journal.",
       "Work Journal: text that could not be saved is kept, retried automatically, and flagged in the pane, the pop-out and on the top-bar icon until it lands; if the other window changed the same text you choose which to keep, and the pop-out asks before closing while text is still unsaved.",
       "Work Journal suggestions now cover every project Maestro has seen in a tab or terminal since this update, including closed tabs and every repo of a multi-repo project, not only the tabs open right now.",
       "Terminal title bar: the name now follows the Claude agent's real name even when Claude was started by hand in the terminal or its start-up hooks were missing, so the header and Claude's own status bar agree without re-saving the name.",

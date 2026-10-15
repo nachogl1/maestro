@@ -8,8 +8,10 @@ import type { Editor } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WORK_JOURNAL_CHANGED_EVENT,
+  WORK_JOURNAL_REPLACING_EVENT,
   WORK_JOURNAL_WINDOW_LABEL,
   type WorkJournalChangedPayload,
+  type WorkJournalReplacingPayload,
 } from "@/lib/workJournalWindow";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
@@ -712,6 +714,8 @@ describe("WorkJournalPanel and the pop-out window", () => {
 
   /** Delivers a `work-journal:changed` event as the backend would. */
   let changed: (payload: WorkJournalChangedPayload) => void;
+  /** Delivers a `work-journal:replacing` event as the backend would. */
+  let replacing: (payload: WorkJournalReplacingPayload) => void;
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -727,9 +731,13 @@ describe("WorkJournalPanel and the pop-out window", () => {
     mockBackend();
     vi.mocked(WebviewWindow).mockClear();
     changed = () => {};
+    replacing = () => {};
     listenMock.mockImplementation(async (event, handler) => {
       if (event === WORK_JOURNAL_CHANGED_EVENT) {
         changed = (payload) => (handler as (e: { payload: unknown }) => void)({ payload });
+      }
+      if (event === WORK_JOURNAL_REPLACING_EVENT) {
+        replacing = (payload) => (handler as (e: { payload: unknown }) => void)({ payload });
       }
       return () => {};
     });
@@ -810,6 +818,42 @@ describe("WorkJournalPanel and the pop-out window", () => {
     await waitFor(() =>
       expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Not saved yet!"),
     );
+  });
+
+  it("a restore in the other window saves typing first, then freezes toolbar, Delete and New until it is read back", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    act(() => {
+      pageEditor().commands.insertContent("Typed before the restore");
+    });
+
+    await act(async () => replacing({ source: WORK_JOURNAL_WINDOW_LABEL, active: true }));
+    // Sent at once (no debounce), so it lands in the safety copy.
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed before the restore");
+    expect(pageEditor().isEditable).toBe(false);
+    expect(screen.getByRole("button", { name: "Bold" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Text colour" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete page" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New page for a date" })).toBeDisabled();
+
+    file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: OTHER_BODY };
+    await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: true }));
+    expect(await screen.findByText("Typed in the window")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bold" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete page" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "New page for a date" })).toBeEnabled();
+    expect(pageEditor().isEditable).toBe(true);
+  });
+
+  it("a failed restore in the other window lets editing resume", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    await act(async () => replacing({ source: WORK_JOURNAL_WINDOW_LABEL, active: true }));
+    expect(screen.getByRole("button", { name: "Delete page" })).toBeDisabled();
+    await act(async () => replacing({ source: WORK_JOURNAL_WINDOW_LABEL, active: false }));
+    expect(screen.getByRole("button", { name: "Delete page" })).toBeEnabled();
+    expect(pageEditor().isEditable).toBe(true);
   });
 
   it("keeps typing not yet saved here; its save wins", async () => {
