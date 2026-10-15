@@ -1,0 +1,100 @@
+name: Release
+
+# Publishes a signed Windows installer on every push to main so the installed
+# app can update itself (Settings → check for updates, or the startup banner).
+#
+# Version scheme: MAJOR.MINOR come from src-tauri/tauri.conf.json, PATCH is the
+# run number of this workflow, so every run is strictly newer than the last.
+# Renaming this file resets the run number and would make versions go
+# backwards — bump MINOR in tauri.conf.json if that ever has to happen.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "website/**"
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build and publish Windows installer
+    runs-on: windows-latest
+    # Manual runs from other branches must not become the "latest" release.
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Compute release version and enable updater artifacts
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./src-tauri/tauri.conf.json').version.split('.').slice(0, 2).join('.')")
+          version="${base}.${{ github.run_number }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Written into the working copy only (never committed): the build
+          # reads the version from here, and createUpdaterArtifacts makes the
+          # bundler emit the .sig file the updater needs. Local builds keep the
+          # repo's version and stay unsigned.
+          node -e "
+            const fs = require('fs');
+            const path = 'src-tauri/tauri.conf.json';
+            const conf = JSON.parse(fs.readFileSync(path, 'utf8'));
+            conf.version = '$version';
+            conf.bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(path, JSON.stringify(conf, null, 2) + '\n');
+          "
+          echo "Release version: $version"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          rm -f package-lock.json
+          npm install
+
+      - name: Build MCP server sidecar
+        shell: bash
+        run: |
+          cargo build --release -p maestro-mcp-server
+          mkdir -p src-tauri/binaries
+          cp target/release/maestro-mcp-server.exe \
+            src-tauri/binaries/maestro-mcp-server-x86_64-pc-windows-msvc.exe
+
+      - name: Build installer and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v${{ steps.version.outputs.version }}
+          releaseName: Maestro v${{ steps.version.outputs.version }}
+          releaseBody: "Automated Windows build of ${{ github.sha }}."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --bundles msi

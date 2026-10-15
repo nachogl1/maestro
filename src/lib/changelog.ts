@@ -8,6 +8,14 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-15",
+    title: "Maestro updates itself",
+    items: [
+      "Maestro now checks this fork's releases and can download and install a new build in one click.",
+      "Every code change merged to main is published as a signed Windows installer automatically.",
+    ],
+  },
+  {
     date: "2026-10-14",
     title: "Readable History, keyboard terminals, richer issue map, agent names",
     items: [
