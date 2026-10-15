@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
-/** Right-side utility panels reachable via Cmd/Ctrl+digit. */
-export type UtilityPanelShortcut = "notes";
+/** Right-side utility panels reachable by shortcut (Cmd/Ctrl+5, Alt+4). */
+export type UtilityPanelShortcut = "notes" | "inject";
 
 /** Cmd/Ctrl+digit → right-side utility panel (2 is the git panel, handled separately). */
 const UTILITY_PANEL_BY_DIGIT: Record<string, UtilityPanelShortcut> = {
@@ -13,11 +13,11 @@ interface UseAppKeyboardOptions {
   onAddSession: () => void;
   /** Whether adding a session is currently allowed */
   canAddSession: boolean;
-  /** Alt+1-4: toggle the left sidebar on tab N (1-based tab index) */
+  /** Alt+1-3: toggle the left sidebar on tab N (1-based tab index) */
   onSidebarTab?: (index: number) => void;
   /** Callback to toggle the git panel (Cmd/Ctrl+2) */
   onToggleGitPanel?: () => void;
-  /** Cmd/Ctrl+5: toggle a right-side utility panel */
+  /** Cmd/Ctrl+5 (Notes) and Alt+4 (Injector): toggle a right-side utility panel */
   onToggleUtilityPanel?: (panel: UtilityPanelShortcut) => void;
   /** Callback to toggle the eagle all-projects terminals view (Cmd/Ctrl+G) */
   onToggleEagleView?: () => void;
@@ -38,7 +38,8 @@ function isMac(): boolean {
  * App-level keyboard shortcut handler.
  *
  * Shortcuts:
- * - Alt+1-4: Toggle the left sidebar on tab N (History/Infra/Settings/Inject)
+ * - Alt+1-3: Toggle the left sidebar on tab N (History/Infra/Settings)
+ * - Alt+4: Toggle the Injector panel
  * - Cmd/Ctrl+2: Toggle the git panel
  * - Cmd/Ctrl+5: Toggle the Notes panel
  * - Cmd/Ctrl+T: Add a new terminal (project picker in eagle view)
@@ -60,14 +61,21 @@ export function useAppKeyboard({
       // Alt-based shortcuts (no Cmd/Ctrl, no Shift)
       // Use event.code so the bindings are layout-independent (AZERTY etc.).
       if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        // Alt+1-4: toggle the left sidebar on the given tab. Top-row digits
+        // Alt+1-3: toggle the left sidebar on the given tab. Top-row digits
         // only — Alt+numpad digits must stay free for Windows Alt-code entry
         // (e.g. Alt+164 → ñ typed into a terminal).
-        const sidebarDigit = /^Digit([1-4])$/.exec(event.code);
+        const sidebarDigit = /^Digit([1-3])$/.exec(event.code);
         if (sidebarDigit && onSidebarTab) {
           event.preventDefault();
           event.stopImmediatePropagation();
           onSidebarTab(Number(sidebarDigit[1]));
+          return;
+        }
+        // Alt+4: the Injector panel on the right (it used to be sidebar tab 4).
+        if (event.code === "Digit4" && onToggleUtilityPanel) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onToggleUtilityPanel("inject");
         }
         return;
       }

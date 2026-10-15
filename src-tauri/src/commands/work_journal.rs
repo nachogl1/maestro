@@ -369,8 +369,8 @@ pub struct WorkJournalRestoreState {
 
 /// "Restore from backup": replaces the whole journal with the backup file
 /// `file`, or with the backup in the configured folder when `file` is
-/// `None`, after saving the current journal as the safety copy. Keeps the
-/// local backup folder and clears the last backup time, so automatic
+/// `None`, after saving the current journal as the safety copy. Keeps all of
+/// this machine's settings and clears the last backup time, so automatic
 /// backups leave the backup folder alone until "Back up now".
 #[tauri::command]
 pub async fn restore_work_journal(

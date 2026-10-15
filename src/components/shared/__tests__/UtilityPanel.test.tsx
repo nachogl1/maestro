@@ -220,6 +220,15 @@ describe("UtilityPanel", () => {
     }
   });
 
+  it("renders the Injector panel with its syringe title and the empty-terminals hint", () => {
+    render(<UtilityPanel panel="inject" width={320} onResize={() => {}} onClose={() => {}} />);
+    // "Injector" is both the panel title and the section's own heading.
+    expect(screen.getAllByText("Injector").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Close Injector panel" })).toBeInTheDocument();
+    // No terminal is running in this test, so the section says so.
+    expect(screen.getByText("No running terminals")).toBeInTheDocument();
+  });
+
   it("calls onClose from the header close button", () => {
     const onClose = vi.fn();
     render(<UtilityPanel panel="launch" width={320} onResize={() => {}} onClose={onClose} />);

@@ -565,19 +565,19 @@ pub fn default_restore_source(path: &Path) -> WorkJournalResult<PathBuf> {
 }
 
 /// The local journal as restore and undo see it: its exact bytes (a missing
-/// file counts as an empty journal) and its backup folder.
+/// file counts as an empty journal) and its settings (empty when missing).
 ///
 /// A local journal from a newer Maestro is refused ("update Maestro first"),
 /// so an older layout never replaces it. One that cannot be read as a journal
-/// at all (corrupt) has no folder but can still be restored over: its bytes
-/// go into the safety copy unchanged.
-fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, Option<String>)> {
+/// at all (corrupt) has empty settings but can still be restored over: its
+/// bytes go into the safety copy unchanged.
+fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, WorkJournalSettings)> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let empty = serde_json::to_vec_pretty(&WorkJournal::default())
                 .map_err(WorkJournalError::Serialize)?;
-            return Ok((empty, None));
+            return Ok((empty, WorkJournalSettings::default()));
         }
         Err(e) => return Err(WorkJournalError::Read(e)),
     };
@@ -595,17 +595,21 @@ fn current_journal(path: &Path) -> WorkJournalResult<(Vec<u8>, Option<String>)> 
             None
         }
     };
-    Ok((bytes, journal.and_then(|j| j.settings.backup_folder)))
+    Ok((bytes, journal.map(|j| j.settings).unwrap_or_default()))
 }
 
-/// The two settings rules for a journal coming back from a backup or the
-/// safety copy: the backup folder stays the local one (the file holds the
-/// settings of whoever wrote it), and the last backup time is cleared, so
-/// the automatic backup leaves the backup folder alone until "Back up now".
-/// The last candidate run time is per-machine state too and is cleared, so
-/// an old value from the file never replays days of suggestions.
-fn keep_local_backup_settings(journal: &mut WorkJournal, local_backup_folder: Option<String>) {
-    journal.settings.backup_folder = local_backup_folder;
+/// The settings rules for a journal coming back from a backup or the safety
+/// copy: every setting stays this machine's own (the file holds the settings
+/// of whoever wrote it, which may be another machine or a crafted file), so
+/// only the pages, deleted dates and last auto-created date come from the
+/// file. A Granola choice not yet made here stays unasked, and the report
+/// folder, model and schedule never change by restoring.
+///
+/// Two times are then cleared: the last backup time, so the automatic backup
+/// leaves the backup folder alone until "Back up now", and the last candidate
+/// run time, so an old value never replays days of suggestions.
+fn keep_local_settings(journal: &mut WorkJournal, local_settings: WorkJournalSettings) {
+    journal.settings = local_settings;
     journal.settings.last_backup_at = None;
     journal.settings.last_run_at = None;
 }
@@ -618,8 +622,8 @@ fn keep_local_backup_settings(journal: &mut WorkJournal, local_backup_folder: Op
 ///    older layout is upgraded.
 /// 2. Read the local journal (see [`current_journal`]).
 /// 3. Write its exact bytes as the safety copy, crash-safely.
-/// 4. Save the backup's content with the local backup folder and no last
-///    backup time.
+/// 4. Save the backup's pages with this machine's own settings (see
+///    [`keep_local_settings`]).
 ///
 /// The safety copy is written before the journal on purpose: whenever the
 /// journal was replaced, the safety copy is the journal from just before.
@@ -645,20 +649,20 @@ pub fn restore_from(path: &Path, source: &Path) -> WorkJournalResult<WorkJournal
             },
         }
     })?;
-    let (current_bytes, local_backup_folder) = current_journal(path)?;
+    let (current_bytes, local_settings) = current_journal(path)?;
     let safety = safety_copy_path(path);
     if let Some(parent) = safety.parent() {
         std::fs::create_dir_all(parent).map_err(WorkJournalError::CreateDir)?;
     }
     atomic_write_via(&safety, &tmp_path(&safety), &current_bytes)
         .map_err(WorkJournalError::SafetyCopyNotSaved)?;
-    keep_local_backup_settings(&mut restored, local_backup_folder);
+    keep_local_settings(&mut restored, local_settings);
     save(path, &restored)?;
     Ok(restored)
 }
 
 /// "Undo restore": puts the safety copy back as the journal (with the same
-/// two settings rules as a restore), then deletes the safety copy, so undo
+/// settings rules as a restore: the current settings stay), then deletes the safety copy, so undo
 /// works once. Without a safety copy there is nothing to undo; an unreadable
 /// one is refused and left on disk.
 pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
@@ -670,8 +674,8 @@ pub fn undo_restore(path: &Path) -> WorkJournalResult<WorkJournal> {
         WorkJournalError::Read(io) => WorkJournalError::SafetyCopyUnreadable(io.to_string()),
         other => WorkJournalError::SafetyCopyUnreadable(other.to_string()),
     })?;
-    let (_, local_backup_folder) = current_journal(path)?;
-    keep_local_backup_settings(&mut previous, local_backup_folder);
+    let (_, local_settings) = current_journal(path)?;
+    keep_local_settings(&mut previous, local_settings);
     save(path, &previous)?;
     if let Err(e) = std::fs::remove_file(&safety) {
         log::warn!("Undo restore done, but the safety copy could not be deleted: {e}");
@@ -1951,11 +1955,12 @@ mod tests {
         let backup = with_run.to_string();
         std::fs::write(backup_path(&folder), &backup).unwrap();
         let old_bytes = local_journal(&path, &folder);
+        let old = parse_journal(std::str::from_utf8(&old_bytes).unwrap()).unwrap();
 
         let saved = restore_from(&path, &backup_path(&folder)).unwrap();
 
         let mut expected = parse_journal(&backup).unwrap();
-        expected.settings.backup_folder = Some(folder.to_string_lossy().into_owned());
+        expected.settings = old.settings;
         expected.settings.last_backup_at = None;
         expected.settings.last_run_at = None;
         assert_eq!(saved, expected);
@@ -1963,12 +1968,11 @@ mod tests {
         assert_eq!(
             load(&path).unwrap(),
             expected,
-            "the journal equals the backup"
+            "the journal equals the backup, with the local settings"
         );
         assert_eq!(
-            saved.settings.granola_opt_in,
-            Some(true),
-            "other settings come from the backup"
+            saved.settings.granola_opt_in, None,
+            "a Granola choice not made on this machine stays unasked"
         );
         assert!(
             !saved.pages.contains_key("2026-10-15"),
@@ -2038,6 +2042,118 @@ mod tests {
 
         assert_eq!(saved.settings.backup_folder.as_deref(), Some("E:\\New"));
         assert!(saved.settings.last_backup_at.is_none());
+    }
+
+    /// Writes a backup whose every setting differs from the local ones.
+    fn backup_with_foreign_settings(folder: &Path) {
+        let mut backup: Value = serde_json::from_str(&other_machine_backup(folder)).unwrap();
+        backup["settings"] = json!({
+            "backup_folder": "Z:\\OtherMachine",
+            "granola_opt_in": true,
+            "report_folder": "Z:\\Reports",
+            "model": "claude-opus",
+            "run_every_hours": 6,
+            "future_setting": "from the file"
+        });
+        std::fs::write(backup_path(folder), backup.to_string()).unwrap();
+    }
+
+    /// Sets this machine's own Granola choice, report folder, model and
+    /// schedule.
+    fn set_local_settings(path: &Path, granola: bool, report: &str, model: &str, hours: u32) {
+        modify(path, |j| {
+            j.settings.granola_opt_in = Some(granola);
+            j.settings.report_folder = Some(report.into());
+            j.settings.model = Some(model.into());
+            j.settings.run_every_hours = Some(hours);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_restore_keeps_the_local_granola_no_when_the_backup_says_yes() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        backup_with_foreign_settings(&folder);
+        local_journal(&path, &folder);
+        set_local_settings(&path, false, "C:\\Reports", "sonnet", 2);
+
+        let saved = restore_from(&path, &backup_path(&folder)).unwrap();
+
+        assert_eq!(saved.settings.granola_opt_in, Some(false));
+        assert_eq!(load(&path).unwrap().settings.granola_opt_in, Some(false));
+    }
+
+    #[test]
+    fn test_restore_keeps_the_local_settings_and_takes_the_backup_pages() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        backup_with_foreign_settings(&folder);
+        local_journal(&path, &folder);
+        set_local_settings(&path, true, "C:\\Reports", "sonnet", 2);
+        modify(&path, |j| {
+            j.settings.extra.insert("local_only".into(), json!("kept"));
+            Ok(())
+        })
+        .unwrap();
+        let backup = load_existing(&backup_path(&folder)).unwrap();
+
+        let saved = restore_from(&path, &backup_path(&folder)).unwrap();
+
+        let s = &saved.settings;
+        assert_eq!(
+            s.backup_folder.as_deref(),
+            Some(folder.to_string_lossy().as_ref())
+        );
+        assert_eq!(s.report_folder.as_deref(), Some("C:\\Reports"));
+        assert_eq!(s.model.as_deref(), Some("sonnet"));
+        assert_eq!(s.run_every_hours, Some(2));
+        assert!(
+            !s.extra.contains_key("future_setting"),
+            "no setting comes from the file"
+        );
+        assert_eq!(
+            s.extra.get("local_only"),
+            Some(&json!("kept")),
+            "a local setting this build does not know survives"
+        );
+        assert!(s.last_backup_at.is_none());
+        assert_eq!(saved.pages, backup.pages, "pages come from the backup");
+        assert_eq!(saved.deleted_dates, backup.deleted_dates);
+        assert_eq!(saved.last_auto_created_date, backup.last_auto_created_date);
+        assert!(
+            !saved.pages.contains_key("2026-10-15"),
+            "replace, never merge"
+        );
+    }
+
+    #[test]
+    fn test_undo_keeps_the_current_settings() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        backup_with_foreign_settings(&folder);
+        local_journal(&path, &folder);
+        set_local_settings(&path, true, "C:\\Reports", "sonnet", 2);
+        restore_from(&path, &backup_path(&folder)).unwrap();
+        // Settings changed after the restore win over the safety copy's.
+        set_local_settings(&path, false, "D:\\Later", "haiku", 4);
+
+        let saved = undo_restore(&path).unwrap();
+
+        let s = &saved.settings;
+        assert_eq!(s.granola_opt_in, Some(false));
+        assert_eq!(s.report_folder.as_deref(), Some("D:\\Later"));
+        assert_eq!(s.model.as_deref(), Some("haiku"));
+        assert_eq!(s.run_every_hours, Some(4));
+        assert!(s.last_backup_at.is_none());
+        assert!(
+            saved.pages.contains_key("2026-10-15"),
+            "the old pages are back"
+        );
     }
 
     #[test]
@@ -2150,6 +2266,11 @@ mod tests {
             "no local folder yet"
         );
         assert!(saved.settings.last_backup_at.is_none());
+        assert_eq!(
+            saved.settings,
+            WorkJournalSettings::default(),
+            "a new laptop takes no settings from the backup; Granola stays unasked"
+        );
 
         assert_eq!(undo_restore(&path).unwrap(), WorkJournal::default());
     }
