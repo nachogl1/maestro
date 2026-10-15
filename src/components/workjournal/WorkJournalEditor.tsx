@@ -1,6 +1,9 @@
+import { TaskItem, TaskList } from "@tiptap/extension-list";
+import { BackgroundColor, Color, TextStyle } from "@tiptap/extension-text-style";
 import { EditorContent, getSchema, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useMemo, useRef } from "react";
+import { WorkJournalToolbar } from "@/components/workjournal/WorkJournalToolbar";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /** How long typing must pause before the page body is saved. */
@@ -12,6 +15,12 @@ const WORK_JOURNAL_EXTENSIONS = [
     // A click must never navigate the app window; links are edited here.
     link: { openOnClick: false },
   }),
+  // Text colour and highlight live on the textStyle mark; no font controls.
+  TextStyle,
+  Color,
+  BackgroundColor,
+  TaskList,
+  TaskItem.configure({ nested: true }),
 ];
 
 const WORK_JOURNAL_SCHEMA = getSchema(WORK_JOURNAL_EXTENSIONS);
@@ -43,9 +52,10 @@ interface WorkJournalEditorProps {
 
 /**
  * Rich-text editor for one Work Journal page: TipTap with its own setup (not
- * the Notes markdown pipeline). Bold, italic, underline, headings, bullet and
- * numbered lists and links, through keyboard shortcuts and markdown-style
- * input rules. The body is saved as TipTap JSON (`editor.getJSON()`) after a
+ * the Notes markdown pipeline). Bold, italic, underline, headings, bullet,
+ * numbered and tick-box lists, links, and text colour and highlight, through
+ * the toolbar above the page, keyboard shortcuts and markdown-style input
+ * rules. The body is saved as TipTap JSON (`editor.getJSON()`) after a
  * short pause in typing, and any unsaved change is flushed when the date
  * changes, the editor closes or the window is closed.
  *
@@ -110,14 +120,18 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   }, []);
 
   return (
-    <EditorContent
-      editor={editor}
-      // Reuses the Notes editor's typography (headings, lists, links) so the
-      // two editors read the same; only the CSS is shared, not the pipeline.
-      className={`notes-editor ${className}`}
-      // Clicking the empty area below the last line moves the caret there.
-      onClick={() => editor?.chain().focus().run()}
-    />
+    <>
+      {editor && <WorkJournalToolbar editor={editor} />}
+      <EditorContent
+        editor={editor}
+        // Reuses the Notes editor's typography (headings, lists, links) so the
+        // two editors read the same; only the CSS is shared, not the pipeline.
+        // `work-journal-editor` scopes the checklist styles to this editor.
+        className={`notes-editor work-journal-editor ${className}`}
+        // Clicking the empty area below the last line moves the caret there.
+        onClick={() => editor?.chain().focus().run()}
+      />
+    </>
   );
 }
 

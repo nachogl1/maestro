@@ -228,6 +228,35 @@
   color: rgb(var(--maestro-muted) / 0.6);
 }
 
+/* ── Work Journal editor: tick-box checklists ──
+   Scoped to the Work Journal editor so the Notes editor's lists are unchanged. */
+.work-journal-editor .tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.1rem;
+}
+
+.work-journal-editor .tiptap ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.work-journal-editor .tiptap ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.work-journal-editor .tiptap ul[data-type="taskList"] li > label input {
+  margin-top: 0.3em;
+  cursor: pointer;
+  accent-color: rgb(var(--maestro-accent));
+}
+
+.work-journal-editor .tiptap ul[data-type="taskList"] li > div {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ── Split Pane Dividers ── */
 
 .split-divider {
