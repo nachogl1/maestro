@@ -45,7 +45,7 @@ describe("PullRequestDetailPanel checks section", () => {
   it("renders nothing when there is no checks summary", () => {
     useGitHubStore.setState({ selectedPR: pr() });
 
-    render(<PullRequestDetailPanel repoPath="/repo" onClose={vi.fn()} />);
+    render(<PullRequestDetailPanel onClose={vi.fn()} />);
 
     expect(screen.getByText("Add feature")).toBeInTheDocument();
     expect(screen.queryByText(/passed|failed|pending/)).not.toBeInTheDocument();
@@ -74,7 +74,7 @@ describe("PullRequestDetailPanel checks section", () => {
       }),
     });
 
-    render(<PullRequestDetailPanel repoPath="/repo" onClose={vi.fn()} />);
+    render(<PullRequestDetailPanel onClose={vi.fn()} />);
 
     expect(await screen.findByText("1 passed, 1 failed")).toBeInTheDocument();
     expect(screen.getByText("CI / build")).toBeInTheDocument();
@@ -100,7 +100,7 @@ describe("PullRequestDetailPanel checks section", () => {
       }),
     });
 
-    render(<PullRequestDetailPanel repoPath="/repo" onClose={vi.fn()} />);
+    render(<PullRequestDetailPanel onClose={vi.fn()} />);
 
     expect(screen.getByText("failing-check")).toBeInTheDocument();
     expect(screen.getByText("pending-check")).toBeInTheDocument();

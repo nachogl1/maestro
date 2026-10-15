@@ -1,8 +1,7 @@
 use crate::github::{
     AuthStatus, BranchPullRequest, CreatePullRequestOptions, DiscussionDetail, DiscussionInfo,
     GitHub, GitHubError, GitHubWatchdog, IssueDetail, IssueFilter, IssueInfo, IssueLinks,
-    MergeMethod, PullRequestDetail, PullRequestFilter, PullRequestInfo, RepoAssignee,
-    WatchedProject,
+    PullRequestDetail, PullRequestFilter, PullRequestInfo, RepoAssignee, WatchedProject,
 };
 
 /// Checks if the user is authenticated with GitHub CLI.
@@ -71,36 +70,6 @@ pub async fn github_create_pr(
         draft,
     };
     gh.create_pull_request(options).await
-}
-
-/// Merges a pull request.
-#[tauri::command]
-pub async fn github_merge_pr(
-    repo_path: String,
-    number: u64,
-    method: MergeMethod,
-    delete_branch: bool,
-) -> Result<(), GitHubError> {
-    let gh = GitHub::new(&repo_path);
-    gh.merge_pull_request(number, method, delete_branch).await
-}
-
-/// Closes a pull request without merging.
-#[tauri::command]
-pub async fn github_close_pr(repo_path: String, number: u64) -> Result<(), GitHubError> {
-    let gh = GitHub::new(&repo_path);
-    gh.close_pull_request(number).await
-}
-
-/// Adds a comment to a pull request.
-#[tauri::command]
-pub async fn github_comment_pr(
-    repo_path: String,
-    number: u64,
-    body: String,
-) -> Result<(), GitHubError> {
-    let gh = GitHub::new(&repo_path);
-    gh.comment_pull_request(number, &body).await
 }
 
 /// Lists issues with optional filtering.
