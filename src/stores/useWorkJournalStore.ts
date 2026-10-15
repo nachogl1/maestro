@@ -114,9 +114,20 @@ const pendingUpdates = new Map<string, number>();
  */
 const failedSaves = new Set<string>();
 
-function hasFailedSave(date: string): boolean {
-  for (const key of failedSaves) if (key.startsWith(`${date}:`)) return true;
-  return false;
+/** The page fields (`body`, `title`) of `date` whose last save failed. */
+function failedFields(date: string): Set<string> {
+  const fields = new Set<string>();
+  for (const key of failedSaves) {
+    if (key.startsWith(`${date}:`)) {
+      for (const field of key.slice(date.length + 1).split(",")) fields.add(field);
+    }
+  }
+  return fields;
+}
+
+/** Forgets the failed saves of `date`: its page is gone, so their text is too. */
+function clearFailedSaves(date: string): void {
+  for (const key of [...failedSaves]) if (key.startsWith(`${date}:`)) failedSaves.delete(key);
 }
 
 /** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
@@ -221,7 +232,7 @@ function errorMessage(error: unknown): string {
 
 /**
  * Pages from a backend reply, keeping pages that still have a save in flight
- * or whose last save failed.
+ * and the fields whose last save failed.
  */
 function mergePages(
   local: Record<string, WorkJournalPage>,
@@ -229,8 +240,16 @@ function mergePages(
 ): Record<string, WorkJournalPage> {
   const merged = { ...incoming };
   for (const date of Object.keys(local)) {
-    if (!pendingUpdates.has(date) && !hasFailedSave(date)) continue;
-    if (merged[date]) merged[date] = local[date];
+    if (!merged[date]) continue;
+    if (pendingUpdates.has(date)) {
+      merged[date] = local[date];
+      continue;
+    }
+    // Only the field whose save failed stays local; the other one takes
+    // the incoming text.
+    const failed = failedFields(date);
+    if (failed.has("body")) merged[date] = { ...merged[date], body: local[date].body };
+    if (failed.has("title")) merged[date] = { ...merged[date], title: local[date].title };
   }
   return merged;
 }
@@ -275,6 +294,10 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         // A save made here after the read started is newer than the reply.
         for (const [date, at] of lastLocalSave) {
           if (at > tick && s.pages[date] && pages[date]) pages[date] = s.pages[date];
+        }
+        // Pages deleted in the other window take their failed saves along.
+        for (const date of Object.keys(s.pages)) {
+          if (!journal.pages[date]) clearFailedSaves(date);
         }
         // The viewed page was deleted in the other window: show the nearest
         // one, as a delete here does.
@@ -402,6 +425,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       // A save queued just before the delete must land first, or the
       // backend would refuse it for a page that no longer exists.
       await savesSettled(date);
+      clearFailedSaves(date);
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {

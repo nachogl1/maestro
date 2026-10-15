@@ -235,6 +235,55 @@ describe("useWorkJournalStore sync (a change made in the other window)", () => {
     expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("theirs"));
   });
 
+  it("a failed title save keeps only the title local; the body still takes the other window's edits", async () => {
+    useWorkJournalStore.setState({ pages: journal([page("2026-10-14", "Old")]).pages });
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Mine" });
+
+    invokeMock.mockResolvedValueOnce(
+      journal([{ ...page("2026-10-14", "Theirs"), body: body("their text") }]),
+    );
+    await useWorkJournalStore.getState().sync(false);
+    const synced = useWorkJournalStore.getState().pages["2026-10-14"];
+    expect(synced.title).toBe("Mine");
+    expect(synced.body).toEqual(body("their text"));
+
+    // A later title save lands and clears the mark.
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-14", "Mine")]));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { title: "Mine" });
+  });
+
+  it("a deleted page forgets its failed saves, so a page made again takes the disk copy", async () => {
+    useWorkJournalStore.setState({
+      pages: journal([page("2026-10-13"), page("2026-10-14")]).pages,
+    });
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("lost") });
+
+    // Deleted here.
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-13")]));
+    await useWorkJournalStore.getState().deletePage("2026-10-14");
+    useWorkJournalStore.setState((s) => ({
+      pages: { ...s.pages, "2026-10-14": { ...page("2026-10-14"), body: body("stale") } },
+    }));
+    invokeMock.mockResolvedValueOnce(
+      journal([page("2026-10-13"), { ...page("2026-10-14"), body: body("new page") }]),
+    );
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("new page"));
+
+    // Deleted in the other window.
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+    await useWorkJournalStore.getState().updatePage("2026-10-14", { body: body("lost again") });
+    invokeMock.mockResolvedValueOnce(journal([page("2026-10-13")]));
+    await useWorkJournalStore.getState().sync(false);
+    invokeMock.mockResolvedValueOnce(
+      journal([page("2026-10-13"), { ...page("2026-10-14"), body: body("made again") }]),
+    );
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().pages["2026-10-14"].body).toEqual(body("made again"));
+  });
+
   it("a restore or undo in the other window replaces the journal and bumps the revision", async () => {
     useWorkJournalStore.setState({
       pages: journal([page("2026-10-13"), page("2026-10-14")]).pages,
