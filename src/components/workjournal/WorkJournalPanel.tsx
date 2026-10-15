@@ -24,7 +24,11 @@ import {
 } from "@/lib/workJournalDates";
 import { listenWorkJournalChanged, openWorkJournalWindow } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
-import { retryWorkJournalSaves, useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import {
+  discardWorkJournalConflicts,
+  retryWorkJournalSaves,
+  useWorkJournalStore,
+} from "@/stores/useWorkJournalStore";
 
 /**
  * Slack after local midnight before the day pages are refreshed, so a timer
@@ -70,6 +74,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
   const revision = useWorkJournalStore((s) => s.revision);
   const replacing = useWorkJournalStore((s) => s.replacing);
   const unsavedDates = useWorkJournalStore((s) => s.unsavedDates);
+  const conflictDates = useWorkJournalStore((s) => s.conflictDates);
   const ensurePages = useWorkJournalStore((s) => s.ensurePages);
   const selectDate = useWorkJournalStore((s) => s.selectDate);
   const goPrev = useWorkJournalStore((s) => s.goPrev);
@@ -334,16 +339,42 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
       {/* Stays until the text is saved: closing and reopening the pane does not clear it. */}
       {unsavedDates.length > 0 && (
         <output className="flex shrink-0 items-center gap-2 border-b border-maestro-border/60 bg-maestro-orange/10 px-3 py-1.5 text-xs text-maestro-orange">
-          <span className="flex-1">
-            Unsaved changes, retrying ({unsavedDates.map(defaultWorkJournalTitle).join(", ")})
-          </span>
-          <button
-            type="button"
-            onClick={() => void retryWorkJournalSaves()}
-            className="rounded px-1.5 py-0.5 hover:bg-maestro-orange/20"
-          >
-            Retry now
-          </button>
+          {conflictDates.length > 0 ? (
+            // The other window saved the same field since: only the user decides.
+            <>
+              <span className="flex-1">
+                Unsaved changes ({conflictDates.map(defaultWorkJournalTitle).join(", ")}): the other
+                window changed this text too.
+              </span>
+              <button
+                type="button"
+                onClick={() => void retryWorkJournalSaves(true)}
+                className="rounded px-1.5 py-0.5 hover:bg-maestro-orange/20"
+              >
+                Overwrite with mine
+              </button>
+              <button
+                type="button"
+                onClick={discardWorkJournalConflicts}
+                className="rounded px-1.5 py-0.5 hover:bg-maestro-orange/20"
+              >
+                Discard mine
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="flex-1">
+                Unsaved changes, retrying ({unsavedDates.map(defaultWorkJournalTitle).join(", ")})
+              </span>
+              <button
+                type="button"
+                onClick={() => void retryWorkJournalSaves()}
+                className="rounded px-1.5 py-0.5 hover:bg-maestro-orange/20"
+              >
+                Retry now
+              </button>
+            </>
+          )}
         </output>
       )}
 

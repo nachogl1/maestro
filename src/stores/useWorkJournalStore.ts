@@ -55,6 +55,12 @@ interface WorkJournalState {
    * lands (or the page going away) clears a date; it is retried meanwhile.
    */
   unsavedDates: string[];
+  /**
+   * Sorted dates among `unsavedDates` whose field the other window changed
+   * since the failed save: never retried on its own, only overwritten or
+   * discarded by the user.
+   */
+  conflictDates: string[];
   /** Reads the journal file. */
   load: () => Promise<void>;
   /**
@@ -132,12 +138,86 @@ function failedFields(date: string): Set<string> {
 
 /** Forgets the failed saves of `date`: its page is gone, so their text is too. */
 function clearFailedSaves(date: string): void {
-  for (const key of [...failedSaves]) if (key.startsWith(`${date}:`)) failedSaves.delete(key);
+  for (const key of [...failedSaves]) if (key.startsWith(`${date}:`)) forgetFailedSave(key);
 }
 
-/** The sorted dates that have a failed save, for `unsavedDates`. */
-function failedDates(): string[] {
-  return [...new Set([...failedSaves].map((key) => key.slice(0, key.indexOf(":"))))].sort();
+/** Drops one failed field and what is known about its conflict. */
+function forgetFailedSave(key: string): void {
+  failedSaves.delete(key);
+  failedBases.delete(key);
+  conflictSaves.delete(key);
+}
+
+/** The pages as last read from the backend, to tell whether a field changed on disk. */
+let diskPages: Record<string, WorkJournalPage> = {};
+
+/**
+ * Per failed field, the disk text it was based on (see `fieldsJson`). When
+ * the disk text moves away from it, the other window saved that field since.
+ */
+const failedBases = new Map<string, string>();
+
+/**
+ * Failed fields the other window changed since: an automatic retry would
+ * overwrite newer text, so only the user's choice sends or drops them.
+ */
+const conflictSaves = new Set<string>();
+
+/** JSON with sorted object keys, so the same text compares equal however it was built. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)))
+      : v,
+  );
+}
+
+function keyDate(key: string): string {
+  return key.slice(0, key.indexOf(":"));
+}
+
+/** The fields (`body`, `title`) a failed-save key covers. */
+function keyFields(key: string): Array<keyof WorkJournalPagePatch> {
+  return key.slice(keyDate(key).length + 1).split(",") as Array<keyof WorkJournalPagePatch>;
+}
+
+/** The fields of a failed-save key's page, as comparable JSON. */
+function fieldsJson(key: string, page: WorkJournalPage | undefined): string {
+  const fields: Record<string, unknown> = {};
+  for (const field of keyFields(key)) fields[field] = page?.[field] ?? null;
+  return stableJson(fields);
+}
+
+/**
+ * Takes in a journal read from the backend before it is merged: failed saves
+ * of a page that is gone are dropped, and a failed field the other window
+ * changed since becomes a conflict.
+ */
+function absorbDiskPages(incoming: Record<string, WorkJournalPage>): void {
+  for (const key of [...failedSaves]) {
+    const page = incoming[keyDate(key)];
+    if (!page) {
+      forgetFailedSave(key);
+      continue;
+    }
+    const base = failedBases.get(key);
+    // The text the failure was based on was never read here: start from this read.
+    if (base === undefined) failedBases.set(key, fieldsJson(key, page));
+    else if (base !== fieldsJson(key, page)) conflictSaves.add(key);
+  }
+  diskPages = incoming;
+  publishFailedSaves();
+}
+
+/** The sorted dates of some failed-save keys. */
+function failedDates(keys: Iterable<string>): string[] {
+  return [...new Set([...keys].map(keyDate))].sort();
+}
+
+/** Whether a failed field may be retried without asking (not a conflict). */
+function hasRetryableSaves(): boolean {
+  for (const key of failedSaves) if (!conflictSaves.has(key)) return true;
+  return false;
 }
 
 /**
@@ -149,33 +229,47 @@ export const WORK_JOURNAL_SAVE_RETRY_DELAYS_MS = [5_000, 30_000];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempt = 0;
 
-/** Arms the next automatic retry, unless one is already waiting. */
+/**
+ * Arms the next automatic retry, unless one is already waiting. The retry
+ * re-reads the file first (`sync`), so it hears what the other window saved
+ * even with the pane closed, and only re-sends fields nobody changed since.
+ */
 function scheduleRetry(): void {
-  if (retryTimer) return;
+  if (retryTimer || !hasRetryableSaves()) return;
   const delays = WORK_JOURNAL_SAVE_RETRY_DELAYS_MS;
   retryTimer = setTimeout(
     () => {
       retryTimer = null;
       retryAttempt += 1;
-      // Rearmed when a retry was skipped (say during a restore) rather than failed.
-      void retryWorkJournalSaves().then(() => {
-        if (failedSaves.size > 0) scheduleRetry();
-      });
+      // Rearmed when the read failed or a retry was skipped (say during a restore).
+      void useWorkJournalStore
+        .getState()
+        .sync(false)
+        .then(() => scheduleRetry());
     },
     delays[Math.min(retryAttempt, delays.length - 1)],
   );
 }
 
-/** Puts `failedSaves` into `unsavedDates`; stops retrying once none are left. */
+/**
+ * Puts the failed saves into `unsavedDates` and `conflictDates`; stops
+ * retrying once none is left to retry.
+ */
 function publishFailedSaves(): void {
-  if (failedSaves.size === 0) {
+  if (!hasRetryableSaves()) {
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
     retryAttempt = 0;
   }
-  const unsavedDates = failedDates();
-  const current = useWorkJournalStore.getState().unsavedDates;
-  if (unsavedDates.join() !== current.join()) useWorkJournalStore.setState({ unsavedDates });
+  const unsavedDates = failedDates(failedSaves);
+  const conflictDates = failedDates(conflictSaves);
+  const current = useWorkJournalStore.getState();
+  if (
+    unsavedDates.join() !== current.unsavedDates.join() ||
+    conflictDates.join() !== current.conflictDates.join()
+  ) {
+    useWorkJournalStore.setState({ unsavedDates, conflictDates });
+  }
 }
 
 /** Counts local page saves; `lastLocalSave` holds the count at each date's latest save. */
@@ -235,24 +329,53 @@ export function flushWorkJournalSaves(): Promise<void> {
 /**
  * Sends the text of every field whose last save failed again (the store keeps
  * that text). A field with a save already queued is skipped: that save carries
- * newer text and clears or keeps the mark itself.
+ * newer text and clears or keeps the mark itself. A field the other window
+ * changed since is sent only with `overwrite` (the user chose to).
  */
-export function retryWorkJournalSaves(): Promise<void> {
+export function retryWorkJournalSaves(overwrite = false): Promise<void> {
   const { pages, updatePage } = useWorkJournalStore.getState();
   const retries: Promise<boolean>[] = [];
   for (const key of [...failedSaves]) {
-    if (saveChains.has(key)) continue;
-    const date = key.slice(0, key.indexOf(":"));
+    if (saveChains.has(key) || (conflictSaves.has(key) && !overwrite)) continue;
+    const date = keyDate(key);
     const page = pages[date];
-    if (!page) continue;
+    // The page is gone, and its text with it.
+    if (!page) {
+      forgetFailedSave(key);
+      continue;
+    }
     const patch: WorkJournalPagePatch = {};
-    for (const field of key.slice(date.length + 1).split(",")) {
+    for (const field of keyFields(key)) {
       if (field === "body") patch.body = page.body;
       if (field === "title") patch.title = page.title;
     }
     retries.push(updatePage(date, patch));
   }
+  publishFailedSaves();
   return Promise.all(retries).then(() => undefined);
+}
+
+/**
+ * Drops this window's unsaved text where the other window changed the same
+ * field, and shows the other window's text instead.
+ */
+export function discardWorkJournalConflicts(): void {
+  const changed: Record<string, WorkJournalPage> = {};
+  for (const key of [...conflictSaves]) {
+    const date = keyDate(key);
+    const disk = diskPages[date];
+    const local = changed[date] ?? useWorkJournalStore.getState().pages[date];
+    forgetFailedSave(key);
+    if (!disk || !local) continue;
+    const page = { ...local };
+    for (const field of keyFields(key)) {
+      if (field === "body") page.body = disk.body;
+      if (field === "title") page.title = disk.title;
+    }
+    changed[date] = page;
+  }
+  useWorkJournalStore.setState((s) => ({ pages: { ...s.pages, ...changed } }));
+  publishFailedSaves();
 }
 
 /**
@@ -353,6 +476,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   revision: 0,
   replacing: false,
   unsavedDates: [],
+  conflictDates: [],
 
   sync: async (replaced: boolean) => {
     const tick = saveTick;
@@ -362,15 +486,14 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         get().replaceJournal(journal);
         return;
       }
+      // Pages deleted in the other window take their failed saves along; a
+      // field it changed since a failed save here is no longer retried.
+      absorbDiskPages(journal.pages);
       set((s) => {
         const pages = mergePages(s.pages, journal.pages);
         // A save made here after the read started is newer than the reply.
         for (const [date, at] of lastLocalSave) {
           if (at > tick && s.pages[date] && pages[date]) pages[date] = s.pages[date];
-        }
-        // Pages deleted in the other window take their failed saves along.
-        for (const date of Object.keys(s.pages)) {
-          if (!journal.pages[date]) clearFailedSaves(date);
         }
         // The viewed page was deleted in the other window: show the nearest
         // one, as a delete here does.
@@ -380,8 +503,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         }
         return { pages };
       });
-      publishFailedSaves();
-      // Another window just saved, so the disk may take failed saves again.
+      // Another window just saved, so the disk may take the failed saves
+      // that nobody changed since.
       void retryWorkJournalSaves();
     } catch (error) {
       console.error("Failed to re-read the Work Journal:", error);
@@ -392,6 +515,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const journal = await invoke<WorkJournalFile>("load_work_journal");
+      absorbDiskPages(journal.pages);
       set((s) => ({ pages: mergePages(s.pages, journal.pages), loading: false }));
     } catch (error) {
       console.error("Failed to load the Work Journal:", error);
@@ -403,6 +527,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const journal = await invoke<WorkJournalFile>("work_journal_ensure_pages", { today });
+      absorbDiskPages(journal.pages);
       set((s) => ({ pages: mergePages(s.pages, journal.pages), loading: false }));
     } catch (error) {
       console.error("Failed to create the Work Journal day pages:", error);
@@ -437,6 +562,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         body: isWeekend(date) ? WEEKEND_PAGE_BODY : EMPTY_PAGE_BODY,
         origin: "manual",
       });
+      absorbDiskPages(journal.pages);
       set((s) => ({ pages: mergePages(s.pages, journal.pages), viewedDate: date }));
     } catch (error) {
       console.error("Failed to create the Work Journal page:", error);
@@ -466,11 +592,19 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
           body: patch.body ?? null,
         });
         saved = true;
-        failedSaves.delete(chainKey(date, patch));
+        forgetFailedSave(chainKey(date, patch));
+        // The disk now holds this text: a later read showing other text
+        // means the other window saved after it.
+        const disk = diskPages[date];
+        if (disk) diskPages = { ...diskPages, [date]: { ...disk, ...patch } };
         publishFailedSaves();
       } catch (error) {
         console.error("Failed to save the Work Journal page:", error);
-        failedSaves.add(chainKey(date, patch));
+        const key = chainKey(date, patch);
+        failedSaves.add(key);
+        if (!failedBases.has(key) && diskPages[date]) {
+          failedBases.set(key, fieldsJson(key, diskPages[date]));
+        }
         set({ error: errorMessage(error) });
         publishFailedSaves();
         scheduleRetry();
@@ -507,6 +641,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       clearFailedSaves(date);
       publishFailedSaves();
       const journal = await invoke<WorkJournalFile>("delete_work_journal_page", { date });
+      absorbDiskPages(journal.pages);
       set((s) => ({ pages: mergePages(s.pages, journal.pages) }));
     } catch (error) {
       console.error("Failed to delete the Work Journal page:", error);
@@ -533,6 +668,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   // The text of failed saves belonged to the replaced journal.
   replaceJournal: (journal: WorkJournalFile) => {
     failedSaves.clear();
+    failedBases.clear();
+    conflictSaves.clear();
+    diskPages = journal.pages;
     publishFailedSaves();
     set((s) => ({
       pages: journal.pages,

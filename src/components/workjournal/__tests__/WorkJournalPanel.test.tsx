@@ -14,6 +14,7 @@ import {
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   EMPTY_PAGE_BODY,
+  retryWorkJournalSaves,
   useWorkJournalStore,
   WORK_JOURNAL_SAVE_RETRY_DELAYS_MS,
   type WorkJournalFile,
@@ -891,5 +892,30 @@ describe("WorkJournalWindow closing", () => {
     await act(async () => closeRequested({ preventDefault: preventAgain }));
     expect(preventAgain).not.toHaveBeenCalled();
     expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pop-out");
+  });
+
+  it("closes and drops the unsaved text after Close and lose it", async () => {
+    render(<WorkJournalWindow />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "update_work_journal_page") throw new Error("disk full");
+      return backend?.(cmd, args);
+    });
+    act(() => {
+      pageEditor().commands.insertContent("Given up");
+    });
+
+    askMock.mockResolvedValueOnce(true);
+    const preventDefault = vi.fn();
+    await act(async () => closeRequested({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledTimes(1);
+
+    // Leaves the store clean for the next test, as the window would be gone.
+    invokeMock.mockImplementation(backend ?? (async () => undefined));
+    await act(async () => {
+      await retryWorkJournalSaves();
+    });
   });
 });
