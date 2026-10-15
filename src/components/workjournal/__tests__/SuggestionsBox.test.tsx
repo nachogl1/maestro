@@ -428,13 +428,19 @@ describe("SuggestionsBox", () => {
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c1" }]));
   });
 
-  it("refuses Accept while a restore replaces the journal", async () => {
+  it("disables Accept and Reject while a restore replaces the journal", async () => {
     await renderWithSuggestions();
     act(() => useWorkJournalStore.setState({ replacing: true }));
 
+    const row = within(box()).getByText(LINE).closest("li") as HTMLElement;
+    const accept = within(row).getByRole("button", { name: "Accept suggestion" });
+    expect(accept).toBeDisabled();
+    expect(accept).toHaveAttribute("title", "Wait for the restore to finish");
+    expect(within(row).getByRole("button", { name: "Reject suggestion" })).toBeDisabled();
     clickRow(LINE, "Accept suggestion");
-    await within(box()).findByText(ACCEPT_NO_EDITOR_ERROR);
+    clickRow(LINE, "Reject suggestion");
     expect(callsTo("accept_work_journal_candidate")).toEqual([]);
+    expect(callsTo("reject_work_journal_candidate")).toEqual([]);
     expect(callsTo("update_work_journal_page")).toEqual([]);
     expect(editorParagraphs()).toEqual(["Standup"]);
   });

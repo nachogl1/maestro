@@ -21,6 +21,13 @@ export const WORK_JOURNAL_VIEW = "work-journal";
  */
 export const WORK_JOURNAL_CHANGED_EVENT = "work-journal:changed";
 
+/**
+ * Backend → every window: a restore or undo is about to replace the journal
+ * (`active`), or one failed (not `active`). See `REPLACING_EVENT` in
+ * `src-tauri/src/commands/work_journal.rs`.
+ */
+export const WORK_JOURNAL_REPLACING_EVENT = "work-journal:replacing";
+
 /** Pop-out window → main window: "run now" was clicked (the main window owns the runs). */
 export const WORK_JOURNAL_RUN_NOW_EVENT = "work-journal:run-now";
 /** Pop-out window → main window: send me the run state now (the window just opened). */
@@ -40,6 +47,14 @@ export interface WorkJournalChangedPayload {
   source: string | null;
   /** The whole journal was replaced (restore or undo). */
   replaced: boolean;
+}
+
+/** Payload of {@link WORK_JOURNAL_REPLACING_EVENT}. */
+export interface WorkJournalReplacingPayload {
+  /** Label of the window that started the restore or undo. */
+  source: string | null;
+  /** True before the journal is replaced; false when the replace failed. */
+  active: boolean;
 }
 
 /** The data part of the candidate-run store, mirrored into the pop-out window. */
@@ -94,6 +109,22 @@ export async function listenWorkJournalChanged(
     const payload = event.payload ?? { source: null, replaced: false };
     if (own !== null && payload.source === own) return;
     onChange(payload);
+  });
+}
+
+/**
+ * Calls `onReplacing` when a restore or undo started in another window is
+ * about to replace the journal (`true`) or failed (`false`). The window that
+ * started it already knows.
+ */
+export async function listenWorkJournalReplacing(
+  onReplacing: (active: boolean) => void,
+): Promise<UnlistenFn> {
+  const own = currentWindowLabel();
+  return listen<WorkJournalReplacingPayload>(WORK_JOURNAL_REPLACING_EVENT, (event) => {
+    const payload = event.payload;
+    if (!payload || (own !== null && payload.source === own)) return;
+    onReplacing(payload.active);
   });
 }
 
