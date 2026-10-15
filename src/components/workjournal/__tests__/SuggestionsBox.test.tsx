@@ -174,12 +174,43 @@ describe("SuggestionsBox", () => {
     expect(within(items[2]).getByText("Design sync on Work Journal")).toBeInTheDocument();
     expect(within(items[2]).getByText("Granola")).toBeInTheDocument();
     for (const item of items) {
-      expect(within(item).getByRole("button", { name: "Accept suggestion" })).toBeEnabled();
-      expect(within(item).getByRole("button", { name: "Reject suggestion" })).toBeEnabled();
+      expect(within(item).getByRole("button", { name: /^Accept suggestion: / })).toBeEnabled();
+      expect(within(item).getByRole("button", { name: /^Reject suggestion: / })).toBeEnabled();
     }
     expect(screen.queryByText("Rejected earlier")).not.toBeInTheDocument();
     expect(screen.queryByText(/Yesterday's commit/)).not.toBeInTheDocument();
     expect(within(box()).getByText("Suggestions (3)")).toBeInTheDocument();
+  });
+
+  it("names each row's Accept and Reject buttons after its suggestion, cut to 60 characters", async () => {
+    const long = "A".repeat(80);
+    candidates = [
+      candidate("n1", "Merged the login fix"),
+      candidate("n2", long),
+      candidate("n3", `${"B".repeat(50)}😀 tail`),
+    ];
+    render(<WorkJournalPanel />);
+    await screen.findByText("14:05 - Merged the login fix");
+
+    expect(
+      within(box()).getByRole("button", {
+        name: "Accept suggestion: 14:05 - Merged the login fix",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(box()).getByRole("button", {
+        name: "Reject suggestion: 14:05 - Merged the login fix",
+      }),
+    ).toBeInTheDocument();
+    const cut = `14:05 - ${"A".repeat(51)}…`;
+    expect(cut).toHaveLength(60);
+    expect(within(box()).getByRole("button", { name: `Accept suggestion: ${cut}` })).toBeVisible();
+    expect(within(box()).getByRole("button", { name: `Reject suggestion: ${cut}` })).toBeVisible();
+    // An emoji at the cut is kept whole, not split into half a surrogate pair.
+    const emojiCut = `14:05 - ${"B".repeat(50)}😀…`;
+    expect(
+      within(box()).getByRole("button", { name: `Accept suggestion: ${emojiCut}` }),
+    ).toBeVisible();
   });
 
   it("maps every source to its exact tag", async () => {
@@ -198,7 +229,9 @@ describe("SuggestionsBox", () => {
     await screen.findByText("13:42 - Merged the PR for the login fix");
 
     const item = within(box()).getByText("13:42 - Merged the PR for the login fix").closest("li");
-    fireEvent.click(within(item as HTMLElement).getByRole("button", { name: "Accept suggestion" }));
+    fireEvent.click(
+      within(item as HTMLElement).getByRole("button", { name: /^Accept suggestion: / }),
+    );
 
     await waitFor(() =>
       expect(
@@ -223,7 +256,7 @@ describe("SuggestionsBox", () => {
     render(<WorkJournalPanel />);
     await screen.findByText("Design sync on Work Journal");
     const item = screen.getByText("Design sync on Work Journal").closest("li") as HTMLElement;
-    fireEvent.click(within(item).getByRole("button", { name: "Accept suggestion" }));
+    fireEvent.click(within(item).getByRole("button", { name: /^Accept suggestion: / }));
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c3" }]));
     expect(savedParagraphs()).toEqual(["Standup", "Design sync on Work Journal"]);
   });
@@ -234,7 +267,9 @@ describe("SuggestionsBox", () => {
     await screen.findByText("13:42 - Merged the PR for the login fix");
 
     const item = within(box()).getByText("13:42 - Merged the PR for the login fix").closest("li");
-    fireEvent.click(within(item as HTMLElement).getByRole("button", { name: "Accept suggestion" }));
+    fireEvent.click(
+      within(item as HTMLElement).getByRole("button", { name: /^Accept suggestion: / }),
+    );
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toHaveLength(1));
 
     expect(file.pages[TODAY].body).toEqual({
@@ -248,7 +283,9 @@ describe("SuggestionsBox", () => {
     await screen.findByText("14:05 - Worked on agent-name terminal titles");
 
     const item = screen.getByText("14:05 - Worked on agent-name terminal titles").closest("li");
-    fireEvent.click(within(item as HTMLElement).getByRole("button", { name: "Reject suggestion" }));
+    fireEvent.click(
+      within(item as HTMLElement).getByRole("button", { name: /^Reject suggestion: / }),
+    );
 
     await waitFor(() =>
       expect(
@@ -269,8 +306,8 @@ describe("SuggestionsBox", () => {
 
     await screen.findByText("14:05 - Future plan");
     expect(screen.getByText("Create the page first to accept a suggestion.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Accept suggestion" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Reject suggestion" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Accept suggestion: / })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Reject suggestion: / })).toBeEnabled();
   });
 
   it("does not remove the candidate when no editor can take the line", async () => {
@@ -320,7 +357,7 @@ describe("SuggestionsBox", () => {
   /** Clicks a box row's button. */
   function clickRow(text: string, button: "Accept suggestion" | "Reject suggestion"): void {
     const item = within(box()).getByText(text).closest("li") as HTMLElement;
-    fireEvent.click(within(item).getByRole("button", { name: button }));
+    fireEvent.click(within(item).getByRole("button", { name: new RegExp(`^${button}: `) }));
   }
 
   /** The editor's paragraphs as text. */
@@ -422,7 +459,7 @@ describe("SuggestionsBox", () => {
     });
     expect(callsTo("accept_work_journal_candidate")).toEqual([]);
     const row = within(box()).getByText(LINE).closest("li") as HTMLElement;
-    expect(within(row).getByRole("button", { name: "Accept suggestion" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: /^Accept suggestion: / })).toBeDisabled();
 
     await act(async () => release());
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c1" }]));
@@ -433,10 +470,10 @@ describe("SuggestionsBox", () => {
     act(() => useWorkJournalStore.setState({ replacing: true }));
 
     const row = within(box()).getByText(LINE).closest("li") as HTMLElement;
-    const accept = within(row).getByRole("button", { name: "Accept suggestion" });
+    const accept = within(row).getByRole("button", { name: /^Accept suggestion: / });
     expect(accept).toBeDisabled();
     expect(accept).toHaveAttribute("title", "Wait for the restore to finish");
-    expect(within(row).getByRole("button", { name: "Reject suggestion" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: /^Reject suggestion: / })).toBeDisabled();
     clickRow(LINE, "Accept suggestion");
     clickRow(LINE, "Reject suggestion");
     expect(callsTo("accept_work_journal_candidate")).toEqual([]);
@@ -462,7 +499,7 @@ describe("SuggestionsBox", () => {
         "This page is read-only here, so a suggestion cannot be added to it.",
       ),
     ).toBeInTheDocument();
-    for (const button of within(box()).getAllByRole("button", { name: "Accept suggestion" })) {
+    for (const button of within(box()).getAllByRole("button", { name: /^Accept suggestion: / })) {
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute("title", "This page is read-only here");
     }
@@ -476,11 +513,11 @@ describe("SuggestionsBox", () => {
     await renderWithSuggestions();
     act(() => useWorkJournalCandidateRunStore.setState({ running: true }));
 
-    for (const button of within(box()).getAllByRole("button", { name: "Accept suggestion" })) {
+    for (const button of within(box()).getAllByRole("button", { name: /^Accept suggestion: / })) {
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute("title", "Wait for the run to finish");
     }
-    expect(within(box()).getAllByRole("button", { name: "Reject suggestion" })[0]).toBeEnabled();
+    expect(within(box()).getAllByRole("button", { name: /^Reject suggestion: / })[0]).toBeEnabled();
     await act(async () => useWorkJournalCandidatesStore.getState().accept(candidates[0]));
     expect(callsTo("update_work_journal_page")).toEqual([]);
     expect(callsTo("accept_work_journal_candidate")).toEqual([]);

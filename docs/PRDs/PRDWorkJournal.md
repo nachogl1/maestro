@@ -307,7 +307,9 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   are not in it; they live in the temporary file described under Candidates.
 - **Safe write:** every save writes a temporary file first and then swaps it
   in, using the existing helper (`src-tauri/src/core/atomic_write.rs`), so a
-  crash cannot leave a half-written journal.
+  crash cannot leave a half-written journal. The temporary file is flushed to
+  disk before the swap, so a power cut cannot empty it; it gets a fresh
+  unpredictable name, and stale temps from earlier crashes are cleaned up.
 - **Layout version:** the file records its layout version number.
 - **Backup folder:** picked by the user in settings. It can be a OneDrive,
   Dropbox or network folder; the cloud sync provides the off-machine copy for
