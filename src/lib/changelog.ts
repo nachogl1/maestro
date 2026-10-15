@@ -12,6 +12,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [
       "Project tabs can no longer be pinned; the pin button and marker on tabs are gone. Pinning terminals is unchanged.",
+      "Terminal title bar: the PR number pill and the checked-out / worktree pill are gone; the branch name stays, and hovering it still says whether it is a worktree.",
       "Injector: a new left-sidebar tab (Alt+4) lists every running terminal across your projects — tick some, type one message, and it is typed and submitted into all of them at once.",
       "New terminal: the working-directory choice (New Worktree, Original Path, Current Worktree) is now a dropdown between the name box and Launch, reachable with Tab; New Worktree is the default and the three old buttons are gone.",
       "Drag a terminal by its title bar: drop it on another pane's edge to move next to it, on the middle to swap, or on the outer edge of the area for a full column or row.",
