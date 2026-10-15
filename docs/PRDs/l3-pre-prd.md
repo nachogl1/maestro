@@ -3,6 +3,8 @@
 | | |
 |---|---|
 | **Status** | Pre-PRD. States what is wanted and what exists. Decides nothing about how. |
+| **Use** | The input to `/wayfinder`. The map it charts resolves the open questions in section 11; the PRD written from the closed map is split by `/prd-to-tickets` and built by the factory's own stories. Section 11 is pre-shaped as the map's Destination, Notes, fog, out-of-scope list and candidate tickets. |
+| **Target** | L3 directly. No intermediate level is delivered or used on the way. |
 | **Date** | 2026-10-15 |
 | **Owner** | the repository owner |
 | **Supersedes, once a PRD exists** | `docs/samurai/prd.md` (Samurai v1 design, 2026-08-06) as the autonomy design for Maestro |
@@ -22,7 +24,9 @@ and have the software **built to completion by agents without the owner's attent
 number of points that are known in advance and front-loaded. The process the agents follow is the one the
 owner already follows by hand and has written down as **Orion**, the per-project framework of skills and
 rules. Maestro becomes the **harness** that triggers, supervises, heals, audits and reports on that process.
-The owner calls this the **Software Factory**, and the generation of Maestro that delivers it **L3**.
+The owner calls this the **Software Factory**, and the generation of Maestro that delivers it **L3**. L3 is
+built directly: there is no L1 or L2 milestone to ship first and grow out of. Section 6 defines L3; the
+things that must be decided to build it are the questions in section 11.
 
 What the owner is moving away from: the current **Samurai launches** and the **Second Brain** panel. They
 exist, they work in parts, and they were built for a different unit of work. The owner's judgement from using
@@ -67,8 +71,8 @@ Each goal is phrased so that the eventual PRD can turn it into acceptance criter
   then the build runs unattended. (b) From a cut backlog: the build runs unattended from the start.
 - **G3. Human needed first, and only where the rules say so.** Every decision a human must take is surfaced
   before the autonomous phase starts, as one readiness checklist. During the run the owner is needed only
-  for: a story labelled `needs-human`, a PRD change, and the Orion skills the owner keeps reserved for a
-  person (see section 6 and decision D3).
+  for: a story labelled `needs-human`, a PRD change, and approving what the factory proposes from a harvest
+  (section 6). Which Orion rules change to allow that is a question for the map, not a given.
 - **G4. Self-healing without a human.** Allowance exhaustion, a crashed or hung session, an expired `gh`
   login, a red `main` inherited from someone else, a context window filling up, and an app restart (including
   the Windows self-update) are all survived by the factory on its own, and resumed from where work stopped.
@@ -82,8 +86,9 @@ Each goal is phrased so that the eventual PRD can turn it into acceptance criter
   surface, and Maestro can tell agents things without typing blindly into a terminal.
 - **G8. Everything that can go wrong has a named owner and a named outcome** (section 8). "It depends" is
   not an outcome.
-- **G9. Maestro is built by its own factory** (dogfooding). Orion is installed on Maestro and the factory
-  ships its own stories once L3 exists at the level that allows it.
+- **G9. Maestro is built by its own factory** (dogfooding). Orion is installed on Maestro, the PRD that
+  follows this document is split by `/prd-to-tickets`, and the resulting stories are the first backlog the
+  factory builds. Until the factory can run them, they are run by hand through Orion.
 - **G10. The owner stops thinking about it.** The measurable version: the owner opens Maestro, sees what
   moved since last time, what is waiting on them, and what it cost. That screen is the product.
 
@@ -93,7 +98,7 @@ Each goal is phrased so that the eventual PRD can turn it into acceptance criter
 
 - Replacing GitHub Issues as the tracker. Orion is GitHub-only by rule; so is the factory.
 - Replacing Orion's skills with Maestro-side logic. If a step is wrong, the fix is in Orion.
-- Running on a server, in the cloud, or on several machines in v1. The decision is open (D6) but the
+- Running on a server, in the cloud, or on several machines in v1. The decision is open (ticket T8 in section 11) but the
   default assumption is one Windows machine, one login, as today.
 - Model routing, cost optimisation across models, and spend-budget parking for enterprise plans. Out of scope
   as they were for Samurai v1.
@@ -102,6 +107,10 @@ Each goal is phrased so that the eventual PRD can turn it into acceptance criter
 - Merging to `main` by any route other than the one Orion defines (a squash-merged pull request, green CI,
   fresh-agent review). A human still makes the merge decision wherever Orion says a human does.
 - Keeping the Samurai launcher or the Second Brain as products. They are replaced, not polished.
+- Shipping an intermediate level of autonomy (a "click once per run" Maestro, or a "walk away but stop at
+  harvest" Maestro) as a product on the way to L3. Stories may land in an order that makes early slices
+  usable, but no slice is a deliverable of its own and nothing is designed to be thrown away at the next
+  level.
 
 ---
 
@@ -164,35 +173,52 @@ about it.
 ### 5.7 Harvest, QA and drift come due
 
 Orion's counters trip: ten unharvested findings, five untested QA records, or drift between PRD and issues.
-What happens next depends on the level the owner chooses (section 6): either the job pauses that strand and
-asks the owner to run the skill, or the factory runs it and brings the owner a batch to approve.
+The factory does not stop. It runs the QA pass itself against `main` and files `bug` issues for confirmed
+failures, which the next pass builds. It runs the harvest itself and brings the owner one batch of proposed
+tickets and rule edits to approve, reject or edit; nothing from a harvest enters the backlog or the rules
+without that approval. It detects drift and brings the owner the list of disagreements with a proposed fix
+each. The owner's involvement is a batch decision at a time of their choosing, never a session they must sit
+in.
 
 ### 5.8 The owner wants to see or steer
 
 At any time the owner can open the live session of any story, read its stream, and either leave it or stop
 it. Stopping a story releases it the Orion way. The owner can pause the whole job, which finishes atomic
-steps and stops claiming. The owner can change the level of the job. None of this needs a terminal command.
+steps and stops claiming. None of this needs a terminal command.
 
 ---
 
-## 6. Levels of autonomy, and what "L3" names
+## 6. What "L3" means
 
-The owner's own word for this generation is **L3**. This section fixes what the levels mean so the word has
-one meaning in every later document. The ladder is chosen so that each level is usable before the next
-exists.
+The owner's word for this generation is **L3**. It is built directly, not reached through smaller levels.
+This section fixes its meaning so every later document, ticket and story uses the same definition.
 
-| Level | Who starts work | Where a human is needed | Orion rule changes needed |
-|---|---|---|---|
-| **L0** | a person types `/dev-next` | everywhere Orion says, plus starting and restarting | none. This is today's Orion by hand. |
-| **L1** | a person clicks once per run in Maestro | same as L0 minus the typing; Maestro supervises, parks, audits one run | none. This is roughly Samurai today, if it drove Orion. |
-| **L2** | Maestro, until the backlog has no eligible story | readiness gate; `needs-human` stories; the four person-only skills (`prd-to-tickets`, `harvest`, `harvest-qa`, `reconcile-issue-map`) | none. The factory stops at those four and tells the owner. |
-| **L3** | Maestro | readiness gate; `needs-human` stories; PRD changes; approving a batch from harvest | `harvest-qa` may run without a person and file `bug` issues; `harvest` may run without a person but only proposes; a person approves. |
-| **L4** | Maestro | PRD approval only | `harvest` files tickets and rule edits as pull requests; `reconcile-issue-map` runs on drift and proposes fixes; the factory feeds its own backlog. |
+**L3 is the state in which one PRD is taken from approved to fully built, including its follow-ups, with the
+owner acting only at these points:**
 
-**What the owner wants is L3 as the destination and a path through L2.** L2 is the first level at which
-"trigger and walk away" is literally true, and it needs no change to Orion. L3 is the first level at which the
-owner's "fully built by agents" sentence is true for a whole PRD including its follow-ups. Which level v1
-ships at is decision D3.
+| Point | What the owner does | Why a human and not an agent |
+|---|---|---|
+| The PRD | writes or approves it | Orion rule: a PRD is never created automatically |
+| The ticket split | sits in the `/prd-to-tickets` session | Orion rule: nothing is filed `agent-ready` with a question left |
+| The readiness list | resolves or waives each red line, once, before Start | these are the decisions that otherwise interrupt the run |
+| A `needs-human` story | answers on the story and flips the label | Orion rule: an irreversible decision is a person's |
+| A harvest batch | approves, rejects or edits proposed tickets and rule edits | the harvest spends the owner's judgement; the factory must not fill its own backlog unchecked |
+| A PRD change | approves it | the PRD is the north star |
+
+**Everything else is the factory's**, including the things Orion today reserves for a person: running the QA
+pass against `main` and filing `bug` issues, running the harvest and preparing the batch, detecting drift
+and preparing the reconcile proposal, restarting after any failure in section 9, and starting the next unit
+of work until no story is eligible.
+
+**What L3 is not.** It is not "a person clicks once per run" (that is Samurai with a better launcher). It is
+not "walk away, but come back to run harvest and QA by hand" (that would leave the loop open at the point
+where process improvement happens). It is not a factory that files its own tickets without approval.
+
+**What L3 requires of Orion.** Three of Orion's rules say a skill is "run by a person, never by another
+skill": `/harvest`, `/harvest-qa` and `/reconcile-issue-map`. L3 needs those skills to run without a person
+present and to end in a proposal a person approves later. Whether that is a change to the rule, a new mode
+of each skill, or a separate factory-side skill is a question for the map (section 11), not a decision made
+here. `/prd-to-tickets` stays a person's session.
 
 ---
 
@@ -453,8 +479,8 @@ headline facts are:
 | Human decisions arrive mid-run | preflight checks four things; everything else surfaces as an ALERT or a `needs-human` during the run | one readiness list before the run, red lines as tasks (G3) |
 | Harness and process are strangers | Samurai carries its own workflow text; Orion does not know Maestro exists | Maestro drives Orion skills; Orion is the only workflow (G5) |
 | Recovery is manual | Recover and Resume now buttons; `/dev-next #N` by hand | automatic for allowance, crash, auth loss, red main, restart (G4) |
-| Unit of work mismatch | Samurai: one orchestrator for days; Orion: one run of up to four stories | one definition, chosen in the PRD (D1) |
-| Blind control of sessions | typing into a PTY with idle gates, ACKs, brief files, receipts | structured control, available in Claude Code today (D8) |
+| Unit of work mismatch | Samurai: one orchestrator for days; Orion: one run of up to four stories | one definition, chosen in the PRD (ticket T1)  |
+| Blind control of sessions | typing into a PTY with idle gates, ACKs, brief files, receipts | structured control, available in Claude Code today (ticket T2) |
 | Two audits, no join | Orion JSON per story on `audit/<login>`; Samurai JSONL per project | one job view down to the story, both sources joined (G6) |
 | No agent → Maestro channel | one status tool | a chain of command (G7) |
 | Merge queue is a file | `in-flight.json` per machine, documented races | a queue the factory owns, still honouring Orion's rules |
@@ -484,7 +510,7 @@ Requirements, not solutions. For each: what the owner wants to be true afterward
 | A story is vaguer than it looked | `ready-check` questions or `needs-human`; never hours of guessing |
 | The `needs-human` pile grows while the owner is away | the job is visibly waiting on the owner with a list; one notification, not one per story |
 | Tokens burn with no commits | the circuit breaker parks the story and the owner is told why |
-| PRD and issues drift | the drift is visible in the job view; at L4 a reconcile is proposed |
+| PRD and issues drift | the drift is visible in the job view with a proposed fix per disagreement; nothing is edited until the owner approves |
 | Orion changes | the factory follows without a Maestro release; if it cannot, the readiness check says so |
 | The usage endpoint stops working | the factory degrades to a safe mode (no new claims, no parks) and says so rather than failing silently |
 | A story touches a repository the team does not own | never built autonomously; `outside-change` plus `needs-human` |
@@ -514,26 +540,140 @@ Requirements, not solutions. For each: what the owner wants to be true afterward
 
 ---
 
-## 11. Open decisions (to be taken before the PRD, not in it)
+## 11. The map seed for `/wayfinder`
 
-Listed neutrally, with the trade-off each way. A recommendation is marked where the author has one; it is a
-recommendation and not a decision.
+This section is written in the shape `/wayfinder` charts: a destination, notes, the decisions already
+taken, the fog, the out-of-scope list, and the questions sharp enough to be tickets now. The wayfinder
+session that reads it should dedupe against the tracker as its rules require and may reject, merge or
+re-type any of these; they are a starting frontier, not the map.
 
-| # | Decision | Options and trade-offs |
-|---|---|---|
-| D1 | Unit of autonomy | (a) one `/dev-next` run, relaunched until the backlog is empty: short, restartable, matches Orion, more session starts, parallelism capped at four per run. (b) a days-long orchestrator as Samurai does: fewer starts, needs the full handoff and replication machinery, its own workflow text, and diverges from Orion. Recommended: (a). |
-| D2 | What to do with Samurai | (a) keep the supervision backend, drop the launcher, the run-config concept, the prompt text and the Second Brain. (b) remove everything and rebuild. (c) keep everything and add the factory beside it. Recommended: (a). |
-| D3 | Target level for v1 | L2 needs no Orion change and already means "trigger and walk away". L3 needs Orion to let `harvest-qa` and `harvest` run without a person. Recommended: L2 shipped, L3 as the next PRD. |
-| D4 | Chain of command surface | (a) extend the existing MCP server (agents already load it, one secret, local only). (b) HTTP from hooks only. (c) both. Recommended: (a). |
-| D5 | Where the specification lives and who approves it | `docs/PRDs/PRD<Name>.md` in Maestro, approved by the owner before any ticket, per Orion's own rule. `docs/samurai/prd.md` marked historical. |
-| D6 | Machines | (a) one Windows machine, one login, as today: the merge queue stays machine-wide. (b) several machines or a cloud runner from the start: the queue and the in-flight picture must be shared. Needs a fact from the owner. |
-| D7 | Dogfooding | install Orion on Maestro before the pilot, or pilot on another project first. Recommended: install first; the readiness gaps found on Maestro are the ones every project will hit. |
-| D8 | Worker transport | (a) headless structured sessions driven from Maestro's Rust backend over stdio, rendered as a log pane, PTY kept for human-attended sessions. (b) PTY terminals with injection as today. (c) the Agent SDK through a sidecar process. (a) removes the blind-typing machinery; (b) keeps the eagle view for workers and every fragile mechanism; (c) is the richest API and adds a runtime. Recommended: (a). |
-| D9 | Pilot project | the owner has named "Vigil" and "DaVinci". Neither is a repository in the owner's GitHub account as seen from this session. Needs a fact from the owner. |
-| D10 | Harvest at L3 | when `harvest` runs without a person, does it file tickets, propose a batch for approval, or only write a report. This is an Orion rule change and the owner's call. |
+### Destination
 
-Questions the owner is asked to answer alongside the decisions: what "SOM" means in "PRD, tickets and SOM";
-whether "L3" is meant as a level in the ladder of section 6 or as the generation name, or both.
+A PRD for the L3 Software Factory, under `docs/PRDs/`, approved by the owner, complete against the
+criteria in section 12, and ready for `/prd-to-tickets`. The map is done when nothing is left to decide
+before that PRD can be written.
+
+### Notes
+
+- Domain context: this document, in full. Sections 7 (what exists) and 9 (failure outcomes) are the facts
+  every ticket starts from; section 10 lists the principles no answer may break.
+- Repository facts: Maestro is a Tauri app, Rust backend under `src-tauri/`, React frontend under `src/`,
+  working rules in `AGENTS.md`, PRDs under `docs/PRDs/`. Maestro has no Orion installed.
+- Orion facts: `nachogl1/orion`, public; `baselines/BASE_CLAUDE.md` is the rules file; `skills/dev-next/`
+  is the engine; the audit record shape is `skills/dev-next/references/audit.md`.
+- Execution is **not** in scope for the map: it produces decisions, and the PRD, nothing else.
+- Standing preference: recommendations are welcome on every ticket, marked as recommendations; the owner
+  takes the decision.
+
+### Decisions so far
+
+- L3 is the target, directly. No intermediate level is a deliverable (section 6, non-goals).
+- The PRD lives at `docs/PRDs/PRD<Name>.md` in Maestro and is approved by the owner before any ticket.
+  `docs/samurai/prd.md` is historical.
+- GitHub Issues remain the only tracker; Orion remains the process; Maestro never carries workflow text
+  (section 10).
+
+### Candidate tickets
+
+Phrased as `/wayfinder` tickets: one question, why it matters, assumptions. Types are proposed; the
+charting session may change them. Blocking edges are noted where one answer shapes another.
+
+**T1 — grilling — The unit of autonomy.** *Question:* is one unit of factory work a single `/dev-next`
+run (up to four stories, relaunched until the backlog is empty), or a long-lived orchestrator that owns a
+whole epic for days? *Why it matters:* it decides whether the handoff and replication machinery is on the
+critical path or a fallback, how crash recovery works, and how parallelism is bounded. *Assumptions:* Orion's
+four-story cap per run stands; sibling runs on one login race for claims unless given disjoint lists.
+
+**T2 — grilling — Worker transport.** *Question:* are factory workers headless structured sessions
+(`claude -p` over stream-json stdio, or the Agent SDK) driven by Maestro's backend and rendered as a log,
+or PTY terminals with typed injection as today, with human-attended sessions staying PTY either way?
+*Why it matters:* it decides whether the idle gate, ACK ladder, brief files and read receipts survive, and
+whether Maestro's core assumption that every session is a terminal changes. *Assumptions:* the capability
+facts in section 7.6. *Blocked by:* T1.
+
+**T3 — grilling — What to do with Samurai.** *Question:* keep the supervision backend (allowance watcher,
+parker, resumer, watchdog, breaker, audit, auth watch) and drop the launcher, run configs, prompt text and
+Second Brain; or remove everything and rebuild; or keep everything and add the factory beside it? *Why it
+matters:* it sets the first stories of the PRD and what the readiness gate can reuse. *Blocked by:* T1, T2.
+
+**T4 — grilling — The Orion rule changes L3 needs.** *Question:* for each of `/harvest`, `/harvest-qa` and
+`/reconcile-issue-map`, does L3 (a) change the "run by a person" rule in `BASE_CLAUDE.md`, (b) add an
+unattended mode to the skill that ends in a proposal, or (c) leave the skill alone and add a factory-side
+skill that prepares the proposal? And what exactly may each file without approval: `bug` issues from QA,
+nothing from harvest, nothing from reconcile? *Why it matters:* without this answer the factory stops at
+exactly the points L3 says it must not. *Assumptions:* `/prd-to-tickets` stays a person's session.
+
+**T5 — grilling — The chain of command.** *Question:* what does the agent-to-Maestro surface offer
+(merge slot, run registration, request-human, report-phase, request-session, allowance), what does the
+Maestro-to-agent surface offer, and over what transport (the existing MCP server, hook HTTP, both)? And
+how does Orion use it with a fallback so a project without Maestro keeps working? *Why it matters:* it
+replaces the in-flight file and defines how Orion and Maestro stay separable. *Blocked by:* T2.
+
+**T6 — grilling — The readiness list.** *Question:* which lines are on it, which are computed from the
+repo and GitHub, which are asked of the owner, which can be waived, and what "green" means per line?
+*Why it matters:* it is the whole "human needed first" promise. *Assumptions:* the draft list in the
+design notes (Orion installed and verified, gate commands real, CI green on `main`, no unlabelled story,
+blocker graph consistent, prototype merged, secrets present, allowance headroom, deploy target and data
+classes stated).
+
+**T7 — grilling — The job view and the audit join.** *Question:* what does the owner see when they open a
+job (moved since last visit, in flight, waiting on you, cost), how are Orion's per-story run reports and
+Maestro's supervision events joined (by run id?), and what replaces the Second Brain's Audit, Journal and
+Files cards? *Why it matters:* G6 and G10; it is the screen that is the product. *Blocked by:* T3.
+
+**T8 — grilling — Machines.** *Question:* one Windows machine and one login as today, or several machines
+or a cloud runner from the start? *Why it matters:* it decides whether the merge queue and the in-flight
+picture are machine-wide or shared. *Assumptions:* one machine unless the owner says otherwise.
+
+**T9 — grilling — The pilot.** *Question:* which project is the first factory job: Maestro itself (with
+Orion installed first), "Vigil", "DaVinci", or another? And what are Vigil and DaVinci, since neither is a
+repository visible in the owner's GitHub account? *Why it matters:* G9 and the order of the first stories.
+
+**T10 — grilling — Vocabulary.** *Question:* what does "SOM" mean in "PRD, tickets and SOM", and is there
+any other input the owner expects to hand the factory besides a PRD and a cut backlog? *Why it matters:*
+an input the factory does not know about becomes an interruption mid-run.
+
+**T11 — research — Subscription quota source.** *Question:* what is the most reliable way to read the 5h
+and 7d windows (the undocumented endpoint Samurai polls, the statusline JSON, or another), what each
+returns, how stale each can be, and what a safe degraded mode looks like when none is available? *Why it
+matters:* parking depends on it and it is the one input with no documented API.
+
+**T12 — research — Headless session control in practice.** *Question:* with the current Claude Code
+release, what exactly does a `claude -p --input-format stream-json --output-format stream-json` session
+accept on stdin and emit on stdout, what does `PreToolUse` `defer` look like end to end, and what are the
+`resume` caveats? Cite the docs and a local experiment. *Why it matters:* T2 depends on these facts being
+true, not reported.
+
+**T13 — research — Hooks as the event source.** *Question:* which of the 33 hook events carry what fields,
+which can POST to Maestro's status server, and whether `rate_limits` or context usage reach a hook? *Why
+it matters:* decides what Maestro can observe without parsing transcripts.
+
+**T14 — prototype — The job view.** *Question:* a throwaway screen showing one job with moved, in flight,
+waiting on you and cost, built from the current Orion audit JSON of a real run, for the owner to react to.
+*Why it matters:* G10 is a screen; a reaction settles more than a grilling. *Blocked by:* T7.
+
+**T15 — task — Install Orion on Maestro.** *Question:* install Orion on the Maestro repository, run
+`/orion-verify`, fill the `CLAUDE.md` slots from `AGENTS.md`, and record what the readiness gate would
+have flagged. *Why it matters:* G9, and it produces the first real readiness list. *Blocked by:* T9 if the
+owner picks another pilot first.
+
+### Not yet specified (fog)
+
+- How a job is paused, resumed and stopped by the owner mid-run, and what happens to in-flight stories.
+- How several jobs on one machine share the allowance and the merge queue.
+- What the factory does when Orion is updated under a running job.
+- How the per-story cost is computed when token figures exclude cache reads and the orchestrator.
+- What the notification surface is (OS notification, in-app only, something else) and how it batches.
+- How a PR-review run, which exists today unsupervised, fits a factory job if at all.
+- What the Work Journal (an existing Maestro feature) records from factory activity, if anything.
+
+### Out of scope
+
+- Any tracker but GitHub Issues.
+- Running the factory on Managed Agents or any API-billed backend.
+- Model routing and cost optimisation across models.
+- An intermediate level of autonomy shipped as a product.
+- Polishing the Samurai launcher or the Second Brain.
 
 ---
 
@@ -543,7 +683,7 @@ The PRD that follows this document is complete when it can answer, with acceptan
 
 - How a job is created, what the readiness list contains, and what "green" means for each line.
 - What one unit of work is, how it is started, how its end is detected, and how the next one is chosen.
-- Which Orion skills the factory invokes, with which arguments, at which level.
+- Which Orion skills the factory invokes, with which arguments, and which Orion rules changed to allow it.
 - How each failure in section 9 is detected, what the factory does, and what the owner sees.
 - What the chain-of-command surface offers in each direction, and how Orion uses it with a fallback.
 - What the job view shows and what the audit record contains per job, run and story.
@@ -560,7 +700,11 @@ The PRD that follows this document is complete when it can answer, with acceptan
 - **Harness.** Maestro's role: trigger, supervise, heal, audit, report.
 - **Process.** Orion's role: what to do, in what order, under which rules.
 - **Chain of command.** The defined surface through which agents and Maestro talk.
-- **Level (L0 to L4).** Section 6.
+- **L3.** Section 6: the state in which a PRD is built to completion with the owner acting only at six
+  named points.
+- **Map, ticket, fog, frontier.** As `/wayfinder` defines them: the map is one tracker issue holding the
+  effort; a ticket is one decision sized to one session; fog is a decision not yet sharp enough to ticket;
+  the frontier is the tickets takeable now.
 - **Park, resume, handoff, generation, allowance window, circuit breaker.** As in `docs/samurai/prd.md`
   section 2; the mechanisms exist and are listed in section 7.1 here.
 
