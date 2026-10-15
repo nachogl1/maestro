@@ -11,20 +11,18 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::commands::ai_runner::artifact_base_dir;
-use crate::core::work_journal::{
-    self, PageOrigin, WorkJournal, WorkJournalResult, WorkJournalSettings,
-};
+use crate::core::work_journal::{self, PageOrigin, WorkJournal, WorkJournalResult};
 
 /// Serialises load-change-save cycles so two commands never interleave and
 /// lose a write.
 static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
 
-/// `<app data>/work-journal/work-journal.json`.
+/// `<work journal dir>/work-journal.json` (see
+/// [`work_journal::work_journal_dir`] for the devtest override).
 fn journal_path() -> PathBuf {
-    work_journal::journal_path(&artifact_base_dir("work-journal"))
+    work_journal::journal_path(&work_journal::work_journal_dir())
 }
 
 /// Runs `op` on a blocking thread while holding [`JOURNAL_LOCK`].
@@ -83,16 +81,14 @@ pub async fn delete_work_journal_page(date: String) -> Result<WorkJournal, Strin
         .await
 }
 
-/// Replaces the journal settings.
+/// Shallow-merges `settings` into the journal settings: each top-level key
+/// sent overwrites or adds that key; keys not sent are kept.
 #[tauri::command]
 pub async fn update_work_journal_settings(
-    settings: WorkJournalSettings,
+    settings: Map<String, Value>,
 ) -> Result<WorkJournal, String> {
     with_journal(move |path| {
-        work_journal::modify(&path, |j| {
-            work_journal::set_settings(j, settings);
-            Ok(())
-        })
+        work_journal::modify(&path, |j| work_journal::merge_settings(j, settings))
     })
     .await
 }

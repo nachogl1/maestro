@@ -15,13 +15,18 @@
 //! Tauri commands pass the app-data path.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::commands::ai_runner::artifact_base_dir;
 use crate::core::atomic_write::atomic_write_via;
+
+/// Environment variable that overrides the journal's folder.
+pub const DIR_ENV_VAR: &str = "MAESTRO_WORK_JOURNAL_DIR";
 
 /// The layout version this build reads and writes.
 pub const LAYOUT_VERSION: u32 = 1;
@@ -36,6 +41,10 @@ pub enum WorkJournalError {
     Read(#[source] std::io::Error),
     #[error("The work journal file is not valid JSON: {0}")]
     Parse(#[source] serde_json::Error),
+    #[error("The work journal file is valid JSON but not in the expected layout: {0}")]
+    Shape(#[source] serde_json::Error),
+    #[error("Invalid work journal settings: {0}")]
+    InvalidSettings(#[source] serde_json::Error),
     #[error("The work journal file has no layout version")]
     MissingLayoutVersion,
     #[error(
@@ -76,9 +85,11 @@ pub enum PageOrigin {
 pub struct WorkJournalPage {
     /// ISO date (`YYYY-MM-DD`), the page's unique key.
     pub date: String,
+    /// The page title; defaults from the date but the user may edit it.
     pub title: String,
     /// TipTap editor JSON, stored as-is (opaque to the backend).
     pub body: Value,
+    /// Whether Maestro or the user created the page.
     pub origin: PageOrigin,
 }
 
@@ -94,6 +105,7 @@ pub struct WorkJournalSettings {
 /// The whole `work-journal.json` file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkJournal {
+    /// The file's layout version, checked on every load (upgrade or refuse).
     pub layout_version: u32,
     /// Pages keyed by their ISO date.
     #[serde(default)]
@@ -104,6 +116,7 @@ pub struct WorkJournal {
     /// Where gap-filling starts on the next launch.
     #[serde(default)]
     pub last_auto_created_date: Option<String>,
+    /// Journal settings (see [`WorkJournalSettings`]).
     #[serde(default)]
     pub settings: WorkJournalSettings,
 }
@@ -117,6 +130,25 @@ impl Default for WorkJournal {
             last_auto_created_date: None,
             settings: WorkJournalSettings::default(),
         }
+    }
+}
+
+/// The journal's folder: `$MAESTRO_WORK_JOURNAL_DIR` when set and non-empty,
+/// else `<app data>/work-journal/`.
+///
+/// The override exists for devtest copies of Maestro: `artifact_base_dir`
+/// ignores the Tauri identifier, so a devtest build would otherwise read and
+/// write the installed Maestro's real journal.
+pub fn work_journal_dir() -> PathBuf {
+    dir_from_override(std::env::var_os(DIR_ENV_VAR))
+}
+
+/// [`work_journal_dir`] with the environment value passed in, so tests never
+/// mutate the process environment.
+fn dir_from_override(value: Option<OsString>) -> PathBuf {
+    match value {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => artifact_base_dir("work-journal"),
     }
 }
 
@@ -142,11 +174,21 @@ pub fn load(path: &Path) -> WorkJournalResult<WorkJournal> {
         }
         Err(e) => return Err(WorkJournalError::Read(e)),
     };
-    parse(&text)
+    parse_journal(&text)
 }
 
-/// Parses file text, refusing a newer layout and upgrading an older one.
-fn parse(text: &str) -> WorkJournalResult<WorkJournal> {
+/// Loads a journal file that must exist: a missing file is an error, never
+/// an empty journal. For callers like restore, where "no file" must not
+/// become "wipe the journal". Never modifies the file.
+#[allow(dead_code)] // first caller: restore from backup (#312)
+pub fn load_existing(path: &Path) -> WorkJournalResult<WorkJournal> {
+    let text = std::fs::read_to_string(path).map_err(WorkJournalError::Read)?;
+    parse_journal(&text)
+}
+
+/// Parses journal file text, refusing a newer layout and upgrading an older
+/// one in memory.
+pub fn parse_journal(text: &str) -> WorkJournalResult<WorkJournal> {
     let value: Value = serde_json::from_str(text).map_err(WorkJournalError::Parse)?;
     let found = value
         .get("layout_version")
@@ -160,7 +202,7 @@ fn parse(text: &str) -> WorkJournalResult<WorkJournal> {
     }
     // `found` <= LAYOUT_VERSION, so it fits in u32.
     let upgraded = upgrade(value, found as u32);
-    serde_json::from_value(upgraded).map_err(WorkJournalError::Parse)
+    serde_json::from_value(upgraded).map_err(WorkJournalError::Shape)
 }
 
 /// Upgrades raw file JSON from layout `from` to [`LAYOUT_VERSION`], one step
@@ -271,9 +313,22 @@ pub fn delete_page(journal: &mut WorkJournal, date: &str) -> WorkJournalResult<(
     Ok(())
 }
 
-/// Replaces the journal settings.
-pub fn set_settings(journal: &mut WorkJournal, settings: WorkJournalSettings) {
-    journal.settings = settings;
+/// Shallow-merges `patch` into the journal settings: each top-level key sent
+/// overwrites or adds that key; keys not sent are kept. So a frontend holding
+/// a stale copy cannot roll back keys the backend wrote since.
+pub fn merge_settings(
+    journal: &mut WorkJournal,
+    patch: Map<String, Value>,
+) -> WorkJournalResult<()> {
+    let mut merged = match serde_json::to_value(&journal.settings) {
+        Ok(Value::Object(map)) => map,
+        Ok(_) => Map::new(),
+        Err(e) => return Err(WorkJournalError::Serialize(e)),
+    };
+    merged.extend(patch);
+    journal.settings =
+        serde_json::from_value(Value::Object(merged)).map_err(WorkJournalError::InvalidSettings)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -314,7 +369,8 @@ mod tests {
     #[test]
     fn test_load_missing_file_returns_empty_journal_and_writes_nothing() {
         let dir = tempdir().unwrap();
-        let path = journal_path(dir.path());
+        let folder = dir.path().join("app-data").join("work-journal");
+        let path = journal_path(&folder);
 
         let journal = load(&path).unwrap();
 
@@ -322,7 +378,31 @@ mod tests {
         assert_eq!(journal.layout_version, 1);
         assert!(journal.pages.is_empty());
         assert!(!path.exists(), "loading must not create the file");
+        assert!(!folder.exists(), "loading must not create folders");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn test_load_existing_refuses_a_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(dir.path());
+
+        let err = load_existing(&path).unwrap_err();
+
+        assert!(
+            matches!(&err, WorkJournalError::Read(e) if e.kind() == std::io::ErrorKind::NotFound),
+            "got: {err}"
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_work_journal_dir_uses_non_empty_override() {
+        let custom = std::env::temp_dir().join("devtest-journal");
+        assert_eq!(dir_from_override(Some(custom.clone().into())), custom);
+        let default = artifact_base_dir("work-journal");
+        assert_eq!(dir_from_override(Some(OsString::new())), default);
+        assert_eq!(dir_from_override(None), default);
     }
 
     #[test]
@@ -412,13 +492,28 @@ mod tests {
     #[test]
     fn test_missing_layout_version_and_bad_json_are_refused() {
         assert!(matches!(
-            parse(r#"{"pages": {}}"#).unwrap_err(),
+            parse_journal(r#"{"pages": {}}"#).unwrap_err(),
             WorkJournalError::MissingLayoutVersion
         ));
-        assert!(matches!(
-            parse("{not json").unwrap_err(),
-            WorkJournalError::Parse(_)
-        ));
+        let bad_json = parse_journal("{not json").unwrap_err();
+        assert!(matches!(bad_json, WorkJournalError::Parse(_)));
+        assert!(
+            bad_json.to_string().contains("not valid JSON"),
+            "got: {bad_json}"
+        );
+    }
+
+    #[test]
+    fn test_wrong_shape_file_has_its_own_message() {
+        let err = parse_journal(r#"{"layout_version": 1, "pages": "oops"}"#).unwrap_err();
+
+        assert!(matches!(err, WorkJournalError::Shape(_)), "got: {err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("not in the expected layout"),
+            "got: {message}"
+        );
+        assert!(!message.contains("not valid JSON"), "got: {message}");
     }
 
     #[test]
@@ -543,21 +638,35 @@ mod tests {
     fn test_settings_round_trip_and_keep_unknown_keys() {
         let dir = tempdir().unwrap();
         let path = journal_path(dir.path());
-        let settings: WorkJournalSettings =
-            serde_json::from_value(json!({"from_a_newer_build": {"x": 1}})).unwrap();
+        let patch = json!({"from_a_newer_build": {"x": 1}});
 
         modify(&path, |j| {
-            set_settings(j, settings.clone());
-            Ok(())
+            merge_settings(j, patch.as_object().unwrap().clone())
         })
         .unwrap();
 
         let reloaded = load(&path).unwrap();
-        assert_eq!(reloaded.settings, settings);
+        assert_eq!(reloaded.settings.extra.len(), 1);
         assert_eq!(
             reloaded.settings.extra["from_a_newer_build"],
             json!({"x": 1})
         );
+    }
+
+    #[test]
+    fn test_merge_settings_keeps_keys_not_sent() {
+        let mut journal = WorkJournal::default();
+        let backend = json!({"last_backup_at": "2026-10-15T09:00:00Z", "mode": "a"});
+        merge_settings(&mut journal, backend.as_object().unwrap().clone()).unwrap();
+
+        // A stale frontend copy sends only the key it changed.
+        let patch = json!({"mode": "b", "added": true});
+        merge_settings(&mut journal, patch.as_object().unwrap().clone()).unwrap();
+
+        let extra = &journal.settings.extra;
+        assert_eq!(extra["last_backup_at"], json!("2026-10-15T09:00:00Z"));
+        assert_eq!(extra["mode"], json!("b"), "a sent key overwrites");
+        assert_eq!(extra["added"], json!(true), "a new key is added");
     }
 
     #[test]
