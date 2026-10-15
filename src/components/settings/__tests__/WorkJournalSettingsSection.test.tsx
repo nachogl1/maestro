@@ -101,9 +101,7 @@ describe("WorkJournalSettingsSection", () => {
       "never written. Press Back up now to replace it, or choose another folder.";
     routeInvoke({
       load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
-      work_journal_backup_if_due: () => {
-        throw skipped;
-      },
+      work_journal_backup_if_due: () => ({ status: "skipped", message: skipped }),
       work_journal_backup_now: () =>
         journal({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T09:00:00Z" }),
     });
@@ -121,6 +119,17 @@ describe("WorkJournalSettingsSection", () => {
     });
     await act(() => backUpIfDue());
     expect(messageMock).toHaveBeenCalledTimes(1);
+
+    // A real failure after a skip still warns once, with its own title.
+    invokeMock.mockImplementationOnce(async () => {
+      throw "Backup failed: the backup folder D:\\OneDrive does not exist.";
+    });
+    await act(() => backUpIfDue());
+    expect(messageMock).toHaveBeenCalledTimes(2);
+    expect(messageMock).toHaveBeenLastCalledWith(
+      "Backup failed: the backup folder D:\\OneDrive does not exist.",
+      { title: AUTO_BACKUP_WARNING_TITLE, kind: "warning" },
+    );
 
     // "Back up now" is the override: it writes and clears the skip.
     fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
@@ -155,8 +164,10 @@ describe("WorkJournalSettingsSection", () => {
       load_work_journal: () =>
         journal({ backup_folder: "D:\\Old", last_backup_at: "2026-10-14T08:00:00Z" }),
       update_work_journal_settings: () => journal({ backup_folder: "E:\\Backups" }),
-      work_journal_backup_if_due: () =>
-        journal({ backup_folder: "E:\\Backups", last_backup_at: at }),
+      work_journal_backup_if_due: () => ({
+        status: "written",
+        journal: journal({ backup_folder: "E:\\Backups", last_backup_at: at }),
+      }),
     });
     openMock.mockResolvedValue("E:\\Backups");
 
@@ -179,9 +190,10 @@ describe("WorkJournalSettingsSection", () => {
       load_work_journal: () =>
         journal({ backup_folder: "D:\\Old", last_backup_at: "2026-10-14T08:00:00Z" }),
       update_work_journal_settings: () => journal({ backup_folder: "E:\\Shared" }),
-      work_journal_backup_if_due: () => {
-        throw "Automatic backup skipped: this folder already holds a backup.";
-      },
+      work_journal_backup_if_due: () => ({
+        status: "skipped",
+        message: "Automatic backup skipped: this folder already holds a backup.",
+      }),
     });
     openMock.mockResolvedValue("E:\\Shared");
 
@@ -192,6 +204,23 @@ describe("WorkJournalSettingsSection", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Automatic backup skipped");
     expect(screen.getByText("E:\\Shared")).toBeInTheDocument();
     expect(screen.getByText("Never backed up")).toBeInTheDocument();
+  });
+
+  it("does nothing when the current folder is chosen again", async () => {
+    const at = "2026-10-14T08:00:00Z";
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive", last_backup_at: at }),
+    });
+    openMock.mockResolvedValue("D:\\OneDrive");
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    fireEvent.click(screen.getByRole("button", { name: /Choose folder/ }));
+
+    await waitFor(() => expect(openMock).toHaveBeenCalled());
+    await act(async () => {});
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(`Last backup: ${shownTime(at)}`)).toBeInTheDocument();
   });
 
   it("changes nothing when the folder picker is cancelled", async () => {
@@ -213,7 +242,10 @@ describe("WorkJournalSettingsSection", () => {
       load_work_journal: () => journal({ backup_folder: "D:\\Gone" }),
       work_journal_backup_if_due: () => {
         if (ifDueFails) throw failure;
-        return journal({ backup_folder: "D:\\Gone", last_backup_at: "2026-10-15T09:00:00Z" });
+        return {
+          status: "written",
+          journal: journal({ backup_folder: "D:\\Gone", last_backup_at: "2026-10-15T09:00:00Z" }),
+        };
       },
     });
     const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;

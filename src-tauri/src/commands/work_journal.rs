@@ -11,9 +11,12 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::core::work_journal::{self, PageOrigin, WorkJournal, WorkJournalResult};
+use crate::core::work_journal::{
+    self, PageOrigin, WorkJournal, WorkJournalError, WorkJournalResult,
+};
 
 /// Serialises load-change-save cycles so two commands never interleave and
 /// lose a write.
@@ -102,14 +105,45 @@ pub async fn work_journal_backup_now() -> Result<WorkJournal, String> {
     with_journal(|path| work_journal::backup_now(&path, chrono::Utc::now())).await
 }
 
+/// What the automatic backup did, tagged by `status` for the frontend.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BackupIfDueOutcome {
+    /// A backup was written; the saved journal.
+    Written { journal: WorkJournal },
+    /// Nothing to do: no folder set, or not due yet.
+    Idle,
+    /// The guard refused to replace a backup this Maestro has not written.
+    Skipped { message: String },
+}
+
+/// Maps the core result to the command's outcome: the guard's refusal is a
+/// `Skipped` outcome, every other error stays an error.
+fn backup_if_due_outcome(
+    result: WorkJournalResult<Option<WorkJournal>>,
+) -> WorkJournalResult<BackupIfDueOutcome> {
+    match result {
+        Ok(Some(journal)) => Ok(BackupIfDueOutcome::Written { journal }),
+        Ok(None) => Ok(BackupIfDueOutcome::Idle),
+        Err(e @ WorkJournalError::AutoBackupWouldReplaceUnknownBackup) => {
+            Ok(BackupIfDueOutcome::Skipped {
+                message: e.to_string(),
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Backs up when a folder is set and the last backup is a day old (or
-/// missing); returns `None` and writes nothing otherwise. Never replaces a
-/// backup file this Maestro has not written (see
-/// [`work_journal::backup_if_due`]). Called on start, by the in-app timer and
-/// after a folder is chosen.
+/// missing). Never replaces a backup file this Maestro has not written (see
+/// [`work_journal::backup_if_due`]); that comes back as `Skipped`. Called on
+/// start, by the in-app timer and after a folder is chosen.
 #[tauri::command]
-pub async fn work_journal_backup_if_due() -> Result<Option<WorkJournal>, String> {
-    with_journal(|path| work_journal::backup_if_due(&path, chrono::Utc::now())).await
+pub async fn work_journal_backup_if_due() -> Result<BackupIfDueOutcome, String> {
+    with_journal(|path| {
+        backup_if_due_outcome(work_journal::backup_if_due(&path, chrono::Utc::now()))
+    })
+    .await
 }
 
 /// Makes sure every day has its page up to `today` (`YYYY-MM-DD`, the
@@ -119,4 +153,34 @@ pub async fn work_journal_backup_if_due() -> Result<Option<WorkJournal>, String>
 #[tauri::command]
 pub async fn work_journal_ensure_pages(today: String) -> Result<WorkJournal, String> {
     with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backup_if_due_outcome_tags_each_case() {
+        let written = backup_if_due_outcome(Ok(Some(WorkJournal::default()))).unwrap();
+        assert_eq!(serde_json::to_value(&written).unwrap()["status"], "written");
+
+        let idle = backup_if_due_outcome(Ok(None)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&idle).unwrap(),
+            serde_json::json!({"status": "idle"})
+        );
+
+        let skipped =
+            backup_if_due_outcome(Err(WorkJournalError::AutoBackupWouldReplaceUnknownBackup))
+                .unwrap();
+        let value = serde_json::to_value(&skipped).unwrap();
+        assert_eq!(value["status"], "skipped");
+        assert!(value["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Automatic backup skipped"));
+
+        let failed = backup_if_due_outcome(Err(WorkJournalError::NoBackupFolder));
+        assert!(matches!(failed, Err(WorkJournalError::NoBackupFolder)));
+    }
 }

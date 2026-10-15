@@ -19,8 +19,11 @@ export const AUTO_BACKUP_WARNING_TITLE = "Work Journal backup failed";
 /** Title of the native warning shown when the guard skips an automatic backup. */
 export const AUTO_BACKUP_SKIPPED_TITLE = "Work Journal backup skipped";
 
-/** Start of the backend's message when the guard skips an automatic backup. */
-const AUTO_BACKUP_SKIPPED_PREFIX = "Automatic backup skipped";
+/** What `work_journal_backup_if_due` did, tagged by `status`. */
+export type BackupIfDueOutcome =
+  | { status: "written"; journal: WorkJournalBackupFile }
+  | { status: "idle" }
+  | { status: "skipped"; message: string };
 
 interface WorkJournalBackupState {
   /** Folder the daily backup is written to; null while none is chosen. */
@@ -33,10 +36,12 @@ interface WorkJournalBackupState {
   error: string | null;
   /**
    * True once the native warning was shown for the current run of automatic
-   * failures or skips, so hourly retries do not warn again. Reset by a
-   * successful backup or a folder change.
+   * failures, so hourly retries do not warn again. Reset by a successful
+   * backup or a folder change.
    */
   autoFailureWarned: boolean;
+  /** The same as `autoFailureWarned`, kept apart for guard skips. */
+  autoSkipWarned: boolean;
   /** True while a manual backup is running. */
   backingUp: boolean;
   /** Reads the backup settings from the journal file. */
@@ -44,7 +49,8 @@ interface WorkJournalBackupState {
   /**
    * Saves `folder` as the backup folder (clearing the last backup time, so an
    * existing backup there is protected until "Back up now"), then runs the
-   * automatic backup right away.
+   * automatic backup right away. Choosing the current folder again does
+   * nothing.
    */
   chooseFolder: (folder: string) => Promise<void>;
   /** "Back up now". */
@@ -55,6 +61,18 @@ interface WorkJournalBackupState {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Clears both "already warned" flags (a success or a folder change ends the run). */
+const WARNINGS_RESET = { autoFailureWarned: false, autoSkipWarned: false } as const;
+
+/** The native warning for an automatic backup; a dialog failure is only logged. */
+async function showWarning(text: string, title: string): Promise<void> {
+  try {
+    await message(text, { title, kind: "warning" });
+  } catch (dialogError) {
+    console.error("Failed to show the Work Journal backup warning:", dialogError);
+  }
 }
 
 function fromJournal(
@@ -77,6 +95,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   loadError: null,
   error: null,
   autoFailureWarned: false,
+  autoSkipWarned: false,
   backingUp: false,
 
   load: async () => {
@@ -90,11 +109,12 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   },
 
   chooseFolder: async (folder: string) => {
+    if (folder === get().backupFolder) return;
     try {
       const journal = await invoke<WorkJournalBackupFile>("update_work_journal_settings", {
         settings: { backup_folder: folder, last_backup_at: null },
       });
-      set({ ...fromJournal(journal), error: null, autoFailureWarned: false });
+      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null });
     } catch (error) {
       console.error("Failed to save the Work Journal backup folder:", error);
       set({ error: `Could not save the backup folder: ${errorMessage(error)}` });
@@ -109,7 +129,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
     set({ backingUp: true });
     try {
       const journal = await invoke<WorkJournalBackupFile>("work_journal_backup_now");
-      set({ ...fromJournal(journal), error: null, autoFailureWarned: false });
+      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null });
     } catch (error) {
       console.error("Work Journal backup failed:", error);
       set({ error: errorMessage(error) });
@@ -121,23 +141,23 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
   // Failures and guard skips also raise one native warning per run, since
   // the user may never open Settings.
   backUpIfDue: async () => {
+    let outcome: BackupIfDueOutcome;
     try {
-      const journal = await invoke<WorkJournalBackupFile | null>("work_journal_backup_if_due");
-      if (journal) set({ ...fromJournal(journal), error: null, autoFailureWarned: false });
+      outcome = await invoke<BackupIfDueOutcome>("work_journal_backup_if_due");
     } catch (error) {
       console.error("Automatic Work Journal backup failed:", error);
       const text = errorMessage(error);
-      const skipped = text.startsWith(AUTO_BACKUP_SKIPPED_PREFIX);
       const warn = !get().autoFailureWarned;
-      set({ error: skipped ? text : `Automatic backup: ${text}`, autoFailureWarned: true });
-      if (warn) {
-        const title = skipped ? AUTO_BACKUP_SKIPPED_TITLE : AUTO_BACKUP_WARNING_TITLE;
-        try {
-          await message(text, { title, kind: "warning" });
-        } catch (dialogError) {
-          console.error("Failed to show the Work Journal backup warning:", dialogError);
-        }
-      }
+      set({ error: `Automatic backup: ${text}`, autoFailureWarned: true });
+      if (warn) await showWarning(text, AUTO_BACKUP_WARNING_TITLE);
+      return;
+    }
+    if (outcome?.status === "written") {
+      set({ ...fromJournal(outcome.journal), ...WARNINGS_RESET, error: null });
+    } else if (outcome?.status === "skipped") {
+      const warn = !get().autoSkipWarned;
+      set({ error: outcome.message, autoSkipWarned: true });
+      if (warn) await showWarning(outcome.message, AUTO_BACKUP_SKIPPED_TITLE);
     }
   },
 }));
