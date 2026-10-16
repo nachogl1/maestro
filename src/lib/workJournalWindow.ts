@@ -57,12 +57,47 @@ export interface WorkJournalQuitFlushedPayload {
   label: string | null;
 }
 
+/**
+ * What a {@link WORK_JOURNAL_CHANGED_EVENT} changed (`ChangeKind` in
+ * `src-tauri/src/commands/work_journal.rs`): day pages, the settings, the
+ * suggestions, a candidate run (suggestions and settings), or the whole
+ * journal (restore or undo).
+ */
+export type WorkJournalChangeKind = "page" | "settings" | "candidates" | "run" | "replaced";
+
+/** The part of the journal a listener shows and re-reads. */
+export type WorkJournalChangeArea = "pages" | "settings" | "candidates";
+
 /** Payload of {@link WORK_JOURNAL_CHANGED_EVENT}. */
 export interface WorkJournalChangedPayload {
   /** Label of the window whose command made the change; null for the backend itself. */
   source: string | null;
   /** The whole journal was replaced (restore or undo). */
   replaced: boolean;
+  /** What changed; missing (an older payload) means anything may have. */
+  kind?: WorkJournalChangeKind;
+}
+
+/** The areas each change kind touches. */
+const CHANGE_KIND_AREAS: Record<WorkJournalChangeKind, WorkJournalChangeArea[]> = {
+  page: ["pages"],
+  settings: ["settings"],
+  candidates: ["candidates"],
+  run: ["candidates", "settings"],
+  replaced: ["pages", "settings", "candidates"],
+};
+
+/**
+ * Whether `change` may have changed `area`. A replaced journal, and a
+ * payload without a known kind, count as everything.
+ */
+export function workJournalChangeTouches(
+  change: WorkJournalChangedPayload,
+  area: WorkJournalChangeArea,
+): boolean {
+  if (change.replaced) return true;
+  const areas = change.kind ? CHANGE_KIND_AREAS[change.kind] : undefined;
+  return areas ? areas.includes(area) : true;
 }
 
 /** Payload of {@link WORK_JOURNAL_REPLACING_EVENT}. */
@@ -113,17 +148,20 @@ export async function openWorkJournalWindow(): Promise<void> {
 }
 
 /**
- * Calls `onChange` when another window (or the backend) changed the journal.
+ * Calls `onChange` when another window (or the backend) changed the journal;
+ * with `area`, only when the change may have touched that part of it.
  * This window's own changes are skipped: it already shows them, and re-reading
  * could put older text over what is being typed.
  */
 export async function listenWorkJournalChanged(
   onChange: (payload: WorkJournalChangedPayload) => void,
+  area?: WorkJournalChangeArea,
 ): Promise<UnlistenFn> {
   const own = currentWindowLabel();
   return listen<WorkJournalChangedPayload>(WORK_JOURNAL_CHANGED_EVENT, (event) => {
     const payload = event.payload ?? { source: null, replaced: false };
     if (own !== null && payload.source === own) return;
+    if (area && !workJournalChangeTouches(payload, area)) return;
     onChange(payload);
   });
 }
@@ -192,7 +230,7 @@ export async function serveWorkJournalWindow(runNow: () => void): Promise<Unlist
   // The pop-out window can change the run settings (the Granola question).
   const stopChanged = await listenWorkJournalChanged(() => {
     void useWorkJournalCandidateRunStore.getState().load();
-  });
+  }, "settings");
   // This window's own unsaved journal text is saved when Maestro quits.
   const stopQuitFlush = await answerWorkJournalQuitFlush();
   const unsubscribe = useWorkJournalCandidateRunStore.subscribe(send);

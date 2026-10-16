@@ -851,6 +851,22 @@ describe("WorkJournalPanel and the pop-out window", () => {
     expect(callsTo("update_work_journal_page")).toEqual([]);
   });
 
+  it("re-reads the journal only when the other window changed its pages", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: OTHER_BODY };
+
+    const other = { source: WORK_JOURNAL_WINDOW_LABEL, replaced: false } as const;
+    await act(async () => changed({ ...other, kind: "settings" }));
+    await act(async () => changed({ ...other, kind: "candidates" }));
+    await act(async () => changed({ source: null, replaced: false, kind: "run" }));
+    expect(callsTo("load_work_journal")).toEqual([]);
+
+    await act(async () => changed({ ...other, kind: "page" }));
+    expect(await screen.findByText("Typed in the window")).toBeInTheDocument();
+    expect(callsTo("load_work_journal")).toHaveLength(1);
+  });
+
   it("keeps text whose save failed when the other window changes the journal", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");

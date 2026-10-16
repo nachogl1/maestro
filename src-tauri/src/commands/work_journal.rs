@@ -38,22 +38,48 @@ static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
 /// candidates, so the pane and the pop-out window show the same data.
 pub const CHANGED_EVENT: &str = "work-journal:changed";
 
+/// What a [`CHANGED_EVENT`] changed, so each listener re-reads only its part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    /// Day pages: created, edited or deleted.
+    Page,
+    /// The journal settings (including the last backup time).
+    Settings,
+    /// Suggestions: accepted or rejected.
+    Candidates,
+    /// A candidate run: new suggestions and the saved run time (settings).
+    Run,
+    /// The whole journal was replaced (restore or undo): everything.
+    Replaced,
+}
+
 /// Payload of [`CHANGED_EVENT`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JournalChanged {
     /// Label of the window whose command made the change (it already shows
     /// it); `None` when the backend made it on its own (a candidate run).
     pub source: Option<String>,
-    /// The whole journal was replaced (restore or undo), not edited.
+    /// The whole journal was replaced (restore or undo), not edited. Kept
+    /// next to `kind` (it is `kind == Replaced`) for older listeners.
     pub replaced: bool,
+    /// What changed.
+    pub kind: ChangeKind,
 }
 
-/// Tells every window that `window`'s command changed the journal.
-fn notify_changed(window: &WebviewWindow, replaced: bool) {
-    let payload = JournalChanged {
-        source: Some(window.label().to_string()),
-        replaced,
-    };
+impl JournalChanged {
+    fn new(source: Option<String>, kind: ChangeKind) -> Self {
+        JournalChanged {
+            source,
+            replaced: kind == ChangeKind::Replaced,
+            kind,
+        }
+    }
+}
+
+/// Tells every window that `window`'s command changed `kind`.
+fn notify_changed(window: &WebviewWindow, kind: ChangeKind) {
+    let payload = JournalChanged::new(Some(window.label().to_string()), kind);
     let _ = window.emit(CHANGED_EVENT, payload);
 }
 
@@ -207,7 +233,7 @@ pub async fn create_work_journal_page(
         })
     })
     .await?;
-    notify_changed(&window, false);
+    notify_changed(&window, ChangeKind::Page);
     Ok(journal)
 }
 
@@ -228,7 +254,7 @@ pub async fn update_work_journal_page(
         })
     })
     .await?;
-    notify_changed(&window, false);
+    notify_changed(&window, ChangeKind::Page);
     Ok(journal)
 }
 
@@ -247,7 +273,7 @@ pub async fn delete_work_journal_page(
         })
     })
     .await?;
-    notify_changed(&window, false);
+    notify_changed(&window, ChangeKind::Page);
     Ok(journal)
 }
 
@@ -260,7 +286,7 @@ pub async fn update_work_journal_settings(
     settings: Map<String, Value>,
 ) -> Result<WorkJournal, String> {
     let journal = with_journal(move |path| work_journal::update_settings(&path, settings)).await?;
-    notify_changed(&window, false);
+    notify_changed(&window, ChangeKind::Settings);
     Ok(journal)
 }
 
@@ -319,7 +345,7 @@ pub async fn work_journal_backup_now(
     })
     .await?;
     if matches!(outcome, BackupNowOutcome::Written { .. }) {
-        notify_changed(&window, false);
+        notify_changed(&window, ChangeKind::Settings);
     }
     Ok(outcome)
 }
@@ -371,7 +397,7 @@ pub async fn work_journal_backup_if_due(
     })
     .await?;
     if matches!(outcome, BackupIfDueOutcome::Written { .. }) {
-        notify_changed(&window, false);
+        notify_changed(&window, ChangeKind::Settings);
     }
     Ok(outcome)
 }
@@ -379,15 +405,18 @@ pub async fn work_journal_backup_if_due(
 /// Makes sure every day has its page up to `today` (`YYYY-MM-DD`, the
 /// caller's local date): gap-fills from the last auto-created date, skips
 /// deleted dates and existing pages, and saves only when something changed.
-/// Returns the journal. Always notifies: the other windows only re-read it.
+/// Returns the journal. Notifies only when it created a page: there is
+/// nothing new for the other windows otherwise.
 #[tauri::command]
 pub async fn work_journal_ensure_pages(
     window: WebviewWindow,
     today: String,
 ) -> Result<WorkJournal, String> {
-    let journal =
+    let (journal, created) =
         with_journal(move |path| work_journal::ensure_pages_in_file(&path, &today)).await?;
-    notify_changed(&window, false);
+    if created {
+        notify_changed(&window, ChangeKind::Page);
+    }
     Ok(journal)
 }
 
@@ -628,13 +657,7 @@ pub async fn work_journal_run_candidates(
     let retry_dates = report.retry_dates.clone();
     with_journal(move |path| save_run(&path, saved, plan.save, retry_dates)).await?;
     // From no window: the new candidates and run time are news to all of them.
-    let _ = app.emit(
-        CHANGED_EVENT,
-        JournalChanged {
-            source: None,
-            replaced: false,
-        },
-    );
+    let _ = app.emit(CHANGED_EVENT, JournalChanged::new(None, ChangeKind::Run));
     Ok(candidate_run_outcome(report, last_run_at, last_attempt_at))
 }
 
@@ -701,7 +724,7 @@ pub async fn restore_work_journal(
         Ok(restore_reply(&path, journal))
     })
     .await?;
-    notify_changed(&window, true);
+    notify_changed(&window, ChangeKind::Replaced);
     Ok(reply)
 }
 
@@ -717,7 +740,7 @@ pub async fn undo_work_journal_restore(
         Ok(restore_reply(&path, journal))
     })
     .await?;
-    notify_changed(&window, true);
+    notify_changed(&window, ChangeKind::Replaced);
     Ok(reply)
 }
 
@@ -764,7 +787,7 @@ pub async fn reject_work_journal_candidate(
     )
     .await
     .map_err(|e| e.to_string())?;
-    notify_changed(&window, false);
+    notify_changed(&window, ChangeKind::Candidates);
     Ok(candidate)
 }
 
@@ -791,7 +814,7 @@ pub async fn accept_work_journal_candidate(
         work_journal_activity::remove_candidate(&work_journal_activity::activity_dir(), &id).await,
     )
     .map_err(|e| e.to_string())?;
-    notify_changed(&window, false);
+    notify_changed(&window, ChangeKind::Candidates);
     Ok(removed)
 }
 
@@ -1215,24 +1238,75 @@ mod tests {
     }
 
     #[test]
-    fn test_changed_event_names_the_source_window() {
+    fn test_changed_event_names_the_source_window_and_the_kind() {
         assert_eq!(CHANGED_EVENT, "work-journal:changed");
-        let changed = JournalChanged {
-            source: Some("work-journal".to_string()),
-            replaced: true,
-        };
+        let changed = JournalChanged::new(Some("work-journal".to_string()), ChangeKind::Replaced);
         assert_eq!(
             serde_json::to_value(&changed).unwrap(),
-            serde_json::json!({"source": "work-journal", "replaced": true})
+            serde_json::json!({"source": "work-journal", "replaced": true, "kind": "replaced"})
         );
-        let from_backend = JournalChanged {
-            source: None,
-            replaced: false,
-        };
+        let from_backend = JournalChanged::new(None, ChangeKind::Run);
         assert_eq!(
             serde_json::to_value(&from_backend).unwrap(),
-            serde_json::json!({"source": null, "replaced": false})
+            serde_json::json!({"source": null, "replaced": false, "kind": "run"})
         );
+    }
+
+    #[test]
+    fn test_each_change_kind_has_the_name_the_frontend_matches() {
+        // `WorkJournalChangeKind` in src/lib/workJournalWindow.ts.
+        for (kind, name, replaced) in [
+            (ChangeKind::Page, "page", false),
+            (ChangeKind::Settings, "settings", false),
+            (ChangeKind::Candidates, "candidates", false),
+            (ChangeKind::Run, "run", false),
+            (ChangeKind::Replaced, "replaced", true),
+        ] {
+            let value = serde_json::to_value(JournalChanged::new(None, kind)).unwrap();
+            assert_eq!(value["kind"], name);
+            assert_eq!(value["replaced"], replaced, "{name}");
+        }
+    }
+
+    #[test]
+    fn test_each_command_emits_its_change_kind() {
+        // The commands need a real window, so this checks their source: each
+        // changing command notifies with the kind of what it changed.
+        let source = include_str!("work_journal.rs");
+        let body = |name: &str| -> &str {
+            let start = source
+                .find(&format!("pub async fn {name}("))
+                .unwrap_or_else(|| panic!("{name} not found"));
+            let rest = &source[start..];
+            let end = rest[1..]
+                .find("#[tauri::command]")
+                .map_or(rest.len(), |i| i + 1);
+            &rest[..end]
+        };
+        for (name, kind) in [
+            ("create_work_journal_page", "ChangeKind::Page"),
+            ("update_work_journal_page", "ChangeKind::Page"),
+            ("delete_work_journal_page", "ChangeKind::Page"),
+            ("work_journal_ensure_pages", "ChangeKind::Page"),
+            ("update_work_journal_settings", "ChangeKind::Settings"),
+            ("work_journal_backup_now", "ChangeKind::Settings"),
+            ("work_journal_backup_if_due", "ChangeKind::Settings"),
+            ("reject_work_journal_candidate", "ChangeKind::Candidates"),
+            ("accept_work_journal_candidate", "ChangeKind::Candidates"),
+            ("work_journal_run_candidates", "ChangeKind::Run"),
+            ("restore_work_journal", "ChangeKind::Replaced"),
+            ("undo_work_journal_restore", "ChangeKind::Replaced"),
+        ] {
+            let body = body(name);
+            assert!(body.contains(kind), "{name} emits {kind}");
+            assert_eq!(body.matches("ChangeKind::").count(), 1, "{name}: one kind");
+        }
+        // ensure_pages notifies only when it created a page.
+        let ensure = body("work_journal_ensure_pages")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(ensure.contains("if created { notify_changed(&window, ChangeKind::Page); }"));
     }
 
     #[test]
