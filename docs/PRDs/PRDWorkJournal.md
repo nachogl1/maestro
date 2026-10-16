@@ -319,6 +319,15 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   changed only the title and the other only the text, both changes are kept
   without asking. Text changed in the other window keeps the cursor where it
   was.
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm: when
+  one window deletes a page while the other still has an unsaved change to it,
+  that change is dropped with the page (it is not kept or retried). When the
+  other window's save of that change was already sent (or had failed before),
+  it shows "The page for <day> was deleted in the other window, so your last
+  change to it was not saved." instead of the raw backend error. Text still
+  inside the 400 ms typing pause when the page is deleted elsewhere is dropped
+  without a notice, and so is a failed save whose page is deleted while that
+  window's Work Journal is closed (the notice only shows while it is open).
 
 ### Storage and backup
 
