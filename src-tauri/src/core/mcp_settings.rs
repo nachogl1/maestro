@@ -39,6 +39,7 @@ use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use super::atomic_write::rename_with_retry;
 use super::config_recovery::read_json_or_recover;
 use super::mcp_error::{McpError, McpResult};
 use super::samurai_files::strip_extended_length;
@@ -207,13 +208,22 @@ fn write_json_file(path: &Path, value: &Value) -> McpResult<()> {
     })?;
 
     let tmp = path.with_extension("maestro-tmp");
-    fs::write(&tmp, pretty).map_err(|source| McpError::WriteFile {
-        path: tmp.clone(),
-        source,
+    fs::write(&tmp, pretty).map_err(|source| {
+        let _ = fs::remove_file(&tmp);
+        McpError::WriteFile {
+            path: tmp.clone(),
+            source,
+        }
     })?;
-    fs::rename(&tmp, path).map_err(|source| McpError::ReplaceFile {
-        path: path.to_path_buf(),
-        source,
+    // The shared rename with the Windows retry (core::atomic_write): an
+    // antivirus or indexer briefly holding the target must not fail the edit.
+    // On final failure the temp file is removed, never left next to the target.
+    rename_with_retry(&tmp, path, || Ok(()), |from, to| fs::rename(from, to)).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        McpError::ReplaceFile {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(e),
+        }
     })
 }
 
@@ -800,5 +810,26 @@ mod tests {
         assert_eq!(written["mcpServers"]["fresh"]["command"], "npx");
         // The corrupt original is preserved for debugging.
         assert!(dir.path().join(".mcp.corrupt").exists());
+    }
+
+    #[test]
+    fn test_write_json_file_success_and_failed_replace_leave_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        write_json_file(&path, &json!({"a": 1})).unwrap();
+        let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written, json!({"a": 1}));
+        assert!(!path.with_extension("maestro-tmp").exists());
+
+        // A target the rename can never replace (a non-empty folder) fails
+        // after the retries; the temp file must not be left behind.
+        let blocked = dir.path().join("blocked.json");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("inner"), "x").unwrap();
+        // Skip the first-write backup, which would fail first on a folder.
+        BACKED_UP.lock().unwrap().insert(blocked.clone());
+        let err = write_json_file(&blocked, &json!({})).unwrap_err();
+        assert!(matches!(err, McpError::ReplaceFile { .. }), "{err:?}");
+        assert!(!blocked.with_extension("maestro-tmp").exists());
     }
 }

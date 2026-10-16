@@ -5,6 +5,9 @@ use directories::BaseDirs;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+use crate::core::mcp_config_writer::{atomic_write, dir_lock};
+use crate::core::samurai_files::strip_extended_length;
+
 /// Status of CLAUDE.md file at project root (legacy shape kept for compatibility).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,9 +204,38 @@ pub async fn write_context_doc(path: String, content: String) -> Result<(), Stri
                 .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
         }
     }
-    tokio::fs::write(&pb, content)
+    write_doc_atomically(&pb, &content)
         .await
         .map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
+/// Writes a context doc so it is never left empty or half-written (the docs
+/// include Claude's settings.json and .mcp.json): temp file + rename, the
+/// crate's shared config writer. A symlinked doc (e.g. CLAUDE.md pointing at
+/// AGENTS.md) is written through to its target, so the rename never replaces
+/// the link itself.
+async fn write_doc_atomically(pb: &Path, content: &str) -> Result<(), String> {
+    let is_link = tokio::fs::symlink_metadata(pb)
+        .await
+        .is_ok_and(|m| m.file_type().is_symlink());
+    let target = if is_link {
+        tokio::fs::canonicalize(pb)
+            .await
+            .map_err(|e| format!("Failed to resolve link {}: {}", pb.display(), e))?
+    } else {
+        pb.to_path_buf()
+    };
+
+    // .mcp.json is also read-modify-written by session launch and the MCP
+    // sidebar under this per-directory lock; take it so neither loses edits.
+    let _guard = match (pb.file_name(), pb.parent()) {
+        (Some(name), Some(parent)) if name == ".mcp.json" => {
+            let key = strip_extended_length(&parent.to_string_lossy());
+            Some(dir_lock(Path::new(&key)).lock_owned().await)
+        }
+        _ => None,
+    };
+    atomic_write(&target, content).await
 }
 
 /// Check if CLAUDE.md exists at project root and optionally return its content.
@@ -254,7 +286,59 @@ pub async fn write_claude_md(project_path: String, content: String) -> Result<()
 
     let claude_md_path = canonical.join("CLAUDE.md");
 
-    tokio::fs::write(&claude_md_path, content)
+    write_doc_atomically(&claude_md_path, &content)
         .await
         .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn write_context_doc_replaces_content_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude").join("settings.json");
+        let path_str = path.to_string_lossy().into_owned();
+
+        write_context_doc(path_str.clone(), "{\"a\": 1, \"long\": true}".into())
+            .await
+            .unwrap();
+        // A shorter rewrite fully replaces the old content.
+        write_context_doc(path_str, "{}".into()).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["settings.json".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn write_context_doc_rejects_other_basenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evil.txt").to_string_lossy().into_owned();
+        assert!(write_context_doc(path, "x".into()).await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_context_doc_writes_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("AGENTS.md");
+        std::fs::write(&agents, "old").unwrap();
+        let claude = dir.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&agents, &claude).unwrap();
+
+        write_context_doc(claude.to_string_lossy().into_owned(), "new".into())
+            .await
+            .unwrap();
+
+        assert!(std::fs::symlink_metadata(&claude)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&agents).unwrap(), "new");
+    }
 }
