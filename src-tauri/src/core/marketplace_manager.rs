@@ -96,14 +96,10 @@ impl MarketplaceManager {
         format!("{:032x}", timestamp)
     }
 
-    /// Gets the current ISO8601 timestamp.
+    /// Gets the current timestamp as RFC 3339 (e.g. "2024-01-01T00:00:00Z"),
+    /// which the frontend can parse with `new Date(...)`.
     fn now_iso8601() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let secs = duration.as_secs();
-        // Simple ISO8601 format: "2024-01-01T00:00:00Z"
-        // This is a simplified implementation - in production, use chrono
-        format!("{}Z", secs)
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 
     // ========== Source Management ==========
@@ -208,9 +204,11 @@ impl MarketplaceManager {
         let url = Self::get_marketplace_json_url(&source.repository_url);
 
         // Fetch the marketplace.json
-        let response = reqwest::get(&url)
-            .await
-            .map_err(|e| MarketplaceError::NetworkError(e.to_string()))?;
+        let response = reqwest::get(&url).await.map_err(|e| {
+            let msg = e.to_string();
+            self.update_source_error(source_id, &msg);
+            MarketplaceError::NetworkError(msg)
+        })?;
 
         if !response.status().is_success() {
             let error_msg = format!("HTTP {}: {}", response.status(), url);
@@ -218,10 +216,11 @@ impl MarketplaceManager {
             return Err(MarketplaceError::FetchError(error_msg));
         }
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| MarketplaceError::NetworkError(e.to_string()))?;
+        let text = response.text().await.map_err(|e| {
+            let msg = e.to_string();
+            self.update_source_error(source_id, &msg);
+            MarketplaceError::NetworkError(msg)
+        })?;
 
         // Parse the catalog
         let catalog: MarketplaceCatalog = serde_json::from_str(&text).map_err(|e| {
@@ -1058,6 +1057,33 @@ mod tests {
             .find(|s| s.id == source.id)
             .expect("expected toggled source to exist");
         assert!(!toggled.is_enabled);
+    }
+
+    #[test]
+    fn now_iso8601_is_rfc3339_the_frontend_can_parse() {
+        let ts = MarketplaceManager::now_iso8601();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
+            .unwrap_or_else(|e| panic!("not RFC 3339: {ts}: {e}"));
+        assert!(ts.ends_with('Z'));
+        assert!(parsed.timestamp() > 1_700_000_000);
+    }
+
+    #[tokio::test]
+    async fn fetch_failure_is_recorded_as_last_error() {
+        let manager = MarketplaceManager::new();
+        let source = manager.add_source(
+            "Offline".to_string(),
+            "https://github.com/maestro-test-nonexistent-owner/nonexistent-repo".to_string(),
+            false,
+        );
+
+        // Whether the request fails at the network layer (offline) or comes
+        // back as an HTTP error, the source card must show why.
+        let result = manager.fetch_marketplace(&source.id).await;
+        assert!(result.is_err());
+        let after = manager.get_source(&source.id).expect("source exists");
+        assert!(after.last_error.is_some(), "last_error must be recorded");
+        assert!(after.last_fetched.is_none());
     }
 
     #[test]
