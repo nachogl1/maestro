@@ -28,8 +28,8 @@ use tokio::sync::{Mutex, MutexGuard};
 
 use crate::core::work_journal::{CandidateRetry, WorkJournal};
 use crate::core::work_journal_activity::{
-    activity_dir, add_candidates, list_candidates, validate_candidate, Candidate, CandidateSource,
-    NewCandidate,
+    activity_dir, add_candidates, cap_candidate_text, list_candidates, validate_candidate,
+    Candidate, CandidateSource, NewCandidate,
 };
 use crate::core::work_journal_collect::{collect_activity, ActivityItem};
 
@@ -105,6 +105,7 @@ remarks.\n\
 - HH:MM is when the activity happened (24-hour, from the activity line), not the time now.\n\
 - action is one short action in English, in the past tense, for example: Merged the PR \
 for the login fix\n\
+- Keep each line under 200 characters.\n\
 - source is the source tag of the activity line it came from: github, git, claude or \
 terminal.\n\
 - Do not repeat anything already on the page or in the suggested or rejected lines, even \
@@ -851,6 +852,12 @@ where
             continue;
         };
         matched += 1;
+        let Some(text) = cap_candidate_text(&candidate.text, candidate.source) else {
+            // Never logs the text: it could be a meeting-note excerpt.
+            log::debug!("Work journal: dropped an over-long meeting line for {date}");
+            continue;
+        };
+        let candidate = NewCandidate { text, ..candidate };
         if candidate.date != date {
             log::debug!("Work journal: dropped a meeting held on another date than {date}");
             continue;
@@ -2630,6 +2637,44 @@ mod tests {
         let prompt = build_prompt("2026-10-15", &[], "", &existing);
         assert!(prompt.contains("Meeting - Planning: picked the next issue | granola"));
         assert!(prompt.contains("Activity (HH:MM [source] project: text):\n(none)"));
+    }
+
+    #[test]
+    fn test_parse_reply_drops_over_long_meetings_and_cuts_other_long_lines() {
+        let excerpt = "the notes said ".repeat(20);
+        let reply = format!(
+            "Meeting - Planning: {excerpt}| granola\n\
+             2026-10-15T13:30:00Z - Meeting: Sync, {excerpt}| granola\n\
+             14:30 - Meeting: Sync, {excerpt}| granola\n\
+             09:05 - Fixed {excerpt}| git\n\
+             10:00 - Meeting: Short sync, kept the plan | granola"
+        );
+        let parsed = parse_reply_in(&UkLike, &reply, "2026-10-15", &[], true).unwrap();
+        assert_eq!(
+            parsed.len(),
+            2,
+            "all three long meetings are dropped: {parsed:?}"
+        );
+        assert_eq!(parsed[0].source, CandidateSource::Git);
+        assert!(
+            parsed[0].text.chars().count()
+                <= crate::core::work_journal_activity::MAX_CANDIDATE_CHARS
+        );
+        assert!(
+            parsed[0].text.ends_with("the notes\u{2026}"),
+            "cut at a word: {}",
+            parsed[0].text
+        );
+        assert_eq!(parsed[1].text, "Meeting: Short sync, kept the plan");
+        for candidate in &parsed {
+            assert_eq!(validate_candidate(candidate).as_ref().ok(), Some(candidate));
+        }
+        // Only long meetings: the reply was still in the format, so the date
+        // is done rather than retried (which would send the notes again).
+        let only_long = format!("Meeting - Planning: {excerpt}| granola");
+        assert!(parse_reply(&only_long, "2026-10-15", &[], true)
+            .unwrap()
+            .is_empty());
     }
 
     // --- run_with ---

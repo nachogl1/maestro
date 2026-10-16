@@ -308,6 +308,12 @@ Granola time) are folded in and linked in the Decision trace.
     calling them and ignoring the result.
   - No note text is written to Maestro logs or error messages. A failed
     Granola call logs only that it failed.
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+  candidate text is capped at 200 characters, both when a reply is read and
+  when a candidate is stored. A longer Granola line is dropped, not cut (a cut
+  note excerpt is still an excerpt); a longer line from any other source is
+  cut at a word and ends with "…". The prompt asks for lines under 200
+  characters.
 
 ### Layout
 

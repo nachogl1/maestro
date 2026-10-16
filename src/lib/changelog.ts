@@ -38,6 +38,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: quitting Maestro now saves what you just typed in the pane or the pop-out, including a page title still being edited, and closing the pop-out saves that title too.",
       "Work Journal: suggestion and report runs that time out, or are still running when you quit, no longer leave helper processes behind on Windows.",
       "Work Journal: two copies of Maestro running at once no longer lose each other's suggestions or terminal activity, and no longer mark the other copy's open terminals as closed.",
+      "Work Journal: suggestions are kept short, and a meeting suggestion that would copy a long piece of your notes is dropped.",
     ],
   },
   {
