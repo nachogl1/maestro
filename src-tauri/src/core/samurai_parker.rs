@@ -603,6 +603,7 @@ impl SamuraiParker {
                 reason: trigger.to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             };
             match self.schedule.arm(entry) {
                 Ok(()) => {
@@ -1444,6 +1445,7 @@ impl SamuraiParker {
             reason: "park".to_string(),
             launch: None,
             held: false,
+            deferred: false,
         };
         self.schedule.arm(entry)?;
         log::info!("samurai parker: resume timer armed for epic {epic} at {fire_at}");
@@ -2447,6 +2449,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -3472,6 +3475,7 @@ mod tests {
                 workflow: None,
             }),
             held: false,
+            deferred: false,
         };
         h.schedule.arm(launch).unwrap();
         h.parker.seed_pending_arm(
