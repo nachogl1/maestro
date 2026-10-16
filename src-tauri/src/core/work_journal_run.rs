@@ -297,12 +297,17 @@ where
     let Ok(day) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
         return String::new();
     };
-    // A window that misses the date (never expected) lists the whole date.
-    let (from, to) = meetings_window_on(tz, day, start, end)
-        .unwrap_or_else(|| (date.to_string(), date.to_string()));
+    // A window that misses the date (never expected) lists the whole date:
+    // a date-only end is that date's midnight and excluded, so the next date.
+    let (from, to) = meetings_window_on(tz, day, start, end).unwrap_or_else(|| {
+        let next = day.succ_opt().unwrap_or(day).format("%Y-%m-%d").to_string();
+        (date.to_string(), next)
+    });
     format!(
         "\n\nMeetings for this date: call mcp__granola__list_meetings with time_range: custom, \
-         custom_start: {from}, custom_end: {to}."
+         custom_start: {from}, custom_end: {to}. A meeting line starts with its meeting_at \
+         exactly as Granola gives it, not HH:MM: <meeting_at> - Meeting: <title>, <outcome> \
+         | granola"
     )
 }
 
@@ -655,7 +660,7 @@ where
 {
     if granola {
         if let Some(candidate) =
-            parse_untimed_meeting(line, date).or_else(|| parse_stamped_meeting(tz, line))
+            parse_untimed_meeting(line, date).or_else(|| parse_stamped_meeting(tz, line, date))
         {
             return Some(candidate);
         }
@@ -704,30 +709,52 @@ fn parse_untimed_meeting(line: &str, date: &str) -> Option<NewCandidate> {
 }
 
 /// A Granola `meeting_at` value as the model copied it: RFC 3339 with `Z` or
-/// an offset (a space instead of `T` too), or, without an offset, a time
-/// in `tz` (Granola reads offset-less times in the user's time zone).
+/// an offset (with or without seconds or the offset's colon, a space
+/// instead of `T` too), RFC 2822, or, without an offset, a time in `tz`
+/// (Granola reads offset-less times in the user's time zone).
 fn parse_meeting_at<Tz: TimeZone>(tz: &Tz, stamp: &str) -> Option<DateTime<Tz>> {
-    if let Ok(at) = DateTime::parse_from_rfc3339(stamp)
-        .or_else(|_| DateTime::parse_from_str(stamp, "%Y-%m-%d %H:%M:%S%.f%:z"))
-    {
+    let with_offset = DateTime::parse_from_rfc3339(stamp)
+        .ok()
+        .or_else(|| DateTime::parse_from_rfc2822(stamp).ok())
+        .or_else(|| {
+            [
+                "%Y-%m-%dT%H:%M:%S%.f%z",
+                "%Y-%m-%d %H:%M:%S%.f%z",
+                "%Y-%m-%dT%H:%M%z",
+                "%Y-%m-%d %H:%M%z",
+            ]
+            .iter()
+            .find_map(|format| DateTime::parse_from_str(stamp, format).ok())
+        });
+    if let Some(at) = with_offset {
         return Some(at.with_timezone(tz));
     }
     let naive = [
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
     ]
     .iter()
     .find_map(|format| chrono::NaiveDateTime::parse_from_str(stamp, format).ok())?;
     tz.from_local_datetime(&naive).earliest()
 }
 
+/// The longest `meeting_at` an unreadable stamp may be and still be kept
+/// as an untimed meeting (see [`parse_stamped_meeting`]).
+const MAX_MEETING_STAMP_CHARS: usize = 40;
+
 /// The meeting line `<meeting_at> - <text> | granola`: the model copies
 /// `meeting_at` as Granola gives it and Maestro, not the model, turns it
 /// into a local `HH:MM` in `tz`. The candidate's date is the meeting's
 /// local date, which [`parse_reply`] checks against the run's date (a
 /// meeting near midnight in another offset can fall on the next day).
-fn parse_stamped_meeting<Tz: TimeZone>(tz: &Tz, line: &str) -> Option<NewCandidate>
+///
+/// The real `meeting_at` format was never recorded, so a `Meeting: ...`
+/// line whose short stamp cannot be read (a date only, `Oct 15, 2026 2:30
+/// PM`) is kept as an untimed meeting on the run's `date` rather than
+/// dropped. A plain `HH:MM` stamp is left to [`parse_line`].
+fn parse_stamped_meeting<Tz: TimeZone>(tz: &Tz, line: &str, date: &str) -> Option<NewCandidate>
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -739,11 +766,28 @@ where
         return None;
     }
     let (stamp, text) = text.trim().split_once(" - ")?;
-    let at = parse_meeting_at(tz, stamp.trim())?;
+    let stamp = stamp.trim();
     let text = one_line(text);
     if text.is_empty() {
         return None;
     }
+    let Some(at) = parse_meeting_at(tz, stamp) else {
+        let untimed = text.to_lowercase().starts_with("meeting:")
+            && !stamp.is_empty()
+            && stamp.chars().count() <= MAX_MEETING_STAMP_CHARS
+            && !stamp.contains('|')
+            && chrono::NaiveTime::parse_from_str(stamp, "%H:%M").is_err();
+        if !untimed {
+            return None;
+        }
+        log::debug!("Work journal: kept a meeting with an unreadable meeting_at without a time");
+        return Some(NewCandidate {
+            date: date.to_string(),
+            time: None,
+            text,
+            source: CandidateSource::Granola,
+        });
+    };
     Some(NewCandidate {
         date: at.format("%Y-%m-%d").to_string(),
         time: Some(at.format("%H:%M").to_string()),
@@ -1819,12 +1863,12 @@ mod tests {
         let (start, end) = (utc("2026-10-24T08:00:00Z"), utc("2026-10-26T10:00:00Z"));
         assert!(
             granola_input_in(&UkLike, "2026-10-24", start, end).contains(
-                "custom_start: 2026-10-24T06:00:00+01:00, custom_end: 2026-10-25T00:00:00+01:00."
+                "custom_start: 2026-10-24T06:00:00+01:00, custom_end: 2026-10-25T00:00:00+01:00. "
             )
         );
         assert!(
             granola_input_in(&UkLike, "2026-10-26", start, end).contains(
-                "custom_start: 2026-10-26T00:00:00+00:00, custom_end: 2026-10-26T10:00:00+00:00."
+                "custom_start: 2026-10-26T00:00:00+00:00, custom_end: 2026-10-26T10:00:00+00:00. "
             )
         );
     }
@@ -1906,7 +1950,8 @@ mod tests {
             input,
             "\n\nMeetings for this date: call mcp__granola__list_meetings with time_range: \
              custom, custom_start: 2026-10-15T09:00:00+01:00, custom_end: \
-             2026-10-15T13:00:00+01:00."
+             2026-10-15T13:00:00+01:00. A meeting line starts with its meeting_at exactly as \
+             Granola gives it, not HH:MM: <meeting_at> - Meeting: <title>, <outcome> | granola"
         );
         // A window that misses the date lists the whole date.
         let missed = granola_input_in(
@@ -1915,7 +1960,7 @@ mod tests {
             utc("2026-10-15T11:00:00Z"),
             utc("2026-10-15T12:00:00Z"),
         );
-        assert!(missed.ends_with("custom_start: 2026-10-16, custom_end: 2026-10-16."));
+        assert!(missed.contains("custom_start: 2026-10-16, custom_end: 2026-10-17."));
     }
 
     // --- Granola: preflight ---
@@ -2276,11 +2321,52 @@ mod tests {
     fn test_parse_reply_reads_other_meeting_at_forms() {
         let reply = "2026-10-15 13:30:00+00:00 - Meeting: A, agreed | granola\n\
                      2026-10-15T10:00:00 - Meeting: B, agreed | granola\n\
-                     2026-10-15T11:20 - Meeting: C, agreed | granola";
+                     2026-10-15T11:20 - Meeting: C, agreed | granola\n\
+                     2026-10-15T13:30+00:00 - Meeting: D, agreed | granola\n\
+                     2026-10-15T13:30:00+0000 - Meeting: E, agreed | granola\n\
+                     2026-10-15 14:30 - Meeting: F, agreed | granola\n\
+                     Thu, 15 Oct 2026 13:30:00 +0000 - Meeting: G, agreed | granola";
         let parsed = parse_reply_in(&UkLike, reply, "2026-10-15", &[], true).unwrap();
         let times: Vec<Option<&str>> = parsed.iter().map(|c| c.time.as_deref()).collect();
         // With an offset it is converted; without one it is already local.
-        assert_eq!(times, vec![Some("14:30"), Some("10:00"), Some("11:20")]);
+        assert_eq!(
+            times,
+            vec![
+                Some("14:30"),
+                Some("10:00"),
+                Some("11:20"),
+                Some("14:30"),
+                Some("14:30"),
+                Some("14:30"),
+                Some("14:30")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_reply_keeps_a_meeting_with_an_unreadable_stamp_without_a_time() {
+        let reply = "2026-10-15 - Meeting: A, agreed | granola\n\
+                     Oct 15, 2026 2:30 PM - Meeting: B, agreed | granola";
+        let parsed = parse_reply_in(&UkLike, reply, "2026-10-15", &[], true).unwrap();
+        let got: Vec<(&str, Option<&str>, &str)> = parsed
+            .iter()
+            .map(|c| (c.date.as_str(), c.time.as_deref(), c.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("2026-10-15", None, "Meeting: A, agreed"),
+                ("2026-10-15", None, "Meeting: B, agreed"),
+            ]
+        );
+        for candidate in &parsed {
+            assert!(validate_candidate(candidate).is_ok());
+        }
+        // Only meeting lines, with a short stamp and the granola tag.
+        let strict = "Oct 15, 2026 2:30 PM - Fixed the bug | granola\n\
+                      Oct 15, 2026 2:30 PM - Meeting: B, agreed | git\n\
+                      a very long stamp that is clearly not a date at all - Meeting: C | granola";
+        assert!(parse_reply_in(&UkLike, strict, "2026-10-15", &[], true).is_err());
     }
 
     #[test]
@@ -2296,7 +2382,7 @@ mod tests {
 
     #[test]
     fn test_parse_reply_keeps_stamped_meeting_lines_strict() {
-        let reply = "Oct 15 2:30 PM - Meeting: A, agreed | granola\n\
+        let reply = "Oct 15 2:30 PM - Standup, agreed | granola\n\
                      2026-10-15T13:30:00Z - Meeting: B, agreed | git\n\
                      2026-10-15T13:30:00Z -  | granola\n\
                      2026-10-15T13:30:00Z Meeting: C, agreed | granola";

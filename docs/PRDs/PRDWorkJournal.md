@@ -268,10 +268,16 @@ Granola time) are folded in and linked in the Decision trace.
   (`<meeting_at> - Meeting: <title>, <outcome> | granola`) and Maestro turns
   it into local `HH:MM`. A meeting whose local date is not the run's date
   (one near midnight in another offset) is dropped there; that date's run
-  has it. `meeting_at` is read as ISO 8601 with `Z` or an offset; without an
-  offset it is taken as local time (Granola's own rule for its inputs); its
-  exact format was not seen, so any other form drops the line. A plain
-  `HH:MM - Meeting: ... | granola` line is still accepted as before.
+  has it. `meeting_at` is read as ISO 8601 with `Z` or an offset (seconds and
+  the offset's colon optional) or RFC 2822; without an offset it is taken as
+  local time (Granola's own rule for its inputs). "Local" means this PC's
+  time zone, which assumes Granola's stored time zone matches it. Its exact
+  format was not seen, so a `Meeting: ...` line whose short stamp cannot be
+  read (a date only, `Oct 15, 2026 2:30 PM`) is kept without a time on the
+  run's date instead of being dropped. A plain
+  `HH:MM - Meeting: ... | granola` line is still accepted as before. When
+  the run's window misses the date, the whole date is listed
+  (`custom_end` is the next date: a date-only end is excluded).
 - **Proven on Windows (hands-on test, 2026-10-14):** after one interactive
   `claude mcp login granola`, a separate headless run from the temp folder
   reused the sign-in with no prompt; `--tools ""` plus `--allowedTools` exposed
