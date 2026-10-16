@@ -2277,9 +2277,11 @@ function DraggablePane({
         const elem = document.elementFromPoint(x, y) as HTMLElement | null;
         const el = elem?.closest<HTMLElement>("[data-slot-id]") ?? null;
         if (eagleMode) {
-          if (el && el.dataset.slotId === slotId) return null;
-          // Another launched tile (it carries grid + session ids): swap.
-          if (el?.dataset.gridId && el.dataset.sessionId) {
+          // Another launched tile (it carries grid + session ids): swap. The
+          // pointer over the dragged tile itself (a short move) falls through
+          // to the free-cell placement below.
+          const self = el !== null && el.dataset.slotId === slotId;
+          if (!self && el?.dataset.gridId && el.dataset.sessionId) {
             return {
               kind: "pane",
               el,

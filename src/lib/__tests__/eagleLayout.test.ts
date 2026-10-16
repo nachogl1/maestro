@@ -92,6 +92,20 @@ describe("layoutEagleTiles", () => {
     expect(layout.reset).toBe(false);
   });
 
+  it("places a new session in the hole without moving later projects' stored tiles", () => {
+    const stored: Record<number, TileRect> = {
+      1: { x: 0, y: 0, w: 19, h: 30 },
+      2: { x: 30, y: 0, w: 30, h: 30 },
+      3: { x: 0, y: 30, w: 30, h: 30 },
+      4: { x: 30, y: 30, w: 30, h: 30 },
+    };
+    // Session 5 belongs to the first project, so it comes before 3 and 4 in the order.
+    const layout = layoutEagleTiles({ sessionIds: [1, 2, 5, 3, 4], pendingByTab: [], stored });
+    expect(layout.tiles.get(3)).toEqual(stored[3]);
+    expect(layout.tiles.get(4)).toEqual(stored[4]);
+    expect(layout.tiles.get(5)).toEqual({ x: 19, y: 0, w: 11, h: 30 });
+  });
+
   it("re-places a stored rect that collides with an earlier tile", () => {
     const stored: Record<number, TileRect> = {
       1: { x: 0, y: 0, w: 30, h: U },

@@ -270,8 +270,27 @@ export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
     return true;
   };
 
+  // Two passes: every stored rect that still fits is placed first, so a new
+  // session earlier in the project order cannot push a later project's
+  // tiles out of their places; then the rest go into the holes left.
+  const unplaced: number[] = [];
   for (const id of sessionIds) {
-    if (!place(id, stored[id])) return packed(sessionIds, pendingByTab, true, units);
+    const wanted = stored[id];
+    if (
+      wanted &&
+      fitsFree(
+        wanted,
+        placed.map((p) => p.rect),
+        units,
+      )
+    ) {
+      placed.push({ sessionId: id, rect: wanted });
+    } else {
+      unplaced.push(id);
+    }
+  }
+  for (const id of unplaced) {
+    if (!place(id, undefined)) return packed(sessionIds, pendingByTab, true, units);
   }
   const pending = new Map<string, TileRect[]>();
   for (const [tabId, count] of pendingByTab) {
