@@ -58,10 +58,6 @@ interface TerminalViewProps {
   projectColor?: string;
   /** Reserve header space for the pane's drag handle overlay. */
   hasMoveHandle?: boolean;
-  /** Eagle view: cycle the tile size (see TerminalHeader). */
-  onCycleTileSize?: () => void;
-  /** Eagle view: current tile size label, e.g. "2×1". */
-  tileSizeLabel?: string;
   /** Whether header tooltips advertise keyboard shortcuts (off in eagle view). */
   showShortcutHints?: boolean;
 }
@@ -148,8 +144,6 @@ export const TerminalView = memo(function TerminalView({
   projectLabel,
   projectColor,
   hasMoveHandle = false,
-  onCycleTileSize,
-  tileSizeLabel,
   showShortcutHints = true,
 }: TerminalViewProps) {
   const sessionData = useSessionStore(
@@ -428,8 +422,6 @@ export const TerminalView = memo(function TerminalView({
         projectLabel={projectLabel}
         projectColor={projectColor}
         hasMoveHandle={hasMoveHandle}
-        onCycleTileSize={onCycleTileSize}
-        tileSizeLabel={tileSizeLabel}
         isFlagged={isFlagged}
         hasAttention={hasAttention}
         onToggleFlag={handleToggleFlag}
