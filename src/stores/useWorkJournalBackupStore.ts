@@ -298,7 +298,7 @@ async function replaceWholeJournal(
     await useWorkJournalStore.getState().beginReplace();
     const reply = await run();
     useWorkJournalStore.getState().replaceJournal(reply.journal);
-    // The candidate run's interval, model and (cleared) last run time come
+    // The candidate run's interval, model and (kept) last run time come
     // from the restored settings too.
     useWorkJournalCandidateRunStore.getState().applySettings(reply.journal);
     useWorkJournalReportStore.getState().applySettings(reply.journal);

@@ -6,6 +6,7 @@ import {
   defaultWorkJournalTitle,
   isWeekend,
   localDateString,
+  shiftJournalDate,
 } from "@/lib/workJournalDates";
 
 /** How a page came to exist (backend `PageOrigin`). */
@@ -86,9 +87,9 @@ interface WorkJournalState {
    */
   ensurePages: (today: string) => Promise<void>;
   selectDate: (date: string) => void;
-  /** Moves to the nearest existing page before the viewed date. */
+  /** Moves one calendar day back from the viewed date, page or not. */
   goPrev: () => void;
-  /** Moves to the nearest existing page after the viewed date. */
+  /** Moves one calendar day forward from the viewed date, page or not. */
   goNext: () => void;
   /** Creates a manual page for `date` with the default title and shows it. */
   createPage: (date: string) => Promise<void>;
@@ -757,19 +758,13 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
   selectDate: (date: string) => set({ viewedDate: date }),
 
   goPrev: () => {
-    const { pages, viewedDate } = get();
-    if (!viewedDate) return;
-    const prev = sortedDates(pages)
-      .filter((d) => d < viewedDate)
-      .pop();
-    if (prev) set({ viewedDate: prev });
+    const { viewedDate } = get();
+    if (viewedDate) set({ viewedDate: shiftJournalDate(viewedDate, -1) });
   },
 
   goNext: () => {
-    const { pages, viewedDate } = get();
-    if (!viewedDate) return;
-    const next = sortedDates(pages).find((d) => d > viewedDate);
-    if (next) set({ viewedDate: next });
+    const { viewedDate } = get();
+    if (viewedDate) set({ viewedDate: shiftJournalDate(viewedDate, 1) });
   },
 
   createPage: async (date: string) => {
