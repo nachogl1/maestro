@@ -200,16 +200,22 @@ fn journal_path() -> PathBuf {
     work_journal::journal_path(&work_journal::work_journal_dir())
 }
 
+/// Runs `op` on `path` while holding [`JOURNAL_LOCK`]. Blocking.
+fn run_locked<T>(
+    path: PathBuf,
+    op: impl FnOnce(PathBuf) -> WorkJournalResult<T>,
+) -> Result<T, String> {
+    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    op(path).map_err(|e| e.to_string())
+}
+
 /// Runs `op` on a blocking thread while holding [`JOURNAL_LOCK`].
 async fn with_journal<T: Send + 'static>(
     op: impl FnOnce(PathBuf) -> WorkJournalResult<T> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::task::spawn_blocking(move || {
-        let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        op(journal_path()).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Work journal task failed: {e}"))?
+    tokio::task::spawn_blocking(move || run_locked(journal_path(), op))
+        .await
+        .map_err(|e| format!("Work journal task failed: {e}"))?
 }
 
 /// Loads the journal; an empty one when no file exists yet (nothing written).
@@ -1350,6 +1356,48 @@ mod tests {
         assert!(WorkJournalError::RestoreInProgress
             .to_string()
             .starts_with("RESTORE_IN_PROGRESS: "));
+    }
+
+    #[test]
+    fn test_journal_lock_serialises_concurrent_page_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-journal.json");
+        let first_days = ["2026-01-01", "2027-01-01"];
+        let threads: Vec<_> = first_days
+            .iter()
+            .map(|first| {
+                let path = path.clone();
+                let first = chrono::NaiveDate::parse_from_str(first, "%Y-%m-%d").unwrap();
+                std::thread::spawn(move || {
+                    for offset in 0..50 {
+                        let date = (first + chrono::Days::new(offset)).to_string();
+                        // The locked load-change-save cycle `with_journal` runs.
+                        run_locked(path.clone(), |p| {
+                            work_journal::modify(&p, |j| {
+                                let body = serde_json::json!({"type": "doc"});
+                                work_journal::create_page(
+                                    j,
+                                    &date,
+                                    date.clone(),
+                                    body,
+                                    PageOrigin::Manual,
+                                )
+                            })
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let journal = work_journal::parse_journal(&text).unwrap();
+        assert_eq!(journal.pages.len(), 100, "no create lost to another");
+        let revs: HashSet<u64> = journal.pages.values().map(|p| p.rev).collect();
+        assert_eq!(revs.len(), 100, "every page got its own rev");
     }
 
     #[test]

@@ -278,6 +278,36 @@ describe("WorkJournalEditor paste", () => {
     ]);
   });
 
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "vbscript:msgbox(1)",
+  ])("drops a pasted link to %s, keeping its text", async (href) => {
+    render(<WorkJournalEditor date="2026-10-15" initialBody={EMPTY_PAGE_BODY} />);
+
+    act(() => {
+      pageEditor().view.pasteHTML(`<p>Before <a href="${href}">x</a> after</p>`);
+    });
+
+    const saved = JSON.stringify(await lastSavedBody());
+    expect(saved).toContain("Before x after");
+    expect(saved).not.toContain('"type":"link"');
+    expect(saved).not.toContain(href.slice(0, href.indexOf(":") + 1));
+    expect(screen.getByLabelText("Work Journal page").querySelector("a")).toBeNull();
+  });
+
+  it("keeps a pasted https link", async () => {
+    render(<WorkJournalEditor date="2026-10-15" initialBody={EMPTY_PAGE_BODY} />);
+
+    act(() => {
+      pageEditor().view.pasteHTML('<p><a href="https://example.com/">safe</a></p>');
+    });
+
+    const saved = JSON.stringify(await lastSavedBody());
+    expect(saved).toContain('"type":"link"');
+    expect(saved).toContain("https://example.com/");
+  });
+
   it("strips only the colour declarations from a style attribute", () => {
     expect(
       stripForeignPastedColors(
