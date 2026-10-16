@@ -322,7 +322,8 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   it shows "The page for <day> was deleted in the other window, so your last
   change to it was not saved." instead of the raw backend error. Text still
   inside the 400 ms typing pause when the page is deleted elsewhere is dropped
-  without a notice.
+  without a notice, and so is a failed save whose page is deleted while that
+  window's Work Journal is closed (the notice only shows while it is open).
 
 ### Storage and backup
 
