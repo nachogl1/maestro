@@ -328,9 +328,11 @@ function fieldsJson(key: string, page: WorkJournalPage | undefined): string {
  * of a page that is gone are dropped, and a failed field the other window
  * changed since becomes a conflict. `tick` is `saveTick` when the read
  * started: a date saved here since then may be older in the reply than on
- * disk, so it keeps what the save put there and is not checked.
+ * disk, so it keeps what the save put there and is not checked. Returns the
+ * sorted dates whose failed saves were dropped with their page.
  */
-function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number): void {
+function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number): string[] {
+  const lost = new Set<string>();
   for (const date of Object.keys(diskPages)) if (!incoming[date]) forgetRevs(date);
   for (const page of Object.values(incoming)) rememberRevCopy(page);
   const savedSince = (date: string): boolean => (lastLocalSave.get(date) ?? 0) > tick;
@@ -340,6 +342,7 @@ function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number
     const page = incoming[date];
     if (!page) {
       forgetFailedSave(key);
+      lost.add(date);
       continue;
     }
     // A failure whose disk text was never read here cannot be checked, so
@@ -354,6 +357,7 @@ function absorbDiskPages(incoming: Record<string, WorkJournalPage>, tick: number
   }
   diskPages = next;
   publishFailedSaves();
+  return [...lost].sort();
 }
 
 /** The sorted dates of some failed-save keys. */
@@ -614,12 +618,6 @@ export function workJournalPageDeletedNotice(date: string): string {
   return `The page for ${defaultWorkJournalTitle(date)} was deleted in the other window, so your last change to it was not saved.`;
 }
 
-/**
- * The page whose failed save put the shown `error` there, so the error goes
- * once that page is gone.
- */
-let pageError: { date: string; message: string } | null = null;
-
 /** An error for the user to read: without the restore refusal's code. */
 function displayError(error: unknown): string {
   const message = errorMessage(error);
@@ -710,7 +708,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       }
       // Pages deleted in the other window take their failed saves along; a
       // field it changed since a failed save here is no longer retried.
-      absorbDiskPages(journal.pages, tick);
+      const lost = absorbDiskPages(journal.pages, tick);
       set((s) => {
         const pages = mergePages(s.pages, journal.pages);
         // A save made here after the read started is newer than the reply.
@@ -720,10 +718,9 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         // The viewed page was deleted in the other window: show the nearest
         // one, as a delete here does.
         const viewed = s.viewedDate;
-        // A save error of a page that is gone no longer applies.
-        const stale = pageError && !pages[pageError.date] && s.error === pageError.message;
-        const error = stale ? { error: null } : {};
-        if (stale) pageError = null;
+        // Unsaved text went with a page deleted there: say so, in place of
+        // that page's save error.
+        const error = lost.length > 0 ? { error: workJournalPageDeletedNotice(lost[0]) } : {};
         if (viewed && s.pages[viewed] && !pages[viewed]) {
           return { pages, viewedDate: nearestPageDate(pages, viewed) ?? viewed, ...error };
         }
@@ -953,8 +950,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
           if (get().replacing) return;
         } else {
           console.error("Failed to save the Work Journal page:", error);
-          pageError = { date, message: errorMessage(error) };
-          set({ error: pageError.message });
+          set({ error: errorMessage(error) });
         }
         publishFailedSaves();
         scheduleRetry();

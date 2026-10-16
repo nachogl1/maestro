@@ -317,10 +317,12 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   was.
 - Decided during the 2026-10-16 audit fixes, flagged for the user to confirm: when
   one window deletes a page while the other still has an unsaved change to it,
-  that change is dropped with the page (it is not kept or retried), and the
-  other window shows "The page for <day> was deleted in the other window, so
-  your last change to it was not saved." instead of the raw backend error. A
-  save error shown for a page is cleared once that page is deleted elsewhere.
+  that change is dropped with the page (it is not kept or retried). When the
+  other window's save of that change was already sent (or had failed before),
+  it shows "The page for <day> was deleted in the other window, so your last
+  change to it was not saved." instead of the raw backend error. Text still
+  inside the 400 ms typing pause when the page is deleted elsewhere is dropped
+  without a notice.
 
 ### Storage and backup
 

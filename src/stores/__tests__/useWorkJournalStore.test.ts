@@ -718,7 +718,23 @@ describe("useWorkJournalStore failed-save retries", () => {
     expect(useWorkJournalStore.getState().error).toBe(workJournalPageDeletedNotice(DATE));
   });
 
-  it("a save error goes once the other window deletes its page; other errors stay", async () => {
+  it("the view stays put when the other window deleted a page it is not showing", async () => {
+    disk = journal([page("2026-10-13"), page(DATE)]);
+    failing = false;
+    await useWorkJournalStore.getState().load();
+    useWorkJournalStore.setState({ viewedDate: "2026-10-13" });
+    delete disk.pages[DATE];
+
+    await useWorkJournalStore.getState().updatePage(DATE, { body: body("typed") });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const state = useWorkJournalStore.getState();
+    expect(state.error).toBe(workJournalPageDeletedNotice(DATE));
+    expect(state.pages[DATE]).toBeUndefined();
+    expect(state.viewedDate).toBe("2026-10-13");
+  });
+
+  it("a save error stays while its page is there; other errors survive a delete elsewhere", async () => {
     disk = journal([page("2026-10-13"), page(DATE)]);
     await failSave("unsaved");
     expect(useWorkJournalStore.getState().error).toBe("disk full");
@@ -727,20 +743,21 @@ describe("useWorkJournalStore failed-save retries", () => {
     await useWorkJournalStore.getState().sync(false);
     expect(useWorkJournalStore.getState().error).toBe("disk full");
 
-    // An error that is not about a page that went away stays too.
+    // A deleted page with nothing unsaved leaves an unrelated error alone.
     useWorkJournalStore.setState({ error: "Backup failed" });
-    delete disk.pages[DATE];
+    delete disk.pages["2026-10-13"];
     await useWorkJournalStore.getState().sync(false);
     expect(useWorkJournalStore.getState().error).toBe("Backup failed");
   });
 
-  it("a page's save error is cleared when the other window deletes that page", async () => {
+  it("a page's save error becomes the deleted notice when the other window deletes that page", async () => {
     disk = journal([page("2026-10-13"), page(DATE)]);
     await failSave("unsaved");
+    expect(useWorkJournalStore.getState().error).toBe("disk full");
     delete disk.pages[DATE];
 
     await useWorkJournalStore.getState().sync(false);
-    expect(useWorkJournalStore.getState().error).toBeNull();
+    expect(useWorkJournalStore.getState().error).toBe(workJournalPageDeletedNotice(DATE));
     expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(saves()).toHaveLength(1);
