@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { normalizePath } from "@/lib/path";
 import type { IssueInfo, PullRequestInfo } from "@/stores/useGitHubStore";
 
 // --- Types (mirror src-tauri/src/github/watchdog.rs) ---
@@ -126,8 +127,11 @@ export function watchedProjectsFromTabs(
   const projects: Array<{ name: string; repoPath: string }> = [];
   for (const tab of tabs) {
     const repoPath = tab.selectedRepoPath ?? tab.projectPath;
-    if (seen.has(repoPath)) continue;
-    seen.add(repoPath);
+    // Normalized key: the same repo can be open under two spellings
+    // (e.g. a CLI-opened \\?\ path), and must still be polled once.
+    const key = normalizePath(repoPath);
+    if (seen.has(key)) continue;
+    seen.add(key);
     projects.push({ name: tab.name, repoPath });
   }
   return projects;
