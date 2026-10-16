@@ -16,7 +16,7 @@
 //! the outside world through [`RunSources`], so tests use fakes and never
 //! start the real `claude` CLI.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -1038,7 +1038,81 @@ pub(crate) async fn run_process(
     quote_output: bool,
 ) -> Result<String, String> {
     let mut child = spawn_process(program, args)?;
+    let _running = child.id().map(|pid| RUNNING_RUNS.register(pid));
     exchange(&mut child, input, limit, quote_output).await
+}
+
+/// The process ids of the `claude` runs still going, so the app's quit path
+/// can end their whole process trees ([`kill_running_runs`]).
+static RUNNING_RUNS: RunRegistry = RunRegistry::new();
+
+/// A set of running process ids; a run is in it from spawn to exit.
+struct RunRegistry(std::sync::Mutex<BTreeSet<u32>>);
+
+impl RunRegistry {
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(BTreeSet::new()))
+    }
+
+    fn set(&self) -> std::sync::MutexGuard<'_, BTreeSet<u32>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Adds `pid` until the returned guard is dropped.
+    fn register(&self, pid: u32) -> Registered<'_> {
+        self.set().insert(pid);
+        Registered {
+            registry: self,
+            pid,
+        }
+    }
+
+    /// Takes every id out, so each tree is killed at most once.
+    fn drain(&self) -> Vec<u32> {
+        std::mem::take(&mut *self.set()).into_iter().collect()
+    }
+}
+
+/// Removes its process id from the registry when the run ends.
+struct Registered<'a> {
+    registry: &'a RunRegistry,
+    pid: u32,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        self.registry.set().remove(&self.pid);
+    }
+}
+
+/// Ends the process tree of every run still going. Called from the app's
+/// quit path: at exit `kill_on_drop` would end `claude` alone, at best, and
+/// leave its children (MCP servers, node helpers) running.
+pub async fn kill_running_runs() {
+    for pid in RUNNING_RUNS.drain() {
+        kill_process_tree(pid).await;
+    }
+}
+
+/// Ends `pid` and every process it started: `taskkill /T /F` with a hidden
+/// console on Windows (the `process_manager` precedent). Elsewhere nothing
+/// more is done; the caller's own kill of the child stays the whole job.
+async fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use crate::core::windows_process::TokioCommandExt;
+        let mut cmd = tokio::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
+            .hide_console_window()
+            .kill_on_drop(true);
+        match tokio::time::timeout(KILL_WAIT, cmd.output()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => log::warn!("Work journal: could not run taskkill for {pid}: {e}"),
+            Err(_) => log::warn!("Work journal: taskkill for {pid} did not finish"),
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 /// Starts `program` from the temp dir with piped stdio, a hidden console on
@@ -1063,15 +1137,30 @@ fn spawn_process(program: &str, args: &[String]) -> Result<Child, String> {
 /// Sends `input` to `child`, reads its output and waits for its exit, all
 /// under ONE `timeout`: a child that never reads stdin (a pipe holds only a
 /// few KB) cannot hold the run (and its one-run lock) past `limit`. On
-/// timeout the child is killed here and reaped before returning. A failed
-/// exit's error quotes the start of stderr (or stdout) only when
-/// `quote_output` is set.
+/// timeout the child's whole process tree is ended (on Windows), then the
+/// child is killed and reaped before returning. A failed exit's error quotes
+/// the start of stderr (or stdout) only when `quote_output` is set.
 async fn exchange(
     child: &mut Child,
     input: &str,
     limit: Duration,
     quote_output: bool,
 ) -> Result<String, String> {
+    exchange_with(child, input, limit, quote_output, kill_process_tree).await
+}
+
+/// [`exchange`] with the tree kill passed in, so a test can see it called.
+async fn exchange_with<K, F>(
+    child: &mut Child,
+    input: &str,
+    limit: Duration,
+    quote_output: bool,
+    kill_tree: K,
+) -> Result<String, String>
+where
+    K: FnOnce(u32) -> F,
+    F: std::future::Future<Output = ()>,
+{
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1091,6 +1180,11 @@ async fn exchange(
     })
     .await;
     let Ok((sent, stdout, stderr, status)) = timed else {
+        // The tree first: it can only be walked while the child is alive, and
+        // the child's own children would outlive a kill of the child alone.
+        if let Some(pid) = child.id() {
+            kill_tree(pid).await;
+        }
         let _ = child.start_kill();
         let _ = tokio::time::timeout(KILL_WAIT, child.wait()).await;
         return Err(format!("{TIMEOUT_ERROR} {}s", limit.as_secs()));
@@ -3063,15 +3157,39 @@ mod tests {
         let input = "x".repeat(4 * 1024 * 1024);
         let started = std::time::Instant::now();
         let mut child = spawn_process(program, &args).unwrap();
-        let result = exchange(&mut child, &input, Duration::from_secs(1), true).await;
+        let pid = child.id().unwrap();
+        let killed = StdMutex::new(Vec::new());
+        let kill_tree = |pid: u32| {
+            killed.lock().unwrap().push(pid);
+            std::future::ready(())
+        };
+        let result =
+            exchange_with(&mut child, &input, Duration::from_secs(1), true, kill_tree).await;
         let err = result.unwrap_err();
         assert!(err.contains("did not answer within 1s"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(15));
+        // The whole tree was asked to go, once, for the child's own id.
+        assert_eq!(*killed.lock().unwrap(), vec![pid]);
         // The child was killed and reaped, not left running.
         assert!(
             child.try_wait().unwrap().is_some(),
             "the child is still running after the timeout"
         );
+    }
+
+    #[test]
+    fn test_run_registry_holds_a_run_until_it_ends_and_drains_once() {
+        let registry = RunRegistry::new();
+        let first = registry.register(10);
+        let second = registry.register(20);
+        drop(first);
+        // An ended run is gone; a running one is drained exactly once.
+        assert_eq!(registry.drain(), vec![20]);
+        assert!(registry.drain().is_empty());
+        // Ending a run after the drain leaves nothing behind.
+        drop(second);
+        let _third = registry.register(30);
+        assert_eq!(registry.drain(), vec![30]);
     }
 
     #[tokio::test]

@@ -220,6 +220,7 @@ pub fn run() {
                     }
                     let win = window.clone();
                     tauri::async_runtime::spawn(async move {
+                        crate::core::work_journal_run::kill_running_runs().await;
                         crate::core::work_journal_quit::flush_before_quit(win.app_handle()).await;
                         if let Err(e) = win.destroy() {
                             log::error!("Failed to destroy window during quit: {e}");
@@ -256,6 +257,8 @@ pub fn run() {
                             }
                             // Work journal: record the close before the app goes.
                             crate::core::work_journal_activity::close_all_terminals().await;
+                            // ...end its suggestion runs with their helper processes...
+                            crate::core::work_journal_run::kill_running_runs().await;
                             // ...and save the text still waiting in its windows.
                             crate::core::work_journal_quit::flush_before_quit(win.app_handle())
                                 .await;

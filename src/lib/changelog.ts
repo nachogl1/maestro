@@ -35,6 +35,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: meeting suggestions from Granola now show the right local time, and a meeting that fell on the next day in your time zone no longer lands on the wrong day.",
       "Work Journal: Settings now refuses a model name that cannot work as soon as you enter it, instead of the suggestions or report run failing hours later.",
       "Work Journal: quitting Maestro now saves what you just typed in the pane or the pop-out, including a page title still being edited, and closing the pop-out saves that title too.",
+      "Work Journal: suggestion and report runs that time out, or are still running when you quit, no longer leave helper processes behind on Windows.",
     ],
   },
   {
