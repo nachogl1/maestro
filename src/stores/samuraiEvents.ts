@@ -53,9 +53,11 @@ const BREAKER_PARK_LABEL = "Circuit breaker parked this run — resume or abando
 
 let samuraiToastSeq = 0;
 
-/** Identity of a park across schedule events (the list re-emits in full). */
+/** Identity of a park across schedule events (the list re-emits in full).
+ *  The backend keeps one timer per (project, epic), so the fire time is NOT
+ *  part of it: a deferral re-arm moves the same park (audit 2026-10-15 #7). */
 function parkAlertKey(entry: SamuraiScheduleEntry): string {
-  return `${normalizePath(entry.project_path)}|${entry.epic}|${entry.fire_at}`;
+  return `${normalizePath(entry.project_path)}|${entry.epic}`;
 }
 
 /** Last path segment — the name the tab strip and the toast kicker use. */
@@ -197,7 +199,7 @@ function applySamuraiAllowanceEvent(payload: SamuraiAllowanceEventPayload): void
   const label = crossing ? allowanceCrossingLabel(payload) : "";
   let announced = false;
   useSessionStore.setState((state) => {
-    const flagged = state.sessions
+    const supervised = state.sessions
       .filter((s) => {
         const info = state.samuraiBySessionId[s.id];
         return (
@@ -206,14 +208,19 @@ function applySamuraiAllowanceEvent(payload: SamuraiAllowanceEventPayload): void
           samePath(s.project_path, info.project)
         );
       })
-      .map((s) => s.id)
-      .filter((id) => !state.attentionSessionIds.includes(id));
+      .map((s) => s.id);
+    const flagged = supervised.filter((id) => !state.attentionSessionIds.includes(id));
     if (flagged.length > 0) {
       return { attentionSessionIds: [...state.attentionSessionIds, ...flagged] };
     }
-    // No-op guard: nothing supervised (or all already flagged) — don't
-    // replace the array and re-render subscribers. The account-wide
-    // announcement below is the one thing that still has to happen.
+    // Audit 2026-10-15 #53: every live supervised session is ALREADY badged
+    // (the soft crossing, then the hard one minutes later). The badges are
+    // the surface and the ALERT rows sit under those runs — announcing the
+    // account-wide card here pointed the user at an empty one.
+    if (supervised.length > 0) return state;
+    // No-op guard: nothing supervised — don't replace the array and
+    // re-render subscribers. The account-wide announcement below is the one
+    // thing that still has to happen.
     if (!notify) return state;
     announced = true;
     samuraiToastSeq += 1;
@@ -426,6 +433,15 @@ let samuraiScheduleEventApplied = false;
 let samuraiParkBaselineApplied = false;
 
 /**
+ * Acknowledged flags of park alerts whose timer left the list (audit
+ * 2026-10-15 #7). A fired timer drops out while its resume spawn is in
+ * flight; when the spawn is never taken the backend re-arms the SAME park as
+ * a `deferred` entry minutes later, and this is what lets it come back with
+ * the flag the user already gave it. Reset with the baseline.
+ */
+const vanishedParkAcks = new Map<string, boolean>();
+
+/**
  * Folds a full timer list into the park alerts: new parks raise the loud
  * surfaces, known ones keep their acknowledged flag, and vanished ones are
  * dropped — a fired or cancelled timer must not leave a "parked" marker.
@@ -433,8 +449,9 @@ let samuraiParkBaselineApplied = false;
  * The alerts ride the SCHEDULE rather than the `PARKED` supervisor event
  * because only the timer carries the resume time, and a park announced
  * without one is exactly the unreadable "parked, back at 09:05" the
- * park-time formatters exist to prevent. A park that arms no timer at all is
- * a circuit-breaker trip, which already comes through the run-fatal path.
+ * park-time formatters exist to prevent. A park that arms no timer at all —
+ * a circuit-breaker trip, or the `gh_auth_lost` sweep that parks every run —
+ * is announced by its ALERT row through the run-fatal path instead.
  *
  * `isParkEntry` gates the list: scheduled launches (issue #129) share it and
  * would otherwise announce a park for a run that does not exist yet.
@@ -448,7 +465,20 @@ function applySamuraiParkAlerts(entries: SamuraiScheduleEntry[]): void {
   const samuraiParkAlerts = entries.filter(isParkEntry).map((entry) => {
     const key = parkAlertKey(entry);
     const existing = known.get(key);
-    if (existing) return existing;
+    if (existing && existing.fireAt === entry.fire_at) return existing;
+    // Audit 2026-10-15 #7: a deferral re-arm is the same park pushed out —
+    // move its resume time in place, keep `acknowledged`, announce nothing.
+    // Without this every ~10-25 min lap of a deferred resume re-raised the
+    // "Samurai parked" toast and OS notification.
+    if (entry.deferred === true) {
+      return {
+        key,
+        project: entry.project_path,
+        epic: entry.epic,
+        fireAt: entry.fire_at,
+        acknowledged: existing?.acknowledged ?? vanishedParkAcks.get(key) ?? false,
+      };
+    }
     const alert: SamuraiParkAlert = {
       key,
       project: entry.project_path,
@@ -459,6 +489,11 @@ function applySamuraiParkAlerts(entries: SamuraiScheduleEntry[]): void {
     fresh.push(alert);
     return alert;
   });
+  const kept = new Set(samuraiParkAlerts.map((a) => a.key));
+  for (const alert of known.values()) {
+    if (!kept.has(alert.key)) vanishedParkAcks.set(alert.key, alert.acknowledged);
+  }
+  for (const key of kept) vanishedParkAcks.delete(key);
 
   const notify =
     announce && fresh.length > 0 && useGitHubWatchdogStore.getState().notificationsEnabled;
@@ -707,6 +742,7 @@ export async function initSamuraiSupervisorListener(): Promise<void> {
   // live schedule event of THIS lifetime lands.
   samuraiScheduleEventApplied = false;
   samuraiParkBaselineApplied = false;
+  vanishedParkAcks.clear();
   samuraiStarting = Promise.all([
     listen<SamuraiSupervisorEvent>("samurai-supervisor-event", (event) => {
       applySamuraiSupervisorEvent(event.payload);

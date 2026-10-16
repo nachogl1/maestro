@@ -417,7 +417,7 @@ impl Git {
         let branch = match branch_output {
             Ok(o) => Some(o.trimmed().to_string()),
             Err(GitError::CommandFailed { ref stderr, .. })
-                if stderr.contains("not a symbolic reference") =>
+                if stderr.contains("not a symbolic ref") =>
             {
                 None // Detached HEAD
             }
@@ -460,8 +460,9 @@ impl Git {
 
     /// Returns up to `max_count` commits in topological order.
     ///
-    /// Parses a pipe-delimited `git log` format with 7 fields. Lines with fewer
-    /// than 7 fields are silently skipped (e.g., malformed or empty repos).
+    /// Parses a unit-separator (`\x1f`) delimited `git log` format with 7
+    /// fields (`|` is legal in author names, so it cannot be the delimiter).
+    /// Lines with fewer than 7 fields are silently skipped (e.g., malformed or empty repos).
     /// When `all_branches` is true, includes commits from all refs (`--all`).
     pub async fn commit_log(
         &self,
@@ -471,7 +472,7 @@ impl Git {
         let count_str = format!("-{}", max_count);
         let mut args = vec![
             "log",
-            "--format=%H|%h|%P|%an|%ae|%at|%s",
+            "--format=%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s",
             &count_str,
             "--topo-order",
         ];
@@ -483,7 +484,7 @@ impl Git {
 
         let mut commits = Vec::new();
         for line in output.lines() {
-            let parts: Vec<&str> = line.splitn(7, '|').collect();
+            let parts: Vec<&str> = line.splitn(7, '\x1f').collect();
             if parts.len() < 7 {
                 continue;
             }
@@ -533,17 +534,19 @@ impl Git {
                 if let Some(pos) = name.find('/') {
                     let local_name = &name[pos + 1..];
                     reject_option_like_ref(local_name)?;
-                    // Reuse an existing local branch of that name if present
-                    match self.run(&["checkout", local_name]).await {
-                        Ok(_) => return Ok(()),
-                        Err(GitError::CommandFailed { .. }) => {
-                            // Local branch doesn't exist, create tracking branch
-                            self.run(&["checkout", "-b", local_name, "--track", name])
-                                .await?;
-                            return Ok(());
-                        }
-                        Err(e) => return Err(e),
+                    // Reuse an existing local branch of that name if present,
+                    // keeping git's own error (e.g. local changes would be
+                    // overwritten) instead of retrying as a branch create.
+                    let has_local = branches
+                        .iter()
+                        .any(|b| !b.is_remote && b.name == local_name);
+                    if has_local {
+                        self.run(&["checkout", local_name]).await?;
+                    } else {
+                        self.run(&["checkout", "-b", local_name, "--track", name])
+                            .await?;
                     }
+                    return Ok(());
                 }
             }
         }
@@ -939,7 +942,9 @@ impl Git {
                 if stderr.contains("no upstream")
                     || stderr.contains("does not have an upstream")
                     || stderr.contains("unknown revision")
-                    || stderr.contains("ambiguous argument") =>
+                    || stderr.contains("ambiguous argument")
+                    // Detached HEAD: `@{u}` has no branch to resolve against.
+                    || stderr.contains("does not point to a branch") =>
             {
                 Ok(None)
             }
@@ -966,7 +971,9 @@ impl Git {
                 if stderr.contains("no upstream")
                     || stderr.contains("does not have an upstream")
                     || stderr.contains("unknown revision")
-                    || stderr.contains("ambiguous argument") =>
+                    || stderr.contains("ambiguous argument")
+                    // Detached HEAD: `@{u}` has no branch to resolve against.
+                    || stderr.contains("does not point to a branch") =>
             {
                 Ok(None)
             }
@@ -982,9 +989,14 @@ impl Git {
             return Ok(Vec::new());
         }
 
-        // Custom format: hash|short|timestamp|author|summary
+        // Custom format: hash, short, timestamp, author, summary separated by
+        // `\x1f` (`|` is legal in author names).
         let out = self
-            .run(&["log", "@{u}..HEAD", "--pretty=format:%H|%h|%at|%an|%s"])
+            .run(&[
+                "log",
+                "@{u}..HEAD",
+                "--pretty=format:%H%x1f%h%x1f%at%x1f%an%x1f%s",
+            ])
             .await?;
 
         let mut commits = Vec::new();
@@ -992,7 +1004,7 @@ impl Git {
             if line.is_empty() {
                 continue;
             }
-            let mut parts = line.splitn(5, '|');
+            let mut parts = line.splitn(5, '\x1f');
             let hash = parts.next().unwrap_or("").to_string();
             let short = parts.next().unwrap_or("").to_string();
             let ts = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -1650,6 +1662,62 @@ mod tests {
         );
     }
 
+    /// Fabricates `refs/remotes/origin/<name>` at HEAD. A configured `origin`
+    /// remote (never fetched) is needed for `checkout --track` to accept it.
+    async fn add_fake_remote_branch(git: &Git, name: &str) {
+        git.run(&["remote", "add", "origin", "https://example.invalid/r.git"])
+            .await
+            .ok();
+        let head = git.run(&["rev-parse", "HEAD"]).await.unwrap();
+        let remote_ref = format!("refs/remotes/origin/{name}");
+        git.run(&["update-ref", &remote_ref, head.stdout.trim()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_checkout_remote_branch_creates_tracking_branch() {
+        let (_dir, git) = create_test_repo().await;
+        add_fake_remote_branch(&git, "feature-y").await;
+
+        git.checkout_branch("origin/feature-y").await.unwrap();
+        assert_eq!(git.current_branch().await.unwrap(), "feature-y");
+        assert_eq!(
+            git.upstream_name().await.unwrap().as_deref(),
+            Some("origin/feature-y")
+        );
+    }
+
+    /// When a local branch of the same name exists but checking it out fails
+    /// (dirty tree), git's real error must surface — not a misleading
+    /// "branch already exists" from a fallback `checkout -b`.
+    #[tokio::test]
+    async fn test_checkout_remote_branch_keeps_real_error_for_existing_local() {
+        let (dir, git) = create_test_repo().await;
+        let start = git.current_branch().await.unwrap();
+        git.run(&["checkout", "-b", "feature"]).await.unwrap();
+        tokio::fs::write(dir.path().join("README.md"), "feature side")
+            .await
+            .unwrap();
+        git.run(&["commit", "-am", "feature edit"]).await.unwrap();
+        add_fake_remote_branch(&git, "feature").await;
+        git.run(&["checkout", &start]).await.unwrap();
+        tokio::fs::write(dir.path().join("README.md"), "dirty local edit")
+            .await
+            .unwrap();
+
+        let err = git.checkout_branch("origin/feature").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("already exists"),
+            "fallback error must not replace git's own: {msg}"
+        );
+        assert!(
+            msg.contains("would be overwritten"),
+            "git's checkout error must be kept: {msg}"
+        );
+    }
+
     #[tokio::test]
     async fn test_detach_head() {
         let (_dir, git) = create_test_repo().await;
@@ -1881,6 +1949,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.untracked, vec!["new.txt".to_string()]);
+    }
+
+    /// A detached HEAD has no branch for `@{u}`; status must still build
+    /// (no upstream) instead of erroring and dropping the worktree.
+    #[tokio::test]
+    async fn test_worktree_status_detached_head() {
+        let (dir, git) = create_test_repo().await;
+        git.detach_head().await.unwrap();
+        tokio::fs::write(dir.path().join("new.txt"), "hi")
+            .await
+            .unwrap();
+
+        assert!(git.upstream_name().await.unwrap().is_none());
+        assert!(git.upstream_ahead_behind().await.unwrap().is_none());
+        let status = git
+            .worktree_status(dir.path().to_string_lossy().to_string(), true)
+            .await
+            .unwrap();
+        assert!(status.upstream.is_none());
+        assert_eq!(status.untracked, vec!["new.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_worktree_add_detached_has_no_branch() {
+        let (dir, git) = create_test_repo().await;
+        let head = git.run(&["rev-parse", "HEAD"]).await.unwrap();
+        let wt_path = dir.path().join("wt-detached");
+
+        let info = git
+            .worktree_add(&wt_path, None, Some(head.stdout.trim()))
+            .await
+            .unwrap();
+        assert!(info.branch.is_none(), "detached worktree: {info:?}");
+
+        git.worktree_remove(&wt_path, true).await.unwrap();
+    }
+
+    // ── '|' in author names ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_commit_log_and_unpushed_handle_pipe_in_author() {
+        let (dir, git) = create_test_repo().await;
+        let start = git.current_branch().await.unwrap();
+        add_fake_remote_branch(&git, &start).await;
+        let upstream = format!("origin/{start}");
+        git.run(&["branch", "--set-upstream-to", &upstream])
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("pipe.txt"), "x")
+            .await
+            .unwrap();
+        git.run(&["add", "pipe.txt"]).await.unwrap();
+        git.run(&[
+            "-c",
+            "user.name=Ann|Lee",
+            "commit",
+            "-m",
+            "pipe author subject",
+        ])
+        .await
+        .unwrap();
+
+        let log = git.commit_log(1, false).await.unwrap();
+        assert_eq!(log[0].author_name, "Ann|Lee");
+        assert_eq!(log[0].author_email, "test@test.com");
+        assert!(log[0].timestamp > 0);
+        assert_eq!(log[0].summary, "pipe author subject");
+
+        let unpushed = git.unpushed_commits().await.unwrap();
+        assert_eq!(unpushed.len(), 1);
+        assert_eq!(unpushed[0].author, "Ann|Lee");
+        assert_eq!(unpushed[0].summary, "pipe author subject");
     }
 
     // ── discard_file / remove_file ───────────────────────────────────

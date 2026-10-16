@@ -1,10 +1,12 @@
 # Maestro - Repository Overview
 
+> Note: the statistics and tables below are a generated snapshot from 2026-02-14 and are not kept up to date.
+
 **Maestro** is a cross-platform desktop application that orchestrates multiple AI coding assistants in parallel. See [README.md](./README.md) for project details, features, installation, and usage.
 
-- **Version**: 0.2.0
+- **Version**: 0.3.0
 - **License**: MIT
-- **Repository**: https://github.com/its-maestro-baby/maestro
+- **Repository**: https://github.com/nachogl1/maestro
 - **Documentation**: https://its-maestro-baby.github.io/maestro/
 
 ---

@@ -4,6 +4,8 @@ version = "0.3.0"
 description = "Maestro — Multi-session AI orchestrator"
 authors = ["lliWcWill"]
 edition = "2021"
+# Lowest toolchain the locked dependencies build on (notify-rust 4.18 needs 1.89).
+rust-version = "1.89"
 
 [lib]
 name = "maestro_lib"

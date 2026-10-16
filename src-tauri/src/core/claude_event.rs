@@ -266,17 +266,32 @@ impl ClaudeEvent {
             } => {
                 format!("SessionEnded:{session_id}:{reason}")
             }
-            ClaudeEvent::UserMessage { uuid, .. } => {
-                format!("UserMessage:{uuid}")
+            // Session-scoped for the same reason as the Subagent arms below:
+            // a second terminal resuming the same conversation replays the
+            // same message uuids and tool_use ids under its own session id.
+            ClaudeEvent::UserMessage {
+                session_id, uuid, ..
+            } => {
+                format!("UserMessage:{session_id}:{uuid}")
             }
-            ClaudeEvent::AssistantMessage { uuid, .. } => {
-                format!("AssistantMessage:{uuid}")
+            ClaudeEvent::AssistantMessage {
+                session_id, uuid, ..
+            } => {
+                format!("AssistantMessage:{session_id}:{uuid}")
             }
-            ClaudeEvent::ToolUseStarted { tool_use_id, .. } => {
-                format!("ToolUseStarted:{tool_use_id}")
+            ClaudeEvent::ToolUseStarted {
+                session_id,
+                tool_use_id,
+                ..
+            } => {
+                format!("ToolUseStarted:{session_id}:{tool_use_id}")
             }
-            ClaudeEvent::ToolUseCompleted { tool_use_id, .. } => {
-                format!("ToolUseCompleted:{tool_use_id}")
+            ClaudeEvent::ToolUseCompleted {
+                session_id,
+                tool_use_id,
+                ..
+            } => {
+                format!("ToolUseCompleted:{session_id}:{tool_use_id}")
             }
             ClaudeEvent::FileEdited {
                 session_id,
@@ -440,6 +455,58 @@ mod tests {
         assert_ne!(completed(1).dedup_key(), completed(2).dedup_key());
         // Same session, same timestamp: still one logical occurrence.
         assert_eq!(completed(1).dedup_key(), completed(1).dedup_key());
+    }
+
+    /// Same as the Subagent keys: a second terminal resuming the same
+    /// conversation replays identical message uuids and tool_use ids under
+    /// its own session id, and must not be swallowed by the first's replay.
+    /// Within one session (hook + transcript) the keys still match.
+    #[test]
+    fn test_message_and_tool_dedup_keys_are_scoped_by_session() {
+        let user = |session_id| ClaudeEvent::UserMessage {
+            session_id,
+            uuid: "u-1".into(),
+            text: "hi".into(),
+            timestamp: "t".into(),
+        };
+        assert_ne!(user(1).dedup_key(), user(2).dedup_key());
+        assert_eq!(user(1).dedup_key(), user(1).dedup_key());
+
+        let assistant = |session_id| ClaudeEvent::AssistantMessage {
+            session_id,
+            uuid: "a-1".into(),
+            text: "hello".into(),
+            model: "m".into(),
+            token_usage: None,
+            timestamp: "t".into(),
+        };
+        assert_ne!(assistant(1).dedup_key(), assistant(2).dedup_key());
+        assert_eq!(assistant(1).dedup_key(), assistant(1).dedup_key());
+
+        let started = |session_id, timestamp: &str| ClaudeEvent::ToolUseStarted {
+            session_id,
+            tool_name: "Bash".into(),
+            tool_use_id: "toolu_y".into(),
+            input_summary: "ls".into(),
+            timestamp: timestamp.into(),
+        };
+        assert_ne!(started(1, "t").dedup_key(), started(2, "t").dedup_key());
+        // Hook and transcript copies of one tool call differ in timestamp but
+        // share the session, so they still dedup.
+        assert_eq!(started(1, "t1").dedup_key(), started(1, "t2").dedup_key());
+
+        let completed = |session_id, timestamp: &str| ClaudeEvent::ToolUseCompleted {
+            session_id,
+            tool_name: "Bash".into(),
+            tool_use_id: "toolu_y".into(),
+            success: true,
+            timestamp: timestamp.into(),
+        };
+        assert_ne!(completed(1, "t").dedup_key(), completed(2, "t").dedup_key());
+        assert_eq!(
+            completed(1, "t1").dedup_key(),
+            completed(1, "t2").dedup_key()
+        );
     }
 
     #[test]

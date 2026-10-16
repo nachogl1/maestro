@@ -220,6 +220,8 @@ export function BranchesPanel({ repoPath }: { repoPath: string }) {
       if (authStatus?.logged_in) {
         fetchBranchPrAudit(repoPath).then(setPrs);
       }
+    } catch {
+      // Store error state shows the failure.
     } finally {
       setIsSyncing(false);
     }

@@ -483,7 +483,11 @@ describe("workflow graph edits (pure rules)", () => {
     }
     await waitFor(() => expect(useSamuraiWorkflowStore.getState().graph?.nodes).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove step implement" }));
+    // The button says so instead of silently ignoring the click.
+    const lastDelete = screen.getByRole("button", { name: "Remove step implement" });
+    expect(lastDelete).toBeDisabled();
+    expect(lastDelete).toHaveAttribute("title", "The last step cannot be removed");
+    fireEvent.click(lastDelete);
 
     expect(useSamuraiWorkflowStore.getState().graph?.nodes).toHaveLength(1);
   });

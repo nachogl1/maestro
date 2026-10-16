@@ -32,6 +32,7 @@ import {
 import { type MoveDirection, neighbourInDirection, type PaneEdge } from "@/lib/paneMoves";
 import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
 import { projectColorFor } from "@/lib/projectColor";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
@@ -76,7 +77,12 @@ function mustCallback<T>(callbacks: Map<string, T>, tabId: string): T {
 }
 
 interface MultiProjectViewProps {
-  onSessionCountChange?: (tabId: string, slotCount: number, launchedCount: number) => void;
+  onSessionCountChange?: (
+    tabId: string,
+    slotCount: number,
+    launchedCount: number,
+    occupiedCount: number,
+  ) => void;
   /**
    * Eagle view: show every project's terminals at once in one flat grid
    * (tiles color-coded by project) instead of only the active project.
@@ -496,10 +502,13 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // Create stable callbacks per tab to avoid infinite re-render loops
     // The callbacks are memoized by tab.id so they don't change on every render
     const sessionCountChangeCallbacks = useMemo(() => {
-      const callbacks = new Map<string, (slotCount: number, launchedCount: number) => void>();
+      const callbacks = new Map<
+        string,
+        (slotCount: number, launchedCount: number, occupiedCount: number) => void
+      >();
       for (const tab of tabs) {
-        callbacks.set(tab.id, (slotCount: number, launchedCount: number) => {
-          onSessionCountChange?.(tab.id, slotCount, launchedCount);
+        callbacks.set(tab.id, (slotCount: number, launchedCount: number, occupiedCount: number) => {
+          onSessionCountChange?.(tab.id, slotCount, launchedCount, occupiedCount);
           // Track this tab's pending (not-yet-launched) slots for eagleTileCount.
           // Bail out with the SAME map when the value didn't change so React
           // skips the re-render instead of looping on every report.
@@ -647,9 +656,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                             sessionId={session.sessionId}
                             index={index}
                             isActive={session.sessionId === eagleZoom}
-                            label={
-                              sessionNames[session.sessionId]?.trim() || `Terminal ${index + 1}`
-                            }
+                            label={sessionDisplayName({
+                              id: session.sessionId,
+                              name: sessionNames[session.sessionId],
+                            })}
                             projectName={session.projectName}
                             color={session.color}
                             onSelect={() => handleEagleZoomToggle(session.sessionId)}

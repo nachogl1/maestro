@@ -57,9 +57,14 @@ import {
   saveBranchConfig,
 } from "@/lib/plugins";
 import { projectColorFor } from "@/lib/projectColor";
-import { shellEscapePaths } from "@/lib/shellEscape";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { successorLaunchImminent } from "@/lib/spawnSession";
-import { killSession, removeSessionHooksConfig, writeStdin } from "@/lib/terminal";
+import {
+  killSession,
+  pathsForTerminalInput,
+  removeSessionHooksConfig,
+  writeStdin,
+} from "@/lib/terminal";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { cleanupSessionWorktree } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
@@ -77,7 +82,7 @@ import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
 import { ParkedShelf } from "./ParkedShelf";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
-import { createEmptySlot, occupiedSlotCount } from "./slots";
+import { createEmptySlot, occupiedSlotCount, sessionConfigDir } from "./slots";
 import {
   buildGridTree,
   collectSlotIds,
@@ -161,7 +166,8 @@ export interface TerminalGridHandle {
  * @property tabId - Workspace tab ID for session-project association.
  * @property preserveOnHide - If true, don't kill sessions when component unmounts (for project switching).
  * @property onSessionCountChange - Fires whenever session counts change,
- *   providing both total slot count and launched session count.
+ *   providing the total slot count, the launched session count, and the count
+ *   that weighs against MAX_SESSIONS (parked samurai terminal-state tiles exempt).
  */
 interface TerminalGridProps {
   projectPath?: string;
@@ -172,7 +178,7 @@ interface TerminalGridProps {
   tabId?: string;
   preserveOnHide?: boolean;
   isActive?: boolean;
-  onSessionCountChange?: (slotCount: number, launchedCount: number) => void;
+  onSessionCountChange?: (slotCount: number, launchedCount: number, occupiedCount: number) => void;
   onAllSessionsClosed?: () => void;
   /**
    * Eagle view: this grid's launched panes AND pre-launch cards become items
@@ -595,7 +601,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   });
 
   /**
-   * Inserts file paths into a session's terminal input, shell-escaped.
+   * Inserts file paths into a session's terminal input, quoted for the
+   * session's shell (cmd.exe on Windows takes double quotes, not POSIX ones).
    * Shared by drag-and-drop and the attach-file button so both take the
    * exact same code path.
    */
@@ -604,8 +611,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // Trailing space separates this insertion from whatever comes next —
       // without it two consecutive drops produce adjacent quoted strings
       // ('/a/one.png''/b/two.png') that shells join into one bogus path.
-      const escaped = `${shellEscapePaths(paths)} `;
-      writeStdin(sessionId, escaped).catch(console.error);
+      pathsForTerminalInput(paths)
+        .then((quoted) => writeStdin(sessionId, `${quoted} `))
+        .catch(console.error);
       // Focus the pane that received the paths so the user can keep typing
       // right after the path. setFocusedSlotId updates the grid's focus ring;
       // the direct DOM focus covers the already-focused pane (no isFocused
@@ -642,12 +650,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onDrop: insertPathsIntoSession,
   });
 
+  // Selected as a number so a park/unpark or a samurai state change re-reports
+  // the count without re-rendering the grid on every unrelated store update.
+  const occupiedCount = useSessionStore(() => occupiedSlotCount(slots));
+
   // Sync refs with state and report counts to parent
   useEffect(() => {
     slotsRef.current = slots;
     const launchedCount = slots.filter((s) => s.sessionId !== null).length;
-    onSessionCountChange?.(slots.length, launchedCount);
-  }, [slots, onSessionCountChange]);
+    onSessionCountChange?.(slots.length, launchedCount, occupiedCount);
+  }, [slots, onSessionCountChange, occupiedCount]);
 
   // Refresh branches callback (used by useEffect and exposed via handle)
   const refreshBranches = useCallback(() => {
@@ -931,7 +943,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // Find the slot to get worktree path before removing
       const slot = slotsRef.current.find((s) => s.sessionId === sessionId);
       const worktreePath = slot?.worktreePath;
-      const workingDir = worktreePath || projectPath;
+      // The folder launch wrote config into (the repo folder in a multi-repo project).
+      const workingDir = sessionConfigDir(slot, projectPath);
 
       // If this is the last slot, return to idle landing view immediately —
       // UNLESS a queued/claimed launch is about to land in this grid (samurai
@@ -957,7 +970,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         // This branch skips setSlots, so the count-reporting effect never fires
         // with 0 — report it explicitly or the parent keeps stale counts
         // (e.g. the sidebar's "Stop All (1)" with nothing running).
-        onSessionCountChange?.(0, 0);
+        onSessionCountChange?.(0, 0, 0);
         onAllSessionsClosedRef.current();
       } else {
         // Clean up cached focus callback for this slot
@@ -1063,7 +1076,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // If removing the last slot, return to idle landing view immediately
       // rather than going through an intermediate empty state
       if (slotsRef.current.length <= 1 && onAllSessionsClosedRef.current) {
-        onSessionCountChange?.(0, 0);
+        onSessionCountChange?.(0, 0, 0);
         onAllSessionsClosedRef.current();
         return;
       }
@@ -1985,8 +1998,14 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                       const sessionId = slot.sessionId;
                       const liveName =
                         sessionId !== null ? sessionNameById.get(sessionId) : undefined;
+                      // A pre-launch slot has no session id yet, so it keeps its strip position.
                       const label =
-                        liveName?.trim() || slot.customName.trim() || `Terminal ${index + 1}`;
+                        sessionId !== null
+                          ? sessionDisplayName({
+                              id: sessionId,
+                              name: liveName?.trim() || slot.customName,
+                            })
+                          : slot.customName.trim() || `Terminal ${index + 1}`;
 
                       return (
                         <ZoomTab
@@ -2202,7 +2221,11 @@ function DraggablePane({
   children: ReactNode;
   /** Eagle view: this pane is a tile of the global all-projects grid. */
   eagleMode?: boolean;
-  /** Eagle view: pane is excluded from the grid entirely — not currently used by any caller. */
+  /**
+   * Pane is excluded from layout entirely (`display:none`). Set in pinned
+   * spotlight mode on every non-pinned pane of an inactive project, so only its
+   * pinned terminals paint.
+   */
   eagleHidden?: boolean;
   /** Eagle view: pane is zoomed to fill the main content area (position: absolute). */
   eagleZoomed?: boolean;
@@ -2524,9 +2547,10 @@ function DraggablePane({
 
   // Eagle view restyles this container purely with CSS so the children
   // (the live xterm instance) never remount:
-  // - hidden:   reserved for panes that shouldn't render as a tile at all;
-  //             pre-launch panes now tile into the grid like launched ones,
-  //             so eagleHidden is currently unused but stays supported
+  // - hidden:   pinned spotlight — a non-pinned pane of an inactive project
+  //             renders nothing (eagleHidden), so only the pinned tiles paint
+  //             over the active project; TerminalGrid.pinnedSpotlight.test
+  //             guards this branch
   // - zoomed:   position:absolute overlays the main content area (resolves to
   //             App's <main>, the nearest positioned ancestor — every eagle
   //             wrapper in between is display:contents), so the sidebar and

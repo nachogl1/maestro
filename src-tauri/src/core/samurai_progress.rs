@@ -196,6 +196,8 @@ fn is_self_event(event: &AuditEvent) -> bool {
             | Some("allowance_recovered")
             | Some("park_no_reset_time")
             | Some("park_timer_arm_failed")
+            // Audit 2026-10-15 #25: the resumer's twin of the row above.
+            | Some("resume_rearm_failed")
             | Some(super::samurai_auth_watch::GH_AUTH_LOST)
             | Some(super::samurai_reconciler::RECONCILE_INTERRUPTED_KIND)
             | Some(super::samurai_reconciler::RECONCILE_UNREADABLE_CONFIG_KIND)
@@ -848,6 +850,7 @@ mod tests {
             (alert("gh_auth_lost"), true),
             (alert("park_no_reset_time"), true),
             (alert("park_timer_arm_failed"), true),
+            (alert("resume_rearm_failed"), true),
             (alert("reconcile_interrupted"), true),
             // Injector/replicator supervision bookkeeping — also not agent
             // activity.

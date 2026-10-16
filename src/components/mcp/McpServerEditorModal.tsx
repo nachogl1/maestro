@@ -3,6 +3,7 @@ import { FolderOpen, Loader2, Plus, Terminal, Trash2, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { useDismissable } from "@/hooks/useDismissable";
 import type { McpCustomServer, McpManagedScope, McpManagedServer } from "@/lib/mcp";
+import { formatArgs, parseArgs } from "@/lib/mcpArgs";
 import { useMcpStore } from "@/stores/useMcpStore";
 
 /** Where a new/edited server definition is written. */
@@ -82,8 +83,10 @@ export function McpServerEditorModal({
     server?.command ?? (typeof managedConfig.command === "string" ? managedConfig.command : ""),
   );
   const [argsString, setArgsString] = useState(
-    server?.args.join(" ") ??
-      (Array.isArray(managedConfig.args) ? (managedConfig.args as string[]).join(" ") : ""),
+    // Quote args with spaces or quotes so saving unchanged writes the same args back.
+    formatArgs(
+      server?.args ?? (Array.isArray(managedConfig.args) ? (managedConfig.args as string[]) : []),
+    ),
   );
   const [url, setUrl] = useState(typeof managedConfig.url === "string" ? managedConfig.url : "");
   const [workingDirectory, setWorkingDirectory] = useState(server?.workingDirectory ?? "");
@@ -99,8 +102,8 @@ export function McpServerEditorModal({
   const isCustom = scope === "custom";
   const showUrl = !isCustom && transport === "http";
 
-  // Close on outside click or Escape
-  useDismissable(onClose, { ref: modalRef });
+  // Close on Escape only: an outside click must not throw away unsaved edits.
+  useDismissable(onClose);
 
   const handleBrowseWorkingDir = async () => {
     try {
@@ -128,35 +131,6 @@ export function McpServerEditorModal({
     setEnvVars(envVars.filter((_, i) => i !== index));
   };
 
-  // Parse arguments from space-separated string
-  const parseArgs = (argsStr: string): string[] => {
-    if (!argsStr.trim()) return [];
-    // Simple split by space, but handle quoted strings
-    const args: string[] = [];
-    let current = "";
-    let inQuotes = false;
-    let quoteChar = "";
-
-    for (const char of argsStr) {
-      if ((char === '"' || char === "'") && !inQuotes) {
-        inQuotes = true;
-        quoteChar = char;
-      } else if (char === quoteChar && inQuotes) {
-        inQuotes = false;
-        quoteChar = "";
-      } else if (char === " " && !inQuotes) {
-        if (current) {
-          args.push(current);
-          current = "";
-        }
-      } else {
-        current += char;
-      }
-    }
-    if (current) args.push(current);
-    return args;
-  };
-
   // Build command preview
   const buildCommandPreview = (): string => {
     if (showUrl) return url || "<url>";
@@ -169,7 +143,7 @@ export function McpServerEditorModal({
     let preview = "";
     if (envPrefix) preview += `${envPrefix} `;
     preview += command || "<command>";
-    if (args.length > 0) preview += ` ${args.join(" ")}`;
+    if (args.length > 0) preview += ` ${formatArgs(args)}`;
     return preview;
   };
 

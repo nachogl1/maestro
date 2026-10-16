@@ -19,7 +19,8 @@ export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
 
 /**
  * Backend-emitted session lifecycle states.
- * Must stay in sync with the Rust `SessionStatus` enum.
+ * Mirrors the status string literals that `status_server.rs` (`emit_status` /
+ * `emit_hook_status`) puts on the wire; there is no Rust `SessionStatus` enum any more.
  * "Timeout" is a frontend-only status for sessions stuck in Starting state.
  */
 export type BackendSessionStatus =
@@ -366,7 +367,7 @@ export function samuraiBriefKey(project: string, epic: string): string {
  * resume-timer list, so a fired or cancelled timer takes its marker with it.
  */
 export interface SamuraiParkAlert {
-  /** Dedupe + acknowledge key: normalized project, epic and fire time. */
+  /** Dedupe + acknowledge key: normalized project and epic (one timer each). */
   key: string;
   /** Canonical project path of the parked run. */
   project: string;

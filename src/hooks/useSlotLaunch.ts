@@ -19,6 +19,7 @@ import {
   buildCliLaunchLine,
   checkCliAvailable,
   createSession,
+  killSession,
   spawnShell,
   terminalShellFamily,
   waitForTerminalReady,
@@ -193,6 +194,9 @@ export function useSlotLaunch({
       const slot = slotsRef.current.find((s) => s.id === slotId);
       if (!slot || slot.sessionId !== null) return;
 
+      // A spawned shell no slot owns yet. If a later step fails before the
+      // slot takes it, the catch below must kill it — no pane would show it.
+      let unownedSessionId: number | null = null;
       try {
         // Save branch config before launching (ensures it's persisted)
         if (effectiveRepoPath && slot.branch) {
@@ -271,6 +275,7 @@ export function useSlotLaunch({
         // Spawn the shell in the correct directory (worktree or project path)
         // MAESTRO_SESSION_ID is automatically injected by the backend
         const sessionId = await spawnShell(workingDirectory, envVars);
+        unownedSessionId = sessionId;
 
         // Register the session in SessionManager (required before assigning branch)
         if (projectPath) {
@@ -342,9 +347,12 @@ export function useSlotLaunch({
         // queries on startup, and xterm.js must be mounted to respond to them.
         setSlots((prev) =>
           prev.map((s) =>
-            s.id === slotId ? { ...s, sessionId, worktreePath, worktreeWarning } : s,
+            s.id === slotId
+              ? { ...s, sessionId, worktreePath, worktreeWarning, configDir: workingDirectory }
+              : s,
           ),
         );
+        unownedSessionId = null;
 
         // Register session with the project
         if (tabId) {
@@ -588,6 +596,12 @@ export function useSlotLaunch({
         }
       } catch (err) {
         console.error("Failed to spawn shell:", err);
+        if (unownedSessionId !== null) {
+          // kill_session also drops the backend registry row; the store row
+          // exists only for a project slot, and removing a missing one is a no-op.
+          killSession(unownedSessionId).catch(console.error);
+          useSessionStore.getState().removeSession(unownedSessionId);
+        }
         // `spawn_shell` returns a structured `PtyError {code, message}`; the
         // fixed string threw away the only thing that says WHY (a missing
         // shell, a permission denial, a vanished working directory).
