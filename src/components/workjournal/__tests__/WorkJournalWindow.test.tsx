@@ -1,21 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { Editor } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_PAGE_BODY,
-  retryWorkJournalSaves,
   useWorkJournalStore,
   type WorkJournalFile,
   type WorkJournalPage,
 } from "@/stores/useWorkJournalStore";
 import { WorkJournalWindow } from "../WorkJournalWindow";
 
-// The pane's own behaviour (saving, restore, the other window's changes and
-// the close-time flush of body and title) is tested in WorkJournalPanel.test.tsx;
-// these cover what the pop-out window root adds around it.
+// The pop-out's close-time flush (body and title, the quit answer and the
+// "Close and lose it / Keep open" guard) is tested under "WorkJournalWindow
+// closing" in WorkJournalPanel.test.tsx; these cover the day list and theme.
 
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(() => Promise.resolve()),
@@ -36,43 +33,12 @@ vi.mock("../WorkJournalBackupReminder", () => ({
 }));
 
 const invokeMock = vi.mocked(invoke);
-const askMock = vi.mocked(ask);
 
 /** In-memory stand-in for `work-journal.json` behind the Tauri commands. */
 let file: WorkJournalFile;
 
-/** The window's close-requested handler, as the window API would call it. */
-let closeRequested: (event: { preventDefault: () => void }) => Promise<void>;
-const destroy = vi.fn(async () => {});
-
 function page(date: string, title: string): WorkJournalPage {
   return { date, title, body: EMPTY_PAGE_BODY, origin: "auto" };
-}
-
-/** Routes the page commands the window uses, mutating `file`. */
-function mockBackend(): void {
-  invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
-    const a = (args ?? {}) as Record<string, unknown>;
-    switch (cmd) {
-      case "load_work_journal":
-      case "work_journal_ensure_pages":
-        return structuredClone(file);
-      case "update_work_journal_page": {
-        const saved = file.pages[a.date as string];
-        if (a.title != null) saved.title = a.title as string;
-        if (a.body != null) saved.body = a.body as WorkJournalPage["body"];
-        return structuredClone(file);
-      }
-      default:
-        return undefined;
-    }
-  });
-}
-
-/** The TipTap editor behind the page body (TipTap puts it on its DOM node). */
-function pageEditor(): Editor {
-  const dom = screen.getByLabelText("Work Journal page") as HTMLElement & { editor: Editor };
-  return dom.editor;
 }
 
 describe("WorkJournalWindow", () => {
@@ -91,16 +57,13 @@ describe("WorkJournalWindow", () => {
       settings: {},
     };
     invokeMock.mockReset();
-    askMock.mockReset();
-    destroy.mockClear();
-    mockBackend();
-    closeRequested = async () => {};
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "load_work_journal" || cmd === "work_journal_ensure_pages"
+        ? structuredClone(file)
+        : undefined,
+    );
     vi.mocked(getCurrentWindow).mockReturnValue({
-      onCloseRequested: vi.fn(async (handler: typeof closeRequested) => {
-        closeRequested = handler;
-        return () => {};
-      }),
-      destroy,
+      onCloseRequested: vi.fn(async () => () => {}),
     } as unknown as ReturnType<typeof getCurrentWindow>);
     useWorkJournalStore.setState({ pages: {}, viewedDate: null, loading: false, error: null });
     localStorage.removeItem("maestro-theme");
@@ -147,42 +110,5 @@ describe("WorkJournalWindow", () => {
     render(<WorkJournalWindow />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-  });
-
-  it("asks Close and lose it or Keep open while a save still fails, and Keep open keeps it", async () => {
-    render(<WorkJournalWindow />);
-    await screen.findByDisplayValue("Wed 14 Oct 2026");
-    const backend = invokeMock.getMockImplementation();
-    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
-      if (cmd === "update_work_journal_page") throw new Error("disk full");
-      return backend?.(cmd, args);
-    });
-    act(() => {
-      pageEditor().commands.insertContent("Not saved yet");
-    });
-
-    askMock.mockResolvedValueOnce(false);
-    const preventDefault = vi.fn();
-    await act(async () => closeRequested({ preventDefault }));
-
-    expect(askMock).toHaveBeenCalledTimes(1);
-    expect(askMock).toHaveBeenCalledWith(
-      expect.stringContaining("Some Work Journal text is not saved yet"),
-      expect.objectContaining({
-        title: "Unsaved Work Journal Text",
-        kind: "warning",
-        okLabel: "Close and lose it",
-        cancelLabel: "Keep open",
-      }),
-    );
-    expect(preventDefault).toHaveBeenCalled();
-    expect(destroy).not.toHaveBeenCalled();
-    expect(screen.getByText(/Unsaved changes, retrying/)).toBeInTheDocument();
-
-    // Leaves the store clean for the next test.
-    invokeMock.mockImplementation(backend ?? (async () => undefined));
-    await act(async () => {
-      await retryWorkJournalSaves();
-    });
   });
 });
