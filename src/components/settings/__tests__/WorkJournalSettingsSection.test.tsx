@@ -6,6 +6,8 @@ import {
   AUTO_BACKUP_SKIPPED_TITLE,
   AUTO_BACKUP_WARNING_TITLE,
   type AutoBackupAfterRestore,
+  type BackupNowOutcome,
+  REPLACE_OTHER_BACKUP_TITLE,
   RESTORE_NOTICES,
   UNDO_RESTORE_NOTICES,
   useWorkJournalBackupStore,
@@ -18,11 +20,17 @@ import { WorkJournalSettingsSection } from "../WorkJournalSettingsSection";
 const invokeMock = vi.mocked(invoke);
 const openMock = vi.mocked(open);
 const messageMock = vi.mocked(message);
+const askDialogMock = vi.mocked(ask);
 
 const INITIAL_STATE = useWorkJournalBackupStore.getState();
 
 function journal(settings: WorkJournalBackupSettings): WorkJournalBackupFile {
   return { layout_version: 1, pages: {}, deleted_dates: [], settings };
+}
+
+/** The reply of a "Back up now" that wrote the backup. */
+function written(settings: WorkJournalBackupSettings): BackupNowOutcome {
+  return { status: "written", journal: journal(settings) };
 }
 
 /** Routes `invoke` by command name; each handler returns the reply or throws. */
@@ -45,6 +53,7 @@ describe("WorkJournalSettingsSection", () => {
     invokeMock.mockReset();
     openMock.mockReset();
     messageMock.mockReset();
+    askDialogMock.mockReset();
     useWorkJournalBackupStore.setState(INITIAL_STATE, true);
   });
 
@@ -66,7 +75,7 @@ describe("WorkJournalSettingsSection", () => {
       load_work_journal: () =>
         journal({ backup_folder: "D:\\OneDrive\\Journal", last_backup_at: before }),
       work_journal_backup_now: () =>
-        journal({ backup_folder: "D:\\OneDrive\\Journal", last_backup_at: after }),
+        written({ backup_folder: "D:\\OneDrive\\Journal", last_backup_at: after }),
     });
 
     render(<WorkJournalSettingsSection />);
@@ -101,6 +110,77 @@ describe("WorkJournalSettingsSection", () => {
     expect(messageMock).not.toHaveBeenCalled();
   });
 
+  it("asks before Back up now replaces another computer's backup", async () => {
+    const question = "Another computer's backup is in this folder. Replace it?";
+    const after = "2026-10-15T12:34:00Z";
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      work_journal_backup_now: (args) =>
+        (args as { replaceOtherComputer?: boolean } | undefined)?.replaceOtherComputer
+          ? written({ backup_folder: "D:\\OneDrive", last_backup_at: after })
+          : { status: "confirm_replace", message: question },
+    });
+    askDialogMock.mockResolvedValue(true);
+
+    render(<WorkJournalSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+
+    expect(await screen.findByText(`Last backup: ${shownTime(after)}`)).toBeInTheDocument();
+    expect(askDialogMock).toHaveBeenCalledWith(question, {
+      title: REPLACE_OTHER_BACKUP_TITLE,
+      kind: "warning",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("work_journal_backup_now", {
+      replaceOtherComputer: true,
+    });
+  });
+
+  it("keeps another computer's backup when the user says no", async () => {
+    routeInvoke({
+      load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
+      work_journal_backup_now: () => ({
+        status: "confirm_replace",
+        message: "Another computer's backup is in this folder. Replace it?",
+      }),
+    });
+    askDialogMock.mockResolvedValue(false);
+
+    render(<WorkJournalSettingsSection />);
+    const button = await screen.findByRole("button", { name: "Back up now" });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button).toBeEnabled());
+    const backupCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "work_journal_backup_now");
+    expect(backupCalls).toEqual([["work_journal_backup_now"]]);
+    expect(screen.getByText("Never backed up")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("warns once when the automatic backup skips another computer's backup", async () => {
+    const skipped =
+      "Automatic backup skipped: this folder holds another computer's Work Journal backup, " +
+      "so it was not replaced. Press Back up now to replace it, or choose another folder.";
+    routeInvoke({
+      load_work_journal: () =>
+        journal({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-14T08:00:00Z" }),
+      work_journal_backup_if_due: () => ({ status: "skipped", message: skipped }),
+    });
+    const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
+
+    render(<WorkJournalSettingsSection />);
+    await screen.findByText("D:\\OneDrive");
+    await act(() => backUpIfDue());
+    await act(() => backUpIfDue());
+
+    expect((await screen.findByRole("alert")).textContent).toBe(skipped);
+    expect(messageMock).toHaveBeenCalledTimes(1);
+    expect(messageMock).toHaveBeenCalledWith(skipped, {
+      title: AUTO_BACKUP_SKIPPED_TITLE,
+      kind: "warning",
+    });
+  });
+
   it("shows an automatic skip inline and as a one-time warning", async () => {
     const skipped =
       "Automatic backup skipped: this folder already holds a backup that this Maestro has " +
@@ -109,7 +189,7 @@ describe("WorkJournalSettingsSection", () => {
       load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
       work_journal_backup_if_due: () => ({ status: "skipped", message: skipped }),
       work_journal_backup_now: () =>
-        journal({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T09:00:00Z" }),
+        written({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T09:00:00Z" }),
     });
     const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
 
@@ -566,7 +646,7 @@ describe("WorkJournalSettingsSection restore", () => {
       work_journal_restore_state: () => ({ canUndo: false }),
       restore_work_journal: () => reply(true, {}),
       work_journal_backup_now: () =>
-        journal({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T12:00:00Z" }),
+        written({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T12:00:00Z" }),
     });
     askMock.mockResolvedValue(true);
 
@@ -653,7 +733,7 @@ describe("WorkJournalSettingsSection restore notices and the backup pause", () =
       restore_work_journal: () => restoreReply("paused", "D:\\OneDrive"),
       work_journal_backup_if_due: () => ({ status: "skipped", message: skipped }),
       work_journal_backup_now: () =>
-        journal({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T12:00:00Z" }),
+        written({ backup_folder: "D:\\OneDrive", last_backup_at: "2026-10-15T12:00:00Z" }),
     });
     const backUpIfDue = useWorkJournalBackupStore.getState().backUpIfDue;
 

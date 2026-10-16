@@ -389,6 +389,26 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 - Decided during the 2026-10-15 audit fixes, flagged for the user to confirm:
   the backup folder may not be the journal's own folder (exact match only; a
   parent folder is allowed); restore is unchanged.
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+  - Each install has its own journal id (a random UUID, created by its first
+    backup, kept local on restore and undo) and writes it into every backup.
+    The automatic backup never replaces a backup that carries another id
+    (another computer sharing the synced folder); it shows a warning once
+    instead. "Back up now" asks "Another computer's backup is in this folder.
+    Replace it?" before replacing one.
+  - A backup without an id (written by an older Maestro, or by this install
+    before the update) counts as this install's own and is replaced as
+    before, so existing users are not blocked. The cost: while one computer
+    still runs an older Maestro, and for the first backup after updating,
+    an overwrite between two computers is not caught.
+  - A backup that exists but cannot be read (an online-only file while
+    offline, a permission error, a half-synced or otherwise unparseable
+    file) counts as "can't tell": the automatic backup skips it with a
+    warning shown once, and "Back up now" asks before replacing it. Skipping
+    only costs a retry; replacing could wipe another computer's newest
+    backup.
+  - Restoring over a corrupt local journal loses this install's id; the next
+    backup creates a new one (and then asks before replacing the old backup).
 
 ### Restore
 
@@ -499,6 +519,20 @@ original file's last write, and a copy whose age cannot be read is deleted.
 So a copy of a file last saved more than a day ago is deleted almost at once,
 because everything in it has already expired; only a file damaged within a
 day of its last save can be inspected.
+
+Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+the temporary file is shared by every Maestro running on the computer (for
+example a test copy next to the installed app), so each change to it holds a
+lock that the other copies wait for, and nothing one copy writes is lost. The
+file also remembers which running Maestro opened each terminal (its process id
+and start time). A copy closes another copy's still-open terminal records only
+once that Maestro is no longer running, and gives them as close time the last
+moment it saw that Maestro running. It keeps a running copy's open terminals
+past the one-day limit, as it does its own, but drops one opened more than 7
+days ago (a hard privacy ceiling). A copy waits at most about 5 seconds for
+another copy's lock; after that the journal change is skipped and logged, so a
+hung copy cannot freeze the others. Records written before this change have no
+such entry and are closed as before.
 
 Confirmed by the coordinator, flagged for the user (2026-10-15): each
 terminal record also stores the folder the shell ran in (for a multi-repo
