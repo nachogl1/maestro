@@ -120,12 +120,7 @@ static ADOPTED_ENTRIES: OnceLock<usize> = OnceLock::new();
 pub fn adopt_user_path() -> usize {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let merged = augmented_path();
-    let before = inherited
-        .split(PATH_SEP)
-        .filter(|s| !s.trim().is_empty())
-        .count();
-    let after = merged.split(PATH_SEP).filter(|s| !s.is_empty()).count();
-    let added = after.saturating_sub(before);
+    let added = missing_entry_count(&inherited, merged);
     if added > 0 {
         std::env::set_var("PATH", merged);
     }
@@ -209,14 +204,36 @@ fn expand_env_tokens(value: &str) -> String {
     out
 }
 
+/// Comparison key for a PATH entry: case-insensitive, ignoring surrounding
+/// whitespace and a trailing backslash.
+#[cfg(windows)]
+fn path_entry_key(entry: &str) -> String {
+    entry.trim().trim_end_matches('\\').to_ascii_lowercase()
+}
+
+/// How many entries of `merged` are absent from `inherited`. Decided by
+/// content, not by comparing entry counts: `merged` is deduplicated, so a
+/// count comparison let duplicates in `inherited` hide missing entries.
+#[cfg(windows)]
+fn missing_entry_count(inherited: &str, merged: &str) -> usize {
+    let present: std::collections::HashSet<String> = inherited
+        .split(PATH_SEP)
+        .filter(|s| !s.trim().is_empty())
+        .map(path_entry_key)
+        .collect();
+    merged
+        .split(PATH_SEP)
+        .filter(|s| !s.trim().is_empty())
+        .filter(|s| !present.contains(&path_entry_key(s)))
+        .count()
+}
+
 /// `inherited` first, then every entry of `extras` not already present
 /// (compared case-insensitively, ignoring a trailing backslash), joined
 /// with `;`. Empty entries are dropped.
 #[cfg(windows)]
 pub fn merge_path_entries(inherited: &str, extras: impl IntoIterator<Item = String>) -> String {
-    fn key(entry: &str) -> String {
-        entry.trim().trim_end_matches('\\').to_ascii_lowercase()
-    }
+    let key = path_entry_key;
     let candidates = inherited.split(PATH_SEP).map(String::from).chain(extras);
     let mut parts: Vec<String> = Vec::new();
     for entry in candidates {
@@ -249,6 +266,28 @@ mod windows_tests {
             merged,
             r"C:\Windows\system32;C:\Windows;C:\Users\me\.local\bin"
         );
+    }
+
+    #[test]
+    fn missing_entry_count_is_not_hidden_by_inherited_duplicates() {
+        // Two duplicates in the inherited PATH and two missing user entries:
+        // the old count comparison (4 merged - 4 inherited) reported 0.
+        let inherited = r"C:\Windows;C:\Windows\;c:\windows;C:\Tools";
+        let merged = merge_path_entries(
+            inherited,
+            vec![
+                r"C:\Users\me\.local\bin".to_string(),
+                r"C:\Users\me\AppData\Roaming\npm".to_string(),
+            ],
+        );
+        assert_eq!(missing_entry_count(inherited, &merged), 2);
+    }
+
+    #[test]
+    fn missing_entry_count_is_zero_when_nothing_is_missing() {
+        let inherited = r"C:\Windows;C:\Windows;C:\Tools";
+        let merged = merge_path_entries(inherited, vec![r"c:\tools\".to_string()]);
+        assert_eq!(missing_entry_count(inherited, &merged), 0);
     }
 
     #[test]
