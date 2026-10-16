@@ -122,6 +122,8 @@ type StepData = {
   reachable: boolean;
   /** Box height for the current mode — labelled boxes are taller. */
   height: number;
+  /** The only box left: it cannot be removed (see `removeNode`). */
+  isLast: boolean;
 };
 
 const handleClass =
@@ -180,9 +182,14 @@ function StepNode({ id, data }: NodeProps) {
         <button
           type="button"
           onClick={() => removeNode(id)}
+          disabled={d.isLast}
           aria-label={`Remove step ${id}`}
-          title="Remove this step — its neighbours are re-connected around it"
-          className="nodrag flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red"
+          title={
+            d.isLast
+              ? "The last step cannot be removed"
+              : "Remove this step — its neighbours are re-connected around it"
+          }
+          className="nodrag flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-maestro-muted transition-colors hover:bg-maestro-surface hover:text-maestro-red disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-maestro-muted"
         >
           <Trash2 size={13} />
           Delete
@@ -314,6 +321,7 @@ function buildModel(graph: SamuraiWorkflowGraph, pr: boolean): { nodes: Node[]; 
           step: stepOf.get(id) ?? null,
           reachable: reachable.has(id),
           height: nodeH,
+          isLast: graph.nodes.length <= 1,
         } satisfies StepData,
         deletable: false,
         width: NODE_W,

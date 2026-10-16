@@ -73,8 +73,15 @@ export function chipSelector(sessionId: number): string {
   return `[data-parked-session-id="${sessionId}"]`;
 }
 
-function anchorOf(el: Element | null): Anchor | null {
+/**
+ * Centre and box of an element that is actually on screen, or null. Hidden
+ * panes hide two ways (see useTerminalDragDrop): `display:none` stacks report a
+ * zero rect, while zoom-obscured tiles are `visibility:hidden` and keep a full
+ * rect, so both are rejected — otherwise sparks burst over the zoomed terminal.
+ */
+export function anchorOf(el: Element | null): Anchor | null {
   if (!el) return null;
+  if (getComputedStyle(el).visibility === "hidden") return null;
   const rect = el.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) return null;
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, rect };

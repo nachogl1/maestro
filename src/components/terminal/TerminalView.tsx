@@ -32,7 +32,8 @@ import { type AIProvider, type SessionStatus, TerminalHeader } from "./TerminalH
  * @property isFocused - Whether this terminal is currently focused (shows accent ring).
  * @property isActive - Whether this terminal is in the active project tab (throttles background polling).
  * @property onFocus - Callback when the terminal is clicked/focused.
- * @property onKill - Callback invoked after the backend kill IPC completes (or fails).
+ * @property onKill - Called immediately after the user confirms (optimistic UI removal); the kill
+ *   IPC runs in the background and is not awaited.
  */
 interface TerminalViewProps {
   sessionId: number;

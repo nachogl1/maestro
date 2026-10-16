@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type ClaudeSessionInfo, listClaudeSessions } from "@/lib/terminal";
 import { PreLaunchCard, type SessionSlot } from "../PreLaunchCard";
@@ -261,6 +261,36 @@ describe("PreLaunchCard AI Mode Selection", () => {
       // Cleanup for next iteration
       cleanup();
     }
+  });
+
+  it("ties each card's field labels to its own controls when two cards are open", () => {
+    render(
+      <>
+        <div data-testid="card-1">
+          <PreLaunchCard {...defaultProps} slot={makeSlot({ id: "slot-1" })} />
+        </div>
+        <div data-testid="card-2">
+          <PreLaunchCard {...defaultProps} slot={makeSlot({ id: "slot-2" })} />
+        </div>
+      </>,
+    );
+
+    for (const cardId of ["card-1", "card-2"]) {
+      const card = screen.getByTestId(cardId);
+      for (const label of card.querySelectorAll("label")) {
+        const target = document.getElementById(label.htmlFor);
+        expect(target, `label "${label.textContent}" in ${cardId}`).not.toBeNull();
+        expect(card.contains(target)).toBe(true);
+      }
+    }
+
+    // Clicking the second card's AI Mode label opens the second card's dropdown.
+    const card2 = screen.getByTestId("card-2");
+    const label = [...card2.querySelectorAll("label")].find((l) => l.textContent === "AI Mode");
+    if (!label) throw new Error("AI Mode label missing");
+    fireEvent.click(label);
+    expect(within(card2).getAllByText("Gemini CLI").length).toBeGreaterThanOrEqual(1);
+    expect(within(screen.getByTestId("card-1")).queryByText("Gemini CLI")).toBeNull();
   });
 });
 

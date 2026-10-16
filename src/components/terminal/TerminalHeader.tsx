@@ -18,7 +18,8 @@ import { memo, useCallback, useRef, useState } from "react";
 import { type IconComponent, OpenCodeIcon } from "@/components/icons";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { useDismissable } from "@/hooks/useDismissable";
-import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
+import { altLabel, comboLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 
 export type SessionStatus =
   | "idle"
@@ -127,14 +128,14 @@ export const TerminalHeader = memo(function TerminalHeader({
   onToggleFlag,
   showShortcutHints = true,
 }: TerminalHeaderProps) {
-  const { icon: ProviderIcon, label: providerLabel } = providerConfig[provider];
+  const { icon: ProviderIcon } = providerConfig[provider];
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   const zoomMenuRef = useRef<HTMLDivElement>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editNameValue, setEditNameValue] = useState("");
   const editNameRef = useRef<HTMLInputElement>(null);
 
-  const defaultLabel = `${providerLabel} #${sessionId}`;
+  const defaultLabel = sessionDisplayName({ id: sessionId });
 
   const startEditingName = () => {
     if (!onRename) return;
@@ -493,7 +494,7 @@ export const TerminalHeader = memo(function TerminalHeader({
                   >
                     <span>{preset}%</span>
                     <span className="text-[10px] text-maestro-muted">
-                      {preset === 100 ? "\u2318 0" : ""}
+                      {preset === 100 ? comboLabel(modLabel(), "0") : ""}
                     </span>
                   </button>
                 ))}

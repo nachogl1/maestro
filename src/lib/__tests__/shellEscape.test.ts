@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { quoteShellArgument, shellEscapePath, shellEscapePaths } from "../shellEscape";
+import {
+  quotePathsForShell,
+  quoteShellArgument,
+  shellEscapePath,
+  shellEscapePaths,
+} from "../shellEscape";
 
 describe("shellEscapePath", () => {
   it("wraps a simple path in single quotes", () => {
@@ -123,5 +128,27 @@ describe("quoteShellArgument (cmd)", () => {
   it("refuses newlines and an empty payload", () => {
     expect(quote("a\nb")).toBeNull();
     expect(quote("")).toBeNull();
+  });
+});
+
+describe("quotePathsForShell (drag-drop / Attach Files)", () => {
+  it("double-quotes Windows paths for cmd.exe instead of POSIX single quotes", () => {
+    expect(quotePathsForShell(["C:\\Users\\me\\My Docs\\report.txt"], "cmd")).toBe(
+      '"C:\\Users\\me\\My Docs\\report.txt"',
+    );
+  });
+
+  it("single-quotes for a posix shell", () => {
+    expect(quotePathsForShell(["/a/b", "/c d/e"], "posix")).toBe("'/a/b' '/c d/e'");
+  });
+
+  it("writes a path bare when its shell refuses to quote it", () => {
+    expect(quotePathsForShell(["C:\\100%\\a.txt", "C:\\b.txt"], "cmd")).toBe(
+      'C:\\100%\\a.txt "C:\\b.txt"',
+    );
+  });
+
+  it("writes every path bare when the shell family is unknown", () => {
+    expect(quotePathsForShell(["/a b/c", "d"], null)).toBe("/a b/c d");
   });
 });

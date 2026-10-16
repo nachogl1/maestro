@@ -26,6 +26,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { type IconComponent, OpenCodeIcon } from "@/components/icons";
 
+import { formatRecentDate } from "@/lib/format";
 import type { BranchWithWorktreeStatus } from "@/lib/git";
 import type { McpServerConfig } from "@/lib/mcp";
 import type { PluginConfig, SkillConfig } from "@/lib/plugins";
@@ -328,22 +329,6 @@ export function PreLaunchCard({
     }
   }, [repoCreateBranch]);
 
-  // Helper: relative time string
-  const formatRelativeTime = (isoDate: string): string => {
-    const now = Date.now();
-    const then = new Date(isoDate).getTime();
-    const diffMs = now - then;
-    const minutes = Math.floor(diffMs / 60000);
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    if (days === 1) return "yesterday";
-    if (days < 30) return `${days}d ago`;
-    return new Date(isoDate).toLocaleDateString();
-  };
-
   // MCP server display info
   const enabledCount = slot.enabledMcpServers.length;
   const totalCount = mcpServers.length;
@@ -588,13 +573,13 @@ export function PreLaunchCard({
           {/* AI Mode Selector */}
           <div className="relative" ref={modeDropdownRef}>
             <label
-              htmlFor="prelaunch-ai-mode"
+              htmlFor={`prelaunch-ai-mode-${slot.id}`}
               className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-maestro-muted"
             >
               AI Mode
             </label>
             <button
-              id="prelaunch-ai-mode"
+              id={`prelaunch-ai-mode-${slot.id}`}
               type="button"
               onClick={() => setModeDropdownOpen(!modeDropdownOpen)}
               className="flex w-full items-center justify-between gap-2 rounded border border-maestro-border bg-maestro-card px-3 py-2 text-left text-sm text-maestro-text transition-colors hover:border-maestro-accent/50"
@@ -637,14 +622,14 @@ export function PreLaunchCard({
           {/* Repository & Branch Selector */}
           <div className="relative" ref={branchDropdownRef}>
             <label
-              htmlFor="prelaunch-branch"
+              htmlFor={`prelaunch-branch-${slot.id}`}
               className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-maestro-muted"
             >
               {isMultiRepo ? "Repository & Branch" : "Git Branch"}
             </label>
             {!isGitRepo && !isMultiRepo ? (
               <div
-                id="prelaunch-branch"
+                id={`prelaunch-branch-${slot.id}`}
                 className="flex items-center gap-2 rounded border border-maestro-border bg-maestro-card/50 px-3 py-2 text-sm text-maestro-muted"
               >
                 <Terminal size={14} />
@@ -653,7 +638,7 @@ export function PreLaunchCard({
             ) : (
               <>
                 <button
-                  id="prelaunch-branch"
+                  id={`prelaunch-branch-${slot.id}`}
                   type="button"
                   onClick={() => {
                     if (!branchDropdownOpen) onRefreshBranches?.();
@@ -1389,14 +1374,14 @@ export function PreLaunchCard({
           {/* MCP Servers Selector */}
           <div className="relative" ref={mcpDropdownRef}>
             <label
-              htmlFor="prelaunch-mcp-servers"
+              htmlFor={`prelaunch-mcp-servers-${slot.id}`}
               className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-maestro-muted"
             >
               MCP Servers
             </label>
             {!hasMcpServers ? (
               <div
-                id="prelaunch-mcp-servers"
+                id={`prelaunch-mcp-servers-${slot.id}`}
                 className="flex items-center gap-2 rounded border border-maestro-border bg-maestro-card/50 px-3 py-2 text-sm text-maestro-muted"
               >
                 <Server size={14} />
@@ -1405,7 +1390,7 @@ export function PreLaunchCard({
             ) : (
               <>
                 <button
-                  id="prelaunch-mcp-servers"
+                  id={`prelaunch-mcp-servers-${slot.id}`}
                   type="button"
                   onClick={() => setMcpDropdownOpen(!mcpDropdownOpen)}
                   className="flex w-full items-center justify-between gap-2 rounded border border-maestro-border bg-maestro-card px-3 py-2 text-left text-sm text-maestro-text transition-colors hover:border-maestro-accent/50"
@@ -1519,14 +1504,14 @@ export function PreLaunchCard({
           {/* Plugins & Skills Selector */}
           <div className="relative" ref={pluginsSkillsDropdownRef}>
             <label
-              htmlFor="prelaunch-plugins-skills"
+              htmlFor={`prelaunch-plugins-skills-${slot.id}`}
               className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-maestro-muted"
             >
               Plugins & Skills
             </label>
             {!hasPluginsOrSkills ? (
               <div
-                id="prelaunch-plugins-skills"
+                id={`prelaunch-plugins-skills-${slot.id}`}
                 className="flex items-center gap-2 rounded border border-maestro-border bg-maestro-card/50 px-3 py-2 text-sm text-maestro-muted"
               >
                 <Store size={14} />
@@ -1535,7 +1520,7 @@ export function PreLaunchCard({
             ) : (
               <>
                 <button
-                  id="prelaunch-plugins-skills"
+                  id={`prelaunch-plugins-skills-${slot.id}`}
                   type="button"
                   onClick={() => setPluginsSkillsDropdownOpen(!pluginsSkillsDropdownOpen)}
                   className="flex w-full items-center justify-between gap-2 rounded border border-maestro-border bg-maestro-card px-3 py-2 text-left text-sm text-maestro-text transition-colors hover:border-maestro-accent/50"
@@ -1835,7 +1820,7 @@ export function PreLaunchCard({
                               </span>
                             )}
                             <span className="shrink-0">
-                              {formatRelativeTime(session.last_active)}
+                              {formatRecentDate(session.last_active)}
                             </span>
                           </div>
                         </button>

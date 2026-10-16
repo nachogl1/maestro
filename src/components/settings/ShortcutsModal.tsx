@@ -58,6 +58,10 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         // Ctrl on every platform: macOS reserves Cmd+Tab for the app switcher.
         { keys: ["Ctrl", "Tab"], description: "Next project" },
         { keys: ["Ctrl", "Shift", "Tab"], description: "Previous project" },
+        {
+          keys: [mod, "Shift", "← →"],
+          description: "Move the focused project tab left / right (tab must have focus)",
+        },
       ],
     },
   ];

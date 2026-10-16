@@ -60,9 +60,14 @@ import {
   saveBranchConfig,
 } from "@/lib/plugins";
 import { projectColorFor } from "@/lib/projectColor";
-import { shellEscapePaths } from "@/lib/shellEscape";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { successorLaunchImminent } from "@/lib/spawnSession";
-import { killSession, removeSessionHooksConfig, writeStdin } from "@/lib/terminal";
+import {
+  killSession,
+  pathsForTerminalInput,
+  removeSessionHooksConfig,
+  writeStdin,
+} from "@/lib/terminal";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { cleanupSessionWorktree } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
@@ -580,7 +585,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   });
 
   /**
-   * Inserts file paths into a session's terminal input, shell-escaped.
+   * Inserts file paths into a session's terminal input, quoted for the
+   * session's shell (cmd.exe on Windows takes double quotes, not POSIX ones).
    * Shared by drag-and-drop and the attach-file button so both take the
    * exact same code path.
    */
@@ -589,8 +595,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // Trailing space separates this insertion from whatever comes next —
       // without it two consecutive drops produce adjacent quoted strings
       // ('/a/one.png''/b/two.png') that shells join into one bogus path.
-      const escaped = `${shellEscapePaths(paths)} `;
-      writeStdin(sessionId, escaped).catch(console.error);
+      pathsForTerminalInput(paths)
+        .then((quoted) => writeStdin(sessionId, `${quoted} `))
+        .catch(console.error);
       // Focus the pane that received the paths so the user can keep typing
       // right after the path. setFocusedSlotId updates the grid's focus ring;
       // the direct DOM focus covers the already-focused pane (no isFocused
@@ -1979,8 +1986,14 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                       const sessionId = slot.sessionId;
                       const liveName =
                         sessionId !== null ? sessionNameById.get(sessionId) : undefined;
+                      // A pre-launch slot has no session id yet, so it keeps its strip position.
                       const label =
-                        liveName?.trim() || slot.customName.trim() || `Terminal ${index + 1}`;
+                        sessionId !== null
+                          ? sessionDisplayName({
+                              id: sessionId,
+                              name: liveName?.trim() || slot.customName,
+                            })
+                          : slot.customName.trim() || `Terminal ${index + 1}`;
 
                       return (
                         <ZoomTab
@@ -2161,7 +2174,11 @@ function DraggablePane({
   children: ReactNode;
   /** Eagle view: this pane is a tile of the global all-projects grid. */
   eagleMode?: boolean;
-  /** Eagle view: pane is excluded from the grid entirely — not currently used by any caller. */
+  /**
+   * Pane is excluded from layout entirely (`display:none`). Set in pinned
+   * spotlight mode on every non-pinned pane of an inactive project, so only its
+   * pinned terminals paint.
+   */
   eagleHidden?: boolean;
   /** Eagle view: pane is zoomed to fill the main content area (position: absolute). */
   eagleZoomed?: boolean;
@@ -2385,9 +2402,10 @@ function DraggablePane({
 
   // Eagle view restyles this container purely with CSS so the children
   // (the live xterm instance) never remount:
-  // - hidden:   reserved for panes that shouldn't render as a tile at all;
-  //             pre-launch panes now tile into the grid like launched ones,
-  //             so eagleHidden is currently unused but stays supported
+  // - hidden:   pinned spotlight — a non-pinned pane of an inactive project
+  //             renders nothing (eagleHidden), so only the pinned tiles paint
+  //             over the active project; TerminalGrid.pinnedSpotlight.test
+  //             guards this branch
   // - zoomed:   position:absolute overlays the main content area (resolves to
   //             App's <main>, the nearest positioned ancestor — every eagle
   //             wrapper in between is display:contents), so the sidebar and

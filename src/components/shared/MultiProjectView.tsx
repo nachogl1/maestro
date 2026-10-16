@@ -36,6 +36,7 @@ import {
 } from "@/lib/paneMoves";
 import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
 import { projectColorFor } from "@/lib/projectColor";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
@@ -620,9 +621,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                             sessionId={session.sessionId}
                             index={index}
                             isActive={session.sessionId === eagleZoom}
-                            label={
-                              sessionNames[session.sessionId]?.trim() || `Terminal ${index + 1}`
-                            }
+                            label={sessionDisplayName({
+                              id: session.sessionId,
+                              name: sessionNames[session.sessionId],
+                            })}
                             projectName={session.projectName}
                             color={session.color}
                             onSelect={() => handleEagleZoomToggle(session.sessionId)}
