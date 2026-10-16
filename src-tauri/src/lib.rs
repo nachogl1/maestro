@@ -4,6 +4,7 @@ mod git;
 mod github;
 mod setup;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
@@ -29,6 +30,11 @@ use core::plugin_manager::PluginManager;
 use core::session_manager::SessionManager;
 use core::worktree_manager::WorktreeManager;
 use core::ProcessManager;
+
+/// Set once quitting is committed. The main window then stays up while the
+/// Work Journal saves (up to 1.5 s); later close requests are ignored so a
+/// second click cannot start a second save and destroy.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Entry point for the Tauri application.
 ///
@@ -200,11 +206,16 @@ pub fn run() {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if QUITTING.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    return;
+                }
                 let count = window.state::<ProcessManager>().session_count();
                 if count == 0 {
                     // Work journal: save the text still waiting in its windows
                     // first; destroying them skips their own close-time save.
                     api.prevent_close();
+                    QUITTING.store(true, Ordering::SeqCst);
                     let win = window.clone();
                     tauri::async_runtime::spawn(async move {
                         crate::core::work_journal_quit::flush_before_quit(win.app_handle()).await;
@@ -226,7 +237,9 @@ pub fn run() {
                     .kind(MessageDialogKind::Warning)
                     .buttons(MessageDialogButtons::YesNo)
                     .show(move |confirmed| {
-                        if !confirmed {
+                        // Cancel leaves the flag clear; a second confirmed
+                        // dialog does nothing once quitting has started.
+                        if !confirmed || QUITTING.swap(true, Ordering::SeqCst) {
                             return;
                         }
                         let manager = win.state::<ProcessManager>().inner().clone();

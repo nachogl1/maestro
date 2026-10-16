@@ -1,5 +1,5 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
@@ -209,6 +209,18 @@ describe("saving the journal when Maestro quits", () => {
     await handlers[WORK_JOURNAL_QUIT_FLUSH_EVENT]({ payload: null });
     expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, { label: "main" });
     consoleError.mockRestore();
+  });
+
+  it("the pop-out window answers with its own label", async () => {
+    vi.mocked(getCurrentWebviewWindow).mockReturnValueOnce({
+      label: WORK_JOURNAL_WINDOW_LABEL,
+    } as ReturnType<typeof getCurrentWebviewWindow>);
+    const stop = await answerWorkJournalQuitFlush();
+    await handlers[WORK_JOURNAL_QUIT_FLUSH_EVENT]({ payload: null });
+    expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, {
+      label: WORK_JOURNAL_WINDOW_LABEL,
+    });
+    stop();
   });
 
   it("the main window answers too, for its own pane", async () => {

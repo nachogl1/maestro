@@ -332,7 +332,9 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   pop-out's "Close and lose it / Keep open" question only shows when the
   pop-out itself is closed, not when Maestro quits. Quitting with no
   terminals open can now take up to 1.5 seconds longer when a window does not
-  answer.
+  answer. A half-typed page title is also saved when the other window starts a
+  restore or undo, the same as page text (it then lands only in the safety
+  copy).
 
 ### Storage and backup
 
