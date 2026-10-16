@@ -39,6 +39,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: with the journal open in the pane and the pop-out, saving in one no longer makes the other re-read the whole journal; it re-reads only what changed.",
       "Work Journal: suggestion and report runs that time out, or are still running when you quit, no longer leave helper processes behind on Windows.",
       "Work Journal: two copies of Maestro running at once no longer lose each other's suggestions or terminal activity, and no longer mark the other copy's open terminals as closed.",
+      "Work Journal: suggestions are kept short, and a meeting suggestion that would copy a long piece of your notes is dropped.",
     ],
   },
   {
