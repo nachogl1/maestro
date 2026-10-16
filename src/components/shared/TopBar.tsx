@@ -47,8 +47,9 @@ interface TopBarProps {
   gitPanelOpen?: boolean;
   /** When true, hides window controls (minimize/maximize/close) - use when ProjectTabs provides them */
   hideWindowControls?: boolean;
-  /** Whether sessions have been launched for the active project (grid view) */
-  inGridView?: boolean;
+  /** Whether a project is open and active — the plus button shows whenever
+   *  there is a project to add a terminal to, idle or not. */
+  hasActiveProject?: boolean;
   /** Number of session slots in the active project */
   slotCount?: number;
   /** Maximum number of sessions allowed */
@@ -89,7 +90,7 @@ export function TopBar({
   onToggleGitPanel,
   gitPanelOpen,
   hideWindowControls = false,
-  inGridView = false,
+  hasActiveProject = false,
   slotCount = 0,
   maxSessions = MAX_SESSIONS,
   onAddSession,
@@ -174,8 +175,9 @@ export function TopBar({
         <ParkedRunsBadge onNavigate={onParkNavigate} />
         {/* GitHub watchdog totals (review requests / assigned issues) */}
         {onWatchdogNavigate && <GitHubWatchdogBadge onNavigate={onWatchdogNavigate} />}
-        {/* Active project: adds a pre-launch slot to its grid. */}
-        {inGridView && !eagleView && (
+        {/* Active project: adds a pre-launch slot to its grid (mounting the
+            grid first when the project is still on its idle landing). */}
+        {hasActiveProject && !eagleView && (
           <button
             type="button"
             onClick={onAddSession}
