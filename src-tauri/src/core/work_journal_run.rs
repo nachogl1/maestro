@@ -956,6 +956,8 @@ trait RunSources {
     /// The Granola preflight (see [`granola_preflight_url`]): the URL to
     /// reach Granola at, `None` = not connected.
     async fn granola_url(&self) -> Option<String>;
+    /// Whether the app is quitting (new `claude` runs are refused).
+    fn quitting(&self) -> bool;
 }
 
 /// The real sources: activity collection, the activity file and `claude`.
@@ -995,6 +997,10 @@ impl RunSources for LiveSources {
 
     async fn granola_url(&self) -> Option<String> {
         granola_preflight_url().await
+    }
+
+    fn quitting(&self) -> bool {
+        RUNNING_RUNS.is_closed()
     }
 }
 
@@ -1115,6 +1121,10 @@ impl RunRegistry {
 
     fn is_idle(&self) -> bool {
         self.lock().running.is_empty()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.lock().closed
     }
 
     /// Resolves once [`close`](Self::close) has been called, even before
@@ -1364,6 +1374,12 @@ async fn run_with<S: RunSources>(
     } else {
         None
     };
+    // A quit stops the preflight, which then reads as "not connected": stop
+    // here rather than cover the window without Granola.
+    if sources.quitting() {
+        report.error = Some(QUITTING_ERROR.to_string());
+        return report;
+    }
     let granola = granola_url.is_some();
     let args = match claude_args(settings.model.as_deref(), granola_url.as_deref()) {
         Ok(args) => args,
@@ -2639,6 +2655,8 @@ mod tests {
         by_window: bool,
         /// Every `claude` call fails with this (a failure of the whole run).
         fail_all: Option<String>,
+        /// What `quitting` answers.
+        quitting: bool,
     }
 
     /// When `item` happened, read back from its local date and time.
@@ -2714,6 +2732,10 @@ mod tests {
             *self.preflights.lock().unwrap() += 1;
             self.granola.then(|| GRANOLA_URL.to_string())
         }
+
+        fn quitting(&self) -> bool {
+            self.quitting
+        }
     }
 
     fn journal_with(last_run_at: Option<String>, model: Option<&str>) -> WorkJournal {
@@ -2721,6 +2743,28 @@ mod tests {
         journal.settings.last_run_at = last_run_at;
         journal.settings.model = model.map(str::to_string);
         journal
+    }
+
+    #[tokio::test]
+    async fn test_a_quit_during_the_granola_check_covers_nothing() {
+        let fake = Fake {
+            items: vec![item(
+                "2026-10-15",
+                "09:00",
+                CandidateSource::Git,
+                "Commit a",
+            )],
+            quitting: true,
+            ..Fake::default()
+        };
+        let mut journal = journal_with(None, None);
+        journal.settings.granola_opt_in = Some(true);
+        let report = run_with(&fake, &journal, &[], now()).await;
+        assert_eq!(report.error.as_deref(), Some(QUITTING_ERROR));
+        assert_eq!(report.covered_until, run_window(None, None, now()).0);
+        assert_eq!(report.retry_dates, journal.settings.retry_dates);
+        assert_eq!(*fake.preflights.lock().unwrap(), 1);
+        assert!(fake.asked.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
