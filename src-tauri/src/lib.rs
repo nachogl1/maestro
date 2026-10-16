@@ -202,6 +202,16 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let count = window.state::<ProcessManager>().session_count();
                 if count == 0 {
+                    // Work journal: save the text still waiting in its windows
+                    // first; destroying them skips their own close-time save.
+                    api.prevent_close();
+                    let win = window.clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::core::work_journal_quit::flush_before_quit(win.app_handle()).await;
+                        if let Err(e) = win.destroy() {
+                            log::error!("Failed to destroy window during quit: {e}");
+                        }
+                    });
                     return;
                 }
                 api.prevent_close();
@@ -229,6 +239,9 @@ pub fn run() {
                             }
                             // Work journal: record the close before the app goes.
                             crate::core::work_journal_activity::close_all_terminals().await;
+                            // ...and save the text still waiting in its windows.
+                            crate::core::work_journal_quit::flush_before_quit(win.app_handle())
+                                .await;
                             if let Err(e) = win.destroy() {
                                 log::error!("Failed to destroy window during quit: {e}");
                             }

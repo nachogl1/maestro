@@ -1,9 +1,11 @@
-import { emitTo, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
+import { flushWorkJournalSaves } from "@/stores/useWorkJournalStore";
 import {
+  answerWorkJournalQuitFlush,
   followWorkJournalRunState,
   isWorkJournalWindowView,
   listenWorkJournalChanged,
@@ -12,6 +14,8 @@ import {
   serveWorkJournalWindow,
   WORK_JOURNAL_CHANGED_EVENT,
   WORK_JOURNAL_OPEN_SETTINGS_EVENT,
+  WORK_JOURNAL_QUIT_FLUSH_EVENT,
+  WORK_JOURNAL_QUIT_FLUSHED_EVENT,
   WORK_JOURNAL_RUN_NOW_EVENT,
   WORK_JOURNAL_RUN_STATE_EVENT,
   WORK_JOURNAL_RUN_STATE_REQUEST_EVENT,
@@ -20,8 +24,14 @@ import {
 } from "../workJournalWindow";
 
 vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(() => Promise.resolve()),
   emitTo: vi.fn(() => Promise.resolve()),
   listen: vi.fn(),
+}));
+
+vi.mock("@/stores/useWorkJournalStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/useWorkJournalStore")>()),
+  flushWorkJournalSaves: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@tauri-apps/api/webviewWindow", () => {
@@ -165,6 +175,47 @@ describe("Settings from the pop-out window", () => {
     const stop = await serveWorkJournalWindow(vi.fn());
     handlers[WORK_JOURNAL_OPEN_SETTINGS_EVENT]({ payload: null });
     expect(useWorkJournalBackupStore.getState().settingsRequested).toBe(true);
+    stop();
+  });
+});
+
+describe("saving the journal when Maestro quits", () => {
+  it("answers the backend only after this window's saves have finished", async () => {
+    let finish = (): void => {};
+    vi.mocked(flushWorkJournalSaves).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const stop = await answerWorkJournalQuitFlush();
+    const handled = handlers[WORK_JOURNAL_QUIT_FLUSH_EVENT]({
+      payload: null,
+    }) as unknown as Promise<void>;
+
+    await Promise.resolve();
+    expect(flushWorkJournalSaves).toHaveBeenCalledTimes(1);
+    expect(emit).not.toHaveBeenCalled();
+
+    finish();
+    await handled;
+    expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, { label: "main" });
+    stop();
+  });
+
+  it("still answers when saving failed, so quitting is not held up", async () => {
+    vi.mocked(flushWorkJournalSaves).mockRejectedValueOnce(new Error("disk full"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    await answerWorkJournalQuitFlush();
+    await handlers[WORK_JOURNAL_QUIT_FLUSH_EVENT]({ payload: null });
+    expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, { label: "main" });
+    consoleError.mockRestore();
+  });
+
+  it("the main window answers too, for its own pane", async () => {
+    const stop = await serveWorkJournalWindow(vi.fn());
+    await handlers[WORK_JOURNAL_QUIT_FLUSH_EVENT]({ payload: null });
+    expect(flushWorkJournalSaves).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, { label: "main" });
     stop();
   });
 });

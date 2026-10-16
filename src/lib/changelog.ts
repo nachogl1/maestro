@@ -21,6 +21,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "The + button in the top bar is back for every project, including one with no terminals yet, so you can always add a terminal from there (Ctrl+T works the same way).",
       "The new-terminal card stacks the window name, the working-directory choice and the Launch button one under the other, so Tab moves down through them in order.",
       "Work Journal: deleting a page in one window now shows a short notice in the other window instead of a raw error, and no longer shows that page as unsaved.",
+      "Work Journal: quitting Maestro now saves what you just typed in the pane or the pop-out, including a page title still being edited, and closing the pop-out saves that title too.",
     ],
   },
   {
