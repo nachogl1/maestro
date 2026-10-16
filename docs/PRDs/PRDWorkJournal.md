@@ -259,6 +259,19 @@ Granola time) are folded in and linked in the Decision trace.
   earlier research had not found. Granola lines use it as their time (see
   Candidates). Whether `meeting_at` is present on the free plan specifically
   was not confirmed, so the time-less fallback stays.
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+  the model never converts a meeting time. Maestro gives it the exact
+  `list_meetings` call (`time_range: custom`, `custom_start` and `custom_end`
+  as ISO times carrying the user's UTC offset, for example
+  `2026-10-16T09:00:00+01:00`, from the run's window clipped to the date). The
+  model copies `meeting_at` verbatim at the start of the line
+  (`<meeting_at> - Meeting: <title>, <outcome> | granola`) and Maestro turns
+  it into local `HH:MM`. A meeting whose local date is not the run's date
+  (one near midnight in another offset) is dropped there; that date's run
+  has it. `meeting_at` is read as ISO 8601 with `Z` or an offset; without an
+  offset it is taken as local time (Granola's own rule for its inputs); its
+  exact format was not seen, so any other form drops the line. A plain
+  `HH:MM - Meeting: ... | granola` line is still accepted as before.
 - **Proven on Windows (hands-on test, 2026-10-14):** after one interactive
   `claude mcp login granola`, a separate headless run from the temp folder
   reused the sign-in with no prompt; `--tools ""` plus `--allowedTools` exposed
