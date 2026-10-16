@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::core::samurai_files::normalize_extended_path;
+
 /// The shell script installed as `maestro` on the user's PATH. Embedded at
 /// compile time so `cli/maestro.sh` is the single source of truth — editing
 /// one without the other previously caused silent drift.
@@ -9,6 +11,10 @@ const CLI_SCRIPT: &str = include_str!("../../../cli/maestro.sh");
 /// Handles ".", "..", relative paths, and already-absolute paths.
 /// Canonicalization is best-effort: a path that doesn't yet exist still
 /// returns the joined absolute form rather than `None`.
+///
+/// On Windows `canonicalize()` prepends the `\\?\` extended-length prefix. It
+/// is stripped so the frontend gets the same spelling the folder dialog gives;
+/// otherwise the project opens as a second, duplicate tab.
 pub fn resolve_cli_path(path: &str) -> Option<PathBuf> {
     let p = PathBuf::from(path);
     let absolute = if p.is_absolute() {
@@ -16,7 +22,18 @@ pub fn resolve_cli_path(path: &str) -> Option<PathBuf> {
     } else {
         std::env::current_dir().ok()?.join(p)
     };
-    Some(absolute.canonicalize().unwrap_or(absolute))
+    Some(strip_verbatim_prefix(
+        absolute.canonicalize().unwrap_or(absolute),
+    ))
+}
+
+/// Drops a `\\?\` / `\\?\UNC\` prefix as a pure string step, so the rule is
+/// testable on any host. A path that is not valid UTF-8 is returned unchanged.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    match path.to_str() {
+        Some(s) => PathBuf::from(normalize_extended_path(s)),
+        None => path,
+    }
 }
 
 /// Resolves a raw argv entry to an existing absolute path, or `None`.
@@ -77,7 +94,9 @@ fn escape_for_applescript_single_quoted_shell(input: &str) -> String {
     applescript_escaped.replace('\'', "'\\''")
 }
 
-#[tauri::command]
+/// `(async)`: the elevated install waits on the OS admin dialog, and a plain
+/// `#[tauri::command]` sync function runs on the MAIN thread, freezing the UI.
+#[tauri::command(async)]
 pub fn install_cli() -> Result<String, String> {
     let dest = cli_install_path()
         .ok_or_else(|| "CLI install is not yet supported on this platform.".to_string())?;
@@ -180,7 +199,9 @@ fn install_cli_elevated(dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+/// `(async)` for the same reason as [`install_cli`]: it may wait on the OS
+/// admin dialog, which must not freeze the UI.
+#[tauri::command(async)]
 pub fn uninstall_cli() -> Result<(), String> {
     let dest = match cli_install_path() {
         Some(p) => p,
@@ -252,14 +273,38 @@ mod tests {
     #[test]
     fn resolve_cli_path_accepts_absolute_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let canonical = tmp.path().canonicalize().unwrap();
+        let canonical = strip_verbatim_prefix(tmp.path().canonicalize().unwrap());
         let resolved = resolve_cli_path(canonical.to_str().unwrap()).unwrap();
         assert_eq!(resolved, canonical);
     }
 
     #[test]
+    fn strip_verbatim_prefix_drops_the_windows_extended_length_prefix() {
+        // Pure string rule, so it is checked on every host (CI runs Linux).
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\git\proj")),
+            PathBuf::from(r"C:\git\proj")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\proj")),
+            PathBuf::from(r"\\server\share\proj")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from("/home/me/proj")),
+            PathBuf::from("/home/me/proj")
+        );
+    }
+
+    #[test]
+    fn resolve_cli_path_never_returns_a_verbatim_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_cli_path(tmp.path().to_str().unwrap()).unwrap();
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
+    }
+
+    #[test]
     fn resolve_cli_path_resolves_dot_to_cwd() {
-        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let cwd = strip_verbatim_prefix(std::env::current_dir().unwrap().canonicalize().unwrap());
         let resolved = resolve_cli_path(".").unwrap();
         assert_eq!(resolved, cwd);
     }
@@ -278,7 +323,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_path_joins_relative_against_cwd() {
-        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let cwd = strip_verbatim_prefix(std::env::current_dir().unwrap().canonicalize().unwrap());
         let resolved = resolve_cli_path("Cargo.toml").unwrap();
         // Cargo.toml is in src-tauri/; canonicalize will resolve it if it exists.
         assert!(resolved.starts_with(&cwd) || resolved.is_absolute());
@@ -309,7 +354,7 @@ mod tests {
     #[test]
     fn existing_path_arg_accepts_real_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let canonical = tmp.path().canonicalize().unwrap();
+        let canonical = strip_verbatim_prefix(tmp.path().canonicalize().unwrap());
         let resolved = resolve_existing_path_arg(canonical.to_str().unwrap())
             .expect("real path should resolve");
         assert_eq!(resolved, canonical);
@@ -319,7 +364,7 @@ mod tests {
     fn existing_path_arg_skips_flag_then_accepts_path() {
         // Simulates scanning `["--some-flag", "<real-tmp-path>"]` argv-style.
         let tmp = tempfile::tempdir().unwrap();
-        let canonical = tmp.path().canonicalize().unwrap();
+        let canonical = strip_verbatim_prefix(tmp.path().canonicalize().unwrap());
         let canonical_str = canonical.to_str().unwrap().to_string();
         let args = ["--some-flag".to_string(), canonical_str];
         let resolved = args

@@ -172,6 +172,8 @@ interface GitHubState {
   // Selected PR detail
   selectedPR: PullRequestDetail | null;
   isLoadingPRDetail: boolean;
+  /** Error from the last failed PR detail fetch; the panel shows it with a Back button. */
+  prDetailError: string | null;
 
   // Issues
   issues: IssueInfo[];
@@ -190,10 +192,12 @@ interface GitHubState {
   // Selected Issue detail
   selectedIssue: IssueDetail | null;
   isLoadingIssueDetail: boolean;
+  issueDetailError: string | null;
 
   // Selected Discussion detail
   selectedDiscussion: DiscussionDetail | null;
   isLoadingDiscussionDetail: boolean;
+  discussionDetailError: string | null;
 
   // Actions
   checkAuth: (repoPath: string) => Promise<void>;
@@ -262,6 +266,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
   prsError: null,
   selectedPR: null,
   isLoadingPRDetail: false,
+  prDetailError: null,
   issues: [],
   issueFilter: DEFAULT_ISSUE_FILTER,
   issueSearch: DEFAULT_ISSUE_SEARCH,
@@ -273,8 +278,10 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
   discussionsEnabled: true,
   selectedIssue: null,
   isLoadingIssueDetail: false,
+  issueDetailError: null,
   selectedDiscussion: null,
   isLoadingDiscussionDetail: false,
+  discussionDetailError: null,
 
   checkAuth: async (repoPath: string) => {
     set({ isCheckingAuth: true, authError: null });
@@ -306,7 +313,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
     try {
       const pullRequests = await invoke<PullRequestInfo[]>("github_list_prs", {
         repoPath,
-        state: filter === "all" ? null : filter,
+        state: filter,
         limit: 50,
         search: searchQuery.trim() ? searchQuery.trim() : null,
       });
@@ -321,7 +328,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
 
   fetchPullRequestDetail: async (repoPath: string, number: number) => {
     const token = ++fetchTokens.prDetail;
-    set({ isLoadingPRDetail: true });
+    set({ isLoadingPRDetail: true, prDetailError: null });
     try {
       const selectedPR = await invoke<PullRequestDetail>("github_get_pr", {
         repoPath,
@@ -332,7 +339,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
     } catch (err) {
       if (token !== fetchTokens.prDetail) return;
       console.error("Failed to fetch PR detail:", err);
-      set({ isLoadingPRDetail: false });
+      set({ isLoadingPRDetail: false, prDetailError: String(err) });
     }
   },
 
@@ -370,7 +377,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
     try {
       const issues = await invoke<IssueInfo[]>("github_list_issues", {
         repoPath,
-        state: filter === "all" ? null : filter,
+        state: filter,
         limit: 50,
         search: searchQuery.trim() ? searchQuery.trim() : null,
       });
@@ -415,7 +422,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
 
   fetchIssueDetail: async (repoPath: string, number: number) => {
     const token = ++fetchTokens.issueDetail;
-    set({ isLoadingIssueDetail: true });
+    set({ isLoadingIssueDetail: true, issueDetailError: null });
     try {
       const selectedIssue = await invoke<IssueDetail>("github_get_issue", {
         repoPath,
@@ -426,7 +433,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
     } catch (err) {
       if (token !== fetchTokens.issueDetail) return;
       console.error("Failed to fetch issue detail:", err);
-      set({ isLoadingIssueDetail: false });
+      set({ isLoadingIssueDetail: false, issueDetailError: String(err) });
     }
   },
 
@@ -451,12 +458,12 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
   },
 
   clearSelectedIssue: () => {
-    set({ selectedIssue: null });
+    set({ selectedIssue: null, issueDetailError: null });
   },
 
   fetchDiscussionDetail: async (repoPath: string, number: number) => {
     const token = ++fetchTokens.discussionDetail;
-    set({ isLoadingDiscussionDetail: true });
+    set({ isLoadingDiscussionDetail: true, discussionDetailError: null });
     try {
       const selectedDiscussion = await invoke<DiscussionDetail>("github_get_discussion", {
         repoPath,
@@ -467,7 +474,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
     } catch (err) {
       if (token !== fetchTokens.discussionDetail) return;
       console.error("Failed to fetch discussion detail:", err);
-      set({ isLoadingDiscussionDetail: false });
+      set({ isLoadingDiscussionDetail: false, discussionDetailError: String(err) });
     }
   },
 
@@ -478,11 +485,11 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
   },
 
   clearSelectedDiscussion: () => {
-    set({ selectedDiscussion: null });
+    set({ selectedDiscussion: null, discussionDetailError: null });
   },
 
   clearSelectedPR: () => {
-    set({ selectedPR: null });
+    set({ selectedPR: null, prDetailError: null });
   },
 
   reset: () => {
@@ -497,6 +504,7 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
       prsError: null,
       selectedPR: null,
       isLoadingPRDetail: false,
+      prDetailError: null,
       issues: [],
       issueFilter: DEFAULT_ISSUE_FILTER,
       issueSearch: DEFAULT_ISSUE_SEARCH,
@@ -508,8 +516,10 @@ export const useGitHubStore = create<GitHubState>()((set, get) => ({
       discussionsEnabled: true,
       selectedIssue: null,
       isLoadingIssueDetail: false,
+      issueDetailError: null,
       selectedDiscussion: null,
       isLoadingDiscussionDetail: false,
+      discussionDetailError: null,
     });
   },
 }));

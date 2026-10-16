@@ -155,6 +155,11 @@ pub const RESUME_ORPHAN_KIND: &str = "resume_orphan";
 /// per lap — see [`ALERT_EVERY_LAPS`].
 const SPAWN_DROPPED_KIND: &str = "spawn_dropped";
 
+/// `details.kind` of the ALERT a deferral lands when its re-arm could not be
+/// written (audit 2026-10-15 #25): the run is left with no resume timer, so
+/// it is latched interrupted under this kind as well.
+const REARM_FAILED_KIND: &str = "resume_rearm_failed";
+
 /// How many laps of the same repeating condition pass between ALERTs: the
 /// first one is always reported, then every Nth after it.
 ///
@@ -765,6 +770,7 @@ impl SamuraiResumer {
                 reason: reason.to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             },
         );
         !self.should_report(project, epic, SPAWN_DROPPED_KIND)
@@ -772,7 +778,9 @@ impl SamuraiResumer {
 
     /// Re-arms the entry [`DEFER_DELAY_SECS`] out and records why. The new
     /// `fire_at` is what lets the re-arm survive the fired entry's
-    /// self-clean (P3.1 removes by (project, epic, fire_at)).
+    /// self-clean (P3.1 removes by (project, epic, fire_at)). A re-arm that
+    /// cannot be written ALERTs `resume_rearm_failed` and latches the run
+    /// interrupted instead of recording a deferral that never happened.
     fn defer(&self, schedule: &Arc<SamuraiSchedule>, entry: &ScheduleEntry) {
         let fire_at = (Utc::now() + chrono::Duration::seconds(DEFER_DELAY_SECS)).to_rfc3339();
         log::info!(
@@ -781,13 +789,42 @@ impl SamuraiResumer {
         );
         let deferred = ScheduleEntry {
             fire_at: fire_at.clone(),
+            // The same park pushed out, not a new one: the frontend moves
+            // the existing park alert instead of announcing it again.
+            deferred: true,
             ..entry.clone()
         };
         if let Err(e) = schedule.arm(deferred) {
+            // Audit 2026-10-15 #25: the fired entry self-cleans after this
+            // returns, so a failed write leaves the run ACTIVE with NO timer.
+            // A `resume_deferred` row would point at a fire_at that never
+            // exists; ALERT and latch it interrupted instead, the parker's
+            // `park_timer_arm_failed` treatment.
             log::error!(
-                "samurai resumer: failed to re-arm the deferred timer for epic {}: {e}",
+                "samurai resumer: failed to re-arm the deferred timer for epic {}: {e} — ALERT",
                 entry.epic,
             );
+            self.append_alert(
+                entry,
+                json!({
+                    "kind": REARM_FAILED_KIND,
+                    "epic": entry.epic,
+                    "error": e,
+                }),
+            );
+            if let Err(e) = self.run_configs.mark_interrupted(
+                &entry.project_path,
+                &entry.epic,
+                0,
+                REARM_FAILED_KIND,
+            ) {
+                log::warn!(
+                    "samurai resumer: could not latch {} in {} as interrupted: {e} — the ALERT still stands",
+                    entry.epic,
+                    entry.project_path,
+                );
+            }
+            return;
         }
         self.audit.append(
             &entry.project_path,
@@ -1174,6 +1211,7 @@ mod tests {
             reason: "park".to_string(),
             launch: None,
             held: false,
+            deferred: false,
         }
     }
 
@@ -1447,6 +1485,10 @@ mod tests {
         let timers = h.schedule.list();
         assert_eq!(timers.len(), 1, "the resume timer is back on disk");
         assert_eq!(timers[0].reason, REASON_PARK);
+        assert!(
+            timers[0].deferred,
+            "a dropped spawn's re-arm is the same park, not a new one (audit #7)"
+        );
         assert!(
             DateTime::parse_from_rfc3339(&timers[0].fire_at).unwrap() > Utc::now(),
             "re-armed into the future"
@@ -1783,6 +1825,9 @@ mod tests {
         assert_eq!(timers.len(), 1);
         assert_eq!(timers[0].epic, "#37");
         assert_eq!(timers[0].reason, "park");
+        // Audit 2026-10-15 #7: marked as the same park pushed out, so the
+        // frontend does not announce a new park.
+        assert!(timers[0].deferred, "a deferral re-arm carries the marker");
         let fired = DateTime::parse_from_rfc3339("2026-08-06T12:00:00+00:00").unwrap();
         let deferred = DateTime::parse_from_rfc3339(&timers[0].fire_at).unwrap();
         assert!(deferred > fired, "deferred past the original fire time");
@@ -1797,6 +1842,46 @@ mod tests {
         assert_eq!(row.details["fire_at"], timers[0].fire_at);
         assert!(h.spawns.lock().unwrap().is_empty());
         assert!(!rows.iter().any(|r| r.event == AuditEventKind::Resume));
+    }
+
+    /// Audit 2026-10-15 #25: a deferral whose re-arm cannot be written used
+    /// to log, still audit `resume_deferred` (pointing at a fire_at that
+    /// never existed) and leave the run ACTIVE with no timer and no stamp.
+    #[tokio::test]
+    async fn test_failed_defer_rearm_alerts_and_latches_instead_of_auditing_a_deferral() {
+        let dir = tempdir().unwrap();
+        let h = harness(dir.path());
+        let project = "C:/git/proj-res-rearm-fail";
+        h.run_configs
+            .save(&SamuraiRunConfig::new(
+                project,
+                "#37",
+                format!("{project}-wt"),
+            ))
+            .unwrap();
+        h.supervisor
+            .register_session(1, project.into(), "#37".into(), 3)
+            .unwrap();
+        // A DIRECTORY where `schedule.json` belongs: every write fails.
+        std::fs::create_dir_all(dir.path().join("schedule").join("schedule.json")).unwrap();
+
+        h.resumer.on_fire(entry(project, "#37"));
+
+        let rows = wait_for_row(&h.tick, &h.audit, project, |r| {
+            r.event == AuditEventKind::Alert && r.details["kind"] == REARM_FAILED_KIND
+        })
+        .await;
+        assert!(
+            !rows.iter().any(|r| r.details["phase"] == "resume_deferred"),
+            "no resume_deferred row for a timer that was never written"
+        );
+        assert!(h.schedule.list().is_empty(), "nothing was armed");
+        let config = h.run_configs.get(project, "#37").expect("config on disk");
+        assert_eq!(
+            config.interrupted_at.map(|s| s.kind),
+            Some(REARM_FAILED_KIND.to_string()),
+            "the run is latched interrupted, like the parker's arm failure"
+        );
     }
 
     #[tokio::test]

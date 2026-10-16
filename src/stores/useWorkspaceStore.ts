@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 
 import type { TileRect } from "@/lib/eagleLayout";
+import { samePath } from "@/lib/path";
 import { killSession } from "@/lib/terminal";
 import { useSessionStore } from "@/stores/useSessionStore";
 
@@ -213,8 +214,9 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
       eagleTileRects: {},
 
       openProject: async (path: string) => {
-        // Deduplicate: if path already open, just activate that tab
-        const existing = get().tabs.find((t) => t.projectPath === path);
+        // Deduplicate: if path already open, just activate that tab. samePath, not
+        // ===: a CLI-opened path can arrive in another spelling (\\?\ prefix, case).
+        const existing = get().tabs.find((t) => samePath(t.projectPath, path));
         if (existing) {
           set((state) => ({
             tabs: state.tabs.map((t) => ({ ...t, active: t.id === existing.id })),
@@ -257,7 +259,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
         // that landed meanwhile (concurrent CLI opens, session assignment).
         // Re-check the dedup against current state for the same reason.
         set((state) => {
-          const opened = state.tabs.find((t) => t.projectPath === path);
+          const opened = state.tabs.find((t) => samePath(t.projectPath, path));
           if (opened) {
             return {
               tabs: state.tabs.map((t) => ({ ...t, active: t.id === opened.id })),

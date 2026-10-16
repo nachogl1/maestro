@@ -60,13 +60,13 @@ describe("ParkedShelf", () => {
     render(<ParkedShelf onUnpark={onUnpark} />);
 
     expect(screen.getByText("Parked")).toBeInTheDocument();
-    expect(screen.queryByText("Session #2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Terminal 2")).not.toBeInTheDocument();
     const chip = screen.getByText("My Agent");
     fireEvent.click(chip);
     expect(onUnpark).toHaveBeenCalledWith(1);
   });
 
-  it("falls back to a Session #id label when the session has no name", () => {
+  it("falls back to the shared Terminal N label when the session has no name", () => {
     useSessionStore.setState({
       sessions: [session(3, "C:/proj")],
       parkedSessionIds: [3],
@@ -74,7 +74,7 @@ describe("ParkedShelf", () => {
 
     render(<ParkedShelf onUnpark={vi.fn()} />);
 
-    expect(screen.getByText("Session #3")).toBeInTheDocument();
+    expect(screen.getByText("Terminal 3")).toBeInTheDocument();
   });
 
   it("filters chips to the given projectPath", () => {

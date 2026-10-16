@@ -431,11 +431,12 @@ export const useGitStore = create<GitState>()((set, get) => ({
   },
 
   fetchAllRemoteRefs: async (repoPath: string) => {
-    set({ isFetching: true });
+    set({ isFetching: true, error: null });
     try {
       await invoke("git_fetch_all", { repoPath });
     } catch (err) {
       console.error("Failed to fetch all remotes:", err);
+      set({ error: String(err) });
       throw err;
     } finally {
       set({ isFetching: false });

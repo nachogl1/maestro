@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import { formatRecentDate } from "@/lib/format";
 import { normalizePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import {
@@ -58,21 +59,6 @@ interface ProjectHistory {
 function baseName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
-}
-
-/** Relative time label, mirroring the pre-launch card's session picker. */
-function formatRelativeTime(isoDate: string): string {
-  const then = new Date(isoDate).getTime();
-  if (!Number.isFinite(then)) return "";
-  const minutes = Math.floor((Date.now() - then) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "yesterday";
-  if (days < 7) return `${days}d ago`;
-  return new Date(isoDate).toLocaleDateString();
 }
 
 /** Exact timestamp, for the hover the relative label cannot give. */
@@ -600,7 +586,7 @@ export function HistorySection({ onLaunch, onNavigate }: HistorySectionProps) {
                                             className="shrink-0"
                                             title={formatAbsoluteTime(conv.last_active)}
                                           >
-                                            {formatRelativeTime(conv.last_active)}
+                                            {formatRecentDate(conv.last_active)}
                                           </span>
                                           {conv.git_branch && (
                                             <span className="flex min-w-0 items-center gap-0.5">

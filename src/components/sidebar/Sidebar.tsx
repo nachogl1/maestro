@@ -49,6 +49,7 @@ import type { McpConnector, McpCustomServer, McpManagedServer } from "@/lib/mcp"
 import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import { isParkEntry } from "@/lib/samurai";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { type SubagentInfo, useAgentStore } from "@/stores/useAgentStore";
@@ -528,7 +529,7 @@ function AgentsSection({
                 {/* Terminal rows */}
                 {projectSessions.map((session) => {
                   const badge = SESSION_STATUS_BADGES[session.status] ?? SESSION_STATUS_BADGES.Idle;
-                  const name = session.name?.trim() || `Terminal ${session.id}`;
+                  const name = sessionDisplayName(session);
                   const sessionAgents = agentsBySession.get(session.id) ?? [];
                   return (
                     <div key={session.id} className="ml-2">

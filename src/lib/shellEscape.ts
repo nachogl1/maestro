@@ -108,3 +108,26 @@ function quoteForCmd(value: string): string | null {
   const trailingBackslashes = /\\*$/.exec(value)?.[0].length ?? 0;
   return `"${value}${"\\".repeat(trailingBackslashes)}"`;
 }
+
+/**
+ * Dropped / attached file paths as one string to type into a session PTY.
+ * Only the user's own Enter runs the line, so this never refuses a path the
+ * way `quoteShellArgument` does for launch lines:
+ * - cmd: always double-quoted. Windows file names cannot contain `"`, so the
+ *   quotes always hold and `&`, `|`, `(`, spaces stay literal. `%`/`!` can
+ *   still expand inside them; that is cmd's rule, and typing the path bare
+ *   would be strictly worse (every metacharacter live).
+ * - posix, or an unknown shell (`null`): POSIX single quotes, the long-standing
+ *   default. A newline stays inside the quotes (continuation prompt), never a
+ *   half-written submit.
+ */
+export function quotePathsForShell(paths: string[], shell: ShellFamily | null): string {
+  if (shell !== "cmd") return shellEscapePaths(paths);
+  return paths.map(wrapForCmd).join(" ");
+}
+
+/** `quoteForCmd` without the refusal: see `quotePathsForShell`. */
+function wrapForCmd(value: string): string {
+  const trailingBackslashes = /\\*$/.exec(value)?.[0].length ?? 0;
+  return `"${value}${"\\".repeat(trailingBackslashes)}"`;
+}

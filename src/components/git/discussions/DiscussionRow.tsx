@@ -57,7 +57,7 @@ export function DiscussionRow({ discussion, isSelected, onClick }: DiscussionRow
         <div className="flex items-center gap-2 text-[10px] text-maestro-muted">
           <span className="font-mono">#{discussion.number}</span>
           <span className="rounded bg-maestro-surface px-1 py-0.5">{discussion.category.name}</span>
-          <span>by {discussion.author.login}</span>
+          {discussion.author.login && <span>by {discussion.author.login}</span>}
         </div>
       </div>
 
