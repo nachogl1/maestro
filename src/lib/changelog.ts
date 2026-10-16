@@ -18,6 +18,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: the previous and next day arrows now move exactly one day, even to days with no page yet, so you can step to any date and create a page there.",
       "The + button in the top bar is back for every project, including one with no terminals yet, so you can always add a terminal from there (Ctrl+T works the same way).",
       "The new-terminal card stacks the window name, the working-directory choice and the Launch button one under the other, so Tab moves down through them in order.",
+      "Work Journal: the Granola check before meeting suggestions is much faster and no longer starts your other MCP servers.",
     ],
   },
   {
