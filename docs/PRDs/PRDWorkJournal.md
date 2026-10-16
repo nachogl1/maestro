@@ -527,6 +527,20 @@ So a copy of a file last saved more than a day ago is deleted almost at once,
 because everything in it has already expired; only a file damaged within a
 day of its last save can be inspected.
 
+Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+the temporary file is shared by every Maestro running on the computer (for
+example a test copy next to the installed app), so each change to it holds a
+lock that the other copies wait for, and nothing one copy writes is lost. The
+file also remembers which running Maestro opened each terminal (its process id
+and start time). A copy closes another copy's still-open terminal records only
+once that Maestro is no longer running, and gives them as close time the last
+moment it saw that Maestro running. It keeps a running copy's open terminals
+past the one-day limit, as it does its own, but drops one opened more than 7
+days ago (a hard privacy ceiling). A copy waits at most about 5 seconds for
+another copy's lock; after that the journal change is skipped and logged, so a
+hung copy cannot freeze the others. Records written before this change have no
+such entry and are closed as before.
+
 Confirmed by the coordinator, flagged for the user (2026-10-15): each
 terminal record also stores the folder the shell ran in (for a multi-repo
 workspace, the selected repo), and `work-journal.json` gains a

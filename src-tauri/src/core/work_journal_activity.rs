@@ -10,19 +10,25 @@
 //!   and closed-at. Nothing typed in a terminal is ever stored.
 //!
 //! Every entry is deleted 24 hours after it stops being current, on every
-//! load and every write. A terminal that is still open in this app launch is
-//! never pruned. This file is NOT `work-journal.json` and is never backed up.
+//! load and every write. A terminal that is still open in this app launch, or
+//! in another Maestro instance that is still running, is never pruned. This
+//! file is NOT `work-journal.json` and is never backed up.
+//!
+//! The file's folder is shared by every Maestro instance on the machine (a
+//! devtest copy next to the installed app), so each read-modify-write also
+//! holds an OS lock on a sibling lock file (see [`lock`]).
 //!
 //! Every function takes the base directory so tests can point it at a temp
 //! dir; the app passes [`activity_dir`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::core::samurai_injector::strip_extended_prefix;
 use crate::core::session_manager::SessionConfig;
@@ -41,9 +47,26 @@ const RETENTION_HOURS: i64 = 24;
 /// Project name used when a path has no usable last component.
 const UNKNOWN_PROJECT: &str = "unknown";
 
+/// Sibling file whose OS lock serialises read-modify-writes of
+/// `activity.json` across Maestro instances. It stays empty and is never
+/// deleted, so every instance locks the same file.
+const LOCK_FILE: &str = "activity.json.lock";
+
 /// Serialises every read-modify-write of the file inside this process, so two
-/// terminals opening at once cannot drop each other's record.
+/// terminals opening at once cannot drop each other's record. Other Maestro
+/// instances are kept out by [`LOCK_FILE`]; take both with [`lock`].
 static FILE_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// How long to wait for another instance to release [`LOCK_FILE`].
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Pause between tries while another instance holds [`LOCK_FILE`].
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Hard privacy ceiling: another launch's terminal record that is still open
+/// is dropped once it was opened more than this many days ago, even while
+/// that launch still runs.
+const OPEN_CEILING_DAYS: i64 = 7;
 
 /// Errors from reading, changing or saving the activity file.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +79,12 @@ pub enum ActivityError {
     },
     #[error("Failed to create the work journal folder {path:?}: {source}")]
     CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Failed to lock {path:?}: {source}")]
+    Lock {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -176,6 +205,21 @@ pub struct ActivityFile {
     pub candidates: Vec<Candidate>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
+    /// The process behind each app launch that opened a listed terminal, by
+    /// launch id, so another instance can tell whether that launch still
+    /// runs. Launches written before it was added have no entry.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub launches: BTreeMap<String, LaunchProcess>,
+}
+
+/// The process of one app launch: its pid and start time. A pid alone is not
+/// enough, because the OS reuses pids after a process ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchProcess {
+    pub pid: u32,
+    /// Seconds since the Unix epoch, as the OS reports it.
+    pub start_time: u64,
 }
 
 /// The folder that holds `activity.json`: the Work Journal's folder, so it
@@ -188,6 +232,170 @@ pub fn activity_dir() -> PathBuf {
 pub fn current_launch_id() -> &'static str {
     static LAUNCH_ID: OnceLock<String> = OnceLock::new();
     LAUNCH_ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// The start time of each listed pid that is running, from one sysinfo
+/// snapshot of just those pids. Blocking: call it off the async runtime.
+fn start_times(pids: &[u32]) -> HashMap<u32, u64> {
+    let pids: Vec<Pid> = pids.iter().map(|&pid| Pid::from_u32(pid)).collect();
+    let mut sys = System::new();
+    // A fresh `System` has nothing dead to remove; and with removal on,
+    // sysinfo 0.32 drops a pid that is listed twice.
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        false,
+        ProcessRefreshKind::new(),
+    );
+    pids.iter()
+        .filter_map(|pid| sys.process(*pid).map(|p| (pid.as_u32(), p.start_time())))
+        .collect()
+}
+
+/// This process's pid and start time, read once. `None` when the start time
+/// cannot be read; such a launch's records are treated as before (closed by
+/// the next launch). Blocking on the first call.
+fn current_launch_process() -> Option<LaunchProcess> {
+    static PROCESS: OnceLock<Option<LaunchProcess>> = OnceLock::new();
+    *PROCESS.get_or_init(|| {
+        let pid = std::process::id();
+        let start_time = start_times(&[pid]).get(&pid).copied()?;
+        (start_time != 0).then_some(LaunchProcess { pid, start_time })
+    })
+}
+
+/// Which of `processes` are still running (same pid, same start time).
+/// Blocking: call it off the async runtime.
+fn running(processes: HashSet<LaunchProcess>) -> HashSet<LaunchProcess> {
+    let pids: Vec<u32> = processes.iter().map(|p| p.pid).collect();
+    let times = start_times(&pids);
+    processes
+        .into_iter()
+        .filter(|p| times.get(&p.pid) == Some(&p.start_time))
+        .collect()
+}
+
+/// When this process last saw each other launch's process running (the
+/// `now` of that load). Used as the close time of its open records once it
+/// is gone, since it ran at least until then.
+fn last_seen_running() -> &'static std::sync::Mutex<HashMap<LaunchProcess, DateTime<Utc>>> {
+    type Seen = std::sync::Mutex<HashMap<LaunchProcess, DateTime<Utc>>>;
+    static SEEN: OnceLock<Seen> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// The launch processes of `file` whose launch is not `launch`, that still
+/// have an open terminal record and are running right now; each is noted as
+/// seen running at `now`. Errors count as not running, which keeps the old
+/// behaviour (the records get closed).
+async fn running_other_launches(
+    file: &ActivityFile,
+    launch: &str,
+    now: DateTime<Utc>,
+) -> HashSet<LaunchProcess> {
+    let wanted: HashSet<LaunchProcess> = file
+        .terminals
+        .iter()
+        .filter(|t| t.launch_id != launch && t.closed_at.is_none())
+        .filter_map(|t| file.launches.get(&t.launch_id).copied())
+        .collect();
+    if wanted.is_empty() {
+        return HashSet::new();
+    }
+    let alive = tokio::task::spawn_blocking(move || running(wanted))
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("work journal: could not check which Maestro launches still run: {e}");
+            HashSet::new()
+        });
+    let mut seen = last_seen_running()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for process in &alive {
+        seen.insert(*process, now);
+    }
+    alive
+}
+
+/// Holds the OS lock on [`LOCK_FILE`] until dropped, on every path.
+struct CrossProcessLock(std::fs::File);
+
+impl CrossProcessLock {
+    /// Waits up to `wait` for no other process to hold the lock, then fails
+    /// with [`std::io::ErrorKind::TimedOut`], so a paused or hung instance
+    /// cannot hang this one (callers log the error and carry on). Creates
+    /// the folder and the lock file when missing. Blocking.
+    fn acquire(dir: &Path, wait: std::time::Duration) -> ActivityResult<Self> {
+        std::fs::create_dir_all(dir).map_err(|source| ActivityError::CreateDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = dir.join(LOCK_FILE);
+        let file = std::fs::File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|source| ActivityError::Lock {
+                path: path.clone(),
+                source,
+            })?;
+        let started = std::time::Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self(file)),
+                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < wait => {
+                    std::thread::sleep(LOCK_RETRY);
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    let source = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("another Maestro held it for more than {wait:?}"),
+                    );
+                    return Err(ActivityError::Lock { path, source });
+                }
+                Err(std::fs::TryLockError::Error(source)) => {
+                    return Err(ActivityError::Lock { path, source });
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CrossProcessLock {
+    fn drop(&mut self) {
+        // Closing the handle releases the lock too; unlocking first is explicit.
+        let _ = self.0.unlock();
+    }
+}
+
+/// Takes the cross-process lock on a blocking thread, so waiting for another
+/// instance never stalls the async runtime.
+async fn lock_cross_process(dir: &Path) -> ActivityResult<CrossProcessLock> {
+    let owned = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || CrossProcessLock::acquire(&owned, LOCK_WAIT))
+        .await
+        .map_err(|e| ActivityError::Lock {
+            path: dir.join(LOCK_FILE),
+            source: std::io::Error::other(e),
+        })?
+}
+
+/// Both locks for one read-modify-write of the file, released when dropped:
+/// [`FILE_LOCK`] inside this process, then [`LOCK_FILE`] across instances.
+struct Locked {
+    _across_instances: CrossProcessLock,
+    _in_process: MutexGuard<'static, ()>,
+}
+
+/// Takes [`FILE_LOCK`], then the cross-process lock. Every read-modify-write
+/// holds it around [`load`] and [`save`].
+async fn lock(dir: &Path) -> ActivityResult<Locked> {
+    let in_process = FILE_LOCK.lock().await;
+    let across_instances = lock_cross_process(dir).await?;
+    Ok(Locked {
+        _across_instances: across_instances,
+        _in_process: in_process,
+    })
 }
 
 /// Project name for a path: its last component, with any Windows `\\?\`
@@ -224,25 +432,42 @@ fn expired(stamp: &str, now: DateTime<Utc>) -> bool {
 }
 
 /// Drops every expired entry. A terminal ages from its close; one with no
-/// close is kept if it belongs to `launch` (still open), and otherwise ages
-/// from its open (only reachable when [`close_stale`] could not read it).
-/// Returns whether anything was removed.
+/// close is kept if it belongs to `launch` (still open) or to another launch
+/// with a known process and a readable open time ([`close_stale`] has
+/// already closed those whose process is gone, so the rest still run) and
+/// opened at most [`OPEN_CEILING_DAYS`] ago, and otherwise ages from its
+/// open (reachable when [`close_stale`] could not read it, or past the
+/// ceiling). A launch entry goes once no record refers to it. Returns
+/// whether anything was removed.
 fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
-    let before = file.candidates.len() + file.terminals.len();
+    let before = file.candidates.len() + file.terminals.len() + file.launches.len();
     file.candidates.retain(|c| !expired(&c.created_at, now));
+    let launches = &file.launches;
+    let within_ceiling = |opened: &str| {
+        parse_stamp(opened).is_some_and(|o| now - o <= Duration::days(OPEN_CEILING_DAYS))
+    };
     file.terminals.retain(|t| match t.closed_at.as_deref() {
         Some(closed) => !expired(closed, now),
         None if t.launch_id == launch => true,
+        None if launches.contains_key(&t.launch_id) && within_ceiling(&t.opened_at) => true,
         None => !expired(&t.opened_at, now),
     });
-    before != file.candidates.len() + file.terminals.len()
+    let terminals = &file.terminals;
+    file.launches
+        .retain(|id, _| terminals.iter().any(|t| &t.launch_id == id));
+    before != file.candidates.len() + file.terminals.len() + file.launches.len()
 }
 
-/// Closes every record left open by another app launch (a crash, a
-/// force-kill, or a quit that skipped the close handler such as macOS
-/// Cmd+Q). The real close time is unknown, so it is estimated:
+/// Closes every record left open by another app launch that is no longer
+/// running (a crash, a force-kill, or a quit that skipped the close handler
+/// such as macOS Cmd+Q). A launch whose process is in `running` is another
+/// Maestro instance still using its terminals, so its records stay open; a
+/// launch with no known process (written before processes were stored) is
+/// treated as gone. The real close time is unknown, so it is estimated:
 ///
-/// - `bound` is the file's last-modified time as this launch first saw it,
+/// - When this process saw that launch running before (`last_seen`, from an
+///   earlier load), it ran at least until then, so that time is the end.
+/// - Otherwise `bound` is the file's last-modified time as this launch first saw it,
 ///   before this launch wrote anything. The earlier launch cannot have run
 ///   a terminal much past its last write to this file, so it is a bounded,
 ///   plausible end time — not an exact one.
@@ -251,17 +476,30 @@ fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
 ///
 /// Without this, such a record would be listed as still running in every
 /// later time window. Returns whether anything was closed.
-fn close_stale(file: &mut ActivityFile, launch: &str, bound: Option<DateTime<Utc>>) -> bool {
+fn close_stale(
+    file: &mut ActivityFile,
+    launch: &str,
+    bound: Option<DateTime<Utc>>,
+    running: &HashSet<LaunchProcess>,
+    last_seen: &HashMap<LaunchProcess, DateTime<Utc>>,
+) -> bool {
     let mut changed = false;
+    let launches = &file.launches;
+    let still_running = |id: &str| launches.get(id).is_some_and(|p| running.contains(p));
     for record in file
         .terminals
         .iter_mut()
         .filter(|t| t.launch_id != launch && t.closed_at.is_none())
+        .filter(|t| !still_running(&t.launch_id))
     {
         let Some(opened) = parse_stamp(&record.opened_at) else {
             continue; // unreadable: prune removes it
         };
-        let end = bound.map_or(opened, |b| b.max(opened));
+        let seen = launches
+            .get(&record.launch_id)
+            .and_then(|p| last_seen.get(p))
+            .copied();
+        let end = seen.or(bound).map_or(opened, |b| b.max(opened));
         record.closed_at = Some(stamp(end.with_timezone(&Local)));
         changed = true;
     }
@@ -330,7 +568,7 @@ async fn prune_damaged(dir: &Path, now: DateTime<Utc>) {
 /// empty; an unparseable one is set aside and treated as empty. A damaged
 /// copy older than a day is deleted first (see [`prune_damaged`]). When
 /// anything changed, writes it back; a failed write-back is logged and the
-/// cleaned data is still returned. Callers hold [`FILE_LOCK`].
+/// cleaned data is still returned. Callers hold [`lock`].
 async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> ActivityResult<ActivityFile> {
     let path = file_path(dir);
     let bound = pre_launch_mtime(&path);
@@ -346,7 +584,12 @@ async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> ActivityResult<Ac
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => ActivityFile::default(),
         Err(source) => return Err(ActivityError::Read { path, source }),
     };
-    let closed = close_stale(&mut file, launch, bound);
+    let running = running_other_launches(&file, launch, now).await;
+    let last_seen = last_seen_running()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let closed = close_stale(&mut file, launch, bound, &running, &last_seen);
     let pruned = prune(&mut file, now, launch);
     if closed || pruned {
         if let Err(e) = save(dir, &mut file, now, launch).await {
@@ -357,7 +600,7 @@ async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> ActivityResult<Ac
 }
 
 /// Prunes, then writes the file with the shared temp-then-rename helper.
-/// Callers hold [`FILE_LOCK`].
+/// Callers hold [`lock`].
 async fn save(
     dir: &Path,
     file: &mut ActivityFile,
@@ -433,7 +676,7 @@ pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> ActivityResul
     }
     let launch = current_launch_id();
     let now = now.with_timezone(&Utc);
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     file.candidates.extend(added.iter().cloned());
     save(dir, &mut file, now, launch).await?;
@@ -448,7 +691,7 @@ pub async fn set_candidate_state(
 ) -> ActivityResult<Candidate> {
     let now = Utc::now();
     let launch = current_launch_id();
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     let candidate = file
         .candidates
@@ -466,7 +709,7 @@ pub async fn set_candidate_state(
 pub async fn remove_candidate(dir: &Path, id: &str) -> ActivityResult<Candidate> {
     let now = Utc::now();
     let launch = current_launch_id();
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     let index = file
         .candidates
@@ -480,7 +723,7 @@ pub async fn remove_candidate(dir: &Path, id: &str) -> ActivityResult<Candidate>
 
 /// Every candidate (pending and rejected) for one `YYYY-MM-DD` date.
 pub async fn list_candidates(dir: &Path, date: &str) -> ActivityResult<Vec<Candidate>> {
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let file = load(dir, Utc::now(), current_launch_id()).await?;
     Ok(file
         .candidates
@@ -492,7 +735,7 @@ pub async fn list_candidates(dir: &Path, date: &str) -> ActivityResult<Vec<Candi
 /// How many pending candidates each date has (dates with none are left
 /// out), in one read for the pop-out window's day list.
 pub async fn pending_counts(dir: &Path) -> ActivityResult<HashMap<String, usize>> {
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let file = load(dir, Utc::now(), current_launch_id()).await?;
     let mut counts = HashMap::new();
     for candidate in file.candidates {
@@ -529,7 +772,7 @@ pub async fn list_terminal_records(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> ActivityResult<Vec<TerminalRecord>> {
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let file = load(dir, Utc::now(), current_launch_id()).await?;
     Ok(file
         .terminals
@@ -539,7 +782,9 @@ pub async fn list_terminal_records(
 }
 
 /// Records a terminal opening. A record that already exists for this
-/// session is left untouched, so a closed record is never reopened.
+/// session is left untouched, so a closed record is never reopened. For this
+/// process's own launch the launch's pid and start time are stored too, so
+/// another Maestro instance keeps the record open while this one runs.
 async fn record_opened(
     dir: &Path,
     launch: &str,
@@ -550,7 +795,15 @@ async fn record_opened(
     opened_at: DateTime<Local>,
 ) -> ActivityResult<()> {
     let now = Utc::now();
-    let _guard = FILE_LOCK.lock().await;
+    let process = if launch == current_launch_id() {
+        tokio::task::spawn_blocking(current_launch_process)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     if file
         .terminals
@@ -569,6 +822,9 @@ async fn record_opened(
         opened_at: stamp(opened_at),
         closed_at: None,
     });
+    if let Some(process) = process {
+        file.launches.insert(launch.to_string(), process);
+    }
     save(dir, &mut file, now, launch).await
 }
 
@@ -581,7 +837,7 @@ async fn record_branch(
     branch: String,
 ) -> ActivityResult<()> {
     let now = Utc::now();
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     let Some(record) = file
         .terminals
@@ -604,7 +860,7 @@ async fn record_closed(
     closed_at: DateTime<Local>,
 ) -> ActivityResult<()> {
     let now = Utc::now();
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     let Some(record) = file
         .terminals
@@ -629,7 +885,7 @@ async fn record_all_closed(
     closed_at: DateTime<Local>,
 ) -> ActivityResult<()> {
     let now = Utc::now();
-    let _guard = FILE_LOCK.lock().await;
+    let _guard = lock(dir).await?;
     let mut file = load(dir, now, launch).await?;
     let mut changed = false;
     for record in file
@@ -972,6 +1228,7 @@ mod tests {
                     terminal(LAUNCH, 1, &earlier, None),
                     terminal(LAUNCH, 2, &earlier, Some(&earlier)),
                 ],
+                launches: BTreeMap::new(),
             },
         );
         record_all_closed(dir.path(), LAUNCH, Local::now())
@@ -997,6 +1254,7 @@ mod tests {
                     terminal("crashed", 1, &hours_ago(3), None),
                     terminal(current_launch_id(), 2, &hours_ago(3), None),
                 ],
+                launches: BTreeMap::new(),
             },
         );
         set_mtime(dir.path(), last_write);
@@ -1031,6 +1289,7 @@ mod tests {
             &ActivityFile {
                 candidates: vec![],
                 terminals: vec![terminal("crashed", 1, &opened, None)],
+                launches: BTreeMap::new(),
             },
         );
         set_mtime(dir.path(), Local::now() - Duration::hours(2));
@@ -1040,6 +1299,198 @@ mod tests {
             file.terminals[0].closed_at.as_deref(),
             Some(opened.as_str())
         );
+    }
+
+    #[test]
+    fn test_two_instances_writing_at_once_lose_nothing() {
+        // Each thread stands in for another Maestro instance: its own
+        // runtime and only the cross-process lock (an instance's in-process
+        // lock does not reach the other instance).
+        const WRITES: usize = 20;
+        let dir = tempdir().unwrap();
+        let writers: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|name| {
+                let dir = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    runtime.block_on(async {
+                        for i in 0..WRITES {
+                            let _lock = lock_cross_process(&dir).await.unwrap();
+                            let now = Utc::now();
+                            let mut file = load(&dir, now, LAUNCH).await.unwrap();
+                            tokio::task::yield_now().await;
+                            let id = format!("{name}-{i}");
+                            file.candidates
+                                .push(candidate_created(&id, &stamp(Local::now())));
+                            save(&dir, &mut file, now, LAUNCH).await.unwrap();
+                        }
+                    });
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let file = read_raw(dir.path());
+        assert_eq!(file.candidates.len(), 2 * WRITES, "no write was lost");
+    }
+
+    #[tokio::test]
+    async fn test_load_keeps_records_of_a_running_launch_open_and_closes_dead_ones() {
+        let dir = tempdir().unwrap();
+        let me = current_launch_process().expect("this process's start time");
+        let launches = BTreeMap::from([
+            // Another instance that is still running (this test process).
+            ("running".to_string(), me),
+            // The pid was reused by a later process: a different start time.
+            (
+                "reused".to_string(),
+                LaunchProcess {
+                    pid: me.pid,
+                    start_time: me.start_time - 1000,
+                },
+            ),
+            // No such process (Windows pids are multiples of 4).
+            (
+                "gone".to_string(),
+                LaunchProcess {
+                    pid: 4_294_967_294,
+                    start_time: me.start_time,
+                },
+            ),
+        ]);
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                candidates: vec![],
+                terminals: vec![
+                    // Open for 30 hours in a running instance: kept, not pruned.
+                    terminal("running", 1, &hours_ago(30), None),
+                    // Open for 8 days: past the privacy ceiling, dropped.
+                    terminal("running", 5, &hours_ago(8 * 24), None),
+                    terminal("reused", 2, &hours_ago(3), None),
+                    terminal("gone", 3, &hours_ago(3), None),
+                    // Written before launches were stored: closed as before.
+                    terminal("old-format", 4, &hours_ago(3), None),
+                ],
+                launches: launches.clone(),
+            },
+        );
+        let _guard = FILE_LOCK.lock().await;
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+
+        let file = read_raw(dir.path());
+        let closed = |id: u32| {
+            file.terminals
+                .iter()
+                .find(|t| t.session_id == id)
+                .unwrap()
+                .closed_at
+                .is_some()
+        };
+        assert!(!closed(1), "the running instance's terminal stays open");
+        assert!(closed(2), "a reused pid is not the same launch");
+        assert!(closed(3), "a launch whose process is gone is closed");
+        assert!(closed(4), "an old record without a process is closed");
+        assert!(
+            !file.terminals.iter().any(|t| t.session_id == 5),
+            "an open record older than the ceiling is dropped"
+        );
+        assert_eq!(file.launches, launches, "launch entries are kept");
+    }
+
+    #[test]
+    fn test_waiting_for_the_lock_times_out_while_another_handle_holds_it() {
+        let dir = tempdir().unwrap();
+        let wait = std::time::Duration::from_millis(200);
+        let holder = CrossProcessLock::acquire(dir.path(), wait).unwrap();
+        let started = std::time::Instant::now();
+        match CrossProcessLock::acquire(dir.path(), wait) {
+            Err(ActivityError::Lock { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut)
+            }
+            other => panic!("expected a lock timeout, got {:?}", other.map(|_| ())),
+        }
+        assert!(started.elapsed() >= wait, "it waited before giving up");
+        drop(holder);
+        assert!(
+            CrossProcessLock::acquire(dir.path(), wait).is_ok(),
+            "free again once the holder lets go"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_launch_seen_running_then_gone_closes_at_its_last_seen_time() {
+        // A real process stands in for another running Maestro.
+        let mut child = if cfg!(windows) {
+            let mut ping = std::process::Command::new("ping");
+            ping.args(["-n", "60", "127.0.0.1"]);
+            ping
+        } else {
+            let mut sleep = std::process::Command::new("sleep");
+            sleep.arg("60");
+            sleep
+        }
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+        let pid = child.id();
+        let start_time = start_times(&[pid])[&pid];
+        let other = LaunchProcess { pid, start_time };
+
+        let dir = tempdir().unwrap();
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                candidates: vec![],
+                terminals: vec![terminal("other", 1, &hours_ago(6), None)],
+                launches: BTreeMap::from([("other".to_string(), other)]),
+            },
+        );
+        // This launch first saw the file 5 hours ago: the old fallback end.
+        set_mtime(dir.path(), Local::now() - Duration::hours(5));
+        let _guard = FILE_LOCK.lock().await;
+        let seen_at = Utc::now();
+        load(dir.path(), seen_at, LAUNCH).await.unwrap();
+        assert!(read_raw(dir.path()).terminals[0].closed_at.is_none());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        let record = &read_raw(dir.path()).terminals[0];
+        let closed = parse_stamp(record.closed_at.as_deref().unwrap()).unwrap();
+        // Stamps keep whole seconds, so allow the truncated fraction.
+        assert!(
+            closed >= seen_at - Duration::seconds(1),
+            "closed at {closed}, last seen running at {seen_at}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_opening_a_terminal_stores_this_launch_process_only() {
+        let dir = tempdir().unwrap();
+        let mine = current_launch_id();
+        record_opened(dir.path(), mine, 1, "p", "p", None, Local::now())
+            .await
+            .unwrap();
+        record_opened(dir.path(), LAUNCH, 2, "p", "p", None, Local::now())
+            .await
+            .unwrap();
+        let file = read_raw(dir.path());
+        assert_eq!(
+            file.launches,
+            BTreeMap::from([(mine.to_string(), current_launch_process().unwrap())])
+        );
+
+        // A launch entry goes with the last record that refers to it.
+        let mut file = file;
+        file.terminals.retain(|t| t.launch_id != mine);
+        assert!(prune(&mut file, Utc::now(), LAUNCH));
+        assert!(file.launches.is_empty());
     }
 
     #[test]
@@ -1066,6 +1517,7 @@ mod tests {
                 // Unreadable time: pruned.
                 terminal("old", 6, "not a time", Some("not a time")),
             ],
+            launches: BTreeMap::new(),
         };
         assert!(prune(&mut file, now, LAUNCH));
         let ids: Vec<&str> = file.candidates.iter().map(|c| c.id.as_str()).collect();
@@ -1089,6 +1541,7 @@ mod tests {
                     terminal("old", 1, &hours_ago(30), Some(&hours_ago(26))),
                     terminal(LAUNCH, 2, &hours_ago(30), None),
                 ],
+                launches: BTreeMap::new(),
             },
         );
         let _guard = FILE_LOCK.lock().await;
@@ -1109,6 +1562,7 @@ mod tests {
             &ActivityFile {
                 candidates: vec![candidate_created("old", &hours_ago(25))],
                 terminals: vec![],
+                launches: BTreeMap::new(),
             },
         );
         // A folder where the temp file must go makes the write-back fail.
@@ -1135,6 +1589,7 @@ mod tests {
                 candidate_created("fresh", &hours_ago(1)),
             ],
             terminals: vec![terminal("old", 1, &hours_ago(30), Some(&hours_ago(25)))],
+            launches: BTreeMap::new(),
         };
         save(dir.path(), &mut file, Utc::now(), LAUNCH)
             .await
@@ -1153,6 +1608,7 @@ mod tests {
             &ActivityFile {
                 candidates: vec![candidate_created("old", &hours_ago(25))],
                 terminals: vec![],
+                launches: BTreeMap::new(),
             },
         );
         add_candidates(
@@ -1351,6 +1807,7 @@ mod tests {
                     // After the window.
                     terminal(launch, 5, &rel(6), Some(&rel(7))),
                 ],
+                launches: BTreeMap::new(),
             },
         );
         let start = (base + Duration::hours(2)).with_timezone(&Utc);
