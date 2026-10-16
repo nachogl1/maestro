@@ -88,8 +88,9 @@ pub enum WorkJournalError {
     BackupFolderNotAFolder(String),
     #[error("The backup folder cannot be the journal's own folder. Choose a different folder.")]
     BackupFolderIsJournalFolder,
-    /// Same wording as the run-time refusal in
-    /// [`crate::core::work_journal_run::claude_args`].
+    /// Same wording as the run-time refusals in
+    /// [`crate::core::work_journal_run::claude_args`] and
+    /// [`crate::core::work_journal_report::claude_args`] (a test keeps them equal).
     #[error(
         "The Work Journal model \"{0}\" is not a valid model name. Change it in Settings or \
          leave it blank for your default model."
@@ -1598,9 +1599,11 @@ mod tests {
                 matches!(err, WorkJournalError::InvalidModel(_)),
                 "{bad}: got {err}"
             );
-            // Word for word what a run says about the same model.
+            // Word for word what a suggestions run and a report say about it.
             let run_err = crate::core::work_journal_run::claude_args(Some(bad), None).unwrap_err();
             assert_eq!(err.to_string(), run_err, "{bad}");
+            let report_err = crate::core::work_journal_report::claude_args(Some(bad)).unwrap_err();
+            assert_eq!(err.to_string(), report_err, "{bad}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "{bad}");
         }
 

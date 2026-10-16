@@ -496,9 +496,10 @@ A Work Journal section in Maestro Settings holds:
   model).
   Decided during the 2026-10-16 audit fixes, flagged for the user to confirm: a
   model name a run would refuse (a space, a leading `-`, or a character other
-  than letters, digits and `-._:[]/@`) is refused when it is saved, with the
-  same message a run shows, and nothing in that save is changed. Blank still
-  means the default model.
+  than ASCII letters, digits and `-._:[]/@`) is refused when it is saved,
+  with the same message a run shows, and nothing in that save is changed.
+  Blank still means the default model. A name saved before this check stays
+  until edited; the run still refuses it with the same message.
 - Backup folder, "Back up now", last backup time, "Restore from backup",
   "Undo restore".
 - Report folder.

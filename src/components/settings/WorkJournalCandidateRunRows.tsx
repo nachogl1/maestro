@@ -67,8 +67,14 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
 
   const [hoursDraft, setHoursDraft] = useState(String(runEveryHours));
   const [modelDraft, setModelDraft] = useState(model);
+  // Why the model shown in the field was not saved; kept after another save
+  // clears the shared settings error, until the field is edited again.
+  const [modelNote, setModelNote] = useState<string | null>(null);
   useEffect(() => setHoursDraft(String(runEveryHours)), [runEveryHours]);
-  useEffect(() => setModelDraft(model), [model]);
+  useEffect(() => {
+    setModelDraft(model);
+    setModelNote(null);
+  }, [model]);
 
   // Retry once on open when the start-up read failed (the read error is the
   // only settings error present at mount).
@@ -95,7 +101,9 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
 
   const commitModel = (): void => {
     if (modelDraft.trim() === model.trim()) return;
-    void setModel(modelDraft);
+    void setModel(modelDraft).then((saved) => {
+      setModelNote(saved ? null : useWorkJournalCandidateRunStore.getState().settingsError);
+    });
   };
 
   const handleRunNow = (): void => {
@@ -131,12 +139,20 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
           type="text"
           value={modelDraft}
           placeholder="Your default Claude model"
-          onChange={(e) => setModelDraft(e.target.value)}
+          onChange={(e) => {
+            setModelDraft(e.target.value);
+            setModelNote(null);
+          }}
           onBlur={commitModel}
           onKeyDown={blurOnEnter}
           className="min-w-0 flex-1 rounded border border-maestro-border bg-maestro-surface px-1.5 py-0.5 text-right text-[11px] text-maestro-text placeholder-maestro-muted/50 outline-none focus:border-maestro-accent"
         />
       </div>
+      {modelNote && modelNote !== settingsError && (
+        <p role="alert" className="text-[10px] text-maestro-red">
+          {modelNote} Runs still use {model ? `"${model}"` : "your default model"}.
+        </p>
+      )}
       <div className="flex items-center gap-2">
         <span className="flex-1 text-[10px] text-maestro-muted">
           {lastRunLabel(lastAttemptAt, lastRunAt)}
