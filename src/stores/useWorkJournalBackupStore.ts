@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "@tauri-apps/plugin-dialog";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { create } from "zustand";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
@@ -21,6 +21,12 @@ export const AUTO_BACKUP_WARNING_TITLE = "Work Journal backup failed";
 
 /** Title of the native warning shown when the guard skips an automatic backup. */
 export const AUTO_BACKUP_SKIPPED_TITLE = "Work Journal backup skipped";
+
+/**
+ * Title of the question asked before "Back up now" replaces another computer's
+ * backup, or one that cannot be read.
+ */
+export const REPLACE_OTHER_BACKUP_TITLE = "Replace the Work Journal backup?";
 
 /**
  * What the automatic backup does after a restore or undo: `paused` (the folder
@@ -60,6 +66,16 @@ export type BackupIfDueOutcome =
   | { status: "written"; journal: WorkJournalBackupFile }
   | { status: "idle" }
   | { status: "skipped"; message: string };
+
+/**
+ * What `work_journal_backup_now` did, tagged by `status`: `confirm_replace`
+ * means nothing was written, since the folder holds another computer's
+ * backup (or one that cannot be read); `message` is the question to ask
+ * before replacing it.
+ */
+export type BackupNowOutcome =
+  | { status: "written"; journal: WorkJournalBackupFile }
+  | { status: "confirm_replace"; message: string };
 
 interface WorkJournalBackupState {
   /** Folder the daily backup is written to; null while none is chosen. */
@@ -217,13 +233,25 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
     await get().backUpIfDue();
   },
 
-  // Always writes (the explicit override of the automatic guard). Failures
-  // stay inline only: the user is looking at the section.
+  // The explicit override of the automatic guard: always writes, except that
+  // another computer's backup is replaced only after the user agrees.
+  // Failures stay inline only: the user is looking at the section.
   backUpNow: async () => {
     set({ backingUp: true });
     try {
-      const journal = await invoke<WorkJournalBackupFile>("work_journal_backup_now");
-      set({ ...fromJournal(journal), ...WARNINGS_RESET, error: null, notice: null });
+      let outcome = await invoke<BackupNowOutcome>("work_journal_backup_now");
+      if (outcome?.status === "confirm_replace") {
+        const replace = await ask(outcome.message, {
+          title: REPLACE_OTHER_BACKUP_TITLE,
+          kind: "warning",
+        });
+        if (!replace) return;
+        outcome = await invoke<BackupNowOutcome>("work_journal_backup_now", {
+          replaceOtherComputer: true,
+        });
+      }
+      if (outcome?.status !== "written") return;
+      set({ ...fromJournal(outcome.journal), ...WARNINGS_RESET, error: null, notice: null });
     } catch (error) {
       console.error("Work Journal backup failed:", error);
       set({ error: errorMessage(error) });

@@ -27,6 +27,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: restoring or undoing a backup keeps this computer's last suggestions run, so nothing is suggested twice.",
       "Work Journal: the previous and next day arrows now move exactly one day, even to days with no page yet, so you can step to any date and create a page there.",
       "Work Journal: the suggestions badge now moves to the new day even if the computer slept through midnight.",
+      "Work Journal: two computers backing up to the same synced folder no longer overwrite each other's backup; you are asked before Back up now replaces another computer's backup.",
       "The + button in the top bar is back for every project, including one with no terminals yet, so you can always add a terminal from there (Ctrl+T works the same way).",
       "The new-terminal card stacks the window name, the working-directory choice and the Launch button one under the other, so Tab moves down through them in order.",
       "Work Journal: a damaged activity file that was set aside is now deleted after a day, like the rest of its activity data.",

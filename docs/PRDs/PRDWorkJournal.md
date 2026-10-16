@@ -389,6 +389,26 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 - Decided during the 2026-10-15 audit fixes, flagged for the user to confirm:
   the backup folder may not be the journal's own folder (exact match only; a
   parent folder is allowed); restore is unchanged.
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+  - Each install has its own journal id (a random UUID, created by its first
+    backup, kept local on restore and undo) and writes it into every backup.
+    The automatic backup never replaces a backup that carries another id
+    (another computer sharing the synced folder); it shows a warning once
+    instead. "Back up now" asks "Another computer's backup is in this folder.
+    Replace it?" before replacing one.
+  - A backup without an id (written by an older Maestro, or by this install
+    before the update) counts as this install's own and is replaced as
+    before, so existing users are not blocked. The cost: while one computer
+    still runs an older Maestro, and for the first backup after updating,
+    an overwrite between two computers is not caught.
+  - A backup that exists but cannot be read (an online-only file while
+    offline, a permission error, a half-synced or otherwise unparseable
+    file) counts as "can't tell": the automatic backup skips it with a
+    warning shown once, and "Back up now" asks before replacing it. Skipping
+    only costs a retry; replacing could wipe another computer's newest
+    backup.
+  - Restoring over a corrupt local journal loses this install's id; the next
+    backup creates a new one (and then asks before replacing the old backup).
 
 ### Restore
 
