@@ -57,6 +57,17 @@ const LOCK_FILE: &str = "activity.json.lock";
 /// instances are kept out by [`LOCK_FILE`]; take both with [`lock`].
 static FILE_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// How long to wait for another instance to release [`LOCK_FILE`].
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Pause between tries while another instance holds [`LOCK_FILE`].
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Hard privacy ceiling: another launch's terminal record that is still open
+/// is dropped once it was opened more than this many days ago, even while
+/// that launch still runs.
+const OPEN_CEILING_DAYS: i64 = 7;
+
 /// Errors from reading, changing or saving the activity file.
 #[derive(Debug, thiserror::Error)]
 pub enum ActivityError {
@@ -263,10 +274,24 @@ fn running(processes: HashSet<LaunchProcess>) -> HashSet<LaunchProcess> {
         .collect()
 }
 
+/// When this process last saw each other launch's process running (the
+/// `now` of that load). Used as the close time of its open records once it
+/// is gone, since it ran at least until then.
+fn last_seen_running() -> &'static std::sync::Mutex<HashMap<LaunchProcess, DateTime<Utc>>> {
+    type Seen = std::sync::Mutex<HashMap<LaunchProcess, DateTime<Utc>>>;
+    static SEEN: OnceLock<Seen> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
 /// The launch processes of `file` whose launch is not `launch`, that still
-/// have an open terminal record and are running right now. Errors count as
-/// not running, which keeps the old behaviour (the records get closed).
-async fn running_other_launches(file: &ActivityFile, launch: &str) -> HashSet<LaunchProcess> {
+/// have an open terminal record and are running right now; each is noted as
+/// seen running at `now`. Errors count as not running, which keeps the old
+/// behaviour (the records get closed).
+async fn running_other_launches(
+    file: &ActivityFile,
+    launch: &str,
+    now: DateTime<Utc>,
+) -> HashSet<LaunchProcess> {
     let wanted: HashSet<LaunchProcess> = file
         .terminals
         .iter()
@@ -276,21 +301,30 @@ async fn running_other_launches(file: &ActivityFile, launch: &str) -> HashSet<La
     if wanted.is_empty() {
         return HashSet::new();
     }
-    tokio::task::spawn_blocking(move || running(wanted))
+    let alive = tokio::task::spawn_blocking(move || running(wanted))
         .await
         .unwrap_or_else(|e| {
             log::warn!("work journal: could not check which Maestro launches still run: {e}");
             HashSet::new()
-        })
+        });
+    let mut seen = last_seen_running()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for process in &alive {
+        seen.insert(*process, now);
+    }
+    alive
 }
 
 /// Holds the OS lock on [`LOCK_FILE`] until dropped, on every path.
 struct CrossProcessLock(std::fs::File);
 
 impl CrossProcessLock {
-    /// Blocks until no other process holds the lock. Creates the folder and
-    /// the lock file when missing.
-    fn acquire(dir: &Path) -> ActivityResult<Self> {
+    /// Waits up to `wait` for no other process to hold the lock, then fails
+    /// with [`std::io::ErrorKind::TimedOut`], so a paused or hung instance
+    /// cannot hang this one (callers log the error and carry on). Creates
+    /// the folder and the lock file when missing. Blocking.
+    fn acquire(dir: &Path, wait: std::time::Duration) -> ActivityResult<Self> {
         std::fs::create_dir_all(dir).map_err(|source| ActivityError::CreateDir {
             path: dir.to_path_buf(),
             source,
@@ -305,9 +339,25 @@ impl CrossProcessLock {
                 path: path.clone(),
                 source,
             })?;
-        file.lock()
-            .map_err(|source| ActivityError::Lock { path, source })?;
-        Ok(Self(file))
+        let started = std::time::Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self(file)),
+                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < wait => {
+                    std::thread::sleep(LOCK_RETRY);
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    let source = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("another Maestro held it for more than {wait:?}"),
+                    );
+                    return Err(ActivityError::Lock { path, source });
+                }
+                Err(std::fs::TryLockError::Error(source)) => {
+                    return Err(ActivityError::Lock { path, source });
+                }
+            }
+        }
     }
 }
 
@@ -322,7 +372,7 @@ impl Drop for CrossProcessLock {
 /// instance never stalls the async runtime.
 async fn lock_cross_process(dir: &Path) -> ActivityResult<CrossProcessLock> {
     let owned = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || CrossProcessLock::acquire(&owned))
+    tokio::task::spawn_blocking(move || CrossProcessLock::acquire(&owned, LOCK_WAIT))
         .await
         .map_err(|e| ActivityError::Lock {
             path: dir.join(LOCK_FILE),
@@ -384,18 +434,22 @@ fn expired(stamp: &str, now: DateTime<Utc>) -> bool {
 /// Drops every expired entry. A terminal ages from its close; one with no
 /// close is kept if it belongs to `launch` (still open) or to another launch
 /// with a known process and a readable open time ([`close_stale`] has
-/// already closed those whose process is gone, so the rest still run), and
-/// otherwise ages from its open (only reachable when [`close_stale`] could
-/// not read it). A launch entry goes once no record refers to it. Returns
+/// already closed those whose process is gone, so the rest still run) and
+/// opened at most [`OPEN_CEILING_DAYS`] ago, and otherwise ages from its
+/// open (reachable when [`close_stale`] could not read it, or past the
+/// ceiling). A launch entry goes once no record refers to it. Returns
 /// whether anything was removed.
 fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
     let before = file.candidates.len() + file.terminals.len() + file.launches.len();
     file.candidates.retain(|c| !expired(&c.created_at, now));
     let launches = &file.launches;
+    let within_ceiling = |opened: &str| {
+        parse_stamp(opened).is_some_and(|o| now - o <= Duration::days(OPEN_CEILING_DAYS))
+    };
     file.terminals.retain(|t| match t.closed_at.as_deref() {
         Some(closed) => !expired(closed, now),
         None if t.launch_id == launch => true,
-        None if launches.contains_key(&t.launch_id) && parse_stamp(&t.opened_at).is_some() => true,
+        None if launches.contains_key(&t.launch_id) && within_ceiling(&t.opened_at) => true,
         None => !expired(&t.opened_at, now),
     });
     let terminals = &file.terminals;
@@ -411,7 +465,9 @@ fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
 /// launch with no known process (written before processes were stored) is
 /// treated as gone. The real close time is unknown, so it is estimated:
 ///
-/// - `bound` is the file's last-modified time as this launch first saw it,
+/// - When this process saw that launch running before (`last_seen`, from an
+///   earlier load), it ran at least until then, so that time is the end.
+/// - Otherwise `bound` is the file's last-modified time as this launch first saw it,
 ///   before this launch wrote anything. The earlier launch cannot have run
 ///   a terminal much past its last write to this file, so it is a bounded,
 ///   plausible end time — not an exact one.
@@ -425,6 +481,7 @@ fn close_stale(
     launch: &str,
     bound: Option<DateTime<Utc>>,
     running: &HashSet<LaunchProcess>,
+    last_seen: &HashMap<LaunchProcess, DateTime<Utc>>,
 ) -> bool {
     let mut changed = false;
     let launches = &file.launches;
@@ -438,7 +495,11 @@ fn close_stale(
         let Some(opened) = parse_stamp(&record.opened_at) else {
             continue; // unreadable: prune removes it
         };
-        let end = bound.map_or(opened, |b| b.max(opened));
+        let seen = launches
+            .get(&record.launch_id)
+            .and_then(|p| last_seen.get(p))
+            .copied();
+        let end = seen.or(bound).map_or(opened, |b| b.max(opened));
         record.closed_at = Some(stamp(end.with_timezone(&Local)));
         changed = true;
     }
@@ -523,8 +584,12 @@ async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> ActivityResult<Ac
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => ActivityFile::default(),
         Err(source) => return Err(ActivityError::Read { path, source }),
     };
-    let running = running_other_launches(&file, launch).await;
-    let closed = close_stale(&mut file, launch, bound, &running);
+    let running = running_other_launches(&file, launch, now).await;
+    let last_seen = last_seen_running()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let closed = close_stale(&mut file, launch, bound, &running, &last_seen);
     let pruned = prune(&mut file, now, launch);
     if closed || pruned {
         if let Err(e) = save(dir, &mut file, now, launch).await {
@@ -1305,6 +1370,8 @@ mod tests {
                 terminals: vec![
                     // Open for 30 hours in a running instance: kept, not pruned.
                     terminal("running", 1, &hours_ago(30), None),
+                    // Open for 8 days: past the privacy ceiling, dropped.
+                    terminal("running", 5, &hours_ago(8 * 24), None),
                     terminal("reused", 2, &hours_ago(3), None),
                     terminal("gone", 3, &hours_ago(3), None),
                     // Written before launches were stored: closed as before.
@@ -1329,7 +1396,78 @@ mod tests {
         assert!(closed(2), "a reused pid is not the same launch");
         assert!(closed(3), "a launch whose process is gone is closed");
         assert!(closed(4), "an old record without a process is closed");
+        assert!(
+            !file.terminals.iter().any(|t| t.session_id == 5),
+            "an open record older than the ceiling is dropped"
+        );
         assert_eq!(file.launches, launches, "launch entries are kept");
+    }
+
+    #[test]
+    fn test_waiting_for_the_lock_times_out_while_another_handle_holds_it() {
+        let dir = tempdir().unwrap();
+        let wait = std::time::Duration::from_millis(200);
+        let holder = CrossProcessLock::acquire(dir.path(), wait).unwrap();
+        let started = std::time::Instant::now();
+        match CrossProcessLock::acquire(dir.path(), wait) {
+            Err(ActivityError::Lock { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut)
+            }
+            other => panic!("expected a lock timeout, got {:?}", other.map(|_| ())),
+        }
+        assert!(started.elapsed() >= wait, "it waited before giving up");
+        drop(holder);
+        assert!(
+            CrossProcessLock::acquire(dir.path(), wait).is_ok(),
+            "free again once the holder lets go"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_launch_seen_running_then_gone_closes_at_its_last_seen_time() {
+        // A real process stands in for another running Maestro.
+        let mut child = if cfg!(windows) {
+            let mut ping = std::process::Command::new("ping");
+            ping.args(["-n", "60", "127.0.0.1"]);
+            ping
+        } else {
+            let mut sleep = std::process::Command::new("sleep");
+            sleep.arg("60");
+            sleep
+        }
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+        let pid = child.id();
+        let start_time = start_times(&[pid])[&pid];
+        let other = LaunchProcess { pid, start_time };
+
+        let dir = tempdir().unwrap();
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                candidates: vec![],
+                terminals: vec![terminal("other", 1, &hours_ago(6), None)],
+                launches: BTreeMap::from([("other".to_string(), other)]),
+            },
+        );
+        // This launch first saw the file 5 hours ago: the old fallback end.
+        set_mtime(dir.path(), Local::now() - Duration::hours(5));
+        let _guard = FILE_LOCK.lock().await;
+        let seen_at = Utc::now();
+        load(dir.path(), seen_at, LAUNCH).await.unwrap();
+        assert!(read_raw(dir.path()).terminals[0].closed_at.is_none());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        let record = &read_raw(dir.path()).terminals[0];
+        let closed = parse_stamp(record.closed_at.as_deref().unwrap()).unwrap();
+        // Stamps keep whole seconds, so allow the truncated fraction.
+        assert!(
+            closed >= seen_at - Duration::seconds(1),
+            "closed at {closed}, last seen running at {seen_at}"
+        );
     }
 
     #[tokio::test]
