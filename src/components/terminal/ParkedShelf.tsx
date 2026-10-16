@@ -2,6 +2,7 @@ import { useMemo } from "react";
 
 import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import {
   type BackendSessionStatus,
@@ -184,9 +185,7 @@ export function ParkedShelf({
                 {project}
               </span>
             )}
-            <span className="max-w-[140px] truncate">
-              {sess.name?.trim() || `Session #${sess.id}`}
-            </span>
+            <span className="max-w-[140px] truncate">{sessionDisplayName(sess)}</span>
           </button>
         );
       })}

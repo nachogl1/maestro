@@ -109,6 +109,10 @@ pub struct HookSessionStartRequest {
     pub transcript_path: String,
     pub cwd: String,
     pub hook_event_name: String,
+    /// Why the session started: "startup", "resume", "clear" or "compact".
+    /// Absent on older Claude Code versions.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Generic request payload for hooks that don't need special fields.
@@ -522,9 +526,18 @@ async fn handle_hook_session_start(
     }
 
     info!(
-        "[HOOK] session-start: maestro_session={}, claude_session={}, cwd={}",
-        maestro_session_id, payload.session_id, payload.cwd
+        "[HOOK] session-start: maestro_session={}, claude_session={}, cwd={}, source={:?}",
+        maestro_session_id, payload.session_id, payload.cwd, payload.source
     );
+
+    // Claude Code fires SessionStart with source "compact" when it compacts
+    // the conversation, often in the middle of a running turn. It is the same
+    // process and the same transcript, so neither the resetting
+    // SessionStarted event (it would wipe the activity feed and token totals)
+    // nor the "Idle" status (the turn is still running) applies.
+    if payload.source.as_deref() == Some("compact") {
+        return StatusCode::OK;
+    }
 
     let event = ClaudeEvent::SessionStarted {
         session_id: maestro_session_id,
@@ -1319,6 +1332,63 @@ mod tests {
         // A freshly started CLI sits at its prompt: Idle, not Working.
         assert_eq!(emitted[0].status, "Idle");
         assert_eq!(emitted[0].message, "Session started");
+    }
+
+    #[tokio::test]
+    async fn session_start_hook_with_compact_source_emits_no_status() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, state) = start_test_http_server_with_state("inst-secret", emit_fn).await;
+        state
+            .session_projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let projects_dir = state.claude_projects_dir.as_ref().unwrap();
+        let transcript = projects_dir.join("enc/t.jsonl");
+        let body = serde_json::json!({
+            "session_id": "claude-uuid",
+            "transcript_path": transcript.to_string_lossy(),
+            "cwd": "/tmp",
+            "hook_event_name": "SessionStart",
+            "source": "compact",
+        });
+        assert_eq!(
+            post_hook(addr, "/hook/session-start", Some("inst-secret"), body).await,
+            200
+        );
+
+        // Compaction happens mid-turn: no "Idle" flash.
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_start_hook_with_startup_source_still_emits_idle() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, state) = start_test_http_server_with_state("inst-secret", emit_fn).await;
+        state
+            .session_projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let projects_dir = state.claude_projects_dir.as_ref().unwrap();
+        let transcript = projects_dir.join("enc/t.jsonl");
+        let body = serde_json::json!({
+            "session_id": "claude-uuid",
+            "transcript_path": transcript.to_string_lossy(),
+            "cwd": "/tmp",
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+        });
+        assert_eq!(
+            post_hook(addr, "/hook/session-start", Some("inst-secret"), body).await,
+            200
+        );
+
+        let emitted = events.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].status, "Idle");
     }
 
     #[tokio::test]
@@ -2329,6 +2399,34 @@ mod tests {
             }
             other => panic!("Expected SessionStarted, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_hook_session_start_compact_emits_no_session_started() {
+        let (hook_events, port, projects_dir) = start_test_http_server_with_hooks().await;
+
+        let transcript = projects_dir.join("enc/transcript.jsonl");
+        let body = serde_json::json!({
+            "session_id": "claude-uuid-123",
+            "transcript_path": transcript.to_string_lossy(),
+            "cwd": "/home/user/project",
+            "hook_event_name": "SessionStart",
+            "source": "compact"
+        });
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/hook/session-start", port))
+            .header("X-Maestro-Session", "42")
+            .header("X-Maestro-Instance", "test-instance")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status().as_u16(), 200);
+        // A SessionStarted here would reset the activity feed and token
+        // totals of a session that is still the same running process.
+        assert!(hook_events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

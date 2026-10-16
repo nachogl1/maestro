@@ -61,6 +61,9 @@ export function PluginInstallModal({
 
     if (result) {
       onInstalled();
+    } else {
+      // The store keeps the failure in its own `error`; show it here, above the list.
+      setError(useMarketplaceStore.getState().error ?? "Install failed");
     }
   };
 

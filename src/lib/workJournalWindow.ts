@@ -1,10 +1,11 @@
-import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   useWorkJournalCandidateRunStore,
   type WorkJournalCandidateRunState,
 } from "@/stores/useWorkJournalCandidateRunStore";
+import { flushWorkJournalSaves } from "@/stores/useWorkJournalStore";
 
 /**
  * The Work Journal can pop out of the right pane into its own OS window
@@ -40,6 +41,21 @@ export const WORK_JOURNAL_RUN_STATE_EVENT = "work-journal:run-state";
  * copies of other stores never write stale values back.
  */
 export const WORK_JOURNAL_OPEN_SETTINGS_EVENT = "work-journal:open-settings";
+
+/**
+ * Backend → every window: Maestro is quitting; save the Work Journal text
+ * still waiting here, then answer with {@link WORK_JOURNAL_QUIT_FLUSHED_EVENT}.
+ * See `QUIT_FLUSH_EVENT` in `src-tauri/src/core/work_journal_quit.rs`.
+ */
+export const WORK_JOURNAL_QUIT_FLUSH_EVENT = "work-journal:quit-flush";
+/** Window → backend: this window's saves have finished (payload: its label). */
+export const WORK_JOURNAL_QUIT_FLUSHED_EVENT = "work-journal:quit-flushed";
+
+/** Payload of {@link WORK_JOURNAL_QUIT_FLUSHED_EVENT}. */
+export interface WorkJournalQuitFlushedPayload {
+  /** Label of the window whose saves have finished. */
+  label: string | null;
+}
 
 /** Payload of {@link WORK_JOURNAL_CHANGED_EVENT}. */
 export interface WorkJournalChangedPayload {
@@ -128,6 +144,28 @@ export async function listenWorkJournalReplacing(
   });
 }
 
+/**
+ * Both windows: when Maestro quits, the backend asks every window to save
+ * the text (and a page title) still waiting for the debounce, or whose save
+ * failed, and waits a short while for each answer before closing the
+ * windows. The answer is sent even when a save failed, so quitting is never
+ * held up longer than needed. Returns the stop function.
+ */
+export async function answerWorkJournalQuitFlush(): Promise<UnlistenFn> {
+  const label = currentWindowLabel();
+  return listen(WORK_JOURNAL_QUIT_FLUSH_EVENT, async () => {
+    try {
+      await flushWorkJournalSaves();
+    } catch (err) {
+      console.error("Failed to save the Work Journal before quitting:", err);
+    }
+    const payload: WorkJournalQuitFlushedPayload = { label };
+    await emit(WORK_JOURNAL_QUIT_FLUSHED_EVENT, payload).catch((err) =>
+      console.error("Failed to tell Maestro the Work Journal is saved:", err),
+    );
+  });
+}
+
 /** The data fields of the run store (functions are left out). */
 function runStateSnapshot(state: WorkJournalCandidateRunState): WorkJournalRunStateSnapshot {
   return Object.fromEntries(
@@ -155,12 +193,15 @@ export async function serveWorkJournalWindow(runNow: () => void): Promise<Unlist
   const stopChanged = await listenWorkJournalChanged(() => {
     void useWorkJournalCandidateRunStore.getState().load();
   });
+  // This window's own unsaved journal text is saved when Maestro quits.
+  const stopQuitFlush = await answerWorkJournalQuitFlush();
   const unsubscribe = useWorkJournalCandidateRunStore.subscribe(send);
   return () => {
     stopRunNow();
     stopRequest();
     stopSettings();
     stopChanged();
+    stopQuitFlush();
     unsubscribe();
   };
 }

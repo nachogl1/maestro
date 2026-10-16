@@ -406,29 +406,46 @@ pub async fn get_claude_usage(force_refresh: Option<bool>) -> Result<UsageData, 
         }
     }
 
-    let result = fetch_usage_from_api().await;
-
-    // Cache successful responses (and auth errors, since those won't change quickly)
-    if let Ok(ref data) = result {
-        if let Ok(mut guard) = USAGE_CACHE.lock() {
-            *guard = Some((Instant::now(), CACHE_TTL_SECS, data.clone()));
-        }
-    }
-
-    result
+    cache_fetch_result(fetch_usage_from_api().await)
 }
 
-/// Actually fetch usage data from the API (uncached).
-async fn fetch_usage_from_api() -> Result<UsageData, String> {
+/// Caches a fetched response (and auth errors, since those won't change
+/// quickly) for the TTL the fetch chose, and strips that TTL off. A 429 picks
+/// the server's retry-after; overwriting it with the 30s default made Maestro
+/// re-request before the server allowed.
+fn cache_fetch_result(result: Result<(UsageData, u64), String>) -> Result<UsageData, String> {
+    let (data, ttl) = result?;
+    if let Ok(mut guard) = USAGE_CACHE.lock() {
+        *guard = Some((Instant::now(), ttl, data.clone()));
+    }
+    Ok(data)
+}
+
+/// The response for a 429, cached for `retry_after` seconds so we don't
+/// retry before the server allows.
+fn rate_limited_usage(retry_after: u64) -> (UsageData, u64) {
+    let data = UsageData {
+        error_message: Some(format!("Rate limited, retrying in {}s", retry_after)),
+        ..Default::default()
+    };
+    (data, retry_after)
+}
+
+/// Actually fetch usage data from the API (uncached). Returns the data and
+/// how many seconds it may be served from the cache.
+async fn fetch_usage_from_api() -> Result<(UsageData, u64), String> {
     let token = match get_access_token().await {
         Ok(t) => t,
         Err(e) => {
             log::debug!("No valid token: {}", e);
-            return Ok(UsageData {
-                error_message: Some(e),
-                needs_auth: true,
-                ..Default::default()
-            });
+            return Ok((
+                UsageData {
+                    error_message: Some(e),
+                    needs_auth: true,
+                    ..Default::default()
+                },
+                CACHE_TTL_SECS,
+            ));
         }
     };
 
@@ -445,11 +462,14 @@ async fn fetch_usage_from_api() -> Result<UsageData, String> {
     // Handle auth errors
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         log::debug!("Usage API returned 401");
-        return Ok(UsageData {
-            error_message: Some("Session expired".to_string()),
-            needs_auth: true,
-            ..Default::default()
-        });
+        return Ok((
+            UsageData {
+                error_message: Some("Session expired".to_string()),
+                needs_auth: true,
+                ..Default::default()
+            },
+            CACHE_TTL_SECS,
+        ));
     }
 
     // Handle rate limiting (429) — extend cache TTL to avoid hammering the API
@@ -461,24 +481,19 @@ async fn fetch_usage_from_api() -> Result<UsageData, String> {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
         log::warn!("Usage API returned 429, retry after {}s", retry_after);
-        let data = UsageData {
-            error_message: Some(format!("Rate limited, retrying in {}s", retry_after)),
-            ..Default::default()
-        };
-        // Cache the 429 response using retry-after as TTL so we don't retry before the server allows
-        if let Ok(mut guard) = USAGE_CACHE.lock() {
-            *guard = Some((Instant::now(), retry_after, data.clone()));
-        }
-        return Ok(data);
+        return Ok(rate_limited_usage(retry_after));
     }
 
     if !response.status().is_success() {
         let status = response.status();
         log::warn!("Usage API returned {}", status);
-        return Ok(UsageData {
-            error_message: Some(format!("API error: {}", status)),
-            ..Default::default()
-        });
+        return Ok((
+            UsageData {
+                error_message: Some(format!("API error: {}", status)),
+                ..Default::default()
+            },
+            CACHE_TTL_SECS,
+        ));
     }
 
     let api_response: ApiUsageResponse = response
@@ -495,7 +510,7 @@ async fn fetch_usage_from_api() -> Result<UsageData, String> {
         usage.spend_percent
     );
 
-    Ok(usage)
+    Ok((usage, CACHE_TTL_SECS))
 }
 
 /// Account info reported by `claude auth status`.
@@ -616,6 +631,20 @@ mod tests {
         "limits": [],
         "spend": {"percent": 0, "severity": "normal"}
     }"#;
+
+    /// The only test touching USAGE_CACHE, so it cannot race another test.
+    #[test]
+    fn rate_limited_response_keeps_retry_after_ttl_in_cache() {
+        let data = cache_fetch_result(Ok(rate_limited_usage(120))).unwrap();
+        assert_eq!(
+            data.error_message.as_deref(),
+            Some("Rate limited, retrying in 120s")
+        );
+        let guard = USAGE_CACHE.lock().unwrap();
+        let (_, ttl, _) = guard.as_ref().unwrap();
+        // Was overwritten with the 30s default (CACHE_TTL_SECS).
+        assert_eq!(*ttl, 120);
+    }
 
     #[test]
     fn maps_enterprise_response_to_spend_window_only() {

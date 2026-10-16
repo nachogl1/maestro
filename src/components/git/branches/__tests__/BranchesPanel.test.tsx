@@ -70,6 +70,7 @@ function mockInvoke(opts: {
   worktrees?: MockWorktree[][];
   authLoggedIn?: boolean;
   prs?: unknown[];
+  fetchAllError?: string;
 }) {
   const worktreeQueue = opts.worktrees ?? [[]];
   let worktreeCall = 0;
@@ -86,6 +87,9 @@ function mockInvoke(opts: {
         return worktreeQueue[idx];
       }
       case "git_worktree_remove":
+        return undefined;
+      case "git_fetch_all":
+        if (opts.fetchAllError) throw opts.fetchAllError;
         return undefined;
       case "github_auth_status":
         return {
@@ -316,5 +320,23 @@ describe("BranchesPanel", () => {
     expect(screen.getByText("Local (1)")).toBeInTheDocument();
     expect(screen.queryByText("No local branches match")).not.toBeInTheDocument();
     expect(screen.queryByText("No worktrees match")).not.toBeInTheDocument();
+  });
+
+  it("shows the error when Fetch all remotes fails", async () => {
+    mockInvoke({
+      branches: [branch({ name: "feature-x" })],
+      fetchAllError: "fatal: unable to access remote",
+    });
+
+    render(<BranchesPanel repoPath="/repo" />);
+
+    expect(await screen.findByText("feature-x")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("Fetch all remotes (with prune)"));
+
+    expect(await screen.findByText("fatal: unable to access remote")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTitle("Fetch all remotes (with prune)")).not.toBeDisabled();
+    });
   });
 });

@@ -93,8 +93,8 @@ export interface WorkJournalCandidateRunState {
   runNow: (projects: string[]) => Promise<void>;
   /** Saves "run every X hours"; values outside 1–24 are clamped, non-numbers ignored. */
   setRunEveryHours: (hours: number) => Promise<void>;
-  /** Saves the model; blank means the user's default model. */
-  setModel: (model: string) => Promise<void>;
+  /** Saves the model; blank means the user's default model. True when saved. */
+  setModel: (model: string) => Promise<boolean>;
   /** Saves the Granola opt-in (Yes or No). */
   setGranolaOptIn: (optIn: boolean) => Promise<void>;
 }
@@ -216,9 +216,11 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
     try {
       const journal = await patchSettings({ model: value === "" ? null : value });
       set({ ...fromJournal(journal), settingsError: null });
+      return true;
     } catch (error) {
       console.error("Failed to save the Work Journal model:", error);
       set({ settingsError: `Could not save the model: ${errorMessage(error)}` });
+      return false;
     }
   },
 

@@ -106,7 +106,7 @@ function App() {
   // whenever repoPath changes, so no per-project tab state is needed.
   const [gitPanelTab, setGitPanelTab] = useState<GitPanelTab>("status");
   const [sessionCounts, setSessionCounts] = useState<
-    Map<string, { slotCount: number; launchedCount: number }>
+    Map<string, { slotCount: number; launchedCount: number; occupiedCount: number }>
   >(new Map());
   const [isStoppingAll, setIsStoppingAll] = useState(false);
   const [currentBranch, setCurrentBranch] = useState<string | undefined>(undefined);
@@ -288,6 +288,9 @@ function App() {
   const activeTabCounts = activeTab ? sessionCounts.get(activeTab.id) : undefined;
   const activeTabSlotCount = activeTabCounts?.slotCount ?? 0;
   const activeTabLaunchedCount = activeTabCounts?.launchedCount ?? 0;
+  // What the "+" button weighs against MAX_SESSIONS: parked samurai terminal-state
+  // tiles are exempt, same as addSession, so the button and Ctrl+T agree.
+  const activeTabOccupiedCount = activeTabCounts?.occupiedCount ?? 0;
 
   const handleStopAll = useCallback(async () => {
     if (!activeTab || isStoppingAll) return;
@@ -302,10 +305,16 @@ function App() {
         }
       }
       await sessionStore.removeSessionsForProject(activeTab.projectPath);
+      // Drop the dead ids from the tab too, or the close-tab confirm and the
+      // eagle zoom strip keep counting terminals that no longer run.
+      const { removeSessionFromProject } = useWorkspaceStore.getState();
+      for (const s of projectSessions) {
+        removeSessionFromProject(activeTab.id, s.id);
+      }
       setSessionsLaunched(activeTab.id, false);
       setSessionCounts((prev) => {
         const next = new Map(prev);
-        next.set(activeTab.id, { slotCount: 0, launchedCount: 0 });
+        next.set(activeTab.id, { slotCount: 0, launchedCount: 0, occupiedCount: 0 });
         return next;
       });
     } finally {
@@ -343,7 +352,7 @@ function App() {
     tabId: t.id,
     name: t.name,
     color: projectColors.get(t.name) ?? projectColorFor(t.name),
-    atMax: (sessionCounts.get(t.id)?.slotCount ?? 0) >= MAX_SESSIONS,
+    atMax: (sessionCounts.get(t.id)?.occupiedCount ?? 0) >= MAX_SESSIONS,
   }));
 
   const handleAddSessionToProject = useCallback(
@@ -518,10 +527,10 @@ function App() {
   };
 
   const handleSessionCountChange = useCallback(
-    (tabId: string, slotCount: number, launchedCount: number) => {
+    (tabId: string, slotCount: number, launchedCount: number, occupiedCount: number) => {
       setSessionCounts((prev) => {
         const next = new Map(prev);
-        next.set(tabId, { slotCount, launchedCount });
+        next.set(tabId, { slotCount, launchedCount, occupiedCount });
         return next;
       });
     },
@@ -582,7 +591,7 @@ function App() {
               gitPanelOpen={gitPanelOpen}
               hideWindowControls
               hasActiveProject={activeTab != null}
-              slotCount={activeTabSlotCount}
+              slotCount={activeTabOccupiedCount}
               maxSessions={MAX_SESSIONS}
               onAddSession={handleAddSessionShortcut}
               eagleView={eagleView}

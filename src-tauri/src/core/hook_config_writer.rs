@@ -19,11 +19,13 @@ use super::mcp_config_writer::{atomic_write, dir_lock};
 
 /// Builds the hooks configuration JSON for a session.
 ///
-/// Generates hook entries for SessionStart, SessionEnd, PreToolUse, and Stop.
-/// Each hook uses curl to POST event data back to Maestro's HTTP server.
+/// Generates hook entries for SessionStart, SessionEnd, PreToolUse,
+/// PostToolUse, Stop, Notification and UserPromptSubmit. Each hook uses curl
+/// to POST event data back to Maestro's HTTP server.
 ///
-/// Note: PreToolUse is marked `"async": true` (fire-and-forget) so it doesn't
-/// block Claude Code. The other hooks do NOT have the async flag.
+/// Note: PreToolUse, PostToolUse, Notification and UserPromptSubmit are
+/// marked `"async": true` (fire-and-forget) so they don't block Claude Code.
+/// SessionStart, SessionEnd and Stop do NOT have the async flag.
 fn build_hooks_config(session_id: u32, status_port: u16, instance_id: &str) -> Value {
     let base_url = format!("http://127.0.0.1:{}", status_port);
     let common_headers = format!(

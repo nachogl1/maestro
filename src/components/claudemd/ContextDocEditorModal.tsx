@@ -97,8 +97,8 @@ export function ContextDocEditorModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Close on outside click or Escape
-  useDismissable(onClose, { ref: modalRef });
+  // Close on Escape only: an outside click must not throw away unsaved edits.
+  useDismissable(onClose);
 
   useEffect(() => {
     textareaRef.current?.focus();

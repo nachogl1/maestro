@@ -158,10 +158,12 @@ describe("IssueMapModal", () => {
     });
   });
 
-  // Renders the maximum number of issues on purpose, which takes several seconds when
-  // the whole suite runs in parallel on a loaded machine; the default 5 s is too tight.
   it("warns in the header and in the saved HTML when the fetch hit the issue limit", async () => {
-    const many = Array.from({ length: MAP_ISSUE_LIMIT }, (_, i) => buildIssue({ number: i + 1 }));
+    // Only #1 and #2 are open: closed issues start hidden, so the modal does not
+    // render a thousand boxes (that alone took ~5 s under load and timed out).
+    const many = Array.from({ length: MAP_ISSUE_LIMIT }, (_, i) =>
+      buildIssue({ number: i + 1, state: i < 2 ? "OPEN" : "CLOSED" }),
+    );
     mockBackend({ issues: many });
     useGitHubStore.setState({ authStatus: { logged_in: true, username: "alice", scopes: [] } });
     vi.mocked(save).mockResolvedValue("C:/exports/map.html");
@@ -178,7 +180,7 @@ describe("IssueMapModal", () => {
     expect((call?.[1] as { content: string }).content).toContain(
       `<div id="limit">${warning}</div>`,
     );
-  }, 20_000);
+  });
 
   it("prints label chips on the box", async () => {
     renderModal();

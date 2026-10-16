@@ -138,6 +138,12 @@ pub struct ScheduleEntry {
     /// UI can offer launch-or-discard either way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// Set on the resumer's DEFERRAL re-arm (`samurai_resumer::defer`): the
+    /// same park pushed out under a new `fire_at`, not a new park. The
+    /// frontend reads it to move the existing park alert's resume time in
+    /// place instead of announcing "Samurai parked" again on every lap.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
 }
 
 /// The persisted timer store + in-memory mirror. Constructed once at app
@@ -575,6 +581,7 @@ mod tests {
             reason: "park".to_string(),
             launch: None,
             held: false,
+            deferred: false,
         }
     }
 
@@ -932,6 +939,7 @@ mod tests {
         unheld
             .arm(ScheduleEntry {
                 held: false,
+                deferred: false,
                 ..overdue
             })
             .unwrap();
@@ -997,6 +1005,25 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].launch, None);
         assert!(!loaded[0].held);
+        assert!(!loaded[0].deferred);
+    }
+
+    /// Audit 2026-10-15 #7: the deferral marker reaches the frontend as
+    /// `"deferred": true` and is omitted on every ordinary timer, so the
+    /// on-disk shape of a plain park is unchanged.
+    #[test]
+    fn test_deferred_marker_serializes_only_when_set() {
+        let plain = entry("C:/git/alpha", "#37", "2030-01-01T00:00:00+00:00");
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("deferred").is_none(), "omitted when false: {json}");
+        let deferred = ScheduleEntry {
+            deferred: true,
+            ..plain
+        };
+        let json = serde_json::to_value(&deferred).unwrap();
+        assert_eq!(json["deferred"], true);
+        let back: ScheduleEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, deferred);
     }
 
     #[test]

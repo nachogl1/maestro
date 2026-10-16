@@ -347,6 +347,17 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   inside the 400 ms typing pause when the page is deleted elsewhere is dropped
   without a notice, and so is a failed save whose page is deleted while that
   window's Work Journal is closed (the notice only shows while it is open).
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+  quitting Maestro from the main window first asks the pane and the pop-out to
+  save text (and a page title being edited) still inside the typing pause, and
+  to retry a failed save once, and waits up to 1.5 seconds for both to answer
+  before the windows close. A save that still fails is lost on quit: the
+  pop-out's "Close and lose it / Keep open" question only shows when the
+  pop-out itself is closed, not when Maestro quits. Quitting with no
+  terminals open can now take up to 1.5 seconds longer when a window does not
+  answer. A half-typed page title is also saved when the other window starts a
+  restore or undo, the same as page text (it then lands only in the safety
+  copy).
 
 ### Storage and backup
 
@@ -513,6 +524,12 @@ A Work Journal section in Maestro Settings holds:
 - Candidate schedule: "run every X hours" while Maestro is open (default 1).
 - Model for candidate runs and reports (default: the user's default Claude
   model).
+  Decided during the 2026-10-16 audit fixes, flagged for the user to confirm: a
+  model name a run would refuse (a space, a leading `-`, or a character other
+  than ASCII letters, digits and `-._:[]/@`) is refused when it is saved,
+  with the same message a run shows, and nothing in that save is changed.
+  Blank still means the default model. A name saved before this check stays
+  until edited; the run still refuses it with the same message.
 - Backup folder, "Back up now", last backup time, "Restore from backup",
   "Undo restore".
 - Report folder.

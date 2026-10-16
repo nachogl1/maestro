@@ -42,8 +42,8 @@ interface GitSettingsModalProps {
 export function GitSettingsModal({ repoPath, tabId, onClose }: GitSettingsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
 
-  // Close on outside click or Escape
-  useDismissable(onClose, { ref: modalRef });
+  // Close on Escape only: an outside click must not throw away unsaved edits.
+  useDismissable(onClose);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">

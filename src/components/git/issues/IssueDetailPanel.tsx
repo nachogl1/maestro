@@ -2,6 +2,7 @@ import { CheckCircle2, CircleDot, ExternalLink, Loader2, MessageSquare, X } from
 import { useState } from "react";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { CommentList } from "../shared/CommentList";
+import { DetailLoadError } from "../shared/DetailLoadError";
 import { MarkdownBody } from "../shared/MarkdownBody";
 
 interface IssueDetailPanelProps {
@@ -10,8 +11,14 @@ interface IssueDetailPanelProps {
 }
 
 export function IssueDetailPanel({ repoPath, onClose }: IssueDetailPanelProps) {
-  const { selectedIssue, isLoadingIssueDetail, closeIssue, reopenIssue, commentIssue } =
-    useGitHubStore();
+  const {
+    selectedIssue,
+    isLoadingIssueDetail,
+    issueDetailError,
+    closeIssue,
+    reopenIssue,
+    commentIssue,
+  } = useGitHubStore();
 
   const [commentText, setCommentText] = useState("");
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
@@ -27,7 +34,7 @@ export function IssueDetailPanel({ repoPath, onClose }: IssueDetailPanelProps) {
   }
 
   if (!selectedIssue) {
-    return null;
+    return <DetailLoadError itemLabel="issue" error={issueDetailError} onClose={onClose} />;
   }
 
   const isOpen = selectedIssue.state.toUpperCase() === "OPEN";
@@ -99,7 +106,8 @@ export function IssueDetailPanel({ repoPath, onClose }: IssueDetailPanelProps) {
 
         {/* Author and date */}
         <div className="mb-3 text-[10px] text-maestro-muted">
-          by {selectedIssue.author.login} on{" "}
+          {/* A deleted GitHub account comes back with an empty login. */}
+          {selectedIssue.author.login ? `by ${selectedIssue.author.login} on` : "Opened on"}{" "}
           {new Date(selectedIssue.createdAt).toLocaleDateString()}
         </div>
 

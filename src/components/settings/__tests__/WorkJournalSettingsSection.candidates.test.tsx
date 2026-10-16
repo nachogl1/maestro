@@ -129,6 +129,64 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     ]);
   });
 
+  it("shows the refusal and keeps the saved model when the model name is invalid", async () => {
+    const refusal =
+      'The Work Journal model "claude opus" is not a valid model name. Change it in Settings or leave it blank for your default model.';
+    routeInvoke({
+      load_work_journal: () => journal({ model: "sonnet" }),
+      update_work_journal_settings: () => {
+        throw refusal;
+      },
+    });
+    await useWorkJournalCandidateRunStore.getState().load();
+    render(<WorkJournalSettingsSection />);
+    const input = screen.getByLabelText("Model");
+
+    fireEvent.change(input, { target: { value: "claude opus" } });
+    fireEvent.blur(input);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `Could not save the model: ${refusal}`,
+    );
+    expect(useWorkJournalCandidateRunStore.getState().model).toBe("sonnet");
+    expect(input).toHaveValue("claude opus");
+  });
+
+  it("keeps a refused model warning after another setting saves", async () => {
+    const refusal = 'The Work Journal model "claude opus" is not a valid model name.';
+    routeInvoke({
+      load_work_journal: () => journal({ model: "sonnet" }),
+      update_work_journal_settings: (args) => {
+        const settings = (args as { settings: WorkJournalCandidateRunSettings }).settings;
+        if (settings.model !== undefined) throw refusal;
+        return journal({ model: "sonnet", ...settings });
+      },
+    });
+    await useWorkJournalCandidateRunStore.getState().load();
+    render(<WorkJournalSettingsSection />);
+    const model = screen.getByLabelText("Model");
+
+    fireEvent.change(model, { target: { value: "claude opus" } });
+    fireEvent.blur(model);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `Could not save the model: ${refusal}`,
+    );
+
+    const hours = screen.getByLabelText("Run every");
+    fireEvent.change(hours, { target: { value: "3" } });
+    fireEvent.blur(hours);
+    await waitFor(() => expect(useWorkJournalCandidateRunStore.getState().runEveryHours).toBe(3));
+
+    expect(useWorkJournalCandidateRunStore.getState().settingsError).toBeNull();
+    expect(model).toHaveValue("claude opus");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      `Could not save the model: ${refusal} Runs still use "sonnet".`,
+    );
+
+    fireEvent.change(model, { target: { value: "claude-opus" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("runs with the open projects' paths and shows the new last run time", async () => {
     const lastRunAt = "2026-10-15T12:34:00Z";
     const lastAttemptAt = "2026-10-15T12:33:00Z";

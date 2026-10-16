@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
 import { formatTimeAgo } from "@/lib/format";
+import { isWindows } from "@/lib/platform";
 import type { SamuraiConfig } from "@/lib/samurai";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 import { WorkJournalSettingsSection } from "./WorkJournalSettingsSection";
@@ -120,7 +121,7 @@ const HINTS = {
     "as a project in Maestro.",
   installCli:
     "Adds the maestro command to your computer so you can open projects from a terminal " +
-    "window. Windows may ask for permission.",
+    "window.",
   uninstallCli: "Removes the maestro command from your computer. Maestro itself keeps working.",
   advanced: "Settings most people never need to change.",
   endpoint:
@@ -417,6 +418,9 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
                       Uninstall
                     </button>
                   </>
+                ) : isWindows() ? (
+                  // The backend refuses: the command is a POSIX shell script.
+                  <div className="text-[11px] text-maestro-muted">Not available on Windows.</div>
                 ) : (
                   <button
                     type="button"
