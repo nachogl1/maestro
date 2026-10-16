@@ -215,12 +215,16 @@ pub fn run() {
                     // Work journal: save the text still waiting in its windows
                     // first; destroying them skips their own close-time save.
                     api.prevent_close();
-                    QUITTING.store(true, Ordering::SeqCst);
+                    if QUITTING.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
                     let win = window.clone();
                     tauri::async_runtime::spawn(async move {
                         crate::core::work_journal_quit::flush_before_quit(win.app_handle()).await;
                         if let Err(e) = win.destroy() {
                             log::error!("Failed to destroy window during quit: {e}");
+                            // Let the user try again rather than ignore every later close.
+                            QUITTING.store(false, Ordering::SeqCst);
                         }
                     });
                     return;
@@ -257,6 +261,8 @@ pub fn run() {
                                 .await;
                             if let Err(e) = win.destroy() {
                                 log::error!("Failed to destroy window during quit: {e}");
+                                // Let the user try again rather than ignore every later close.
+                                QUITTING.store(false, Ordering::SeqCst);
                             }
                         });
                     });
