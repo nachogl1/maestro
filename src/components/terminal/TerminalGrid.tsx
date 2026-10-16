@@ -33,6 +33,7 @@ import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
 import { useSlotLaunch } from "@/hooks/useSlotLaunch";
 import { useTerminalDragDrop } from "@/hooks/useTerminalDragDrop";
 import { useTerminalKeyboard } from "@/hooks/useTerminalKeyboard";
+import { EAGLE_UNITS, fitsFree, placeTileAt, type TileRect } from "@/lib/eagleLayout";
 import {
   type BranchWithWorktreeStatus,
   getBranchesWithWorktreeStatus,
@@ -40,17 +41,13 @@ import {
 } from "@/lib/git";
 import { type McpServerConfig, removeOpenCodeMcpConfig, removeSessionMcpConfig } from "@/lib/mcp";
 import {
-  clampSpan,
-  type EagleDropZone,
-  eagleDropZone,
   type MoveDirection,
   neighbourInDirection,
   type PaneDropZone,
+  type PaneEdge,
   paneDropZone,
   STAGE_EDGE_RATIO,
   stageEdgeAt,
-  type TileSpan,
-  tileSpanLabel,
 } from "@/lib/paneMoves";
 import {
   loadBranchConfig,
@@ -222,22 +219,40 @@ interface TerminalGridProps {
    * terminals are already on screen.
    */
   pinnedTileStyles?: ReadonlyMap<number, React.CSSProperties> | null;
-  /**
-   * Eagle view: display position of each launched tile (session id → index)
-   * in the user's free order; tiles not listed go after the ordered ones.
-   */
-  eagleTileRank?: ReadonlyMap<number, number>;
-  /** Eagle view: tile sizes per session id (columns × rows); absent = 1×1. */
-  eagleTileSpans?: Readonly<Record<number, TileSpan>>;
-  /** Eagle view: current column count — a tile is never wider than the grid. */
-  eagleColumnCount?: number;
-  /** Eagle view: a tile was dropped before/after/onto another tile (session ids). */
-  onEagleReorder?: (srcSessionId: number, destSessionId: number, zone: EagleDropZone) => void;
-  /** Eagle view: Alt+Shift+Arrow — move a tile one step in the grid. */
+  /** Eagle view: each launched tile's place and size in the grid (session id → rect). */
+  eagleTileRects?: ReadonlyMap<number, TileRect>;
+  /** Eagle view: rects for this project's pre-launch cards, in card order. */
+  eaglePendingRects?: readonly TileRect[];
+  /** Eagle view: every placed tile of every project — what a move or resize must not overlap. */
+  eagleOccupied?: readonly EagleOccupiedTile[];
+  /** Eagle view: a tile was dropped onto another tile (swap) or onto empty grid space. */
+  onEagleDrop?: (sessionId: number, target: EagleDropTarget) => void;
+  /** Eagle view: Alt+Shift+Arrow — swap a tile with its neighbour in that direction. */
   onEagleMoveTile?: (sessionId: number, direction: MoveDirection) => void;
-  /** Eagle view: the header's tile-size button — next size for this session. */
-  onEagleCycleTileSize?: (sessionId: number) => void;
+  /**
+   * Eagle view: an edge of a tile is being dragged. `start` is the rect when
+   * the drag began, `delta` the cells travelled since, `others` the tiles
+   * that were in the grid at that moment.
+   */
+  onEagleResizeTile?: (
+    sessionId: number,
+    start: TileRect,
+    edge: PaneEdge,
+    delta: number,
+    others: readonly TileRect[],
+  ) => void;
 }
+
+/** A placed eagle tile: a launched session, or a pre-launch card (null id). */
+export interface EagleOccupiedTile {
+  sessionId: number | null;
+  rect: TileRect;
+}
+
+/** Where an eagle tile was dropped: on another tile (swap) or on free grid cells. */
+export type EagleDropTarget =
+  | { kind: "swap"; sessionId: number }
+  | { kind: "place"; rect: TileRect };
 
 /**
  * Manages a dynamic grid of session slots that can be either:
@@ -271,12 +286,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onEagleZoomToggle,
     eagleTileCount = 0,
     pinnedTileStyles = null,
-    eagleTileRank,
-    eagleTileSpans,
-    eagleColumnCount,
-    onEagleReorder,
+    eagleTileRects,
+    eaglePendingRects,
+    eagleOccupied,
+    onEagleDrop,
     onEagleMoveTile,
-    onEagleCycleTileSize,
+    onEagleResizeTile,
   },
   ref,
 ) {
@@ -1685,18 +1700,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             onSwap={handleSwapSlots}
             onMoveToSide={handleMoveSlotToSide}
             onMoveToStageEdge={handleMoveSlotToStageEdge}
-            onEagleReorder={onEagleReorder}
-            eagleOrder={
-              eagleMode ? (eagleTileRank?.get(sessionId) ?? EAGLE_UNRANKED_ORDER) : undefined
-            }
-            eagleSpan={
-              eagleMode
-                ? clampSpan(
-                    eagleTileSpans?.[sessionId],
-                    eagleColumnCount ?? Number.MAX_SAFE_INTEGER,
-                  )
-                : undefined
-            }
+            onEagleDrop={onEagleDrop}
+            onEagleResize={onEagleResizeTile}
+            eagleRect={eagleMode ? eagleTileRects?.get(sessionId) : undefined}
+            eagleOccupied={eagleMode ? eagleOccupied : undefined}
             eagleMode={flatLayout}
             eagleHidden={spotlightHidden}
             eagleZoomed={isEagleZoomed}
@@ -1738,13 +1745,6 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
               projectLabel={flatLayout ? projectName : undefined}
               projectColor={eagleColor}
               hasMoveHandle={showReorderHandle}
-              // Tile sizes only exist in the eagle grid.
-              onCycleTileSize={
-                eagleMode && onEagleCycleTileSize
-                  ? () => onEagleCycleTileSize(sessionId)
-                  : undefined
-              }
-              tileSizeLabel={eagleMode ? tileSpanLabel(eagleTileSpans?.[sessionId]) : undefined}
               showShortcutHints={!flatLayout}
             />
             {dropOverlay}
@@ -1756,13 +1756,19 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         <DraggablePane
           slotId={slot.id}
           gridId={tabId}
-          // A card has no session yet, so the eagle order (session ids) cannot
-          // place it: it tiles after the launched terminals and is not draggable there.
+          // A card has no session yet, so it cannot be moved or resized in the
+          // eagle grid; MultiProjectView hands this project one rect per card.
           showHandle={showReorderHandle && !eagleMode}
           onSwap={handleSwapSlots}
           onMoveToSide={handleMoveSlotToSide}
           onMoveToStageEdge={handleMoveSlotToStageEdge}
-          eagleOrder={eagleMode ? EAGLE_PRELAUNCH_ORDER : undefined}
+          eagleRect={
+            eagleMode
+              ? eaglePendingRects?.[
+                  slots.filter((s) => s.sessionId === null).findIndex((s) => s.id === slot.id)
+                ]
+              : undefined
+          }
           eagleMode={flatLayout}
           eagleHidden={spotlightHidden}
           eagleZoomed={false}
@@ -1822,11 +1828,11 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       handleSwapSlots,
       handleMoveSlotToSide,
       handleMoveSlotToStageEdge,
-      onEagleReorder,
-      onEagleCycleTileSize,
-      eagleTileRank,
-      eagleTileSpans,
-      eagleColumnCount,
+      onEagleDrop,
+      onEagleResizeTile,
+      eagleTileRects,
+      eaglePendingRects,
+      eagleOccupied,
       projectPath,
       branches,
       isLoadingBranches,
@@ -2085,22 +2091,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   );
 });
 
-/** Eagle grid `order` for a launched tile that has no place in the user's order yet (goes last). */
-const EAGLE_UNRANKED_ORDER = 10_000;
-/** Eagle grid `order` for pre-launch cards: after every launched tile. */
-const EAGLE_PRELAUNCH_ORDER = 20_000;
 /** Pointer travel before a title-bar press turns into a drag (a plain click stays a click). */
 const DRAG_START_PX = 4;
 
 /** What the drop-zone overlay says for each zone. */
-const DROP_ZONE_LABELS: Record<PaneDropZone | EagleDropZone, string> = {
+const DROP_ZONE_LABELS: Record<PaneDropZone, string> = {
   swap: "Swap",
   left: "Move here (left half)",
   right: "Move here (right half)",
   top: "Move here (top half)",
   bottom: "Move here (bottom half)",
-  before: "Insert before",
-  after: "Insert after",
 };
 
 /** Where a dragged pane would land right now. */
@@ -2110,9 +2110,41 @@ type DropTarget =
       el: HTMLElement;
       slotId: string;
       sessionId: number | null;
-      zone: PaneDropZone | EagleDropZone;
+      zone: PaneDropZone;
     }
-  | { kind: "stage"; edge: PaneSide };
+  | { kind: "stage"; edge: PaneSide }
+  | { kind: "cell"; rect: TileRect };
+
+/** The eagle grid's content box in CSS px (its padding excluded), or null outside eagle view. */
+function eagleGridBox(): {
+  el: HTMLElement;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} | null {
+  const el = document.querySelector<HTMLElement>("[data-eagle-grid]");
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  const padX = Number.parseFloat(style.paddingLeft) || 0;
+  const padY = Number.parseFloat(style.paddingTop) || 0;
+  return {
+    el,
+    left: rect.left + padX,
+    top: rect.top + padY,
+    width: rect.width - 2 * padX,
+    height: rect.height - 2 * padY,
+  };
+}
+
+/** The four edges of an eagle tile a resize can grab, and where each handle sits. */
+const EAGLE_RESIZE_EDGES: readonly { edge: PaneEdge; className: string }[] = [
+  { edge: "left", className: "left-0 top-2 bottom-2 w-1.5 cursor-col-resize" },
+  { edge: "right", className: "right-0 top-2 bottom-2 w-1.5 cursor-col-resize" },
+  { edge: "top", className: "top-0 left-2 right-2 h-1.5 cursor-row-resize" },
+  { edge: "bottom", className: "bottom-0 left-2 right-2 h-1.5 cursor-row-resize" },
+];
 
 /**
  * Wraps a terminal pane in a relative container that supports drag-to-move.
@@ -2147,7 +2179,8 @@ function DraggablePane({
   onSwap,
   onMoveToSide,
   onMoveToStageEdge,
-  onEagleReorder,
+  onEagleDrop,
+  onEagleResize,
   children,
   eagleMode = false,
   eagleHidden = false,
@@ -2155,8 +2188,8 @@ function DraggablePane({
   eagleObscured = false,
   eagleReserveShelf = false,
   pinnedStyle = null,
-  eagleOrder,
-  eagleSpan,
+  eagleRect,
+  eagleOccupied,
 }: {
   slotId: string;
   /** Owning grid (tab) id — identifies the source project for eagle drops. */
@@ -2171,8 +2204,16 @@ function DraggablePane({
   onMoveToSide: (srcSlotId: string, destSlotId: string, side: PaneSide) => void;
   /** Split layout: pane dropped on the outer edge of the split area. */
   onMoveToStageEdge: (srcSlotId: string, side: PaneSide) => void;
-  /** Eagle view: tile dropped before/after/onto another tile (session ids). */
-  onEagleReorder?: (srcSessionId: number, destSessionId: number, zone: EagleDropZone) => void;
+  /** Eagle view: tile dropped onto another tile (swap) or onto free grid cells. */
+  onEagleDrop?: (sessionId: number, target: EagleDropTarget) => void;
+  /** Eagle view: an edge of this tile is being dragged (see TerminalGridProps). */
+  onEagleResize?: (
+    sessionId: number,
+    start: TileRect,
+    edge: PaneEdge,
+    delta: number,
+    others: readonly TileRect[],
+  ) => void;
   children: ReactNode;
   /** Eagle view: this pane is a tile of the global all-projects grid. */
   eagleMode?: boolean;
@@ -2194,10 +2235,10 @@ function DraggablePane({
    * tile class — the tile is positioned against the content area, not tiled.
    */
   pinnedStyle?: React.CSSProperties | null;
-  /** Eagle view: CSS `order` of this tile in the grid (the user's free order). */
-  eagleOrder?: number;
-  /** Eagle view: columns × rows this tile spans. */
-  eagleSpan?: TileSpan;
+  /** Eagle view: this tile's place and size in the grid. Undefined = not placed yet (hidden). */
+  eagleRect?: TileRect;
+  /** Eagle view: every placed tile — the collision set for a move or resize of this one. */
+  eagleOccupied?: readonly EagleOccupiedTile[];
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -2214,9 +2255,17 @@ function DraggablePane({
         !eagleMode && gridId
           ? document.querySelector<HTMLElement>(`[data-split-stage="${gridId}"]`)
           : null;
+      // Eagle view: the grid box turns pointer positions into cells, and the
+      // tiles already placed are what a drop on free cells must not overlap.
+      const grid = eagleMode ? eagleGridBox() : null;
+      const eagleOthers =
+        eagleMode && eagleOccupied
+          ? eagleOccupied.filter((o) => o.sessionId !== sessionId).map((o) => o.rect)
+          : [];
       let active = false;
       let ghost: HTMLDivElement | null = null;
       let stageHighlight: HTMLDivElement | null = null;
+      let cellHighlight: HTMLDivElement | null = null;
       let hovered: HTMLElement | null = null;
 
       const begin = () => {
@@ -2246,19 +2295,36 @@ function DraggablePane({
         }
         const elem = document.elementFromPoint(x, y) as HTMLElement | null;
         const el = elem?.closest<HTMLElement>("[data-slot-id]") ?? null;
-        if (!el || el.dataset.slotId === slotId) return null;
         if (eagleMode) {
-          // Only visible launched tiles (they carry grid + session ids) take drops;
-          // the order is by session id, so a pre-launch card has no place in it.
-          if (!el.dataset.gridId || !el.dataset.sessionId) return null;
-          return {
-            kind: "pane",
-            el,
-            slotId: el.dataset.slotId ?? "",
-            sessionId: Number(el.dataset.sessionId),
-            zone: eagleDropZone(el.getBoundingClientRect(), x),
-          };
+          // Another launched tile (it carries grid + session ids): swap. The
+          // pointer over the dragged tile itself (a short move) falls through
+          // to the free-cell placement below.
+          const self = el !== null && el.dataset.slotId === slotId;
+          if (!self && el?.dataset.gridId && el.dataset.sessionId) {
+            return {
+              kind: "pane",
+              el,
+              slotId: el.dataset.slotId ?? "",
+              sessionId: Number(el.dataset.sessionId),
+              zone: "swap",
+            };
+          }
+          // Free grid cells: the tile moves there if it fits (same size).
+          if (!grid || !eagleRect || sessionId === null) return null;
+          if (
+            x < grid.left ||
+            y < grid.top ||
+            x > grid.left + grid.width ||
+            y > grid.top + grid.height
+          ) {
+            return null;
+          }
+          const cx = ((x - grid.left) / grid.width) * EAGLE_UNITS;
+          const cy = ((y - grid.top) / grid.height) * EAGLE_UNITS;
+          const rect = placeTileAt(eagleRect, cx, cy);
+          return fitsFree(rect, eagleOthers) ? { kind: "cell", rect } : null;
         }
+        if (!el || el.dataset.slotId === slotId) return null;
         if (stage && !stage.contains(el)) return null;
         return {
           kind: "pane",
@@ -2276,11 +2342,35 @@ function DraggablePane({
         }
         stageHighlight?.remove();
         stageHighlight = null;
+        cellHighlight?.remove();
+        cellHighlight = null;
       };
 
       const showTarget = (target: DropTarget | null) => {
         clearHighlight();
         if (!target) return;
+        if (target.kind === "cell") {
+          // The grid is deliberately unpositioned (zoomed panes resolve to
+          // App's <main>), so the highlight is positioned against the grid's
+          // offsetParent, like a zoomed pane — appending it to the grid
+          // itself would make it a grid item.
+          if (!grid) return;
+          const parent = grid.el.offsetParent as HTMLElement | null;
+          if (!parent) return;
+          cellHighlight = document.createElement("div");
+          cellHighlight.className = "pane-stage-drop";
+          const padX = grid.left - grid.el.getBoundingClientRect().left;
+          const padY = grid.top - grid.el.getBoundingClientRect().top;
+          const unitW = grid.width / EAGLE_UNITS;
+          const unitH = grid.height / EAGLE_UNITS;
+          const style = cellHighlight.style;
+          style.left = `${grid.el.offsetLeft + padX + target.rect.x * unitW}px`;
+          style.top = `${grid.el.offsetTop + padY + target.rect.y * unitH}px`;
+          style.width = `${target.rect.w * unitW}px`;
+          style.height = `${target.rect.h * unitH}px`;
+          parent.appendChild(cellHighlight);
+          return;
+        }
         if (target.kind === "stage") {
           if (!stage) return;
           stageHighlight = document.createElement("div");
@@ -2342,9 +2432,13 @@ function DraggablePane({
           onMoveToStageEdge(slotId, target.edge);
           return;
         }
+        if (target.kind === "cell") {
+          if (sessionId !== null) onEagleDrop?.(sessionId, { kind: "place", rect: target.rect });
+          return;
+        }
         if (eagleMode) {
           if (sessionId !== null && target.sessionId !== null) {
-            onEagleReorder?.(sessionId, target.sessionId, target.zone as EagleDropZone);
+            onEagleDrop?.(sessionId, { kind: "swap", sessionId: target.sessionId });
           }
           return;
         }
@@ -2368,8 +2462,53 @@ function DraggablePane({
       onSwap,
       onMoveToSide,
       onMoveToStageEdge,
-      onEagleReorder,
+      onEagleDrop,
+      eagleRect,
+      eagleOccupied,
     ],
+  );
+
+  /**
+   * Eagle view: drag one edge of the tile. The start rect and the collision
+   * set are captured here so the drag stays consistent while the layout
+   * re-renders under it; the pointer travel is turned into whole cells.
+   */
+  const handleResizePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, edge: PaneEdge) => {
+      if (e.button !== 0 && e.pointerType !== "touch") return;
+      if (!eagleRect || sessionId === null || !onEagleResize) return;
+      const grid = eagleGridBox();
+      if (!grid || grid.width <= 0 || grid.height <= 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const start = eagleRect;
+      const others = (eagleOccupied ?? [])
+        .filter((o) => o.sessionId !== sessionId)
+        .map((o) => o.rect);
+      const horizontal = edge === "left" || edge === "right";
+      const unitPx = horizontal ? grid.width / EAGLE_UNITS : grid.height / EAGLE_UNITS;
+      const origin = horizontal ? e.clientX : e.clientY;
+      let lastDelta = 0;
+      document.body.classList.add("pane-resizing");
+      document.body.style.cursor = horizontal ? "col-resize" : "row-resize";
+      const onMove = (ev: PointerEvent) => {
+        const delta = Math.round(((horizontal ? ev.clientX : ev.clientY) - origin) / unitPx);
+        if (delta === lastDelta) return;
+        lastDelta = delta;
+        onEagleResize(sessionId, start, edge, delta, others);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        document.body.classList.remove("pane-resizing");
+        document.body.style.cursor = "";
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [eagleRect, eagleOccupied, sessionId, onEagleResize],
   );
 
   /** The grip: picks the pane up at once. */
@@ -2414,10 +2553,10 @@ function DraggablePane({
   //             git panel stay usable while zoomed; the header button returns
   // - obscured: another pane is zoomed — visibility:hidden stops WebGL paints
   //             behind the opaque overlay (also excludes it from drop hit-tests)
-  // - tile:     plain grid item — the project-colored border is painted by the
-  //             terminal cell itself (TerminalView's projectColor override);
-  //             `order` is the user's free tile order and `grid-column/row`
-  //             spans the tile's chosen size
+  // - tile:     plain grid item placed by `grid-column/row` from its rect; the
+  //             project-colored border is painted by the terminal cell itself
+  //             (TerminalView's projectColor override); p-1 is half the
+  //             visual gap between tiles (the grid has no track gap)
   const eagleClass = eagleHidden
     ? "hidden"
     : pinnedStyle
@@ -2428,7 +2567,7 @@ function DraggablePane({
           `absolute inset-x-0 top-8 z-40 bg-maestro-bg p-2 min-h-0 min-w-0 ${
             eagleReserveShelf ? "bottom-8" : "bottom-0"
           }`
-        : "relative h-full w-full min-h-0 min-w-0 overflow-hidden rounded-md";
+        : "relative h-full w-full min-h-0 min-w-0 overflow-hidden rounded-md p-1";
   let eagleStyle: React.CSSProperties | undefined;
   if (eagleMode && !eagleHidden) {
     if (pinnedStyle) {
@@ -2436,12 +2575,24 @@ function DraggablePane({
     } else {
       eagleStyle = {};
       if (eagleObscured) eagleStyle.visibility = "hidden";
-      if (eagleOrder !== undefined) eagleStyle.order = eagleOrder;
-      if (eagleSpan && eagleSpan[0] > 1) eagleStyle.gridColumn = `span ${eagleSpan[0]}`;
-      if (eagleSpan && eagleSpan[1] > 1) eagleStyle.gridRow = `span ${eagleSpan[1]}`;
+      if (!eagleZoomed) {
+        if (eagleRect) {
+          eagleStyle.gridColumn = `${eagleRect.x + 1} / span ${eagleRect.w}`;
+          eagleStyle.gridRow = `${eagleRect.y + 1} / span ${eagleRect.h}`;
+        } else {
+          // Not placed yet (the layout learns about a new card one render
+          // late): park it in the corner, invisible, so it takes no real cell.
+          eagleStyle.gridArea = "1 / 1 / 2 / 2";
+          eagleStyle.visibility = "hidden";
+        }
+      }
     }
   }
   const carriesIds = eagleMode && !eagleHidden && !pinnedStyle;
+  // Resize handles: launched eagle tiles only, and only while the grid shows
+  // more than one tile (same rule as the move grip).
+  const showResizeHandles =
+    eagleMode && showHandle && !eagleZoomed && !pinnedStyle && !!eagleRect && !!onEagleResize;
   return (
     <div
       ref={wrapperRef}
@@ -2465,12 +2616,22 @@ function DraggablePane({
       <div className="pane-drop-zone">
         <span />
       </div>
+      {showResizeHandles &&
+        EAGLE_RESIZE_EDGES.map(({ edge, className }) => (
+          <div
+            key={edge}
+            data-testid={`eagle-resize-${edge}`}
+            title="Drag to resize this terminal (only this one changes)"
+            className={`absolute z-20 rounded-sm transition-colors hover:bg-maestro-accent/60 ${className}`}
+            onPointerDown={(e) => handleResizePointerDown(e, edge)}
+          />
+        ))}
       {showHandle && (
         <div
           onPointerDown={handleGripPointerDown}
           title={
             eagleMode
-              ? "Drag to move this terminal — edges insert, middle swaps"
+              ? "Drag to move this terminal — onto another terminal swaps, onto empty space moves"
               : "Drag to move this pane — edges move it there, middle swaps"
           }
           className={`absolute left-1 top-1 z-20 flex h-5 w-4 items-center justify-center rounded transition-colors hover:bg-maestro-card/80 hover:text-maestro-text ${

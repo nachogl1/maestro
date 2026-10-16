@@ -4,7 +4,7 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 
-import { isDefaultSpan, type TileSpan } from "@/lib/paneMoves";
+import type { TileRect } from "@/lib/eagleLayout";
 import { samePath } from "@/lib/path";
 import { killSession } from "@/lib/terminal";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -64,16 +64,12 @@ type WorkspaceState = {
    */
   zoomTabOrders: Record<string, string[]>;
   /**
-   * Eagle view tile order (session ids), as the user dragged it — terminals
-   * of different projects can be mixed freely. Also the zoom tab strip's
-   * order. Runtime-only like `zoomTabOrders`: session ids do not survive a
-   * restart. Sessions missing from it tile after the ordered ones.
+   * Eagle view: where the user put each tile and how big (session id → place
+   * and size in grid cells, see eagleLayout.ts). Empty = the automatic
+   * square-ish layout. Runtime-only like `zoomTabOrders`: session ids do not
+   * survive a restart.
    */
-  eagleTileOrder: number[];
-  /** Eagle view tile sizes (columns × rows) per session id; absent = 1×1. Runtime-only. */
-  eagleTileSpans: Record<number, TileSpan>;
-  /** Eagle view column count the user picked; null = automatic. Runtime-only. */
-  eagleColumns: number | null;
+  eagleTileRects: Record<number, TileRect>;
 };
 
 /**
@@ -100,13 +96,9 @@ type WorkspaceActions = {
   moveTab: (tabId: string, direction: "left" | "right") => void;
   /** Set the zoom tab strip display order (slot ids) for a workspace tab. */
   setZoomTabOrder: (tabId: string, order: string[]) => void;
-  /** Set the eagle view tile order (session ids). */
-  setEagleTileOrder: (order: number[]) => void;
-  /** Set a tile's eagle view size; a 1×1 (or null) clears the entry. */
-  setEagleTileSpan: (sessionId: number, span: TileSpan | null) => void;
-  /** Pick the eagle view column count; null goes back to automatic. */
-  setEagleColumns: (columns: number | null) => void;
-  /** Put every project's terminals back together, in project tab order. */
+  /** Replace every eagle tile's place and size (the whole custom layout). */
+  setEagleTileRects: (rects: Record<number, TileRect>) => void;
+  /** Back to the automatic layout: project by project, equal tiles. */
   groupEagleTilesByProject: () => void;
   /** Re-scan repositories for all multi-repo tabs after rehydration. */
   rehydrateRepositories: () => Promise<void>;
@@ -219,9 +211,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
     (set, get) => ({
       tabs: [],
       zoomTabOrders: {},
-      eagleTileOrder: [],
-      eagleTileSpans: {},
-      eagleColumns: null,
+      eagleTileRects: {},
 
       openProject: async (path: string) => {
         // Deduplicate: if path already open, just activate that tab. samePath, not
@@ -352,17 +342,15 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
       },
 
       removeSessionFromProject: (tabId: string, sessionId: number) => {
-        const { eagleTileOrder, eagleTileSpans } = get();
-        const { [sessionId]: _dropped, ...spans } = eagleTileSpans;
+        const { [sessionId]: _dropped, ...rects } = get().eagleTileRects;
         set({
           tabs: get().tabs.map((t) =>
             t.id === tabId
               ? { ...t, sessionIds: t.sessionIds.filter((id) => id !== sessionId) }
               : t,
           ),
-          // A dead session must not keep a place or a size in the eagle grid.
-          eagleTileOrder: eagleTileOrder.filter((id) => id !== sessionId),
-          eagleTileSpans: spans,
+          // A dead session must not keep a place in the eagle grid.
+          eagleTileRects: rects,
         });
       },
 
@@ -426,24 +414,12 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
         set({ zoomTabOrders: { ...get().zoomTabOrders, [tabId]: order } });
       },
 
-      setEagleTileOrder: (order: number[]) => {
-        set({ eagleTileOrder: order });
-      },
-
-      setEagleTileSpan: (sessionId: number, span: TileSpan | null) => {
-        const { [sessionId]: _old, ...rest } = get().eagleTileSpans;
-        set({
-          eagleTileSpans:
-            span === null || isDefaultSpan(span) ? rest : { ...rest, [sessionId]: span },
-        });
-      },
-
-      setEagleColumns: (columns: number | null) => {
-        set({ eagleColumns: columns });
+      setEagleTileRects: (rects: Record<number, TileRect>) => {
+        set({ eagleTileRects: rects });
       },
 
       groupEagleTilesByProject: () => {
-        set({ eagleTileOrder: get().tabs.flatMap((t) => t.sessionIds) });
+        set({ eagleTileRects: {} });
       },
 
       rehydrateRepositories: async () => {

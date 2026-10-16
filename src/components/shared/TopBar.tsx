@@ -28,9 +28,6 @@ import {
   WorkJournalUnsavedDot,
 } from "./WorkJournalSuggestionsBadge";
 
-/** Column counts offered by the eagle view picker (besides automatic). */
-const EAGLE_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6] as const;
-
 /** One entry of the eagle-view "add terminal" project dropdown. */
 export interface EagleProjectOption {
   tabId: string;
@@ -115,10 +112,7 @@ export function TopBar({
   const appWindow = useMemo(() => getCurrentWindow(), []);
   const workJournalLabel = useWorkJournalButtonLabel();
 
-  // Eagle view grid controls: how many columns, and "group by project" to undo
-  // the free mixing of projects' terminals (runtime-only store state).
-  const eagleColumns = useWorkspaceStore((s) => s.eagleColumns);
-  const setEagleColumns = useWorkspaceStore((s) => s.setEagleColumns);
+  // Eagle view: "sort by project" puts the grid back to the automatic layout.
   const groupEagleTilesByProject = useWorkspaceStore((s) => s.groupEagleTilesByProject);
 
   // Eagle view add-terminal dropdown (pick which project gets the new terminal)
@@ -239,35 +233,17 @@ export function TopBar({
             )}
           </div>
         )}
-        {/* Eagle view: column count and "group by project". */}
+        {/* Eagle view: "sort by project" — back to the automatic layout. */}
         {eagleView && (
-          <>
-            <select
-              value={eagleColumns === null ? "auto" : String(eagleColumns)}
-              onChange={(e) =>
-                setEagleColumns(e.target.value === "auto" ? null : Number(e.target.value))
-              }
-              className="rounded border border-maestro-border bg-maestro-surface px-1 py-0.5 text-[11px] text-maestro-muted hover:text-maestro-text"
-              aria-label="Eagle view columns"
-              title="How many columns the eagle grid has (auto = square-ish)"
-            >
-              <option value="auto">Auto cols</option>
-              {EAGLE_COLUMN_CHOICES.map((n) => (
-                <option key={n} value={String(n)}>
-                  {n} {n === 1 ? "col" : "cols"}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={groupEagleTilesByProject}
-              className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
-              aria-label="Group terminals by project"
-              title="Group terminals by project (undo mixing)"
-            >
-              <Group size={14} />
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={groupEagleTilesByProject}
+            className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+            aria-label="Sort terminals by project"
+            title="Sort terminals by project — lays the grid out again project by project with equal tiles (undoes your moves and sizes)"
+          >
+            <Group size={14} />
+          </button>
         )}
         {onToggleEagleView && (
           <button

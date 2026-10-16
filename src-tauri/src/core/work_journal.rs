@@ -1410,6 +1410,8 @@ mod tests {
 
         let err = update_page(&mut journal, "2026-10-15", None, None, None).unwrap_err();
         assert!(matches!(err, WorkJournalError::PageNotFound(_)));
+        // The frontend matches this text (isPageNotFound).
+        assert_eq!(err.to_string(), "No work journal page for 2026-10-15");
     }
 
     #[test]

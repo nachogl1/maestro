@@ -9,6 +9,7 @@ import {
   pendingCountsByDate,
   pendingTodayCount,
   useWorkJournalCandidatesStore,
+  WORK_JOURNAL_BADGE_DATE_CHECK_MS,
   WORK_JOURNAL_CANDIDATES_EVENT,
   type WorkJournalCandidate,
 } from "@/stores/useWorkJournalCandidatesStore";
@@ -286,5 +287,53 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
 
     stop();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("moves the badge to the new day within a minute after sleeping through midnight", async () => {
+    candidates.push(candidate("n1", "2026-10-15"), candidate("n2", "2026-10-15"));
+    await start();
+    await settle();
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(3);
+
+    // The PC slept through midnight: the clock jumps, no timer fired, no focus event.
+    vi.setSystemTime(new Date(2026, 9, 15, 8, 0, 0));
+    await act(async () => vi.advanceTimersByTime(WORK_JOURNAL_BADGE_DATE_CHECK_MS));
+    await settle();
+    expect(listCalls().filter((a) => (a as { date: string }).date === "2026-10-15")).toHaveLength(
+      1,
+    );
+    expect(useWorkJournalCandidatesStore.getState().today).toBe("2026-10-15");
+    expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(2);
+
+    // Later checks see the same date: no further reads.
+    await act(async () => vi.advanceTimersByTime(3 * WORK_JOURNAL_BADGE_DATE_CHECK_MS));
+    await settle();
+    expect(listCalls().filter((a) => (a as { date: string }).date === "2026-10-15")).toHaveLength(
+      1,
+    );
+  });
+
+  it("does not re-read today on the minute check while the date is unchanged", async () => {
+    await start();
+    await settle();
+    invokeMock.mockClear();
+
+    await act(async () => vi.advanceTimersByTime(5 * WORK_JOURNAL_BADGE_DATE_CHECK_MS));
+    await settle();
+    expect(listCalls()).toEqual([]);
+  });
+
+  it("stops the minute date check when the listeners stop", async () => {
+    const stop = await start();
+    await settle();
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+    invokeMock.mockClear();
+
+    vi.setSystemTime(new Date(2026, 9, 15, 8, 0, 0));
+    await act(async () => vi.advanceTimersByTime(2 * WORK_JOURNAL_BADGE_DATE_CHECK_MS));
+    await settle();
+    expect(listCalls()).toEqual([]);
+    expect(useWorkJournalCandidatesStore.getState().today).toBe(TODAY);
   });
 });
