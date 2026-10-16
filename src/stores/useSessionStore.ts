@@ -19,7 +19,8 @@ export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
 
 /**
  * Backend-emitted session lifecycle states.
- * Must stay in sync with the Rust `SessionStatus` enum.
+ * Mirrors the status string literals that `status_server.rs` (`emit_status` /
+ * `emit_hook_status`) puts on the wire; there is no Rust `SessionStatus` enum any more.
  * "Timeout" is a frontend-only status for sessions stuck in Starting state.
  */
 export type BackendSessionStatus =

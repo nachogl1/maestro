@@ -1,7 +1,8 @@
 # Session status: signal → state mapping
 
-How the per-session status (the 3-dot indicator: blue = working, red = needs
-input, green = done, gray = idle) is derived, and how to verify each failure
+How the per-session status (shown by the colour dot on the tab and the
+coloured title-bar underline: blue = working, red = needs input, green = done,
+gray = idle) is derived, and how to verify each failure
 class from issue #105 in the live app.
 
 Statuses live in `useSessionStore` (`src/stores/useSessionStore.ts`). Every
@@ -23,7 +24,9 @@ Written per session into `.claude/settings.local.json` by
 | `PreToolUse` (`AskUserQuestion`) | `/hook/pre-tool` | `NeedsInput` | The agent opened an interactive question dialog mid-turn. Never suppressed by the window rule. |
 | `PostToolUse` (any tool) | `/hook/post-tool` | `Working` ("Finished {tool}") | A tool ran to completion — proof any permission prompt was answered (issue #109). Clears `NeedsInput` *unconditionally* (deliberately exempt from the window rule: this is exactly the fresh after-approval signal) and closes the digit-shortcut gap where approving the turn's LAST long tool left `NeedsInput` painted until Stop. |
 | `PreToolUse` / `PostToolUse` (`maestro_status`) | both | *(none)* | Maestro's own status tool is a report, not work — its `/status` call is the status. A `Working` here overwrote the report (`Done` → `Working`), so the turn's Stop then read as a second "ready" transition and auto-unparked a session the user had just re-parked. |
-| `Notification` | `/hook/notification` | `NeedsInput` | The CLI is waiting on the human: permission prompt, or the 60s idle-prompt reminder. The notification text becomes the needs-input prompt. Also arms the 2s PreToolUse shield above. |
+| `Notification` (waiting: permission prompt, or any unknown / absent `notification_type`) | `/hook/notification` | `NeedsInput` | The CLI is waiting on the human. The notification text becomes the needs-input prompt. Also arms the 2s PreToolUse shield above. |
+| `Notification` (`idle_prompt`) | `/hook/notification` | `IdleReminder` (wire-only) | The ~60s reminder that the CLI finished and nothing was typed since. No shield is armed. See merge rule 3. |
+| `Notification` (`auth_success`, `elicitation_complete`, `elicitation_response`, `agent_completed`, `quota_auto_resume_fired`) | `/hook/notification` | *(none)* | Informational only: the hook is acknowledged and dropped, the status is untouched. |
 | `Stop` | `/hook/stop` | `AwaitingInput` (wire-only) | Turn ended, control returned to the user. |
 | `SessionEnd` | `/hook/session-end` | `SessionEnded` (wire-only) | The claude process exited (`/exit`, `/clear`, logout). |
 
@@ -59,10 +62,16 @@ come from here (and from the samurai watchdog).
    - otherwise `NeedsInput`.
 2. **`SessionEnded`**: dropped if `Done`/`Error` (the outcome stays visible);
    otherwise `Idle`, clearing any needs-input prompt.
-3. **`NeedsInput`**: dropped if `Done`/`Error` (the 60s idle reminder fires
-   after every turn and must not repaint a finished session red). A `Timeout`
-   session *is* overwritten — an explicit needs-input proves the CLI is alive.
-4. **Everything else applies verbatim** — last writer wins. In particular
+3. **`IdleReminder`** (`idle_prompt` Notification, ~60s after a turn end with
+   nothing typed since): dropped if `Done`/`Error` (must not repaint a finished
+   session red) and dropped while background subagents still run. Otherwise it
+   repaints `NeedsInput`, recovering a lost or overwritten turn end, but with
+   `suppressAutoUnpark`: a reminder never pulls a parked session out of the
+   parking tray.
+4. **`NeedsInput`** (Notification wait, `AskUserQuestion`, or the MCP tool):
+   dropped if `Done`/`Error`. A `Timeout` session *is* overwritten — an
+   explicit needs-input proves the CLI is alive.
+5. **Everything else applies verbatim** — last writer wins. In particular
    `Working` from `UserPromptSubmit` is what moves a session out of
    `Done`/`Error` when a new turn starts.
 
@@ -118,7 +127,7 @@ Run `npm run tauri dev`, open a project, start a Claude session.
    blue↔gray flapping between tool calls (every tool start refreshes the
    authoritative Working signal, which keeps the PTY heuristic silenced).
 3. Leave the finished session alone for >60s after the turn-end red.
-   **Correct:** stays red (the idle reminder re-asserts needs-input); a
+   **Correct:** stays red (the idle reminder re-asserts needs-input, without unparking a parked session); a
    session that reported Done stays green.
 
 ### Class 5 — permission-prompt repaints (issue #109 — pending human sign-off)
@@ -139,7 +148,7 @@ Run `npm run tauri dev`, open a project, start a Claude session.
 ## Known residual gaps (documented, not silently ignored)
 
 - **Esc-interrupt:** interrupting a turn fires no Stop hook. The status stays
-  blue until the CLI's 60s idle Notification (→ red) or the PTY heuristic's
+  blue until the CLI's 60s idle reminder (→ red) or the PTY heuristic's
   idle flip (→ gray) corrects it.
 - **Hard kill:** a `kill -9`/crash fires no SessionEnd hook. Samurai-supervised
   sessions are covered by the watchdog (→ Error); unsupervised sessions keep

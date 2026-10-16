@@ -17,7 +17,17 @@ Maestro is a desktop app for developers who build software with AI coding assist
 
 ## Getting Started
 
-There is no ready-made installer to download yet, so you build Maestro on your own computer once. It sounds harder than it is: you install a few free tools, copy and paste a handful of commands, and wait.
+### On Windows: download the installer (easiest)
+
+1. Go to the [Releases page](https://github.com/nachogl1/maestro/releases) and download the newest `.msi` file.
+2. Double-click it and follow the steps. Then open **Maestro** from your Start menu.
+3. Later updates arrive inside the app: open **Settings**, then **Updates**.
+
+You still need Git and an AI assistant such as Claude Code installed (see Step 2, items 3 and 5).
+
+### On macOS and Linux (or if you prefer to build it yourself)
+
+There is no ready-made installer for these yet, so you build Maestro on your own computer once. It sounds harder than it is: you install a few free tools, copy and paste a handful of commands, and wait.
 
 ### Step 1: Get the code
 
@@ -33,7 +43,7 @@ Either way, you end up with a folder called `maestro` (or `maestro-main` if you 
 You only do this once. Install each one with its normal installer and accept the default options.
 
 1. **Node.js** (version 20 or newer): download the "LTS" version from [nodejs.org](https://nodejs.org/).
-2. **Rust** (version 1.78 or newer): follow the instructions at [rustup.rs](https://rustup.rs/). On Linux, use rustup rather than your system's package manager, which often ships an older version.
+2. **Rust** (version 1.82 or newer): follow the instructions at [rustup.rs](https://rustup.rs/). On Linux, use rustup rather than your system's package manager, which often ships an older version.
 3. **Git**: download it from [git-scm.com](https://git-scm.com/downloads). Maestro uses Git to give each AI session its own copy of your code.
 4. **Your computer's build tools:**
    - **Windows:** install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and tick **"Desktop development with C++"** during setup.
