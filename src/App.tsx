@@ -321,8 +321,9 @@ function App() {
       setEagleAddPickerOpen(true);
       return;
     }
-    multiProjectRef.current?.addSessionToActiveProject();
-  }, [eagleView]);
+    // addSessionInProject also covers an idle project (no grid mounted yet).
+    if (activeTab) multiProjectRef.current?.addSessionInProject(activeTab.id);
+  }, [eagleView, activeTab]);
 
   // Leaving eagle view always drops the picker.
   useEffect(() => {
@@ -500,7 +501,7 @@ function App() {
     onAddSession: handleAddSessionShortcut,
     // Eagle view: Cmd/Ctrl+T opens the project picker instead of adding
     // directly, so it only needs at least one open project.
-    canAddSession: eagleView ? tabs.length > 0 : activeTabSessionsLaunched,
+    canAddSession: eagleView ? tabs.length > 0 : activeTab != null,
     onSidebarTab: handleSidebarTabShortcut,
     onToggleGitPanel: handleToggleGitPanel,
     onToggleUtilityPanel: handleToggleUtilityPanel,
@@ -580,10 +581,10 @@ function App() {
               onToggleGitPanel={() => setGitPanelOpen((prev) => !prev)}
               gitPanelOpen={gitPanelOpen}
               hideWindowControls
-              inGridView={activeTabSessionsLaunched}
+              hasActiveProject={activeTab != null}
               slotCount={activeTabSlotCount}
               maxSessions={MAX_SESSIONS}
-              onAddSession={() => multiProjectRef.current?.addSessionToActiveProject()}
+              onAddSession={handleAddSessionShortcut}
               eagleView={eagleView}
               onToggleEagleView={() => setEagleView((v) => !v)}
               eagleProjects={eagleProjects}
