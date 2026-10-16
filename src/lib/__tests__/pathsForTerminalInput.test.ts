@@ -28,9 +28,9 @@ describe("pathsForTerminalInput", () => {
     await expect(pathsForTerminalInput(["/my docs/a.txt"])).resolves.toBe("'/my docs/a.txt'");
   });
 
-  it("falls back to bare paths when the family lookup fails", async () => {
+  it("falls back to posix single quotes when the family lookup fails", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     invokeMock.mockRejectedValue(new Error("no backend"));
-    await expect(pathsForTerminalInput(["/a/b"])).resolves.toBe("/a/b");
+    await expect(pathsForTerminalInput(["/a/b"])).resolves.toBe("'/a/b'");
   });
 });

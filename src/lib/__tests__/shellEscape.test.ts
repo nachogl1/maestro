@@ -142,13 +142,17 @@ describe("quotePathsForShell (drag-drop / Attach Files)", () => {
     expect(quotePathsForShell(["/a/b", "/c d/e"], "posix")).toBe("'/a/b' '/c d/e'");
   });
 
-  it("writes a path bare when its shell refuses to quote it", () => {
-    expect(quotePathsForShell(["C:\\100%\\a.txt", "C:\\b.txt"], "cmd")).toBe(
-      'C:\\100%\\a.txt "C:\\b.txt"',
+  it("still double-quotes a cmd path that a launch line would refuse (% & !)", () => {
+    expect(quotePathsForShell(["C:\\100% off&calc.txt", "C:\\dir\\"], "cmd")).toBe(
+      '"C:\\100% off&calc.txt" "C:\\dir\\\\"',
     );
   });
 
-  it("writes every path bare when the shell family is unknown", () => {
-    expect(quotePathsForShell(["/a b/c", "d"], null)).toBe("/a b/c d");
+  it("keeps a newline inside posix single quotes instead of typing it bare", () => {
+    expect(quotePathsForShell(["/a\nb"], "posix")).toBe("'/a\nb'");
+  });
+
+  it("falls back to posix single quotes when the shell family is unknown", () => {
+    expect(quotePathsForShell(["/a b/c", "d"], null)).toBe("'/a b/c' 'd'");
   });
 });

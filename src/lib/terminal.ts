@@ -609,7 +609,7 @@ export async function terminalShellFamily(): Promise<ShellFamily | null> {
 /**
  * File paths (drag-and-drop, Attach Files) as text to type into a session,
  * quoted for the session's shell — see [`quotePathsForShell`]. A failed
- * family lookup counts as unknown, so the paths still arrive (bare).
+ * family lookup counts as unknown, so the paths still arrive (single-quoted).
  */
 export async function pathsForTerminalInput(paths: string[]): Promise<string> {
   const family = await terminalShellFamily().catch((err) => {
