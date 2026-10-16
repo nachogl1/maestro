@@ -16,6 +16,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Context alert: the level at which a Claude terminal blinks red is now a number you type (1-100%) with a switch to turn the alert off, instead of a fixed list.",
       "Work Journal: restoring or undoing a backup keeps this computer's last suggestions run, so nothing is suggested twice.",
       "Work Journal: the previous and next day arrows now move exactly one day, even to days with no page yet, so you can step to any date and create a page there.",
+      "Work Journal: the suggestions badge now moves to the new day even if the computer slept through midnight.",
       "The + button in the top bar is back for every project, including one with no terminals yet, so you can always add a terminal from there (Ctrl+T works the same way).",
       "The new-terminal card stacks the window name, the working-directory choice and the Launch button one under the other, so Tab moves down through them in order.",
     ],
