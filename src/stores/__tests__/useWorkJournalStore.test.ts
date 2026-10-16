@@ -743,11 +743,15 @@ describe("useWorkJournalStore failed-save retries", () => {
     await useWorkJournalStore.getState().sync(false);
     expect(useWorkJournalStore.getState().error).toBe("disk full");
 
-    // A deleted page with nothing unsaved leaves an unrelated error alone.
+    // A deleted page with nothing unsaved leaves an unrelated error alone
+    // (the sync's retry of this page's save lands now).
+    failing = false;
     useWorkJournalStore.setState({ error: "Backup failed" });
     delete disk.pages["2026-10-13"];
     await useWorkJournalStore.getState().sync(false);
+    await vi.advanceTimersByTimeAsync(0);
     expect(useWorkJournalStore.getState().error).toBe("Backup failed");
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
   });
 
   it("a page's save error becomes the deleted notice when the other window deletes that page", async () => {
