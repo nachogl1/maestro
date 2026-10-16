@@ -101,6 +101,12 @@ pub enum WorkJournalError {
          never written. Press Back up now to replace it, or choose another folder."
     )]
     AutoBackupWouldReplaceUnknownBackup,
+    #[error(
+        "Automatic backup skipped: this folder holds another computer's Work Journal backup, so          it was not replaced. Press Back up now to replace it, or choose another folder."
+    )]
+    AutoBackupWouldReplaceOtherComputersBackup,
+    #[error("Another computer's backup is in this folder. Replace it?")]
+    BackupBelongsToOtherComputer,
     #[error("Backup failed: {0}")]
     BackupWrite(String),
     #[error("Backup written, but the backup time could not be saved: {0}")]
@@ -192,6 +198,11 @@ pub struct WorkJournalSettings {
     /// When the last successful backup was written (RFC 3339, UTC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_backup_at: Option<String>,
+    /// This install's own id (a UUID v4), created by its first backup and
+    /// written into every backup, so a backup another computer wrote to a
+    /// shared (synced) folder is recognised. Kept local on restore and undo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_id: Option<String>,
     /// Hours between candidate runs while Maestro is open; absent = 1
     /// (see [`crate::core::work_journal_run::effective_run_every_hours`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -651,6 +662,54 @@ pub fn backup_now(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<WorkJour
     write_backup(path, journal, &folder, now)
 }
 
+/// "Back up now" without the user's go-ahead to replace another computer's
+/// backup: refused with [`WorkJournalError::BackupBelongsToOtherComputer`]
+/// when the folder holds one (see [`backup_is_other_computers`]), else the
+/// same as [`backup_now`].
+pub fn backup_now_if_ours(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<WorkJournal> {
+    let journal = load(path)?;
+    let folder = configured_backup_folder(&journal).ok_or(WorkJournalError::NoBackupFolder)?;
+    if backup_is_other_computers(&journal, &folder) {
+        return Err(WorkJournalError::BackupBelongsToOtherComputer);
+    }
+    write_backup(path, journal, &folder, now)
+}
+
+/// Only the `settings.journal_id` of a backup file; serde skips the rest.
+#[derive(Deserialize)]
+struct BackupOwner {
+    #[serde(default)]
+    settings: BackupOwnerSettings,
+}
+
+#[derive(Default, Deserialize)]
+struct BackupOwnerSettings {
+    #[serde(default)]
+    journal_id: Option<String>,
+}
+
+/// True when `<folder>/work-journal.json` was written by another install:
+/// it carries a `journal_id` that is not this journal's. A missing,
+/// unreadable or id-less backup (an older Maestro's, this install's own
+/// from before ids existed) counts as this install's, so existing users are
+/// not blocked.
+fn backup_is_other_computers(journal: &WorkJournal, folder: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(backup_path(folder)) else {
+        return false;
+    };
+    let theirs = match serde_json::from_slice::<BackupOwner>(&bytes) {
+        Ok(owner) => owner.settings.journal_id,
+        Err(e) => {
+            log::warn!("The Work Journal backup's id cannot be read: {e}");
+            return false;
+        }
+    };
+    let Some(theirs) = theirs.filter(|id| !id.trim().is_empty()) else {
+        return false;
+    };
+    journal.settings.journal_id.as_deref() != Some(theirs.as_str())
+}
+
 /// The automatic backup (start-up, hourly, and right after a folder is
 /// chosen): runs when a folder is set and [`backup_due`] says so. `None`
 /// (nothing written anywhere) when no folder is set or it is not due.
@@ -661,6 +720,10 @@ pub fn backup_now(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<WorkJour
 /// another machine's backup, and replacing it could wipe the only copy. Only
 /// the file's existence is checked; the backup is never read. "Back up now"
 /// ([`backup_now`]) is the explicit override.
+///
+/// Second guard, after the first backup too: a backup another computer wrote
+/// to the same (synced) folder is never replaced automatically (see
+/// [`backup_is_other_computers`]); only its `journal_id` is read.
 pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Option<WorkJournal>> {
     let journal = load(path)?;
     let Some(folder) = configured_backup_folder(&journal) else {
@@ -676,13 +739,16 @@ pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Optio
     if never_backed_up && backup_path(&folder).exists() {
         return Err(WorkJournalError::AutoBackupWouldReplaceUnknownBackup);
     }
+    if backup_is_other_computers(&journal, &folder) {
+        return Err(WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup);
+    }
     write_backup(path, journal, &folder, now).map(Some)
 }
 
 /// Checks the folder exists (never creates it, unlike [`save`]) and is not
 /// the journal's own folder, writes the backup crash-safely, then saves the
 /// local journal with the new `last_backup_at`. The backup carries that same
-/// time.
+/// time, and this install's `journal_id` (created here when missing).
 fn write_backup(
     path: &Path,
     mut journal: WorkJournal,
@@ -700,6 +766,14 @@ fn write_backup(
     ensure_not_journal_folder(path, folder)?;
     let target = backup_path(folder);
     journal.settings.last_backup_at = Some(now.to_rfc3339_opts(SecondsFormat::Secs, true));
+    if journal
+        .settings
+        .journal_id
+        .as_deref()
+        .is_none_or(|id| id.trim().is_empty())
+    {
+        journal.settings.journal_id = Some(uuid::Uuid::new_v4().to_string());
+    }
     let bytes = serde_json::to_vec_pretty(&journal).map_err(WorkJournalError::Serialize)?;
     atomic_write_durable(&target, &bytes).map_err(WorkJournalError::BackupWrite)?;
     save(path, &journal).map_err(|e| WorkJournalError::BackupTimeNotSaved(e.to_string()))?;
@@ -2437,6 +2511,181 @@ mod tests {
         let backup = std::fs::read_to_string(backup_path(&folder)).unwrap();
         assert_eq!(parse_journal(&backup).unwrap(), saved);
         assert!(saved.pages.contains_key("2026-10-15"));
+    }
+
+    /// Rewrites the backup in `folder` with `settings.journal_id` set to `id`,
+    /// or removed when `None` (a backup from an older Maestro). Returns the
+    /// new bytes.
+    fn set_backup_journal_id(folder: &Path, id: Option<&str>) -> Vec<u8> {
+        let text = std::fs::read_to_string(backup_path(folder)).unwrap();
+        let mut backup: Value = serde_json::from_str(&text).unwrap();
+        let settings = backup["settings"].as_object_mut().unwrap();
+        match id {
+            Some(id) => settings.insert("journal_id".into(), json!(id)),
+            None => settings.remove("journal_id"),
+        };
+        let bytes = backup.to_string().into_bytes();
+        std::fs::write(backup_path(folder), &bytes).unwrap();
+        bytes
+    }
+
+    fn backup_journal_id(folder: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(backup_path(folder)).unwrap();
+        parse_journal(&text).unwrap().settings.journal_id
+    }
+
+    #[test]
+    fn test_first_backup_creates_the_journal_id_once_and_writes_it() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        assert!(load(&path).unwrap().settings.journal_id.is_none());
+
+        let first = backup_now(&path, at("2026-10-14T08:00:00Z")).unwrap();
+        let id = first
+            .settings
+            .journal_id
+            .clone()
+            .expect("created by the first backup");
+        assert!(uuid::Uuid::parse_str(&id).is_ok(), "a UUID: {id}");
+        assert_eq!(
+            load(&path).unwrap().settings.journal_id.as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(backup_journal_id(&folder).as_deref(), Some(id.as_str()));
+
+        let later = backup_if_due(&path, at("2026-10-15T09:00:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            later.settings.journal_id.as_deref(),
+            Some(id.as_str()),
+            "kept"
+        );
+        assert_eq!(backup_journal_id(&folder).as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn test_automatic_backup_skips_another_computers_backup_after_its_first() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        backup_now(&path, at("2026-10-14T08:00:00Z")).unwrap();
+        // The other computer's daily backup lands in the synced folder.
+        let theirs = set_backup_journal_id(&folder, Some("other-computer"));
+        let journal_before = std::fs::read(&path).unwrap();
+
+        let err = backup_if_due(&path, at("2026-10-15T09:00:00Z")).unwrap_err();
+
+        assert!(matches!(
+            err,
+            WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup
+        ));
+        assert!(err
+            .to_string()
+            .contains("another computer's Work Journal backup"));
+        assert_eq!(std::fs::read(backup_path(&folder)).unwrap(), theirs);
+        assert_eq!(std::fs::read(&path).unwrap(), journal_before);
+    }
+
+    #[test]
+    fn test_automatic_backup_skips_an_id_backup_while_this_install_has_none() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        backup_now(&path, at("2026-10-14T08:00:00Z")).unwrap();
+        let theirs = set_backup_journal_id(&folder, Some("other-computer"));
+        // A journal from before ids existed, already backed up from here.
+        modify(&path, |j| {
+            j.settings.journal_id = None;
+            Ok(())
+        })
+        .unwrap();
+
+        let err = backup_if_due(&path, at("2026-10-15T09:00:00Z")).unwrap_err();
+
+        assert!(matches!(
+            err,
+            WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup
+        ));
+        assert_eq!(std::fs::read(backup_path(&folder)).unwrap(), theirs);
+    }
+
+    #[test]
+    fn test_automatic_backup_replaces_a_backup_without_an_id() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        backup_now(&path, at("2026-10-14T08:00:00Z")).unwrap();
+        // As an older Maestro wrote it.
+        set_backup_journal_id(&folder, None);
+
+        let saved = backup_if_due(&path, at("2026-10-15T09:00:00Z"))
+            .unwrap()
+            .unwrap();
+
+        let backup = std::fs::read_to_string(backup_path(&folder)).unwrap();
+        assert_eq!(parse_journal(&backup).unwrap(), saved);
+        assert!(saved.settings.journal_id.is_some());
+    }
+
+    #[test]
+    fn test_back_up_now_asks_before_replacing_another_computers_backup() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        let own = backup_now_if_ours(&path, at("2026-10-14T08:00:00Z")).unwrap();
+        let id = own.settings.journal_id.clone().unwrap();
+        let theirs = set_backup_journal_id(&folder, Some("other-computer"));
+        let journal_before = std::fs::read(&path).unwrap();
+
+        let err = backup_now_if_ours(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+        assert!(matches!(
+            err,
+            WorkJournalError::BackupBelongsToOtherComputer
+        ));
+        assert_eq!(std::fs::read(backup_path(&folder)).unwrap(), theirs);
+        assert_eq!(std::fs::read(&path).unwrap(), journal_before);
+
+        // The user agreed: the override replaces it with this install's id.
+        let saved = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap();
+        assert_eq!(backup_journal_id(&folder).as_deref(), Some(id.as_str()));
+        assert_eq!(saved.settings.journal_id.as_deref(), Some(id.as_str()));
+        // And the next automatic backup runs again.
+        assert!(backup_if_due(&path, at("2026-10-16T13:00:00Z"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn test_restore_and_undo_keep_the_local_journal_id() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        let id = backup_now(&path, at("2026-10-14T08:00:00Z"))
+            .unwrap()
+            .settings
+            .journal_id
+            .unwrap();
+        set_backup_journal_id(&folder, Some("from-the-file"));
+
+        let restored = restore_from(&path, &backup_path(&folder)).unwrap();
+        assert_eq!(restored.settings.journal_id.as_deref(), Some(id.as_str()));
+
+        let undone = undo_restore(&path).unwrap();
+        assert_eq!(undone.settings.journal_id.as_deref(), Some(id.as_str()));
     }
 
     #[test]

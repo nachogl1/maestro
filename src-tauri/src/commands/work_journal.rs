@@ -264,15 +264,61 @@ pub async fn update_work_journal_settings(
     Ok(journal)
 }
 
+/// What "Back up now" did, tagged by `status` for the frontend.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BackupNowOutcome {
+    /// A backup was written; the saved journal.
+    Written { journal: Box<WorkJournal> },
+    /// Nothing written: the folder holds another computer's backup and the
+    /// user has not agreed to replace it yet.
+    OtherComputer { message: String },
+}
+
+/// Maps the core result to the command's outcome: the other-computer refusal
+/// is an `OtherComputer` outcome, every other error stays an error.
+fn backup_now_outcome(
+    result: WorkJournalResult<WorkJournal>,
+) -> WorkJournalResult<BackupNowOutcome> {
+    match result {
+        Ok(journal) => Ok(BackupNowOutcome::Written {
+            journal: Box::new(journal),
+        }),
+        Err(e @ WorkJournalError::BackupBelongsToOtherComputer) => {
+            Ok(BackupNowOutcome::OtherComputer {
+                message: e.to_string(),
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// "Back up now": writes the journal to `<backup folder>/work-journal.json`
 /// and records `last_backup_at`, replacing any file there (the explicit
-/// override of the automatic guard). Refused when no folder is set or the
-/// folder is missing; the journal is then left untouched.
+/// override of the automatic guard). A backup another computer wrote there is
+/// only replaced with `replace_other_computer` (after the user agreed);
+/// without it the reply is `OtherComputer` and nothing is written. Refused
+/// when no folder is set or the folder is missing; the journal is then left
+/// untouched.
 #[tauri::command]
-pub async fn work_journal_backup_now(window: WebviewWindow) -> Result<WorkJournal, String> {
-    let journal = with_journal(|path| work_journal::backup_now(&path, chrono::Utc::now())).await?;
-    notify_changed(&window, false);
-    Ok(journal)
+pub async fn work_journal_backup_now(
+    window: WebviewWindow,
+    replace_other_computer: Option<bool>,
+) -> Result<BackupNowOutcome, String> {
+    let replace = replace_other_computer.unwrap_or(false);
+    let outcome = with_journal(move |path| {
+        let now = chrono::Utc::now();
+        backup_now_outcome(if replace {
+            work_journal::backup_now(&path, now)
+        } else {
+            work_journal::backup_now_if_ours(&path, now)
+        })
+    })
+    .await?;
+    if matches!(outcome, BackupNowOutcome::Written { .. }) {
+        notify_changed(&window, false);
+    }
+    Ok(outcome)
 }
 
 /// What the automatic backup did, tagged by `status` for the frontend.
@@ -283,7 +329,8 @@ pub enum BackupIfDueOutcome {
     Written { journal: Box<WorkJournal> },
     /// Nothing to do: no folder set, or not due yet.
     Idle,
-    /// The guard refused to replace a backup this Maestro has not written.
+    /// The guard refused to replace a backup this Maestro has not written,
+    /// or one another computer wrote.
     Skipped { message: String },
 }
 
@@ -297,11 +344,12 @@ fn backup_if_due_outcome(
             journal: Box::new(journal),
         }),
         Ok(None) => Ok(BackupIfDueOutcome::Idle),
-        Err(e @ WorkJournalError::AutoBackupWouldReplaceUnknownBackup) => {
-            Ok(BackupIfDueOutcome::Skipped {
-                message: e.to_string(),
-            })
-        }
+        Err(
+            e @ (WorkJournalError::AutoBackupWouldReplaceUnknownBackup
+            | WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup),
+        ) => Ok(BackupIfDueOutcome::Skipped {
+            message: e.to_string(),
+        }),
         Err(e) => Err(e),
     }
 }
@@ -842,6 +890,36 @@ mod tests {
             own_folder,
             Err(WorkJournalError::BackupFolderIsJournalFolder)
         ));
+
+        let other = backup_if_due_outcome(Err(
+            WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup,
+        ))
+        .unwrap();
+        let value = serde_json::to_value(&other).unwrap();
+        assert_eq!(value["status"], "skipped");
+        assert!(value["message"]
+            .as_str()
+            .unwrap()
+            .contains("another computer's Work Journal backup"));
+    }
+
+    #[test]
+    fn test_backup_now_outcome_tags_each_case() {
+        let written = backup_now_outcome(Ok(WorkJournal::default())).unwrap();
+        assert_eq!(serde_json::to_value(&written).unwrap()["status"], "written");
+
+        let other =
+            backup_now_outcome(Err(WorkJournalError::BackupBelongsToOtherComputer)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&other).unwrap(),
+            serde_json::json!({
+                "status": "other_computer",
+                "message": "Another computer's backup is in this folder. Replace it?"
+            })
+        );
+
+        let failed = backup_now_outcome(Err(WorkJournalError::NoBackupFolder));
+        assert!(matches!(failed, Err(WorkJournalError::NoBackupFolder)));
     }
 
     #[test]
