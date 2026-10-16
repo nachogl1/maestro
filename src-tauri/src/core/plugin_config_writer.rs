@@ -16,19 +16,38 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::config_recovery::read_json_or_recover;
 use super::mcp_config_writer::{atomic_write, dir_lock};
 use super::plugin_error::{PluginError, PluginResult};
+use super::samurai_files::{canonical_key, strip_extended_length};
 
-/// For one settings.local.json: each `enabledPlugins` key Maestro has written,
-/// with the value it had before Maestro's first write (`None` = absent).
-type OriginalEntries = HashMap<String, Option<Value>>;
+/// One `enabledPlugins` key Maestro has written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct OwnedKey {
+    /// The value before Maestro's first write (`None` = the key was absent).
+    prior: Option<Value>,
+    /// The value Maestro last wrote. A different value in the file means the
+    /// user changed the key since: it is theirs, and Maestro leaves it alone.
+    wrote: Value,
+}
 
-/// The ownership record: settings.local.json path -> [`OriginalEntries`].
-type OwnershipRecord = HashMap<String, OriginalEntries>;
+/// For one settings.local.json: every key Maestro owns there.
+type OwnedKeys = HashMap<String, OwnedKey>;
+
+/// The ownership record: normalized `.claude` folder -> [`OwnedKeys`].
+type OwnershipRecord = HashMap<String, OwnedKeys>;
+
+/// The record key for a `.claude` folder: canonical (resolves case, slashes
+/// and `..` on disk), without the Windows `\\?\` prefix, so two spellings of one
+/// folder share one entry. A folder that does not exist keeps its raw spelling.
+fn record_key(claude_dir: &Path) -> String {
+    canonical_key(claude_dir)
+        .unwrap_or_else(|_| strip_extended_length(&claude_dir.to_string_lossy()))
+}
 
 /// File name of the ownership record in Maestro's app data dir.
 const RECORD_FILE_NAME: &str = "plugin-config-ownership.json";
@@ -93,13 +112,13 @@ async fn save_record(path: &Path, record: &OwnershipRecord) -> PluginResult<()> 
 /// Merges Maestro's `enabledPlugins` keys into an existing settings.local.json.
 ///
 /// Preserves user-defined settings and the user's own `enabledPlugins`
-/// entries: only Maestro's keys are set, and each key's prior value is added to
-/// `originals` (first value only) for close to restore. Also removes the legacy
+/// entries: only Maestro's keys are set, and `owned` records each key's prior
+/// value and what Maestro wrote, for close to restore. Also removes the legacy
 /// `plugins` array if present.
 fn merge_with_existing(
     settings_path: &Path,
     enabled_plugins: &HashMap<String, bool>,
-    originals: &mut OriginalEntries,
+    owned: &mut OwnedKeys,
 ) -> PluginResult<Value> {
     // A corrupt settings.local.json (e.g. from a crashed/interleaved write) is
     // moved aside and treated as empty so the launch self-heals instead of
@@ -126,13 +145,21 @@ fn merge_with_existing(
     let Some(plugins_obj) = config["enabledPlugins"].as_object_mut() else {
         unreachable!("just made it an object");
     };
+    // A recorded key whose value is no longer what Maestro wrote was changed
+    // by the user (e.g. after a crash): it is theirs now, so forget it.
+    owned.retain(|id, key| plugins_obj.get(id) == Some(&key.wrote));
     for (id, enabled) in enabled_plugins {
-        // Record only the first value seen: a later launch in the same
-        // directory must not mistake Maestro's own earlier value for the user's.
-        originals
+        let wrote = json!(*enabled);
+        // Keep the first prior value: a later launch in the same directory
+        // must not mistake Maestro's own earlier value for the user's.
+        owned
             .entry(id.clone())
-            .or_insert_with(|| plugins_obj.get(id).cloned());
-        plugins_obj.insert(id.clone(), json!(*enabled));
+            .and_modify(|key| key.wrote = wrote.clone())
+            .or_insert_with(|| OwnedKey {
+                prior: plugins_obj.get(id).cloned(),
+                wrote: wrote.clone(),
+            });
+        plugins_obj.insert(id.clone(), wrote);
     }
 
     Ok(config)
@@ -181,10 +208,9 @@ async fn write_session_plugin_config_at(
 
     // Merge with existing settings, recording what Maestro's keys held before
     let settings_path = claude_dir.join("settings.local.json");
-    let record_key = settings_path.to_string_lossy().into_owned();
     let mut record = load_record(record_file)?;
-    let originals = record.entry(record_key).or_default();
-    let final_config = merge_with_existing(&settings_path, enabled_plugins, originals)?;
+    let owned = record.entry(record_key(&claude_dir)).or_default();
+    let final_config = merge_with_existing(&settings_path, enabled_plugins, owned)?;
     // Keep the record bounded: no entry for a folder Maestro owns nothing in.
     record.retain(|_, keys| !keys.is_empty());
     save_record(record_file, &record).await?;
@@ -232,7 +258,6 @@ async fn remove_session_plugin_config_at(
 ) -> PluginResult<()> {
     let claude_dir = working_dir.join(".claude");
     let settings_path = claude_dir.join("settings.local.json");
-    let record_key = settings_path.to_string_lossy().into_owned();
 
     // Serialize against the hooks writer (see write_session_plugin_config).
     let lock = dir_lock(&claude_dir);
@@ -240,8 +265,8 @@ async fn remove_session_plugin_config_at(
     let _record_guard = RECORD_LOCK.lock().await;
 
     let mut record = load_record(record_file)?;
-    let originals = record.remove(&record_key);
-    let had_record = originals.is_some();
+    let owned = record.remove(&record_key(&claude_dir));
+    let had_record = owned.is_some();
 
     if !settings_path.exists() {
         // Nothing to restore into; drop the folder's entry so it cannot go stale.
@@ -260,12 +285,16 @@ async fn remove_session_plugin_config_at(
     // Restore Maestro's enabledPlugins keys and remove the legacy plugins array
     if let Some(obj) = config.as_object_mut() {
         let mut restored_enabled = false;
-        if let (Some(originals), Some(plugins)) = (
-            originals,
+        if let (Some(owned), Some(plugins)) = (
+            owned,
             obj.get_mut("enabledPlugins").and_then(Value::as_object_mut),
         ) {
-            for (id, original) in originals {
-                match original {
+            for (id, key) in owned {
+                // Changed since Maestro wrote it: the user's value, leave it.
+                if plugins.get(&id) != Some(&key.wrote) {
+                    continue;
+                }
+                match key.prior {
                     Some(value) => plugins.insert(id, value),
                     None => plugins.remove(&id),
                 };
@@ -587,9 +616,10 @@ mod tests {
         // The record is on disk (there is no in-memory copy to lose)...
         let record: OwnershipRecord =
             serde_json::from_str(&std::fs::read_to_string(record_file(&dir)).unwrap()).unwrap();
-        let key = settings.to_string_lossy().into_owned();
-        assert_eq!(record[&key]["user@market"], Some(json!(true)));
-        assert_eq!(record[&key]["unselected@market"], None);
+        let key = record_key(&claude_dir);
+        assert_eq!(record[&key]["user@market"].prior, Some(json!(true)));
+        assert_eq!(record[&key]["user@market"].wrote, json!(false));
+        assert_eq!(record[&key]["unselected@market"].prior, None);
 
         // ...so after the restart a new launch does not take Maestro's
         // leftovers for the user's values, and its close removes them.
@@ -628,13 +658,101 @@ mod tests {
         let left: OwnershipRecord =
             serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
         assert_eq!(left.len(), 1);
-        let b_key = repo_b
-            .join(".claude")
-            .join("settings.local.json")
-            .to_string_lossy()
-            .into_owned();
-        assert!(left.contains_key(&b_key));
+        assert!(left.contains_key(&record_key(&repo_b.join(".claude"))));
         assert!(!repo_a.join(".claude/settings.local.json").exists());
+    }
+
+    fn read_settings(dir: &TempDir) -> Value {
+        let path = dir.path().join(".claude/settings.local.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn write_settings(dir: &TempDir, value: &Value) {
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            serde_json::to_string(value).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_user_turns_on_maestro_key_after_crash_and_it_survives() {
+        let dir = tempdir().unwrap();
+        let record = record_file(&dir);
+        let plugins = HashMap::from([("k@market".to_string(), false)]);
+
+        // Maestro adds K (prior: absent), then the app crashes: no close.
+        write_session_plugin_config_at(dir.path(), &plugins, &record)
+            .await
+            .unwrap();
+        // The user turns K on themselves.
+        write_settings(&dir, &json!({ "enabledPlugins": { "k@market": true } }));
+
+        // Next launch sets K for its session; its close must give the user's
+        // value back, not the stale "absent".
+        write_session_plugin_config_at(dir.path(), &plugins, &record)
+            .await
+            .unwrap();
+        assert_eq!(read_settings(&dir)["enabledPlugins"]["k@market"], false);
+        remove_session_plugin_config_at(dir.path(), &record)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_settings(&dir),
+            json!({ "enabledPlugins": { "k@market": true } })
+        );
+        assert!(!record.exists());
+    }
+
+    #[tokio::test]
+    async fn test_user_flips_maestro_value_during_a_run_and_close_keeps_it() {
+        let dir = tempdir().unwrap();
+        let record = record_file(&dir);
+        let plugins = HashMap::from([("k@market".to_string(), false)]);
+
+        write_session_plugin_config_at(dir.path(), &plugins, &record)
+            .await
+            .unwrap();
+        // Between launch and close the user turns K on (e.g. via /plugin).
+        write_settings(&dir, &json!({ "enabledPlugins": { "k@market": true } }));
+        remove_session_plugin_config_at(dir.path(), &record)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_settings(&dir),
+            json!({ "enabledPlugins": { "k@market": true } })
+        );
+        assert!(!record.exists());
+    }
+
+    #[tokio::test]
+    async fn test_two_spellings_of_one_folder_share_one_record_entry() {
+        let dir = tempdir().unwrap();
+        let record = record_file(&dir);
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let other_spelling = repo.join("..").join("repo");
+        let plugins = HashMap::from([("k@market".to_string(), true)]);
+
+        write_session_plugin_config_at(&repo, &plugins, &record)
+            .await
+            .unwrap();
+        write_session_plugin_config_at(&other_spelling, &plugins, &record)
+            .await
+            .unwrap();
+        let entries: OwnershipRecord =
+            serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+        assert_eq!(entries.len(), 1);
+
+        remove_session_plugin_config_at(&other_spelling, &record)
+            .await
+            .unwrap();
+        assert!(!repo.join(".claude/settings.local.json").exists());
+        assert!(!record.exists());
     }
 
     #[tokio::test]
