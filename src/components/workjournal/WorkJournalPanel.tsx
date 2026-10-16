@@ -140,12 +140,14 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
   }, [ensurePages]);
 
   // The pane and the pop-out window share the journal file: re-read it when
-  // the other one (or a candidate run) changed it.
+  // the other one changed its pages (or replaced the whole journal).
   useEffect(() => {
-    const stop = listenWorkJournalChanged((change) => void sync(change.replaced)).catch((err) => {
-      console.error("Failed to follow Work Journal changes:", err);
-      return () => {};
-    });
+    const stop = listenWorkJournalChanged((change) => void sync(change.replaced), "pages").catch(
+      (err) => {
+        console.error("Failed to follow Work Journal changes:", err);
+        return () => {};
+      },
+    );
     return () => {
       void stop.then((fn) => fn());
     };

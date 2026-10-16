@@ -1147,15 +1147,17 @@ pub fn ensure_pages(journal: &mut WorkJournal, today: &str) -> WorkJournalResult
 }
 
 /// Loads the journal at `path`, runs [`ensure_pages`] for `today`, and saves
-/// only when something changed. Returns the (saved) journal. An invalid
-/// `today` is refused before the file is read.
-pub fn ensure_pages_in_file(path: &Path, today: &str) -> WorkJournalResult<WorkJournal> {
+/// only when something changed. Returns the (saved) journal and whether a
+/// page was created. An invalid `today` is refused before the file is read.
+pub fn ensure_pages_in_file(path: &Path, today: &str) -> WorkJournalResult<(WorkJournal, bool)> {
     parse_day_page_date(today)?;
     let mut journal = load(path)?;
+    let pages_before = journal.pages.len();
     if ensure_pages(&mut journal, today)? {
         save(path, &journal)?;
     }
-    Ok(journal)
+    let created = journal.pages.len() > pages_before;
+    Ok((journal, created))
 }
 
 #[cfg(test)]
@@ -2118,8 +2120,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = journal_path(&dir.path().join("work-journal"));
 
-        let journal = ensure_pages_in_file(&path, "2026-10-14").unwrap();
+        let (journal, created) = ensure_pages_in_file(&path, "2026-10-14").unwrap();
 
+        assert!(created);
         assert!(journal.pages.contains_key("2026-10-14"));
         assert_eq!(
             load(&path).unwrap(),
@@ -2136,10 +2139,37 @@ mod tests {
         let text = r#"{"layout_version":1,"last_auto_created_date":"2026-10-14"}"#;
         std::fs::write(&path, text).unwrap();
 
-        let journal = ensure_pages_in_file(&path, "2026-10-14").unwrap();
+        let (journal, created) = ensure_pages_in_file(&path, "2026-10-14").unwrap();
 
+        assert!(!created);
         assert!(journal.pages.is_empty());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn test_ensure_in_file_reports_no_page_created_when_every_day_has_one() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(dir.path());
+        modify(&path, |j| {
+            create_page(
+                j,
+                "2026-10-14",
+                "Kept".into(),
+                empty_page_body(),
+                PageOrigin::Manual,
+            )
+        })
+        .unwrap();
+
+        // The anchor moves (a save), but no page is created.
+        let (journal, created) = ensure_pages_in_file(&path, "2026-10-14").unwrap();
+
+        assert!(!created);
+        assert_eq!(journal.pages.len(), 1);
+        assert_eq!(
+            journal.last_auto_created_date.as_deref(),
+            Some("2026-10-14")
+        );
     }
 
     #[test]

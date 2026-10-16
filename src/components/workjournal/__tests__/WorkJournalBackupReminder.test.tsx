@@ -140,6 +140,28 @@ describe("WorkJournalBackupReminder", () => {
     expect(reads()).toBe(2);
   });
 
+  it("re-reads only for a settings change, a replace, or an older payload without a kind", async () => {
+    render(<WorkJournalBackupReminder />);
+    await screen.findByText(BACKUP_REMINDER_TEXT);
+    const reads = (): number =>
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "load_work_journal").length;
+    expect(reads()).toBe(1);
+
+    const other = { source: WORK_JOURNAL_WINDOW_LABEL, replaced: false } as const;
+    await act(async () => changed({ ...other, kind: "page" }));
+    await act(async () => changed({ ...other, kind: "candidates" }));
+    expect(reads()).toBe(1);
+
+    await act(async () => changed({ ...other, kind: "settings" }));
+    expect(reads()).toBe(2);
+    await act(async () => changed({ ...other, kind: "run" }));
+    expect(reads()).toBe(3);
+    await act(async () => changed({ ...other, replaced: true, kind: "replaced" }));
+    expect(reads()).toBe(4);
+    await act(async () => changed(other));
+    expect(reads()).toBe(5);
+  });
+
   it("goes away once a folder is chosen here or in the other window", async () => {
     render(<WorkJournalBackupReminder />);
     await screen.findByText(BACKUP_REMINDER_TEXT);

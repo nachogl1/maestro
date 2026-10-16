@@ -277,9 +277,10 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         (event) => refreshLoaded(event.payload?.dates ?? []),
       );
       // The pane and the pop-out window each keep a copy: re-read it when the
-      // other one accepted or rejected (or anything else changed).
-      const unlistenChanged = await listenWorkJournalChanged(() =>
-        refreshLoaded(Object.keys(get().byDate)),
+      // other one accepted or rejected (or a run or restore changed them).
+      const unlistenChanged = await listenWorkJournalChanged(
+        () => refreshLoaded(Object.keys(get().byDate)),
+        "candidates",
       );
       // Back to the window: the date may have changed while it was away.
       const onFocus = (): void => void get().refreshToday();
