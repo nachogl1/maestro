@@ -600,6 +600,26 @@ function isPageChangedRefusal(error: unknown): boolean {
   return errorMessage(error).startsWith(WORK_JOURNAL_PAGE_CHANGED_CODE);
 }
 
+/**
+ * Whether `error` is the backend's refusal of a save for a page that no
+ * longer exists (`WorkJournalError::PageNotFound`, "No work journal page for
+ * <date>"): the other window deleted it.
+ */
+function isPageNotFound(error: unknown, date: string): boolean {
+  return errorMessage(error) === `No work journal page for ${date}`;
+}
+
+/** What the user reads when a save found its page deleted in the other window. */
+export function workJournalPageDeletedNotice(date: string): string {
+  return `The page for ${defaultWorkJournalTitle(date)} was deleted in the other window, so your last change to it was not saved.`;
+}
+
+/**
+ * The page whose failed save put the shown `error` there, so the error goes
+ * once that page is gone.
+ */
+let pageError: { date: string; message: string } | null = null;
+
 /** An error for the user to read: without the restore refusal's code. */
 function displayError(error: unknown): string {
   const message = errorMessage(error);
@@ -700,10 +720,14 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         // The viewed page was deleted in the other window: show the nearest
         // one, as a delete here does.
         const viewed = s.viewedDate;
+        // A save error of a page that is gone no longer applies.
+        const stale = pageError && !pages[pageError.date] && s.error === pageError.message;
+        const error = stale ? { error: null } : {};
+        if (stale) pageError = null;
         if (viewed && s.pages[viewed] && !pages[viewed]) {
-          return { pages, viewedDate: nearestPageDate(pages, viewed) ?? viewed };
+          return { pages, viewedDate: nearestPageDate(pages, viewed) ?? viewed, ...error };
         }
-        return { pages };
+        return { pages, ...error };
       });
       // Another window just saved, so the disk may take the failed saves
       // that nobody changed since.
@@ -830,6 +854,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
       let conflict = false;
       // Set when the save went on top of a newer copy this window has not shown.
       let resent = false;
+      // Set when the page was found deleted in the other window after a refusal.
+      let gone = false;
       try {
         let rev = Number.NaN;
         let base = sentBase;
@@ -847,6 +873,7 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
             // A restore or undo landed meanwhile: the text belongs to the old journal.
             if (get().revision !== revision) throw error;
             rememberRevCopy(fresh);
+            gone = !fresh;
             const made = revCopies.get(`${date}@${sentBase}`);
             if (
               fresh?.rev === undefined ||
@@ -885,6 +912,17 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
         // found changed: the text belonged to the replaced journal.
         const replaced = refused || isPageChangedRefusal(error);
         if (replaced && get().revision !== revision) return;
+        if (gone || isPageNotFound(error, date)) {
+          if (get().revision !== revision) return;
+          // Deleted in the other window: its text went with it, so nothing is
+          // kept or retried. The read drops the page here too.
+          clearFailedSaves(date);
+          forgetRevs(date);
+          publishFailedSaves();
+          set({ error: workJournalPageDeletedNotice(date) });
+          void get().sync(false);
+          return;
+        }
         failedSaves.add(key);
         if (!failedRevs.has(key) && sentBase !== undefined) failedRevs.set(key, sentBase);
         if (!failedBases.has(key)) {
@@ -915,7 +953,8 @@ export const useWorkJournalStore = create<WorkJournalState>((set, get) => ({
           if (get().replacing) return;
         } else {
           console.error("Failed to save the Work Journal page:", error);
-          set({ error: errorMessage(error) });
+          pageError = { date, message: errorMessage(error) };
+          set({ error: pageError.message });
         }
         publishFailedSaves();
         scheduleRetry();

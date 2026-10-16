@@ -12,6 +12,7 @@ import {
   WORK_JOURNAL_SAVE_RETRY_DELAYS_MS,
   type WorkJournalFile,
   type WorkJournalPage,
+  workJournalPageDeletedNotice,
 } from "../useWorkJournalStore";
 
 const invokeMock = vi.mocked(invoke);
@@ -380,8 +381,9 @@ describe("useWorkJournalStore failed-save retries", () => {
         return read;
       }
       if (cmd === "update_work_journal_page") {
-        if (failing) throw new Error("disk full");
         const a = args as { date: string; title: string | null; body: WorkJournalPage["body"] };
+        if (!disk.pages[a.date]) throw `No work journal page for ${a.date}`;
+        if (failing) throw new Error("disk full");
         const saved = disk.pages[a.date];
         if (a.title != null) saved.title = a.title;
         if (a.body != null) saved.body = a.body;
@@ -691,6 +693,58 @@ describe("useWorkJournalStore failed-save retries", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(saves()).toHaveLength(1);
   });
+
+  it("a save for a page the other window deleted shows a short notice and is not retried", async () => {
+    disk = journal([page("2026-10-13"), page(DATE)]);
+    failing = false;
+    await useWorkJournalStore.getState().load();
+    useWorkJournalStore.setState({ viewedDate: DATE });
+    delete disk.pages[DATE];
+
+    const saved = await useWorkJournalStore.getState().updatePage(DATE, { body: body("typed") });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(saved).toBe(false);
+    const state = useWorkJournalStore.getState();
+    expect(state.error).toBe(workJournalPageDeletedNotice(DATE));
+    expect(state.error).not.toContain("No work journal page");
+    expect(state.unsavedDates).toEqual([]);
+    expect(state.pages[DATE]).toBeUndefined();
+    expect(state.viewedDate).toBe("2026-10-13");
+    // Nothing is retried, and the notice stays until dismissed.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(saves()).toHaveLength(1);
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().error).toBe(workJournalPageDeletedNotice(DATE));
+  });
+
+  it("a save error goes once the other window deletes its page; other errors stay", async () => {
+    disk = journal([page("2026-10-13"), page(DATE)]);
+    await failSave("unsaved");
+    expect(useWorkJournalStore.getState().error).toBe("disk full");
+
+    // The page is still there: the error stays.
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().error).toBe("disk full");
+
+    // An error that is not about a page that went away stays too.
+    useWorkJournalStore.setState({ error: "Backup failed" });
+    delete disk.pages[DATE];
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().error).toBe("Backup failed");
+  });
+
+  it("a page's save error is cleared when the other window deletes that page", async () => {
+    disk = journal([page("2026-10-13"), page(DATE)]);
+    await failSave("unsaved");
+    delete disk.pages[DATE];
+
+    await useWorkJournalStore.getState().sync(false);
+    expect(useWorkJournalStore.getState().error).toBeNull();
+    expect(useWorkJournalStore.getState().unsavedDates).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(saves()).toHaveLength(1);
+  });
 });
 
 describe("useWorkJournalStore page revs (the pane and the pop-out saving the same page)", () => {
@@ -725,6 +779,7 @@ describe("useWorkJournalStore page revs (the pane and the pop-out saving the sam
       if (cmd === "update_work_journal_page") {
         const a = args as { date: string; title: string | null; body: unknown; baseRev?: number };
         const saved = disk.pages[a.date];
+        if (!saved) throw `No work journal page for ${a.date}`;
         if (a.baseRev !== undefined && a.baseRev !== saved.rev) {
           throw `PAGE_CHANGED: The page for ${a.date} was changed in another window; this change was not saved.`;
         }
@@ -826,6 +881,27 @@ describe("useWorkJournalStore page revs (the pane and the pop-out saving the sam
     expect(useWorkJournalStore.getState().conflictDates).toEqual([date]);
     discardWorkJournalConflicts();
     expect(useWorkJournalStore.getState().pages[date].title).toBe("Theirs");
+  });
+
+  it("a save refused because the page then went away shows the deleted notice", async () => {
+    const date = "2026-11-04";
+    disk.pages[date] = { ...page(date), body: body("start"), rev: 0 };
+    await useWorkJournalStore.getState().load();
+    // The other window saved, then deleted the page, while this save was on its way.
+    invokeMock.mockImplementationOnce(async () => {
+      delete disk.pages[date];
+      throw `PAGE_CHANGED: The page for ${date} was changed in another window; this change was not saved.`;
+    });
+
+    const saved = await useWorkJournalStore.getState().updatePage(date, { body: body("x") }, 0);
+    await settle();
+
+    expect(saved).toBe(false);
+    const state = useWorkJournalStore.getState();
+    expect(state.error).toBe(workJournalPageDeletedNotice(date));
+    expect(state.conflictDates).toEqual([]);
+    expect(state.unsavedDates).toEqual([]);
+    expect(state.pages[date]).toBeUndefined();
   });
 
   it("a page deleted and made again saves without a conflict", async () => {
