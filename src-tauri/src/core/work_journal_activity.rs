@@ -304,13 +304,37 @@ async fn set_aside_damaged(dir: &Path, error: &serde_json::Error) {
     }
 }
 
+/// Deletes [`DAMAGED_FILE`] once its modified time is more than
+/// [`RETENTION_HOURS`] before `now`, so a set-aside copy cannot keep raw
+/// activity past the one-day limit. A fresh one stays for inspection. A time
+/// that cannot be read counts as old (like an unreadable stamp in
+/// [`expired`]); a missing file is fine; a failed delete is only logged.
+async fn prune_damaged(dir: &Path, now: DateTime<Utc>) {
+    let damaged = dir.join(DAMAGED_FILE);
+    let modified = match tokio::fs::metadata(&damaged).await {
+        Ok(meta) => meta.modified().ok().map(DateTime::<Utc>::from),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => None,
+    };
+    if modified.is_some_and(|t| now - t <= Duration::hours(RETENTION_HOURS)) {
+        return;
+    }
+    match tokio::fs::remove_file(&damaged).await {
+        Ok(()) => log::info!("work journal: deleted {damaged:?}, older than a day"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("work journal: could not delete the old {damaged:?}: {e}"),
+    }
+}
+
 /// Reads the file, closes stale records and prunes. A missing file is
-/// empty; an unparseable one is set aside and treated as empty. When
+/// empty; an unparseable one is set aside and treated as empty. A damaged
+/// copy older than a day is deleted first (see [`prune_damaged`]). When
 /// anything changed, writes it back; a failed write-back is logged and the
 /// cleaned data is still returned. Callers hold [`FILE_LOCK`].
 async fn load(dir: &Path, now: DateTime<Utc>, launch: &str) -> ActivityResult<ActivityFile> {
     let path = file_path(dir);
     let bound = pre_launch_mtime(&path);
+    prune_damaged(dir, now).await;
     let mut file = match tokio::fs::read_to_string(&path).await {
         Ok(text) => match serde_json::from_str(&text) {
             Ok(file) => file,
@@ -1380,6 +1404,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read_raw(dir.path()).candidates.len(), 1);
+    }
+
+    fn write_damaged(dir: &Path, modified: DateTime<Local>) -> PathBuf {
+        let damaged = dir.join(DAMAGED_FILE);
+        std::fs::write(&damaged, "raw activity").unwrap();
+        let file = std::fs::File::options().write(true).open(&damaged).unwrap();
+        file.set_modified(modified.into()).unwrap();
+        damaged
+    }
+
+    #[tokio::test]
+    async fn test_load_deletes_a_damaged_copy_older_than_a_day() {
+        let dir = tempdir().unwrap();
+        let damaged = write_damaged(dir.path(), Local::now() - Duration::hours(25));
+        let _guard = FILE_LOCK.lock().await;
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert!(!damaged.exists(), "a day-old damaged copy is deleted");
+    }
+
+    #[tokio::test]
+    async fn test_load_keeps_a_fresh_damaged_copy() {
+        let dir = tempdir().unwrap();
+        let damaged = write_damaged(dir.path(), Local::now() - Duration::hours(23));
+        let _guard = FILE_LOCK.lock().await;
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&damaged).unwrap(), "raw activity");
+
+        // The same file is deleted once "now" is more than a day past it.
+        load(dir.path(), Utc::now() + Duration::hours(2), LAUNCH)
+            .await
+            .unwrap();
+        assert!(!damaged.exists());
+    }
+
+    #[tokio::test]
+    async fn test_load_without_a_damaged_copy_is_fine() {
+        let dir = tempdir().unwrap();
+        let _guard = FILE_LOCK.lock().await;
+        let file = load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert!(file.candidates.is_empty() && file.terminals.is_empty());
+        assert!(!dir.path().join(DAMAGED_FILE).exists());
     }
 
     #[test]
