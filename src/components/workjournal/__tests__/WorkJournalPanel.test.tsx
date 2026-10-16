@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -7,7 +7,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { Editor } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  answerWorkJournalQuitFlush,
   WORK_JOURNAL_CHANGED_EVENT,
+  WORK_JOURNAL_QUIT_FLUSH_EVENT,
+  WORK_JOURNAL_QUIT_FLUSHED_EVENT,
   WORK_JOURNAL_REPLACING_EVENT,
   WORK_JOURNAL_WINDOW_LABEL,
   type WorkJournalChangedPayload,
@@ -27,6 +30,7 @@ import { WorkJournalPanel } from "../WorkJournalPanel";
 import { WorkJournalWindow } from "../WorkJournalWindow";
 
 vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(() => Promise.resolve()),
   emitTo: vi.fn(() => Promise.resolve()),
   listen: vi.fn(async () => () => {}),
 }));
@@ -119,6 +123,13 @@ function mockBackend(): void {
 
 function callsTo(cmd: string): unknown[] {
   return invokeMock.mock.calls.filter(([c]) => c === cmd).map(([, args]) => args);
+}
+
+/** The latest quit-flush handler registered through `listen`, as the backend would call it. */
+function quitFlushHandler(): () => Promise<void> {
+  const calls = listenMock.mock.calls.filter(([event]) => event === WORK_JOURNAL_QUIT_FLUSH_EVENT);
+  const handler = calls[calls.length - 1]?.[1] as unknown as (event: unknown) => Promise<void>;
+  return () => handler({ payload: null });
 }
 
 /** The TipTap editor behind the page body (TipTap puts it on its DOM node). */
@@ -450,6 +461,24 @@ describe("WorkJournalPanel", () => {
     const saves = callsTo("update_work_journal_page") as Array<Record<string, unknown>>;
     expect(saves.some((a) => JSON.stringify(a.body).includes("Before quit"))).toBe(true);
     expect(saves.some((a) => a.title === "Quit day")).toBe(true);
+  });
+
+  it("quitting Maestro saves the pane's last typing and title, then answers", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const stop = await answerWorkJournalQuitFlush();
+
+    act(() => {
+      pageEditor().commands.insertContent("Typed before quitting");
+    });
+    fireEvent.change(screen.getByLabelText("Page title"), { target: { value: "Quit day" } });
+    vi.mocked(emit).mockClear();
+    await act(async () => quitFlushHandler()());
+
+    expect(file.pages["2026-10-14"].title).toBe("Quit day");
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed before quitting");
+    expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, { label: "main" });
+    stop();
   });
 
   it("shows a body it cannot read as read-only and never saves it", async () => {
@@ -1002,6 +1031,41 @@ describe("WorkJournalWindow closing", () => {
     await act(async () => closeRequested({ preventDefault: preventAgain }));
     expect(preventAgain).not.toHaveBeenCalled();
     expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pop-out");
+  });
+
+  it("pop-out close saves a title still being edited with the text before it goes", async () => {
+    render(<WorkJournalWindow />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    act(() => {
+      pageEditor().commands.insertContent("Last words");
+    });
+    fireEvent.change(screen.getByLabelText("Page title"), { target: { value: "Closing day" } });
+
+    const preventDefault = vi.fn();
+    await act(async () => closeRequested({ preventDefault }));
+
+    // Both saves landed before the handler returned (the window then goes).
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(askMock).not.toHaveBeenCalled();
+    expect(file.pages["2026-10-14"].title).toBe("Closing day");
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Last words");
+  });
+
+  it("quitting from the main window saves the pop-out's typing and title first", async () => {
+    render(<WorkJournalWindow />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    act(() => {
+      pageEditor().commands.insertContent("Typed in the pop-out");
+    });
+    fireEvent.change(screen.getByLabelText("Page title"), { target: { value: "Pop-out day" } });
+    vi.mocked(emit).mockClear();
+
+    await act(async () => quitFlushHandler()());
+
+    expect(file.pages["2026-10-14"].title).toBe("Pop-out day");
+    expect(JSON.stringify(file.pages["2026-10-14"].body)).toContain("Typed in the pop-out");
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith(WORK_JOURNAL_QUIT_FLUSHED_EVENT, { label: "main" });
   });
 
   it("closes and drops the unsaved text after Close and lose it", async () => {

@@ -31,6 +31,7 @@ import {
 import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
 import {
   discardWorkJournalConflicts,
+  registerWorkJournalEditorFlush,
   retryWorkJournalSaves,
   useWorkJournalStore,
 } from "@/stores/useWorkJournalStore";
@@ -196,6 +197,9 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
       window.removeEventListener("pagehide", onLeave);
     };
   }, []);
+  // A title still being edited is saved, and waited for, with the page text
+  // when the pop-out closes or Maestro quits (`flushWorkJournalSaves`).
+  useEffect(() => registerWorkJournalEditorFlush(() => commitTitleRef.current()), []);
 
   const handleTitleKey = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") {
