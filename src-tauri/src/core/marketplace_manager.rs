@@ -202,9 +202,20 @@ impl MarketplaceManager {
             .ok_or_else(|| MarketplaceError::SourceNotFound(source_id.to_string()))?;
 
         let url = Self::get_marketplace_json_url(&source.repository_url);
+        self.fetch_marketplace_from(source_id, &source.repository_url, &url)
+            .await
+    }
 
+    /// Fetches `url` as the catalog of `source_id`, recording the outcome on
+    /// the source. Split out so tests can aim it at a local address.
+    async fn fetch_marketplace_from(
+        &self,
+        source_id: &str,
+        repository_url: &str,
+        url: &str,
+    ) -> MarketplaceResult<Vec<MarketplacePlugin>> {
         // Fetch the marketplace.json
-        let response = reqwest::get(&url).await.map_err(|e| {
+        let response = reqwest::get(url).await.map_err(|e| {
             let msg = e.to_string();
             self.update_source_error(source_id, &msg);
             MarketplaceError::NetworkError(msg)
@@ -233,7 +244,7 @@ impl MarketplaceManager {
         let plugins: Vec<MarketplacePlugin> = catalog
             .plugins
             .into_iter()
-            .map(|p| p.into_marketplace_plugin(source_id, &source.repository_url))
+            .map(|p| p.into_marketplace_plugin(source_id, repository_url))
             .collect();
 
         // Update source status
@@ -1077,9 +1088,15 @@ mod tests {
             false,
         );
 
-        // Whether the request fails at the network layer (offline) or comes
-        // back as an HTTP error, the source card must show why.
-        let result = manager.fetch_marketplace(&source.id).await;
+        // Port 1 on loopback refuses the connection at once, so this hits the
+        // network-layer error path without depending on the internet.
+        let result = manager
+            .fetch_marketplace_from(
+                &source.id,
+                &source.repository_url,
+                "http://127.0.0.1:1/marketplace.json",
+            )
+            .await;
         assert!(result.is_err());
         let after = manager.get_source(&source.id).expect("source exists");
         assert!(after.last_error.is_some(), "last_error must be recorded");
