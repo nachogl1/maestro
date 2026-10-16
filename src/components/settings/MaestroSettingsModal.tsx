@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
 import { formatTimeAgo } from "@/lib/format";
 import type { SamuraiConfig } from "@/lib/samurai";
@@ -246,7 +247,7 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
   }, [focusSection]);
 
   const handleCheckNow = useCallback(() => {
-    checkForUpdates();
+    checkForUpdates({ manual: true });
   }, [checkForUpdates]);
 
   const handleEndpointBlur = () => {
@@ -256,8 +257,8 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
 
   const isChecking = status === "checking";
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
         ref={modalRef}
         className="w-full max-w-md rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
@@ -538,6 +539,7 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

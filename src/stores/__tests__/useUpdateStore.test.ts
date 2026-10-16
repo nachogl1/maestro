@@ -207,4 +207,22 @@ describe("useUpdateStore", () => {
       expect(next.customEndpoint).toBe("https://example.test");
     });
   });
+
+  describe("manual check from Settings", () => {
+    it("shows a dismissed version again so the toast comes back", async () => {
+      useUpdateStore.setState({ dismissedVersion: "1.1.0" });
+      mockInvoke.mockResolvedValue(INFO);
+      await useUpdateStore.getState().checkForUpdates({ manual: true });
+      const s = useUpdateStore.getState();
+      expect(s.dismissedVersion).toBeNull();
+      expect(s.status).toBe("available");
+    });
+
+    it("an automatic check keeps the dismissal", async () => {
+      useUpdateStore.setState({ dismissedVersion: "1.1.0" });
+      mockInvoke.mockResolvedValue(INFO);
+      await useUpdateStore.getState().checkForUpdates();
+      expect(useUpdateStore.getState().dismissedVersion).toBe("1.1.0");
+    });
+  });
 });

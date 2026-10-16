@@ -1,5 +1,6 @@
 import { Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
 import { clearFontCache, EMBEDDED_FONT } from "@/lib/fonts";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
@@ -47,8 +48,8 @@ export function TerminalSettingsModal({ onClose }: TerminalSettingsModalProps) {
     setIsRefreshing(false);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
         ref={modalRef}
         className="w-full max-w-md rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
@@ -175,7 +176,8 @@ export function TerminalSettingsModal({ onClose }: TerminalSettingsModalProps) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
