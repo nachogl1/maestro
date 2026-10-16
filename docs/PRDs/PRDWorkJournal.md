@@ -371,6 +371,11 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
     pages, deleted dates and last auto-created date from the file.
   - On a new laptop no settings come across: the user sets them again and is
     asked about Granola again.
+  - User decision (2026-10-16): restore and undo also keep this computer's
+    own suggestions-run state (last run time, last attempt time, days waiting
+    for a retry), so the next run continues from where it left off instead of
+    suggesting the whole day again; the file's run state is never taken. Only
+    the last backup time is cleared (automatic backups wait for "Back up now").
   - Undo keeps the journal it replaces as `work-journal.before-undo.json` in
     Maestro's data folder (next to the journal, not the backup folder), so
     the undo itself can be reversed by hand (no redo button). Only one such

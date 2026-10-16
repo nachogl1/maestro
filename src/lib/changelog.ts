@@ -14,6 +14,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Maestro Settings and the other settings dialogs (Terminal, CLI, Shortcuts, Changelog) now sit above the terminals and the project tab bar instead of being crossed by them.",
       "Checking for updates from Maestro Settings shows the update toast at the bottom right again, even for a version you dismissed earlier.",
       "Context alert: the level at which a Claude terminal blinks red is now a number you type (1-100%) with a switch to turn the alert off, instead of a fixed list.",
+      "Work Journal: restoring or undoing a backup keeps this computer's last suggestions run, so nothing is suggested twice.",
     ],
   },
   {
