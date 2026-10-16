@@ -37,6 +37,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: Settings now refuses a model name that cannot work as soon as you enter it, instead of the suggestions or report run failing hours later.",
       "Work Journal: quitting Maestro now saves what you just typed in the pane or the pop-out, including a page title still being edited, and closing the pop-out saves that title too.",
       "Work Journal: with the journal open in the pane and the pop-out, saving in one no longer makes the other re-read the whole journal; it re-reads only what changed.",
+      "Work Journal: suggestion and report runs that time out, or are still running when you quit, no longer leave helper processes behind on Windows.",
       "Work Journal: two copies of Maestro running at once no longer lose each other's suggestions or terminal activity, and no longer mark the other copy's open terminals as closed.",
     ],
   },
