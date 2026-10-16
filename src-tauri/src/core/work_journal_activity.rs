@@ -100,8 +100,37 @@ pub enum ActivityError {
     InvalidTime(String),
     #[error("Candidate text is empty")]
     EmptyText,
+    #[error("Meeting candidate text is longer than {MAX_CANDIDATE_CHARS} characters")]
+    MeetingTextTooLong,
     #[error("No work journal candidate with id {0}")]
     CandidateNotFound(String),
+}
+
+/// The longest candidate text kept, in characters (not bytes).
+pub const MAX_CANDIDATE_CHARS: usize = 200;
+
+/// Caps candidate text at [`MAX_CANDIDATE_CHARS`] characters. Longer
+/// Granola text is dropped (`None`): a cut note excerpt is still an excerpt.
+/// Other text is cut at the last space within the first
+/// [`MAX_CANDIDATE_CHARS`] characters and ends with `…`; when that space is
+/// in the first half (a long URL or word), it is cut mid-word instead, so
+/// little is lost. Never splits a UTF-8 character.
+pub fn cap_candidate_text(text: &str, source: CandidateSource) -> Option<String> {
+    if text.chars().count() <= MAX_CANDIDATE_CHARS {
+        return Some(text.to_string());
+    }
+    if source == CandidateSource::Granola {
+        return None;
+    }
+    let head: Vec<char> = text.chars().take(MAX_CANDIDATE_CHARS).collect();
+    let at_word = head
+        .iter()
+        .rposition(|c| c.is_whitespace())
+        .filter(|&at| at >= MAX_CANDIDATE_CHARS / 2)
+        .map(|at| head[..at].iter().collect::<String>().trim_end().to_string())
+        .filter(|cut| !cut.is_empty());
+    let cut = at_word.unwrap_or_else(|| head[..MAX_CANDIDATE_CHARS - 1].iter().collect());
+    Some(format!("{cut}\u{2026}"))
 }
 
 /// Result type for activity-file operations.
@@ -626,8 +655,9 @@ async fn save(
 
 /// Checks one new candidate and returns it normalised: `date` as
 /// `YYYY-MM-DD` and `time` as `HH:MM` (zero-padded, so `2026-1-5` and `9:5`
-/// become `2026-01-05` and `09:05`), text folded to one non-empty line. Use
-/// it to drop bad lines before [`add_candidates`], which rejects a whole
+/// become `2026-01-05` and `09:05`), text folded to one non-empty line and
+/// capped by [`cap_candidate_text`] (an over-long meeting line is an error).
+/// Use it to drop bad lines before [`add_candidates`], which rejects a whole
 /// batch if any one is invalid.
 pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandidate> {
     let date = NaiveDate::parse_from_str(&candidate.date, "%Y-%m-%d")
@@ -649,6 +679,8 @@ pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandida
     if text.is_empty() {
         return Err(ActivityError::EmptyText);
     }
+    let text =
+        cap_candidate_text(&text, candidate.source).ok_or(ActivityError::MeetingTextTooLong)?;
     Ok(NewCandidate {
         date: date.format("%Y-%m-%d").to_string(),
         time,
@@ -1685,6 +1717,97 @@ mod tests {
             validate_candidate(&new_candidate("2026-10-15", None, "   ")),
             Err(ActivityError::EmptyText)
         ));
+    }
+
+    #[test]
+    fn test_cap_keeps_200_chars_and_cuts_201_at_a_word_with_an_ellipsis() {
+        let exact = "a".repeat(MAX_CANDIDATE_CHARS);
+        assert_eq!(
+            cap_candidate_text(&exact, CandidateSource::Git),
+            Some(exact.clone())
+        );
+        assert_eq!(
+            cap_candidate_text(&exact, CandidateSource::Granola),
+            Some(exact.clone())
+        );
+        let long = format!("{} tail", "word ".repeat(40));
+        let capped = cap_candidate_text(&long, CandidateSource::Git).unwrap();
+        assert!(capped.chars().count() <= MAX_CANDIDATE_CHARS);
+        assert!(capped.ends_with("word\u{2026}"), "cut at a word: {capped}");
+        let one_word = "x".repeat(MAX_CANDIDATE_CHARS + 1);
+        let capped = cap_candidate_text(&one_word, CandidateSource::Claude).unwrap();
+        assert_eq!(capped.chars().count(), MAX_CANDIDATE_CHARS);
+        assert!(capped.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn test_cap_cuts_mid_word_when_the_last_space_is_in_the_first_half() {
+        let long = format!("Fixed https://example.com/{}", "a".repeat(250));
+        let capped = cap_candidate_text(&long, CandidateSource::Git).unwrap();
+        assert_eq!(capped.chars().count(), MAX_CANDIDATE_CHARS);
+        assert!(capped.starts_with("Fixed https://example.com/aaa"));
+        assert!(capped.ends_with("a\u{2026}"));
+    }
+
+    #[test]
+    fn test_cap_keeps_a_whole_last_word_when_char_200_is_a_space() {
+        let long = format!("{} {} tail", "x".repeat(99), "y".repeat(99));
+        assert_eq!(long.chars().nth(MAX_CANDIDATE_CHARS - 1), Some(' '));
+        let capped = cap_candidate_text(&long, CandidateSource::Git).unwrap();
+        assert_eq!(
+            capped,
+            format!("{} {}\u{2026}", "x".repeat(99), "y".repeat(99))
+        );
+        assert_eq!(capped.chars().count(), MAX_CANDIDATE_CHARS);
+    }
+
+    #[test]
+    fn test_cap_counts_characters_not_bytes_and_never_splits_one() {
+        let exact = "é".repeat(MAX_CANDIDATE_CHARS);
+        assert!(
+            exact.len() > MAX_CANDIDATE_CHARS,
+            "more bytes than characters"
+        );
+        assert_eq!(
+            cap_candidate_text(&exact, CandidateSource::Git),
+            Some(exact.clone())
+        );
+        let long = "日本語 ".repeat(60);
+        let capped = cap_candidate_text(&long, CandidateSource::Git).unwrap();
+        assert!(capped.chars().count() <= MAX_CANDIDATE_CHARS);
+        assert!(capped.ends_with("日本語\u{2026}"), "{capped}");
+    }
+
+    #[test]
+    fn test_cap_drops_an_over_long_granola_line() {
+        let long = "Meeting - ".to_string() + &"note ".repeat(50);
+        assert_eq!(cap_candidate_text(&long, CandidateSource::Granola), None);
+    }
+
+    #[tokio::test]
+    async fn test_storage_guard_caps_text_and_refuses_a_long_meeting() {
+        let dir = tempdir().unwrap();
+        let long = "word ".repeat(60);
+        let added = add_candidates(dir.path(), vec![new_candidate("2026-10-15", None, &long)])
+            .await
+            .unwrap();
+        assert!(added[0].text.chars().count() <= MAX_CANDIDATE_CHARS);
+        assert!(added[0].text.ends_with('\u{2026}'));
+        let stored = list_candidates(dir.path(), "2026-10-15").await.unwrap();
+        assert_eq!(
+            stored[0].text, added[0].text,
+            "the capped text is what is stored"
+        );
+
+        let mut meeting = new_candidate("2026-10-15", None, &long);
+        meeting.source = CandidateSource::Granola;
+        assert!(matches!(
+            validate_candidate(&meeting),
+            Err(ActivityError::MeetingTextTooLong)
+        ));
+        assert!(add_candidates(dir.path(), vec![meeting]).await.is_err());
+        let stored = list_candidates(dir.path(), "2026-10-15").await.unwrap();
+        assert_eq!(stored.len(), 1, "the long meeting never reached the file");
     }
 
     #[tokio::test]
