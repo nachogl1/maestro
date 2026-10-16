@@ -4,7 +4,8 @@
 //!
 //! - **Claude conversations** from the History listing, labelled with the AI
 //!   name and two-sentence summary History already caches (the cache is only
-//!   read; the summariser is never run here). Like History, the listing also
+//!   read; the summariser is never run here), plus the last prompt when the
+//!   label does not already say it. Like History, the listing also
 //!   covers the repo's worktrees, which Maestro keeps outside the repo.
 //! - **Git commits** made by the repo's configured user.
 //! - **PRs and issues** through the GitHub CLI, skipped silently when `gh` is
@@ -36,7 +37,8 @@ use crate::commands::git::git_user_config;
 use crate::commands::github::{github_auth_status, github_list_issues, github_list_prs};
 use crate::commands::session_summary::{cached_session_summaries, SessionSummary};
 use crate::core::work_journal_activity::{
-    activity_dir, list_terminal_records, project_name_from_path, CandidateSource, TerminalRecord,
+    activity_dir, cap_candidate_text, list_terminal_records, project_name_from_path,
+    CandidateSource, TerminalRecord,
 };
 use crate::git::{CommitInfo, Git, GitUserConfig, WorktreeInfo};
 use crate::github::{IssueInfo, PullRequestInfo};
@@ -637,8 +639,29 @@ where
 }
 
 /// The cached AI name and summary when there is one; otherwise the session's
-/// own title or a prompt.
+/// own title or a prompt. Followed by the session's last prompt (capped like
+/// a candidate) when the label does not already say it: the label rarely
+/// changes as a conversation goes on (the cached summary only refreshes when
+/// History shows the row), so the last prompt is what tells a later window's
+/// new work apart from work already sent.
 fn claude_text(session: &ClaudeSessionInfo, summary: Option<&SessionSummary>) -> String {
+    let label = claude_label(session, summary);
+    let last = session
+        .last_prompt
+        .as_deref()
+        .map(one_line)
+        .filter(|last| !last.is_empty() && !label.contains(last.as_str()));
+    match last {
+        Some(last) => {
+            let last = cap_candidate_text(&last, CandidateSource::Claude).unwrap_or(last);
+            format!("{label} (last prompt: {last})")
+        }
+        None => label,
+    }
+}
+
+/// The label part of [`claude_text`].
+fn claude_label(session: &ClaudeSessionInfo, summary: Option<&SessionSummary>) -> String {
     if let Some(summary) = summary {
         return one_line(&format!("{}: {}", summary.name, summary.summary));
     }
@@ -1207,6 +1230,67 @@ mod tests {
             vec![("2026-10-15", "11:10"), ("2026-10-15", "11:40")]
         );
         assert_eq!(items[0].key, "started-inside");
+    }
+
+    /// A fake with one summarised conversation, last active `last_active`
+    /// minutes after the test window start, with `last_prompt`.
+    fn summarised(last_active: i64, last_prompt: &str) -> Fake {
+        let mut s = session("s", -120, last_active);
+        s.last_prompt = Some(last_prompt.to_string());
+        let mut fake = Fake::default();
+        fake.sessions.insert(PROJECT.into(), Ok(vec![s]));
+        fake.summaries.insert(
+            "s".into(),
+            SessionSummary {
+                name: "Fix login".into(),
+                summary: "The user wanted a fix.".into(),
+            },
+        );
+        fake
+    }
+
+    #[tokio::test]
+    async fn a_conversation_with_a_new_last_prompt_says_something_new() {
+        let first = collect(&summarised(10, "fix the login"), &[PROJECT]).await;
+        assert_eq!(
+            texts(&first),
+            vec!["Fix login: The user wanted a fix. (last prompt: fix the login)"]
+        );
+
+        // The next hour: only more activity, or new work.
+        let next = window(end(), end() + Duration::hours(1));
+        let projects = [PROJECT.to_string()];
+        let same = collect_with(&summarised(70, "fix the login"), &next, &projects).await;
+        let new = collect_with(&summarised(70, "now add tests"), &next, &projects).await;
+        assert_eq!(same[0].key, first[0].key);
+        assert_ne!(same[0].time, first[0].time);
+        assert_eq!(
+            same[0].content, first[0].content,
+            "only last_active changed"
+        );
+        assert_eq!(new[0].key, first[0].key);
+        assert_ne!(new[0].content, first[0].content, "a new last prompt");
+        assert!(new[0].content.contains("now add tests"));
+    }
+
+    #[test]
+    fn a_last_prompt_already_in_the_label_is_not_repeated_and_a_long_one_is_capped() {
+        let mut only_last = session("s", 0, 0);
+        only_last.first_prompt = None;
+        only_last.last_prompt = Some("just this".into());
+        assert_eq!(
+            claude_text(&only_last, None),
+            "Claude conversation: just this"
+        );
+        let mut long = session("s", 0, 0);
+        long.last_prompt = Some("word ".repeat(100));
+        let text = claude_text(&long, None);
+        assert!(text.ends_with("\u{2026})"), "{text}");
+        let last = text.split("(last prompt: ").nth(1).unwrap();
+        assert!(
+            last.chars().count() <= crate::core::work_journal_activity::MAX_CANDIDATE_CHARS + 1,
+            "{text}"
+        );
     }
 
     #[tokio::test]

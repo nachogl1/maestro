@@ -222,12 +222,17 @@ Granola time) are folded in and linked in the Decision trace.
     (its source, its identity such as the session id, and a short hash of
     what it says; never its text), kept for a day like the rest of the file.
     A later run leaves out an item already sent for that date unless what it
-    says changed (a conversation with a new summary). A terminal counts as
+    says changed. A conversation says its name or summary plus its last
+    prompt, so new work in a later hour (a new last prompt) is sent again,
+    while more activity on the same last prompt is not. A terminal counts as
     unchanged while its project and branch stay the same; its time span
     ("still open", "closed at") is not a change. Items are remembered only
     after their date's run succeeded, so a failed day sends them again on
     its retry. A date with nothing new left is not asked at all, unless
-    Granola is on (its meetings are still asked about).
+    Granola is on (its meetings are still asked about). After a catch-up gap
+    of more than a day, an item from an earlier date may be sent once more,
+    because its sent record was already deleted; this errs towards a repeat,
+    never towards a miss.
   - **Headless run:** the run reuses the History-summary pattern, a headless
     `claude -p` with no built-in tools, no saved session
     (`--no-session-persistence`), a temp-dir working directory and a timeout
@@ -540,7 +545,8 @@ In a temporary file, deleted after a day (not backed up):
 - **Sent activity (2026-10-16):** per activity item already sent to a
   successful candidate run, its date, source, identity and a short hash of
   what it said, plus when it was sent (see Candidates, "Each activity is sent
-  once"). No activity text is stored.
+  once"). No activity text is stored. An older Maestro version ignores and
+  clears this list on its next write, so those items are sent once more.
 
 Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
 when the temporary file cannot be read it is moved aside as
