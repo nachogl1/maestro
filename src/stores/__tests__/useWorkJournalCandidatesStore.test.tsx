@@ -28,7 +28,7 @@ const TODAY = "2026-10-14";
 let candidates: WorkJournalCandidate[];
 let emit: ((event: { payload: { dates: string[]; added: number } }) => void) | null;
 let emitChanged:
-  | ((event: { payload: { source: string | null; replaced: boolean } }) => void)
+  | ((event: { payload: { source: string | null; replaced: boolean; kind?: string } }) => void)
   | null;
 const unlisten = vi.fn();
 
@@ -211,6 +211,33 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     expect(useWorkJournalCandidatesStore.getState().byDate[TODAY]).toHaveLength(3);
     expect(useWorkJournalCandidatesStore.getState().byDate["2026-10-13"]).toHaveLength(0);
     expect(pendingTodayCount(useWorkJournalCandidatesStore.getState())).toBe(2);
+  });
+
+  it("re-reads only for changes that can touch the suggestions", async () => {
+    await start();
+    await settle();
+    const reads = (): number => listCalls().length;
+    const before = reads();
+    // A page save or a settings change in the other window: nothing to re-read.
+    for (const kind of ["page", "settings"]) {
+      await act(async () => {
+        emitChanged?.({ payload: { source: "work-journal", replaced: false, kind } });
+      });
+      await settle();
+    }
+    expect(reads()).toBe(before);
+    // Suggestions, a run, a restore, and an older payload without a kind do.
+    const payloads = [
+      { source: "work-journal", replaced: false, kind: "candidates" },
+      { source: null, replaced: false, kind: "run" },
+      { source: "work-journal", replaced: true, kind: "replaced" },
+      { source: "work-journal", replaced: false },
+    ];
+    for (const [i, payload] of payloads.entries()) {
+      await act(async () => emitChanged?.({ payload }));
+      await settle();
+      expect(reads()).toBe(before + i + 1);
+    }
   });
 
   it("counts every day's pending suggestions in one call, kept current by changes", async () => {

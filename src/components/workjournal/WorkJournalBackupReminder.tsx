@@ -37,11 +37,12 @@ export function WorkJournalBackupReminder({ inWindow = false }: WorkJournalBacku
     const load = (): Promise<void> => useWorkJournalBackupStore.getState().load();
     void load().then(() => setChecked(true));
     // Re-read only while it can change what is shown: no folder yet, or a
-    // restore or undo replaced the whole journal (and its settings).
+    // restore or undo replaced the whole journal (and its settings); and
+    // only when the settings changed.
     const stop = listenWorkJournalChanged((change) => {
       const state = useWorkJournalBackupStore.getState();
       if (!state.reminderDismissed && (!state.backupFolder || change.replaced)) void load();
-    }).catch((err) => {
+    }, "settings").catch((err) => {
       console.error("Failed to follow Work Journal backup settings:", err);
       return () => {};
     });

@@ -358,6 +358,14 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   answer. A half-typed page title is also saved when the other window starts a
   restore or undo, the same as page text (it then lands only in the safety
   copy).
+- Decided during the 2026-10-16 audit fixes, flagged for the user to confirm: the
+  other window re-reads only the part that changed (pages, settings or
+  suggestions; a candidate run counts as suggestions and settings; a restore or
+  undo as everything), and making sure today's page exists tells the other
+  window nothing unless a page was created. A save that failed in one window
+  is therefore retried after the other window saves a page, but no longer after
+  it only changes a setting or a suggestion; the timed retry still sends it
+  within 30 seconds.
 
 ### Storage and backup
 

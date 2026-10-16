@@ -21,6 +21,8 @@ import {
   WORK_JOURNAL_RUN_STATE_REQUEST_EVENT,
   WORK_JOURNAL_VIEW,
   WORK_JOURNAL_WINDOW_LABEL,
+  type WorkJournalChangeKind,
+  workJournalChangeTouches,
 } from "../workJournalWindow";
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -113,6 +115,59 @@ describe("listenWorkJournalChanged", () => {
       [{ source: WORK_JOURNAL_WINDOW_LABEL, replaced: true }],
       [{ source: null, replaced: false }],
     ]);
+  });
+});
+
+describe("what a change touches", () => {
+  const change = (kind?: WorkJournalChangeKind) => ({
+    source: WORK_JOURNAL_WINDOW_LABEL,
+    replaced: kind === "replaced",
+    kind,
+  });
+
+  it("maps each kind to the parts it changed", () => {
+    const touched = (kind?: WorkJournalChangeKind): string[] =>
+      (["pages", "settings", "candidates"] as const).filter((area) =>
+        workJournalChangeTouches(change(kind), area),
+      );
+    expect(touched("page")).toEqual(["pages"]);
+    expect(touched("settings")).toEqual(["settings"]);
+    expect(touched("candidates")).toEqual(["candidates"]);
+    expect(touched("run")).toEqual(["settings", "candidates"]);
+    expect(touched("replaced")).toEqual(["pages", "settings", "candidates"]);
+    // An older payload without a kind (or one this build does not know) is everything.
+    expect(touched(undefined)).toEqual(["pages", "settings", "candidates"]);
+    expect(touched("later" as WorkJournalChangeKind)).toEqual(["pages", "settings", "candidates"]);
+  });
+
+  it("passes on only the changes for the asked part", async () => {
+    const onChange = vi.fn();
+    await listenWorkJournalChanged(onChange, "pages");
+    const changed = handlers[WORK_JOURNAL_CHANGED_EVENT];
+
+    changed({ payload: change("settings") });
+    changed({ payload: change("candidates") });
+    expect(onChange).not.toHaveBeenCalled();
+    changed({ payload: change("page") });
+    changed({ payload: change() });
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("the main window re-reads the run state only for settings, runs and replaces", async () => {
+    const load = vi.fn(() => Promise.resolve());
+    useWorkJournalCandidateRunStore.setState({ load });
+    const stop = await serveWorkJournalWindow(vi.fn());
+    const changed = handlers[WORK_JOURNAL_CHANGED_EVENT];
+
+    changed({ payload: change("page") });
+    changed({ payload: change("candidates") });
+    expect(load).not.toHaveBeenCalled();
+    changed({ payload: change("settings") });
+    changed({ payload: change("run") });
+    changed({ payload: change("replaced") });
+    changed({ payload: change() });
+    expect(load).toHaveBeenCalledTimes(4);
+    stop();
   });
 });
 
