@@ -270,13 +270,14 @@ pub async fn update_work_journal_settings(
 pub enum BackupNowOutcome {
     /// A backup was written; the saved journal.
     Written { journal: Box<WorkJournal> },
-    /// Nothing written: the folder holds another computer's backup and the
-    /// user has not agreed to replace it yet.
-    OtherComputer { message: String },
+    /// Nothing written: the folder holds another computer's backup, or one
+    /// that cannot be read, and the user has not agreed to replace it yet;
+    /// `message` is the question to ask.
+    ConfirmReplace { message: String },
 }
 
-/// Maps the core result to the command's outcome: the other-computer refusal
-/// is an `OtherComputer` outcome, every other error stays an error.
+/// Maps the core result to the command's outcome: the two "ask first"
+/// refusals are a `ConfirmReplace` outcome, every other error stays an error.
 fn backup_now_outcome(
     result: WorkJournalResult<WorkJournal>,
 ) -> WorkJournalResult<BackupNowOutcome> {
@@ -284,20 +285,22 @@ fn backup_now_outcome(
         Ok(journal) => Ok(BackupNowOutcome::Written {
             journal: Box::new(journal),
         }),
-        Err(e @ WorkJournalError::BackupBelongsToOtherComputer) => {
-            Ok(BackupNowOutcome::OtherComputer {
-                message: e.to_string(),
-            })
-        }
+        Err(
+            e @ (WorkJournalError::BackupBelongsToOtherComputer
+            | WorkJournalError::BackupUnreadableAskFirst),
+        ) => Ok(BackupNowOutcome::ConfirmReplace {
+            message: e.to_string(),
+        }),
         Err(e) => Err(e),
     }
 }
 
 /// "Back up now": writes the journal to `<backup folder>/work-journal.json`
 /// and records `last_backup_at`, replacing any file there (the explicit
-/// override of the automatic guard). A backup another computer wrote there is
-/// only replaced with `replace_other_computer` (after the user agreed);
-/// without it the reply is `OtherComputer` and nothing is written. Refused
+/// override of the automatic guard). A backup another computer wrote there,
+/// or one that cannot be read, is only replaced with `replace_other_computer`
+/// (after the user agreed); without it the reply is `ConfirmReplace` and
+/// nothing is written. Refused
 /// when no folder is set or the folder is missing; the journal is then left
 /// untouched.
 #[tauri::command]
@@ -330,7 +333,7 @@ pub enum BackupIfDueOutcome {
     /// Nothing to do: no folder set, or not due yet.
     Idle,
     /// The guard refused to replace a backup this Maestro has not written,
-    /// or one another computer wrote.
+    /// one another computer wrote, or one that cannot be read.
     Skipped { message: String },
 }
 
@@ -346,7 +349,8 @@ fn backup_if_due_outcome(
         Ok(None) => Ok(BackupIfDueOutcome::Idle),
         Err(
             e @ (WorkJournalError::AutoBackupWouldReplaceUnknownBackup
-            | WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup),
+            | WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup
+            | WorkJournalError::AutoBackupCannotReadExistingBackup),
         ) => Ok(BackupIfDueOutcome::Skipped {
             message: e.to_string(),
         }),
@@ -895,12 +899,28 @@ mod tests {
             WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup,
         ))
         .unwrap();
-        let value = serde_json::to_value(&other).unwrap();
-        assert_eq!(value["status"], "skipped");
-        assert!(value["message"]
-            .as_str()
-            .unwrap()
-            .contains("another computer's Work Journal backup"));
+        assert_eq!(
+            serde_json::to_value(&other).unwrap(),
+            serde_json::json!({
+                "status": "skipped",
+                "message": "Automatic backup skipped: this folder holds another computer's Work \
+                    Journal backup, so it was not replaced. Press Back up now to replace it, or \
+                    choose another folder."
+            })
+        );
+
+        let unreadable =
+            backup_if_due_outcome(Err(WorkJournalError::AutoBackupCannotReadExistingBackup))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(&unreadable).unwrap(),
+            serde_json::json!({
+                "status": "skipped",
+                "message": "Automatic backup skipped: the backup already in this folder could \
+                    not be read, so it was not replaced. Press Back up now to replace it, or \
+                    choose another folder."
+            })
+        );
     }
 
     #[test]
@@ -913,8 +933,19 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&other).unwrap(),
             serde_json::json!({
-                "status": "other_computer",
+                "status": "confirm_replace",
                 "message": "Another computer's backup is in this folder. Replace it?"
+            })
+        );
+
+        let unreadable =
+            backup_now_outcome(Err(WorkJournalError::BackupUnreadableAskFirst)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&unreadable).unwrap(),
+            serde_json::json!({
+                "status": "confirm_replace",
+                "message": "The backup already in this folder could not be read, so it may be \
+                    another computer's. Replace it?"
             })
         );
 

@@ -401,6 +401,14 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
     before, so existing users are not blocked. The cost: while one computer
     still runs an older Maestro, and for the first backup after updating,
     an overwrite between two computers is not caught.
+  - A backup that exists but cannot be read (an online-only file while
+    offline, a permission error, a half-synced or otherwise unparseable
+    file) counts as "can't tell": the automatic backup skips it with a
+    warning shown once, and "Back up now" asks before replacing it. Skipping
+    only costs a retry; replacing could wipe another computer's newest
+    backup.
+  - Restoring over a corrupt local journal loses this install's id; the next
+    backup creates a new one (and then asks before replacing the old backup).
 
 ### Restore
 

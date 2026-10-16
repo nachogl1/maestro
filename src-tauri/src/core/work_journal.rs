@@ -102,11 +102,22 @@ pub enum WorkJournalError {
     )]
     AutoBackupWouldReplaceUnknownBackup,
     #[error(
-        "Automatic backup skipped: this folder holds another computer's Work Journal backup, so          it was not replaced. Press Back up now to replace it, or choose another folder."
+        "Automatic backup skipped: this folder holds another computer's Work Journal backup, so \
+         it was not replaced. Press Back up now to replace it, or choose another folder."
     )]
     AutoBackupWouldReplaceOtherComputersBackup,
+    #[error(
+        "Automatic backup skipped: the backup already in this folder could not be read, so it \
+         was not replaced. Press Back up now to replace it, or choose another folder."
+    )]
+    AutoBackupCannotReadExistingBackup,
     #[error("Another computer's backup is in this folder. Replace it?")]
     BackupBelongsToOtherComputer,
+    #[error(
+        "The backup already in this folder could not be read, so it may be another computer's. \
+         Replace it?"
+    )]
+    BackupUnreadableAskFirst,
     #[error("Backup failed: {0}")]
     BackupWrite(String),
     #[error("Backup written, but the backup time could not be saved: {0}")]
@@ -662,15 +673,18 @@ pub fn backup_now(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<WorkJour
     write_backup(path, journal, &folder, now)
 }
 
-/// "Back up now" without the user's go-ahead to replace another computer's
-/// backup: refused with [`WorkJournalError::BackupBelongsToOtherComputer`]
-/// when the folder holds one (see [`backup_is_other_computers`]), else the
-/// same as [`backup_now`].
+/// "Back up now" without the user's go-ahead to replace a backup that may
+/// not be this install's (see [`backup_owner`]): refused with
+/// [`WorkJournalError::BackupBelongsToOtherComputer`] for another computer's
+/// backup and [`WorkJournalError::BackupUnreadableAskFirst`] for one that
+/// cannot be read, else the same as [`backup_now`].
 pub fn backup_now_if_ours(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<WorkJournal> {
     let journal = load(path)?;
     let folder = configured_backup_folder(&journal).ok_or(WorkJournalError::NoBackupFolder)?;
-    if backup_is_other_computers(&journal, &folder) {
-        return Err(WorkJournalError::BackupBelongsToOtherComputer);
+    match backup_owner(&journal, &folder) {
+        BackupOwnerKind::Ours => {}
+        BackupOwnerKind::Theirs => return Err(WorkJournalError::BackupBelongsToOtherComputer),
+        BackupOwnerKind::Unknown => return Err(WorkJournalError::BackupUnreadableAskFirst),
     }
     write_backup(path, journal, &folder, now)
 }
@@ -688,26 +702,47 @@ struct BackupOwnerSettings {
     journal_id: Option<String>,
 }
 
-/// True when `<folder>/work-journal.json` was written by another install:
-/// it carries a `journal_id` that is not this journal's. A missing,
-/// unreadable or id-less backup (an older Maestro's, this install's own
-/// from before ids existed) counts as this install's, so existing users are
-/// not blocked.
-fn backup_is_other_computers(journal: &WorkJournal, folder: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(backup_path(folder)) else {
-        return false;
+/// Who wrote the backup already in the backup folder (see [`backup_owner`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackupOwnerKind {
+    /// No backup there, or this install's own (or an id-less one).
+    Ours,
+    /// Another install's: its `journal_id` is not this journal's.
+    Theirs,
+    /// It cannot be read or parsed (an online-only file while offline, a
+    /// permission error, a half-synced file...), so it may be anyone's.
+    Unknown,
+}
+
+/// Reads only the `journal_id` of `<folder>/work-journal.json`. No file is
+/// [`BackupOwnerKind::Ours`]. A backup without an id (an older Maestro's,
+/// or this install's own from before ids existed) also counts as ours, so
+/// existing users are not blocked. Any other read or parse failure is
+/// [`BackupOwnerKind::Unknown`]: replacing it could wipe another computer's
+/// newest backup, while skipping only costs a retry.
+fn backup_owner(journal: &WorkJournal, folder: &Path) -> BackupOwnerKind {
+    let bytes = match std::fs::read(backup_path(folder)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BackupOwnerKind::Ours,
+        Err(e) => {
+            log::warn!("The Work Journal backup cannot be read: {e}");
+            return BackupOwnerKind::Unknown;
+        }
     };
     let theirs = match serde_json::from_slice::<BackupOwner>(&bytes) {
         Ok(owner) => owner.settings.journal_id,
         Err(e) => {
             log::warn!("The Work Journal backup's id cannot be read: {e}");
-            return false;
+            return BackupOwnerKind::Unknown;
         }
     };
-    let Some(theirs) = theirs.filter(|id| !id.trim().is_empty()) else {
-        return false;
-    };
-    journal.settings.journal_id.as_deref() != Some(theirs.as_str())
+    match theirs.filter(|id| !id.trim().is_empty()) {
+        None => BackupOwnerKind::Ours,
+        Some(theirs) if journal.settings.journal_id.as_deref() == Some(theirs.as_str()) => {
+            BackupOwnerKind::Ours
+        }
+        Some(_) => BackupOwnerKind::Theirs,
+    }
 }
 
 /// The automatic backup (start-up, hourly, and right after a folder is
@@ -722,8 +757,9 @@ fn backup_is_other_computers(journal: &WorkJournal, folder: &Path) -> bool {
 /// ([`backup_now`]) is the explicit override.
 ///
 /// Second guard, after the first backup too: a backup another computer wrote
-/// to the same (synced) folder is never replaced automatically (see
-/// [`backup_is_other_computers`]); only its `journal_id` is read.
+/// to the same (synced) folder, or one that cannot be read, is never
+/// replaced automatically (see [`backup_owner`]); only its `journal_id` is
+/// read.
 pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Option<WorkJournal>> {
     let journal = load(path)?;
     let Some(folder) = configured_backup_folder(&journal) else {
@@ -739,8 +775,14 @@ pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Optio
     if never_backed_up && backup_path(&folder).exists() {
         return Err(WorkJournalError::AutoBackupWouldReplaceUnknownBackup);
     }
-    if backup_is_other_computers(&journal, &folder) {
-        return Err(WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup);
+    match backup_owner(&journal, &folder) {
+        BackupOwnerKind::Ours => {}
+        BackupOwnerKind::Theirs => {
+            return Err(WorkJournalError::AutoBackupWouldReplaceOtherComputersBackup)
+        }
+        BackupOwnerKind::Unknown => {
+            return Err(WorkJournalError::AutoBackupCannotReadExistingBackup)
+        }
     }
     write_backup(path, journal, &folder, now).map(Some)
 }
@@ -748,7 +790,9 @@ pub fn backup_if_due(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<Optio
 /// Checks the folder exists (never creates it, unlike [`save`]) and is not
 /// the journal's own folder, writes the backup crash-safely, then saves the
 /// local journal with the new `last_backup_at`. The backup carries that same
-/// time, and this install's `journal_id` (created here when missing).
+/// time, and this install's `journal_id`. A missing id is created here and
+/// saved locally before the backup is written, so the folder never holds an
+/// id this install did not keep.
 fn write_backup(
     path: &Path,
     mut journal: WorkJournal,
@@ -765,7 +809,6 @@ fn write_backup(
     }
     ensure_not_journal_folder(path, folder)?;
     let target = backup_path(folder);
-    journal.settings.last_backup_at = Some(now.to_rfc3339_opts(SecondsFormat::Secs, true));
     if journal
         .settings
         .journal_id
@@ -773,7 +816,13 @@ fn write_backup(
         .is_none_or(|id| id.trim().is_empty())
     {
         journal.settings.journal_id = Some(uuid::Uuid::new_v4().to_string());
+        save(path, &journal).map_err(|e| {
+            WorkJournalError::BackupWrite(format!(
+                "this computer's backup id could not be saved: {e}"
+            ))
+        })?;
     }
+    journal.settings.last_backup_at = Some(now.to_rfc3339_opts(SecondsFormat::Secs, true));
     let bytes = serde_json::to_vec_pretty(&journal).map_err(WorkJournalError::Serialize)?;
     atomic_write_durable(&target, &bytes).map_err(WorkJournalError::BackupWrite)?;
     save(path, &journal).map_err(|e| WorkJournalError::BackupTimeNotSaved(e.to_string()))?;
@@ -2249,6 +2298,12 @@ mod tests {
         journal_with_backup_folder(&path, &folder);
         let target = backup_path(&folder);
         std::fs::write(&target, "previous backup").unwrap();
+        // An id already kept, so a new one is not saved before the backup.
+        modify(&path, |j| {
+            j.settings.journal_id = Some("this-install".into());
+            Ok(())
+        })
+        .unwrap();
         let journal_before = std::fs::read_to_string(&path).unwrap();
 
         // Fail the temp-file step: a backup that writes the temp first must
@@ -2688,6 +2743,107 @@ mod tests {
         assert_eq!(undone.settings.journal_id.as_deref(), Some(id.as_str()));
     }
 
+    /// A journal backed up once from here, then the backup file replaced by
+    /// `bytes`. Returns the journal's bytes after that backup.
+    fn backed_up_then_backup_is(path: &Path, folder: &Path, bytes: &[u8]) -> Vec<u8> {
+        std::fs::create_dir(folder).unwrap();
+        journal_with_backup_folder(path, folder);
+        backup_now(path, at("2026-10-14T08:00:00Z")).unwrap();
+        std::fs::write(backup_path(folder), bytes).unwrap();
+        std::fs::read(path).unwrap()
+    }
+
+    #[test]
+    fn test_a_backup_that_cannot_be_read_is_never_replaced_without_asking() {
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(br#"{"layout_version": 1, "settings": {}}"#);
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("a BOM", with_bom),
+            (
+                "a non-string id",
+                br#"{"layout_version": 1, "settings": {"journal_id": 42}}"#.to_vec(),
+            ),
+            (
+                "settings null",
+                br#"{"layout_version": 1, "settings": null}"#.to_vec(),
+            ),
+            (
+                "half-synced bytes",
+                br#"{"layout_version": 1, "sett"#.to_vec(),
+            ),
+        ];
+        for (case, bytes) in cases {
+            let dir = tempdir().unwrap();
+            let path = journal_path(&dir.path().join("app"));
+            let folder = dir.path().join("OneDrive");
+            let journal_before = backed_up_then_backup_is(&path, &folder, &bytes);
+
+            let err = backup_if_due(&path, at("2026-10-15T09:00:00Z")).unwrap_err();
+            assert!(
+                matches!(err, WorkJournalError::AutoBackupCannotReadExistingBackup),
+                "{case}: {err}"
+            );
+            let err = backup_now_if_ours(&path, at("2026-10-15T09:00:00Z")).unwrap_err();
+            assert!(
+                matches!(err, WorkJournalError::BackupUnreadableAskFirst),
+                "{case}: {err}"
+            );
+            assert_eq!(
+                std::fs::read(backup_path(&folder)).unwrap(),
+                bytes,
+                "{case}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), journal_before, "{case}");
+
+            // The user agreed: replaced.
+            let saved = backup_now(&path, at("2026-10-15T09:00:00Z")).unwrap();
+            let backup = std::fs::read_to_string(backup_path(&folder)).unwrap();
+            assert_eq!(parse_journal(&backup).unwrap(), saved, "{case}");
+        }
+    }
+
+    #[test]
+    fn test_a_backup_path_that_cannot_be_read_counts_as_unknown() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        backup_now(&path, at("2026-10-14T08:00:00Z")).unwrap();
+        // A folder where the backup file should be: reading it fails, but
+        // not with "not found".
+        std::fs::remove_file(backup_path(&folder)).unwrap();
+        std::fs::create_dir(backup_path(&folder)).unwrap();
+
+        let journal = load(&path).unwrap();
+        assert_eq!(backup_owner(&journal, &folder), BackupOwnerKind::Unknown);
+        let err = backup_if_due(&path, at("2026-10-15T09:00:00Z")).unwrap_err();
+        assert!(matches!(
+            err,
+            WorkJournalError::AutoBackupCannotReadExistingBackup
+        ));
+    }
+
+    #[test]
+    fn test_a_new_id_that_cannot_be_kept_locally_is_never_written_to_the_folder() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("OneDrive");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        let before = std::fs::read(&path).unwrap();
+
+        let _block = block_durable_writes_to(&path);
+        let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::BackupWrite(ref m) if m.contains("backup id")),
+            "got: {err}"
+        );
+        assert!(!backup_path(&folder).exists(), "no backup written");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
     #[test]
     fn test_folder_change_patch_clears_last_backup_at() {
         let mut journal = WorkJournal::default();
@@ -2731,6 +2887,12 @@ mod tests {
         let folder = dir.path().join("backup");
         std::fs::create_dir(&folder).unwrap();
         journal_with_backup_folder(&path, &folder);
+        // An id already kept, so the first local save is the time's.
+        modify(&path, |j| {
+            j.settings.journal_id = Some("this-install".into());
+            Ok(())
+        })
+        .unwrap();
         let before = std::fs::read(&path).unwrap();
 
         // Fail the journal's own save after the backup has been written.

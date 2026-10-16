@@ -118,7 +118,7 @@ describe("WorkJournalSettingsSection", () => {
       work_journal_backup_now: (args) =>
         (args as { replaceOtherComputer?: boolean } | undefined)?.replaceOtherComputer
           ? written({ backup_folder: "D:\\OneDrive", last_backup_at: after })
-          : { status: "other_computer", message: question },
+          : { status: "confirm_replace", message: question },
     });
     askDialogMock.mockResolvedValue(true);
 
@@ -139,7 +139,7 @@ describe("WorkJournalSettingsSection", () => {
     routeInvoke({
       load_work_journal: () => journal({ backup_folder: "D:\\OneDrive" }),
       work_journal_backup_now: () => ({
-        status: "other_computer",
+        status: "confirm_replace",
         message: "Another computer's backup is in this folder. Replace it?",
       }),
     });

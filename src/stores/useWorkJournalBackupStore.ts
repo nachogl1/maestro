@@ -22,7 +22,10 @@ export const AUTO_BACKUP_WARNING_TITLE = "Work Journal backup failed";
 /** Title of the native warning shown when the guard skips an automatic backup. */
 export const AUTO_BACKUP_SKIPPED_TITLE = "Work Journal backup skipped";
 
-/** Title of the question asked before "Back up now" replaces another computer's backup. */
+/**
+ * Title of the question asked before "Back up now" replaces another computer's
+ * backup, or one that cannot be read.
+ */
 export const REPLACE_OTHER_BACKUP_TITLE = "Replace the Work Journal backup?";
 
 /**
@@ -65,13 +68,14 @@ export type BackupIfDueOutcome =
   | { status: "skipped"; message: string };
 
 /**
- * What `work_journal_backup_now` did, tagged by `status`: `other_computer`
+ * What `work_journal_backup_now` did, tagged by `status`: `confirm_replace`
  * means nothing was written, since the folder holds another computer's
- * backup; `message` is the question to ask before replacing it.
+ * backup (or one that cannot be read); `message` is the question to ask
+ * before replacing it.
  */
 export type BackupNowOutcome =
   | { status: "written"; journal: WorkJournalBackupFile }
-  | { status: "other_computer"; message: string };
+  | { status: "confirm_replace"; message: string };
 
 interface WorkJournalBackupState {
   /** Folder the daily backup is written to; null while none is chosen. */
@@ -236,7 +240,7 @@ export const useWorkJournalBackupStore = create<WorkJournalBackupState>((set, ge
     set({ backingUp: true });
     try {
       let outcome = await invoke<BackupNowOutcome>("work_journal_backup_now");
-      if (outcome?.status === "other_computer") {
+      if (outcome?.status === "confirm_replace") {
         const replace = await ask(outcome.message, {
           title: REPLACE_OTHER_BACKUP_TITLE,
           kind: "warning",
