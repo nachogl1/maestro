@@ -57,6 +57,13 @@ export const ACCEPT_SAVE_FAILED_ERROR = "The line could not be saved; the sugges
 const MIDNIGHT_SLACK_MS = 1_000;
 
 /**
+ * How often the local date is compared with the badge's day. Catches what the
+ * midnight timer misses: a PC that slept through midnight (timers pause) or a
+ * clock or time-zone change.
+ */
+export const WORK_JOURNAL_BADGE_DATE_CHECK_MS = 60_000;
+
+/**
  * The page line for a candidate: `HH:MM - action`, or the text as given when
  * it has no time (an untimed meeting already reads `Meeting - ...`).
  */
@@ -99,7 +106,8 @@ interface WorkJournalCandidatesState {
   /**
    * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`,
    * and in the pop-out window): the candidates event, an accept or reject
-   * in the other window, window focus, local midnight, and a journal
+   * in the other window, window focus, local midnight (plus a once-a-minute
+   * date compare for a PC that slept through it), and a journal
    * restore or undo.
    * Also loads today's candidates. Returns the stop function.
    */
@@ -289,6 +297,11 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         }, msUntilNextLocalMidnight(new Date()) + MIDNIGHT_SLACK_MS);
       };
       armMidnight();
+      // Once a minute: the date moved on without a midnight timer, focus or
+      // visibility event (the PC slept through midnight with the window open).
+      const dateCheck = setInterval(() => {
+        if (localDateString(new Date()) !== get().today) void get().refreshToday();
+      }, WORK_JOURNAL_BADGE_DATE_CHECK_MS);
       // A restore or undo replaced the journal: re-read every loaded date.
       const unsubscribe = useWorkJournalStore.subscribe((s, prev) => {
         if (s.revision !== prev.revision) refreshLoaded(Object.keys(get().byDate));
@@ -300,6 +313,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         unlistenChanged();
         unsubscribe();
         clearTimeout(midnight);
+        clearInterval(dateCheck);
         window.removeEventListener("focus", onFocus);
         document.removeEventListener("visibilitychange", onVisibility);
       };
