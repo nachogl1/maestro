@@ -59,6 +59,20 @@ export function daysBetween(a: string, b: string): number {
   return Math.abs(dayNumber(a) - dayNumber(b));
 }
 
+/**
+ * The `YYYY-MM-DD` date `days` calendar days after `date` (negative goes back);
+ * an invalid `date` comes back unchanged.
+ */
+export function shiftJournalDate(date: string, days: number): string {
+  const parts = parseIsoDate(date);
+  if (!parts) return date;
+  const shifted = new Date(Date.UTC(parts.y, parts.m - 1, parts.d + days));
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(shifted.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 /** Whether a `YYYY-MM-DD` date is a Saturday or a Sunday. */
 export function isWeekend(date: string): boolean {
   const parts = parseIsoDate(date);

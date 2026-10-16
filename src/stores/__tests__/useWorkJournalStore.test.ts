@@ -44,20 +44,33 @@ describe("useWorkJournalStore", () => {
     expect(Object.keys(useWorkJournalStore.getState().pages)).toEqual(["2026-10-14"]);
   });
 
-  it("goPrev and goNext jump to the nearest existing page", () => {
+  it("goPrev and goNext step one calendar day, onto days with no page too", () => {
     useWorkJournalStore.setState({
-      pages: journal([page("2026-10-01"), page("2026-10-10"), page("2026-10-14")]).pages,
-      viewedDate: "2026-10-12",
+      pages: journal([page("2026-10-01"), page("2026-10-14")]).pages,
+      viewedDate: "2026-10-14",
     });
+    useWorkJournalStore.getState().goNext();
+    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-15");
     useWorkJournalStore.getState().goPrev();
-    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-10");
     useWorkJournalStore.getState().goPrev();
-    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-01");
+    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-13");
+
+    // Across a month boundary, with no page on either side.
+    useWorkJournalStore.setState({ viewedDate: "2026-10-01" });
     useWorkJournalStore.getState().goPrev();
-    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-01");
+    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-09-30");
     useWorkJournalStore.getState().goNext();
     useWorkJournalStore.getState().goNext();
-    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-14");
+    expect(useWorkJournalStore.getState().viewedDate).toBe("2026-10-02");
+    // No page is created by moving.
+    expect(Object.keys(useWorkJournalStore.getState().pages)).toEqual(["2026-10-01", "2026-10-14"]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("goPrev and goNext do nothing before a date is viewed", () => {
+    useWorkJournalStore.getState().goPrev();
+    useWorkJournalStore.getState().goNext();
+    expect(useWorkJournalStore.getState().viewedDate).toBeNull();
   });
 
   it("createPage sends a manual page with the default title and weekend body", async () => {

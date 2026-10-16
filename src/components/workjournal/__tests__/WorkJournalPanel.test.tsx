@@ -159,10 +159,10 @@ describe("WorkJournalPanel", () => {
     expect(await screen.findByDisplayValue("Wed 14 Oct 2026")).toBeInTheDocument();
     expect(callsTo("work_journal_ensure_pages")).toEqual([{ today: "2026-10-14" }]);
     expect(screen.getByTestId("backup-reminder")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Next day" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next day" })).toBeEnabled();
   });
 
-  it("navigates to the previous and next pages", async () => {
+  it("steps one day at a time, onto days with no page too", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
@@ -170,9 +170,33 @@ describe("WorkJournalPanel", () => {
     expect(screen.getByLabelText("Page title")).toHaveValue("Tue 13 Oct 2026");
     fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
     expect(screen.getByLabelText("Page title")).toHaveValue("Mon 12 Oct 2026");
-    expect(screen.getByRole("button", { name: "Previous day" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
+    expect(screen.getByText("No page for Sun 11 Oct 2026.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Page title")).toHaveAttribute("placeholder", "Sun 11 Oct 2026");
+    expect(screen.getByRole("button", { name: "Create a page for this day" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
-    expect(screen.getByLabelText("Page title")).toHaveValue("Tue 13 Oct 2026");
+    expect(screen.getByLabelText("Page title")).toHaveValue("Mon 12 Oct 2026");
+  });
+
+  it("keeps both arrows enabled on a journal with one page", async () => {
+    file.pages = { "2026-10-14": page("2026-10-14", "Wed 14 Oct 2026") };
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    const prev = screen.getByRole("button", { name: "Previous day" });
+    const next = screen.getByRole("button", { name: "Next day" });
+    expect(prev).toBeEnabled();
+    expect(next).toBeEnabled();
+
+    fireEvent.click(next);
+    expect(screen.getByText("No page for Thu 15 Oct 2026.")).toBeInTheDocument();
+    expect(next).toBeEnabled();
+    fireEvent.click(prev);
+    expect(screen.getByLabelText("Page title")).toHaveValue("Wed 14 Oct 2026");
+    fireEvent.click(prev);
+    expect(screen.getByText("No page for Tue 13 Oct 2026.")).toBeInTheDocument();
+    expect(prev).toBeEnabled();
+    expect(callsTo("create_work_journal_page")).toEqual([]);
   });
 
   it("saves the body as editor JSON after the debounce, and the title on blur", async () => {
@@ -318,7 +342,8 @@ describe("WorkJournalPanel", () => {
       await useWorkJournalStore.getState().ensurePages("2026-10-14");
     });
     expect(file.pages["2026-10-14"]).toBeUndefined();
-    expect(screen.getByRole("button", { name: "Next day" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+    expect(screen.getByText("No page for Wed 14 Oct 2026.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "New page for a date" }));
     fireEvent.change(screen.getByLabelText("Date for the new page"), {
@@ -500,7 +525,7 @@ describe("WorkJournalPanel", () => {
       { today: "2026-10-14" },
       { today: "2026-10-15" },
     ]);
-    // The view stays put; the arrow reaches the new page.
+    // The view stays put; the next-day arrow shows the new page.
     expect(screen.getByLabelText("Page title")).toHaveValue("Wed 14 Oct 2026");
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
     expect(screen.getByLabelText("Page title")).toHaveValue("auto 2026-10-15");

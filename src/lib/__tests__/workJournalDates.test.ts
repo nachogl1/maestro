@@ -6,6 +6,7 @@ import {
   isWeekend,
   localDateString,
   msUntilNextLocalMidnight,
+  shiftJournalDate,
 } from "../workJournalDates";
 
 // CI runs in UTC, where the local and UTC dates always match. Switch to a zone
@@ -44,6 +45,17 @@ describe("workJournalDates", () => {
     expect(isWeekend("2026-10-18")).toBe(true);
     expect(isWeekend("2026-10-19")).toBe(false);
     expect(daysBetween("2026-10-14", "2026-10-11")).toBe(3);
+  });
+
+  it("shifts a date by whole calendar days across months and years", () => {
+    expect(shiftJournalDate("2026-10-14", 1)).toBe("2026-10-15");
+    expect(shiftJournalDate("2026-10-14", -1)).toBe("2026-10-13");
+    expect(shiftJournalDate("2026-11-01", -1)).toBe("2026-10-31");
+    expect(shiftJournalDate("2026-12-31", 1)).toBe("2027-01-01");
+    expect(shiftJournalDate("2028-02-28", 1)).toBe("2028-02-29");
+    // The day the clocks go back in Los Angeles is still one day.
+    expect(shiftJournalDate("2026-11-01", 1)).toBe("2026-11-02");
+    expect(shiftJournalDate("not-a-date", 1)).toBe("not-a-date");
   });
 
   it("measures the time to the next local midnight", () => {
