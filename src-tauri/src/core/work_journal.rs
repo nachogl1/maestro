@@ -666,7 +666,8 @@ fn configured_backup_folder(journal: &WorkJournal) -> Option<PathBuf> {
 
 /// Writes the journal at `path` to its backup folder now, then records
 /// `last_backup_at` in the journal. Refused when no folder is set or the
-/// folder is missing; on any failure the journal file is left untouched.
+/// folder is missing; on any failure the journal file is left untouched,
+/// except that a newly created `journal_id` may already be saved.
 pub fn backup_now(path: &Path, now: DateTime<Utc>) -> WorkJournalResult<WorkJournal> {
     let journal = load(path)?;
     let folder = configured_backup_folder(&journal).ok_or(WorkJournalError::NoBackupFolder)?;
