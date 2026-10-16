@@ -650,13 +650,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onDrop: insertPathsIntoSession,
   });
 
+  // Selected as a number so a park/unpark or a samurai state change re-reports
+  // the count without re-rendering the grid on every unrelated store update.
+  const occupiedCount = useSessionStore(() => occupiedSlotCount(slots));
+
   // Sync refs with state and report counts to parent
-  // biome-ignore lint/correctness/useExhaustiveDependencies: parkedSessionIds is a deliberate extra dep — occupiedSlotCount reads it from the store, and a park/unpark changes the count without changing slots
   useEffect(() => {
     slotsRef.current = slots;
     const launchedCount = slots.filter((s) => s.sessionId !== null).length;
-    onSessionCountChange?.(slots.length, launchedCount, occupiedSlotCount(slots));
-  }, [slots, onSessionCountChange, parkedSessionIds]);
+    onSessionCountChange?.(slots.length, launchedCount, occupiedCount);
+  }, [slots, onSessionCountChange, occupiedCount]);
 
   // Refresh branches callback (used by useEffect and exposed via handle)
   const refreshBranches = useCallback(() => {
