@@ -128,6 +128,7 @@ pub struct ClaudeSessionListing {
 }
 
 /// System XML tags that indicate a non-user message (should be skipped entirely).
+/// Kept in step with `INJECTED_ENTRY_TAGS` in `src/lib/sessionContext.ts`.
 const SYSTEM_TAGS: &[&str] = &[
     "<local-command-caveat>",
     "<bash-input>",
@@ -135,6 +136,9 @@ const SYSTEM_TAGS: &[&str] = &[
     "<bash-stderr>",
     "<local-command-stdout>",
     "<local-command-stderr>",
+    "<system-reminder>",
+    "<task-notification>",
+    "<user-prompt-submit-hook>",
 ];
 
 /// Checks if a user message is a system-generated message (not a real user prompt).
@@ -1266,6 +1270,27 @@ mod tests {
     #[test]
     fn plain_text_is_not_system() {
         assert!(!is_system_message("hello"));
+    }
+
+    #[test]
+    fn detects_system_reminder_as_system() {
+        assert!(is_system_message(
+            "<system-reminder>injected</system-reminder>"
+        ));
+    }
+
+    #[test]
+    fn detects_task_notification_as_system() {
+        assert!(is_system_message(
+            "  <task-notification>agent done</task-notification>"
+        ));
+    }
+
+    #[test]
+    fn detects_user_prompt_submit_hook_as_system() {
+        assert!(is_system_message(
+            "<user-prompt-submit-hook>hook output</user-prompt-submit-hook>"
+        ));
     }
 
     // ---- truncate_chars (the UTF-8 panic fix) ----------------------------
