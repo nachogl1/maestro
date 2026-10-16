@@ -161,6 +161,30 @@ describe("account-wide samurai allowance crossings", () => {
     expect(notifyOs).not.toHaveBeenCalled();
   });
 
+  // Audit 2026-10-15 #53: the soft crossing badges the run, the hard one
+  // lands minutes later while that badge is still up — it used to fall
+  // through to the account-wide toast, pointing at an empty card.
+  it("stays quiet on a second crossing while the supervised run is still badged", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    emitSupervisorEvent({
+      session_id: 1,
+      project: "C:/proj",
+      epic: "#38",
+      generation: 1,
+      state: "WORKING",
+    });
+
+    emitAllowanceEvent(hardCrossing({ threshold_kind: "soft", value: 78, threshold: 78 }));
+    const afterSoft = useSessionStore.getState().attentionSessionIds;
+    emitAllowanceEvent(hardCrossing());
+
+    const state = useSessionStore.getState();
+    expect(state.attentionSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toBe(afterSoft);
+    expect(state.samuraiToasts).toEqual([]);
+    expect(notifyOs).not.toHaveBeenCalled();
+  });
+
   it("honours the notifications toggle, the way every other samurai surface does", () => {
     useGitHubWatchdogStore.setState({ notificationsEnabled: false });
 

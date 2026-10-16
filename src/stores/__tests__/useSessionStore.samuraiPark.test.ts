@@ -217,6 +217,53 @@ describe("allowance park visibility — live schedule events", () => {
     expect(useSessionStore.getState().samuraiToasts).toHaveLength(2);
   });
 
+  // Audit 2026-10-15 #7: a deferral re-arm (new fire_at, `deferred: true`)
+  // is the same park pushed out — every lap used to toast and notify again.
+  it("moves a deferred re-arm in place without announcing it or resetting acknowledged", () => {
+    emitSchedule([entry()]);
+    useSessionStore.getState().acknowledgeSamuraiParks("C:/proj");
+
+    const later = "2026-08-13T09:15:00+00:00";
+    emitSchedule([entry({ fire_at: later, deferred: true })]);
+    emitSchedule([entry({ fire_at: "2026-08-13T09:25:00+00:00", deferred: true })]);
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiParkAlerts).toHaveLength(1);
+    expect(state.samuraiParkAlerts[0]).toMatchObject({
+      fireAt: "2026-08-13T09:25:00+00:00",
+      acknowledged: true,
+    });
+    expect(state.samuraiToasts).toHaveLength(1);
+    expect(notifyOs).toHaveBeenCalledTimes(1);
+  });
+
+  it("brings a dropped resume spawn's re-arm back silently, with its acknowledged flag", () => {
+    // The fired timer leaves the list while the spawn is in flight; the
+    // spawn is never taken, and the backend re-arms the SAME park deferred.
+    emitSchedule([entry()]);
+    useSessionStore.getState().acknowledgeSamuraiParks("C:/proj");
+    emitSchedule([]);
+    expect(useSessionStore.getState().samuraiParkAlerts).toEqual([]);
+
+    emitSchedule([entry({ fire_at: "2026-08-13T09:20:00+00:00", deferred: true })]);
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiParkAlerts).toHaveLength(1);
+    expect(state.samuraiParkAlerts[0].acknowledged).toBe(true);
+    expect(state.samuraiToasts).toHaveLength(1);
+    expect(notifyOs).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an unacknowledged park unacknowledged across a dropped-spawn re-arm", () => {
+    emitSchedule([entry({ epic: "#51" })]);
+    emitSchedule([]);
+    emitSchedule([entry({ epic: "#51", fire_at: "2026-08-13T09:20:00+00:00", deferred: true })]);
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiParkAlerts[0].acknowledged).toBe(false);
+    expect(state.samuraiToasts).toHaveLength(1);
+  });
+
   it("still announces a park whose fire time does not parse", () => {
     emitSchedule([entry({ fire_at: "garbage" })]);
 

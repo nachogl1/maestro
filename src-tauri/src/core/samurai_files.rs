@@ -1892,6 +1892,7 @@ mod tests {
             reason: "park".to_string(),
             launch: None,
             held: false,
+            deferred: false,
         }
     }
 

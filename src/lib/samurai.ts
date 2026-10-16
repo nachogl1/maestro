@@ -134,6 +134,23 @@ export function samuraiRunFatalLabel(event: SamuraiAuditEvent): string | null {
     // the toast is the ONLY place it can surface.
     case "reconcile_unreadable_config":
       return "A run's saved file could not be read — that run is invisible to Maestro";
+    // Audit 2026-10-15 #6: `gh` logged out mid-run. The parker parks and
+    // tears down every supervised run with NO resume timer, so the schedule
+    // never announces it — this row is the only live signal. Nothing restarts
+    // until `gh auth` is back.
+    case "gh_auth_lost":
+      return "`gh` is logged out — runs stay parked until you log in again";
+    // Audit 2026-10-15 #49: live verdicts that stamp the run INTERRUPTED (or,
+    // for resume_no_handoff, leave it with nothing to resume from). They used
+    // to surface only on the NEXT app launch, through the interrupted seed.
+    case "resume_interrupted_restart":
+      return "Run was interrupted — resume or abandon it";
+    case "park_timer_arm_failed":
+      return "Run was interrupted — its resume timer could not be saved";
+    case "resume_rearm_failed":
+      return "Run was interrupted — its deferred resume could not be saved";
+    case "resume_no_handoff":
+      return "Run has no resume point — relaunch it from the launcher";
     // Issue #205's SECOND rung only. One ALERT kind covers both rungs, and
     // `escalated: false` is the FIRST expiry — a nudge went out and the agent
     // still has a corrective to act on, so it belongs on the attention tier
@@ -334,6 +351,12 @@ export interface SamuraiScheduleEntry {
    * retries exhausted). The backend omits it when false.
    */
   held?: boolean;
+  /**
+   * Set on a resume DEFERRAL re-arm: the same park pushed out under a new
+   * `fire_at`, not a new park (audit 2026-10-15 #7). The backend omits it
+   * when false.
+   */
+  deferred?: boolean;
 }
 
 /** Mirrors the Rust `ScheduledLaunchSpec` (issue #129). */

@@ -261,6 +261,40 @@ describe("run-fatal samurai audit events (issue #174)", () => {
     expect(state.attentionSessionIds).toEqual([]);
   });
 
+  // Audit 2026-10-15 #6: a `gh` logout parks every run with NO resume
+  // timer, so the schedule never announces it — this row is the only signal.
+  it("a gh_auth_lost park toasts and notifies, badging nothing", () => {
+    emitAuditEvent({ session_id: 0, generation: 0, details: { kind: "gh_auth_lost" } });
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiToasts.map((t) => t.label)).toEqual([
+      "`gh` is logged out — runs stay parked until you log in again",
+    ]);
+    expect(state.attentionSessionIds).toEqual([]);
+    expect(vi.mocked(notifyOs)).toHaveBeenCalledTimes(1);
+  });
+
+  // Audit 2026-10-15 #49 (+ #25): live verdicts that leave a run needing a
+  // human used to surface only on the NEXT app launch.
+  it("live interrupted / no-resume-point verdicts toast without waiting for a restart", () => {
+    const alert = (kind: string) =>
+      emitAuditEvent({ session_id: 0, generation: 0, details: { kind, epic: "nido" } });
+    alert("resume_interrupted_restart");
+    alert("park_timer_arm_failed");
+    alert("resume_rearm_failed");
+    alert("resume_no_handoff");
+
+    const state = useSessionStore.getState();
+    expect(state.samuraiToasts.map((t) => t.label)).toEqual([
+      "Run was interrupted — resume or abandon it",
+      "Run was interrupted — its resume timer could not be saved",
+      "Run was interrupted — its deferred resume could not be saved",
+      "Run has no resume point — relaunch it from the launcher",
+    ]);
+    expect(state.attentionSessionIds).toEqual([]);
+    expect(vi.mocked(notifyOs)).toHaveBeenCalledTimes(4);
+  });
+
   it("non-fatal rows never toast or badge", () => {
     emitAuditEvent({ details: { kind: "submit_retry" } });
     emitAuditEvent({ details: { kind: "ack_timeout" } });
