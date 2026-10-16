@@ -264,9 +264,7 @@ pub fn run() {
                             // and save the text still waiting in its windows.
                             tokio::join!(
                                 crate::core::work_journal_run::kill_running_runs(),
-                                crate::core::work_journal_quit::flush_before_quit(
-                                    win.app_handle()
-                                )
+                                crate::core::work_journal_quit::flush_before_quit(win.app_handle())
                             );
                             if let Err(e) = win.destroy() {
                                 log::error!("Failed to destroy window during quit: {e}");
