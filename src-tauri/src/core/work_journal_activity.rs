@@ -111,8 +111,10 @@ pub const MAX_CANDIDATE_CHARS: usize = 200;
 
 /// Caps candidate text at [`MAX_CANDIDATE_CHARS`] characters. Longer
 /// Granola text is dropped (`None`): a cut note excerpt is still an excerpt.
-/// Other text is cut at the last space that fits and ends with `…`; a single
-/// over-long word is cut mid-word. Never splits a UTF-8 character.
+/// Other text is cut at the last space within the first
+/// [`MAX_CANDIDATE_CHARS`] characters and ends with `…`; when that space is
+/// in the first half (a long URL or word), it is cut mid-word instead, so
+/// little is lost. Never splits a UTF-8 character.
 pub fn cap_candidate_text(text: &str, source: CandidateSource) -> Option<String> {
     if text.chars().count() <= MAX_CANDIDATE_CHARS {
         return Some(text.to_string());
@@ -120,11 +122,14 @@ pub fn cap_candidate_text(text: &str, source: CandidateSource) -> Option<String>
     if source == CandidateSource::Granola {
         return None;
     }
-    let head: String = text.chars().take(MAX_CANDIDATE_CHARS - 1).collect();
-    let cut = match head.rfind(char::is_whitespace) {
-        Some(at) if !head[..at].trim_end().is_empty() => head[..at].trim_end(),
-        _ => head.as_str(),
-    };
+    let head: Vec<char> = text.chars().take(MAX_CANDIDATE_CHARS).collect();
+    let at_word = head
+        .iter()
+        .rposition(|c| c.is_whitespace())
+        .filter(|&at| at >= MAX_CANDIDATE_CHARS / 2)
+        .map(|at| head[..at].iter().collect::<String>().trim_end().to_string())
+        .filter(|cut| !cut.is_empty());
+    let cut = at_word.unwrap_or_else(|| head[..MAX_CANDIDATE_CHARS - 1].iter().collect());
     Some(format!("{cut}\u{2026}"))
 }
 
@@ -1733,6 +1738,27 @@ mod tests {
         let capped = cap_candidate_text(&one_word, CandidateSource::Claude).unwrap();
         assert_eq!(capped.chars().count(), MAX_CANDIDATE_CHARS);
         assert!(capped.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn test_cap_cuts_mid_word_when_the_last_space_is_in_the_first_half() {
+        let long = format!("Fixed https://example.com/{}", "a".repeat(250));
+        let capped = cap_candidate_text(&long, CandidateSource::Git).unwrap();
+        assert_eq!(capped.chars().count(), MAX_CANDIDATE_CHARS);
+        assert!(capped.starts_with("Fixed https://example.com/aaa"));
+        assert!(capped.ends_with("a\u{2026}"));
+    }
+
+    #[test]
+    fn test_cap_keeps_a_whole_last_word_when_char_200_is_a_space() {
+        let long = format!("{} {} tail", "x".repeat(99), "y".repeat(99));
+        assert_eq!(long.chars().nth(MAX_CANDIDATE_CHARS - 1), Some(' '));
+        let capped = cap_candidate_text(&long, CandidateSource::Git).unwrap();
+        assert_eq!(
+            capped,
+            format!("{} {}\u{2026}", "x".repeat(99), "y".repeat(99))
+        );
+        assert_eq!(capped.chars().count(), MAX_CANDIDATE_CHARS);
     }
 
     #[test]

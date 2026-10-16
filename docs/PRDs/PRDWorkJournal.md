@@ -313,7 +313,8 @@ Granola time) are folded in and linked in the Decision trace.
   when a candidate is stored. A longer Granola line is dropped, not cut (a cut
   note excerpt is still an excerpt); a longer line from any other source is
   cut at a word and ends with "…". The prompt asks for lines under 200
-  characters.
+  characters. Over-long candidates saved before this change are not
+  converted; they go with the existing 24-hour cleanup.
 
 ### Layout
 

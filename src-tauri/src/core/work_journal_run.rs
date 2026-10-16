@@ -2677,6 +2677,22 @@ mod tests {
             .is_empty());
     }
 
+    #[test]
+    fn test_parse_reply_skips_a_long_line_whose_shortened_text_is_already_saved() {
+        let reply = format!("09:05 - Fixed {}| git", "the notes said ".repeat(20));
+        let first = parse_reply(&reply, "2026-10-15", &[], false).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].text.ends_with('\u{2026}'));
+        let saved = vec![candidate(
+            "2026-10-15",
+            &first[0].text,
+            CandidateState::Pending,
+        )];
+        assert!(parse_reply(&reply, "2026-10-15", &saved, false)
+            .unwrap()
+            .is_empty());
+    }
+
     // --- run_with ---
 
     /// Fake sources: canned activity and replies, recording every call.
