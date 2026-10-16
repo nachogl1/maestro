@@ -366,7 +366,7 @@ export function samuraiBriefKey(project: string, epic: string): string {
  * resume-timer list, so a fired or cancelled timer takes its marker with it.
  */
 export interface SamuraiParkAlert {
-  /** Dedupe + acknowledge key: normalized project, epic and fire time. */
+  /** Dedupe + acknowledge key: normalized project and epic (one timer each). */
   key: string;
   /** Canonical project path of the parked run. */
   project: string;
