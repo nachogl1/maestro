@@ -108,3 +108,16 @@ function quoteForCmd(value: string): string | null {
   const trailingBackslashes = /\\*$/.exec(value)?.[0].length ?? 0;
   return `"${value}${"\\".repeat(trailingBackslashes)}"`;
 }
+
+/**
+ * Dropped / attached file paths as one string to type into a session PTY,
+ * each quoted for the shell actually running there (`terminal_shell_family`).
+ * A path that `quoteShellArgument` refuses, or every path when the family is
+ * unknown (`null`), goes in bare: quoting with another shell's rules is worse
+ * than none — POSIX single quotes are literal characters in cmd.exe.
+ */
+export function quotePathsForShell(paths: string[], shell: ShellFamily | null): string {
+  return paths
+    .map((path) => (shell === null ? null : quoteShellArgument(path, shell)) ?? path)
+    .join(" ");
+}

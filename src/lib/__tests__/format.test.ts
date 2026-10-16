@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatAgeMs, formatBytes, formatGiB, formatIsoAge, formatTimeAgo } from "../format";
+import {
+  formatAgeMs,
+  formatBytes,
+  formatGiB,
+  formatIsoAge,
+  formatRecentDate,
+  formatTimeAgo,
+} from "../format";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -66,6 +73,38 @@ describe("formatTimeAgo / formatIsoAge", () => {
 
   it("measures an ISO time against now", () => {
     expect(formatIsoAge(new Date(NOW - 2 * DAY).toISOString())).toBe("2d ago");
+  });
+});
+
+describe("formatRecentDate", () => {
+  const NOW = new Date("2026-10-13T12:00:00Z").getTime();
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const ago = (ms: number): string => new Date(NOW - ms).toISOString();
+
+  it("reads recent times relatively, with yesterday for one day", () => {
+    expect(formatRecentDate(ago(10_000))).toBe("just now");
+    expect(formatRecentDate(ago(5 * MIN))).toBe("5m ago");
+    expect(formatRecentDate(ago(3 * HOUR))).toBe("3h ago");
+    expect(formatRecentDate(ago(DAY + HOUR))).toBe("yesterday");
+  });
+
+  it("keeps day counts up to 30 days, then shows a calendar date", () => {
+    // History and the pre-launch Resume picker once disagreed here (7 vs 30).
+    expect(formatRecentDate(ago(12 * DAY))).toBe("12d ago");
+    expect(formatRecentDate(ago(29 * DAY))).toBe("29d ago");
+    expect(formatRecentDate(ago(30 * DAY))).toBe(new Date(NOW - 30 * DAY).toLocaleDateString());
+  });
+
+  it("returns empty for an unparsable time", () => {
+    expect(formatRecentDate("not-a-date")).toBe("");
   });
 });
 

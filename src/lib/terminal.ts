@@ -8,7 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isValidAgentName } from "@/lib/agentName";
-import { quoteShellArgument, type ShellFamily } from "@/lib/shellEscape";
+import { quotePathsForShell, quoteShellArgument, type ShellFamily } from "@/lib/shellEscape";
 import type { BackendCapabilities, BackendType } from "./terminalTheme";
 
 /**
@@ -167,7 +167,7 @@ export const AI_CLI_CONFIG: Record<
   },
   Codex: {
     command: "codex",
-    installHint: "npm install -g codex",
+    installHint: "npm install -g @openai/codex",
     skipPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",
   },
   OpenCode: {
@@ -604,4 +604,17 @@ function launchPromptSurvivesFlags(flags?: CliFlags): boolean {
 export async function terminalShellFamily(): Promise<ShellFamily | null> {
   const family = await invoke<string | null>("terminal_shell_family");
   return family === "posix" || family === "cmd" ? family : null;
+}
+
+/**
+ * File paths (drag-and-drop, Attach Files) as text to type into a session,
+ * quoted for the session's shell — see [`quotePathsForShell`]. A failed
+ * family lookup counts as unknown, so the paths still arrive (bare).
+ */
+export async function pathsForTerminalInput(paths: string[]): Promise<string> {
+  const family = await terminalShellFamily().catch((err) => {
+    console.error("Could not read the session shell family:", err);
+    return null;
+  });
+  return quotePathsForShell(paths, family);
 }

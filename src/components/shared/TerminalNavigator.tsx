@@ -2,6 +2,7 @@ import { ChevronUp, ParkingSquare, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { projectColorFor } from "@/lib/projectColor";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { SessionStatusDot } from "../terminal/ThinkingIndicator";
@@ -125,9 +126,7 @@ export function TerminalNavigator({ onNavigate }: TerminalNavigatorProps) {
                       }`}
                     >
                       <SessionStatusDot sessionId={sess.id} />
-                      <span className="min-w-0 flex-1 truncate">
-                        {sess.name?.trim() || `Session #${sess.id}`}
-                      </span>
+                      <span className="min-w-0 flex-1 truncate">{sessionDisplayName(sess)}</span>
                       {isParked && (
                         // Neon red + glow: parked is the one state in this list
                         // the user scans for, so it must not read as another
