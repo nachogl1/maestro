@@ -294,9 +294,11 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
 - **Pane icon:** a Work Journal icon among the existing right-side pane icons
   in the top bar, with a badge counting waiting candidates.
 - **Side pane (layout A, default):** opens next to the terminals as a
-  right-side `UtilityPanel` kind. Header: previous and next day arrows, the
-  editable title, a jump-to-date picker, new page for a date, delete, Report,
-  and pop-out. Below: the formatting toolbar and the page body. Under the
+  right-side `UtilityPanel` kind. Header: previous and next day arrows (user
+  decision, 2026-10-16: each arrow moves exactly one calendar day, to days
+  with or without a page, with no limit either way; a day with no page shows
+  the "create a page for this day" state), the editable title, a jump-to-date
+  picker, new page for a date, delete, Report, and pop-out. Below: the formatting toolbar and the page body. Under the
   page: the suggestions box with source tags, accept and reject icons, and
   "next run · run now".
 - **Own window (layout B):** the pop-out button opens the same journal in its

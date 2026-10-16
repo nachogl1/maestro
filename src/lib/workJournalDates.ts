@@ -67,7 +67,7 @@ export function shiftJournalDate(date: string, days: number): string {
   const parts = parseIsoDate(date);
   if (!parts) return date;
   const shifted = new Date(Date.UTC(parts.y, parts.m - 1, parts.d + days));
-  const y = shifted.getUTCFullYear();
+  const y = String(shifted.getUTCFullYear()).padStart(4, "0");
   const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
   const d = String(shifted.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
