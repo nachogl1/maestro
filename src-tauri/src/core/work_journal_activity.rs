@@ -1,6 +1,6 @@
 //! The Work Journal's temporary activity file: `<app data>/work-journal/activity.json`.
 //!
-//! It holds two kinds of short-lived entries (PRD "Candidates" → "Temporary
+//! It holds three kinds of short-lived entries (PRD "Candidates" → "Temporary
 //! file", and "Data model"):
 //!
 //! - **Candidates** a candidate run proposed for a day page, while they are
@@ -8,6 +8,9 @@
 //!   duplicate removal).
 //! - **Terminal records**: one per terminal — project name, branch, opened-at
 //!   and closed-at. Nothing typed in a terminal is ever stored.
+//! - **Sent activity**: which activity items a candidate run already gave
+//!   `claude` for a date (identity and a short hash, never the text), so the
+//!   next run does not send them again.
 //!
 //! Every entry is deleted 24 hours after it stops being current, on every
 //! load and every write. A terminal that is still open in this app launch, or
@@ -137,7 +140,7 @@ pub fn cap_candidate_text(text: &str, source: CandidateSource) -> Option<String>
 pub type ActivityResult<T> = Result<T, ActivityError>;
 
 /// Where a candidate's activity came from (one source tag each).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CandidateSource {
     Github,
@@ -239,6 +242,37 @@ pub struct ActivityFile {
     /// runs. Launches written before it was added have no entry.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub launches: BTreeMap<String, LaunchProcess>,
+    /// The activity items a candidate run already gave `claude` for a date
+    /// whose run succeeded, so later runs do not send them again. Files
+    /// written before it was added have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sent: Vec<SentRecord>,
+}
+
+/// One activity item as sent to a candidate run: never its text, only a
+/// short hash of it, so a changed item (a conversation with a new summary)
+/// is told apart from one already sent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentItem {
+    /// The date it was sent for, `YYYY-MM-DD`. An item spanning midnight is
+    /// that date's own activity on each date.
+    pub date: String,
+    pub source: CandidateSource,
+    /// The item's stable identity (session id, commit hash, ...).
+    pub key: String,
+    /// Short hash of what the item said.
+    pub hash: String,
+}
+
+/// A [`SentItem`] and when it was recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentRecord {
+    #[serde(flatten)]
+    pub item: SentItem,
+    /// When it was recorded (RFC 3339) — the pruning clock.
+    pub sent_at: String,
 }
 
 /// The process of one app launch: its pid and start time. A pid alone is not
@@ -469,8 +503,10 @@ fn expired(stamp: &str, now: DateTime<Utc>) -> bool {
 /// ceiling). A launch entry goes once no record refers to it. Returns
 /// whether anything was removed.
 fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
-    let before = file.candidates.len() + file.terminals.len() + file.launches.len();
+    let before =
+        file.candidates.len() + file.terminals.len() + file.launches.len() + file.sent.len();
     file.candidates.retain(|c| !expired(&c.created_at, now));
+    file.sent.retain(|s| !expired(&s.sent_at, now));
     let launches = &file.launches;
     let within_ceiling = |opened: &str| {
         parse_stamp(opened).is_some_and(|o| now - o <= Duration::days(OPEN_CEILING_DAYS))
@@ -484,7 +520,7 @@ fn prune(file: &mut ActivityFile, now: DateTime<Utc>, launch: &str) -> bool {
     let terminals = &file.terminals;
     file.launches
         .retain(|id, _| terminals.iter().any(|t| &t.launch_id == id));
-    before != file.candidates.len() + file.terminals.len() + file.launches.len()
+    before != file.candidates.len() + file.terminals.len() + file.launches.len() + file.sent.len()
 }
 
 /// Closes every record left open by another app launch that is no longer
@@ -776,6 +812,37 @@ pub async fn pending_counts(dir: &Path) -> ActivityResult<HashMap<String, usize>
         }
     }
     Ok(counts)
+}
+
+/// Every activity item a candidate run already sent (see
+/// [`ActivityFile::sent`]), for the last [`RETENTION_HOURS`].
+pub async fn list_sent(dir: &Path) -> ActivityResult<HashSet<SentItem>> {
+    let _guard = lock(dir).await?;
+    let file = load(dir, Utc::now(), current_launch_id()).await?;
+    Ok(file.sent.into_iter().map(|s| s.item).collect())
+}
+
+/// Records `items` as sent, now. An item already recorded for the same
+/// date, source and key is replaced, so only its latest hash is kept.
+pub async fn record_sent(dir: &Path, items: Vec<SentItem>) -> ActivityResult<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let now = Local::now();
+    let sent_at = stamp(now);
+    let now = now.with_timezone(&Utc);
+    let launch = current_launch_id();
+    let _guard = lock(dir).await?;
+    let mut file = load(dir, now, launch).await?;
+    let same =
+        |a: &SentItem, b: &SentItem| a.date == b.date && a.source == b.source && a.key == b.key;
+    file.sent
+        .retain(|old| !items.iter().any(|new| same(&old.item, new)));
+    file.sent.extend(items.into_iter().map(|item| SentRecord {
+        item,
+        sent_at: sent_at.clone(),
+    }));
+    save(dir, &mut file, now, launch).await
 }
 
 /// Whether a record was running at some moment in the half-open window
@@ -1261,6 +1328,7 @@ mod tests {
                     terminal(LAUNCH, 2, &earlier, Some(&earlier)),
                 ],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         record_all_closed(dir.path(), LAUNCH, Local::now())
@@ -1287,6 +1355,7 @@ mod tests {
                     terminal(current_launch_id(), 2, &hours_ago(3), None),
                 ],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         set_mtime(dir.path(), last_write);
@@ -1322,6 +1391,7 @@ mod tests {
                 candidates: vec![],
                 terminals: vec![terminal("crashed", 1, &opened, None)],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         set_mtime(dir.path(), Local::now() - Duration::hours(2));
@@ -1410,6 +1480,7 @@ mod tests {
                     terminal("old-format", 4, &hours_ago(3), None),
                 ],
                 launches: launches.clone(),
+                sent: Vec::new(),
             },
         );
         let _guard = FILE_LOCK.lock().await;
@@ -1481,6 +1552,7 @@ mod tests {
                 candidates: vec![],
                 terminals: vec![terminal("other", 1, &hours_ago(6), None)],
                 launches: BTreeMap::from([("other".to_string(), other)]),
+                sent: Vec::new(),
             },
         );
         // This launch first saw the file 5 hours ago: the old fallback end.
@@ -1550,6 +1622,7 @@ mod tests {
                 terminal("old", 6, "not a time", Some("not a time")),
             ],
             launches: BTreeMap::new(),
+            sent: Vec::new(),
         };
         assert!(prune(&mut file, now, LAUNCH));
         let ids: Vec<&str> = file.candidates.iter().map(|c| c.id.as_str()).collect();
@@ -1574,6 +1647,7 @@ mod tests {
                     terminal(LAUNCH, 2, &hours_ago(30), None),
                 ],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         let _guard = FILE_LOCK.lock().await;
@@ -1595,6 +1669,7 @@ mod tests {
                 candidates: vec![candidate_created("old", &hours_ago(25))],
                 terminals: vec![],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         // A folder where the temp file must go makes the write-back fail.
@@ -1622,6 +1697,7 @@ mod tests {
             ],
             terminals: vec![terminal("old", 1, &hours_ago(30), Some(&hours_ago(25)))],
             launches: BTreeMap::new(),
+            sent: Vec::new(),
         };
         save(dir.path(), &mut file, Utc::now(), LAUNCH)
             .await
@@ -1641,6 +1717,7 @@ mod tests {
                 candidates: vec![candidate_created("old", &hours_ago(25))],
                 terminals: vec![],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         add_candidates(
@@ -1652,6 +1729,69 @@ mod tests {
         let written = read_raw(dir.path());
         assert_eq!(written.candidates.len(), 1);
         assert_eq!(written.candidates[0].text, "new one");
+    }
+
+    fn sent_item(date: &str, key: &str, hash: &str) -> SentItem {
+        SentItem {
+            date: date.to_string(),
+            source: CandidateSource::Terminal,
+            key: key.to_string(),
+            hash: hash.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_record_sent_lists_items_and_keeps_only_the_latest_hash() {
+        let dir = tempdir().unwrap();
+        record_sent(
+            dir.path(),
+            vec![
+                sent_item("2026-10-15", "t-1", "aaaa"),
+                sent_item("2026-10-16", "t-1", "aaaa"),
+            ],
+        )
+        .await
+        .unwrap();
+        record_sent(dir.path(), vec![sent_item("2026-10-15", "t-1", "bbbb")])
+            .await
+            .unwrap();
+        let sent = list_sent(dir.path()).await.unwrap();
+        assert_eq!(
+            sent,
+            HashSet::from([
+                sent_item("2026-10-15", "t-1", "bbbb"),
+                sent_item("2026-10-16", "t-1", "aaaa"),
+            ])
+        );
+        // Stored flat, next to the time it was sent.
+        let raw = std::fs::read_to_string(file_path(dir.path())).unwrap();
+        assert!(raw.contains("\"sentAt\""), "{raw}");
+    }
+
+    #[tokio::test]
+    async fn test_sent_items_are_pruned_after_a_day() {
+        let dir = tempdir().unwrap();
+        let record = |key: &str, sent_at: &str| SentRecord {
+            item: sent_item("2026-10-15", key, "aaaa"),
+            sent_at: sent_at.to_string(),
+        };
+        write_raw(
+            dir.path(),
+            &ActivityFile {
+                sent: vec![
+                    record("old", &hours_ago(25)),
+                    record("fresh", &hours_ago(23)),
+                    record("damaged", "not a time"),
+                ],
+                ..ActivityFile::default()
+            },
+        );
+        let sent = list_sent(dir.path()).await.unwrap();
+        assert_eq!(
+            sent,
+            HashSet::from([sent_item("2026-10-15", "fresh", "aaaa")])
+        );
+        assert_eq!(read_raw(dir.path()).sent.len(), 1, "pruned on disk too");
     }
 
     #[tokio::test]
@@ -1931,6 +2071,7 @@ mod tests {
                     terminal(launch, 5, &rel(6), Some(&rel(7))),
                 ],
                 launches: BTreeMap::new(),
+                sent: Vec::new(),
             },
         );
         let start = (base + Duration::hours(2)).with_timezone(&Utc);

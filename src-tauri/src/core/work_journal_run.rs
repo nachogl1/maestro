@@ -22,14 +22,15 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveDate, SecondsFormat, SubsecRound, TimeDelta, TimeZone, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::core::work_journal::{CandidateRetry, WorkJournal};
 use crate::core::work_journal_activity::{
-    activity_dir, add_candidates, cap_candidate_text, list_candidates, validate_candidate,
-    Candidate, CandidateSource, NewCandidate,
+    activity_dir, add_candidates, cap_candidate_text, list_candidates, list_sent, record_sent,
+    validate_candidate, Candidate, CandidateSource, NewCandidate, SentItem,
 };
 use crate::core::work_journal_collect::{collect_activity, ActivityItem};
 
@@ -644,6 +645,19 @@ pub fn build_prompt(
     )
 }
 
+/// How `item` is remembered once sent for its date: its identity plus a
+/// short hash (16 hex digits of SHA-256) of its project and
+/// [`ActivityItem::content`], so the same item with new content is sent again.
+fn sent_item(item: &ActivityItem) -> SentItem {
+    let digest = Sha256::digest(format!("{}\n{}", item.project, item.content).as_bytes());
+    SentItem {
+        date: item.date.clone(),
+        source: item.source,
+        key: item.key.clone(),
+        hash: hex::encode(&digest[..8]),
+    }
+}
+
 /// Comparison key for duplicate text: one line, lower case.
 fn dedupe_key(text: &str) -> String {
     one_line(text).to_lowercase()
@@ -960,6 +974,10 @@ trait RunSources {
         granola: bool,
     ) -> Result<String, String>;
     async fn add(&self, new: Vec<NewCandidate>) -> Result<usize, String>;
+    /// The activity items earlier runs already sent (see [`sent_item`]).
+    async fn sent(&self) -> Result<HashSet<SentItem>, String>;
+    /// Remembers `items` as sent.
+    async fn mark_sent(&self, items: Vec<SentItem>) -> Result<(), String>;
     /// The Granola preflight (see [`granola_preflight_url`]): the URL to
     /// reach Granola at, `None` = not connected.
     async fn granola_url(&self) -> Option<String>;
@@ -999,6 +1017,16 @@ impl RunSources for LiveSources {
         add_candidates(&activity_dir(), new)
             .await
             .map(|added| added.len())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn sent(&self) -> Result<HashSet<SentItem>, String> {
+        list_sent(&activity_dir()).await.map_err(|e| e.to_string())
+    }
+
+    async fn mark_sent(&self, items: Vec<SentItem>) -> Result<(), String> {
+        record_sent(&activity_dir(), items)
+            .await
             .map_err(|e| e.to_string())
     }
 
@@ -1438,6 +1466,20 @@ async fn run_with<S: RunSources>(
         }
     }
 
+    // An item already sent for its date by an earlier run is left out unless
+    // what it says changed: a conversation or terminal spanning several
+    // windows is listed in each, and `claude` would only reword it. Items are
+    // remembered only once their date's run succeeded, so a failed date sends
+    // them again. Unreadable, everything is sent (as before).
+    let sent = if by_date.is_empty() {
+        HashSet::new()
+    } else {
+        sources.sent().await.unwrap_or_else(|e| {
+            log::warn!("Work journal: could not read which activity was already sent: {e}");
+            HashSet::new()
+        })
+    };
+
     // A failed date does not stop the run or hold back the others: the window
     // counts as covered and only the failed date is remembered, from where
     // its uncovered activity starts, so the next run asks about that date
@@ -1451,13 +1493,29 @@ async fn run_with<S: RunSources>(
     let mut retry_dates = BTreeMap::new();
     let mut errors: Vec<String> = Vec::new();
     for (date, items) in by_date {
+        let items: Vec<ActivityItem> = items
+            .into_iter()
+            .filter(|item| !sent.contains(&sent_item(item)))
+            .collect();
+        // Nothing new and no meetings to ask about: the date is done.
+        if items.is_empty() && !granola {
+            log::debug!("Work journal: no new activity for {date}, not asking claude");
+            continue;
+        }
         let previous = retries.iter().find(|retry| retry.date == date);
         let since = previous.map_or_else(
             || start_of_local_date(&date).map_or(start, |midnight| midnight.max(start)),
             |retry| retry.since,
         );
         let window = granola.then_some((since.min(start), end));
-        match run_date(sources, journal, &args, window, &date, &items).await {
+        let result = run_date(sources, journal, &args, window, &date, &items).await;
+        if result.is_ok() {
+            let done = items.iter().map(sent_item).collect();
+            if let Err(e) = sources.mark_sent(done).await {
+                log::warn!("Work journal: could not remember the activity sent for {date}: {e}");
+            }
+        }
+        match result {
             Ok(0) => {}
             Ok(added) => {
                 report.added += added;
@@ -1599,6 +1657,7 @@ mod tests {
             text: text.to_string(),
             project: "maestro".to_string(),
             key: format!("{date}{time}{text}"),
+            content: text.to_string(),
         }
     }
 
@@ -2718,6 +2777,8 @@ mod tests {
         fail_all: Option<String>,
         /// What `quitting` answers.
         quitting: bool,
+        /// The activity remembered as sent, as the activity file keeps it.
+        sent: StdMutex<HashSet<SentItem>>,
     }
 
     /// When `item` happened, read back from its local date and time.
@@ -2787,6 +2848,21 @@ mod tests {
             let count = new.len();
             self.added.lock().unwrap().extend(new);
             Ok(count)
+        }
+
+        async fn sent(&self) -> Result<HashSet<SentItem>, String> {
+            Ok(self.sent.lock().unwrap().clone())
+        }
+
+        async fn mark_sent(&self, items: Vec<SentItem>) -> Result<(), String> {
+            let mut sent = self.sent.lock().unwrap();
+            for item in items {
+                sent.retain(|old| {
+                    (&old.date, old.source, &old.key) != (&item.date, item.source, &item.key)
+                });
+                sent.insert(item);
+            }
+            Ok(())
         }
 
         async fn granola_url(&self) -> Option<String> {
@@ -3265,6 +3341,165 @@ mod tests {
         assert!(asked
             .iter()
             .all(|(_, input)| input.matches("Terminal open").count() == 1));
+    }
+
+    /// An item listed in several windows (an open terminal, a long Claude
+    /// conversation): the same key every time, its text as given.
+    fn spanning(source: CandidateSource, key: &str, text: &str, content: &str) -> ActivityItem {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        ActivityItem {
+            source,
+            key: key.into(),
+            content: content.into(),
+            ..item(&today, "11:10", source, text)
+        }
+    }
+
+    /// The open terminal and the long conversation of the tests below.
+    fn terminal_and_conversation(terminal_text: &str) -> Vec<ActivityItem> {
+        vec![
+            spanning(
+                CandidateSource::Terminal,
+                "terminal-1",
+                terminal_text,
+                "Terminal in maestro on main",
+            ),
+            spanning(
+                CandidateSource::Claude,
+                "session-1",
+                "Login fix: fixed the login",
+                "Login fix: fixed the login",
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_the_next_window_does_not_send_the_same_terminal_or_conversation_again() {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let mut fake = Fake {
+            items: terminal_and_conversation("Terminal in maestro on main from 11:10, still open"),
+            ..Fake::default()
+        };
+        fake.replies.insert(
+            today.clone(),
+            "11:10 - Worked on the login fix | claude".into(),
+        );
+        let mut journal = journal_with(Some((now() - TimeDelta::hours(1)).to_rfc3339()), None);
+        let first = run_with(&fake, &journal, &[], now()).await;
+        assert_eq!(first.added, 1);
+        let input = fake.asked.lock().unwrap()[0].1.clone();
+        assert!(
+            input.contains("still open") && input.contains("Login fix"),
+            "{input}"
+        );
+        save(&mut journal, &first);
+
+        // The next window lists both again; the terminal's span reads
+        // differently, but what it says is the same.
+        fake.items = terminal_and_conversation(
+            "Terminal in maestro on main since 2026-10-15 11:10, still open",
+        );
+        let later = now() + TimeDelta::hours(1);
+        let second = run_with(&fake, &journal, &[], later).await;
+
+        assert!(second.error.is_none(), "{:?}", second.error);
+        assert_eq!(second.added, 0);
+        assert_eq!(second.covered_until, later);
+        assert_eq!(
+            fake.asked.lock().unwrap().len(),
+            1,
+            "nothing new to ask about"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_item_that_changed_is_sent_again_without_the_unchanged_ones() {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let mut fake = Fake {
+            items: terminal_and_conversation("Terminal in maestro on main from 11:10, still open"),
+            ..Fake::default()
+        };
+        fake.replies.insert(today.clone(), "NONE".into());
+        let mut journal = journal_with(Some((now() - TimeDelta::hours(1)).to_rfc3339()), None);
+        let first = run_with(&fake, &journal, &[], now()).await;
+        assert!(first.error.is_none(), "{:?}", first.error);
+        save(&mut journal, &first);
+
+        // The conversation got a new summary; the terminal is unchanged.
+        fake.items[1].text = "Login fix: fixed the login and added tests".into();
+        fake.items[1].content = fake.items[1].text.clone();
+        run_with(&fake, &journal, &[], now() + TimeDelta::hours(1)).await;
+
+        let asked = fake.asked.lock().unwrap();
+        assert_eq!(asked.len(), 2);
+        let input = &asked[1].1;
+        assert!(input.contains("added tests"), "{input}");
+        assert!(!input.contains("Terminal in"), "{input}");
+    }
+
+    #[tokio::test]
+    async fn test_a_failed_date_sends_its_items_again_on_retry() {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        // No reply for the date: its call times out.
+        let mut fake = Fake {
+            items: terminal_and_conversation("Terminal in maestro on main from 11:10, still open"),
+            ..Fake::default()
+        };
+        let mut journal = journal_with(Some((now() - TimeDelta::hours(1)).to_rfc3339()), None);
+        let failed = run_with(&fake, &journal, &[], now()).await;
+        assert!(failed.retry_dates.contains_key(&today));
+        assert!(
+            fake.sent.lock().unwrap().is_empty(),
+            "a failed date sends nothing"
+        );
+        save(&mut journal, &failed);
+
+        fake.replies.insert(today.clone(), "NONE".into());
+        let retried = run_with(&fake, &journal, &[], now() + TimeDelta::hours(1)).await;
+        assert!(retried.error.is_none(), "{:?}", retried.error);
+        assert!(retried.retry_dates.is_empty());
+        {
+            let asked = fake.asked.lock().unwrap();
+            assert_eq!(asked.len(), 2);
+            assert!(
+                asked[1].1.contains("Terminal in") && asked[1].1.contains("Login fix"),
+                "{}",
+                asked[1].1
+            );
+        }
+        save(&mut journal, &retried);
+
+        // Sent once the retry succeeded: not again.
+        run_with(&fake, &journal, &[], now() + TimeDelta::hours(2)).await;
+        assert_eq!(fake.asked.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_a_granola_date_is_still_asked_when_its_activity_was_sent() {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let mut fake = Fake {
+            items: terminal_and_conversation("Terminal in maestro on main from 11:10, still open"),
+            granola: true,
+            ..Fake::default()
+        };
+        fake.replies.insert(today.clone(), "NONE".into());
+        let mut journal = granola_journal(Some(true));
+        journal.settings.last_run_at = Some((now() - TimeDelta::hours(1)).to_rfc3339());
+        let first = run_with(&fake, &journal, &[], now()).await;
+        assert!(first.error.is_none(), "{:?}", first.error);
+        save(&mut journal, &first);
+
+        let later = now() + TimeDelta::minutes(30);
+        run_with(&fake, &journal, &[], later).await;
+
+        // Asked again for the meetings, without the activity already sent.
+        assert_eq!(asked_about(&fake, &today), 2);
+        let asked = fake.asked.lock().unwrap();
+        let input = &asked.last().unwrap().1;
+        assert!(
+            input.contains("Activity (HH:MM [source] project: text):\n(none)"),
+            "{input}"
+        );
     }
 
     #[tokio::test]
