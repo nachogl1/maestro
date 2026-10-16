@@ -357,7 +357,10 @@ function WorktreeCard({
         <div className="space-y-1 px-3 pb-3 pt-1">
           {!atRisk && (
             <div className="rounded bg-maestro-card/40 px-2 py-1.5 text-[11px] text-maestro-muted">
-              Working tree clean. Branch is fully pushed.
+              {/* With no upstream, ahead/unpushed are always 0 — nothing proves it was pushed. */}
+              {status.upstream
+                ? "Working tree clean. Branch is fully pushed."
+                : "Working tree clean. No upstream — pushed state unknown."}
             </div>
           )}
 
