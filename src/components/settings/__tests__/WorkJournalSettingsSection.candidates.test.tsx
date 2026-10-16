@@ -129,6 +129,29 @@ describe("WorkJournalSettingsSection candidate run rows", () => {
     ]);
   });
 
+  it("shows the refusal and keeps the saved model when the model name is invalid", async () => {
+    const refusal =
+      'The Work Journal model "claude opus" is not a valid model name. Change it in Settings or leave it blank for your default model.';
+    routeInvoke({
+      load_work_journal: () => journal({ model: "sonnet" }),
+      update_work_journal_settings: () => {
+        throw refusal;
+      },
+    });
+    await useWorkJournalCandidateRunStore.getState().load();
+    render(<WorkJournalSettingsSection />);
+    const input = screen.getByLabelText("Model");
+
+    fireEvent.change(input, { target: { value: "claude opus" } });
+    fireEvent.blur(input);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `Could not save the model: ${refusal}`,
+    );
+    expect(useWorkJournalCandidateRunStore.getState().model).toBe("sonnet");
+    expect(input).toHaveValue("claude opus");
+  });
+
   it("runs with the open projects' paths and shows the new last run time", async () => {
     const lastRunAt = "2026-10-15T12:34:00Z";
     const lastAttemptAt = "2026-10-15T12:33:00Z";

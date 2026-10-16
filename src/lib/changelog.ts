@@ -23,6 +23,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: a damaged activity file that was set aside is now deleted after a day, like the rest of its activity data.",
       "Work Journal: the Granola check before meeting suggestions is much faster and no longer starts your other MCP servers.",
       "Work Journal: deleting a page in one window now shows a short notice in the other window instead of a raw error, and no longer shows that page as unsaved.",
+      "Work Journal: Settings now refuses a model name that cannot work as soon as you enter it, instead of the suggestions or report run failing hours later.",
     ],
   },
   {
