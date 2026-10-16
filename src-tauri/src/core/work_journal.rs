@@ -88,6 +88,14 @@ pub enum WorkJournalError {
     BackupFolderNotAFolder(String),
     #[error("The backup folder cannot be the journal's own folder. Choose a different folder.")]
     BackupFolderIsJournalFolder,
+    /// Same wording as the run-time refusals in
+    /// [`crate::core::work_journal_run::claude_args`] and
+    /// [`crate::core::work_journal_report::claude_args`] (a test keeps them equal).
+    #[error(
+        "The Work Journal model \"{0}\" is not a valid model name. Change it in Settings or \
+         leave it blank for your default model."
+    )]
+    InvalidModel(String),
     #[error(
         "Automatic backup skipped: this folder already holds a backup that this Maestro has \
          never written. Press Back up now to replace it, or choose another folder."
@@ -552,8 +560,19 @@ pub fn merge_settings(
 }
 
 /// [`merge_settings`] on the journal at `path`, saved. A `backup_folder` that
-/// is the journal's own folder is refused and nothing is saved.
+/// is the journal's own folder, or a `model` a run would refuse, is refused
+/// and nothing is saved. A blank model (the user's default) is allowed.
 pub fn update_settings(path: &Path, patch: Map<String, Value>) -> WorkJournalResult<WorkJournal> {
+    let model = patch
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if let Some(model) = model {
+        if !crate::core::work_journal_run::is_safe_model(model) {
+            return Err(WorkJournalError::InvalidModel(model.to_string()));
+        }
+    }
     let folder = patch
         .get("backup_folder")
         .and_then(Value::as_str)
@@ -1562,6 +1581,39 @@ mod tests {
             reloaded.settings.extra["from_a_newer_build"],
             json!({"x": 1})
         );
+    }
+
+    #[test]
+    fn test_settings_refuse_an_invalid_model_and_change_nothing() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(dir.path());
+        let other = dir.path().join("OneDrive");
+        let save = |patch: Value| update_settings(&path, patch.as_object().unwrap().clone());
+        save(json!({ "model": "sonnet" })).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        for bad in ["claude opus", " -p ", "opus;rm"] {
+            let patch = json!({ "model": bad, "backup_folder": other.to_string_lossy() });
+            let err = save(patch).unwrap_err();
+            assert!(
+                matches!(err, WorkJournalError::InvalidModel(_)),
+                "{bad}: got {err}"
+            );
+            // Word for word what a suggestions run and a report say about it.
+            let run_err = crate::core::work_journal_run::claude_args(Some(bad), None).unwrap_err();
+            assert_eq!(err.to_string(), run_err, "{bad}");
+            let report_err = crate::core::work_journal_report::claude_args(Some(bad)).unwrap_err();
+            assert_eq!(err.to_string(), report_err, "{bad}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "{bad}");
+        }
+
+        let saved = save(json!({ "model": "claude-opus-5-5[1m]" })).unwrap();
+        assert_eq!(saved.settings.model.as_deref(), Some("claude-opus-5-5[1m]"));
+        for blank in [json!(null), json!(""), json!("   ")] {
+            save(json!({ "model": blank.clone() })).unwrap();
+        }
+        save(json!({ "model": null })).unwrap();
+        assert!(load(&path).unwrap().settings.model.is_none());
     }
 
     #[test]
