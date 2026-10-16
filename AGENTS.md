@@ -178,7 +178,7 @@ export const useStore = create<StoreState>((set) => ({
 - Frontend builds to `dist/` directory
 - MCP server binary bundled at build time
 - Tauri bundles frontend + Rust backend into native apps
-- Node 20+ required (matches CI), Rust 1.82+ required
+- Node 20+ required (matches CI), Rust 1.89+ required
 
 ## Development Workflow
 Use this workflow when implementing a task or story, refactoring, or fixing a bug.

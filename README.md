@@ -43,7 +43,7 @@ Either way, you end up with a folder called `maestro` (or `maestro-main` if you 
 You only do this once. Install each one with its normal installer and accept the default options.
 
 1. **Node.js** (version 20 or newer): download the "LTS" version from [nodejs.org](https://nodejs.org/).
-2. **Rust** (version 1.82 or newer): follow the instructions at [rustup.rs](https://rustup.rs/). On Linux, use rustup rather than your system's package manager, which often ships an older version.
+2. **Rust** (version 1.89 or newer): follow the instructions at [rustup.rs](https://rustup.rs/). On Linux, use rustup rather than your system's package manager, which often ships an older version.
 3. **Git**: download it from [git-scm.com](https://git-scm.com/downloads). Maestro uses Git to give each AI session its own copy of your code.
 4. **Your computer's build tools:**
    - **Windows:** install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and tick **"Desktop development with C++"** during setup.
