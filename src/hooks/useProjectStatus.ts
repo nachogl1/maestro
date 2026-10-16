@@ -22,7 +22,7 @@ export function sessionsForTab(tab: WorkspaceTab, sessions: SessionConfig[]): Se
 
 /**
  * Aggregated status for a project, derived from its sessions.
- * Priority order: NeedsInput > Working > Error > Done > Starting > Idle
+ * Priority order: NeedsInput > Working > Error (or a startup Timeout) > Done > Starting > Idle
  *
  * NeedsInput comes first on purpose: the tab strip answers "does this project
  * need me?", and with several terminals per project something is almost always
@@ -71,9 +71,9 @@ export function useProjectStatus(tabId: string): {
       return { status: "idle" as ProjectStatus, sessionCount: 0, activeSessionCount: 0 };
     }
 
-    // Count active sessions (not Done or Error)
+    // Count active sessions (not Done, Error or Timeout — a startup timeout is a failure)
     const activeSessionCount = projectSessions.filter(
-      (s) => s.status !== "Done" && s.status !== "Error",
+      (s) => s.status !== "Done" && s.status !== "Error" && s.status !== "Timeout",
     ).length;
 
     // Priority-based status aggregation
@@ -85,7 +85,8 @@ export function useProjectStatus(tabId: string): {
       status = "needs-input";
     } else if (hasStatus("Working")) {
       status = "working";
-    } else if (hasStatus("Error")) {
+    } else if (hasStatus("Error") || hasStatus("Timeout")) {
+      // A startup timeout is painted red by the status dot and the parked chip too.
       status = "error";
     } else if (projectSessions.every((s) => s.status === "Done")) {
       status = "done";

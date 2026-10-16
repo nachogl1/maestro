@@ -145,12 +145,13 @@ vi.mock("../splitTree", async (importOriginal) => {
 });
 
 import { invoke } from "@tauri-apps/api/core";
+import { setSessionMcpServers } from "@/lib/mcp";
 import {
   samuraiHarvestArm,
   samuraiRegisterSession,
   samuraiRevertLaunchLinePrompt,
 } from "@/lib/samurai";
-import { spawnShell, terminalShellFamily, writeStdin } from "@/lib/terminal";
+import { killSession, spawnShell, terminalShellFamily, writeStdin } from "@/lib/terminal";
 import { terminalArmInitialPrompt } from "@/lib/terminalPrompt";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -165,6 +166,8 @@ const harvestArmMock = vi.mocked(samuraiHarvestArm);
 const shellFamilyMock = vi.mocked(terminalShellFamily);
 const revertMock = vi.mocked(samuraiRevertLaunchLinePrompt);
 const initialPromptArmMock = vi.mocked(terminalArmInitialPrompt);
+const killSessionMock = vi.mocked(killSession);
+const setMcpServersMock = vi.mocked(setSessionMcpServers);
 
 const WORKTREE = "C:/wt/samurai-77-78";
 
@@ -507,11 +510,21 @@ describe("TerminalGrid pending samurai launch", () => {
    * oldest one as a finished samurai generation. Returns the grid handle and
    * that parked session's id.
    */
-  async function fillGridWithOneParkedGeneration() {
+  async function fillGridWithOneParkedGeneration(
+    onSessionCountChange?: (slots: number, launched: number, occupied: number) => void,
+  ) {
     let nextId = 100;
     spawnShellMock.mockImplementation(async () => nextId++);
     const ref = createRef<TerminalGridHandle>();
-    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+    render(
+      <TerminalGrid
+        ref={ref}
+        projectPath="C:/proj"
+        tabId="tab-1"
+        isActive
+        onSessionCountChange={onSessionCountChange}
+      />,
+    );
     const handle = ref.current;
     if (!handle) throw new Error("expected TerminalGrid ref to be attached");
 
@@ -577,6 +590,37 @@ describe("TerminalGrid pending samurai launch", () => {
     });
 
     await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(launchesBefore + 1));
+  });
+
+  // The top-bar "+" and the eagle picker grey out on the reported occupied
+  // count, so it must apply the same exemption as addSession — otherwise the
+  // button looks full while Ctrl+T still adds a terminal.
+  it("reports the parked samurai exemption in the occupied count it hands the parent", async () => {
+    const onCounts = vi.fn();
+    await fillGridWithOneParkedGeneration(onCounts);
+
+    await waitFor(() =>
+      expect(onCounts).toHaveBeenLastCalledWith(MAX_SESSIONS, MAX_SESSIONS, MAX_SESSIONS - 1),
+    );
+  });
+
+  // A step between spawnShell and the slot taking the session (here the MCP
+  // server write) can reject. The shell then belongs to no pane, so the launch
+  // must kill it and drop its store row instead of leaking an invisible PTY.
+  it("kills the shell and drops its session row when a launch step fails before the slot owns it", async () => {
+    spawnShellMock.mockImplementationOnce(async () => 42);
+    setMcpServersMock.mockRejectedValueOnce(new Error("Session not found"));
+    killSessionMock.mockClear();
+    const ref = createRef<TerminalGridHandle>();
+    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+
+    await act(async () => {
+      await ref.current?.launchAll();
+    });
+
+    await waitFor(() => expect(killSessionMock).toHaveBeenCalledWith(42));
+    expect(useSessionStore.getState().sessions).toHaveLength(0);
+    expect(writeStdinMock).not.toHaveBeenCalled();
   });
 
   // The injection rides claude's SessionStart hook, which no other CLI posts:

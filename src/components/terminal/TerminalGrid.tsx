@@ -164,7 +164,8 @@ export interface TerminalGridHandle {
  * @property tabId - Workspace tab ID for session-project association.
  * @property preserveOnHide - If true, don't kill sessions when component unmounts (for project switching).
  * @property onSessionCountChange - Fires whenever session counts change,
- *   providing both total slot count and launched session count.
+ *   providing the total slot count, the launched session count, and the count
+ *   that weighs against MAX_SESSIONS (parked samurai terminal-state tiles exempt).
  */
 interface TerminalGridProps {
   projectPath?: string;
@@ -175,7 +176,7 @@ interface TerminalGridProps {
   tabId?: string;
   preserveOnHide?: boolean;
   isActive?: boolean;
-  onSessionCountChange?: (slotCount: number, launchedCount: number) => void;
+  onSessionCountChange?: (slotCount: number, launchedCount: number, occupiedCount: number) => void;
   onAllSessionsClosed?: () => void;
   /**
    * Eagle view: this grid's launched panes AND pre-launch cards become items
@@ -628,11 +629,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   });
 
   // Sync refs with state and report counts to parent
+  // biome-ignore lint/correctness/useExhaustiveDependencies: parkedSessionIds is a deliberate extra dep — occupiedSlotCount reads it from the store, and a park/unpark changes the count without changing slots
   useEffect(() => {
     slotsRef.current = slots;
     const launchedCount = slots.filter((s) => s.sessionId !== null).length;
-    onSessionCountChange?.(slots.length, launchedCount);
-  }, [slots, onSessionCountChange]);
+    onSessionCountChange?.(slots.length, launchedCount, occupiedSlotCount(slots));
+  }, [slots, onSessionCountChange, parkedSessionIds]);
 
   // Refresh branches callback (used by useEffect and exposed via handle)
   const refreshBranches = useCallback(() => {
@@ -942,7 +944,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         // This branch skips setSlots, so the count-reporting effect never fires
         // with 0 — report it explicitly or the parent keeps stale counts
         // (e.g. the sidebar's "Stop All (1)" with nothing running).
-        onSessionCountChange?.(0, 0);
+        onSessionCountChange?.(0, 0, 0);
         onAllSessionsClosedRef.current();
       } else {
         // Clean up cached focus callback for this slot
@@ -1048,7 +1050,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // If removing the last slot, return to idle landing view immediately
       // rather than going through an intermediate empty state
       if (slotsRef.current.length <= 1 && onAllSessionsClosedRef.current) {
-        onSessionCountChange?.(0, 0);
+        onSessionCountChange?.(0, 0, 0);
         onAllSessionsClosedRef.current();
         return;
       }
