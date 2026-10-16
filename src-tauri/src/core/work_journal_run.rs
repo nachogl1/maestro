@@ -59,7 +59,7 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(180);
 /// day's meetings are extra tool calls, each a network round trip.
 const GRANOLA_RUN_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// `claude mcp get granola` checks only the Granola server (about 3 s
+/// `claude mcp get granola` checks only the Granola server (about 2 s
 /// measured); anything past this means "Granola off" for the run. Kept at
 /// 30 s: a cold CLI start plus a slow network can take well over the usual
 /// time, and the limit only ever ends a hung call.

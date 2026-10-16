@@ -270,7 +270,7 @@ Granola time) are folded in and linked in the Decision trace.
   missing server prints `No MCP server named "granola"` and exits 1. Changed
   from `claude mcp list` in the 2026-10-16 audit fixes: `list` health-checks
   every MCP server the user has (about 15 s, and it starts local ones such as
-  Playwright), while `get` checks only Granola (about 3 s).
+  Playwright), while `get` checks only Granola (about 2 s).
 - **One-time opt-in (privacy).** The first time Maestro finds Granola
   connected, the suggestions box asks: "Use your Granola meeting notes for
   suggestions? Notes are sent to Claude and not stored." The user answers Yes
