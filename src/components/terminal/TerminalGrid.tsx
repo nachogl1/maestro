@@ -82,7 +82,7 @@ import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
 import { ParkedShelf } from "./ParkedShelf";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
-import { createEmptySlot, occupiedSlotCount } from "./slots";
+import { createEmptySlot, occupiedSlotCount, sessionConfigDir } from "./slots";
 import {
   buildGridTree,
   collectSlotIds,
@@ -943,7 +943,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // Find the slot to get worktree path before removing
       const slot = slotsRef.current.find((s) => s.sessionId === sessionId);
       const worktreePath = slot?.worktreePath;
-      const workingDir = worktreePath || projectPath;
+      // The folder launch wrote config into (the repo folder in a multi-repo project).
+      const workingDir = sessionConfigDir(slot, projectPath);
 
       // If this is the last slot, return to idle landing view immediately —
       // UNLESS a queued/claimed launch is about to land in this grid (samurai

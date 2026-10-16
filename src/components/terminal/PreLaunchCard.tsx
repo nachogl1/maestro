@@ -81,6 +81,12 @@ export interface SessionSlot {
    */
   workingDirOverride?: string | null;
   /**
+   * The folder launch wrote this session's MCP, plugin and hooks config into.
+   * Close cleans that same folder: in a multi-repo project it is the repo
+   * folder, not the project folder. Unset until the session has launched.
+   */
+  configDir?: string | null;
+  /**
    * Samurai successor metadata (issue #55): forces skip-permissions on the
    * CLI command and registers the session under supervision right before the
    * CLI launches. Never set for manually created slots.

@@ -347,7 +347,9 @@ export function useSlotLaunch({
         // queries on startup, and xterm.js must be mounted to respond to them.
         setSlots((prev) =>
           prev.map((s) =>
-            s.id === slotId ? { ...s, sessionId, worktreePath, worktreeWarning } : s,
+            s.id === slotId
+              ? { ...s, sessionId, worktreePath, worktreeWarning, configDir: workingDirectory }
+              : s,
           ),
         );
         unownedSessionId = null;
