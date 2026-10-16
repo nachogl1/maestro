@@ -479,6 +479,16 @@ In a temporary file, deleted after a day (not backed up):
 - **Terminal-session record:** per terminal, project name, branch, opened-at
   and closed-at. Nothing typed in the terminal is stored.
 
+Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+when the temporary file cannot be read it is moved aside as
+`activity.json.damaged` for inspection. The next time the temporary file is
+read after that copy's last change is more than a day old, the copy is
+deleted, like the expired entries in the temporary file itself. Its age counts from the
+original file's last write, and a copy whose age cannot be read is deleted.
+So a copy of a file last saved more than a day ago is deleted almost at once,
+because everything in it has already expired; only a file damaged within a
+day of its last save can be inspected.
+
 Confirmed by the coordinator, flagged for the user (2026-10-15): each
 terminal record also stores the folder the shell ran in (for a multi-repo
 workspace, the selected repo), and `work-journal.json` gains a
