@@ -14,6 +14,7 @@ import {
 import { useState } from "react";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { CommentList } from "../shared/CommentList";
+import { DetailLoadError } from "../shared/DetailLoadError";
 import { MarkdownBody } from "../shared/MarkdownBody";
 import { type NormalizedCheck, normalizeCheck } from "./prChecks";
 
@@ -65,7 +66,7 @@ interface PullRequestDetailPanelProps {
 }
 
 export function PullRequestDetailPanel({ onClose }: PullRequestDetailPanelProps) {
-  const { selectedPR, isLoadingPRDetail } = useGitHubStore();
+  const { selectedPR, isLoadingPRDetail, prDetailError } = useGitHubStore();
 
   const [showAllChecks, setShowAllChecks] = useState(false);
 
@@ -78,7 +79,7 @@ export function PullRequestDetailPanel({ onClose }: PullRequestDetailPanelProps)
   }
 
   if (!selectedPR) {
-    return null;
+    return <DetailLoadError itemLabel="pull request" error={prDetailError} onClose={onClose} />;
   }
 
   const isMerged = selectedPR.state.toUpperCase() === "MERGED";
@@ -140,7 +141,9 @@ export function PullRequestDetailPanel({ onClose }: PullRequestDetailPanelProps)
 
         {/* Author and date */}
         <div className="mb-3 text-[10px] text-maestro-muted">
-          by {selectedPR.author.login} on {new Date(selectedPR.createdAt).toLocaleDateString()}
+          {/* A deleted GitHub account comes back with an empty login. */}
+          {selectedPR.author.login ? `by ${selectedPR.author.login} on` : "Opened on"}{" "}
+          {new Date(selectedPR.createdAt).toLocaleDateString()}
         </div>
 
         {/* Stats */}

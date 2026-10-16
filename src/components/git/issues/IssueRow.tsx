@@ -55,7 +55,7 @@ export function IssueRow({ issue, isSelected, onClick }: IssueRowProps) {
         </div>
         <div className="flex items-center gap-2 text-[10px] text-maestro-muted">
           <span className="font-mono">#{issue.number}</span>
-          <span>by {issue.author.login}</span>
+          {issue.author.login && <span>by {issue.author.login}</span>}
           {issue.labels.length > 0 && (
             <div className="flex items-center gap-1">
               {issue.labels.slice(0, 2).map((label) => (
