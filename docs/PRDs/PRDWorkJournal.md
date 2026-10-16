@@ -242,8 +242,8 @@ Granola time) are folded in and linked in the Decision trace.
   then `/mcp` (or `claude mcp login granola`). A headless run can never sign
   in itself. Maestro keeps no Granola secret and maintains as little as
   possible.
-- **Preflight.** Before a run, Maestro checks `claude mcp list` and uses the
-  Granola path only when the `granola` line says Connected. Any other status,
+- **Preflight.** Before a run, Maestro checks `claude mcp get granola` and uses
+  the Granola path only when its `Status:` line says Connected. Any other status,
   or no Granola tools in the run, means "Granola off": the normal run carries
   on and nothing is treated as an error.
 - **Tools allowed.** Only Granola's read tools, listed one by one
@@ -264,9 +264,13 @@ Granola time) are folded in and linked in the Decision trace.
   reused the sign-in with no prompt; `--tools ""` plus `--allowedTools` exposed
   only the two read tools; `get_meeting_transcript` was denied. Sign-in itself
   needs a real terminal; it fails with "stdin isn't a terminal" otherwise.
-- **Preflight output format (checked):** `claude mcp list` prints one line per
-  server: `<name>: <target> - ✔ Connected` or
-  `<name>: <target> - ! Needs authentication`.
+- **Preflight output format (checked):** `claude mcp get granola` prints the
+  server's fields, among them `Status: ✔ Connected` (or `Status: ! Needs
+  authentication`), `Type: http` and `URL: <url>`; the run uses that URL. A
+  missing server prints `No MCP server named "granola"` and exits 1. Changed
+  from `claude mcp list` in the 2026-10-16 audit fixes: `list` health-checks
+  every MCP server the user has (about 15 s, and it starts local ones such as
+  Playwright), while `get` checks only Granola (about 2 s).
 - **One-time opt-in (privacy).** The first time Maestro finds Granola
   connected, the suggestions box asks: "Use your Granola meeting notes for
   suggestions? Notes are sent to Claude and not stored." The user answers Yes
@@ -467,6 +471,16 @@ In a temporary file, deleted after a day (not backed up):
 - **Terminal-session record:** per terminal, project name, branch, opened-at
   and closed-at. Nothing typed in the terminal is stored.
 
+Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
+when the temporary file cannot be read it is moved aside as
+`activity.json.damaged` for inspection. The next time the temporary file is
+read after that copy's last change is more than a day old, the copy is
+deleted, like the expired entries in the temporary file itself. Its age counts from the
+original file's last write, and a copy whose age cannot be read is deleted.
+So a copy of a file last saved more than a day ago is deleted almost at once,
+because everything in it has already expired; only a file damaged within a
+day of its last save can be inspected.
+
 Confirmed by the coordinator, flagged for the user (2026-10-15): each
 terminal record also stores the folder the shell ran in (for a multi-repo
 workspace, the selected repo), and `work-journal.json` gains a
@@ -582,7 +596,7 @@ Every item that was once an assumption was confirmed by the user on
 - Candidate run tests: the headless command line (no built-in tools,
   `--no-session-persistence`, timeout, `--permission-mode dontAsk`, only the
   two Granola read tools when opted in, nothing Granola-related when not);
-  "Granola off" handling of a non-Connected `claude mcp list` line.
+  "Granola off" handling of a non-Connected `claude mcp get granola` status.
 - Hands-on Granola test: done on Windows on 2026-10-14 (passed; see the
   Granola connector section). macOS is a known, accepted gap. The build still
   checks that an expired sign-in degrades to "Granola off" rather than an
