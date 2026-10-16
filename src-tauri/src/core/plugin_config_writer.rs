@@ -13,7 +13,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use serde_json::{json, Value};
 
@@ -21,10 +22,26 @@ use super::config_recovery::read_json_or_recover;
 use super::mcp_config_writer::{atomic_write, dir_lock};
 use super::plugin_error::{PluginError, PluginResult};
 
+/// The original value of one `enabledPlugins` key before Maestro first wrote it
+/// (`None` = the key was absent).
+type OriginalEntries = HashMap<String, Option<Value>>;
+
+/// Per settings.local.json: every `enabledPlugins` key Maestro has written, with
+/// the value it had before Maestro's first write. Claude Code's own `/plugin`
+/// local scope stores the user's entries in the same map, so close restores
+/// exactly these keys and leaves every other entry alone (same goal as the hook
+/// writer's merge-only fix, issue #109). Kept in memory only: after an app
+/// restart there is no record, and close leaves `enabledPlugins` untouched
+/// rather than guess which keys are Maestro's.
+static WRITTEN_KEYS: LazyLock<Mutex<HashMap<PathBuf, OriginalEntries>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Merges `enabledPlugins` into an existing settings.local.json file.
 ///
-/// Preserves user-defined settings while replacing the `enabledPlugins` object.
-/// Also removes the legacy `plugins` array if present.
+/// Preserves user-defined settings and the user's own `enabledPlugins`
+/// entries: only Maestro's keys are set, and their prior values are recorded
+/// in [`WRITTEN_KEYS`] for close to restore. Also removes the legacy `plugins`
+/// array if present.
 fn merge_with_existing(
     settings_path: &Path,
     enabled_plugins: &HashMap<String, bool>,
@@ -46,13 +63,24 @@ fn merge_with_existing(
         obj.remove("plugins");
     }
 
-    // Build the enabledPlugins object
-    let plugins_obj: serde_json::Map<String, Value> = enabled_plugins
-        .iter()
-        .map(|(id, enabled)| (id.clone(), json!(*enabled)))
-        .collect();
-
-    config["enabledPlugins"] = Value::Object(plugins_obj);
+    // Merge Maestro's keys into the existing enabledPlugins object — never
+    // replace the whole map (that dropped the user's local-scope plugins).
+    if !config["enabledPlugins"].is_object() {
+        config["enabledPlugins"] = json!({});
+    }
+    let Some(plugins_obj) = config["enabledPlugins"].as_object_mut() else {
+        unreachable!("just made it an object");
+    };
+    let mut written = WRITTEN_KEYS.lock().unwrap_or_else(|e| e.into_inner());
+    let originals = written.entry(settings_path.to_path_buf()).or_default();
+    for (id, enabled) in enabled_plugins {
+        // Record only the first value seen: a later launch in the same
+        // directory must not mistake Maestro's own earlier value for the user's.
+        originals
+            .entry(id.clone())
+            .or_insert_with(|| plugins_obj.get(id).cloned());
+        plugins_obj.insert(id.clone(), json!(*enabled));
+    }
 
     Ok(config)
 }
@@ -114,8 +142,10 @@ pub async fn write_session_plugin_config(
 
 /// Removes session plugin config from the session's .claude/settings.local.json.
 ///
-/// Removes both `enabledPlugins` (current format) and legacy `plugins` array.
-/// Preserves other settings in the file. Deletes the file if it becomes empty.
+/// Restores only the `enabledPlugins` keys Maestro wrote (see [`WRITTEN_KEYS`])
+/// to their earlier values, and drops `enabledPlugins` only once it is empty.
+/// Also removes the legacy `plugins` array. Preserves other settings in the
+/// file. Deletes the file if it becomes empty.
 ///
 /// # Arguments
 ///
@@ -124,6 +154,11 @@ pub async fn remove_session_plugin_config(working_dir: &Path) -> PluginResult<()
     let claude_dir = working_dir.join(".claude");
     let settings_path = claude_dir.join("settings.local.json");
     if !settings_path.exists() {
+        // Nothing to restore into; drop the record so it cannot go stale.
+        WRITTEN_KEYS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&settings_path);
         return Ok(());
     }
 
@@ -137,11 +172,30 @@ pub async fn remove_session_plugin_config(working_dir: &Path) -> PluginResult<()
 
     let mut config: Value = serde_json::from_str(&content).map_err(PluginError::ParseSettings)?;
 
-    // Remove both enabledPlugins and legacy plugins array
+    // Restore Maestro's enabledPlugins keys and remove the legacy plugins array
+    let originals = WRITTEN_KEYS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&settings_path);
     if let Some(obj) = config.as_object_mut() {
-        let removed_enabled = obj.remove("enabledPlugins").is_some();
+        let mut restored_enabled = false;
+        if let (Some(originals), Some(plugins)) = (
+            originals,
+            obj.get_mut("enabledPlugins").and_then(Value::as_object_mut),
+        ) {
+            for (id, original) in originals {
+                match original {
+                    Some(value) => plugins.insert(id, value),
+                    None => plugins.remove(&id),
+                };
+            }
+            restored_enabled = true;
+            if plugins.is_empty() {
+                obj.remove("enabledPlugins");
+            }
+        }
         let removed_legacy = obj.remove("plugins").is_some();
-        if removed_enabled || removed_legacy {
+        if restored_enabled || removed_legacy {
             log::debug!("Removed plugin config from {:?}", settings_path);
         }
     }
@@ -267,25 +321,24 @@ mod tests {
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
 
-        // Write settings with enabledPlugins and other settings
-        let existing = json!({
-            "someOtherSetting": "value",
-            "enabledPlugins": {
-                "test-plugin@official": true
-            }
-        });
+        // Existing settings, then a Maestro launch writes its plugin key
+        let existing = json!({ "someOtherSetting": "value" });
         std::fs::write(
             claude_dir.join("settings.local.json"),
             serde_json::to_string(&existing).unwrap(),
         )
         .unwrap();
+        let plugins = HashMap::from([("test-plugin@official".to_string(), true)]);
+        write_session_plugin_config(dir.path(), &plugins)
+            .await
+            .unwrap();
 
         remove_session_plugin_config(dir.path()).await.unwrap();
 
         let content = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
 
-        // enabledPlugins should be removed
+        // enabledPlugins held only Maestro's key, so it is pruned
         assert!(config.get("enabledPlugins").is_none());
         // Other settings should be preserved
         assert_eq!(config["someOtherSetting"], "value");
@@ -297,7 +350,11 @@ mod tests {
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
 
-        // Write settings with both enabledPlugins and legacy plugins
+        // Maestro launch writes its key, then a legacy plugins array reappears
+        let plugins = HashMap::from([("test@official".to_string(), true)]);
+        write_session_plugin_config(dir.path(), &plugins)
+            .await
+            .unwrap();
         let existing = json!({
             "someOtherSetting": "value",
             "enabledPlugins": { "test@official": true },
@@ -325,10 +382,30 @@ mod tests {
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
 
-        // Write settings with only enabledPlugins
+        // A Maestro launch writes a file holding only its own plugin key
+        let plugins = HashMap::from([("test-plugin@official".to_string(), true)]);
+        write_session_plugin_config(dir.path(), &plugins)
+            .await
+            .unwrap();
+
+        remove_session_plugin_config(dir.path()).await.unwrap();
+
+        // File should be deleted since it would be empty
+        assert!(!claude_dir.join("settings.local.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_user_plugin_entries_survive_launch_and_close() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // The user's own local-scope entries (written by Claude's /plugin),
+        // one of which Maestro also manages for its session.
         let existing = json!({
             "enabledPlugins": {
-                "test-plugin@official": true
+                "user-only@market": true,
+                "shared@market": true
             }
         });
         std::fs::write(
@@ -337,10 +414,54 @@ mod tests {
         )
         .unwrap();
 
+        let plugins = HashMap::from([
+            ("shared@market".to_string(), false),
+            ("maestro-only@market".to_string(), true),
+        ]);
+        write_session_plugin_config(dir.path(), &plugins)
+            .await
+            .unwrap();
+        // A second launch in the same directory must not record Maestro's
+        // own value as the user's original.
+        write_session_plugin_config(dir.path(), &plugins)
+            .await
+            .unwrap();
+
+        let read = || -> Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        let during = read();
+        assert_eq!(during["enabledPlugins"]["user-only@market"], true);
+        assert_eq!(during["enabledPlugins"]["shared@market"], false);
+        assert_eq!(during["enabledPlugins"]["maestro-only@market"], true);
+
         remove_session_plugin_config(dir.path()).await.unwrap();
 
-        // File should be deleted since it would be empty
-        assert!(!claude_dir.join("settings.local.json").exists());
+        // Exactly the user's entries are back; Maestro's own key is gone.
+        assert_eq!(read(), existing);
+    }
+
+    #[tokio::test]
+    async fn test_remove_without_maestro_write_leaves_enabled_plugins() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let existing = json!({ "enabledPlugins": { "user@market": true } });
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            serde_json::to_string(&existing).unwrap(),
+        )
+        .unwrap();
+
+        remove_session_plugin_config(dir.path()).await.unwrap();
+
+        let content = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(config, existing);
     }
 
     #[tokio::test]
