@@ -224,7 +224,9 @@ Granola time) are folded in and linked in the Decision trace.
     A later run leaves out an item already sent for that date unless what it
     says changed. A conversation says its name or summary plus its last
     prompt, so new work in a later hour (a new last prompt) is sent again,
-    while more activity on the same last prompt is not. A terminal counts as
+    while more activity on the same last prompt is not (so a long agent run
+    on one prompt, such as a coordinator session, is suggested once per day).
+    A terminal counts as
     unchanged while its project and branch stay the same; its time span
     ("still open", "closed at") is not a change. Items are remembered only
     after their date's run succeeded, so a failed day sends them again on

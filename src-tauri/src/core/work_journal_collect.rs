@@ -640,7 +640,7 @@ where
 
 /// The cached AI name and summary when there is one; otherwise the session's
 /// own title or a prompt. Followed by the session's last prompt (capped like
-/// a candidate) when the label does not already say it: the label rarely
+/// a candidate) unless the label is that prompt itself: the label rarely
 /// changes as a conversation goes on (the cached summary only refreshes when
 /// History shows the row), so the last prompt is what tells a later window's
 /// new work apart from work already sent.
@@ -650,7 +650,7 @@ fn claude_text(session: &ClaudeSessionInfo, summary: Option<&SessionSummary>) ->
         .last_prompt
         .as_deref()
         .map(one_line)
-        .filter(|last| !last.is_empty() && !label.contains(last.as_str()));
+        .filter(|last| !last.is_empty() && label != format!("Claude conversation: {last}"));
     match last {
         Some(last) => {
             let last = cap_candidate_text(&last, CandidateSource::Claude).unwrap_or(last);
@@ -1281,6 +1281,14 @@ mod tests {
         assert_eq!(
             claude_text(&only_last, None),
             "Claude conversation: just this"
+        );
+        // A short prompt that merely appears inside the label still counts.
+        let mut short = session("s", 0, 0);
+        short.title = Some("Fix the login".into());
+        short.last_prompt = Some("Fix".into());
+        assert_eq!(
+            claude_text(&short, None),
+            "Claude conversation: Fix the login (last prompt: Fix)"
         );
         let mut long = session("s", 0, 0);
         long.last_prompt = Some("word ".repeat(100));
