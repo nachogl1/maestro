@@ -1911,6 +1911,7 @@ pub(crate) fn schedule_launch_inner(
             workflow,
         }),
         held: false,
+        deferred: false,
     };
     schedule.arm(entry.clone())?;
     log::info!(
@@ -3353,6 +3354,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
         let ExistingRun::Active { state, .. } =
@@ -4183,6 +4185,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
         // A terminal leftover session must NOT block cleanup.
@@ -4263,6 +4266,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -4446,6 +4450,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -5325,6 +5330,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -5629,6 +5635,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -5750,6 +5757,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
         // A WORKING orchestrator for this very run.
@@ -6082,6 +6090,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -6441,6 +6450,7 @@ mod tests {
                 reason: "park".to_string(),
                 launch: None,
                 held: false,
+                deferred: false,
             })
             .unwrap();
 
@@ -6685,6 +6695,7 @@ mod tests {
                     reason: "park".to_string(),
                     launch: None,
                     held: false,
+                    deferred: false,
                 })
                 .unwrap();
         }

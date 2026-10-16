@@ -2,6 +2,7 @@ import { CheckCircle, ExternalLink, Loader2, MessageSquare, X } from "lucide-rea
 import { useState } from "react";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { CommentList } from "../shared/CommentList";
+import { DetailLoadError } from "../shared/DetailLoadError";
 import { parseEmoji } from "../shared/emojiUtils";
 import { MarkdownBody } from "../shared/MarkdownBody";
 
@@ -11,7 +12,12 @@ interface DiscussionDetailPanelProps {
 }
 
 export function DiscussionDetailPanel({ repoPath, onClose }: DiscussionDetailPanelProps) {
-  const { selectedDiscussion, isLoadingDiscussionDetail, commentDiscussion } = useGitHubStore();
+  const {
+    selectedDiscussion,
+    isLoadingDiscussionDetail,
+    discussionDetailError,
+    commentDiscussion,
+  } = useGitHubStore();
 
   const [commentText, setCommentText] = useState("");
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
@@ -25,7 +31,9 @@ export function DiscussionDetailPanel({ repoPath, onClose }: DiscussionDetailPan
   }
 
   if (!selectedDiscussion) {
-    return null;
+    return (
+      <DetailLoadError itemLabel="discussion" error={discussionDetailError} onClose={onClose} />
+    );
   }
 
   const isAnswered = Boolean(selectedDiscussion.answerChosenAt);
@@ -78,7 +86,9 @@ export function DiscussionDetailPanel({ repoPath, onClose }: DiscussionDetailPan
             {selectedDiscussion.category.name}
           </span>
           <span>
-            by {selectedDiscussion.author.login} on{" "}
+            {selectedDiscussion.author.login
+              ? `by ${selectedDiscussion.author.login} on`
+              : "Opened on"}{" "}
             {new Date(selectedDiscussion.createdAt).toLocaleDateString()}
           </span>
         </div>

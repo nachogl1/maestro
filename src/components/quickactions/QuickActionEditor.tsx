@@ -31,8 +31,8 @@ export function QuickActionEditor({ action, onSave, onClose }: QuickActionEditor
   // Validation
   const isValid = name.trim().length > 0 && prompt.trim().length > 0;
 
-  // Close on outside click or Escape
-  useDismissable(onClose, { ref: modalRef });
+  // Close on Escape only: an outside click must not throw away unsaved edits.
+  useDismissable(onClose);
 
   const handleSave = () => {
     if (!isValid) return;

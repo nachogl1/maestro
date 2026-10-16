@@ -47,7 +47,8 @@ interface TopBarProps {
   /** Whether a project is open and active — the plus button shows whenever
    *  there is a project to add a terminal to, idle or not. */
   hasActiveProject?: boolean;
-  /** Number of session slots in the active project */
+  /** Slots in the active project that count against maxSessions (parked samurai
+   *  terminal-state tiles excluded, as in TerminalGrid's addSession) */
   slotCount?: number;
   /** Maximum number of sessions allowed */
   maxSessions?: number;

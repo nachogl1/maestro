@@ -3,7 +3,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo } from "react";
 import { WorkJournalDayList } from "@/components/workjournal/WorkJournalDayList";
 import { WorkJournalPanel } from "@/components/workjournal/WorkJournalPanel";
-import { followWorkJournalRunState } from "@/lib/workJournalWindow";
+import { answerWorkJournalQuitFlush, followWorkJournalRunState } from "@/lib/workJournalWindow";
 import {
   pendingCountsByDate,
   useWorkJournalCandidatesStore,
@@ -57,9 +57,15 @@ export function WorkJournalWindow() {
       console.error("Failed to follow the Work Journal run state:", err);
       return () => {};
     });
-    // Typing still waiting for the save debounce is sent before the window goes.
-    // Text that still could not be saved lives only in this window, so the
-    // close is held (the unsaved notice stays up) unless the user lets it go.
+    // Quitting from the main window closes this window without the close
+    // request below, so the backend asks for the same save first.
+    const stopQuitFlush = answerWorkJournalQuitFlush().catch((err) => {
+      console.error("Failed to follow Maestro quitting:", err);
+      return () => {};
+    });
+    // Typing (and a page title being edited) still waiting to be saved is sent
+    // before the window goes. Text that still could not be saved lives only in
+    // this window, so the close is held (the unsaved notice stays up) unless the user lets it go.
     const stopClose = getCurrentWindow()
       .onCloseRequested(async (event) => {
         await flushWorkJournalSaves();
@@ -86,6 +92,7 @@ export function WorkJournalWindow() {
     return () => {
       void stopCandidates.then((stop) => stop());
       void stopRunState.then((stop) => stop());
+      void stopQuitFlush.then((stop) => stop());
       void stopClose.then((stop) => stop());
     };
   }, []);

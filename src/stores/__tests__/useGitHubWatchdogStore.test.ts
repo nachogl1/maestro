@@ -157,6 +157,14 @@ describe("watchedProjectsFromTabs", () => {
     ]);
   });
 
+  it("dedupes the same repo open under a \\\\?\\ spelling (first wins)", () => {
+    const projects = watchedProjectsFromTabs([
+      { name: "proj", projectPath: "C:\\git\\proj", selectedRepoPath: null },
+      { name: "proj-cli", projectPath: "\\\\?\\C:\\git\\proj", selectedRepoPath: null },
+    ]);
+    expect(projects).toEqual([{ name: "proj", repoPath: "C:\\git\\proj" }]);
+  });
+
   it("prefers the selected repo path over the project path", () => {
     const projects = watchedProjectsFromTabs([
       { name: "ws", projectPath: "C:/git/workspace", selectedRepoPath: "C:/git/workspace/repo" },

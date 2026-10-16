@@ -11,6 +11,15 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-16",
     title: "Settings dialogs on top, update toast on re-check, typed context alert level",
     items: [
+      "MCP server editor: saving a server whose arguments contain spaces (such as a folder path) keeps each argument whole instead of splitting it.",
+      "Plugins you turn on yourself for a project are no longer overwritten or removed when Maestro opens or closes a terminal there.",
+      "The CLAUDE.md, MCP server, quick action and Git settings editors no longer close and lose your edits when you click outside them (use Cancel or Escape), and saving a config file can no longer leave it half-written.",
+      "Pull requests and Issues: the All chip now includes closed and merged items. A failed detail load shows the error with a Back button, Sync says when fetching fails, detached worktrees stay in the Status list, local-only branches no longer claim to be pushed, and your GitHub name shows with newer gh versions.",
+      "Stop All removes the stopped terminals from the project tab, so closing it no longer warns about terminals that are gone. Opening a folder from the command line reuses its open tab instead of adding a duplicate.",
+      "Samurai: losing GitHub login, a resume timer that could not be saved and a restart interruption now raise a notice right away; a postponed resume no longer re-announces the park every few minutes; a second allowance warning no longer repeats for runs already flagged.",
+      "When Claude compacts a long conversation the terminal no longer flashes Idle or loses its activity feed, and two terminals resuming the same conversation both show its history.",
+      "Unnamed terminals now carry one name everywhere (Terminal and its number). Dropped or attached file paths are quoted correctly in Windows terminals. A terminal that timed out turns its project tab dot red, and the + button no longer counts finished parked Samurai runs.",
+      "Smaller fixes: Settings says the CLI command is not available on Windows and installing it elsewhere no longer freezes the window; Shortcuts lists the move-project-tab keys; the font-zoom menu shows Ctrl+0 on Windows; the last workflow step's Delete is greyed out; plugin install errors show in the dialog; marketplace sources show a real last-updated time and offline errors; label clicks on a second new-terminal card work; a failed launch no longer leaves a hidden terminal running; Claude usage waits as long as the server asks after a rate limit.",
       "Eagle view: resize any terminal on its own by dragging one of its edges — only that terminal changes, as far as the free space around it allows. Drag a terminal onto empty space to move it there, or onto another terminal to swap the two. The column picker and the tile-size button are gone; the Sort terminals by project button (now with a tooltip) puts the grid back to the automatic layout.",
       "Maestro Settings and the other settings dialogs (Terminal, CLI, Shortcuts, Changelog) now sit above the terminals and the project tab bar instead of being crossed by them.",
       "Checking for updates from Maestro Settings shows the update toast at the bottom right again, even for a version you dismissed earlier.",
@@ -24,6 +33,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: the Granola check before meeting suggestions is much faster and no longer starts your other MCP servers.",
       "Work Journal: deleting a page in one window now shows a short notice in the other window instead of a raw error, and no longer shows that page as unsaved.",
       "Work Journal: Settings now refuses a model name that cannot work as soon as you enter it, instead of the suggestions or report run failing hours later.",
+      "Work Journal: quitting Maestro now saves what you just typed in the pane or the pop-out, including a page title still being edited, and closing the pop-out saves that title too.",
     ],
   },
   {

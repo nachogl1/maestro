@@ -27,6 +27,17 @@ export function occupiedSlotCount(slots: SessionSlot[]): number {
   }).length;
 }
 
+/**
+ * The folder whose session config (MCP, plugins, hooks) a closing terminal
+ * must clean: the one launch wrote into, else its worktree, else the project.
+ */
+export function sessionConfigDir(
+  slot: Pick<SessionSlot, "configDir" | "worktreePath"> | undefined,
+  projectPath: string | undefined,
+): string | undefined {
+  return slot?.configDir || slot?.worktreePath || projectPath;
+}
+
 /** Generates a unique ID for a new session slot. */
 function generateSlotId(): string {
   return `slot-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;

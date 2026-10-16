@@ -374,6 +374,7 @@ describe("useGitStore", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("git_fetch_all", { repoPath: "/repo" });
     expect(useGitStore.getState().isFetching).toBe(false);
+    expect(useGitStore.getState().error).toBe("offline");
   });
 
   it("setDefaultBranch writes then re-reads the default branch", async () => {

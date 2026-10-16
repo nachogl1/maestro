@@ -3,16 +3,12 @@ import { useCallback, useMemo } from "react";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
 import { injectIntoAll } from "@/lib/injector";
 import { projectColorFor } from "@/lib/projectColor";
+import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useInjectorStore } from "@/stores/useInjectorStore";
 import { type SessionConfig, useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { badgeBaseClass, cardClass, SESSION_STATUS_BADGES, SectionHeader } from "./sectionChrome";
-
-/** Display name of a terminal row: its agent/session name, else "Terminal N". */
-export function sessionDisplayName(session: SessionConfig): string {
-  return session.name?.trim() || `Terminal ${session.id}`;
-}
 
 /**
  * Injector tab: tick any of the terminals Maestro is running (across every

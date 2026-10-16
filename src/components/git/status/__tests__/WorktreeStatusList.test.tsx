@@ -333,3 +333,28 @@ describe("WorktreeStatusList search and filters", () => {
     expect(screen.getByText("feature/beta")).toBeInTheDocument();
   });
 });
+
+describe("WorktreeStatusList clean worktree message", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it("does not claim 'fully pushed' for a branch with no upstream", async () => {
+    mockInvoke([[buildStatus({ upstream: null, unstaged: [], untracked: [] })]]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    expect(
+      await screen.findByText("Working tree clean. No upstream — pushed state unknown."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/fully pushed/)).not.toBeInTheDocument();
+  });
+
+  it("says 'fully pushed' when an upstream exists and nothing is ahead", async () => {
+    mockInvoke([[buildStatus({ upstream: "origin/main", unstaged: [], untracked: [] })]]);
+    render(<WorktreeStatusList repoPath="/repo/main" />);
+
+    expect(
+      await screen.findByText("Working tree clean. Branch is fully pushed."),
+    ).toBeInTheDocument();
+  });
+});

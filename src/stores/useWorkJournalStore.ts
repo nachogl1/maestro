@@ -457,7 +457,7 @@ function allSavesSettled(): Promise<void> {
   return Promise.all([...saveChains.values()]).then(() => undefined);
 }
 
-/** Each open editor's "send my unsaved text now" function. */
+/** Each open editor's (and page title field's) "send my unsaved text now" function. */
 const editorFlushes = new Set<() => void>();
 
 /**

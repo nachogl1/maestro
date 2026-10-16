@@ -547,6 +547,17 @@ struct RepoOwner {
     login: String,
 }
 
+/// Extracts the username from `gh auth status` output. gh >= 2.40 prints
+/// "Logged in to github.com account <user> (keyring)"; older versions print
+/// "Logged in to github.com as <user> (oauth_token)". The first "Logged in to"
+/// line wins.
+fn parse_auth_username(output: &str) -> Option<String> {
+    let line = output.lines().find(|line| line.contains("Logged in to"))?;
+    let mut tokens = line.split_whitespace();
+    tokens.find(|t| *t == "account" || *t == "as")?;
+    tokens.next().map(str::to_string)
+}
+
 /// GitHub operations using the `gh` CLI.
 impl GitHub {
     /// Fetches the owner and name of the current repository via `gh repo view`.
@@ -566,11 +577,7 @@ impl GitHub {
                 let stderr = output.stderr;
                 let combined = format!("{}\n{}", stdout, stderr);
 
-                let username = combined
-                    .lines()
-                    .find(|line| line.contains("Logged in to"))
-                    .and_then(|line| line.split("as ").nth(1))
-                    .map(|s| s.trim().trim_end_matches([')', ' ']).to_string());
+                let username = parse_auth_username(&combined);
 
                 Ok(AuthStatus {
                     logged_in: true,
@@ -1507,6 +1514,25 @@ mod tests {
         assert!(q.contains("i1: issue(number: 210)"));
         assert!(q.contains("blockedBy(first: 50)"));
         assert!(q.contains("subIssues(first: 50)"));
+    }
+
+    #[test]
+    fn parse_auth_username_reads_modern_account_form() {
+        let out = "github.com\n  \u{2713} Logged in to github.com account someuser (keyring)\n  \
+                   - Active account: true\n";
+        assert_eq!(parse_auth_username(out).as_deref(), Some("someuser"));
+    }
+
+    #[test]
+    fn parse_auth_username_reads_legacy_as_form() {
+        let out = "github.com\n  \u{2713} Logged in to github.com as octocat (oauth_token)\n";
+        assert_eq!(parse_auth_username(out).as_deref(), Some("octocat"));
+    }
+
+    #[test]
+    fn parse_auth_username_none_without_login_line() {
+        let out = "You are not logged into any GitHub hosts.";
+        assert_eq!(parse_auth_username(out), None);
     }
 
     #[test]
