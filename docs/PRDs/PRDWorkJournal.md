@@ -215,6 +215,19 @@ Granola time) are folded in and linked in the Decision trace.
     the day and where its uncovered activity starts), so later runs ask about
     that day alone. After three failed tries the day is given up and the run
     reports "Could not get suggestions for 14 Oct after 3 tries".
+  - **Each activity is sent once:** decided during the 2026-10-16 audit
+    fixes, flagged for the user to confirm: a conversation or terminal that
+    spans several runs is listed in each, and the model only rewords it, so
+    the temporary file remembers which activity was already sent for a date
+    (its source, its identity such as the session id, and a short hash of
+    what it says; never its text), kept for a day like the rest of the file.
+    A later run leaves out an item already sent for that date unless what it
+    says changed (a conversation with a new summary). A terminal counts as
+    unchanged while its project and branch stay the same; its time span
+    ("still open", "closed at") is not a change. Items are remembered only
+    after their date's run succeeded, so a failed day sends them again on
+    its retry. A date with nothing new left is not asked at all, unless
+    Granola is on (its meetings are still asked about).
   - **Headless run:** the run reuses the History-summary pattern, a headless
     `claude -p` with no built-in tools, no saved session
     (`--no-session-persistence`), a temp-dir working directory and a timeout
@@ -524,6 +537,10 @@ In a temporary file, deleted after a day (not backed up):
   Kept for same-day duplicate removal. Never holds Granola note excerpts.
 - **Terminal-session record:** per terminal, project name, branch, opened-at
   and closed-at. Nothing typed in the terminal is stored.
+- **Sent activity (2026-10-16):** per activity item already sent to a
+  successful candidate run, its date, source, identity and a short hash of
+  what it said, plus when it was sent (see Candidates, "Each activity is sent
+  once"). No activity text is stored.
 
 Decided during the 2026-10-16 audit fixes, flagged for the user to confirm:
 when the temporary file cannot be read it is moved aside as

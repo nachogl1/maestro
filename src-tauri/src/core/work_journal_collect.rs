@@ -79,6 +79,11 @@ pub struct ActivityItem {
     /// or issue event (`opened`, `merged`, `closed`, `updated`), or the
     /// terminal record id.
     pub key: String,
+    /// What the item says about the work without its window-dependent part:
+    /// `text`, except a terminal's place without its time span (which reads
+    /// differently in every window it is open in). A candidate run sends an
+    /// item again only when this changed.
+    pub content: String,
 }
 
 /// Where the collection reads each source from. The app uses
@@ -306,6 +311,7 @@ where
                 source,
                 date: local.format("%Y-%m-%d").to_string(),
                 time: local.format("%H:%M").to_string(),
+                content: text.clone(),
                 text,
                 project: project.to_string(),
                 key,
@@ -887,13 +893,15 @@ where
         ),
         (true, None) => format!("since {}, still open", window.day_clock(opened)),
     };
-    Some(window.item(
+    let mut found = window.item(
         CandidateSource::Terminal,
         opened.max(window.start),
         record.id.clone(),
         format!("Terminal in {place} {span}"),
         &record.project_name,
-    ))
+    );
+    found.item.content = format!("Terminal in {place}");
+    Some(found)
 }
 
 #[cfg(test)]
@@ -1503,6 +1511,22 @@ mod tests {
             vec![("2026-10-15", "11:00"), ("2026-10-15", "11:30")]
         );
         assert_eq!(items[0].key, "earlier");
+    }
+
+    #[test]
+    fn an_open_terminal_says_the_same_in_every_window_it_spans() {
+        let record = terminal("open", 30, None);
+        let first = terminal_item(&record, &window(start(), end()))
+            .unwrap()
+            .item;
+        let second = terminal_item(&record, &window(end(), end() + Duration::hours(1)))
+            .unwrap()
+            .item;
+        // The span reads differently per window; what it says does not.
+        assert_ne!(first.text, second.text);
+        assert_eq!(first.content, "Terminal in proj on main");
+        assert_eq!(first.content, second.content);
+        assert_eq!(first.key, second.key);
     }
 
     #[tokio::test]
