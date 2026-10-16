@@ -1,5 +1,6 @@
 import { AlertTriangle, RotateCcw, Terminal, X } from "lucide-react";
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
 import { AI_CLI_CONFIG, buildCliCommand, type CliAiMode } from "@/lib/terminal";
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
@@ -52,8 +53,8 @@ export function CliSettingsModal({ onClose }: CliSettingsModalProps) {
   const currentFlags = flags[activeMode];
   const previewCommand = buildCliCommand(activeMode, currentFlags);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
         ref={modalRef}
         className="w-full max-w-lg rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
@@ -195,6 +196,7 @@ export function CliSettingsModal({ onClose }: CliSettingsModalProps) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

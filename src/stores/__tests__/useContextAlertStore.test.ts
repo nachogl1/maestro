@@ -13,9 +13,11 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import {
-  CONTEXT_ALERT_THRESHOLDS,
   DEFAULT_CONTEXT_ALERT_THRESHOLD,
   isContextAlert,
+  MAX_CONTEXT_ALERT_THRESHOLD,
+  MIN_CONTEXT_ALERT_THRESHOLD,
+  parseContextAlertThreshold,
   useContextAlertStore,
 } from "../useContextAlertStore";
 
@@ -40,9 +42,10 @@ describe("useContextAlertStore", () => {
     useContextAlertStore.setState({ threshold: DEFAULT_CONTEXT_ALERT_THRESHOLD });
   });
 
-  it("defaults to a threshold that is one of the selectable options", () => {
+  it("defaults to a threshold within the allowed range", () => {
     expect(useContextAlertStore.getState().threshold).toBe(DEFAULT_CONTEXT_ALERT_THRESHOLD);
-    expect(CONTEXT_ALERT_THRESHOLDS).toContain(DEFAULT_CONTEXT_ALERT_THRESHOLD);
+    expect(DEFAULT_CONTEXT_ALERT_THRESHOLD).toBeGreaterThanOrEqual(MIN_CONTEXT_ALERT_THRESHOLD);
+    expect(DEFAULT_CONTEXT_ALERT_THRESHOLD).toBeLessThanOrEqual(MAX_CONTEXT_ALERT_THRESHOLD);
   });
 
   it("stores a new threshold and can be switched off", () => {
@@ -50,5 +53,27 @@ describe("useContextAlertStore", () => {
     expect(useContextAlertStore.getState().threshold).toBe(90);
     useContextAlertStore.getState().setThreshold(null);
     expect(useContextAlertStore.getState().threshold).toBeNull();
+  });
+});
+
+describe("parseContextAlertThreshold", () => {
+  it("accepts whole percents inside the range", () => {
+    expect(parseContextAlertThreshold("65")).toBe(65);
+    expect(parseContextAlertThreshold(" 1 ")).toBe(1);
+    expect(parseContextAlertThreshold("100")).toBe(100);
+  });
+
+  it("clamps to the range and rounds decimals", () => {
+    expect(parseContextAlertThreshold("0")).toBe(MIN_CONTEXT_ALERT_THRESHOLD);
+    expect(parseContextAlertThreshold("-5")).toBe(MIN_CONTEXT_ALERT_THRESHOLD);
+    expect(parseContextAlertThreshold("250")).toBe(MAX_CONTEXT_ALERT_THRESHOLD);
+    expect(parseContextAlertThreshold("72.6")).toBe(73);
+  });
+
+  it("rejects empty or non-numeric text", () => {
+    expect(parseContextAlertThreshold("")).toBeNull();
+    expect(parseContextAlertThreshold("   ")).toBeNull();
+    expect(parseContextAlertThreshold("abc")).toBeNull();
+    expect(parseContextAlertThreshold("Infinity")).toBeNull();
   });
 });

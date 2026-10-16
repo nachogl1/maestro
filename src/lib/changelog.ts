@@ -8,6 +8,15 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-16",
+    title: "Settings dialogs on top, update toast on re-check, typed context alert level",
+    items: [
+      "Maestro Settings and the other settings dialogs (Terminal, CLI, Shortcuts, Changelog) now sit above the terminals and the project tab bar instead of being crossed by them.",
+      "Checking for updates from Maestro Settings shows the update toast at the bottom right again, even for a version you dismissed earlier.",
+      "Context alert: the level at which a Claude terminal blinks red is now a number you type (1-100%) with a switch to turn the alert off, instead of a fixed list.",
+    ],
+  },
+  {
     date: "2026-10-15",
     title: "Move terminals anywhere, Maestro updates itself, Work Journal pane, Injector",
     items: [

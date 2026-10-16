@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { useRef } from "react";
+import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
 import { CHANGELOG } from "@/lib/changelog";
 
@@ -13,8 +14,8 @@ export function ChangelogModal({ onClose }: ChangelogModalProps) {
   // Close on outside click or Escape
   useDismissable(onClose, { ref: modalRef });
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
         ref={modalRef}
         className="w-full max-w-lg max-h-[80vh] overflow-hidden rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl flex flex-col"
@@ -49,6 +50,7 @@ export function ChangelogModal({ onClose }: ChangelogModalProps) {
           ))}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

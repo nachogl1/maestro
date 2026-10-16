@@ -56,7 +56,11 @@ type UpdateState = UpdateSettings & {
 
 /** Store actions. */
 type UpdateActions = {
-  checkForUpdates: () => Promise<void>;
+  /**
+   * Look for a newer version. A `manual` check (the Settings "check now" button)
+   * shows the update toast again even for a version the user dismissed earlier.
+   */
+  checkForUpdates: (options?: { manual?: boolean }) => Promise<void>;
   downloadAndInstall: () => Promise<void>;
   dismissUpdate: () => void;
   setAutoCheckEnabled: (enabled: boolean) => void;
@@ -117,11 +121,11 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
       error: null,
       lastCheckedAt: null,
 
-      checkForUpdates: async () => {
+      checkForUpdates: async ({ manual = false } = {}) => {
         const { status, customEndpoint } = get();
         if (status === "checking" || status === "downloading" || status === "installing") return;
 
-        set({ status: "checking", error: null });
+        set({ status: "checking", error: null, ...(manual ? { dismissedVersion: null } : {}) });
         try {
           const info = await invoke<UpdateInfo>("check_for_updates", {
             customEndpoint: customEndpoint || null,

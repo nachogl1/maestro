@@ -8,8 +8,23 @@ import { createJSONStorage, persist, type StateStorage } from "zustand/middlewar
  * in globals.css). Picked in the sidebar Settings tab (ContextAlertSection).
  */
 
-/** Selectable thresholds, in percent of the model's context window. */
-export const CONTEXT_ALERT_THRESHOLDS: readonly number[] = [50, 60, 70, 75, 80, 85, 90, 95];
+/** Lowest and highest percent the alert can be set to. */
+export const MIN_CONTEXT_ALERT_THRESHOLD = 1;
+export const MAX_CONTEXT_ALERT_THRESHOLD = 100;
+
+/**
+ * Parses what the user typed into a whole percent within range (values outside
+ * it are clamped), or null when the text is not a usable number.
+ */
+export function parseContextAlertThreshold(raw: string): number | null {
+  const text = raw.trim();
+  const value = Number(text);
+  if (text === "" || !Number.isFinite(value)) return null;
+  return Math.min(
+    MAX_CONTEXT_ALERT_THRESHOLD,
+    Math.max(MIN_CONTEXT_ALERT_THRESHOLD, Math.round(value)),
+  );
+}
 
 /** Threshold used until the user picks one. */
 export const DEFAULT_CONTEXT_ALERT_THRESHOLD = 80;
