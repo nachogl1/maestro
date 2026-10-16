@@ -18,7 +18,7 @@ Written per session into `.claude/settings.local.json` by
 
 | Hook | Route | Wire status | Meaning |
 | --- | --- | --- | --- |
-| `SessionStart` | `/hook/session-start` | `Idle` | CLI (re)started and sits at its prompt. It is *not* working yet. |
+| `SessionStart` | `/hook/session-start` | `Idle` | CLI (re)started and sits at its prompt. It is *not* working yet. A start with `source: compact` (Claude compacting mid-turn) emits nothing. |
 | `UserPromptSubmit` | `/hook/user-prompt` | `Working` | A prompt was submitted (typed by the human or injected by Maestro). Authoritative turn start. |
 | `PreToolUse` (any tool) | `/hook/pre-tool` | `Working` ("Running {tool}") | The agent is executing a tool. **Window rule (issue #109):** within 2s of a `Notification` for the same session the `Working` is suppressed — PreToolUse is async fire-and-forget, so a gated tool's `Working` can land *after* the permission prompt's `NeedsInput`; a later PreToolUse (fresh tool start after approval) repaints normally. |
 | `PreToolUse` (`AskUserQuestion`) | `/hook/pre-tool` | `NeedsInput` | The agent opened an interactive question dialog mid-turn. Never suppressed by the window rule. |
