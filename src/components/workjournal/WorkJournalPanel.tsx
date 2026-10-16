@@ -93,9 +93,6 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
   const endReplace = useWorkJournalStore((s) => s.endReplace);
 
   const page = viewedDate ? (pages[viewedDate] ?? null) : null;
-  const dates = Object.keys(pages);
-  const hasPrev = viewedDate !== null && dates.some((d) => d < viewedDate);
-  const hasNext = viewedDate !== null && dates.some((d) => d > viewedDate);
 
   // The local date the day pages were last ensured for.
   const knownDateRef = useRef<string | null>(null);
@@ -277,7 +274,6 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         <button
           type="button"
           onClick={goPrev}
-          disabled={!hasPrev}
           className={ICON_BUTTON}
           aria-label="Previous day"
           title="Previous day"
@@ -298,7 +294,6 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         <button
           type="button"
           onClick={goNext}
-          disabled={!hasNext}
           className={ICON_BUTTON}
           aria-label="Next day"
           title="Next day"

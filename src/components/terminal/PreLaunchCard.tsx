@@ -536,10 +536,10 @@ export function PreLaunchCard({
             >
               Window Name <span className="text-maestro-muted/60">(optional)</span>
             </label>
-            {/* Tab order: name → working-directory dropdown (git repos only) →
-                Launch, so the whole row is reachable from the keyboard and
-                Enter on the button launches. */}
-            <div className="flex gap-2">
+            {/* Stacked, one per line: name, then working-directory dropdown
+                (git repos only), then Launch — Tab walks down them in that
+                order and Enter on the button launches. */}
+            <div className="flex flex-col gap-2">
               <input
                 id={`session-name-${slot.id}`}
                 type="text"
@@ -547,7 +547,7 @@ export function PreLaunchCard({
                 onChange={(e) => onCustomNameChange(e.target.value)}
                 placeholder="e.g. backend bugfix"
                 maxLength={60}
-                className="min-w-0 flex-1 rounded border border-maestro-border bg-maestro-card px-3 py-2 text-sm text-maestro-text outline-none transition-colors placeholder:text-maestro-muted/50 hover:border-maestro-accent/50 focus:border-maestro-accent"
+                className="w-full rounded border border-maestro-border bg-maestro-card px-3 py-2 text-sm text-maestro-text outline-none transition-colors placeholder:text-maestro-muted/50 hover:border-maestro-accent/50 focus:border-maestro-accent"
               />
               {isGitRepo && (
                 <select
@@ -559,7 +559,7 @@ export function PreLaunchCard({
                   }
                   value={slot.worktreeMode}
                   onChange={(e) => onWorktreeModeChange(e.target.value as WorktreeMode)}
-                  className="shrink-0 rounded border border-maestro-border bg-maestro-card px-2 py-2 text-sm text-maestro-text outline-none transition-colors hover:border-maestro-accent/50 focus:border-maestro-accent"
+                  className="w-full rounded border border-maestro-border bg-maestro-card px-2 py-2 text-sm text-maestro-text outline-none transition-colors hover:border-maestro-accent/50 focus:border-maestro-accent"
                 >
                   {WORKTREE_MODE_OPTIONS.map((option) => (
                     <option
@@ -577,7 +577,7 @@ export function PreLaunchCard({
                 onClick={onLaunch}
                 aria-label={slot.resumeSessionId ? "Resume Session" : "Launch Session"}
                 title={slot.resumeSessionId ? "Resume Session" : "Launch Session"}
-                className="flex shrink-0 items-center justify-center gap-1.5 rounded bg-maestro-accent px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-maestro-accent/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-maestro-accent"
+                className="flex w-full items-center justify-center gap-1.5 rounded bg-maestro-accent px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-maestro-accent/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-maestro-accent"
               >
                 <Play size={14} fill="currentColor" />
                 {slot.resumeSessionId ? "Resume" : "Launch"}

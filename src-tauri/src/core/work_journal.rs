@@ -803,16 +803,17 @@ fn current_journal(path: &Path) -> WorkJournalResult<CurrentJournal> {
 /// file. A Granola choice not yet made here stays unasked, and the report
 /// folder, model and schedule never change by restoring.
 ///
-/// Two times are then cleared: the last backup time, so the automatic backup
-/// leaves the backup folder alone until "Back up now", and the last candidate
-/// run time, so an old value never replays days of suggestions. The dates
-/// waiting for a retry and the last run attempt time go with it.
+/// The candidate run state (last run time, last attempt time and the dates
+/// waiting for a retry) is this machine's own too, so it is kept: the next
+/// run continues from where it left off instead of suggesting the whole day
+/// again (lines a restore removed included). The file's run state is never
+/// taken, so an old value from it cannot replay days of suggestions.
+///
+/// Only the last backup time is cleared, so the automatic backup leaves the
+/// backup folder alone until "Back up now".
 fn keep_local_settings(journal: &mut WorkJournal, local_settings: WorkJournalSettings) {
     journal.settings = local_settings;
     journal.settings.last_backup_at = None;
-    journal.settings.last_run_at = None;
-    journal.settings.last_attempt_at = None;
-    journal.settings.retry_dates.clear();
 }
 
 /// "Restore from backup": replaces the whole journal at `path` with the
@@ -2516,20 +2517,41 @@ mod tests {
         with_run["settings"]["last_run_at"] = json!("2026-09-01T09:00:00Z");
         let backup = with_run.to_string();
         std::fs::write(backup_path(&folder), &backup).unwrap();
-        let old_bytes = local_journal(&path, &folder);
+        local_journal(&path, &folder);
+        // This machine's own candidate run state.
+        modify(&path, |j| {
+            j.settings.last_run_at = Some("2026-10-15T10:00:00Z".into());
+            j.settings.last_attempt_at = Some("2026-10-15T09:59:00Z".into());
+            j.settings.retry_dates.insert(
+                "2026-10-14".into(),
+                CandidateRetry {
+                    since: "2026-10-13T22:00:00Z".into(),
+                    failures: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+        let old_bytes = std::fs::read(&path).unwrap();
         let old = parse_journal(std::str::from_utf8(&old_bytes).unwrap()).unwrap();
 
         let saved = restore_from(&path, &backup_path(&folder)).unwrap();
 
         let mut expected = parse_journal(&backup).unwrap();
-        expected.settings = old.settings;
+        expected.settings = old.settings.clone();
         expected.settings.last_backup_at = None;
-        expected.settings.last_run_at = None;
         // A restored page always gets a new rev (see `bump_revs_past`).
         expected.pages = with_revs_of(expected.pages, &saved);
         expected.next_rev = saved.next_rev;
         assert_eq!(saved, expected);
-        assert!(saved.settings.last_run_at.is_none());
+        assert_eq!(
+            saved.settings.last_run_at.as_deref(),
+            Some("2026-10-15T10:00:00Z"),
+            "the local last run is kept and the backup's is not taken"
+        );
+        assert_eq!(saved.settings.last_attempt_at, old.settings.last_attempt_at);
+        assert_eq!(saved.settings.retry_dates, old.settings.retry_dates);
+        assert!(saved.settings.last_backup_at.is_none());
         assert_eq!(
             load(&path).unwrap(),
             expected,
@@ -2642,14 +2664,20 @@ mod tests {
 
         let mut expected = old;
         expected.settings.last_backup_at = None;
-        expected.settings.last_run_at = None;
-        expected.settings.last_attempt_at = None;
-        expected.settings.retry_dates.clear();
         expected.pages = with_revs_of(expected.pages, &saved);
         expected.next_rev = saved.next_rev;
         assert_eq!(saved, expected);
-        assert!(saved.settings.last_run_at.is_none());
-        assert!(saved.settings.last_attempt_at.is_none());
+        // This machine's candidate run state survives the restore and the undo.
+        assert_eq!(
+            saved.settings.last_run_at.as_deref(),
+            Some("2026-10-15T10:00:00Z")
+        );
+        assert_eq!(
+            saved.settings.last_attempt_at.as_deref(),
+            Some("2026-10-15T09:59:00Z")
+        );
+        assert!(saved.settings.retry_dates.contains_key("2026-10-14"));
+        assert!(saved.settings.last_backup_at.is_none());
         assert_eq!(load(&path).unwrap(), expected);
         assert!(saved.pages.contains_key("2026-10-15"));
         assert!(!safety_copy_path(&path).exists(), "undo works once");
