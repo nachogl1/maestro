@@ -2359,6 +2359,50 @@ mod tests {
     }
 
     #[test]
+    fn test_backup_that_cannot_be_moved_into_place_errors_and_leaves_no_temp_file() {
+        let dir = tempdir().unwrap();
+        let path = journal_path(&dir.path().join("app"));
+        let folder = dir.path().join("backup");
+        std::fs::create_dir(&folder).unwrap();
+        journal_with_backup_folder(&path, &folder);
+        // An id already kept, so the journal is not saved before the backup.
+        modify(&path, |j| {
+            j.settings.journal_id = Some("this-install".into());
+            Ok(())
+        })
+        .unwrap();
+        // A folder where the backup file goes: the temp file is written, but
+        // renaming it over the folder fails (on Windows and on Linux alike).
+        let target = backup_path(&folder);
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), "inside").unwrap();
+        let journal_before = std::fs::read_to_string(&path).unwrap();
+
+        let err = backup_now(&path, at("2026-10-15T12:00:00Z")).unwrap_err();
+
+        assert!(
+            matches!(err, WorkJournalError::BackupWrite(_)),
+            "got: {err}"
+        );
+        assert!(err.to_string().starts_with("Backup failed: "), "got: {err}");
+        assert!(
+            leftover_temps(&folder).is_empty(),
+            "the failed write removes its temp file"
+        );
+        let names: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from(FILE_NAME)]);
+        assert!(target.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep.txt")).unwrap(),
+            "inside"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), journal_before);
+    }
+
+    #[test]
     fn test_backup_to_a_missing_folder_errors_and_leaves_the_journal_untouched() {
         let dir = tempdir().unwrap();
         let path = journal_path(&dir.path().join("app"));

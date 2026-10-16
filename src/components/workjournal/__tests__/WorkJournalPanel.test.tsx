@@ -1038,6 +1038,15 @@ describe("WorkJournalWindow closing", () => {
     await act(async () => closeRequested({ preventDefault }));
     expect(preventDefault).toHaveBeenCalled();
     expect(askMock).toHaveBeenCalledTimes(1);
+    expect(askMock).toHaveBeenCalledWith(
+      expect.stringContaining("Some Work Journal text is not saved yet"),
+      expect.objectContaining({
+        title: "Unsaved Work Journal Text",
+        kind: "warning",
+        okLabel: "Close and lose it",
+        cancelLabel: "Keep open",
+      }),
+    );
     expect(destroy).not.toHaveBeenCalled();
     expect(screen.getByText(/Unsaved changes, retrying/)).toBeInTheDocument();
 
