@@ -37,8 +37,8 @@ interface GranolaStatus {
 /**
  * Whether to ask the Granola question: once per mount, only after the run
  * settings were read and while the choice was never made, ask the backend
- * whether Granola is connected (it runs `claude mcp list`; no meeting is
- * read). Any failure counts as not connected.
+ * whether Granola is connected (it runs `claude mcp get granola`, which checks
+ * only that server; no meeting is read). Any failure counts as not connected.
  */
 function useGranolaQuestion(): boolean {
   const granolaOptIn = useWorkJournalCandidateRunStore((s) => s.granolaOptIn);

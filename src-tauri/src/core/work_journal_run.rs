@@ -59,8 +59,10 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(180);
 /// day's meetings are extra tool calls, each a network round trip.
 const GRANOLA_RUN_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// `claude mcp list` health-checks every MCP server the user has; anything
-/// past this means "Granola off" for the run.
+/// `claude mcp get granola` checks only the Granola server (about 2 s
+/// measured); anything past this means "Granola off" for the run. Kept at
+/// 30 s: a cold CLI start plus a slow network can take well over the usual
+/// time, and the limit only ever ends a hung call.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The only Granola tools a run may call: the read tools, listed one by one
@@ -140,34 +142,67 @@ pub fn system_prompt(granola: bool) -> String {
     }
 }
 
-/// The `<target>` when `claude mcp list` output says the `granola` server is
-/// connected: its line is `granola: <target> - <tick> Connected`, where the
-/// tick is U+2714. The CLI prints U+221A instead when it thinks the console
-/// has no Unicode (as for a child of a GUI app on Windows, seen with Claude
-/// Code 2.1.300), so both count. Any other status (`! Needs
-/// authentication`, `<cross> Failed to connect`, `! Connected - tools fetch
-/// failed`), another server, or no `granola` line at all is "not
-/// connected" (`None`).
-fn connected_granola_target(output: &str) -> Option<&str> {
-    output.lines().find_map(|line| {
-        let (name, rest) = line.trim().split_once(": ")?;
-        let (target, status) = rest.rsplit_once(" - ")?;
-        (name.trim() == "granola"
-            && matches!(status.trim(), "\u{2714} Connected" | "\u{221A} Connected"))
-        .then(|| target.trim())
-    })
+/// The `Key: value` fields of `claude mcp get granola` output, which reads
+/// (Claude Code 2.1.301):
+///
+/// ```text
+/// granola:
+///   Scope: User config (available in all your projects)
+///   Status: <tick> Connected
+///   Type: http
+///   URL: https://mcp.granola.ai/mcp
+/// ```
+///
+/// Only the lines after the `granola:` header count. `None` when there is
+/// no such header, as when no server has that name (the CLI then prints
+/// `No MCP server named "granola". ...` and exits 1).
+fn granola_fields(output: &str) -> Option<Vec<(&str, &str)>> {
+    let mut lines = output.lines().map(str::trim);
+    lines.find(|line| *line == "granola:")?;
+    Some(
+        lines
+            .filter_map(|line| line.split_once(": "))
+            .map(|(key, value)| (key.trim(), value.trim()))
+            .collect(),
+    )
 }
 
-/// The URL a Granola run reaches Granola at, from `claude mcp list` output:
-/// the user's own server (`granola: <url> (HTTP) - <tick> Connected`), so
-/// the run reuses their stored sign-in. `None` (Granola off) when Granola is
-/// not connected, and also when it is connected some other way (a local
-/// proxy command, SSE): the run's `--mcp-config` names an HTTP server only,
-/// and another URL's sign-in may not apply, so there is no fallback URL.
+/// The first value of `key` in [`granola_fields`].
+fn granola_field<'a>(fields: &[(&'a str, &'a str)], key: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, value)| *value)
+}
+
+/// Whether `claude mcp get granola` output says Granola is connected: its
+/// `Status:` field is `<tick> Connected`, where the tick is U+2714. The CLI
+/// prints U+221A instead when it thinks the console has no Unicode (as for
+/// a child of a GUI app on Windows, seen with Claude Code 2.1.300), so both
+/// count. Any other status (`! Needs authentication`, `<cross> Failed to
+/// connect`, `! Connected - tools fetch failed`), no `Status:` field, or no
+/// `granola` server at all is "not connected".
+fn granola_connected(fields: &[(&str, &str)]) -> bool {
+    matches!(
+        granola_field(fields, "Status"),
+        Some("\u{2714} Connected" | "\u{221A} Connected")
+    )
+}
+
+/// The URL a Granola run reaches Granola at, from `claude mcp get granola`
+/// output: the user's own server (`Type: http` and its `URL:`), so the run
+/// reuses their stored sign-in. `None` (Granola off) when Granola is not
+/// connected, and also when it is connected some other way (a local proxy
+/// command, SSE): the run's `--mcp-config` names an HTTP server only, and
+/// another URL's sign-in may not apply, so there is no fallback URL.
 pub fn parse_granola_url(output: &str) -> Option<String> {
-    let target = connected_granola_target(output)?;
-    let url = target.strip_suffix(" (HTTP)").map(str::trim).filter(|url| {
-        (url.starts_with("https://") || url.starts_with("http://"))
+    let fields = granola_fields(output)?;
+    if !granola_connected(&fields) {
+        return None;
+    }
+    let url = granola_field(&fields, "URL").filter(|url| {
+        granola_field(&fields, "Type").is_some_and(|kind| kind.eq_ignore_ascii_case("http"))
+            && (url.starts_with("https://") || url.starts_with("http://"))
             && !url.contains(char::is_whitespace)
     });
     if url.is_none() {
@@ -178,9 +213,11 @@ pub fn parse_granola_url(output: &str) -> Option<String> {
     url.map(str::to_string)
 }
 
-/// The preflight: runs `claude mcp list` and says whether Granola is
-/// connected. Every failure (no CLI, a timeout, an error exit) is "not
-/// connected"; nothing but that outcome is logged.
+/// The preflight: runs `claude mcp get granola` (which checks only the
+/// Granola server, never the user's other MCP servers) and says whether
+/// Granola is connected. Every failure (no CLI, a timeout, an error exit
+/// such as "no server named granola") is "not connected"; nothing but that
+/// outcome is logged.
 pub async fn granola_preflight() -> bool {
     granola_preflight_url().await.is_some()
 }
@@ -188,7 +225,7 @@ pub async fn granola_preflight() -> bool {
 /// [`granola_preflight`], giving the URL to reach Granola at (see
 /// [`parse_granola_url`]); `None` = not connected.
 pub async fn granola_preflight_url() -> Option<String> {
-    let args = ["mcp".to_string(), "list".to_string()];
+    let args = ["mcp".to_string(), "get".to_string(), "granola".to_string()];
     match run_process("claude", &args, "", PREFLIGHT_TIMEOUT, false).await {
         Ok(output) => {
             let url = parse_granola_url(&output);
@@ -1786,77 +1823,100 @@ mod tests {
 
     // --- Granola: preflight ---
 
+    /// Synthetic `claude mcp get granola` output with the given fields
+    /// (the real layout, Claude Code 2.1.301).
+    fn mcp_get(status: &str, kind: &str, target: &str) -> String {
+        let target = if kind == "stdio" {
+            format!("  Command: {target}\n  Args: \n  Environment:\n")
+        } else {
+            format!("  URL: {target}\n")
+        };
+        format!(
+            "granola:\n  Scope: User config (available in all your projects)\n  Status: {status}\n  \
+             Type: {kind}\n{target}\nTo remove this server, run: claude mcp remove granola -s user\n"
+        )
+    }
+
     fn parse_granola_connected(output: &str) -> bool {
-        connected_granola_target(output).is_some()
+        granola_fields(output).is_some_and(|fields| granola_connected(&fields))
     }
 
     #[test]
-    fn test_parse_granola_connected_reads_the_mcp_list_line() {
-        let connected = "Checking MCP server health\u{2026}\n\n\
-            playwright: npx @playwright/mcp@latest - \u{2714} Connected\n\
-            granola: https://mcp.granola.ai/mcp (HTTP) - \u{2714} Connected\n";
-        assert!(parse_granola_connected(connected));
-        let ascii_tick = "granola: https://mcp.granola.ai/mcp (HTTP) - \u{221A} Connected";
+    fn test_parse_granola_connected_reads_the_mcp_get_status_line() {
+        let connected = mcp_get("\u{2714} Connected", "http", GRANOLA_URL);
+        assert!(parse_granola_connected(&connected));
+        let ascii_tick = mcp_get("\u{221A} Connected", "http", GRANOLA_URL);
         assert!(
-            parse_granola_connected(ascii_tick),
+            parse_granola_connected(&ascii_tick),
             "the CLI's non-Unicode tick"
         );
-        assert!(parse_granola_connected(
-            "granola: https://mcp.granola.ai/mcp (HTTP) - \u{2714} Connected\r\n"
-        ));
+        assert!(parse_granola_connected(&connected.replace('\n', "\r\n")));
+        let with_preamble = format!("Checking MCP server health\u{2026}\n\n{connected}");
+        assert!(parse_granola_connected(&with_preamble));
     }
 
     #[test]
     fn test_parse_granola_url_takes_the_users_own_https_url() {
-        let output = "playwright: npx @playwright/mcp@latest - \u{2714} Connected\n\
-            granola: https://eu.granola.example/mcp (HTTP) - \u{2714} Connected\n";
+        let output = mcp_get(
+            "\u{2714} Connected",
+            "http",
+            "https://eu.granola.example/mcp",
+        );
         assert_eq!(
-            parse_granola_url(output).as_deref(),
+            parse_granola_url(&output).as_deref(),
             Some("https://eu.granola.example/mcp")
         );
         assert_eq!(
-            parse_granola_url("granola: https://mcp.granola.ai/mcp (HTTP) - \u{221A} Connected")
-                .as_deref(),
+            parse_granola_url(&mcp_get("\u{221A} Connected", "http", GRANOLA_URL)).as_deref(),
             Some(GRANOLA_URL)
         );
         assert_eq!(
-            parse_granola_url("granola: http://localhost:9000/mcp (HTTP) - \u{2714} Connected")
-                .as_deref(),
+            parse_granola_url(&mcp_get(
+                "\u{2714} Connected",
+                "http",
+                "http://localhost:9000/mcp"
+            ))
+            .as_deref(),
             Some("http://localhost:9000/mcp")
         );
         // Connected some other way: Granola off, never a fallback URL.
         for other in [
-            "granola: npx granola-proxy - \u{2714} Connected",
-            "granola: https://mcp.granola.ai/sse (SSE) - \u{2714} Connected",
-            "granola: ftp://example.com/mcp (HTTP) - \u{2714} Connected",
-            "granola: https://a b/mcp (HTTP) - \u{2714} Connected",
+            mcp_get("\u{2714} Connected", "stdio", "npx"),
+            mcp_get("\u{2714} Connected", "sse", "https://mcp.granola.ai/sse"),
+            mcp_get("\u{2714} Connected", "http", "ftp://example.com/mcp"),
+            mcp_get("\u{2714} Connected", "http", "https://a b/mcp"),
+            "granola:\n  Status: \u{2714} Connected\n  Type: http\n".to_string(),
+            "granola:\n  Status: \u{2714} Connected\n  URL: https://mcp.granola.ai/mcp\n"
+                .to_string(),
         ] {
-            assert_eq!(parse_granola_url(other), None, "{other:?}");
+            assert_eq!(parse_granola_url(&other), None, "{other:?}");
         }
         assert_eq!(
-            parse_granola_url(
-                "granola: https://mcp.granola.ai/mcp (HTTP) - ! Needs authentication"
-            ),
+            parse_granola_url(&mcp_get("! Needs authentication", "http", GRANOLA_URL)),
             None
         );
     }
 
     #[test]
     fn test_granola_not_connected_for_any_other_status_or_server() {
+        let not_found = "No MCP server named \"granola\". Configured servers: playwright, \
+            railway";
+        let other_server = mcp_get("\u{2714} Connected", "http", GRANOLA_URL)
+            .replace("granola:\n", "granola-old:\n");
         for output in [
-            "granola: https://mcp.granola.ai/mcp (HTTP) - ! Needs authentication",
-            "granola: https://mcp.granola.ai/mcp (HTTP) - \u{2718} Failed to connect",
-            "granola: https://mcp.granola.ai/mcp (HTTP) - ! Connected \u{b7} tools fetch failed",
-            "playwright: npx @playwright/mcp@latest - \u{2714} Connected\n\
-             railway: npx railway - ! Needs authentication",
-            "claude.ai Granola: https://claude.ai/granola - \u{2714} Connected",
-            "granola-old: https://example.com/mcp (HTTP) - \u{2714} Connected",
-            "No MCP servers configured. Use `claude mcp add` to add a server.",
-            "",
-            "\u{fffd}\u{fffd} garbage - - : Connected",
-            "granola Connected",
+            mcp_get("! Needs authentication", "http", GRANOLA_URL),
+            mcp_get("\u{2718} Failed to connect", "http", GRANOLA_URL),
+            mcp_get("! Connected \u{b7} tools fetch failed", "http", GRANOLA_URL),
+            "granola:\n  Type: http\n  URL: https://mcp.granola.ai/mcp\n".to_string(),
+            "granola: https://mcp.granola.ai/mcp (HTTP) - \u{2714} Connected".to_string(),
+            other_server,
+            not_found.to_string(),
+            String::new(),
+            "\u{fffd}\u{fffd} garbage - - : Connected".to_string(),
+            "granola Connected".to_string(),
         ] {
-            assert!(!parse_granola_connected(output), "{output:?}");
+            assert!(!parse_granola_connected(&output), "{output:?}");
+            assert_eq!(parse_granola_url(&output), None, "{output:?}");
         }
     }
 

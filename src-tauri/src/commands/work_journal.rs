@@ -593,7 +593,7 @@ pub struct GranolaStatus {
     pub connected: bool,
 }
 
-/// Runs the Granola preflight (`claude mcp list`; see
+/// Runs the Granola preflight (`claude mcp get granola`; see
 /// [`work_journal_run::granola_preflight`]). Reads no meeting; any failure
 /// is "not connected", never an error.
 #[tauri::command]
