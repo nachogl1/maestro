@@ -1439,6 +1439,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_a_copy_set_aside_from_an_old_file_survives_one_load_then_goes() {
+        let dir = tempdir().unwrap();
+        std::fs::write(file_path(dir.path()), "{ not json").unwrap();
+        set_mtime(dir.path(), Local::now() - Duration::hours(30));
+        let damaged = dir.path().join(DAMAGED_FILE);
+        let _guard = FILE_LOCK.lock().await;
+
+        // Cleanup runs before the read, so the copy set aside now survives this load.
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&damaged).unwrap(), "{ not json");
+
+        // The rename kept the original's old modified time, so the next load deletes it.
+        load(dir.path(), Utc::now(), LAUNCH).await.unwrap();
+        assert!(!damaged.exists());
+    }
+
+    #[tokio::test]
     async fn test_load_without_a_damaged_copy_is_fine() {
         let dir = tempdir().unwrap();
         let _guard = FILE_LOCK.lock().await;

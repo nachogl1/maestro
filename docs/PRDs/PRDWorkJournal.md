@@ -453,6 +453,9 @@ when the temporary file cannot be read it is moved aside as
 read after that copy's last change is more than a day old, the copy is
 deleted, like the expired entries in the temporary file itself. Its age counts from the
 original file's last write, and a copy whose age cannot be read is deleted.
+So a copy of a file last saved more than a day ago is deleted almost at once,
+because everything in it has already expired; only a file damaged within a
+day of its last save can be inspected.
 
 Confirmed by the coordinator, flagged for the user (2026-10-15): each
 terminal record also stores the folder the shell ran in (for a multi-repo
