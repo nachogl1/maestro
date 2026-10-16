@@ -159,7 +159,11 @@ describe("IssueMapModal", () => {
   });
 
   it("warns in the header and in the saved HTML when the fetch hit the issue limit", async () => {
-    const many = Array.from({ length: MAP_ISSUE_LIMIT }, (_, i) => buildIssue({ number: i + 1 }));
+    // Only #1 and #2 are open: closed issues start hidden, so the modal does not
+    // render a thousand boxes (that alone took ~5 s under load and timed out).
+    const many = Array.from({ length: MAP_ISSUE_LIMIT }, (_, i) =>
+      buildIssue({ number: i + 1, state: i < 2 ? "OPEN" : "CLOSED" }),
+    );
     mockBackend({ issues: many });
     useGitHubStore.setState({ authStatus: { logged_in: true, username: "alice", scopes: [] } });
     vi.mocked(save).mockResolvedValue("C:/exports/map.html");
