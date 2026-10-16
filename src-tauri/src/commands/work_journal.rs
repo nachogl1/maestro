@@ -6,8 +6,10 @@
 //!
 //! Every changing command returns the whole saved journal, so the frontend
 //! never has to guess side effects (for example `deleted_dates` after a
-//! delete), and emits [`CHANGED_EVENT`], so every other window showing the
-//! journal (the pane and the pop-out window) re-reads it.
+//! delete), and emits [`CHANGED_EVENT`] with the kind of change, so every
+//! other window showing the journal (the pane and the pop-out window)
+//! re-reads only that part. Making sure the day pages exist emits only when
+//! it created a page.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};

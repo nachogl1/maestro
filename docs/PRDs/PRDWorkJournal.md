@@ -364,7 +364,8 @@ Mock (throwaway, evidence only; the user accepted every detail as is):
   undo as everything), and making sure today's page exists tells the other
   window nothing unless a page was created. A save that failed in one window
   is therefore retried after the other window saves a page, but no longer after
-  it only changes a setting or a suggestion.
+  it only changes a setting or a suggestion; the timed retry still sends it
+  within 30 seconds.
 
 ### Storage and backup
 
