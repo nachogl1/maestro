@@ -20,6 +20,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Work Journal: the suggestions badge now moves to the new day even if the computer slept through midnight.",
       "The + button in the top bar is back for every project, including one with no terminals yet, so you can always add a terminal from there (Ctrl+T works the same way).",
       "The new-terminal card stacks the window name, the working-directory choice and the Launch button one under the other, so Tab moves down through them in order.",
+      "Work Journal: the Granola check before meeting suggestions is much faster and no longer starts your other MCP servers.",
       "Work Journal: deleting a page in one window now shows a short notice in the other window instead of a raw error, and no longer shows that page as unsaved.",
     ],
   },
