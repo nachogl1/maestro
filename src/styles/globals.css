@@ -635,38 +635,6 @@
   bottom: 0;
   height: 50%;
 }
-/* Eagle view: a bar on the side the tile will be inserted at. */
-[data-drop-zone="before"] .pane-drop-zone,
-[data-drop-zone="after"] .pane-drop-zone {
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  border: 0;
-  border-radius: 3px;
-  background: rgb(var(--maestro-blue));
-}
-[data-drop-zone="before"] .pane-drop-zone {
-  left: 0;
-}
-[data-drop-zone="after"] .pane-drop-zone {
-  right: 0;
-}
-[data-drop-zone="before"] .pane-drop-zone > span,
-[data-drop-zone="after"] .pane-drop-zone > span {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgb(var(--maestro-blue));
-  white-space: nowrap;
-}
-[data-drop-zone="before"] .pane-drop-zone > span {
-  left: 10px;
-}
-[data-drop-zone="after"] .pane-drop-zone > span {
-  right: 10px;
-}
 /* Split layout: the band of the whole area the pane becomes a column/row of. */
 .pane-stage-drop {
   position: absolute;
@@ -703,4 +671,12 @@
 }
 .pane-dragging .pane-drag-source {
   opacity: 0.4;
+}
+/* While an eagle tile edge is being dragged: xterm must not grab the pointer. */
+.pane-resizing,
+.pane-resizing * {
+  user-select: none;
+}
+.pane-resizing .xterm {
+  pointer-events: none;
 }

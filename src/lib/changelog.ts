@@ -11,14 +11,17 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-10-16",
     title: "Settings dialogs on top, update toast on re-check, typed context alert level",
     items: [
+      "Eagle view: resize any terminal on its own by dragging one of its edges — only that terminal changes, as far as the free space around it allows. Drag a terminal onto empty space to move it there, or onto another terminal to swap the two. The column picker and the tile-size button are gone; the Sort terminals by project button (now with a tooltip) puts the grid back to the automatic layout.",
       "Maestro Settings and the other settings dialogs (Terminal, CLI, Shortcuts, Changelog) now sit above the terminals and the project tab bar instead of being crossed by them.",
       "Checking for updates from Maestro Settings shows the update toast at the bottom right again, even for a version you dismissed earlier.",
       "Context alert: the level at which a Claude terminal blinks red is now a number you type (1-100%) with a switch to turn the alert off, instead of a fixed list.",
       "Work Journal: restoring or undoing a backup keeps this computer's last suggestions run, so nothing is suggested twice.",
       "Work Journal: the previous and next day arrows now move exactly one day, even to days with no page yet, so you can step to any date and create a page there.",
+      "Work Journal: the suggestions badge now moves to the new day even if the computer slept through midnight.",
       "The + button in the top bar is back for every project, including one with no terminals yet, so you can always add a terminal from there (Ctrl+T works the same way).",
       "The new-terminal card stacks the window name, the working-directory choice and the Launch button one under the other, so Tab moves down through them in order.",
       "Work Journal: a damaged activity file that was set aside is now deleted after a day, like the rest of its activity data.",
+      "Work Journal: deleting a page in one window now shows a short notice in the other window instead of a raw error, and no longer shows that page as unsaved.",
     ],
   },
   {

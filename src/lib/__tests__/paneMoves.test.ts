@@ -1,17 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  clampSpan,
-  eagleAutoColumns,
-  eagleDropZone,
-  moveInOrder,
-  neighbourInDirection,
-  nextTileSpan,
-  paneDropZone,
-  reorderTiles,
-  stageEdgeAt,
-  tileSpanLabel,
-} from "../paneMoves";
+import { neighbourInDirection, paneDropZone, stageEdgeAt } from "../paneMoves";
 
 const rect = { left: 100, top: 100, width: 400, height: 200 };
 
@@ -30,14 +19,6 @@ describe("paneDropZone", () => {
 
   it("falls back to swap for a zero-size pane", () => {
     expect(paneDropZone({ ...rect, width: 0 }, 100, 100)).toBe("swap");
-  });
-});
-
-describe("eagleDropZone", () => {
-  it("maps the outer thirds to before/after and the middle to swap", () => {
-    expect(eagleDropZone(rect, 150)).toBe("before");
-    expect(eagleDropZone(rect, 450)).toBe("after");
-    expect(eagleDropZone(rect, 300)).toBe("swap");
   });
 });
 
@@ -81,69 +62,5 @@ describe("neighbourInDirection", () => {
     expect(neighbourInDirection(a, others("a"), "left")).toBeNull();
     expect(neighbourInDirection(a, others("a"), "up")).toBeNull();
     expect(neighbourInDirection(b, others("b"), "up")).toBeNull();
-  });
-});
-
-describe("moveInOrder", () => {
-  const order = [1, 2, 3, 4, 5, 6];
-
-  it("swaps one place sideways and one row vertically", () => {
-    expect(moveInOrder(order, 2, "right", 3)).toEqual([1, 3, 2, 4, 5, 6]);
-    expect(moveInOrder(order, 2, "left", 3)).toEqual([2, 1, 3, 4, 5, 6]);
-    expect(moveInOrder(order, 2, "down", 3)).toEqual([1, 5, 3, 4, 2, 6]);
-    expect(moveInOrder(order, 5, "up", 3)).toEqual([1, 5, 3, 4, 2, 6]);
-  });
-
-  it("leaves the order alone at the grid's edge or for an unknown id", () => {
-    expect(moveInOrder(order, 1, "left", 3)).toEqual(order);
-    expect(moveInOrder(order, 6, "down", 3)).toEqual(order);
-    expect(moveInOrder(order, 42, "right", 3)).toEqual(order);
-  });
-});
-
-describe("reorderTiles", () => {
-  const order = ["a", "b", "c", "d"];
-
-  it("inserts before or after the target", () => {
-    expect(reorderTiles(order, "a", "c", "before")).toEqual(["b", "a", "c", "d"]);
-    expect(reorderTiles(order, "a", "c", "after")).toEqual(["b", "c", "a", "d"]);
-    expect(reorderTiles(order, "d", "a", "before")).toEqual(["d", "a", "b", "c"]);
-  });
-
-  it("swaps the two tiles", () => {
-    expect(reorderTiles(order, "a", "d", "swap")).toEqual(["d", "b", "c", "a"]);
-  });
-
-  it("ignores a drop on itself or on an unknown tile", () => {
-    expect(reorderTiles(order, "a", "a", "after")).toEqual(order);
-    expect(reorderTiles(order, "a", "zz", "after")).toEqual(order);
-  });
-});
-
-describe("tile spans", () => {
-  it("cycles normal → wide → big → tall → normal", () => {
-    expect(nextTileSpan(undefined)).toEqual([2, 1]);
-    expect(nextTileSpan([2, 1])).toEqual([2, 2]);
-    expect(nextTileSpan([2, 2])).toEqual([1, 2]);
-    expect(nextTileSpan([1, 2])).toEqual([1, 1]);
-  });
-
-  it("clamps the width to the column count", () => {
-    expect(clampSpan([2, 2], 1)).toEqual([1, 2]);
-    expect(clampSpan([2, 1], 3)).toEqual([2, 1]);
-  });
-
-  it("labels the size", () => {
-    expect(tileSpanLabel(undefined)).toBe("1×1");
-    expect(tileSpanLabel([2, 2])).toBe("2×2");
-  });
-});
-
-describe("eagleAutoColumns", () => {
-  it("keeps the square-ish grid and never goes below 2 with a wide tile", () => {
-    expect(eagleAutoColumns(1, false)).toBe(1);
-    expect(eagleAutoColumns(1, true)).toBe(2);
-    expect(eagleAutoColumns(6, false)).toBe(3);
-    expect(eagleAutoColumns(10, false)).toBe(4);
   });
 });
