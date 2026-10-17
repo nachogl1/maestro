@@ -6,7 +6,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
+// The context-alert store persists through the Tauri store plugin; stub it.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+  },
+}));
 
+import { useContextAlertStore } from "@/stores/useContextAlertStore";
 import {
   type BackendSessionStatus,
   type SessionConfig,
@@ -154,6 +165,59 @@ describe("ParkedShelf", () => {
     expect(screen.getByText("Plain").closest("button")?.className).not.toContain(
       "parked-chip-attention",
     );
+  });
+
+  describe("context alert on a parked chip", () => {
+    beforeEach(() => {
+      useContextAlertStore.setState({ threshold: 80 });
+    });
+
+    it("blinks the chip red when the parked terminal's context passed the threshold", () => {
+      useSessionStore.setState({
+        sessions: [
+          { ...session(1, "C:/proj", "Full"), contextPercent: 91 },
+          { ...session(2, "C:/proj", "Roomy"), contextPercent: 20 },
+        ],
+        parkedSessionIds: [1, 2],
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+
+      const fullChip = screen.getByText("Full").closest("button");
+      const roomyChip = screen.getByText("Roomy").closest("button");
+      expect(fullChip?.className).toContain("parked-chip-context-alert");
+      // The project colour must step aside or the inline style beats the class.
+      expect(fullChip?.style.borderColor).toBe("");
+      expect(fullChip?.getAttribute("title")).toContain("Context 91% ≥ 80% alert");
+      expect(roomyChip?.className).not.toContain("parked-chip-context-alert");
+    });
+
+    it("the alert outranks the needs-input pulse and the allowance shine", () => {
+      useSessionStore.setState({
+        sessions: [{ ...session(1, "C:/proj", "Waiting", "NeedsInput"), contextPercent: 85 }],
+        parkedSessionIds: [1],
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+
+      const chip = screen.getByText("Waiting").closest("button");
+      expect(chip?.className).toContain("parked-chip-context-alert");
+      expect(chip?.className).not.toContain("parked-chip-attention");
+    });
+
+    it("stays quiet with the alert switched off", () => {
+      useContextAlertStore.setState({ threshold: null });
+      useSessionStore.setState({
+        sessions: [{ ...session(1, "C:/proj", "Full"), contextPercent: 91 }],
+        parkedSessionIds: [1],
+      });
+
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+
+      expect(screen.getByText("Full").closest("button")?.className).not.toContain(
+        "parked-chip-context-alert",
+      );
+    });
   });
 
   it("keeps the shelf neutral while parked agents are only working", () => {

@@ -198,8 +198,10 @@ Settings → Changelog) in the same PR as the change.
 
 - Add to today's entry (`date: "YYYY-MM-DD"`) if one exists; otherwise add a new entry at the top
   — the list is newest first and a test enforces that order.
-- One short, plain line per change, written for a user: what they can now see or do, not how
-  it was built. Merge related changes into one line; give the day's entry a short title.
-- Pure refactors, test-only and CI-only changes do not need an entry.
+- Do NOT add a line per commit or PR. First look for a line in today's entry about the same
+  feature or area and extend or reword it; add a new line only for a different feature.
+- A day's entry stays at about 6 lines or fewer. One short plain sentence per line, written for a
+  user (what they can now see or do), with no implementation detail — that belongs in the PR.
+- Pure refactors, test-only and CI-only changes get no entry.
 
 

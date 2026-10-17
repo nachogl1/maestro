@@ -5,6 +5,11 @@ import { projectColorFor } from "@/lib/projectColor";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import {
+  describeContextAlert,
+  isContextAlert,
+  useContextAlertStore,
+} from "@/stores/useContextAlertStore";
+import {
   type BackendSessionStatus,
   type SamuraiParkAlert,
   type SamuraiSupervisorState,
@@ -101,6 +106,9 @@ export function ParkedShelf({
   // an ordinary user-initiated park.
   const runFatalIds = useSessionStore((s) => s.runFatalSessionIds);
   const acknowledgeParks = useSessionStore((s) => s.acknowledgeSamuraiParks);
+  // Context alert (Settings): a parked terminal past the threshold blinks its
+  // chip red, the same way its hidden frame would.
+  const contextAlertThreshold = useContextAlertStore((s) => s.threshold);
   // Clash-resolved colors, so a parked chip matches the project's terminals
   // rather than showing that project's raw (possibly re-seated) hash color.
   const projectColors = useProjectColors();
@@ -148,11 +156,22 @@ export function ParkedShelf({
         // HH:MM" is simply wrong for a run the circuit breaker killed, and
         // the existing NeedsInput treatment already reads as "come look now".
         const runFatal = runFatalIds.includes(sess.id);
-        const attention = runFatal
-          ? "parked-chip-attention"
+        // The context alert outranks everything: the terminal is about to run
+        // out of room whatever else it is doing, and the frame it stands in
+        // for would be blinking red too.
+        const contextAlert = isContextAlert(sess.contextPercent, contextAlertThreshold);
+        const attention = contextAlert
+          ? "parked-chip-context-alert"
+          : runFatal
+            ? "parked-chip-attention"
+            : parked
+              ? "samurai-park-shine"
+              : chipAttentionClass(sess.status);
+        const restoreTitle = runFatal
+          ? "Samurai run died — restore terminal"
           : parked
-            ? "samurai-park-shine"
-            : chipAttentionClass(sess.status);
+            ? "Parked on token allowance — restore terminal"
+            : "Restore terminal";
         return (
           <button
             key={sess.id}
@@ -170,11 +189,9 @@ export function ParkedShelf({
             data-parked-session-id={sess.id}
             className={`flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card px-2.5 py-0.5 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
             title={
-              runFatal
-                ? "Samurai run died — restore terminal"
-                : parked
-                  ? "Parked on token allowance — restore terminal"
-                  : "Restore terminal"
+              contextAlert && sess.contextPercent !== undefined && contextAlertThreshold !== null
+                ? `${describeContextAlert(sess.contextPercent, contextAlertThreshold)} — ${restoreTitle}`
+                : restoreTitle
             }
           >
             <span

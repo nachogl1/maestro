@@ -15,7 +15,7 @@ describe("ChangelogModal", () => {
   it("calls onClose when the close button is clicked", () => {
     const onClose = vi.fn();
     render(<ChangelogModal onClose={onClose} />);
-    fireEvent.click(screen.getByLabelText("Close changelog"));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

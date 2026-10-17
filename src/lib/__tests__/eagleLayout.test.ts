@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   autoPack,
   compareRowMajor,
+  dropBesideTile,
   EAGLE_UNITS,
   fitsFree,
+  insertColumnAtEdge,
   largestEmptyRect,
   layoutEagleTiles,
   MIN_TILE_UNITS,
@@ -13,6 +15,7 @@ import {
   resizeTile,
   type TileRect,
 } from "../eagleLayout";
+import { STAGE_EDGE_RATIO } from "../paneMoves";
 
 const U = EAGLE_UNITS;
 
@@ -189,5 +192,135 @@ describe("compareRowMajor", () => {
       { x: 0, y: 0, w: 30, h: 30 },
     ];
     expect([...rects].sort(compareRowMajor)).toEqual([rects[2], rects[0], rects[1]]);
+  });
+});
+
+/** Every tile is whole-celled, at least the minimum size, inside the grid and clear of the rest. */
+function expectValidLayout(tiles: ReadonlyMap<number, TileRect>): void {
+  const rects = [...tiles.values()];
+  rects.forEach((r, i) => {
+    expect(
+      fitsFree(
+        r,
+        rects.filter((_, j) => j !== i),
+      ),
+    ).toBe(true);
+  });
+}
+
+describe("dropBesideTile", () => {
+  // Three tiles auto-packed 2×2: 00, 01 and 10.
+  const tiles = new Map<number, TileRect>([
+    [1, { x: 0, y: 0, w: 30, h: 30 }],
+    [2, { x: 30, y: 0, w: 30, h: 30 }],
+    [3, { x: 0, y: 30, w: 30, h: 30 }],
+  ]);
+
+  it("puts the dragged tile in the target's left half and keeps the target in the right half", () => {
+    const next = dropBesideTile(tiles, 3, 2, "left");
+    expect(next).not.toBeNull();
+    expect(next?.get(3)).toEqual({ x: 30, y: 0, w: 15, h: 30 });
+    expect(next?.get(2)).toEqual({ x: 45, y: 0, w: 15, h: 30 });
+    expect(next?.get(1)).toEqual(tiles.get(1));
+    expectValidLayout(next as Map<number, TileRect>);
+  });
+
+  it("handles the right, top and bottom sides", () => {
+    expect(dropBesideTile(tiles, 3, 2, "right")?.get(3)).toEqual({ x: 45, y: 0, w: 15, h: 30 });
+    expect(dropBesideTile(tiles, 3, 2, "right")?.get(2)).toEqual({ x: 30, y: 0, w: 15, h: 30 });
+    expect(dropBesideTile(tiles, 3, 2, "top")?.get(3)).toEqual({ x: 30, y: 0, w: 30, h: 15 });
+    expect(dropBesideTile(tiles, 3, 2, "top")?.get(2)).toEqual({ x: 30, y: 15, w: 30, h: 15 });
+    expect(dropBesideTile(tiles, 3, 2, "bottom")?.get(3)).toEqual({ x: 30, y: 15, w: 30, h: 15 });
+    expect(dropBesideTile(tiles, 3, 2, "bottom")?.get(2)).toEqual({ x: 30, y: 0, w: 30, h: 15 });
+  });
+
+  it("splits an odd size into whole cells, the target keeping the larger part", () => {
+    const odd = new Map<number, TileRect>([
+      [1, { x: 0, y: 0, w: 13, h: 60 }],
+      [2, { x: 13, y: 0, w: 47, h: 60 }],
+    ]);
+    const next = dropBesideTile(odd, 2, 1, "right");
+    expect(next?.get(2)).toEqual({ x: 7, y: 0, w: 6, h: 60 });
+    expect(next?.get(1)).toEqual({ x: 0, y: 0, w: 7, h: 60 });
+  });
+
+  it("is invalid when the half would be smaller than the minimum tile size", () => {
+    const narrow = new Map<number, TileRect>([
+      [1, { x: 0, y: 0, w: 2 * MIN_TILE_UNITS - 1, h: 60 }],
+      [2, { x: 11, y: 0, w: 49, h: 60 }],
+    ]);
+    expect(dropBesideTile(narrow, 2, 1, "left")).toBeNull();
+    expect(dropBesideTile(narrow, 2, 1, "right")).toBeNull();
+    // Height is fine, so top/bottom still work.
+    expect(dropBesideTile(narrow, 2, 1, "top")).not.toBeNull();
+  });
+
+  it("is invalid for an unknown tile or a drop onto itself", () => {
+    expect(dropBesideTile(tiles, 3, 3, "left")).toBeNull();
+    expect(dropBesideTile(tiles, 3, 99, "left")).toBeNull();
+    expect(dropBesideTile(tiles, 99, 3, "left")).toBeNull();
+  });
+});
+
+describe("insertColumnAtEdge", () => {
+  const tiles = new Map<number, TileRect>([
+    [1, { x: 0, y: 0, w: 30, h: 30 }],
+    [2, { x: 30, y: 0, w: 30, h: 30 }],
+    [3, { x: 0, y: 30, w: 30, h: 30 }],
+  ]);
+  const share = Math.round(STAGE_EDGE_RATIO * U);
+
+  it("moves the third of a 2×2 pack to a new full-height column on the right", () => {
+    const next = insertColumnAtEdge(tiles, 3, "right");
+    expect(next).not.toBeNull();
+    expect(share).toBe(20);
+    expect(next?.get(3)).toEqual({ x: U - share, y: 0, w: share, h: U });
+    expect(next?.get(1)).toEqual({ x: 0, y: 0, w: 20, h: 30 });
+    expect(next?.get(2)).toEqual({ x: 20, y: 0, w: 20, h: 30 });
+    expectValidLayout(next as Map<number, TileRect>);
+  });
+
+  it("inserts a column on the left, shifting the others right", () => {
+    const next = insertColumnAtEdge(tiles, 3, "left");
+    expect(next?.get(3)).toEqual({ x: 0, y: 0, w: share, h: U });
+    expect(next?.get(1)).toEqual({ x: share, y: 0, w: 20, h: 30 });
+    expect(next?.get(2)).toEqual({ x: share + 20, y: 0, w: 20, h: 30 });
+    expectValidLayout(next as Map<number, TileRect>);
+  });
+
+  it("inserts a full-width row at the top or bottom, scaling the others vertically", () => {
+    const top = insertColumnAtEdge(tiles, 3, "top");
+    expect(top?.get(3)).toEqual({ x: 0, y: 0, w: U, h: share });
+    expect(top?.get(1)).toEqual({ x: 0, y: share, w: 30, h: 20 });
+    expect(top?.get(2)).toEqual({ x: 30, y: share, w: 30, h: 20 });
+    expectValidLayout(top as Map<number, TileRect>);
+    const bottom = insertColumnAtEdge(tiles, 3, "bottom");
+    expect(bottom?.get(3)).toEqual({ x: 0, y: U - share, w: U, h: share });
+    expect(bottom?.get(1)).toEqual({ x: 0, y: 0, w: 30, h: 20 });
+    expectValidLayout(bottom as Map<number, TileRect>);
+  });
+
+  it("keeps neighbouring tiles touching after scaling (no gaps, no overlaps)", () => {
+    const seven = new Map<number, TileRect>(autoPack(7).map((r, i) => [i + 1, r]));
+    const next = insertColumnAtEdge(seven, 7, "right");
+    expect(next).not.toBeNull();
+    expectValidLayout(next as Map<number, TileRect>);
+    const row = [1, 2, 3].map((id) => next?.get(id) as TileRect);
+    expect(row[0].x + row[0].w).toBe(row[1].x);
+    expect(row[1].x + row[1].w).toBe(row[2].x);
+    expect(row[2].x + row[2].w).toBe(U - share);
+  });
+
+  it("is invalid when scaling would make a tile smaller than the minimum", () => {
+    const skinny = new Map<number, TileRect>([
+      [1, { x: 0, y: 0, w: MIN_TILE_UNITS, h: 60 }],
+      [2, { x: MIN_TILE_UNITS, y: 0, w: U - MIN_TILE_UNITS, h: 60 }],
+    ]);
+    expect(insertColumnAtEdge(skinny, 2, "right")).toBeNull();
+    expect(insertColumnAtEdge(skinny, 2, "top")).not.toBeNull();
+  });
+
+  it("is invalid for an unknown tile", () => {
+    expect(insertColumnAtEdge(tiles, 99, "right")).toBeNull();
   });
 });

@@ -33,7 +33,14 @@ import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
 import { useSlotLaunch } from "@/hooks/useSlotLaunch";
 import { useTerminalDragDrop } from "@/hooks/useTerminalDragDrop";
 import { useTerminalKeyboard } from "@/hooks/useTerminalKeyboard";
-import { EAGLE_UNITS, fitsFree, placeTileAt, type TileRect } from "@/lib/eagleLayout";
+import {
+  dropBesideTile,
+  EAGLE_UNITS,
+  fitsFree,
+  insertColumnAtEdge,
+  placeTileAt,
+  type TileRect,
+} from "@/lib/eagleLayout";
 import {
   type BranchWithWorktreeStatus,
   getBranchesWithWorktreeStatus,
@@ -249,10 +256,16 @@ export interface EagleOccupiedTile {
   rect: TileRect;
 }
 
-/** Where an eagle tile was dropped: on another tile (swap) or on free grid cells. */
+/**
+ * Where an eagle tile was dropped: on another tile's middle (swap), on its
+ * outer quarter (beside it, taking half its room), on free grid cells, or on
+ * the grid's outer edge (a new full-height column / full-width row).
+ */
 export type EagleDropTarget =
   | { kind: "swap"; sessionId: number }
-  | { kind: "place"; rect: TileRect };
+  | { kind: "beside"; sessionId: number; side: PaneEdge }
+  | { kind: "place"; rect: TileRect }
+  | { kind: "edge"; edge: PaneEdge };
 
 /**
  * Manages a dynamic grid of session slots that can be either:
@@ -2117,7 +2130,9 @@ type DropTarget =
       zone: PaneDropZone;
     }
   | { kind: "stage"; edge: PaneSide }
-  | { kind: "cell"; rect: TileRect };
+  | { kind: "cell"; rect: TileRect }
+  /** Eagle view: the grid's outer edge; `rect` is the column/row the tile would take. */
+  | { kind: "gridEdge"; edge: PaneEdge; rect: TileRect };
 
 /** The eagle grid's content box in CSS px (its padding excluded), or null outside eagle view. */
 function eagleGridBox(): {
@@ -2158,8 +2173,9 @@ const EAGLE_RESIZE_EDGES: readonly { edge: PaneEdge; className: string }[] = [
  * - split layout: on the outer quarter of another pane to move next to it
  *   (it takes half that pane's room), on the middle to swap, or on the outer
  *   edge of the whole split area to become a full column/row;
- * - eagle view: on the outer third of a tile to insert before/after it (any
- *   project, any position), on the middle to swap.
+ * - eagle view: on the outer quarter of another tile to move beside it
+ *   (taking half its cells), on the middle to swap, on free cells to move
+ *   there, or on the outer edge of the grid to become a full column/row.
  *
  * Uses pointer events (mousedown/move/up) instead of HTML5 DnD because
  * Tauri's WebView2 keeps showing the "no drop" cursor when custom MIME
@@ -2266,6 +2282,13 @@ function DraggablePane({
         eagleMode && eagleOccupied
           ? eagleOccupied.filter((o) => o.sessionId !== sessionId).map((o) => o.rect)
           : [];
+      // The launched tiles by id — what a drop beside a tile or on the grid's
+      // edge rearranges (pre-launch cards have no stored rect and re-pack).
+      const eagleTiles = new Map<number, TileRect>();
+      if (eagleMode && eagleOccupied) {
+        for (const o of eagleOccupied)
+          if (o.sessionId !== null) eagleTiles.set(o.sessionId, o.rect);
+      }
       let active = false;
       let ghost: HTMLDivElement | null = null;
       let stageHighlight: HTMLDivElement | null = null;
@@ -2300,21 +2323,40 @@ function DraggablePane({
         const elem = document.elementFromPoint(x, y) as HTMLElement | null;
         const el = elem?.closest<HTMLElement>("[data-slot-id]") ?? null;
         if (eagleMode) {
-          // Another launched tile (it carries grid + session ids): swap. The
-          // pointer over the dragged tile itself (a short move) falls through
-          // to the free-cell placement below.
+          // Only launched tiles move in eagle view: a pre-launch card has no
+          // stored rect, so it gets no drop highlight either.
+          if (sessionId === null) return null;
+          // The grid's outer edge: the tile becomes a full column/row there
+          // and the other tiles make room — when they all stay big enough.
+          // An edge that cannot make room is a dead zone, not a swap.
+          if (grid) {
+            const edge = stageEdgeAt(grid, x, y);
+            if (edge) {
+              const rect = insertColumnAtEdge(eagleTiles, sessionId, edge)?.get(sessionId);
+              return rect ? { kind: "gridEdge", edge, rect } : null;
+            }
+          }
+          // Another launched tile (it carries grid + session ids): its outer
+          // quarter moves the dragged tile beside it (half its cells), the
+          // middle swaps. The pointer over the dragged tile itself (a short
+          // move) falls through to the free-cell placement below.
           const self = el !== null && el.dataset.slotId === slotId;
           if (!self && el?.dataset.gridId && el.dataset.sessionId) {
+            const targetId = Number(el.dataset.sessionId);
+            const zone = paneDropZone(el.getBoundingClientRect(), x, y);
+            if (zone !== "swap" && !dropBesideTile(eagleTiles, sessionId, targetId, zone)) {
+              return null;
+            }
             return {
               kind: "pane",
               el,
               slotId: el.dataset.slotId ?? "",
-              sessionId: Number(el.dataset.sessionId),
-              zone: "swap",
+              sessionId: targetId,
+              zone,
             };
           }
           // Free grid cells: the tile moves there if it fits (same size).
-          if (!grid || !eagleRect || sessionId === null) return null;
+          if (!grid || !eagleRect) return null;
           if (
             x < grid.left ||
             y < grid.top ||
@@ -2353,7 +2395,7 @@ function DraggablePane({
       const showTarget = (target: DropTarget | null) => {
         clearHighlight();
         if (!target) return;
-        if (target.kind === "cell") {
+        if (target.kind === "cell" || target.kind === "gridEdge") {
           // The grid is deliberately unpositioned (zoomed panes resolve to
           // App's <main>), so the highlight is positioned against the grid's
           // offsetParent, like a zoomed pane — appending it to the grid
@@ -2440,9 +2482,18 @@ function DraggablePane({
           if (sessionId !== null) onEagleDrop?.(sessionId, { kind: "place", rect: target.rect });
           return;
         }
+        if (target.kind === "gridEdge") {
+          if (sessionId !== null) onEagleDrop?.(sessionId, { kind: "edge", edge: target.edge });
+          return;
+        }
         if (eagleMode) {
           if (sessionId !== null && target.sessionId !== null) {
-            onEagleDrop?.(sessionId, { kind: "swap", sessionId: target.sessionId });
+            onEagleDrop?.(
+              sessionId,
+              target.zone === "swap"
+                ? { kind: "swap", sessionId: target.sessionId }
+                : { kind: "beside", sessionId: target.sessionId, side: target.zone },
+            );
           }
           return;
         }

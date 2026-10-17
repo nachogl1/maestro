@@ -100,6 +100,28 @@ describe("TerminalView context alert frame", () => {
     expect(frame(container).classList.contains("terminal-cell-context-alert")).toBe(false);
   });
 
+  it("shows the header banner with percent and threshold only while alerting", () => {
+    seedSession(87.3);
+    const { container, queryByRole } = render(
+      <TerminalView sessionId={SESSION_ID} onKill={() => {}} />,
+    );
+    const pill = queryByRole("status");
+    expect(pill).not.toBeNull();
+    expect(pill?.textContent).toContain("Context threshold reached");
+    expect(pill?.getAttribute("title")).toBe("Context 87% ≥ 80% alert");
+    act(() => {
+      useContextAlertStore.getState().setThreshold(90);
+    });
+    expect(frame(container).classList.contains("terminal-cell-context-alert")).toBe(false);
+    expect(queryByRole("status")).toBeNull();
+  });
+
+  it("alerts when the reading rounds up to the threshold, like the badges show it", () => {
+    seedSession(79.6);
+    const { container } = render(<TerminalView sessionId={SESSION_ID} onKill={() => {}} />);
+    expect(frame(container).classList.contains("terminal-cell-context-alert")).toBe(true);
+  });
+
   it("does not alert before the first usage reading", () => {
     seedSession(undefined);
     const { container } = render(<TerminalView sessionId={SESSION_ID} onKill={() => {}} />);

@@ -33,13 +33,22 @@ export const DEFAULT_CONTEXT_ALERT_THRESHOLD = 80;
  * True when the frame should blink: a threshold is set and the session's
  * last-known context usage has reached it. Sessions with no usage data yet
  * (undefined percent) never alert.
+ *
+ * The store keeps one decimal (79.6) but every badge shows the whole percent
+ * (80%), so the comparison uses the whole percent too: a terminal that reads
+ * "80%" must alert at an 80 threshold.
  */
 export function isContextAlert(
   contextPercent: number | undefined,
   threshold: number | null,
 ): boolean {
   if (threshold === null || contextPercent === undefined) return false;
-  return contextPercent >= threshold;
+  return Math.round(contextPercent) >= threshold;
+}
+
+/** Hover text for an active alert, e.g. "Context 87% ≥ 80% alert". */
+export function describeContextAlert(contextPercent: number, threshold: number): string {
+  return `Context ${Math.round(contextPercent)}% ≥ ${threshold}% alert`;
 }
 
 interface ContextAlertState {

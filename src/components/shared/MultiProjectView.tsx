@@ -22,8 +22,10 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import {
   compareRowMajor,
+  dropBesideTile,
   EAGLE_UNITS,
   type EagleLayout,
+  insertColumnAtEdge,
   layoutEagleTiles,
   rectsEqual,
   resizeTile,
@@ -255,6 +257,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           if (!other || target.sessionId === sessionId) return;
           tiles.set(sessionId, other);
           tiles.set(target.sessionId, own);
+        } else if (target.kind === "beside") {
+          const next = dropBesideTile(tiles, sessionId, target.sessionId, target.side);
+          if (!next) return;
+          commitEagleRects(next);
+          return;
+        } else if (target.kind === "edge") {
+          const next = insertColumnAtEdge(tiles, sessionId, target.edge);
+          if (!next) return;
+          commitEagleRects(next);
+          return;
         } else {
           tiles.set(sessionId, target.rect);
         }

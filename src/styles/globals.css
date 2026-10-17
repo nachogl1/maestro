@@ -502,6 +502,31 @@
   animation: context-alert-blink 1s step-end infinite;
 }
 
+/* A parked terminal past the threshold: its shelf chip blinks the same red
+   rhythm as the frame it stands in for. Doubled class so it outranks the
+   status and attention chip classes. */
+.parked-chip-context-alert.parked-chip-context-alert {
+  border-color: rgb(var(--maestro-red));
+  animation: context-alert-blink 1s step-end infinite;
+}
+
+/* "Context threshold reached" pill in the terminal header: fades in step with
+   the frame's blink (same 1s step-end rhythm) so the two read as one alarm. */
+@keyframes context-alert-pill-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.35;
+  }
+}
+
+.context-alert-pill {
+  animation: context-alert-pill-blink 1s step-end infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
   .animate-edge-dash,
@@ -509,7 +534,9 @@
   .parked-chip-attention,
   .samurai-park-shine,
   .terminal-cell-starting,
-  .terminal-cell-context-alert {
+  .terminal-cell.terminal-cell-context-alert,
+  .parked-chip-context-alert.parked-chip-context-alert,
+  .context-alert-pill {
     animation: none;
     transform: none;
   }
@@ -542,7 +569,9 @@
 }
 
 /* Context alert keeps its red border, loses the blink */
-.platform-linux .terminal-cell-context-alert {
+.platform-linux .terminal-cell-context-alert,
+.platform-linux .parked-chip-context-alert.parked-chip-context-alert,
+.platform-linux .context-alert-pill {
   animation: none;
   box-shadow: none;
 }

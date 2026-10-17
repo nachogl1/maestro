@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   BrainCircuit,
   ChevronDown,
   Code2,
@@ -81,6 +82,16 @@ interface TerminalHeaderProps {
    * themselves still work).
    */
   showShortcutHints?: boolean;
+  /**
+   * Context alert is active for this terminal: a red "Context threshold
+   * reached" pill blinks in the middle of the header, in step with the frame.
+   */
+  contextAlert?: boolean;
+  /**
+   * Hover text of the alert pill ("Context 87% >= 80% alert"). Derived by the
+   * parent so this memoised header does not re-render on every usage tick.
+   */
+  contextAlertTitle?: string;
 }
 
 const providerConfig: Record<AIProvider, { icon: IconComponent; label: string }> = {
@@ -117,6 +128,8 @@ export const TerminalHeader = memo(function TerminalHeader({
   hasAttention = false,
   onToggleFlag,
   showShortcutHints = true,
+  contextAlert = false,
+  contextAlertTitle,
 }: TerminalHeaderProps) {
   const { icon: ProviderIcon } = providerConfig[provider];
   const [showZoomMenu, setShowZoomMenu] = useState(false);
@@ -268,7 +281,7 @@ export const TerminalHeader = memo(function TerminalHeader({
     // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-flag on a row full of nested interactive controls (buttons/inputs excluded via handleHeaderClick) — not a discrete focusable widget, so there's no sensible single keyboard equivalent.
     // biome-ignore lint/a11y/useKeyWithClickEvents: see noStaticElementInteractions above.
     <div
-      className={`no-select flex ${adaptive.headerHeight} shrink-0 items-center ${adaptive.gapSize} border-b ${statusBorder} ${isFlagged || hasAttention ? "warning-flag" : "bg-maestro-surface"} ${hasMoveHandle ? "pl-6 pr-2" : "px-2"} ${onToggleFlag ? "cursor-pointer" : ""}`}
+      className={`no-select terminal-header relative flex ${adaptive.headerHeight} shrink-0 items-center ${adaptive.gapSize} border-b ${statusBorder} ${isFlagged || hasAttention ? "warning-flag" : "bg-maestro-surface"} ${hasMoveHandle ? "pl-6 pr-2" : "px-2"} ${onToggleFlag ? "cursor-pointer" : ""}`}
       // The whole title bar is the pane's drag handle (see DraggablePane in
       // TerminalGrid): press and move to pick the terminal up; a plain click
       // still toggles the flag.
@@ -349,6 +362,22 @@ export const TerminalHeader = memo(function TerminalHeader({
             Renders nothing for non-supervised sessions. */}
         <SamuraiBadge sessionId={sessionId} />
       </div>
+
+      {/* Context alert pill: centred over the header, blinking with the
+          frame. Absolutely positioned so the name (left) and the controls
+          (right) keep their layout; pointer-events-none so header clicks
+          (flag toggle, drag handle) still land. Capped to the middle 40% of
+          the header (text truncates) and icon-only in a dense grid, so it
+          never hides the controls. */}
+      {contextAlert && (
+        <output
+          className={`context-alert-pill pointer-events-none absolute left-1/2 top-1/2 flex max-w-[40%] -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-maestro-red/15 px-2 py-0.5 font-medium text-maestro-red ${adaptive.badgeSize}`}
+          title={contextAlertTitle ?? "Context threshold reached"}
+        >
+          <AlertTriangle size={terminalCount <= 4 ? 12 : 10} aria-hidden="true" />
+          {terminalCount <= 4 && <span className="truncate">Context threshold reached</span>}
+        </output>
+      )}
 
       {/* Right cluster */}
       <div className="flex shrink-0 items-center gap-0.5">

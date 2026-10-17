@@ -1,5 +1,6 @@
 import { Loader2, Play } from "lucide-react";
 import { type KeyboardEvent, useEffect, useState } from "react";
+import { dialogButtonClass, dialogInputClass } from "@/components/shared/DialogShell";
 import {
   clampRunEveryHours,
   MAX_RUN_EVERY_HOURS,
@@ -113,7 +114,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
   return (
     <>
       <div className="flex items-center gap-2 text-xs" title={HINTS.runEvery}>
-        <label htmlFor="work-journal-run-every" className="flex-1 cursor-help text-maestro-muted">
+        <label htmlFor="work-journal-run-every" className="flex-1 cursor-help text-maestro-text">
           Run every
         </label>
         <input
@@ -126,12 +127,12 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
           onChange={(e) => setHoursDraft(e.target.value)}
           onBlur={commitHours}
           onKeyDown={blurOnEnter}
-          className="w-14 rounded border border-maestro-border bg-maestro-surface px-1.5 py-0.5 text-right text-[11px] text-maestro-text outline-none focus:border-maestro-accent"
+          className={`w-16 text-right ${dialogInputClass}`}
         />
         <span className="shrink-0 text-maestro-muted">hours</span>
       </div>
       <div className="flex items-center gap-2 text-xs" title={HINTS.model}>
-        <label htmlFor="work-journal-model" className="shrink-0 cursor-help text-maestro-muted">
+        <label htmlFor="work-journal-model" className="shrink-0 cursor-help text-maestro-text">
           Model
         </label>
         <input
@@ -145,7 +146,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
           }}
           onBlur={commitModel}
           onKeyDown={blurOnEnter}
-          className="min-w-0 flex-1 rounded border border-maestro-border bg-maestro-surface px-1.5 py-0.5 text-right text-[11px] text-maestro-text placeholder-maestro-muted/50 outline-none focus:border-maestro-accent"
+          className={`min-w-0 flex-1 text-right ${dialogInputClass}`}
         />
       </div>
       {modelNote && modelNote !== settingsError && (
@@ -154,7 +155,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
         </p>
       )}
       <div className="flex items-center gap-2">
-        <span className="flex-1 text-[10px] text-maestro-muted">
+        <span className="flex-1 text-[11px] text-maestro-muted">
           {lastRunLabel(lastAttemptAt, lastRunAt)}
         </span>
         <button
@@ -162,7 +163,7 @@ export function WorkJournalCandidateRunRows(): JSX.Element {
           onClick={handleRunNow}
           disabled={running}
           title={HINTS.runNow}
-          className="flex items-center gap-1 rounded border border-maestro-accent/50 bg-maestro-accent/10 px-3 py-1 text-[11px] font-medium text-maestro-accent hover:bg-maestro-accent/20 disabled:opacity-50"
+          className={dialogButtonClass("primary")}
         >
           {running ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
           Run now
