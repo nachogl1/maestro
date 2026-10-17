@@ -98,8 +98,6 @@ type WorkspaceActions = {
   setZoomTabOrder: (tabId: string, order: string[]) => void;
   /** Replace every eagle tile's place and size (the whole custom layout). */
   setEagleTileRects: (rects: Record<number, TileRect>) => void;
-  /** Back to the automatic layout: project by project, equal tiles. */
-  groupEagleTilesByProject: () => void;
   /** Re-scan repositories for all multi-repo tabs after rehydration. */
   rehydrateRepositories: () => Promise<void>;
 };
@@ -416,10 +414,6 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
 
       setEagleTileRects: (rects: Record<number, TileRect>) => {
         set({ eagleTileRects: rects });
-      },
-
-      groupEagleTilesByProject: () => {
-        set({ eagleTileRects: {} });
       },
 
       rehydrateRepositories: async () => {
