@@ -322,3 +322,30 @@ export function moveSlotToTreeEdge(
     ratio: first ? share : 1 - share,
   };
 }
+
+/** Number of panes (leaves) under a node. */
+function countLeaves(node: TreeNode): number {
+  if (node.type === "leaf") return 1;
+  return countLeaves(node.children[0]) + countLeaves(node.children[1]);
+}
+
+/**
+ * Give every pane an even share of the space while keeping the arrangement:
+ * each split's ratio becomes its first side's pane count over the total, so
+ * a column of three next to a single pane splits 3:1, not 1:1.
+ *
+ * Node ids, directions and pane order are kept. Returns the original tree
+ * (same reference) when every ratio is already even.
+ */
+export function equalizeTree(tree: TreeNode): TreeNode {
+  if (tree.type === "leaf") return tree;
+
+  const [left, right] = tree.children;
+  const newLeft = equalizeTree(left);
+  const newRight = equalizeTree(right);
+  const leftCount = countLeaves(left);
+  const evenRatio = leftCount / (leftCount + countLeaves(right));
+
+  if (newLeft === left && newRight === right && tree.ratio === evenRatio) return tree;
+  return { ...tree, ratio: evenRatio, children: [newLeft, newRight] };
+}

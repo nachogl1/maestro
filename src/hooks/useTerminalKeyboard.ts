@@ -19,6 +19,8 @@ interface UseTerminalKeyboardOptions {
   onParkFocused?: () => void;
   /** Callback to move the focused terminal one pane in a direction (Alt+Shift+Arrow) */
   onMoveFocused?: (direction: MoveDirection) => void;
+  /** Callback to give every terminal an even share of the layout (Alt+T) */
+  onTidyLayout?: () => void;
   /**
    * Whether a single terminal is currently zoomed/maximized. When true, the
    * tab strip is visible and Alt+Left/Alt+Right cycle between tabs. When
@@ -53,6 +55,7 @@ function isMac(): boolean {
  * - Cmd/Ctrl+Alt+Left/Right: Cycle focus to the previous/next terminal
  * - Alt+Left/Right: Previous/next terminal tab while zoomed
  * - Alt+P: Park the focused terminal
+ * - Alt+T: Tidy up — give every terminal an even share of the layout
  * - Alt+Shift+Arrow: Move the focused terminal one pane in that direction
  */
 export function useTerminalKeyboard({
@@ -64,6 +67,7 @@ export function useTerminalKeyboard({
   onZoomedPrev,
   onParkFocused,
   onMoveFocused,
+  onTidyLayout,
   isZoomed = false,
   enabled = true,
 }: UseTerminalKeyboardOptions): void {
@@ -124,6 +128,14 @@ export function useTerminalKeyboard({
         return;
       }
 
+      // Alt+T: tidy up the layout. event.code for layout independence.
+      if (event.code === "KeyT" && onTidyLayout) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onTidyLayout();
+        return;
+      }
+
       // Alt+Left/Right: cycle zoom tabs — only while zoomed.
       if (!isZoomed) return;
       if (event.key === "ArrowRight" && onZoomedNext) {
@@ -152,6 +164,7 @@ export function useTerminalKeyboard({
     onZoomedPrev,
     onParkFocused,
     onMoveFocused,
+    onTidyLayout,
   ]);
 
   useEffect(() => {

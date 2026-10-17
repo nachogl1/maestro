@@ -16,7 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { GripVertical } from "lucide-react";
+import { GripVertical, LayoutGrid } from "lucide-react";
 import {
   forwardRef,
   type ReactNode,
@@ -94,6 +94,7 @@ import {
   buildGridTree,
   collectSlotIds,
   createLeaf,
+  equalizeTree,
   findSiblingSlotId,
   MAX_SESSIONS,
   moveSlotToSide,
@@ -563,6 +564,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // further down (it needs handleSwapSlots), so the hook reads it at call time.
   const moveFocusedRef = useRef<(direction: MoveDirection) => void>(() => {});
 
+  /** Tidy up: every pane gets an even share of the layout; the arrangement stays. */
+  const handleTidyLayout = useCallback(() => setLayoutTree(equalizeTree), []);
+
   useTerminalKeyboard({
     terminalCount: launchedSlots.length,
     // While zoomed, focus-cycling follows the zoom-tab order so Cmd/Ctrl+Alt+
@@ -595,6 +599,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     // — Alt+P would park the pane focused one render ago).
     onParkFocused: useCallback(() => parkFocusedRef.current(), []),
     onMoveFocused: useCallback((direction: MoveDirection) => moveFocusedRef.current(direction), []),
+    onTidyLayout: handleTidyLayout,
     onToggleZoomFocused: useCallback(() => {
       const targetId = focusedSlotId ?? slotsRef.current[0]?.id;
       if (!targetId) return;
@@ -1983,6 +1988,15 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           const zoomedIndex = orderedSlots.findIndex((s) => s.id === zoomedSlotId);
           return (
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-maestro-border bg-maestro-surface px-3">
+              <button
+                type="button"
+                onClick={handleTidyLayout}
+                className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+                title="Tidy up: give every terminal an even share (Alt+T)"
+                aria-label="Tidy up terminals"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
               <span className="text-[11px] font-medium uppercase tracking-wider text-maestro-muted">
                 Terminal {zoomedIndex + 1}/{orderedSlots.length}
               </span>
