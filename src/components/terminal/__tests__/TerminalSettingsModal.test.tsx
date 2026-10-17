@@ -39,6 +39,12 @@ describe("TerminalSettingsModal", () => {
     expect(screen.getByRole("button", { name: "Reset to Defaults" })).toBeInTheDocument();
   });
 
+  it("hides the reset action until the saved settings have loaded", () => {
+    useTerminalSettingsStore.setState({ isInitialized: false, isLoading: true });
+    render(<TerminalSettingsModal onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Reset to Defaults" })).not.toBeInTheDocument();
+  });
+
   it("closes from the shared close button", () => {
     const onClose = vi.fn();
     render(<TerminalSettingsModal onClose={onClose} />);

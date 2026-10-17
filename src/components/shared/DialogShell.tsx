@@ -106,7 +106,8 @@ export function DialogShell({
 /* ── Content primitives ── */
 
 /** The card every dialog section sits in. */
-export const dialogCardClass = "rounded-lg border border-maestro-border/60 bg-maestro-card p-3";
+export const dialogCardClass =
+  "rounded-lg border border-maestro-border bg-maestro-card p-3 shadow-[0_1px_3px_rgb(0_0_0/0.08)]";
 
 /** Section heading typography, shared with collapsible section headers. */
 export const dialogSectionHeadingClass =

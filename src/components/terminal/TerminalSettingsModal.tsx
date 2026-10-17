@@ -51,6 +51,8 @@ export function TerminalSettingsModal({ onClose }: TerminalSettingsModalProps) {
     setIsRefreshing(false);
   };
 
+  const loading = isLoading && !isInitialized;
+
   return (
     <DialogShell
       title="Terminal Settings"
@@ -58,13 +60,17 @@ export function TerminalSettingsModal({ onClose }: TerminalSettingsModalProps) {
       icon={<Monitor size={16} />}
       onClose={onClose}
       footer={
-        <button type="button" onClick={resetToDefaults} className={dialogButtonClass("ghost")}>
-          <RotateCcw size={12} />
-          Reset to Defaults
-        </button>
+        // No reset while the saved settings are still loading: it would
+        // overwrite them with the defaults before they arrive.
+        loading ? undefined : (
+          <button type="button" onClick={resetToDefaults} className={dialogButtonClass("ghost")}>
+            <RotateCcw size={12} />
+            Reset to Defaults
+          </button>
+        )
       }
     >
-      {isLoading && !isInitialized ? (
+      {loading ? (
         <div className="flex items-center justify-center py-8">
           <Loader2 size={20} className="animate-spin text-maestro-muted" />
         </div>
