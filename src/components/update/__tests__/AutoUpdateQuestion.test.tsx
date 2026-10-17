@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The update store persists through the Tauri store plugin; happy-dom has no
 // Tauri backend, so stub it out.
@@ -18,8 +18,13 @@ import { useUpdateStore } from "@/stores/useUpdateStore";
 import { AUTO_UPDATE_QUESTION, AutoUpdateQuestion } from "../AutoUpdateQuestion";
 
 describe("AutoUpdateQuestion", () => {
-  beforeEach(() => {
-    useUpdateStore.setState({ settingsLoaded: true, autoInstallOnLaunch: null });
+  beforeEach(async () => {
+    await useUpdateStore.persist.rehydrate();
+    useUpdateStore.setState({ autoInstallOnLaunch: null });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("asks once the settings are loaded and nothing was chosen yet", () => {
@@ -28,7 +33,8 @@ describe("AutoUpdateQuestion", () => {
   });
 
   it("stays hidden until the settings are loaded", () => {
-    useUpdateStore.setState({ settingsLoaded: false });
+    vi.spyOn(useUpdateStore.persist, "hasHydrated").mockReturnValue(false);
+    vi.spyOn(useUpdateStore.persist, "onFinishHydration").mockReturnValue(() => {});
     render(<AutoUpdateQuestion />);
     expect(screen.queryByText(AUTO_UPDATE_QUESTION)).toBeNull();
   });

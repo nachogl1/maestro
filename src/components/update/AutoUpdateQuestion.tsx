@@ -1,11 +1,26 @@
 import { ArrowDownCircle } from "lucide-react";
+import { useEffect, useState } from "react";
 import { DialogShell, dialogButtonClass } from "@/components/shared/DialogShell";
-import { useUpdateStore } from "@/stores/useUpdateStore";
+import { settingsHydrated, useUpdateStore } from "@/stores/useUpdateStore";
 
 /** The one-time question about installing updates when Maestro opens. */
 export const AUTO_UPDATE_QUESTION =
   "Install Maestro updates automatically when you open it? Maestro restarts once to finish. " +
   "You can change this in Maestro Settings.";
+
+/** Whether the persisted update settings have been read back from disk. */
+function useSettingsLoaded(): boolean {
+  const [loaded, setLoaded] = useState(() => useUpdateStore.persist.hasHydrated());
+  useEffect(() => {
+    if (loaded) return;
+    let active = true;
+    void settingsHydrated().then(() => active && setLoaded(true));
+    return () => {
+      active = false;
+    };
+  }, [loaded]);
+  return loaded;
+}
 
 /**
  * Asks once, after the update settings are loaded, whether an update found
@@ -13,7 +28,7 @@ export const AUTO_UPDATE_QUESTION =
  * dialog counts as Not now) is saved, so it never shows again.
  */
 export function AutoUpdateQuestion() {
-  const settingsLoaded = useUpdateStore((s) => s.settingsLoaded);
+  const settingsLoaded = useSettingsLoaded();
   const autoInstallOnLaunch = useUpdateStore((s) => s.autoInstallOnLaunch);
   const setAutoInstallOnLaunch = useUpdateStore((s) => s.setAutoInstallOnLaunch);
 

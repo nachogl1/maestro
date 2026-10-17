@@ -54,8 +54,6 @@ type UpdateState = UpdateSettings & {
   downloadProgress: number | null;
   error: string | null;
   lastCheckedAt: number | null;
-  /** Whether the persisted settings have been read back from disk. */
-  settingsLoaded: boolean;
 };
 
 /** Store actions. */
@@ -131,7 +129,6 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
       downloadProgress: null,
       error: null,
       lastCheckedAt: null,
-      settingsLoaded: false,
 
       checkForUpdates: async ({ manual = false } = {}) => {
         const { status, customEndpoint } = get();
@@ -232,14 +229,13 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
         customEndpoint: state.customEndpoint,
         autoInstallOnLaunch: state.autoInstallOnLaunch,
       }),
-      onRehydrateStorage: () => () => useUpdateStore.setState({ settingsLoaded: true }),
       version: 1,
     },
   ),
 );
 
 /** Resolves once the persisted update settings have been read back from disk. */
-function settingsHydrated(): Promise<void> {
+export function settingsHydrated(): Promise<void> {
   if (useUpdateStore.persist.hasHydrated()) return Promise.resolve();
   return new Promise((resolve) => {
     const stop = useUpdateStore.persist.onFinishHydration(() => {
