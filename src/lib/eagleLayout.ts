@@ -5,7 +5,7 @@
  * components hand in ids, counts and rects, so everything here is unit tested.
  */
 
-import type { PaneEdge } from "./paneMoves";
+import { type PaneEdge, STAGE_EDGE_RATIO } from "./paneMoves";
 
 /** Cells per axis. 60 divides evenly by 1–6 columns/rows (the automatic layouts). */
 export const EAGLE_UNITS = 60;
@@ -376,6 +376,83 @@ export function placeTileAt(
   const x = Math.min(units - size.w, Math.max(0, Math.round(cx - size.w / 2)));
   const y = Math.min(units - size.h, Math.max(0, Math.round(cy - size.h / 2)));
   return { x, y, w: size.w, h: size.h };
+}
+
+/**
+ * Drop a tile beside another one: the target gives up half its width (left/
+ * right) or height (top/bottom) on that side and the dragged tile takes it;
+ * the dragged tile's old cells become free. Null when either half would be
+ * smaller than MIN_TILE_UNITS, or the ids are unknown or the same.
+ */
+export function dropBesideTile(
+  tiles: ReadonlyMap<number, TileRect>,
+  movingId: number,
+  targetId: number,
+  side: PaneEdge,
+): Map<number, TileRect> | null {
+  const target = tiles.get(targetId);
+  if (!target || !tiles.has(movingId) || movingId === targetId) return null;
+  const horizontal = side === "left" || side === "right";
+  const size = horizontal ? target.w : target.h;
+  const movingShare = Math.floor(size / 2);
+  if (movingShare < MIN_TILE_UNITS) return null;
+  const targetShare = size - movingShare;
+  const next = new Map(tiles);
+  switch (side) {
+    case "left":
+      next.set(movingId, { ...target, w: movingShare });
+      next.set(targetId, { ...target, x: target.x + movingShare, w: targetShare });
+      break;
+    case "right":
+      next.set(movingId, { ...target, x: target.x + targetShare, w: movingShare });
+      next.set(targetId, { ...target, w: targetShare });
+      break;
+    case "top":
+      next.set(movingId, { ...target, h: movingShare });
+      next.set(targetId, { ...target, y: target.y + movingShare, h: targetShare });
+      break;
+    case "bottom":
+      next.set(movingId, { ...target, y: target.y + targetShare, h: movingShare });
+      next.set(targetId, { ...target, h: targetShare });
+      break;
+  }
+  return next;
+}
+
+/**
+ * Drop a tile on the grid's outer edge: it becomes a full-height column (or
+ * full-width row) of round(STAGE_EDGE_RATIO × units) cells there, and every
+ * other tile is scaled on that axis into the cells left. Boundaries are
+ * rounded (not sizes), so tiles that touched keep touching and nothing
+ * overlaps. Null when the id is unknown or a scaled tile would drop below
+ * MIN_TILE_UNITS.
+ */
+export function insertColumnAtEdge(
+  tiles: ReadonlyMap<number, TileRect>,
+  movingId: number,
+  edge: PaneEdge,
+  units: number = EAGLE_UNITS,
+): Map<number, TileRect> | null {
+  if (!tiles.has(movingId)) return null;
+  const share = Math.round(STAGE_EDGE_RATIO * units);
+  const rest = units - share;
+  const horizontal = edge === "left" || edge === "right";
+  const offset = edge === "left" || edge === "top" ? share : 0;
+  const scale = (v: number) => offset + Math.round((v * rest) / units);
+  const next = new Map<number, TileRect>();
+  for (const [id, r] of tiles) {
+    if (id === movingId) continue;
+    const scaled: TileRect = horizontal
+      ? { ...r, x: scale(r.x), w: scale(r.x + r.w) - scale(r.x) }
+      : { ...r, y: scale(r.y), h: scale(r.y + r.h) - scale(r.y) };
+    if (!rectInGrid(scaled, units)) return null;
+    next.set(id, scaled);
+  }
+  const column: TileRect = horizontal
+    ? { x: edge === "left" ? 0 : rest, y: 0, w: share, h: units }
+    : { x: 0, y: edge === "top" ? 0 : rest, w: units, h: share };
+  next.set(movingId, column);
+  return next;
 }
 
 /** Row-major reading order of the tiles (top to bottom, then left to right). */
