@@ -48,6 +48,7 @@ interface InfraProject {
 function dedupeProjects(tabs: WorkspaceTab[]): InfraProject[] {
   const projects: InfraProject[] = [];
   for (const tab of tabs) {
+    if (!tab.projectPath) continue;
     const existing = projects.find((p) => samePath(p.tab.projectPath, tab.projectPath));
     if (existing) {
       existing.active = existing.active || tab.active;
@@ -72,6 +73,16 @@ export function InfraTab() {
 
   const projects = useMemo(() => dedupeProjects(tabs), [tabs]);
 
+  // A toggle lives as long as its project is open: a project closed and
+  // opened again starts like any untouched group (expanded when active).
+  useEffect(() => {
+    setToggled((prev) => {
+      const open = new Set(projects.map((p) => normalizePath(p.tab.projectPath)));
+      const kept = Object.entries(prev).filter(([key]) => open.has(key));
+      return kept.length === Object.keys(prev).length ? prev : Object.fromEntries(kept);
+    });
+  }, [projects]);
+
   // Marketplace data backs the uninstall buttons in every group's Plugins &
   // Skills list: load it once for the tab, not once per project section (two
   // sections racing the same fetch re-triggered each other without end).
@@ -93,6 +104,7 @@ export function InfraTab() {
             <button
               type="button"
               onClick={() => setToggled((prev) => ({ ...prev, [key]: !expanded }))}
+              aria-expanded={expanded}
               className="mb-1 flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[11px] font-semibold hover:bg-maestro-border/30"
               title={tab.projectPath}
             >

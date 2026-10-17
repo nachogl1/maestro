@@ -114,6 +114,51 @@ describe("InfraTab (one group per open project)", () => {
     expect(marketplaceCalls).toHaveLength(1);
   });
 
+  it("tells assistive tech whether a group is expanded", () => {
+    render(<InfraTab />);
+    expect(screen.getByRole("button", { name: "maestro" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "other-app" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  // A collapsed group's choice must not outlive its tab: closing the project
+  // and opening it again as the active one starts it expanded, like any
+  // other untouched group.
+  it("forgets a collapsed group once its project is closed", () => {
+    const { rerender } = render(<InfraTab />);
+    fireEvent.click(screen.getByRole("button", { name: "maestro" }));
+    expect(screen.queryAllByText("MCP Servers")).toHaveLength(0);
+    useWorkspaceStore.setState({
+      tabs: [buildTab({ id: "tab-2", name: "other-app", projectPath: OTHER_PATH, active: true })],
+    });
+    rerender(<InfraTab />);
+    useWorkspaceStore.setState({
+      tabs: [
+        buildTab({ id: "tab-2", name: "other-app", projectPath: OTHER_PATH, active: false }),
+        buildTab({ id: "tab-3", active: true }),
+      ],
+    });
+    rerender(<InfraTab />);
+    expect(screen.getByRole("button", { name: "maestro" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("skips a tab that has no project folder", () => {
+    useWorkspaceStore.setState({
+      tabs: [buildTab(), buildTab({ id: "tab-9", name: "", projectPath: "", active: false })],
+    });
+    render(<InfraTab />);
+    expect(screen.queryAllByRole("button", { expanded: false })).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "maestro" })).toBeInTheDocument();
+  });
+
   it("shows the user-level sections without a header when no project is open", () => {
     useWorkspaceStore.setState({ tabs: [] });
     render(<InfraTab />);
