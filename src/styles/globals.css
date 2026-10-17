@@ -527,18 +527,6 @@
   animation: context-alert-pill-blink 1s step-end infinite;
 }
 
-/* The header is a size container so the pill can drop its text — icon only —
-   where the header is too narrow to fit it between the name and the controls. */
-.terminal-header {
-  container-type: inline-size;
-}
-
-@container (max-width: 360px) {
-  .context-alert-pill-text {
-    display: none;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
   .animate-edge-dash,

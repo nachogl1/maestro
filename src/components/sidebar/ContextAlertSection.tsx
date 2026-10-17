@@ -33,6 +33,7 @@ export function ContextAlertSection() {
   const [lastPercent, setLastPercent] = useState(threshold ?? DEFAULT_CONTEXT_ALERT_THRESHOLD);
   const [draft, setDraft] = useState(String(threshold ?? DEFAULT_CONTEXT_ALERT_THRESHOLD));
   const pendingApply = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const cancelPendingApply = useCallback(() => {
     if (pendingApply.current === null) return;
@@ -42,14 +43,16 @@ export function ContextAlertSection() {
 
   useEffect(() => cancelPendingApply, [cancelPendingApply]);
 
+  // Mirror the stored percent into the field, except while the user is typing
+  // in it, so a pause-apply never rewrites the text under their cursor (blur
+  // or Enter normalises it).
   useEffect(() => {
     if (threshold === null) return;
     setLastPercent(threshold);
-    setDraft(String(threshold));
+    if (document.activeElement !== inputRef.current) setDraft(String(threshold));
   }, [threshold]);
 
   const applyPercent = (parsed: number) => {
-    setDraft(String(parsed));
     setLastPercent(parsed);
     setThreshold(parsed);
   };
@@ -62,6 +65,7 @@ export function ContextAlertSection() {
       setDraft(String(lastPercent));
       return;
     }
+    setDraft(String(parsed));
     applyPercent(parsed);
   };
 
@@ -84,6 +88,7 @@ export function ContextAlertSection() {
       <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-maestro-text hover:bg-maestro-border/40">
         <span className="flex-1">Blink red frame at</span>
         <input
+          ref={inputRef}
           type="number"
           inputMode="numeric"
           min={MIN_CONTEXT_ALERT_THRESHOLD}
@@ -106,7 +111,11 @@ export function ContextAlertSection() {
           role="switch"
           aria-checked={enabled}
           aria-label="Toggle context alert"
-          onClick={() => setThreshold(enabled ? null : lastPercent)}
+          onClick={() => {
+            // Switching off must win over a number still waiting to apply.
+            cancelPendingApply();
+            setThreshold(enabled ? null : lastPercent);
+          }}
           className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
             enabled ? "bg-maestro-accent" : "bg-maestro-border"
           }`}

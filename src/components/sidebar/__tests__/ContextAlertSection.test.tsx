@@ -156,6 +156,30 @@ describe("ContextAlertSection", () => {
       expect(input().value).toBe("");
     });
 
+    it("switching the alert off cancels a number still waiting to apply", () => {
+      render(<ContextAlertSection />);
+      fireEvent.change(input(), { target: { value: "95" } });
+      fireEvent.click(screen.getByLabelText("Toggle context alert"));
+      expect(useContextAlertStore.getState().threshold).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(CONTEXT_ALERT_APPLY_DELAY_MS);
+      });
+      expect(useContextAlertStore.getState().threshold).toBeNull();
+    });
+
+    it("a pause-apply leaves the text under the cursor alone until blur", () => {
+      render(<ContextAlertSection />);
+      input().focus();
+      fireEvent.change(input(), { target: { value: "150" } });
+      act(() => {
+        vi.advanceTimersByTime(CONTEXT_ALERT_APPLY_DELAY_MS);
+      });
+      expect(useContextAlertStore.getState().threshold).toBe(100);
+      expect(input().value).toBe("150");
+      fireEvent.blur(input());
+      expect(input().value).toBe("100");
+    });
+
     it("unmounting with a pending edit does not apply it later", () => {
       const { unmount } = render(<ContextAlertSection />);
       fireEvent.change(input(), { target: { value: "33" } });

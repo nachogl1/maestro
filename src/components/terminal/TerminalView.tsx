@@ -17,7 +17,11 @@ import { describeSessionContext } from "@/lib/sessionContext";
 import { killSession, writeStdin } from "@/lib/terminal";
 import { DEFAULT_THEME, LIGHT_THEME, toXtermTheme } from "@/lib/terminalTheme";
 import { useActivityStore } from "@/stores/useActivityStore";
-import { isContextAlert, useContextAlertStore } from "@/stores/useContextAlertStore";
+import {
+  describeContextAlert,
+  isContextAlert,
+  useContextAlertStore,
+} from "@/stores/useContextAlertStore";
 import { type AiMode, type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 import type { ClaudeEvent } from "@/types/claude-events";
@@ -170,6 +174,10 @@ export const TerminalView = memo(function TerminalView({
   // reaches the threshold picked in Settings (null = off).
   const contextAlertThreshold = useContextAlertStore((s) => s.threshold);
   const contextAlert = isContextAlert(sessionData?.contextPercent, contextAlertThreshold);
+  const contextAlertTitle =
+    contextAlert && sessionData?.contextPercent !== undefined && contextAlertThreshold !== null
+      ? describeContextAlert(sessionData.contextPercent, contextAlertThreshold)
+      : undefined;
   const effectiveProvider = sessionData ? mapAiMode(sessionData.mode) : "claude";
 
   // Warning flag: user-toggled yellow chrome (header + tab strip), synced via
@@ -428,8 +436,7 @@ export const TerminalView = memo(function TerminalView({
         onToggleFlag={handleToggleFlag}
         showShortcutHints={showShortcutHints}
         contextAlert={contextAlert}
-        contextPercent={sessionData?.contextPercent}
-        contextAlertThreshold={contextAlertThreshold}
+        contextAlertTitle={contextAlertTitle}
       />
 
       {/* Can't-miss attention strip: Maestro is about to hand off or park

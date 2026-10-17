@@ -20,7 +20,6 @@ import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { useDismissable } from "@/hooks/useDismissable";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, comboLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
-import { describeContextAlert } from "@/stores/useContextAlertStore";
 
 export type SessionStatus =
   | "idle"
@@ -88,10 +87,11 @@ interface TerminalHeaderProps {
    * reached" pill blinks in the middle of the header, in step with the frame.
    */
   contextAlert?: boolean;
-  /** Last-known context-window usage (0-100), for the pill's hover text. */
-  contextPercent?: number;
-  /** The alert threshold (0-100), for the pill's hover text. */
-  contextAlertThreshold?: number | null;
+  /**
+   * Hover text of the alert pill ("Context 87% >= 80% alert"). Derived by the
+   * parent so this memoised header does not re-render on every usage tick.
+   */
+  contextAlertTitle?: string;
 }
 
 const providerConfig: Record<AIProvider, { icon: IconComponent; label: string }> = {
@@ -129,8 +129,7 @@ export const TerminalHeader = memo(function TerminalHeader({
   onToggleFlag,
   showShortcutHints = true,
   contextAlert = false,
-  contextPercent,
-  contextAlertThreshold,
+  contextAlertTitle,
 }: TerminalHeaderProps) {
   const { icon: ProviderIcon } = providerConfig[provider];
   const [showZoomMenu, setShowZoomMenu] = useState(false);
@@ -364,23 +363,19 @@ export const TerminalHeader = memo(function TerminalHeader({
         <SamuraiBadge sessionId={sessionId} />
       </div>
 
-      {/* Context alert pill — centred over the header, blinking with the
+      {/* Context alert pill: centred over the header, blinking with the
           frame. Absolutely positioned so the name (left) and the controls
           (right) keep their layout; pointer-events-none so header clicks
-          (flag toggle, drag handle) still land. Under ~360px of header the
-          text hides and only the icon stays (see .terminal-header in
-          globals.css). */}
+          (flag toggle, drag handle) still land. Capped to the middle 40% of
+          the header (text truncates) and icon-only in a dense grid, so it
+          never hides the controls. */}
       {contextAlert && (
         <output
-          className={`context-alert-pill pointer-events-none absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-maestro-red/15 px-2 py-0.5 font-medium text-maestro-red ${adaptive.badgeSize}`}
-          title={
-            contextPercent !== undefined && contextAlertThreshold != null
-              ? describeContextAlert(contextPercent, contextAlertThreshold)
-              : "Context threshold reached"
-          }
+          className={`context-alert-pill pointer-events-none absolute left-1/2 top-1/2 flex max-w-[40%] -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-maestro-red/15 px-2 py-0.5 font-medium text-maestro-red ${adaptive.badgeSize}`}
+          title={contextAlertTitle ?? "Context threshold reached"}
         >
           <AlertTriangle size={terminalCount <= 4 ? 12 : 10} aria-hidden="true" />
-          <span className="context-alert-pill-text">Context threshold reached</span>
+          {terminalCount <= 4 && <span className="truncate">Context threshold reached</span>}
         </output>
       )}
 
