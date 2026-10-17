@@ -31,9 +31,17 @@ describe("isContextAlert", () => {
   });
 
   it("alerts at and above the threshold, not below it", () => {
-    expect(isContextAlert(79.9, 80)).toBe(false);
+    expect(isContextAlert(79.4, 80)).toBe(false);
     expect(isContextAlert(80, 80)).toBe(true);
     expect(isContextAlert(93.4, 80)).toBe(true);
+  });
+
+  it("judges the whole percent the badges show, so a reading displayed as 80% alerts at 80", () => {
+    // The store keeps one decimal (79.6) while every badge rounds it (80%);
+    // comparing the raw decimal made a terminal that visibly read "80%" stay
+    // quiet at an 80 threshold — the "not all terminals blink" flake.
+    expect(isContextAlert(79.6, 80)).toBe(true);
+    expect(isContextAlert(79.4, 80)).toBe(false);
   });
 });
 

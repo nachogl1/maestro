@@ -427,6 +427,9 @@ export const TerminalView = memo(function TerminalView({
         hasAttention={hasAttention}
         onToggleFlag={handleToggleFlag}
         showShortcutHints={showShortcutHints}
+        contextAlert={contextAlert}
+        contextPercent={sessionData?.contextPercent}
+        contextAlertThreshold={contextAlertThreshold}
       />
 
       {/* Can't-miss attention strip: Maestro is about to hand off or park

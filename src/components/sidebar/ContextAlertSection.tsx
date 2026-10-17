@@ -1,5 +1,5 @@
 import { Gauge } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_CONTEXT_ALERT_THRESHOLD,
   MAX_CONTEXT_ALERT_THRESHOLD,
@@ -10,11 +10,19 @@ import {
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 /**
+ * How long the user has to stop typing before the number in the field is
+ * applied on its own. Long enough that "9" on the way to "95" never makes
+ * every terminal blink, short enough to feel immediate.
+ */
+export const CONTEXT_ALERT_APPLY_DELAY_MS = 500;
+
+/**
  * Sidebar settings card for the context-usage alert: type the context-window
  * percentage at which a Claude terminal's frame starts blinking red, or switch
- * the alert off. The typed value is applied on blur or Enter (not per
- * keystroke, so "9" on the way to "95" never makes every terminal blink) and
- * is clamped to the allowed range; text that is not a number is dropped.
+ * the alert off. A valid number is applied once the user pauses typing (see
+ * {@link CONTEXT_ALERT_APPLY_DELAY_MS}), and at once on blur or Enter — never
+ * per keystroke. It is clamped to the allowed range; on blur, text that is not
+ * a number is dropped.
  */
 export function ContextAlertSection() {
   const threshold = useContextAlertStore((s) => s.threshold);
@@ -24,6 +32,15 @@ export function ContextAlertSection() {
   // The percent kept while the alert is off, so switching it back on restores it.
   const [lastPercent, setLastPercent] = useState(threshold ?? DEFAULT_CONTEXT_ALERT_THRESHOLD);
   const [draft, setDraft] = useState(String(threshold ?? DEFAULT_CONTEXT_ALERT_THRESHOLD));
+  const pendingApply = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelPendingApply = useCallback(() => {
+    if (pendingApply.current === null) return;
+    clearTimeout(pendingApply.current);
+    pendingApply.current = null;
+  }, []);
+
+  useEffect(() => cancelPendingApply, [cancelPendingApply]);
 
   useEffect(() => {
     if (threshold === null) return;
@@ -31,15 +48,33 @@ export function ContextAlertSection() {
     setDraft(String(threshold));
   }, [threshold]);
 
+  const applyPercent = (parsed: number) => {
+    setDraft(String(parsed));
+    setLastPercent(parsed);
+    setThreshold(parsed);
+  };
+
+  // Blur / Enter: apply now, dropping unusable text.
   const commit = () => {
+    cancelPendingApply();
     const parsed = parseContextAlertThreshold(draft);
     if (parsed === null) {
       setDraft(String(lastPercent));
       return;
     }
-    setDraft(String(parsed));
-    setLastPercent(parsed);
-    setThreshold(parsed);
+    applyPercent(parsed);
+  };
+
+  // Typing: apply the number once the user pauses. Unusable text (an emptied
+  // field mid-edit) is left alone so they can finish the number.
+  const handleDraftChange = (value: string) => {
+    setDraft(value);
+    cancelPendingApply();
+    pendingApply.current = setTimeout(() => {
+      pendingApply.current = null;
+      const parsed = parseContextAlertThreshold(value);
+      if (parsed !== null) applyPercent(parsed);
+    }, CONTEXT_ALERT_APPLY_DELAY_MS);
   };
 
   return (
@@ -56,7 +91,7 @@ export function ContextAlertSection() {
           step={1}
           value={draft}
           disabled={!enabled}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => handleDraftChange(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === "Enter") commit();
