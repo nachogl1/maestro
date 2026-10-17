@@ -9,9 +9,10 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-18",
-    title: "Automatic updates when Maestro opens",
+    title: "Automatic updates when Maestro opens, opt-in Work Journal",
     items: [
       "Updates: turn on Install on launch (Maestro asks once, or in Maestro Settings) and an update found when you open Maestro installs by itself and restarts the app.",
+      "Work Journal is off until you turn it on: Maestro asks once on first launch, remembers your answer across updates, and Maestro Settings has a switch to change it any time.",
     ],
   },
   {

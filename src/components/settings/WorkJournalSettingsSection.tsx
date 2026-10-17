@@ -6,6 +6,7 @@ import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
 import { WorkJournalCandidateRunRows } from "./WorkJournalCandidateRunRows";
+import { WorkJournalEnabledToggle } from "./WorkJournalEnabledToggle";
 import { WorkJournalGranolaRow } from "./WorkJournalGranolaRow";
 import { WorkJournalReportFolderRow } from "./WorkJournalReportFolderRow";
 
@@ -131,7 +132,12 @@ export function WorkJournalSettingsSection(): JSX.Element {
   };
 
   return (
-    <DialogSection title="Work Journal" icon={<BookOpen size={13} />} hint={HINTS.section}>
+    <DialogSection
+      title="Work Journal"
+      icon={<BookOpen size={13} />}
+      hint={HINTS.section}
+      right={<WorkJournalEnabledToggle />}
+    >
       <WorkJournalCandidateRunRows />
       <WorkJournalGranolaRow />
       <div className="flex items-center gap-2 text-xs">

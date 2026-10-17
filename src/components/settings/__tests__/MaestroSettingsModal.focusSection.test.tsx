@@ -1,9 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { MaestroSettingsModal } from "../MaestroSettingsModal";
 
 const invokeMock = vi.mocked(invoke);
+
+// The Work Journal switch persists through the Tauri store plugin; happy-dom
+// has no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
 
 /** A stand-in ResizeObserver: happy-dom has no layout, so tests fire resizes by hand. */
 class FakeResizeObserver {
@@ -35,6 +49,8 @@ describe("MaestroSettingsModal focusSection", () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     scrollSpy = vi.fn();
     Element.prototype.scrollIntoView = scrollSpy as unknown as Element["scrollIntoView"];
+    // The full Work Journal section shows only once the user turned the journal on.
+    useWorkJournalSettingsStore.setState({ enabled: true });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "samurai_get_config") throw new Error("not needed here");
