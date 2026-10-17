@@ -111,8 +111,8 @@ now; for a line that sums up several activities, the time of the earliest one.\n
 - action is one short action in English, in the past tense, for example: Worked on the \
 login fix: new password rules and the PR merged\n\
 - Keep each line under 200 characters.\n\
-- source is the source tag of the activity lines it came from: github, git, claude or \
-terminal; for a line that sums up several sources, the one with most of the work.\n\
+- source is the source tag of the activity lines it came from: git (a commit), pr, issue, \
+claude or terminal; for a line that sums up several sources, the one with most of the work.\n\
 - Do not repeat anything already on the page or in the suggested or rejected lines, even \
 in other words. When a suggested or rejected line already covers a project's work that day, \
 add a line for that project only for a different piece of work.\n\
@@ -320,9 +320,11 @@ where
 
 /// The source tags a reply line may carry; `granola` only when Granola was
 /// on for the call (see [`parse_line`]).
-const REPLY_SOURCES: [CandidateSource; 4] = [
+const REPLY_SOURCES: [CandidateSource; 6] = [
     CandidateSource::Github,
     CandidateSource::Git,
+    CandidateSource::Pr,
+    CandidateSource::Issue,
     CandidateSource::Claude,
     CandidateSource::Terminal,
 ];
@@ -583,6 +585,8 @@ fn source_tag(source: CandidateSource) -> &'static str {
     match source {
         CandidateSource::Github => "github",
         CandidateSource::Git => "git",
+        CandidateSource::Pr => "pr",
+        CandidateSource::Issue => "issue",
         CandidateSource::Claude => "claude",
         CandidateSource::Terminal => "terminal",
         CandidateSource::Granola => "granola",
@@ -653,11 +657,17 @@ pub fn build_prompt(
 /// How `item` is remembered once sent for its date: its identity plus a
 /// short hash (16 hex digits of SHA-256) of its project and
 /// [`ActivityItem::content`], so the same item with new content is sent again.
+/// A PR or issue is remembered as `Github`, as before the split, so items
+/// sent before it are not sent again.
 fn sent_item(item: &ActivityItem) -> SentItem {
     let digest = Sha256::digest(format!("{}\n{}", item.project, item.content).as_bytes());
+    let source = match item.source {
+        CandidateSource::Pr | CandidateSource::Issue => CandidateSource::Github,
+        source => source,
+    };
     SentItem {
         date: item.date.clone(),
-        source: item.source,
+        source,
         key: item.key.clone(),
         hash: hex::encode(&digest[..8]),
     }
@@ -2406,7 +2416,37 @@ mod tests {
         assert!(prompt.contains("for this date (do not repeat):\n(none)"));
     }
 
+    #[test]
+    fn test_build_prompt_tags_prs_and_issues_and_remembers_them_as_github() {
+        let pr = item(
+            "2026-10-15",
+            "09:05",
+            CandidateSource::Pr,
+            "Merged PR #3: login",
+        );
+        let issue = item(
+            "2026-10-15",
+            "09:10",
+            CandidateSource::Issue,
+            "Closed issue #4: x",
+        );
+        let prompt = build_prompt("2026-10-15", &[pr.clone(), issue.clone()], "", &[]);
+        assert!(prompt.contains("09:05 [pr] maestro: Merged PR #3: login"));
+        assert!(prompt.contains("09:10 [issue] maestro: Closed issue #4: x"));
+        // Sent records written before the split keep matching.
+        assert_eq!(sent_item(&pr).source, CandidateSource::Github);
+        assert_eq!(sent_item(&issue).source, CandidateSource::Github);
+    }
+
     // --- parse_reply ---
+
+    #[test]
+    fn test_parse_reply_reads_pr_and_issue_tags() {
+        let reply = "09:05 - Merged the login PR | pr\n09:10 - Closed the bug | Issue";
+        let parsed = parse_reply(reply, "2026-10-15", &[], false).unwrap();
+        let sources: Vec<CandidateSource> = parsed.iter().map(|c| c.source).collect();
+        assert_eq!(sources, vec![CandidateSource::Pr, CandidateSource::Issue]);
+    }
 
     #[test]
     fn test_parse_reply_reads_valid_lines() {

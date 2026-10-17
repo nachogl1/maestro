@@ -6,8 +6,19 @@ import { listenWorkJournalChanged } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { appendWorkJournalLine, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
-/** Where a candidate's activity came from (backend `CandidateSource`). */
-export type WorkJournalCandidateSource = "github" | "git" | "claude" | "terminal" | "granola";
+/**
+ * Where a candidate's activity came from (backend `CandidateSource`). `git`
+ * (a commit), `pr` and `issue` are the git family; `github` is the older tag
+ * for a PR or issue, still found on candidates stored before the split.
+ */
+export type WorkJournalCandidateSource =
+  | "github"
+  | "git"
+  | "pr"
+  | "issue"
+  | "claude"
+  | "terminal"
+  | "granola";
 
 /** Pending (waiting for the user) or rejected (backend `CandidateState`). */
 export type WorkJournalCandidateState = "pending" | "rejected";
@@ -34,10 +45,12 @@ interface CandidatesAddedPayload {
   added: number;
 }
 
-/** The source tag shown for each source. */
+/** The source tag shown for each source: the git family says what in git it came from. */
 export const WORK_JOURNAL_SOURCE_LABELS: Record<WorkJournalCandidateSource, string> = {
-  github: "GitHub",
-  git: "Git",
+  github: "Git · GitHub",
+  git: "Git · commit",
+  pr: "Git · PR",
+  issue: "Git · issue",
   claude: "Claude",
   terminal: "Terminal",
   granola: "Granola",

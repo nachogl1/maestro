@@ -7,11 +7,28 @@ import {
   useWorkJournalCandidatesStore,
   WORK_JOURNAL_SOURCE_LABELS,
   type WorkJournalCandidate,
+  type WorkJournalCandidateSource,
 } from "@/stores/useWorkJournalCandidatesStore";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /** Stable empty list, so the selector does not return a new array each render. */
 const NO_CANDIDATES: WorkJournalCandidate[] = [];
+
+const GIT_TAG_COLOR = "border-maestro-orange/50 text-maestro-orange";
+
+/** Source tag colours: one per source, one shared by the whole git family. */
+const SOURCE_TAG_COLORS: Record<WorkJournalCandidateSource, string> = {
+  github: GIT_TAG_COLOR,
+  git: GIT_TAG_COLOR,
+  pr: GIT_TAG_COLOR,
+  issue: GIT_TAG_COLOR,
+  claude: "border-maestro-blue/50 text-maestro-blue",
+  terminal: "border-maestro-green/50 text-maestro-green",
+  granola: "border-maestro-purple/50 text-maestro-purple",
+};
+
+/** For a source tag this build does not know. */
+const DEFAULT_TAG_COLOR = "border-maestro-border text-maestro-muted";
 
 const ICON_BUTTON =
   "rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
@@ -223,7 +240,11 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                 <span className="min-w-0 flex-1 break-words text-maestro-text">
                   {candidateLine(candidate)}
                 </span>
-                <span className="shrink-0 rounded border border-maestro-border px-1 text-[10px] text-maestro-muted">
+                <span
+                  className={`shrink-0 rounded border px-1 text-[10px] ${
+                    SOURCE_TAG_COLORS[candidate.source] ?? DEFAULT_TAG_COLOR
+                  }`}
+                >
                   {WORK_JOURNAL_SOURCE_LABELS[candidate.source] ?? candidate.source}
                 </span>
                 <button

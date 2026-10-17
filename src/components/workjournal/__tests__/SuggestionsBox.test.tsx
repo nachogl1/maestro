@@ -179,7 +179,7 @@ describe("SuggestionsBox", () => {
 
     const items = within(box()).getAllByRole("listitem");
     expect(items).toHaveLength(3);
-    expect(within(items[0]).getByText("GitHub")).toBeInTheDocument();
+    expect(within(items[0]).getByText("Git · GitHub")).toBeInTheDocument();
     expect(
       within(items[1]).getByText("14:05 - Worked on agent-name terminal titles"),
     ).toBeVisible();
@@ -226,15 +226,29 @@ describe("SuggestionsBox", () => {
     ).toBeVisible();
   });
 
-  it("maps every source to its exact tag", async () => {
-    candidates = (["github", "git", "claude", "terminal", "granola"] as const).map((source, i) =>
-      candidate(`s${i}`, `line ${source}`, { source }),
-    );
+  it("maps every source to its exact tag, the git family sharing one colour", async () => {
+    const sources = ["github", "git", "pr", "issue", "claude", "terminal", "granola"] as const;
+    candidates = sources.map((source, i) => candidate(`s${i}`, `line ${source}`, { source }));
     render(<WorkJournalPanel />);
     await screen.findByText("14:05 - line github");
-    for (const tag of ["GitHub", "Git", "Claude", "Terminal", "Granola"]) {
+    const tags = [
+      "Git · GitHub",
+      "Git · commit",
+      "Git · PR",
+      "Git · issue",
+      "Claude",
+      "Terminal",
+      "Granola",
+    ];
+    for (const tag of tags) {
       expect(within(box()).getByText(tag)).toBeInTheDocument();
     }
+    const color = (tag: string) => within(box()).getByText(tag).className;
+    for (const tag of ["Git · GitHub", "Git · PR", "Git · issue"]) {
+      expect(color(tag)).toBe(color("Git · commit"));
+    }
+    const families = ["Git · commit", "Claude", "Terminal", "Granola"].map(color);
+    expect(new Set(families).size).toBe(4);
   });
 
   it("accept appends `time - action` at the end of the page and removes the candidate", async () => {
