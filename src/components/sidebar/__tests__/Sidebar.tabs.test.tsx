@@ -73,6 +73,9 @@ function buildTab(overrides: Partial<WorkspaceTab> = {}): WorkspaceTab {
 /** The conversation in the mock ran inside the feature worktree, not the repo. */
 const WORKTREE_PATH = "C:\\worktrees\\feat-login";
 
+/** A second open project, for the per-project Infra groups. */
+const OTHER_PATH = "C:\\git\\other-app";
+
 /** Routes the global invoke mock by command; unknown commands resolve empty. */
 function mockInvoke() {
   invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
@@ -239,6 +242,60 @@ describe("Sidebar tab bar", () => {
     expect(screen.getByText("Plugins & Skills")).toBeInTheDocument();
     expect(screen.getByText("Project Context")).toBeInTheDocument();
     expect(screen.queryByText("Agents")).not.toBeInTheDocument();
+  });
+
+  // The Infra tab covers every open project, not just the active one: one
+  // collapsible group per project tab, so a second project's MCP servers,
+  // plugins and context docs can be managed without switching tabs.
+  it("Infra tab shows one group per open project; the active one starts expanded", async () => {
+    useWorkspaceStore.setState({
+      tabs: [
+        buildTab(),
+        buildTab({ id: "tab-2", name: "other-app", projectPath: OTHER_PATH, active: false }),
+      ],
+    });
+    localStorage.setItem("maestro-sidebar-tab", "infra");
+    render(<ControlledSidebar />);
+
+    expect(screen.getByRole("button", { name: "maestro" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "other-app" })).toBeInTheDocument();
+    // Only the active project's sections are open.
+    expect(screen.getAllByText("MCP Servers")).toHaveLength(1);
+    expect(screen.getAllByText("Plugins & Skills")).toHaveLength(1);
+    expect(screen.getAllByText("Project Context")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "other-app" }));
+    expect(screen.getAllByText("MCP Servers")).toHaveLength(2);
+    expect(screen.getAllByText("Project Context")).toHaveLength(2);
+
+    // Each group fetched its own project's infra.
+    await waitFor(() => {
+      for (const cmd of ["get_mcp_status", "get_project_plugins", "list_context_docs"]) {
+        const paths = invokeMock.mock.calls
+          .filter(([c]) => c === cmd)
+          .map(([, args]) => (args as { projectPath: string }).projectPath);
+        expect(paths, cmd).toEqual(expect.arrayContaining(["C:\\git\\maestro", OTHER_PATH]));
+      }
+    });
+
+    // The active group collapses too, hiding its sections.
+    fireEvent.click(screen.getByRole("button", { name: "maestro" }));
+    expect(screen.getAllByText("MCP Servers")).toHaveLength(1);
+  });
+
+  it("Infra tab shows one group for tabs that open the same project", () => {
+    useWorkspaceStore.setState({
+      tabs: [
+        buildTab(),
+        // Same folder, different spelling (slashes + case), as a second tab.
+        buildTab({ id: "tab-2", name: "maestro", projectPath: "c:/git/maestro/", active: false }),
+      ],
+    });
+    localStorage.setItem("maestro-sidebar-tab", "infra");
+    render(<ControlledSidebar />);
+
+    expect(screen.getAllByRole("button", { name: "maestro" })).toHaveLength(1);
+    expect(screen.getAllByText("MCP Servers")).toHaveLength(1);
   });
 
   it("switches to Settings (appearance, notifications, agents) and persists the chosen tab", async () => {
