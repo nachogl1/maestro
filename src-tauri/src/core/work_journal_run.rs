@@ -98,20 +98,25 @@ const USER_PROMPT: &str = "Write Work Journal lines for the activity given on st
 pub const SYSTEM_PROMPT: &str = "You write a developer's Work Journal. You are given what \
 they did on one day (one activity per line: time, source tag, project, text), what is \
 already on that day's journal page, and the lines already suggested or rejected for that \
-day. Turn the activity into short journal lines.\n\
+day. Turn the activity into a few short journal lines that sum up the day's work.\n\
 Output contract, follow it exactly:\n\
 - Plain text lines only: no markdown, no bullets, no numbering, no preamble, no closing \
 remarks.\n\
 - One line per journal entry, in the form: HH:MM - action | source\n\
-- HH:MM is when the activity happened (24-hour, from the activity line), not the time now.\n\
-- action is one short action in English, in the past tense, for example: Merged the PR \
-for the login fix\n\
+- Write one line per project, summing up the features or outcomes worked on in that \
+project that day, not one line per commit, pull request, file, session or terminal. Give a \
+project a second line only for a clearly separate piece of work.\n\
+- HH:MM is when the activity happened (24-hour, from the activity lines), not the time \
+now; for a line that sums up several activities, the time of the earliest one.\n\
+- action is one short action in English, in the past tense, for example: Worked on the \
+login fix: new password rules and the PR merged\n\
 - Keep each line under 200 characters.\n\
-- source is the source tag of the activity line it came from: github, git, claude or \
-terminal.\n\
+- source is the source tag of the activity lines it came from: github, git, claude or \
+terminal; for a line that sums up several sources, the one with most of the work.\n\
 - Do not repeat anything already on the page or in the suggested or rejected lines, even \
-in other words.\n\
-- Merge closely related activity into one line; skip activity not worth a journal line.\n\
+in other words. When a suggested or rejected line already covers a project's work that day, \
+add a line for that project only for a different piece of work.\n\
+- Skip activity not worth a journal line.\n\
 - If nothing is worth a line, reply with exactly: NONE";
 
 /// The rules added to [`SYSTEM_PROMPT`] when Granola is on for a run. The
@@ -641,7 +646,7 @@ pub fn build_prompt(
          Activity (HH:MM [source] project: text):\n{activity}\n\n\
          Already on the journal page for this date (do not repeat):\n{page}\n\n\
          Already suggested or rejected for this date (do not repeat):\n{suggested}\n\n\
-         Reply with one line per new journal entry, HH:MM - action | source, or NONE."
+         Reply with one line per project with new work, HH:MM - action | source, or NONE."
     )
 }
 
@@ -1884,6 +1889,27 @@ mod tests {
         ] {
             assert!(SYSTEM_PROMPT.contains(needle), "missing {needle}");
         }
+    }
+
+    #[test]
+    fn test_system_prompt_asks_for_one_line_per_project_not_one_per_change() {
+        for needle in [
+            "one line per project",
+            "features",
+            "not one line per commit",
+            "different piece of work",
+        ] {
+            assert!(SYSTEM_PROMPT.contains(needle), "missing {needle}");
+        }
+        assert!(!SYSTEM_PROMPT.contains("Merge closely related activity"));
+    }
+
+    #[test]
+    fn test_build_prompt_closes_with_the_one_line_per_project_rule() {
+        let prompt = build_prompt("2026-10-15", &[], "", &[]);
+        assert!(prompt.ends_with(
+            "Reply with one line per project with new work, HH:MM - action | source, or NONE."
+        ));
     }
 
     // --- Granola: command line and system prompt ---
