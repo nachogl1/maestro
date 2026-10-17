@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-18",
+    title: "Automatic updates when Maestro opens",
+    items: [
+      "Updates: turn on Install on launch (Maestro asks once, or in Maestro Settings) and an update found when you open Maestro installs by itself and restarts the app.",
+    ],
+  },
+  {
     date: "2026-10-17",
     title: "Eagle view columns, tidier settings, Infra for every project, shorter changelog",
     items: [
