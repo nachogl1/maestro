@@ -11,7 +11,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
 import { isMac } from "@/lib/platform";
 
@@ -92,7 +92,7 @@ function TabItem({
       tabIndex={tab.active ? 0 : -1}
       onClick={onSelect}
       onKeyDown={onKeyDown}
-      className={`flex items-center gap-1.5 rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
+      className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
         tab.active
           ? "bg-maestro-bg text-maestro-text"
           : "text-maestro-muted hover:text-maestro-text"
@@ -178,6 +178,19 @@ export function ProjectTabs({
     [onReorderTab],
   );
 
+  // Keep the selected tab visible when the strip is wider than the window.
+  const activeTabId = tabs.find((t) => t.active)?.id;
+  useEffect(() => {
+    if (!activeTabId) return;
+    tabRefs.current.get(activeTabId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId]);
+
+  // A plain mouse wheel has no horizontal axis; map it onto the strip's scroll.
+  const handleTabListWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaX !== 0 || e.deltaY === 0) return;
+    e.currentTarget.scrollLeft += e.deltaY;
+  }, []);
+
   const handleTabKeyDown = useCallback(
     (e: React.KeyboardEvent, tab: ProjectTab) => {
       const isMeta = e.metaKey || e.ctrlKey;
@@ -219,13 +232,13 @@ export function ProjectTabs({
     >
       {/* Left: sidebar toggle + tabs (inset from CSS var for macOS traffic lights) */}
       <div
-        className="flex items-center gap-0.5 pr-1.5"
+        className="flex min-w-0 items-center gap-0.5 pr-1.5"
         style={{ paddingLeft: "max(var(--mac-title-bar-inset, 0px), 6px)" }}
       >
         <button
           type="button"
           onClick={onToggleSidebar}
-          className={`rounded p-1.5 transition-colors ${
+          className={`shrink-0 rounded p-1.5 transition-colors ${
             sidebarOpen
               ? "text-maestro-accent hover:bg-maestro-accent/10"
               : "text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
@@ -235,7 +248,7 @@ export function ProjectTabs({
           <PanelLeft size={14} />
         </button>
 
-        <div className="mx-1 h-4 w-px bg-maestro-border" />
+        <div className="mx-1 h-4 w-px shrink-0 bg-maestro-border" />
 
         <DndContext
           sensors={sensors}
@@ -244,7 +257,12 @@ export function ProjectTabs({
           onDragEnd={handleDragEnd}
         >
           <SortableContext items={tabs.map((t) => t.id)} strategy={horizontalListSortingStrategy}>
-            <div role="tablist" aria-label="Open projects" className="flex items-center gap-0.5">
+            <div
+              role="tablist"
+              aria-label="Open projects"
+              onWheel={handleTabListWheel}
+              className="scrollbar-none flex min-w-0 items-center gap-0.5 overflow-x-auto"
+            >
               {tabs.length === 0 ? (
                 <span className="px-2 text-xs text-maestro-muted">No projects</span>
               ) : (
@@ -266,7 +284,7 @@ export function ProjectTabs({
         <button
           type="button"
           onClick={onNewTab}
-          className="rounded p-1 text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
+          className="shrink-0 rounded p-1 text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
           aria-label="Open new project"
         >
           <Plus size={14} />
@@ -278,7 +296,7 @@ export function ProjectTabs({
 
       {/* Right: window controls (hidden on macOS — custom traffic lights in row instead) */}
       {!isMac() && (
-        <div className="flex items-center">
+        <div className="flex shrink-0 items-center">
           <button
             type="button"
             onClick={() => appWindow.minimize()}

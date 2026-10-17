@@ -18,6 +18,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "The Infra sidebar tab shows every open project as its own collapsible group, so you can manage each project's MCP servers, plugins, skills and context docs without switching tabs.",
       "Context alert: a changed percentage applies as soon as you stop typing, terminals showing the threshold percentage blink reliably, and every alerting terminal (parked ones too) gets a blinking red Context threshold reached banner in its header.",
       "This changelog now keeps a few lines per day instead of one per change.",
+      "Window: the minimize, maximize and close buttons stay visible however narrow the window gets, project tabs scroll sideways with the mouse wheel when there are too many to fit, and the window can be made as small as you like.",
     ],
   },
   {
