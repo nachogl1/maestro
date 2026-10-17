@@ -1,20 +1,32 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useUpdateStore } from "@/stores/useUpdateStore";
 import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { WorkJournalOptInDialog } from "../WorkJournalOptInDialog";
 
+// The settings persist through the Tauri store plugin; happy-dom has no
+// Tauri backend, so stub it out.
 vi.mock("@tauri-apps/plugin-store", () => ({
-  LazyStore: vi.fn().mockImplementation(() => ({
-    get: vi.fn(async () => null),
-    set: vi.fn(async () => {}),
-    save: vi.fn(async () => {}),
-    delete: vi.fn(async () => {}),
-  })),
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
 }));
 
 describe("WorkJournalOptInDialog", () => {
-  beforeEach(() => {
-    useWorkJournalSettingsStore.setState({ enabled: null, hasHydrated: true });
+  beforeEach(async () => {
+    await useWorkJournalSettingsStore.persist.rehydrate();
+    useWorkJournalSettingsStore.setState({ enabled: null });
+    // The automatic-updates question was already answered.
+    useUpdateStore.setState({ autoInstallOnLaunch: false });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("asks whether to enable the Work Journal when the user has not answered yet", () => {
@@ -23,7 +35,14 @@ describe("WorkJournalOptInDialog", () => {
   });
 
   it("stays hidden until the saved choice has been read", () => {
-    useWorkJournalSettingsStore.setState({ hasHydrated: false });
+    vi.spyOn(useWorkJournalSettingsStore.persist, "hasHydrated").mockReturnValue(false);
+    vi.spyOn(useWorkJournalSettingsStore.persist, "onFinishHydration").mockReturnValue(() => {});
+    render(<WorkJournalOptInDialog />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("waits for the automatic-updates question, so the two never stack", () => {
+    useUpdateStore.setState({ autoInstallOnLaunch: null });
     render(<WorkJournalOptInDialog />);
     expect(screen.queryByRole("dialog")).toBeNull();
   });

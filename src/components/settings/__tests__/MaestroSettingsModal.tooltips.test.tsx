@@ -6,6 +6,19 @@ import { MaestroSettingsModal } from "../MaestroSettingsModal";
 
 const invokeMock = vi.mocked(invoke);
 
+// The Work Journal switch persists through the Tauri store plugin; happy-dom
+// has no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
+
 const SAMURAI_CONFIG = {
   handoff_context_pct: 40,
   park_soft_5h_pct: 78,

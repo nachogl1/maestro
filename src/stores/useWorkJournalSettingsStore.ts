@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 
@@ -9,8 +10,6 @@ type WorkJournalSettingsState = {
    * first-run question; the journal stays off while unanswered.
    */
   enabled: boolean | null;
-  /** True once the saved choice has been read from disk (or the read failed). */
-  hasHydrated: boolean;
   setEnabled: (enabled: boolean) => void;
 };
 
@@ -47,7 +46,6 @@ export const useWorkJournalSettingsStore = create<WorkJournalSettingsState>()(
   persist(
     (set) => ({
       enabled: null,
-      hasHydrated: false,
       setEnabled: (enabled) => {
         set({ enabled });
         void syncBackend(enabled);
@@ -58,12 +56,28 @@ export const useWorkJournalSettingsStore = create<WorkJournalSettingsState>()(
       storage: createJSONStorage(() => tauriStorage),
       partialize: (state) => ({ enabled: state.enabled }),
       onRehydrateStorage: () => (state) => {
-        useWorkJournalSettingsStore.setState({ hasHydrated: true });
         void syncBackend(state?.enabled ?? null);
       },
     },
   ),
 );
+
+/**
+ * True once the saved choice has been read back from disk (or the read
+ * failed). Uses zustand's own hydration state, so loading never writes the
+ * settings file.
+ */
+export function useWorkJournalSettingsLoaded(): boolean {
+  const [loaded, setLoaded] = useState(() => useWorkJournalSettingsStore.persist.hasHydrated());
+  useEffect(() => {
+    if (loaded) return;
+    const stop = useWorkJournalSettingsStore.persist.onFinishHydration(() => setLoaded(true));
+    // Hydration may have finished between the first render and this effect.
+    if (useWorkJournalSettingsStore.persist.hasHydrated()) setLoaded(true);
+    return stop;
+  }, [loaded]);
+  return loaded;
+}
 
 /** True only when the user opted in to the Work Journal. */
 export function useWorkJournalEnabled(): boolean {

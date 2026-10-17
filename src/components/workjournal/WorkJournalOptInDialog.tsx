@@ -1,17 +1,24 @@
 import { BookOpen } from "lucide-react";
 import { DialogShell, dialogButtonClass } from "@/components/shared/DialogShell";
-import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
+import { useUpdateStore } from "@/stores/useUpdateStore";
+import {
+  useWorkJournalSettingsLoaded,
+  useWorkJournalSettingsStore,
+} from "@/stores/useWorkJournalSettingsStore";
 
 /**
  * First-run question, shown once after the app has loaded: turn the Work
  * Journal on or not. Any answer (closing counts as "Not now") is saved, so
  * the question never comes back; Maestro Settings can change it later.
+ * Waits for the automatic-updates question to be answered first, so the two
+ * first-run dialogs never stack (one Escape would otherwise answer both).
  */
 export function WorkJournalOptInDialog() {
   const enabled = useWorkJournalSettingsStore((s) => s.enabled);
-  const hasHydrated = useWorkJournalSettingsStore((s) => s.hasHydrated);
+  const settingsLoaded = useWorkJournalSettingsLoaded();
   const setEnabled = useWorkJournalSettingsStore((s) => s.setEnabled);
-  if (!hasHydrated || enabled !== null) return null;
+  const updateQuestionAnswered = useUpdateStore((s) => s.autoInstallOnLaunch !== null);
+  if (!settingsLoaded || !updateQuestionAnswered || enabled !== null) return null;
 
   const decline = () => setEnabled(false);
 

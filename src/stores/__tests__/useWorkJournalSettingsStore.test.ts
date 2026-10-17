@@ -45,18 +45,25 @@ describe("useWorkJournalSettingsStore", () => {
     expect(JSON.parse(value).state).toEqual({ enabled: true });
   });
 
-  it("rehydrates a saved choice and marks the store hydrated", async () => {
+  it("rehydrates a saved choice", async () => {
     lazy.get.mockResolvedValue(JSON.stringify({ state: { enabled: false }, version: 0 }));
     await useWorkJournalSettingsStore.persist.rehydrate();
     expect(useWorkJournalSettingsStore.getState().enabled).toBe(false);
-    expect(useWorkJournalSettingsStore.getState().hasHydrated).toBe(true);
+    expect(useWorkJournalSettingsStore.persist.hasHydrated()).toBe(true);
   });
 
-  it("stays unanswered but hydrated when the stored read throws", async () => {
+  it("does not write the settings file back while reading it", async () => {
+    lazy.get.mockResolvedValue(JSON.stringify({ state: { enabled: true }, version: 0 }));
+    lazy.set.mockClear();
+    await useWorkJournalSettingsStore.persist.rehydrate();
+    expect(lazy.set).not.toHaveBeenCalled();
+  });
+
+  it("stays unanswered when the stored read throws", async () => {
     lazy.get.mockRejectedValue(new Error("disk gone"));
     await useWorkJournalSettingsStore.persist.rehydrate();
     expect(useWorkJournalSettingsStore.getState().enabled).toBeNull();
-    expect(useWorkJournalSettingsStore.getState().hasHydrated).toBe(true);
+    expect(useWorkJournalSettingsStore.persist.hasHydrated()).toBe(true);
   });
 
   it("tells the backend whether to record terminal activity when the choice changes", () => {
