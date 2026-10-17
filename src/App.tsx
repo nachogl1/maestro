@@ -40,6 +40,8 @@ import {
 } from "./components/sidebar/Sidebar";
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
 import { UpdateNotification } from "./components/update/UpdateNotification";
+import { WorkJournalBackgroundWork } from "./components/workjournal/WorkJournalBackgroundWork";
+import { WorkJournalOptInDialog } from "./components/workjournal/WorkJournalOptInDialog";
 import { WorkJournalSettingsHost } from "./components/workjournal/WorkJournalSettingsHost";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useAppListeners } from "./hooks/useAppListeners";
@@ -53,6 +55,7 @@ import {
 } from "./stores/useGitHubWatchdogStore";
 import { useGitStore } from "./stores/useGitStore";
 import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
+import { useWorkJournalEnabled } from "./stores/useWorkJournalSettingsStore";
 
 /**
  * Full-screen workflow editor, loaded on demand: it pulls in React Flow,
@@ -343,6 +346,12 @@ function App() {
     setUtilityPanel((prev) => (prev === panel ? null : panel));
   }, []);
 
+  // Work Journal is opt-in: turning it off hides its button and closes its pane.
+  const workJournalEnabled = useWorkJournalEnabled();
+  useEffect(() => {
+    if (!workJournalEnabled) setUtilityPanel((prev) => (prev === "workjournal" ? null : prev));
+  }, [workJournalEnabled]);
+
   // Eagle view add-terminal dropdown: every open project tab is offered.
   // Picking one stays in eagle view: a pre-launch card tiles into the eagle
   // grid for that project, so the terminal is configured (name/branch/worktree/…)
@@ -605,7 +614,9 @@ function App() {
               launchPanelOpen={utilityPanel === "launch"}
               onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
               workJournalPanelOpen={utilityPanel === "workjournal"}
-              onToggleWorkJournalPanel={() => handleToggleUtilityPanel("workjournal")}
+              onToggleWorkJournalPanel={
+                workJournalEnabled ? () => handleToggleUtilityPanel("workjournal") : undefined
+              }
               injectPanelOpen={utilityPanel === "inject"}
               onToggleInjectPanel={() => handleToggleUtilityPanel("inject")}
               onWatchdogNavigate={handleWatchdogNavigate}
@@ -770,6 +781,8 @@ function App() {
       <NotificationToasts />
       <ParticleEffectsLayer />
       <WorkJournalSettingsHost />
+      <WorkJournalBackgroundWork tabs={tabs} />
+      <WorkJournalOptInDialog />
     </div>
   );
 }

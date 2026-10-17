@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-18",
+    title: "Work Journal is now opt-in",
+    items: [
+      "Work Journal is off until you turn it on: Maestro asks once on first launch, remembers your answer across updates, and Maestro Settings has a switch to change it any time.",
+    ],
+  },
+  {
     date: "2026-10-17",
     title: "Eagle view columns, tidier settings, Infra for every project, shorter changelog",
     items: [

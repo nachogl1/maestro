@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { MaestroSettingsModal } from "../MaestroSettingsModal";
 
 const invokeMock = vi.mocked(invoke);
@@ -38,6 +39,8 @@ function hoverText(element: HTMLElement): string | null {
 
 describe("MaestroSettingsModal tooltips", () => {
   beforeEach(() => {
+    // The full Work Journal section shows only once the user turned the journal on.
+    useWorkJournalSettingsStore.setState({ enabled: true });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "samurai_get_config") return SAMURAI_CONFIG;

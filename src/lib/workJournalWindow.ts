@@ -147,6 +147,12 @@ export async function openWorkJournalWindow(): Promise<void> {
   });
 }
 
+/** Close the journal window if it is open (the user turned the journal off). */
+export async function closeWorkJournalWindow(): Promise<void> {
+  const existing = await WebviewWindow.getByLabel(WORK_JOURNAL_WINDOW_LABEL);
+  await existing?.close();
+}
+
 /**
  * Calls `onChange` when another window (or the backend) changed the journal;
  * with `area`, only when the change may have touched that part of it.

@@ -25,7 +25,7 @@ import { formatTimeAgo } from "@/lib/format";
 import { isWindows } from "@/lib/platform";
 import type { SamuraiConfig } from "@/lib/samurai";
 import { useUpdateStore } from "@/stores/useUpdateStore";
-import { WorkJournalSettingsSection } from "./WorkJournalSettingsSection";
+import { WorkJournalSettingsGate } from "./WorkJournalSettingsGate";
 
 /** Hover help for the Samurai section heading: what the supervisor is. */
 const SAMURAI_HINT =
@@ -432,7 +432,7 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
       </DialogSection>
 
       <div ref={workJournalRef}>
-        <WorkJournalSettingsSection />
+        <WorkJournalSettingsGate />
       </div>
 
       {/* Advanced */}
