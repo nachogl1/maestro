@@ -4,7 +4,6 @@ import {
   BookOpenCheck,
   BrainCircuit,
   GitMerge,
-  Group,
   Minus,
   PanelLeft,
   Plus,
@@ -18,7 +17,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
-import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 import { HealthAttentionBadge } from "./HealthAttentionBadge";
 import { ParkedRunsBadge } from "./ParkedRunsBadge";
@@ -111,9 +109,6 @@ export function TopBar({
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
   const workJournalLabel = useWorkJournalButtonLabel();
-
-  // Eagle view: "sort by project" puts the grid back to the automatic layout.
-  const groupEagleTilesByProject = useWorkspaceStore((s) => s.groupEagleTilesByProject);
 
   // Eagle view add-terminal dropdown (pick which project gets the new terminal)
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -232,18 +227,6 @@ export function TopBar({
               </div>
             )}
           </div>
-        )}
-        {/* Eagle view: "sort by project" — back to the automatic layout. */}
-        {eagleView && (
-          <button
-            type="button"
-            onClick={groupEagleTilesByProject}
-            className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
-            aria-label="Sort terminals by project"
-            title="Sort terminals by project — lays the grid out again project by project with equal tiles (undoes your moves and sizes)"
-          >
-            <Group size={14} />
-          </button>
         )}
         {onToggleEagleView && (
           <button
