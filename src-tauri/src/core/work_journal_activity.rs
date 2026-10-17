@@ -139,12 +139,17 @@ pub fn cap_candidate_text(text: &str, source: CandidateSource) -> Option<String>
 /// Result type for activity-file operations.
 pub type ActivityResult<T> = Result<T, ActivityError>;
 
-/// Where a candidate's activity came from (one source tag each).
+/// Where a candidate's activity came from (one source tag each). `Git`,
+/// `Pr` and `Issue` are the git family (a commit, a pull request, an
+/// issue); `Github` is the older tag for either of the last two, still read
+/// from candidates stored before the split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CandidateSource {
     Github,
     Git,
+    Pr,
+    Issue,
     Claude,
     Terminal,
     Granola,

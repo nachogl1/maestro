@@ -747,6 +747,8 @@ where
 struct GithubThing<'a> {
     /// `PR` or `issue`.
     kind: &'static str,
+    /// [`CandidateSource::Pr`] or [`CandidateSource::Issue`], matching `kind`.
+    source: CandidateSource,
     number: u64,
     title: &'a str,
     url: &'a str,
@@ -851,6 +853,7 @@ where
 
     let prs = prs.values().map(|(pr, authored)| GithubThing {
         kind: "PR",
+        source: CandidateSource::Pr,
         number: pr.number,
         title: &pr.title,
         url: &pr.url,
@@ -862,6 +865,7 @@ where
     });
     let issues = issues.values().map(|(issue, authored)| GithubThing {
         kind: "issue",
+        source: CandidateSource::Issue,
         number: issue.number,
         title: &issue.title,
         url: &issue.url,
@@ -875,7 +879,7 @@ where
     for thing in prs.chain(issues) {
         for (at, event, text) in github_events(&thing, window) {
             let key = format!("{}#{}:{event}", repo_slug(thing.url), thing.number);
-            out.push(window.item(CandidateSource::Github, at, key, text, name));
+            out.push(window.item(thing.source, at, key, text, name));
         }
     }
     out
@@ -1524,7 +1528,9 @@ mod tests {
                 "Assigned issue #8 was opened: Issue title 8",
             ]
         );
-        assert!(items.iter().all(|i| i.source == CandidateSource::Github));
+        let sources: Vec<CandidateSource> = items.iter().map(|i| i.source).collect();
+        use CandidateSource::{Issue, Pr};
+        assert_eq!(sources, vec![Pr, Pr, Pr, Pr, Issue, Issue]);
         assert_eq!(items[2].time, "11:30");
         assert_eq!(items[0].key, "o/r#1:opened");
         assert_eq!(items[2].key, "o/r#1:merged");
