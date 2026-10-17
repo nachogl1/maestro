@@ -3,6 +3,7 @@ import {
   buildGridTree,
   collectSlotIds,
   createLeaf,
+  equalizeTree,
   gridDimensions,
   MAX_SESSIONS,
   moveSlotToSide,
@@ -192,5 +193,79 @@ describe("moveSlotToTreeEdge", () => {
       children: [createLeaf("a"), createLeaf("b")],
     };
     expect(moveSlotToTreeEdge(t, "zz", "left")).toBe(t);
+  });
+});
+
+describe("equalizeTree", () => {
+  it("leaves a single leaf untouched", () => {
+    const single = createLeaf("a");
+    expect(equalizeTree(single)).toBe(single);
+  });
+
+  it("resets a lopsided two-pane split to an even share", () => {
+    const t: TreeNode = {
+      type: "split",
+      id: "root",
+      direction: "vertical",
+      ratio: 0.8,
+      children: [createLeaf("a"), createLeaf("b")],
+    };
+    const even = equalizeTree(t);
+    if (even.type !== "split") throw new Error("expected split root");
+    expect(even.ratio).toBe(0.5);
+    expect(collectSlotIds(even)).toEqual(["a", "b"]);
+  });
+
+  it("weights each side by its pane count so every pane gets the same room", () => {
+    // [a | [b | c]] with a hogging 70%: a should end at 1/3, b and c at 1/3 each.
+    const t: TreeNode = {
+      type: "split",
+      id: "root",
+      direction: "vertical",
+      ratio: 0.7,
+      children: [
+        createLeaf("a"),
+        {
+          type: "split",
+          id: "inner",
+          direction: "vertical",
+          ratio: 0.2,
+          children: [createLeaf("b"), createLeaf("c")],
+        },
+      ],
+    };
+    const even = equalizeTree(t);
+    if (even.type !== "split") throw new Error("expected split root");
+    expect(even.ratio).toBeCloseTo(1 / 3);
+    const inner = even.children[1];
+    if (inner.type !== "split") throw new Error("expected inner split");
+    expect(inner.ratio).toBe(0.5);
+  });
+
+  it("keeps the arrangement, node ids and directions; only ratios change", () => {
+    const t = moveSlotToTreeEdge(buildGridTree(["a", "b", "c", "d"]), "d", "left", 0.2);
+    const even = equalizeTree(t);
+    expect(collectSlotIds(even)).toEqual(collectSlotIds(t));
+    if (even.type !== "split" || t.type !== "split") throw new Error("expected split root");
+    expect(even.id).toBe(t.id);
+    expect(even.direction).toBe(t.direction);
+    expect(even.ratio).toBeCloseTo(0.25);
+  });
+
+  it("returns the same tree when every ratio is already even", () => {
+    const t = buildGridTree(["a", "b", "c", "d"]);
+    expect(equalizeTree(t)).toBe(t);
+  });
+
+  it("does not mutate the input tree", () => {
+    const t: TreeNode = {
+      type: "split",
+      id: "root",
+      direction: "horizontal",
+      ratio: 0.9,
+      children: [createLeaf("a"), createLeaf("b")],
+    };
+    equalizeTree(t);
+    expect(t.ratio).toBe(0.9);
   });
 });

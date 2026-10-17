@@ -259,3 +259,48 @@ describe("useTerminalKeyboard Alt+Shift+Arrow pane moves", () => {
     expect(ev.defaultPrevented).toBe(false);
   });
 });
+
+describe("useTerminalKeyboard Alt+T tidy layout", () => {
+  function dispatchAltT(extra: KeyboardEventInit = {}): KeyboardEvent {
+    const ev = new KeyboardEvent("keydown", {
+      key: "t",
+      code: "KeyT",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+      ...extra,
+    });
+    window.dispatchEvent(ev);
+    return ev;
+  }
+
+  it("fires onTidyLayout on Alt+T and prevents default", () => {
+    const onTidyLayout = vi.fn();
+    renderKeyboardHook({ onTidyLayout });
+
+    const ev = dispatchAltT();
+
+    expect(onTidyLayout).toHaveBeenCalledTimes(1);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("ignores Alt+T when Ctrl, Meta or Shift is also pressed", () => {
+    const onTidyLayout = vi.fn();
+    renderKeyboardHook({ onTidyLayout });
+
+    dispatchAltT({ ctrlKey: true });
+    dispatchAltT({ metaKey: true });
+    dispatchAltT({ shiftKey: true });
+
+    expect(onTidyLayout).not.toHaveBeenCalled();
+  });
+
+  it("does not fire when enabled=false", () => {
+    const onTidyLayout = vi.fn();
+    renderKeyboardHook({ onTidyLayout, enabled: false });
+
+    dispatchAltT();
+
+    expect(onTidyLayout).not.toHaveBeenCalled();
+  });
+});
