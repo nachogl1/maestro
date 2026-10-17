@@ -1887,15 +1887,24 @@ mod tests {
     fn test_successor_session_name_shape() {
         // Issue #175: the run's stored display name wins, for any generation
         // — default (Samurai-N) and user rename alike.
-        assert_eq!(successor_session_name(Some("Samurai-1"), "#37", 3), "Samurai-1");
+        assert_eq!(
+            successor_session_name(Some("Samurai-1"), "#37", 3),
+            "Samurai-1"
+        );
         assert_eq!(
             successor_session_name(Some("nido-maps-batch"), "#37", 2),
             "nido-maps-batch"
         );
-        assert_eq!(successor_session_name(Some("  padded "), "#37", 2), "padded");
+        assert_eq!(
+            successor_session_name(Some("  padded "), "#37", 2),
+            "padded"
+        );
         // No config / legacy runs keep the old epic-slug shape.
         assert_eq!(successor_session_name(None, "#37", 3), "samurai gen-3 37");
-        assert_eq!(successor_session_name(Some("  "), "#37", 3), "samurai gen-3 37");
+        assert_eq!(
+            successor_session_name(Some("  "), "#37", 3),
+            "samurai gen-3 37"
+        );
         assert_eq!(
             successor_session_name(None, "Epic 12: Auth", 2),
             "samurai gen-2 epic-12-auth"

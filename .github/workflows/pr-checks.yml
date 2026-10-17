@@ -66,10 +66,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+
+      - name: Format check
+        run: cargo fmt --check
+        working-directory: src-tauri
 
       - name: Install Linux build dependencies
         run: |

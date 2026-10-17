@@ -133,13 +133,12 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // the SessionManager (worktree/sub-repo aware, falling back to
     // the project root when no explicit working dir was recorded).
     let session_dirs_handle = app.handle().clone();
-    let session_dirs: core::samurai_injector::SessionDirResolver =
-        Arc::new(move |session_id| {
-            session_dirs_handle
-                .state::<SessionManager>()
-                .get_session(session_id)
-                .map(|s| s.working_directory.unwrap_or(s.project_path))
-        });
+    let session_dirs: core::samurai_injector::SessionDirResolver = Arc::new(move |session_id| {
+        session_dirs_handle
+            .state::<SessionManager>()
+            .get_session(session_id)
+            .map(|s| s.working_directory.unwrap_or(s.project_path))
+    });
 
     // Samurai (issue #57): circuit breaker + handoff churn. Progress
     // is measured in commits only for v1 (gh issue-update polling is
@@ -150,13 +149,12 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // session with a circuit_breaker ALERT. A handoff triggered with
     // HEAD still at the generation's baseline fires a handoff_churn
     // ALERT (signal only — the handoff proceeds).
-    let (samurai_progress, samurai_progress_task) =
-        core::samurai_progress::SamuraiProgress::new(
-            supervisor.clone(),
-            samurai_config.clone(),
-            audit_log.clone(),
-            session_dirs.clone(),
-        );
+    let (samurai_progress, samurai_progress_task) = core::samurai_progress::SamuraiProgress::new(
+        supervisor.clone(),
+        samurai_config.clone(),
+        audit_log.clone(),
+        session_dirs.clone(),
+    );
     tauri::async_runtime::spawn(samurai_progress_task);
     // Managed so the session-teardown commands can propagate removals
     // (fresh-eyes finding H): a session closed outside the samurai
@@ -180,26 +178,23 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     let teardown_status = app.state::<Arc<StatusServer>>().inner().clone();
     let teardown_watcher = app.state::<Arc<TranscriptWatcher>>().inner().clone();
     let teardown_context = samurai_context.clone();
-    let teardown: core::samurai_replicator::SessionTeardown =
-        Arc::new(move |session_id| {
-            let pm = teardown_pm.clone();
-            let status = teardown_status.clone();
-            let watcher = teardown_watcher.clone();
-            let context = teardown_context.clone();
-            Box::pin(async move {
-                // Mirrors commands::terminal::kill_session: PTY tree
-                // kill, status-server unregister, transcript watcher
-                // release, stale-context removal.
-                if let Err(e) = pm.kill_session(session_id).await {
-                    log::warn!(
-                        "samurai replicator: kill_session({session_id}) failed: {e}"
-                    );
-                }
-                status.unregister_session(session_id).await;
-                watcher.stop_watching(session_id);
-                context.remove(session_id);
-            })
-        });
+    let teardown: core::samurai_replicator::SessionTeardown = Arc::new(move |session_id| {
+        let pm = teardown_pm.clone();
+        let status = teardown_status.clone();
+        let watcher = teardown_watcher.clone();
+        let context = teardown_context.clone();
+        Box::pin(async move {
+            // Mirrors commands::terminal::kill_session: PTY tree
+            // kill, status-server unregister, transcript watcher
+            // release, stale-context removal.
+            if let Err(e) = pm.kill_session(session_id).await {
+                log::warn!("samurai replicator: kill_session({session_id}) failed: {e}");
+            }
+            status.unregister_session(session_id).await;
+            watcher.stop_watching(session_id);
+            context.remove(session_id);
+        })
+    });
     let spawn_event_handle = app.handle().clone();
     let emit_spawn: core::samurai_replicator::SuccessorEmitter = Arc::new(move |spawn| {
         let _ = spawn_event_handle.emit("samurai-spawn-successor", spawn);
@@ -247,10 +242,9 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // all) shows no turn activity, the replicator re-sends the lone
     // submit key. NEVER the body: it already sits in the input box.
     let resend_pm = app.state::<ProcessManager>().inner().clone();
-    let enter_resender: core::samurai_replicator::EnterResender =
-        Arc::new(move |session_id| {
-            core::samurai_pty::resend_submit(resend_pm.clone(), session_id, "replicator");
-        });
+    let enter_resender: core::samurai_replicator::EnterResender = Arc::new(move |session_id| {
+        core::samurai_pty::resend_submit(resend_pm.clone(), session_id, "replicator");
+    });
     // The parker (issue #60) tears parked sessions down with this
     // same closure — a PARKED terminal serves no purpose, every
     // wake-up is a fresh spawn (PRD decision #6).
@@ -450,15 +444,14 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // why this uses the confirmed submit variant: the closure runs
     // on the blocking pool (the hook tap's spawn_blocking above).
     let harvest_pm = app.state::<ProcessManager>().inner().clone();
-    let harvest_deliver: commands::harvest::DeliverFn =
-        Arc::new(move |session_id, prompt| {
-            core::samurai_pty::submit_instruction_confirmed(
-                harvest_pm.clone(),
-                session_id,
-                prompt,
-                "harvest",
-            )
-        });
+    let harvest_deliver: commands::harvest::DeliverFn = Arc::new(move |session_id, prompt| {
+        core::samurai_pty::submit_instruction_confirmed(
+            harvest_pm.clone(),
+            session_id,
+            prompt,
+            "harvest",
+        )
+    });
     // Every injection outcome reaches the Journal card: the panel
     // announces "triage session opened — N entries will be injected
     // there" at click time, so a failure that only reached the log
@@ -475,15 +468,14 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // the Enter. Account-wide pseudo-project (allowance convention):
     // a harvest session belongs to no run.
     let harvest_replicator = replicator.clone();
-    let harvest_watch: commands::harvest::HarvestDeliveredFn =
-        Arc::new(move |session_id| {
-            harvest_replicator.watch_delivery(
-                core::allowance_watcher::ACCOUNT_PROJECT,
-                "harvest",
-                0,
-                session_id,
-            );
-        });
+    let harvest_watch: commands::harvest::HarvestDeliveredFn = Arc::new(move |session_id| {
+        harvest_replicator.watch_delivery(
+            core::allowance_watcher::ACCOUNT_PROJECT,
+            "harvest",
+            0,
+            session_id,
+        );
+    });
     let harvest_triage = Arc::new(
         commands::harvest::HarvestTriage::new(
             journal_store.clone(),
@@ -520,26 +512,24 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // dependencies from managed state at fire time); every other
     // reason keeps going to the resumer.
     let launch_fire_handle = app.handle().clone();
-    let (samurai_schedule, samurai_schedule_task) =
-        core::samurai_schedule::SamuraiSchedule::new(
-            commands::ai_runner::artifact_base_dir("samurai"),
-            Arc::new(move |entry: core::samurai_schedule::ScheduleEntry| {
-                if entry.reason == core::samurai_schedule::REASON_SCHEDULED_LAUNCH {
-                    let handle = launch_fire_handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        commands::samurai::handle_scheduled_launch_fire(handle, entry)
-                            .await;
-                    });
-                } else {
-                    resumer_for_fire.on_fire(entry);
-                }
-            }),
-            Some(Arc::new(
-                move |entries: &[core::samurai_schedule::ScheduleEntry]| {
-                    let _ = schedule_event_handle.emit("samurai-schedule-event", entries);
-                },
-            )),
-        );
+    let (samurai_schedule, samurai_schedule_task) = core::samurai_schedule::SamuraiSchedule::new(
+        commands::ai_runner::artifact_base_dir("samurai"),
+        Arc::new(move |entry: core::samurai_schedule::ScheduleEntry| {
+            if entry.reason == core::samurai_schedule::REASON_SCHEDULED_LAUNCH {
+                let handle = launch_fire_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::samurai::handle_scheduled_launch_fire(handle, entry).await;
+                });
+            } else {
+                resumer_for_fire.on_fire(entry);
+            }
+        }),
+        Some(Arc::new(
+            move |entries: &[core::samurai_schedule::ScheduleEntry]| {
+                let _ = schedule_event_handle.emit("samurai-schedule-event", entries);
+            },
+        )),
+    );
     // Issue #62: snapshot the pending timers BEFORE the fire loop is
     // spawned — a past-due entry fires on the loop's first tick and
     // self-cleans, so reading `list()` from the reconciliation task
@@ -621,14 +611,12 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // reconciliation task below because the schedule's fire loop is
     // spawned a few lines down and its first tick fires every
     // past-due timer immediately.
-    let transcript_ages: core::samurai_reconciler::TranscriptAgeProbe =
-        Arc::new(|project| {
-            commands::claude_sessions::newest_transcript_for_project(project)
-                .and_then(|path| core::samurai_watchdog::transcript_age(&path))
-        });
-    let claude_alive: core::samurai_reconciler::ClaudeAliveProbe = Arc::new(|| {
-        !core::samurai_watchdog::scan_claude_ancestor_pids().is_empty()
+    let transcript_ages: core::samurai_reconciler::TranscriptAgeProbe = Arc::new(|project| {
+        commands::claude_sessions::newest_transcript_for_project(project)
+            .and_then(|path| core::samurai_watchdog::transcript_age(&path))
     });
+    let claude_alive: core::samurai_reconciler::ClaudeAliveProbe =
+        Arc::new(|| !core::samurai_watchdog::scan_claude_ancestor_pids().is_empty());
     let transcript_ages_for_resume = transcript_ages.clone();
     let claude_alive_for_resume = claude_alive.clone();
     samurai_resumer.set_orphan_probe(Arc::new(move |worktree: &str| {

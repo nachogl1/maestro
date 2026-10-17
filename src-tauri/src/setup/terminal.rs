@@ -55,43 +55,47 @@ pub(super) fn setup_terminal(
     let transcript_watcher_for_hooks = transcript_watcher.clone();
     let samurai_injector_for_hooks = samurai_injector.clone();
     let harvest_triage_for_hooks = harvest_triage_slot.clone();
-    let hook_emit_fn: Arc<dyn Fn(ClaudeEvent) + Send + Sync> = Arc::new(move |event: ClaudeEvent| {
-        if let ClaudeEvent::SessionStarted { session_id, ref transcript_path, .. } = event {
-            transcript_watcher_for_hooks.start_watching(
+    let hook_emit_fn: Arc<dyn Fn(ClaudeEvent) + Send + Sync> =
+        Arc::new(move |event: ClaudeEvent| {
+            if let ClaudeEvent::SessionStarted {
                 session_id,
-                std::path::PathBuf::from(transcript_path),
-            );
-            // Interactive harvest triage (issue #98): an armed
-            // session's first SessionStarted is the injection gate —
-            // the same signal the replicator uses for successor
-            // briefs. The injection reads and commits the journal
-            // (file IO, Windows rename retries), so it leaves the
-            // hook chain via the blocking pool.
-            if let Some(triage) = harvest_triage_for_hooks.get() {
-                let triage = triage.clone();
+                ref transcript_path,
+                ..
+            } = event
+            {
+                transcript_watcher_for_hooks
+                    .start_watching(session_id, std::path::PathBuf::from(transcript_path));
+                // Interactive harvest triage (issue #98): an armed
+                // session's first SessionStarted is the injection gate —
+                // the same signal the replicator uses for successor
+                // briefs. The injection reads and commits the journal
+                // (file IO, Windows rename retries), so it leaves the
+                // hook chain via the blocking pool.
+                if let Some(triage) = harvest_triage_for_hooks.get() {
+                    let triage = triage.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        triage.on_session_started(session_id);
+                    });
+                }
+                // Generic initial prompt: same gate, same policy — the
+                // PTY write is fully blocking, so it leaves the hook
+                // chain via the blocking pool. A session nobody armed is
+                // a no-op inside the injector.
+                let initial_prompt_injector = initial_prompt_for_hooks.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    triage.on_session_started(session_id);
+                    initial_prompt_injector.on_session_started(session_id);
                 });
             }
-            // Generic initial prompt: same gate, same policy — the
-            // PTY write is fully blocking, so it leaves the hook
-            // chain via the blocking pool. A session nobody armed is
-            // a no-op inside the injector.
-            let initial_prompt_injector = initial_prompt_for_hooks.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                initial_prompt_injector.on_session_started(session_id);
-            });
-        }
-        // Samurai (issue #53): idle-gate signal (Stop hook →
-        // SessionEnded reason "stop"). Tapped here, pre-dedup: the
-        // EventBus dedups SessionEnded per session and reason, so a
-        // Stop landing within the 5s window of another Stop would
-        // never reach a bus-side tee.
-        if let Some(injector) = samurai_injector_for_hooks.get() {
-            injector.observe_hook(&event);
-        }
-        event_bus_for_hooks.emit(event);
-    });
+            // Samurai (issue #53): idle-gate signal (Stop hook →
+            // SessionEnded reason "stop"). Tapped here, pre-dedup: the
+            // EventBus dedups SessionEnded per session and reason, so a
+            // Stop landing within the 5s window of another Stop would
+            // never reach a bus-side tee.
+            if let Some(injector) = samurai_injector_for_hooks.get() {
+                injector.observe_hook(&event);
+            }
+            event_bus_for_hooks.emit(event);
+        });
 
     // Start the HTTP status server for MCP status reporting
     // IMPORTANT: This must be done synchronously so the server is ready

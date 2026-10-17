@@ -152,9 +152,17 @@ pub fn run() {
                 .build()?;
 
             // View submenu with terminal font zoom controls
-            let zoom_in = MenuItem::with_id(handle, "zoom-in", "Zoom In", true, Some("CmdOrCtrl+="))?;
-            let zoom_out = MenuItem::with_id(handle, "zoom-out", "Zoom Out", true, Some("CmdOrCtrl+-"))?;
-            let zoom_reset = MenuItem::with_id(handle, "zoom-reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
+            let zoom_in =
+                MenuItem::with_id(handle, "zoom-in", "Zoom In", true, Some("CmdOrCtrl+="))?;
+            let zoom_out =
+                MenuItem::with_id(handle, "zoom-out", "Zoom Out", true, Some("CmdOrCtrl+-"))?;
+            let zoom_reset = MenuItem::with_id(
+                handle,
+                "zoom-reset",
+                "Actual Size",
+                true,
+                Some("CmdOrCtrl+0"),
+            )?;
             let view_menu = SubmenuBuilder::new(handle, "View")
                 .item(&zoom_in)
                 .item(&zoom_out)
