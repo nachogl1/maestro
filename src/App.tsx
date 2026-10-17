@@ -39,6 +39,7 @@ import {
   sidebarTabShortcutTransition,
 } from "./components/sidebar/Sidebar";
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
+import { AutoUpdateQuestion } from "./components/update/AutoUpdateQuestion";
 import { UpdateNotification } from "./components/update/UpdateNotification";
 import { WorkJournalSettingsHost } from "./components/workjournal/WorkJournalSettingsHost";
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
@@ -767,6 +768,7 @@ function App() {
       )}
 
       <UpdateNotification />
+      <AutoUpdateQuestion />
       <NotificationToasts />
       <ParticleEffectsLayer />
       <WorkJournalSettingsHost />

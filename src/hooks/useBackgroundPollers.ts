@@ -25,11 +25,14 @@ export function useBackgroundPollers(
   const autoCheckEnabled = useUpdateStore((s) => s.autoCheckEnabled);
   const checkIntervalMinutes = useUpdateStore((s) => s.checkIntervalMinutes);
 
+  // Check once when Maestro opens; this check may install on its own.
+  useEffect(() => {
+    void useUpdateStore.getState().checkOnLaunch();
+  }, []);
+
+  // Then periodically; these checks only offer the update.
   useEffect(() => {
     if (!autoCheckEnabled) return;
-    // Check on mount
-    checkForUpdates();
-    // Then periodically
     const interval = setInterval(checkForUpdates, checkIntervalMinutes * 60 * 1000);
     return () => clearInterval(interval);
   }, [autoCheckEnabled, checkIntervalMinutes, checkForUpdates]);
