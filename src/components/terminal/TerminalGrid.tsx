@@ -2323,13 +2323,18 @@ function DraggablePane({
         const elem = document.elementFromPoint(x, y) as HTMLElement | null;
         const el = elem?.closest<HTMLElement>("[data-slot-id]") ?? null;
         if (eagleMode) {
+          // Only launched tiles move in eagle view: a pre-launch card has no
+          // stored rect, so it gets no drop highlight either.
+          if (sessionId === null) return null;
           // The grid's outer edge: the tile becomes a full column/row there
           // and the other tiles make room — when they all stay big enough.
-          if (grid && sessionId !== null) {
+          // An edge that cannot make room is a dead zone, not a swap.
+          if (grid) {
             const edge = stageEdgeAt(grid, x, y);
-            const next = edge ? insertColumnAtEdge(eagleTiles, sessionId, edge) : null;
-            const rect = next?.get(sessionId);
-            if (edge && rect) return { kind: "gridEdge", edge, rect };
+            if (edge) {
+              const rect = insertColumnAtEdge(eagleTiles, sessionId, edge)?.get(sessionId);
+              return rect ? { kind: "gridEdge", edge, rect } : null;
+            }
           }
           // Another launched tile (it carries grid + session ids): its outer
           // quarter moves the dragged tile beside it (half its cells), the
@@ -2339,10 +2344,7 @@ function DraggablePane({
           if (!self && el?.dataset.gridId && el.dataset.sessionId) {
             const targetId = Number(el.dataset.sessionId);
             const zone = paneDropZone(el.getBoundingClientRect(), x, y);
-            if (
-              zone !== "swap" &&
-              (sessionId === null || !dropBesideTile(eagleTiles, sessionId, targetId, zone))
-            ) {
+            if (zone !== "swap" && !dropBesideTile(eagleTiles, sessionId, targetId, zone)) {
               return null;
             }
             return {
@@ -2354,7 +2356,7 @@ function DraggablePane({
             };
           }
           // Free grid cells: the tile moves there if it fits (same size).
-          if (!grid || !eagleRect || sessionId === null) return null;
+          if (!grid || !eagleRect) return null;
           if (
             x < grid.left ||
             y < grid.top ||
