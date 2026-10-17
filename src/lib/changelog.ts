@@ -8,6 +8,18 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-17",
+    title: "Eagle view columns, tidier settings, Infra for every project, shorter changelog",
+    items: [
+      "Eagle view: drag a terminal onto the outer edge of the grid to give it its own full column or row, or onto the edge of another terminal to sit beside it.",
+      "Maestro Settings and the Terminal, CLI, Shortcuts and Changelog dialogs share one look: same frame, headers, section cards, inputs and switches.",
+      "Sidebar Settings: the Notifications and Context alert cards lost their explanatory text (the hint shows when you hover the percentage), and the Git Repository card is gone (the Git panel covers it).",
+      "The Infra sidebar tab shows every open project as its own collapsible group, so you can manage each project's MCP servers, plugins, skills and context docs without switching tabs.",
+      "Context alert: a changed percentage applies as soon as you stop typing, terminals showing the threshold percentage blink reliably, and every alerting terminal (parked ones too) gets a blinking red Context threshold reached banner in its header.",
+      "This changelog now keeps a few lines per day instead of one per change.",
+    ],
+  },
+  {
     date: "2026-10-16",
     title: "Eagle view resizing, dialogs on top, Work Journal reliability",
     items: [
