@@ -159,6 +159,10 @@ Granola time) are folded in and linked in the Decision trace.
 - **Model:** the user's own default Claude model, changeable in Settings (user
   correction: not Haiku by default). Runs use the user's existing Claude plan,
   so there is no extra bill.
+- **Granularity (user, 2026-10-17):** one line per project per day, summing up
+  the features or outcomes worked on, not one line per commit, PR, file or
+  session. A project gets a second line only for a clearly separate piece of
+  work. Meeting lines stay one per meeting.
 - **No learning.** The run never sees journal history or past verdicts.
 - Confirmed by the user (2026-10-14):
   - **Time:** the time in `time - action` is when the activity happened, taken
