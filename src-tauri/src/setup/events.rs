@@ -67,9 +67,8 @@ pub(super) fn build_event_bus(app: &tauri::App) -> (Arc<EventBus>, SamuraiTees) 
     // journal prompt injected on their first SessionStarted hook
     // signal. Same late-bound slot pattern (it needs the journal
     // store constructed further down).
-    let harvest_triage_slot: Arc<
-        std::sync::OnceLock<Arc<commands::harvest::HarvestTriage>>,
-    > = Arc::new(std::sync::OnceLock::new());
+    let harvest_triage_slot: Arc<std::sync::OnceLock<Arc<commands::harvest::HarvestTriage>>> =
+        Arc::new(std::sync::OnceLock::new());
 
     let pending_for_emit = pending_events.clone();
     let data_ready_for_emit = data_ready.clone();
