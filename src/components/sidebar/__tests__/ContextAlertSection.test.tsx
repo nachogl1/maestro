@@ -32,6 +32,12 @@ describe("ContextAlertSection", () => {
     expect(screen.getByLabelText("Toggle context alert")).toHaveAttribute("aria-checked", "true");
   });
 
+  it("explains the threshold in the input's hover text instead of a paragraph", () => {
+    render(<ContextAlertSection />);
+    expect(input().title).toMatch(/blinks red/);
+    expect(screen.queryByText(/the switch turns the alert off/)).toBeNull();
+  });
+
   it("typing a percentage stores it on blur, not per keystroke", () => {
     render(<ContextAlertSection />);
     fireEvent.change(input(), { target: { value: "6" } });

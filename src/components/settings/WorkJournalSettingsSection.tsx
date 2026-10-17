@@ -1,6 +1,7 @@
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { BookOpen, FolderOpen, Loader2, Undo2 } from "lucide-react";
 import { useEffect } from "react";
+import { DialogSection, dialogButtonClass } from "@/components/shared/DialogShell";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
@@ -130,103 +131,95 @@ export function WorkJournalSettingsSection(): JSX.Element {
   };
 
   return (
-    <div>
-      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-        <BookOpen size={13} className="text-maestro-accent" />
-        <span className="cursor-help" title={HINTS.section}>
-          Work Journal
+    <DialogSection title="Work Journal" icon={<BookOpen size={13} />} hint={HINTS.section}>
+      <WorkJournalCandidateRunRows />
+      <WorkJournalGranolaRow />
+      <div className="flex items-center gap-2 text-xs">
+        <span className="shrink-0 cursor-help text-maestro-text" title={HINTS.backupFolder}>
+          Backup folder
         </span>
+        <span
+          className="min-w-0 flex-1 truncate text-right text-[11px] text-maestro-muted"
+          title={backupFolder ?? undefined}
+        >
+          {backupFolder ?? "None"}
+        </span>
+        <button
+          type="button"
+          onClick={() => void handleChooseFolder()}
+          title={HINTS.backupFolder}
+          className={dialogButtonClass("accent")}
+        >
+          <FolderOpen size={11} />
+          Choose folder
+        </button>
       </div>
-      <div className="space-y-1.5 px-1">
-        <WorkJournalCandidateRunRows />
-        <WorkJournalGranolaRow />
-        <div className="flex items-center gap-2 text-xs">
-          <span className="shrink-0 cursor-help text-maestro-muted" title={HINTS.backupFolder}>
-            Backup folder
-          </span>
-          <span
-            className="min-w-0 flex-1 truncate text-right text-[11px] text-maestro-text"
-            title={backupFolder ?? undefined}
-          >
-            {backupFolder ?? "None"}
-          </span>
-          <button
-            type="button"
-            onClick={() => void handleChooseFolder()}
-            title={HINTS.backupFolder}
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40"
-          >
-            <FolderOpen size={11} />
-            Choose folder
-          </button>
-        </div>
-        {!backupFolder && (
-          <p className="text-[11px] text-maestro-orange">
-            No backup folder chosen. Pick one to turn on the daily backup.
-          </p>
-        )}
-        <div className="flex items-center gap-2">
-          <span className="flex-1 text-[10px] text-maestro-muted">
-            {lastBackupAt ? `Last backup: ${formatBackupTime(lastBackupAt)}` : "Never backed up"}
-          </span>
-          <button
-            type="button"
-            onClick={() => void backUpNow()}
-            disabled={!backupFolder || backingUp}
-            title={HINTS.backUpNow}
-            className="flex items-center gap-1 rounded border border-maestro-accent/50 bg-maestro-accent/10 px-3 py-1 text-[11px] font-medium text-maestro-accent hover:bg-maestro-accent/20 disabled:opacity-50"
-          >
-            {backingUp && <Loader2 size={11} className="animate-spin" />}
-            Back up now
-          </button>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="flex-1 text-[10px] text-maestro-muted">
-            Restore replaces the whole journal
-          </span>
-          <button
-            type="button"
-            onClick={() => void handleRestoreDefault()}
-            disabled={!backupFolder || busy}
-            title={
-              backupFolder
-                ? `${HINTS.restore}\nBackup file: ${backupFileIn(backupFolder)}`
-                : `${HINTS.restore}\nChoose a backup folder first.`
-            }
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
-          >
-            {restoring && <Loader2 size={11} className="animate-spin" />}
-            Restore from backup
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleBrowseRestore()}
-            disabled={busy}
-            title={HINTS.browse}
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
-          >
-            <FolderOpen size={11} />
-            Browse…
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleUndoRestore()}
-            disabled={!canUndo || busy}
-            title={HINTS.undo}
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40 disabled:opacity-50"
-          >
-            <Undo2 size={11} />
-            Undo restore
-          </button>
-        </div>
-        <WorkJournalReportFolderRow />
-        {notice && <output className="block text-[11px] text-maestro-green">{notice}</output>}
-        {[runSettingsError, runError, loadError, error, reportError].filter(Boolean).map((text) => (
-          <div key={text} role="alert" className="text-[11px] text-maestro-red">
-            {text}
-          </div>
-        ))}
+      {!backupFolder && (
+        <p className="text-[11px] text-maestro-orange">
+          No backup folder chosen. Pick one to turn on the daily backup.
+        </p>
+      )}
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-[11px] text-maestro-muted">
+          {lastBackupAt ? `Last backup: ${formatBackupTime(lastBackupAt)}` : "Never backed up"}
+        </span>
+        <button
+          type="button"
+          onClick={() => void backUpNow()}
+          disabled={!backupFolder || backingUp}
+          title={HINTS.backUpNow}
+          className={dialogButtonClass("primary")}
+        >
+          {backingUp && <Loader2 size={11} className="animate-spin" />}
+          Back up now
+        </button>
       </div>
-    </div>
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-[11px] text-maestro-muted">
+          Restore replaces the whole journal
+        </span>
+        <button
+          type="button"
+          onClick={() => void handleRestoreDefault()}
+          disabled={!backupFolder || busy}
+          title={
+            backupFolder
+              ? `${HINTS.restore}\nBackup file: ${backupFileIn(backupFolder)}`
+              : `${HINTS.restore}\nChoose a backup folder first.`
+          }
+          className={dialogButtonClass("accent")}
+        >
+          {restoring && <Loader2 size={11} className="animate-spin" />}
+          Restore from backup
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleBrowseRestore()}
+          disabled={busy}
+          title={HINTS.browse}
+          className={dialogButtonClass("accent")}
+        >
+          <FolderOpen size={11} />
+          Browse…
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleUndoRestore()}
+          disabled={!canUndo || busy}
+          title={HINTS.undo}
+          className={dialogButtonClass("accent")}
+        >
+          <Undo2 size={11} />
+          Undo restore
+        </button>
+      </div>
+      <WorkJournalReportFolderRow />
+      {notice && <output className="block text-[11px] text-maestro-green">{notice}</output>}
+      {[runSettingsError, runError, loadError, error, reportError].filter(Boolean).map((text) => (
+        <div key={text} role="alert" className="text-[11px] text-maestro-red">
+          {text}
+        </div>
+      ))}
+    </DialogSection>
   );
 }

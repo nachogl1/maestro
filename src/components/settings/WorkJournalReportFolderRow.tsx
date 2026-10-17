@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen } from "lucide-react";
+import { dialogButtonClass } from "@/components/shared/DialogShell";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
 
 /** Hover help for the row, in plain language. */
@@ -36,11 +37,11 @@ export function WorkJournalReportFolderRow(): JSX.Element {
 
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="shrink-0 cursor-help text-maestro-muted" title={REPORT_FOLDER_HINT}>
+      <span className="shrink-0 cursor-help text-maestro-text" title={REPORT_FOLDER_HINT}>
         Report folder
       </span>
       <span
-        className="min-w-0 flex-1 truncate text-right text-[11px] text-maestro-text"
+        className="min-w-0 flex-1 truncate text-right text-[11px] text-maestro-muted"
         title={reportFolder ?? undefined}
       >
         {reportFolder ?? "None"}
@@ -50,7 +51,7 @@ export function WorkJournalReportFolderRow(): JSX.Element {
         onClick={() => void handleChooseFolder()}
         aria-label="Choose report folder"
         title={REPORT_FOLDER_HINT}
-        className="flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-maestro-accent hover:bg-maestro-border/40"
+        className={dialogButtonClass("accent")}
       >
         <FolderOpen size={11} />
         Choose folder

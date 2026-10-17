@@ -6,13 +6,21 @@ import {
   ChevronRight,
   Loader2,
   RefreshCw,
+  Settings,
   Swords,
   Terminal,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { useDismissable } from "@/hooks/useDismissable";
+import {
+  DialogRow,
+  DialogSection,
+  DialogShell,
+  DialogToggle,
+  dialogButtonClass,
+  dialogCardClass,
+  dialogInputClass,
+  dialogSectionHeadingClass,
+} from "@/components/shared/DialogShell";
 import { formatTimeAgo } from "@/lib/format";
 import { isWindows } from "@/lib/platform";
 import type { SamuraiConfig } from "@/lib/samurai";
@@ -158,7 +166,6 @@ const INTERVAL_OPTIONS = [
 ];
 
 export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsModalProps) {
-  const modalRef = useRef<HTMLDivElement>(null);
   const workJournalRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
@@ -221,9 +228,6 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
     setEndpointInput(customEndpoint ?? "");
   }, [customEndpoint]);
 
-  // Close on outside click or Escape
-  useDismissable(onClose, { ref: modalRef });
-
   useEffect(() => {
     if (focusSection !== "work-journal") return;
     const scrollToSection = () => workJournalRef.current?.scrollIntoView?.({ block: "start" });
@@ -258,292 +262,227 @@ export function MaestroSettingsModal({ onClose, focusSection }: MaestroSettingsM
 
   const isChecking = status === "checking";
 
-  return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div
-        ref={modalRef}
-        className="w-full max-w-md rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-maestro-border px-4 py-3">
-          <h2 className="text-sm font-semibold text-maestro-text">Maestro Settings</h2>
+  /** Runs an install/uninstall command and shows its outcome; a cancelled prompt shows nothing. */
+  const runCliCommand = (
+    command: Promise<unknown>,
+    installed: boolean,
+    okMessage: (value: string) => string,
+  ) => {
+    setCliStatus(null);
+    command
+      .then((value) => {
+        setCliInstalled(installed);
+        setCliStatus({ kind: "ok", message: okMessage(typeof value === "string" ? value : "") });
+      })
+      .catch((err) => {
+        const msg = String(err);
+        if (msg === CLI_CANCEL_SENTINEL) {
+          setCliStatus(null);
+          return;
+        }
+        setCliStatus({ kind: "error", message: `Error: ${msg}` });
+      });
+  };
+
+  return (
+    <DialogShell
+      title="Maestro Settings"
+      subtitle="Updates, the terminal command, the Samurai supervisor and the Work Journal."
+      icon={<Settings size={16} />}
+      onClose={onClose}
+      bodyRef={contentRef}
+    >
+      <DialogSection title="Updates" icon={<ArrowDownCircle size={13} />}>
+        <DialogRow label="Version" hint={HINTS.version}>
+          <span className="flex items-center gap-1.5 text-[11px] font-medium text-maestro-text">
+            <Check size={12} className="shrink-0 text-maestro-green" />v{appVersion ?? "..."}
+          </span>
+        </DialogRow>
+        <DialogRow label="Last checked">
+          {status === "checking" && (
+            <span className="flex items-center gap-1.5 text-[11px] text-maestro-muted">
+              <Loader2 size={11} className="animate-spin" />
+              Checking...
+            </span>
+          )}
+          <span className="text-[11px] text-maestro-muted">
+            {formatTimeAgo(lastCheckedAt, { capitalize: true })}
+          </span>
           <button
             type="button"
-            onClick={onClose}
-            className="rounded p-1 hover:bg-maestro-border/40"
+            onClick={handleCheckNow}
+            disabled={isChecking}
+            className={dialogButtonClass("ghost")}
+            title={HINTS.checkNow}
           >
-            <X size={16} className="text-maestro-muted" />
+            <RefreshCw size={12} className={isChecking ? "animate-spin" : ""} />
+            Check now
           </button>
-        </div>
-
-        {/* Content */}
-        <div ref={contentRef} className="max-h-[calc(100vh-6rem)] space-y-4 overflow-y-auto p-4">
-          {/* Version */}
-          <div>
-            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-              Version
-            </div>
-            <div className="flex items-center gap-2 px-1 text-xs" title={HINTS.version}>
-              <Check size={12} className="shrink-0 text-maestro-green" />
-              <span className="text-maestro-text font-medium">v{appVersion ?? "..."}</span>
-            </div>
-          </div>
-
-          {/* Updates */}
-          <div>
-            <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-              <ArrowDownCircle size={13} className="text-maestro-green" />
-              <span className="flex-1">Updates</span>
-              <button
-                type="button"
-                onClick={handleCheckNow}
-                disabled={isChecking}
-                className="rounded p-0.5 hover:bg-maestro-border/40"
-                title={HINTS.checkNow}
-              >
-                <RefreshCw
-                  size={12}
-                  className={`text-maestro-muted ${isChecking ? "animate-spin" : ""}`}
-                />
-              </button>
-            </div>
-
-            <div className="space-y-1">
-              {status === "checking" && (
-                <div className="flex items-center gap-2 px-1 text-[11px] text-maestro-muted">
-                  <Loader2 size={11} className="animate-spin" />
-                  Checking...
-                </div>
-              )}
-              <div className="flex items-center gap-2 px-1 text-[10px] text-maestro-muted">
-                Last checked: {formatTimeAgo(lastCheckedAt, { capitalize: true })}
-              </div>
-            </div>
-
-            {/* Auto-check toggle */}
-            <div
-              className="mt-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-maestro-text hover:bg-maestro-border/40"
-              title={HINTS.autoCheck}
+        </DialogRow>
+        <DialogRow label="Auto-check" hint={HINTS.autoCheck}>
+          <DialogToggle
+            checked={autoCheckEnabled}
+            onChange={setAutoCheckEnabled}
+            aria-label="Toggle auto-check"
+          />
+        </DialogRow>
+        {autoCheckEnabled && (
+          <DialogRow label="Interval" hint={HINTS.interval}>
+            <select
+              value={checkIntervalMinutes}
+              onChange={(e) => setCheckInterval(Number(e.target.value))}
+              className={dialogInputClass}
             >
-              <span className="flex-1 cursor-help">Auto-check</span>
+              {INTERVAL_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </DialogRow>
+        )}
+      </DialogSection>
+
+      <DialogSection
+        title="CLI Command"
+        icon={<Terminal size={13} />}
+        hint={HINTS.cli}
+        description={
+          <>
+            Install the{" "}
+            <code className="rounded bg-maestro-border/40 px-1 py-0.5 text-maestro-text">
+              maestro
+            </code>{" "}
+            command to open projects from your terminal.
+          </>
+        }
+      >
+        {cliStatus && (
+          <div
+            className={`text-[11px] ${cliStatus.kind === "error" ? "text-maestro-red" : "text-maestro-green"}`}
+          >
+            {cliStatus.message}
+          </div>
+        )}
+        <div className="flex items-center gap-2 text-xs">
+          {cliInstalled ? (
+            <>
+              <span className="flex flex-1 items-center gap-1.5 text-[11px] text-maestro-green">
+                <Check size={11} />
+                Installed
+              </span>
               <button
                 type="button"
-                onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
-                className={`relative h-4 w-7 rounded-full transition-colors ${
-                  autoCheckEnabled ? "bg-maestro-accent" : "bg-maestro-border"
-                }`}
-                aria-label="Toggle auto-check"
+                onClick={() =>
+                  runCliCommand(invoke("uninstall_cli"), false, () => "CLI command removed")
+                }
+                className={dialogButtonClass("danger")}
+                title={HINTS.uninstallCli}
               >
-                <span
-                  className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
-                    autoCheckEnabled ? "left-3.5" : "left-0.5"
-                  }`}
-                />
+                Uninstall
               </button>
-            </div>
-
-            {/* Interval dropdown */}
-            {autoCheckEnabled && (
-              <div
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-maestro-text"
-                title={HINTS.interval}
-              >
-                <span className="flex-1 cursor-help text-maestro-muted">Interval</span>
-                <select
-                  value={checkIntervalMinutes}
-                  onChange={(e) => setCheckInterval(Number(e.target.value))}
-                  className="rounded border border-maestro-border bg-maestro-surface px-1.5 py-0.5 text-[11px] text-maestro-text outline-none"
-                >
-                  {INTERVAL_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
-          {/* CLI Command */}
-          <div>
-            <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-              <Terminal size={13} className="text-maestro-accent" />
-              <span className="cursor-help" title={HINTS.cli}>
-                CLI Command
-              </span>
-            </div>
-            <div className="space-y-1.5 px-1">
-              <p className="text-[11px] text-maestro-muted">
-                Install the{" "}
-                <code className="rounded bg-maestro-border/40 px-1 py-0.5 text-maestro-text">
-                  maestro
-                </code>{" "}
-                command to open projects from your terminal.
-              </p>
-              {cliStatus && (
-                <div
-                  className={`text-[11px] ${cliStatus.kind === "error" ? "text-maestro-red" : "text-maestro-green"}`}
-                >
-                  {cliStatus.message}
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                {cliInstalled ? (
-                  <>
-                    <div className="flex items-center gap-1.5 text-[11px] text-maestro-green">
-                      <Check size={11} />
-                      Installed
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCliStatus(null);
-                        invoke("uninstall_cli")
-                          .then(() => {
-                            setCliInstalled(false);
-                            setCliStatus({ kind: "ok", message: "CLI command removed" });
-                          })
-                          .catch((err) => {
-                            const msg = String(err);
-                            if (msg === CLI_CANCEL_SENTINEL) {
-                              setCliStatus(null);
-                              return;
-                            }
-                            setCliStatus({ kind: "error", message: `Error: ${msg}` });
-                          });
-                      }}
-                      className="rounded px-2 py-0.5 text-[11px] text-maestro-red hover:bg-maestro-border/40"
-                      title={HINTS.uninstallCli}
-                    >
-                      Uninstall
-                    </button>
-                  </>
-                ) : isWindows() ? (
-                  // The backend refuses: the command is a POSIX shell script.
-                  <div className="text-[11px] text-maestro-muted">Not available on Windows.</div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCliStatus(null);
-                      invoke<string>("install_cli")
-                        .then((path) => {
-                          setCliInstalled(true);
-                          setCliStatus({ kind: "ok", message: `Installed to ${path}` });
-                        })
-                        .catch((err) => {
-                          const msg = String(err);
-                          if (msg === CLI_CANCEL_SENTINEL) {
-                            setCliStatus(null);
-                            return;
-                          }
-                          setCliStatus({ kind: "error", message: `Error: ${msg}` });
-                        });
-                    }}
-                    className="rounded border border-maestro-accent/50 bg-maestro-accent/10 px-3 py-1 text-[11px] font-medium text-maestro-accent hover:bg-maestro-accent/20"
-                    title={HINTS.installCli}
-                  >
-                    Install &apos;maestro&apos; command in PATH
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Samurai supervisor thresholds (PRD §7) */}
-          <div>
-            <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-maestro-muted">
-              <Swords size={13} className="text-maestro-accent" />
-              <span className="cursor-help" title={SAMURAI_HINT}>
-                Samurai Thresholds
-              </span>
-            </div>
-            <div className="space-y-1 px-1">
-              <p className="text-[11px] text-maestro-muted">
-                Low values are the test mode: set a park threshold below current usage and watch the
-                crossing land in the audit log.
-              </p>
-              {samuraiError && <div className="text-[11px] text-maestro-red">{samuraiError}</div>}
-              {samuraiConfig
-                ? SAMURAI_FIELDS.map(({ key, label, hint }) => (
-                    <div
-                      key={key}
-                      className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-maestro-text"
-                      title={hint}
-                    >
-                      <span className="flex-1 cursor-help text-maestro-muted">{label}</span>
-                      <input
-                        type="number"
-                        value={samuraiConfig[key]}
-                        onChange={(e) => handleSamuraiChange(key, e.target.value)}
-                        onBlur={handleSamuraiBlur}
-                        className="w-20 rounded border border-maestro-border bg-maestro-surface px-1.5 py-0.5 text-right text-[11px] text-maestro-text outline-none focus:border-maestro-accent"
-                      />
-                    </div>
-                  ))
-                : !samuraiError && (
-                    <div className="flex items-center gap-2 px-1 text-[11px] text-maestro-muted">
-                      <Loader2 size={11} className="animate-spin" />
-                      Loading...
-                    </div>
-                  )}
-            </div>
-          </div>
-
-          <div ref={workJournalRef}>
-            <WorkJournalSettingsSection />
-          </div>
-
-          {/* Advanced */}
-          <div>
+            </>
+          ) : isWindows() ? (
+            // The backend refuses: the command is a POSIX shell script.
+            <span className="text-[11px] text-maestro-muted">Not available on Windows.</span>
+          ) : (
             <button
               type="button"
-              onClick={() => setAdvancedOpen(!advancedOpen)}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] text-maestro-muted hover:bg-maestro-border/40 hover:text-maestro-text"
-              title={HINTS.advanced}
+              onClick={() =>
+                runCliCommand(invoke<string>("install_cli"), true, (path) => `Installed to ${path}`)
+              }
+              className={dialogButtonClass("primary")}
+              title={HINTS.installCli}
             >
-              {advancedOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-              Advanced
+              Install &apos;maestro&apos; command in PATH
             </button>
+          )}
+        </div>
+      </DialogSection>
 
-            {advancedOpen && (
-              <div className="px-2 py-1.5 space-y-1.5">
-                <label
-                  htmlFor="maestro-custom-endpoint"
-                  className="block cursor-help text-[10px] text-maestro-muted uppercase tracking-wide"
-                  title={HINTS.endpoint}
-                >
-                  Custom endpoint
-                </label>
+      {/* Samurai supervisor thresholds (PRD §7) */}
+      <DialogSection
+        title="Samurai Thresholds"
+        icon={<Swords size={13} />}
+        hint={SAMURAI_HINT}
+        description={
+          "Low values are the test mode: set a park threshold below current usage and watch " +
+          "the crossing land in the audit log."
+        }
+      >
+        {samuraiError && <div className="text-[11px] text-maestro-red">{samuraiError}</div>}
+        {samuraiConfig
+          ? SAMURAI_FIELDS.map(({ key, label, hint }) => (
+              <DialogRow key={key} label={label} hint={hint}>
                 <input
-                  id="maestro-custom-endpoint"
-                  type="text"
-                  value={endpointInput}
-                  onChange={(e) => setEndpointInput(e.target.value)}
-                  onBlur={handleEndpointBlur}
-                  placeholder="https://..."
-                  title={HINTS.endpoint}
-                  className="w-full rounded border border-maestro-border bg-maestro-surface px-2 py-1 text-[11px] text-maestro-text placeholder-maestro-muted/50 outline-none focus:border-maestro-accent"
+                  type="number"
+                  value={samuraiConfig[key]}
+                  onChange={(e) => handleSamuraiChange(key, e.target.value)}
+                  onBlur={handleSamuraiBlur}
+                  className={`w-24 text-right ${dialogInputClass}`}
                 />
-                {customEndpoint && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCustomEndpoint(null);
-                      setEndpointInput("");
-                    }}
-                    className="text-[10px] text-maestro-red hover:underline"
-                    title={HINTS.resetEndpoint}
-                  >
-                    Reset to default
-                  </button>
-                )}
+              </DialogRow>
+            ))
+          : !samuraiError && (
+              <div className="flex items-center gap-2 text-[11px] text-maestro-muted">
+                <Loader2 size={11} className="animate-spin" />
+                Loading...
+              </div>
+            )}
+      </DialogSection>
+
+      <div ref={workJournalRef}>
+        <WorkJournalSettingsSection />
+      </div>
+
+      {/* Advanced */}
+      <section className={dialogCardClass}>
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen(!advancedOpen)}
+          aria-expanded={advancedOpen}
+          className={`${dialogSectionHeadingClass} w-full rounded hover:text-maestro-text`}
+          title={HINTS.advanced}
+        >
+          {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          Advanced
+        </button>
+
+        {advancedOpen && (
+          <div className="mt-2 space-y-1.5">
+            <DialogRow
+              label="Custom endpoint"
+              hint={HINTS.endpoint}
+              htmlFor="maestro-custom-endpoint"
+            >
+              <input
+                id="maestro-custom-endpoint"
+                type="text"
+                value={endpointInput}
+                onChange={(e) => setEndpointInput(e.target.value)}
+                onBlur={handleEndpointBlur}
+                placeholder="https://..."
+                className={`w-56 ${dialogInputClass}`}
+              />
+            </DialogRow>
+            {customEndpoint && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomEndpoint(null);
+                    setEndpointInput("");
+                  }}
+                  className={dialogButtonClass("danger")}
+                  title={HINTS.resetEndpoint}
+                >
+                  Reset to default
+                </button>
               </div>
             )}
           </div>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        )}
+      </section>
+    </DialogShell>
   );
 }

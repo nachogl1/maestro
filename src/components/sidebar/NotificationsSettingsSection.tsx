@@ -1,5 +1,4 @@
 import { Bell } from "lucide-react";
-import { formatTimeAgo } from "@/lib/format";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -19,8 +18,6 @@ export function NotificationsSettingsSection() {
   const notificationsEnabled = useGitHubWatchdogStore((s) => s.notificationsEnabled);
   const setNotificationsEnabled = useGitHubWatchdogStore((s) => s.setNotificationsEnabled);
   const status = useGitHubWatchdogStore((s) => s.status);
-  const lastPolledAt = useGitHubWatchdogStore((s) => s.lastPolledAt);
-  const lastCheckedAt = useHealthStore((s) => s.lastCheckedAt);
   const dismissHealthToasts = useHealthStore((s) => s.dismissAllToasts);
   const dismissSamuraiToasts = useSessionStore((s) => s.dismissAllSamuraiToasts);
 
@@ -55,10 +52,6 @@ export function NotificationsSettingsSection() {
           />
         </button>
       </div>
-
-      <p className="px-2 pt-1 text-[10px] text-maestro-muted">
-        GitHub checked {formatTimeAgo(lastPolledAt)} · health checked {formatTimeAgo(lastCheckedAt)}
-      </p>
 
       {status === "gh-missing" && (
         <p className="px-2 pt-1 text-[10px] text-maestro-muted">

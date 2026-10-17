@@ -1,3 +1,4 @@
+import { dialogInputClass } from "@/components/shared/DialogShell";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 
 /** The select's value while the choice was never made. */
@@ -20,7 +21,7 @@ export function WorkJournalGranolaRow(): JSX.Element {
       className="flex items-center gap-2 text-xs"
       title="When Granola is connected in your Claude setup, suggestions also cover your meetings. Notes are sent to Claude and not stored."
     >
-      <label htmlFor="work-journal-granola" className="flex-1 cursor-help text-maestro-muted">
+      <label htmlFor="work-journal-granola" className="flex-1 cursor-help text-maestro-text">
         Granola meeting notes
       </label>
       <select
@@ -29,7 +30,7 @@ export function WorkJournalGranolaRow(): JSX.Element {
         onChange={(e) => {
           if (e.target.value !== NOT_ASKED) void setGranolaOptIn(e.target.value === "yes");
         }}
-        className="rounded border border-maestro-border bg-maestro-surface px-1.5 py-0.5 text-[11px] text-maestro-text outline-none"
+        className={dialogInputClass}
       >
         {granolaOptIn === null && (
           <option value={NOT_ASKED} disabled>

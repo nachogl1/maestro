@@ -62,6 +62,7 @@ export function ContextAlertSection() {
             if (e.key === "Enter") commit();
           }}
           aria-label="Context alert threshold"
+          title={`Context window percentage (${MIN_CONTEXT_ALERT_THRESHOLD}-${MAX_CONTEXT_ALERT_THRESHOLD}) at which a Claude terminal's frame blinks red.`}
           className="w-16 shrink-0 rounded border border-maestro-border/60 bg-maestro-surface px-1.5 py-1 text-right text-[11px] text-maestro-text focus:border-maestro-accent focus:outline-none disabled:opacity-50"
         />
         <span className="text-maestro-muted">%</span>
@@ -82,13 +83,6 @@ export function ContextAlertSection() {
           />
         </button>
       </div>
-
-      <p className="px-2 pt-1 text-[10px] text-maestro-muted">
-        A terminal whose Claude conversation fills its context window past this level gets a
-        blinking red frame, so you can hand off or compact before it runs out. Any whole number from{" "}
-        {MIN_CONTEXT_ALERT_THRESHOLD} to {MAX_CONTEXT_ALERT_THRESHOLD}; the switch turns the alert
-        off.
-      </p>
     </div>
   );
 }
