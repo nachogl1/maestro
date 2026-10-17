@@ -182,7 +182,7 @@ describe("Sidebar tab bar", () => {
     for (const label of ["History", "Infra", "Settings"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
-    // The General tab is gone: its Agents + Git Repository cards live under Settings.
+    // The General tab is gone: its Agents card lives under Settings.
     expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "History" })).toHaveClass("border-maestro-accent");
     // Content from other tabs is not mounted
@@ -241,14 +241,15 @@ describe("Sidebar tab bar", () => {
     expect(screen.queryByText("Agents")).not.toBeInTheDocument();
   });
 
-  it("switches to Settings (appearance, notifications, agents, git) and persists the chosen tab", async () => {
+  it("switches to Settings (appearance, notifications, agents) and persists the chosen tab", async () => {
     render(<ControlledSidebar />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByText("Terminal Settings")).toBeInTheDocument();
     expect(screen.getByText("Notifications")).toBeInTheDocument();
     // Moved here from the removed General tab, below the existing cards.
     expect(screen.getByText("Agents")).toBeInTheDocument();
-    expect(screen.getByText("Git Repository")).toBeInTheDocument();
+    // The Git Repository card is gone from the sidebar (the Git panel covers it).
+    expect(screen.queryByText("Git Repository")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(localStorage.getItem("maestro-sidebar-tab")).toBe("settings");
     });

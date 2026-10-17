@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
@@ -9,8 +8,6 @@ import {
   Cloud,
   Edit2,
   FileText,
-  FolderGit2,
-  GitBranch,
   History,
   Home,
   Info,
@@ -29,14 +26,11 @@ import {
   Store,
   Sun,
   Trash2,
-  User,
   Wrench,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
 import { ContextDocEditorModal } from "@/components/claudemd";
-import { GitSettingsModal, RemoteStatusIndicator } from "@/components/git";
 import { MarketplaceBrowser } from "@/components/marketplace";
 import { McpServerEditorModal } from "@/components/mcp";
 import { ChangelogModal, MaestroSettingsModal, ShortcutsModal } from "@/components/settings";
@@ -53,7 +47,6 @@ import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { type SubagentInfo, useAgentStore } from "@/stores/useAgentStore";
-import { useGitStore } from "@/stores/useGitStore";
 import { useMarketplaceStore } from "@/stores/useMarketplaceStore";
 import { useMcpStore } from "@/stores/useMcpStore";
 import { usePluginStore } from "@/stores/usePluginStore";
@@ -387,8 +380,6 @@ function ConfigTab({
           <ContextAlertSection />
           {divider}
           <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
-          {divider}
-          <GitRepositorySection />
         </>
       );
   }
@@ -603,166 +594,6 @@ function AgentsSection({
           })
         ))}
     </div>
-  );
-}
-
-/* ── 1. Git Repository ── */
-
-/** Shortens a filesystem path for display by keeping the last 2-3 segments. */
-function shortenPath(path: string): string {
-  const segments = path.replace(/[\\/]+$/, "").split(/[\\/]/);
-  if (segments.length <= 3) return path;
-  return `.../${segments.slice(-3).join("/")}`;
-}
-
-function GitRepositorySection() {
-  const [showSettings, setShowSettings] = useState(false);
-  const [defaultWorktreeBase, setDefaultWorktreeBase] = useState<string | null>(null);
-  const tabs = useWorkspaceStore((s) => s.tabs);
-  const activeTab = tabs.find((t) => t.active);
-  const repoPath = activeTab?.projectPath ?? "";
-  const worktreeBasePath = activeTab?.worktreeBasePath ?? null;
-
-  const { userConfig, remotes, remoteStatuses, fetchUserConfig, fetchRemotes, testAllRemotes } =
-    useGitStore(
-      useShallow((s) => ({
-        userConfig: s.userConfig,
-        remotes: s.remotes,
-        remoteStatuses: s.remoteStatuses,
-        fetchUserConfig: s.fetchUserConfig,
-        fetchRemotes: s.fetchRemotes,
-        testAllRemotes: s.testAllRemotes,
-      })),
-    );
-
-  // Fetch default worktree base dir on mount
-  useEffect(() => {
-    invoke<string>("get_default_worktree_base_dir")
-      .then(setDefaultWorktreeBase)
-      .catch(() => {});
-  }, []);
-
-  // Fetch data on mount and when repoPath changes
-  useEffect(() => {
-    if (!repoPath) return;
-    fetchUserConfig(repoPath);
-    fetchRemotes(repoPath);
-  }, [repoPath, fetchUserConfig, fetchRemotes]);
-
-  // Test remotes after fetching them
-  useEffect(() => {
-    if (!repoPath || remotes.length === 0) return;
-    // Only test if we don't have statuses yet
-    const hasStatuses = remotes.some((r) => remoteStatuses[r.name] !== undefined);
-    if (!hasStatuses) {
-      testAllRemotes(repoPath);
-    }
-  }, [repoPath, remotes, remoteStatuses, testAllRemotes]);
-
-  const hasUser = userConfig?.name || userConfig?.email;
-  const displayName = userConfig?.name || "Not configured";
-  const displayEmail = userConfig?.email || "No email set";
-
-  // Format remote URL for display (shorten GitHub URLs)
-  const formatRemoteUrl = (url: string) => {
-    // git@github.com:user/repo.git -> github.com/user/repo
-    // https://github.com/user/repo.git -> github.com/user/repo
-    const match = url.match(/github\.com[:/](.+?)(?:\.git)?$/);
-    if (match) {
-      return `github.com/${match[1]}`;
-    }
-    // For other URLs, just show the host/path
-    try {
-      const parsed = new URL(url.replace(/^git@/, "https://").replace(/:(?!\/\/)/, "/"));
-      return `${parsed.host}${parsed.pathname.replace(/\.git$/, "")}`;
-    } catch {
-      return url;
-    }
-  };
-
-  if (!repoPath) {
-    return (
-      <div className={cardClass}>
-        <SectionHeader icon={GitBranch} label="Git Repository" iconColor="text-maestro-muted" />
-        <div className="px-1 py-1 text-xs text-maestro-muted">No project selected</div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div className={cardClass}>
-        <SectionHeader
-          icon={GitBranch}
-          label="Git Repository"
-          iconColor="text-maestro-green"
-          right={
-            <button
-              type="button"
-              onClick={() => setShowSettings(true)}
-              className="rounded p-0.5 hover:bg-maestro-border/40"
-              title="Git settings"
-            >
-              <Settings size={12} className="text-maestro-muted" />
-            </button>
-          }
-        />
-        {/* User */}
-        <div className="flex items-center gap-2 px-1 py-1">
-          <User size={12} className={hasUser ? "text-maestro-green" : "text-maestro-muted"} />
-          <span className="text-xs font-semibold text-maestro-text truncate">{displayName}</span>
-        </div>
-        <div className="pl-5 text-[11px] text-maestro-muted truncate">{displayEmail}</div>
-
-        {/* Remotes */}
-        {remotes.length === 0 ? (
-          <div className="mt-2 px-1 py-1 text-xs text-maestro-muted">No remotes configured</div>
-        ) : (
-          remotes.map((remote) => (
-            <div key={remote.name} className="mt-1">
-              <div className="flex items-center gap-2 px-1 py-1">
-                <RemoteStatusIndicator status={remoteStatuses[remote.name] ?? "unknown"} />
-                <span className="text-xs font-semibold text-maestro-text truncate">
-                  {remote.name}
-                </span>
-              </div>
-              <div className="pl-5 text-[11px] text-maestro-muted truncate">
-                {formatRemoteUrl(remote.url)}
-              </div>
-            </div>
-          ))
-        )}
-
-        {/* Worktree base path */}
-        {(worktreeBasePath || defaultWorktreeBase) && (
-          <div className="mt-2 border-t border-maestro-border/30 pt-2 min-w-0 overflow-hidden">
-            <div className="flex items-center gap-2 px-1 py-1 min-w-0">
-              <FolderGit2 size={12} className="text-maestro-accent shrink-0" />
-              <span className="text-xs font-semibold text-maestro-text truncate min-w-0">
-                Worktrees
-              </span>
-              {!worktreeBasePath && (
-                <span className="text-[10px] text-maestro-muted/60 shrink-0">(default)</span>
-              )}
-            </div>
-            <div
-              className="pl-5 text-[11px] text-maestro-muted truncate min-w-0 overflow-hidden"
-              title={worktreeBasePath ?? defaultWorktreeBase ?? ""}
-            >
-              {shortenPath(worktreeBasePath ?? defaultWorktreeBase ?? "")}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {showSettings && (
-        <GitSettingsModal
-          repoPath={repoPath}
-          tabId={activeTab?.id ?? ""}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
-    </>
   );
 }
 
