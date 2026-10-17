@@ -12,7 +12,8 @@ interface EagleProjectPickerModalProps {
 /**
  * Eagle-view "new terminal" picker, opened by Cmd/Ctrl+T while eagle view is
  * active. ArrowUp/ArrowDown move the selection (skipping projects already at
- * the session cap), Enter confirms, Escape cancels. Clicking a row works too.
+ * the session cap, stopping at the first/last project) and keep it scrolled
+ * into view, Enter confirms, Escape cancels. Clicking a row works too.
  */
 export function EagleProjectPickerModal({
   projects,
@@ -20,17 +21,15 @@ export function EagleProjectPickerModal({
   onClose,
 }: EagleProjectPickerModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const [selected, setSelected] = useState(() => projects.findIndex((p) => !p.atMax));
 
   const move = useCallback(
     (dir: 1 | -1) => {
       setSelected((cur) => {
-        const n = projects.length;
-        if (n === 0) return -1;
-        // Walk at most one full loop looking for the next selectable project.
-        let idx = cur;
-        for (let i = 0; i < n; i++) {
-          idx = (idx + dir + n) % n;
+        // Walk toward the list edge looking for the next selectable project;
+        // stay put when there is none (no wrap-around).
+        for (let idx = cur + dir; idx >= 0 && idx < projects.length; idx += dir) {
           if (!projects[idx].atMax) return idx;
         }
         return cur;
@@ -38,6 +37,19 @@ export function EagleProjectPickerModal({
     },
     [projects],
   );
+
+  // Keep the selected row visible inside the list. Adjusts the list's own
+  // scrollTop rather than scrollIntoView, which would also scroll ancestors.
+  useEffect(() => {
+    const list = listRef.current;
+    const row = list?.children[selected] as HTMLElement | undefined;
+    if (!list || !row) return;
+    const rowBottom = row.offsetTop + row.offsetHeight;
+    if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop;
+    else if (rowBottom > list.scrollTop + list.clientHeight) {
+      list.scrollTop = rowBottom - list.clientHeight;
+    }
+  }, [selected]);
 
   // Close on click-away. Escape is handled below in the capture-phase listener.
   useDismissable(onClose, { ref: modalRef, escape: false });
@@ -73,14 +85,14 @@ export function EagleProjectPickerModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
         ref={modalRef}
-        className="w-full max-w-xs rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
+        className="w-full max-w-md rounded-lg border border-maestro-border bg-maestro-bg shadow-2xl"
       >
         <div className="border-b border-maestro-border px-4 py-3">
           <h2 className="text-sm font-semibold text-maestro-text">New terminal</h2>
           <p className="mt-0.5 text-[11px] text-maestro-muted">Pick the project it belongs to</p>
         </div>
 
-        <ul className="max-h-72 overflow-y-auto py-1">
+        <ul ref={listRef} className="scrollbar-none relative max-h-[70vh] overflow-y-auto py-1">
           {projects.map((project, index) => (
             <li key={project.tabId}>
               <button
