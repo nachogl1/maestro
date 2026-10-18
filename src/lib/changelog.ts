@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-18",
+    title: "Maestro for Mac",
+    items: [
+      "Mac users can download Maestro from the Releases page (Apple Silicon and Intel) and get updates inside the app, like on Windows.",
+    ],
+  },
+  {
     date: "2026-10-17",
     title: "Eagle view columns, tidier settings, Infra for every project, shorter changelog",
     items: [
