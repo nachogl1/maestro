@@ -65,7 +65,12 @@ export function UpdateNotification() {
       {/* Body */}
       <div className="px-3 py-2.5 space-y-2">
         {status === "error" && (
-          <p className="text-[11px] text-maestro-red leading-relaxed">{error}</p>
+          <p
+            className="text-[11px] text-maestro-red leading-relaxed break-words line-clamp-3"
+            title={error ?? undefined}
+          >
+            {error}
+          </p>
         )}
 
         {status === "available" && updateInfo && (

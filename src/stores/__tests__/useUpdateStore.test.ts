@@ -87,11 +87,20 @@ describe("useUpdateStore", () => {
       expect(mockInvoke).toHaveBeenLastCalledWith("check_for_updates", { customEndpoint: null });
     });
 
-    it("records the error on failure", async () => {
+    it("records the error on a failed manual check", async () => {
+      mockInvoke.mockRejectedValue(new Error("offline"));
+      await useUpdateStore.getState().checkForUpdates({ manual: true });
+      const s = useUpdateStore.getState();
+      expect(s.status).toBe("error");
+      expect(s.error).toBe("offline");
+      expect(s.lastCheckedAt).not.toBeNull();
+    });
+
+    it("keeps a failed automatic check quiet so no error toast pops up", async () => {
       mockInvoke.mockRejectedValue(new Error("offline"));
       await useUpdateStore.getState().checkForUpdates();
       const s = useUpdateStore.getState();
-      expect(s.status).toBe("error");
+      expect(s.status).toBe("idle");
       expect(s.error).toBe("offline");
       expect(s.lastCheckedAt).not.toBeNull();
     });

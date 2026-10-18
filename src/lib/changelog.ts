@@ -13,7 +13,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Maestro for Mac, automatic updates when Maestro opens, opt-in Work Journal, one Settings window, Workshop, Tidy up button",
     items: [
       "Mac users can download Maestro from the Releases page (Apple Silicon and Intel) and get updates inside the app, like on Windows.",
-      "Updates: turn on Install on launch (Maestro asks once, or in Settings → Updates) and an update found when you open Maestro installs by itself and restarts the app.",
+      "Updates: turn on Install on launch (Maestro asks once, or in Settings → Updates) and an update found when you open Maestro installs by itself and restarts the app. A background check that can't reach the server retries quietly instead of showing an error, and update errors are short and fit their popup.",
       "Work Journal is off until you turn it on: Maestro asks once on first launch, remembers your answer across updates, and Settings → Work Journal has a switch to change it any time.",
       "Settings: every setting now lives in one Settings window with a menu on the left (Appearance, Features, Notifications, Updates, Terminal, AI command lines, Samurai, Work Journal, Keyboard shortcuts and Changelog), with cleaner, rounder fields and switches. Open it with Open Settings in the sidebar's Settings tab. Settings → Features switches Samurai launch, Second Brain and the Work Journal on or off; a tool that is off leaves the top bar.",
       "Notes: removing or changing one bullet no longer moves the bullets around it to a different level.",
