@@ -18,9 +18,9 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
-import { TerminalSettingsModal } from "../TerminalSettingsModal";
+import { TerminalSettingsPanel } from "../TerminalSettingsPanel";
 
-describe("TerminalSettingsModal", () => {
+describe("TerminalSettingsPanel", () => {
   beforeEach(() => {
     // Skip the font scan: happy-dom has no Tauri backend.
     useTerminalSettingsStore.setState({
@@ -30,9 +30,8 @@ describe("TerminalSettingsModal", () => {
     });
   });
 
-  it("opens as a shared settings dialog with its sections and the reset action", () => {
-    render(<TerminalSettingsModal onClose={vi.fn()} />);
-    expect(screen.getByRole("dialog", { name: "Terminal Settings" })).toBeInTheDocument();
+  it("shows its sections and the reset action", () => {
+    render(<TerminalSettingsPanel />);
     for (const section of ["Font Family", "Font Size", "Zoom Level", "Line Height"]) {
       expect(screen.getByText(section)).toBeInTheDocument();
     }
@@ -41,19 +40,12 @@ describe("TerminalSettingsModal", () => {
 
   it("hides the reset action until the saved settings have loaded", () => {
     useTerminalSettingsStore.setState({ isInitialized: false, isLoading: true });
-    render(<TerminalSettingsModal onClose={vi.fn()} />);
+    render(<TerminalSettingsPanel />);
     expect(screen.queryByRole("button", { name: "Reset to Defaults" })).not.toBeInTheDocument();
   });
 
-  it("closes from the shared close button", () => {
-    const onClose = vi.fn();
-    render(<TerminalSettingsModal onClose={onClose} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
   it("applies a zoom preset", () => {
-    render(<TerminalSettingsModal onClose={vi.fn()} />);
+    render(<TerminalSettingsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "150%" }));
     expect(useTerminalSettingsStore.getState().settings.zoomLevel).toBe(150);
   });

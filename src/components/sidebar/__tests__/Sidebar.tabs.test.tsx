@@ -298,11 +298,13 @@ describe("Sidebar tab bar", () => {
     expect(screen.getAllByText("MCP Servers")).toHaveLength(1);
   });
 
-  it("switches to Settings (appearance, notifications, agents) and persists the chosen tab", async () => {
+  it("switches to Settings (settings launcher, agents) and persists the chosen tab", async () => {
     render(<ControlledSidebar />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByText("Terminal Settings")).toBeInTheDocument();
-    expect(screen.getByText("Notifications")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Settings" })).toBeInTheDocument();
+    // Every setting lives in the one Settings dialog, not in separate buttons or cards.
+    expect(screen.queryByText("Terminal Settings")).not.toBeInTheDocument();
+    expect(screen.queryByText("Notifications")).not.toBeInTheDocument();
     // Moved here from the removed General tab, below the existing cards.
     expect(screen.getByText("Agents")).toBeInTheDocument();
     // The Git Repository card is gone from the sidebar (the Git panel covers it).
@@ -310,6 +312,15 @@ describe("Sidebar tab bar", () => {
     await waitFor(() => {
       expect(localStorage.getItem("maestro-sidebar-tab")).toBe("settings");
     });
+  });
+
+  it("opens the one Settings dialog from the Settings tab", () => {
+    localStorage.setItem("maestro-sidebar-tab", "settings");
+    render(<ControlledSidebar />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("falls back to History when a removed tab id was persisted", () => {

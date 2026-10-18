@@ -5,7 +5,7 @@ import { useSessionStore } from "@/stores/useSessionStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 /**
- * Sidebar settings card for every background notification Maestro raises
+ * Settings card (Settings → Notifications) for every background notification Maestro raises
  * (follows the UpdateSettingsSection pattern).
  *
  * One toggle covers every notifying watcher — the GitHub watchdog, the

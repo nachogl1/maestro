@@ -769,7 +769,7 @@ function App() {
       <UpdateNotification />
       <NotificationToasts />
       <ParticleEffectsLayer />
-      <WorkJournalSettingsHost />
+      <WorkJournalSettingsHost theme={theme} onToggleTheme={toggleTheme} />
     </div>
   );
 }

@@ -1,28 +1,23 @@
-import { Loader2, Monitor, RefreshCw, RotateCcw } from "lucide-react";
+import { Loader2, RefreshCw, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   DialogSection,
-  DialogShell,
   dialogButtonClass,
   dialogInputClass,
 } from "@/components/shared/DialogShell";
 import { clearFontCache, EMBEDDED_FONT } from "@/lib/fonts";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 
-interface TerminalSettingsModalProps {
-  onClose: () => void;
-}
-
 /** The zoom presets offered as buttons, in percent. */
 const ZOOM_PRESETS = [50, 75, 100, 125, 150, 200];
 
 /**
- * Modal for managing terminal display settings:
+ * Settings section for terminal display settings:
  * - Font family selection (with detected system fonts)
  * - Font size adjustment
  * - Line height adjustment
  */
-export function TerminalSettingsModal({ onClose }: TerminalSettingsModalProps) {
+export function TerminalSettingsPanel() {
   const {
     settings,
     availableFonts,
@@ -53,99 +48,93 @@ export function TerminalSettingsModal({ onClose }: TerminalSettingsModalProps) {
 
   const loading = isLoading && !isInitialized;
 
+  // No reset while the saved settings are still loading: it would overwrite
+  // them with the defaults before they arrive.
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 size={20} className="animate-spin text-maestro-muted" />
+      </div>
+    );
+  }
+
   return (
-    <DialogShell
-      title="Terminal Settings"
-      subtitle="Font, size and spacing of every terminal."
-      icon={<Monitor size={16} />}
-      onClose={onClose}
-      footer={
-        // No reset while the saved settings are still loading: it would
-        // overwrite them with the defaults before they arrive.
-        loading ? undefined : (
-          <button type="button" onClick={resetToDefaults} className={dialogButtonClass("ghost")}>
-            <RotateCcw size={12} />
-            Reset to Defaults
-          </button>
-        )
-      }
-    >
-      {loading ? (
-        <div className="flex items-center justify-center py-8">
-          <Loader2 size={20} className="animate-spin text-maestro-muted" />
-        </div>
-      ) : (
-        <>
-          <FontFamilySection
-            availableFonts={availableFonts}
-            selectedFont={settings.fontFamily}
-            onSelect={(font) => setSetting("fontFamily", font)}
-            onRefresh={handleRefreshFonts}
-            isRefreshing={isRefreshing}
+    <>
+      <FontFamilySection
+        availableFonts={availableFonts}
+        selectedFont={settings.fontFamily}
+        onSelect={(font) => setSetting("fontFamily", font)}
+        onRefresh={handleRefreshFonts}
+        isRefreshing={isRefreshing}
+      />
+
+      <DialogSection title="Font Size">
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={10}
+            max={20}
+            step={1}
+            value={settings.fontSize}
+            onChange={(e) => setSetting("fontSize", Number(e.target.value))}
+            className="flex-1 accent-maestro-accent"
           />
+          <span className="w-16 text-right text-xs font-medium text-maestro-text">
+            {settings.zoomLevel !== 100
+              ? `${settings.fontSize}px @ ${settings.zoomLevel}% = ${getEffectiveFontSize()}px`
+              : `${settings.fontSize}px`}
+          </span>
+        </div>
+      </DialogSection>
 
-          <DialogSection title="Font Size">
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={10}
-                max={20}
-                step={1}
-                value={settings.fontSize}
-                onChange={(e) => setSetting("fontSize", Number(e.target.value))}
-                className="flex-1 accent-maestro-accent"
-              />
-              <span className="w-16 text-right text-xs font-medium text-maestro-text">
-                {settings.zoomLevel !== 100
-                  ? `${settings.fontSize}px @ ${settings.zoomLevel}% = ${getEffectiveFontSize()}px`
-                  : `${settings.fontSize}px`}
-              </span>
-            </div>
-          </DialogSection>
+      <DialogSection title="Zoom Level">
+        <div className="flex flex-wrap gap-1.5">
+          {ZOOM_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => setZoomLevel(preset)}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                settings.zoomLevel === preset
+                  ? "bg-maestro-accent text-white"
+                  : "bg-maestro-bg text-maestro-muted hover:bg-maestro-border/40 hover:text-maestro-text"
+              }`}
+            >
+              {preset}%
+            </button>
+          ))}
+        </div>
+        {settings.zoomLevel !== 100 && (
+          <p className="text-[11px] text-maestro-muted">
+            Effective font size: {getEffectiveFontSize()}px
+          </p>
+        )}
+      </DialogSection>
 
-          <DialogSection title="Zoom Level">
-            <div className="flex flex-wrap gap-1.5">
-              {ZOOM_PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setZoomLevel(preset)}
-                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                    settings.zoomLevel === preset
-                      ? "bg-maestro-accent text-white"
-                      : "bg-maestro-bg text-maestro-muted hover:bg-maestro-border/40 hover:text-maestro-text"
-                  }`}
-                >
-                  {preset}%
-                </button>
-              ))}
-            </div>
-            {settings.zoomLevel !== 100 && (
-              <p className="text-[11px] text-maestro-muted">
-                Effective font size: {getEffectiveFontSize()}px
-              </p>
-            )}
-          </DialogSection>
+      <DialogSection title="Line Height">
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={1.0}
+            max={2.0}
+            step={0.1}
+            value={settings.lineHeight}
+            onChange={(e) => setSetting("lineHeight", Number(e.target.value))}
+            className="flex-1 accent-maestro-accent"
+          />
+          <span className="w-8 text-right text-xs font-medium text-maestro-text">
+            {settings.lineHeight.toFixed(1)}
+          </span>
+        </div>
+      </DialogSection>
 
-          <DialogSection title="Line Height">
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1.0}
-                max={2.0}
-                step={0.1}
-                value={settings.lineHeight}
-                onChange={(e) => setSetting("lineHeight", Number(e.target.value))}
-                className="flex-1 accent-maestro-accent"
-              />
-              <span className="w-8 text-right text-xs font-medium text-maestro-text">
-                {settings.lineHeight.toFixed(1)}
-              </span>
-            </div>
-          </DialogSection>
-        </>
-      )}
-    </DialogShell>
+      <div className="flex justify-end">
+        <button type="button" onClick={resetToDefaults} className={dialogButtonClass("ghost")}>
+          <RotateCcw size={12} />
+          Reset to Defaults
+        </button>
+      </div>
+    </>
   );
 }
 

@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-18",
+    title: "One Settings window",
+    items: [
+      "Settings: every setting now lives in one Settings window with a menu on the left (Appearance, Notifications, Updates, Terminal, AI command lines, Samurai, Work Journal, Keyboard shortcuts and Changelog). Open it with Open Settings in the sidebar's Settings tab.",
+    ],
+  },
+  {
     date: "2026-10-17",
     title: "Eagle view columns, tidier settings, Infra for every project, shorter changelog",
     items: [
