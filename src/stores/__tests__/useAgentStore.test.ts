@@ -261,42 +261,6 @@ describe("useAgentStore", () => {
     expect(useAgentStore.getState().agents.map((a) => a.agentId)).toEqual(["toolu_orphan"]);
   });
 
-  it("dismiss removes exactly one agent", () => {
-    useAgentStore.getState().handleEvent(spawned(1, "toolu_a"));
-    useAgentStore.getState().handleEvent(spawned(1, "toolu_b"));
-    useAgentStore.getState().dismiss(1, "toolu_a");
-    expect(useAgentStore.getState().agents.map((a) => a.agentId)).toEqual(["toolu_b"]);
-  });
-
-  it("dismiss keeps the same tool_use id belonging to another session", () => {
-    useAgentStore.getState().handleEvent(spawned(1, "toolu_a"));
-    useAgentStore.getState().handleEvent(spawned(2, "toolu_a"));
-    useAgentStore.getState().dismiss(1, "toolu_a");
-    expect(useAgentStore.getState().agents.map((a) => a.sessionId)).toEqual([2]);
-  });
-
-  it("dismiss of an unknown id leaves the state untouched", () => {
-    useAgentStore.getState().handleEvent(spawned(1, "toolu_a"));
-    const before = useAgentStore.getState().agents;
-    useAgentStore.getState().dismiss(1, "nope");
-    expect(useAgentStore.getState().agents).toBe(before);
-  });
-
-  it("clearFinished drops the finished agents of one session only", () => {
-    useAgentStore.getState().handleEvent(spawned(1, "toolu_done"));
-    useAgentStore.getState().handleEvent(spawned(1, "toolu_running"));
-    useAgentStore.getState().handleEvent(spawned(2, "toolu_other_done"));
-    useAgentStore.getState().handleEvent(completed(1, "toolu_done", true));
-    useAgentStore.getState().handleEvent(completed(2, "toolu_other_done", true));
-
-    useAgentStore.getState().clearFinished(1);
-
-    expect(useAgentStore.getState().agents.map((a) => a.agentId)).toEqual([
-      "toolu_running",
-      "toolu_other_done",
-    ]);
-  });
-
   it("clearFinishedAndDead drops finished agents everywhere plus dead ones", () => {
     useAgentStore.getState().handleEvent(spawned(1, "toolu_running"));
     useAgentStore.getState().handleEvent(spawned(1, "toolu_done"));

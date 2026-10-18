@@ -59,15 +59,6 @@ interface AgentState {
    */
   handleEvents: (events: ClaudeEvent[]) => void;
   /**
-   * Remove one agent from the graph. Nothing else ever removes them.
-   * Keyed on (session, agent) like every event handler: a resumed
-   * conversation replays the same tool_use ids, so the id alone would also
-   * take the other session's node.
-   */
-  dismiss: (sessionId: number, agentId: string) => void;
-  /** Remove every finished agent of one session, leaving the running ones. */
-  clearFinished: (sessionId: number) => void;
-  /**
    * Remove every finished agent everywhere, plus the dead ones: agents still
    * marked running whose session is not in `liveSessionIds` — its terminal
    * ended or is gone, so the agent can never complete and would otherwise
@@ -79,12 +70,11 @@ interface AgentState {
 /**
  * Store of the subagents seen in each session's transcript.
  *
- * Agents are kept until the user dismisses them: a finished agent stays on the
- * graph with its final status, its brief and its report, so a whole
- * orchestration run can be read back after every agent has stopped. Nothing
- * expires them on a timer and a dead session does not drop them — the only
- * removals are [`dismiss`], [`clearFinished`] and [`clearFinishedAndDead`],
- * plus quitting the app, since this store is in memory only.
+ * A finished agent is kept with its final status, its brief and its report,
+ * so a whole orchestration run can be read back after every agent has
+ * stopped. Nothing expires them on a timer and a dead session does not drop
+ * them — the only removals are [`clearFinishedAndDead`] and quitting the app,
+ * since this store is in memory only.
  */
 /**
  * Apply one event to the agent list, returning the SAME array reference when
@@ -233,18 +223,6 @@ export const useAgentStore = create<AgentState>((set) => ({
       return agents === state.agents ? state : { agents };
     });
   },
-
-  dismiss: (sessionId: number, agentId: string) =>
-    set((state) => {
-      const kept = state.agents.filter((a) => a.agentId !== agentId || a.sessionId !== sessionId);
-      return kept.length === state.agents.length ? state : { agents: kept };
-    }),
-
-  clearFinished: (sessionId: number) =>
-    set((state) => {
-      const kept = state.agents.filter((a) => a.sessionId !== sessionId || a.completedAt === null);
-      return kept.length === state.agents.length ? state : { agents: kept };
-    }),
 
   clearFinishedAndDead: (liveSessionIds: ReadonlySet<number>) =>
     set((state) => {

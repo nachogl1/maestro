@@ -98,6 +98,8 @@ export interface MultiProjectViewHandle {
   addSessionInProject: (tabId: string) => boolean;
   launchAllInActiveProject: () => Promise<void>;
   refreshBranchesInActiveProject: () => void;
+  /** Tidy up: give every terminal of the active project an even share of its grid. */
+  tidyActiveProject: () => void;
   /** Focus the pane running the given session. False if that grid isn't mounted or doesn't own it. */
   focusSessionInProject: (tabId: string, sessionId: number) => boolean;
   /** Zoom into the pane running the given session (eagle zoom in eagle view, per-project zoom otherwise). False if no grid owns it. */
@@ -453,6 +455,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
             const gridRef = gridRefs.current.get(activeTab.id);
             gridRef?.refreshBranches();
           }
+        },
+        tidyActiveProject: () => {
+          const activeTab = tabs.find((t) => t.active);
+          if (activeTab) gridRefs.current.get(activeTab.id)?.tidyLayout();
         },
         focusSessionInProject: (tabId: string, sessionId: number) => {
           return gridRefs.current.get(tabId)?.focusSession(sessionId) ?? false;

@@ -32,7 +32,6 @@ vi.mock("@/lib/git", () => ({
   isGitWorktree: vi.fn(async () => false),
 }));
 vi.mock("@/components/session/ActivityFeed", () => ({ ActivityFeed: () => null }));
-vi.mock("@/components/session/AgentGraph", () => ({ AgentGraph: () => null }));
 vi.mock("@/components/quickactions/QuickActionsManager", () => ({
   QuickActionsManager: () => null,
 }));

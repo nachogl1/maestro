@@ -145,6 +145,7 @@ describe("UtilityPanel", () => {
   beforeAll(async () => {
     await import("@/components/notepad/NotepadPanel");
     await import("@/components/workjournal/WorkJournalPanel");
+    await import("@/components/workshop/WorkshopPanel");
   });
 
   beforeEach(() => {
