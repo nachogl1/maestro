@@ -98,7 +98,10 @@ export interface MultiProjectViewHandle {
   addSessionInProject: (tabId: string) => boolean;
   launchAllInActiveProject: () => Promise<void>;
   refreshBranchesInActiveProject: () => void;
-  /** Tidy up: give every terminal of the active project an even share of its grid. */
+  /**
+   * Tidy up: give every terminal of the active project an even share of its
+   * grid — in eagle view, put every tile back on the automatic even layout.
+   */
   tidyActiveProject: () => void;
   /** Focus the pane running the given session. False if that grid isn't mounted or doesn't own it. */
   focusSessionInProject: (tabId: string, sessionId: number) => boolean;
@@ -457,6 +460,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           }
         },
         tidyActiveProject: () => {
+          if (eagleView) {
+            setEagleTileRects({});
+            return;
+          }
           const activeTab = tabs.find((t) => t.active);
           if (activeTab) gridRefs.current.get(activeTab.id)?.tidyLayout();
         },
@@ -514,7 +521,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           return wasZoomed ? grid.zoomSession(sessionId) : grid.focusSession(sessionId);
         },
       }),
-      [tabs, setSessionsLaunched, eagleView, eagleZoom],
+      [tabs, setSessionsLaunched, eagleView, eagleZoom, setEagleTileRects],
     );
 
     // Create stable callbacks per tab to avoid infinite re-render loops

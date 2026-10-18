@@ -74,10 +74,12 @@ describe("TopBar tidy-up button", () => {
     expect(onTidyLayout).toHaveBeenCalledTimes(1);
   });
 
-  it("hides in eagle view", () => {
-    render(<TopBar {...baseProps} hasActiveProject eagleView onTidyLayout={vi.fn()} />);
+  it("shows in eagle view and tidies on click", () => {
+    const onTidyLayout = vi.fn();
+    render(<TopBar {...baseProps} hasActiveProject eagleView onTidyLayout={onTidyLayout} />);
 
-    expect(screen.queryByRole("button", { name: "Tidy up terminals" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Tidy up terminals" }));
+    expect(onTidyLayout).toHaveBeenCalledTimes(1);
   });
 
   it("hides when no project is open", () => {
