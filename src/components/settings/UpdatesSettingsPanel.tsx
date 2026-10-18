@@ -30,6 +30,9 @@ const HINTS = {
     "When on, Maestro looks for newer versions by itself in the background and tells you " +
     "when one is ready to install.",
   interval: "How often Maestro looks for a newer version while Auto-check is on.",
+  installOnLaunch:
+    "When on, an update found when you open Maestro downloads and installs by itself, then " +
+    "Maestro restarts. Updates found later still ask first.",
   cli:
     "The maestro command lets you type 'maestro' in any terminal window to open that folder " +
     "as a project in Maestro.",
@@ -76,6 +79,8 @@ export function UpdatesSettingsPanel() {
   const setAutoCheckEnabled = useUpdateStore((s) => s.setAutoCheckEnabled);
   const setCheckInterval = useUpdateStore((s) => s.setCheckInterval);
   const setCustomEndpoint = useUpdateStore((s) => s.setCustomEndpoint);
+  const autoInstallOnLaunch = useUpdateStore((s) => s.autoInstallOnLaunch);
+  const setAutoInstallOnLaunch = useUpdateStore((s) => s.setAutoInstallOnLaunch);
 
   useEffect(() => {
     invoke<boolean>("is_cli_installed")
@@ -177,6 +182,13 @@ export function UpdatesSettingsPanel() {
             </select>
           </DialogRow>
         )}
+        <DialogRow label="Install on launch" hint={HINTS.installOnLaunch}>
+          <DialogToggle
+            checked={autoInstallOnLaunch === true}
+            onChange={setAutoInstallOnLaunch}
+            aria-label="Toggle install on launch"
+          />
+        </DialogRow>
       </DialogSection>
 
       <DialogSection

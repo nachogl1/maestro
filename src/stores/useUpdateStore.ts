@@ -43,6 +43,8 @@ type UpdateSettings = {
   checkIntervalMinutes: number;
   dismissedVersion: string | null;
   customEndpoint: string | null;
+  /** Install an update found when Maestro opens: true = yes, false = no, null = not asked yet. */
+  autoInstallOnLaunch: boolean | null;
 };
 
 /** Full store state: persisted settings + transient runtime state. */
@@ -61,11 +63,17 @@ type UpdateActions = {
    * shows the update toast again even for a version the user dismissed earlier.
    */
   checkForUpdates: (options?: { manual?: boolean }) => Promise<void>;
+  /**
+   * The check Maestro runs when it opens: once the settings are loaded, it
+   * looks for a newer version and, when auto-install is on, installs it.
+   */
+  checkOnLaunch: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
   dismissUpdate: () => void;
   setAutoCheckEnabled: (enabled: boolean) => void;
   setCheckInterval: (minutes: number) => void;
   setCustomEndpoint: (url: string | null) => void;
+  setAutoInstallOnLaunch: (enabled: boolean) => void;
   initListeners: () => Promise<UnlistenFn>;
 };
 
@@ -113,6 +121,7 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
       checkIntervalMinutes: 60,
       dismissedVersion: null,
       customEndpoint: null,
+      autoInstallOnLaunch: null,
 
       // Transient state
       status: "idle",
@@ -141,6 +150,16 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
             error: err instanceof Error ? err.message : String(err),
             lastCheckedAt: Date.now(),
           });
+        }
+      },
+
+      checkOnLaunch: async () => {
+        await settingsHydrated();
+        const { autoCheckEnabled, autoInstallOnLaunch } = get();
+        if (!autoCheckEnabled && autoInstallOnLaunch !== true) return;
+        await get().checkForUpdates();
+        if (get().status === "available" && autoInstallOnLaunch === true) {
+          await get().downloadAndInstall();
         }
       },
 
@@ -175,6 +194,7 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
       setAutoCheckEnabled: (enabled) => set({ autoCheckEnabled: enabled }),
       setCheckInterval: (minutes) => set({ checkIntervalMinutes: minutes }),
       setCustomEndpoint: (url) => set({ customEndpoint: url }),
+      setAutoInstallOnLaunch: (enabled) => set({ autoInstallOnLaunch: enabled }),
 
       initListeners: async () => {
         const unlistenProgress = await listen<DownloadProgress>(
@@ -207,8 +227,20 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
         checkIntervalMinutes: state.checkIntervalMinutes,
         dismissedVersion: state.dismissedVersion,
         customEndpoint: state.customEndpoint,
+        autoInstallOnLaunch: state.autoInstallOnLaunch,
       }),
       version: 1,
     },
   ),
 );
+
+/** Resolves once the persisted update settings have been read back from disk. */
+export function settingsHydrated(): Promise<void> {
+  if (useUpdateStore.persist.hasHydrated()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const stop = useUpdateStore.persist.onFinishHydration(() => {
+      stop();
+      resolve();
+    });
+  });
+}

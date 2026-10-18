@@ -19,6 +19,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
+import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { SettingsDialog } from "../SettingsDialog";
 
 const invokeMock = vi.mocked(invoke);
@@ -50,6 +51,8 @@ describe("SettingsDialog", () => {
       isLoading: false,
       availableFonts: [],
     });
+    // The full Work Journal section shows only once the user turned the journal on.
+    useWorkJournalSettingsStore.setState({ enabled: true });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "samurai_get_config") return null;

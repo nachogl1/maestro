@@ -54,4 +54,14 @@ describe("UpdatesSettingsPanel check now", () => {
     expect(invokeMock).toHaveBeenCalledWith("check_for_updates", { customEndpoint: null });
     expect(useUpdateStore.getState().dismissedVersion).toBeNull();
   });
+
+  it("the Install on launch toggle saves the auto-install choice", () => {
+    useUpdateStore.setState({ autoInstallOnLaunch: null });
+    render(<UpdatesSettingsPanel />);
+    const toggle = screen.getByRole("switch", { name: "Toggle install on launch" });
+    fireEvent.click(toggle);
+    expect(useUpdateStore.getState().autoInstallOnLaunch).toBe(true);
+    fireEvent.click(toggle);
+    expect(useUpdateStore.getState().autoInstallOnLaunch).toBe(false);
+  });
 });

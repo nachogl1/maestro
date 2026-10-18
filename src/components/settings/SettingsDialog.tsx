@@ -21,7 +21,7 @@ import { ChangelogPanel } from "./ChangelogPanel";
 import { SamuraiSettingsPanel } from "./SamuraiSettingsPanel";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { UpdatesSettingsPanel } from "./UpdatesSettingsPanel";
-import { WorkJournalSettingsSection } from "./WorkJournalSettingsSection";
+import { WorkJournalSettingsGate } from "./WorkJournalSettingsGate";
 
 export type SettingsSectionId =
   | "appearance"
@@ -174,7 +174,7 @@ export function SettingsDialog({
       case "samurai":
         return <SamuraiSettingsPanel />;
       case "work-journal":
-        return <WorkJournalSettingsSection />;
+        return <WorkJournalSettingsGate />;
       case "shortcuts":
         return <ShortcutsPanel />;
       case "changelog":

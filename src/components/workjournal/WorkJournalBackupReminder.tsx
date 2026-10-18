@@ -18,7 +18,7 @@ export interface WorkJournalBackupReminderProps {
 /**
  * One-line reminder under the Work Journal header while no backup folder is
  * chosen, in the pane and the pop-out window, since the user may never open
- * Settings. "Open Settings" opens Maestro Settings in the main window at the
+ * Settings. "Open Settings" opens Settings in the main window at the
  * Work Journal section; the close button hides it in this window until it
  * closes or Maestro restarts. It reads the backup settings on mount and again
  * when another window changed the journal while it can still matter, so it

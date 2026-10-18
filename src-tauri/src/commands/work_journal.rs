@@ -676,6 +676,13 @@ pub struct GranolaStatus {
     pub connected: bool,
 }
 
+/// Turns terminal activity recording on or off to match the user's Work
+/// Journal setting (sent by the frontend on start and on every change).
+#[tauri::command]
+pub async fn set_work_journal_enabled(enabled: bool) {
+    work_journal_activity::set_recording_enabled(enabled);
+}
+
 /// Runs the Granola preflight (`claude mcp get granola`; see
 /// [`work_journal_run::granola_preflight`]). Reads no meeting; any failure
 /// is "not connected", never an error.

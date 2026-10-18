@@ -47,6 +47,7 @@ describe("useUpdateStore", () => {
       checkIntervalMinutes: 60,
       dismissedVersion: null,
       customEndpoint: null,
+      autoInstallOnLaunch: null,
       status: "idle",
       updateInfo: null,
       downloadProgress: null,
@@ -224,5 +225,59 @@ describe("useUpdateStore", () => {
       await useUpdateStore.getState().checkForUpdates();
       expect(useUpdateStore.getState().dismissedVersion).toBe("1.1.0");
     });
+  });
+
+  describe("checkOnLaunch", () => {
+    const invokedCommands = () => mockInvoke.mock.calls.map(([command]) => command);
+
+    it("installs an available update when auto-install is on", async () => {
+      useUpdateStore.setState({ autoInstallOnLaunch: true });
+      mockInvoke.mockResolvedValueOnce(INFO).mockResolvedValueOnce(undefined);
+      await useUpdateStore.getState().checkOnLaunch();
+      expect(invokedCommands()).toEqual(["check_for_updates", "download_and_install_update"]);
+      expect(useUpdateStore.getState().status).toBe("downloading");
+    });
+
+    it("installs even a version the user dismissed earlier", async () => {
+      useUpdateStore.setState({ autoInstallOnLaunch: true, dismissedVersion: "1.1.0" });
+      mockInvoke.mockResolvedValueOnce(INFO).mockResolvedValueOnce(undefined);
+      await useUpdateStore.getState().checkOnLaunch();
+      expect(invokedCommands()).toContain("download_and_install_update");
+    });
+
+    it("checks and installs while auto-check is off", async () => {
+      useUpdateStore.setState({ autoInstallOnLaunch: true, autoCheckEnabled: false });
+      mockInvoke.mockResolvedValueOnce(INFO).mockResolvedValueOnce(undefined);
+      await useUpdateStore.getState().checkOnLaunch();
+      expect(invokedCommands()).toEqual(["check_for_updates", "download_and_install_update"]);
+    });
+
+    it.each([false, null])("only offers the update when auto-install is %s", async (choice) => {
+      useUpdateStore.setState({ autoInstallOnLaunch: choice });
+      mockInvoke.mockResolvedValueOnce(INFO);
+      await useUpdateStore.getState().checkOnLaunch();
+      expect(invokedCommands()).toEqual(["check_for_updates"]);
+      expect(useUpdateStore.getState().status).toBe("available");
+    });
+
+    it("does nothing more when there is no update", async () => {
+      useUpdateStore.setState({ autoInstallOnLaunch: true });
+      mockInvoke.mockResolvedValueOnce({ ...INFO, available: false });
+      await useUpdateStore.getState().checkOnLaunch();
+      expect(invokedCommands()).toEqual(["check_for_updates"]);
+    });
+
+    it("does not check when auto-check and auto-install are both off", async () => {
+      useUpdateStore.setState({ autoInstallOnLaunch: false, autoCheckEnabled: false });
+      await useUpdateStore.getState().checkOnLaunch();
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+  });
+
+  it("setAutoInstallOnLaunch saves the choice", () => {
+    useUpdateStore.getState().setAutoInstallOnLaunch(true);
+    expect(useUpdateStore.getState().autoInstallOnLaunch).toBe(true);
+    useUpdateStore.getState().setAutoInstallOnLaunch(false);
+    expect(useUpdateStore.getState().autoInstallOnLaunch).toBe(false);
   });
 });
