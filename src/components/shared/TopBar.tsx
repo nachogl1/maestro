@@ -171,18 +171,14 @@ export function TopBar({
       {/* Right: action icons */}
       <div className="flex items-center gap-0.5 mr-1">
         {/* Tidy up: evens out terminals the user resized — the project grid,
-            or in eagle view every tile (Alt+T only works in the project grid). */}
+            or in eagle view every tile. */}
         {(hasActiveProject || eagleView) && onTidyLayout && (
           <button
             type="button"
             onClick={onTidyLayout}
             className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
             aria-label="Tidy up terminals"
-            title={
-              eagleView
-                ? "Tidy up: give every terminal an even share"
-                : titleWithShortcut("Tidy up: give every terminal an even share", altLabel(), "T")
-            }
+            title={titleWithShortcut("Tidy up: give every terminal an even share", altLabel(), "T")}
           >
             <LayoutGrid size={14} />
           </button>

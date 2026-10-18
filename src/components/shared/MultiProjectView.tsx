@@ -388,6 +388,22 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
     }, [eagleView, eagleZoom, orderedEagleSessions]);
 
+    // Alt+T in eagle view: tidy up — every tile back on the automatic even
+    // layout (the per-project Alt+T in useTerminalKeyboard is off here).
+    // Capture phase for the same xterm reason as above.
+    useEffect(() => {
+      if (!eagleView) return;
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (e.code !== "KeyT") return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setEagleTileRects({});
+      };
+      window.addEventListener("keydown", handleKeyDown, { capture: true });
+      return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
+    }, [eagleView, setEagleTileRects]);
+
     // Focus follows the zoomed terminal (tab click / Alt+Arrow). Only the grid
     // that owns the session accepts the call, same pattern as killSessionInProject.
     useEffect(() => {
