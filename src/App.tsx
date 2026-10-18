@@ -606,6 +606,8 @@ function App() {
               onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
               workJournalPanelOpen={utilityPanel === "workjournal"}
               onToggleWorkJournalPanel={() => handleToggleUtilityPanel("workjournal")}
+              workshopPanelOpen={utilityPanel === "workshop"}
+              onToggleWorkshopPanel={() => handleToggleUtilityPanel("workshop")}
               injectPanelOpen={utilityPanel === "inject"}
               onToggleInjectPanel={() => handleToggleUtilityPanel("inject")}
               onWatchdogNavigate={handleWatchdogNavigate}

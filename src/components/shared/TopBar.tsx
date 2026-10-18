@@ -4,6 +4,7 @@ import {
   BookOpenCheck,
   BrainCircuit,
   GitMerge,
+  Hammer,
   Minus,
   PanelLeft,
   Plus,
@@ -70,6 +71,9 @@ interface TopBarProps {
   /** Right-side Work Journal panel: one page per day (issue #309) */
   workJournalPanelOpen?: boolean;
   onToggleWorkJournalPanel?: () => void;
+  /** Right-side Workshop panel: the weekly /insights report (issue #415) */
+  workshopPanelOpen?: boolean;
+  onToggleWorkshopPanel?: () => void;
   /** Right-side Injector panel: one message into many terminals */
   injectPanelOpen?: boolean;
   onToggleInjectPanel?: () => void;
@@ -102,6 +106,8 @@ export function TopBar({
   onToggleLaunchPanel,
   workJournalPanelOpen = false,
   onToggleWorkJournalPanel,
+  workshopPanelOpen = false,
+  onToggleWorkshopPanel,
   injectPanelOpen = false,
   onToggleInjectPanel,
   onWatchdogNavigate,
@@ -304,6 +310,21 @@ export function TopBar({
             <BookOpenCheck size={14} />
             <WorkJournalSuggestionsBadge />
             <WorkJournalUnsavedDot />
+          </button>
+        )}
+        {onToggleWorkshopPanel && (
+          <button
+            type="button"
+            onClick={onToggleWorkshopPanel}
+            className={`rounded p-1.5 transition-colors ${
+              workshopPanelOpen
+                ? "text-maestro-accent hover:bg-maestro-accent/10"
+                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
+            }`}
+            aria-label="Workshop"
+            title="Workshop — your weekly Claude Code insights"
+          >
+            <Hammer size={14} />
           </button>
         )}
         {onToggleInjectPanel && (

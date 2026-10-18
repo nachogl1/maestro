@@ -220,6 +220,13 @@ describe("UtilityPanel", () => {
     }
   });
 
+  it("renders the Workshop panel with its Summary and Real Transcript tabs", async () => {
+    render(<UtilityPanel panel="workshop" width={560} onResize={() => {}} onClose={() => {}} />);
+    expect(screen.getByText("Workshop")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Real Transcript" })).toBeInTheDocument();
+  });
+
   it("renders the Injector panel with its syringe title and the empty-terminals hint", () => {
     render(<UtilityPanel panel="inject" width={320} onResize={() => {}} onClose={() => {}} />);
     // "Injector" is both the panel title and the section's own heading.

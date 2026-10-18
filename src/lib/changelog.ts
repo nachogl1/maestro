@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-18",
+    title: "Workshop: your weekly Claude Code insights",
+    items: [
+      "Workshop: a new top-bar panel runs Claude Code's /insights once a week while Maestro is open and keeps the report there, showing when it ran, when the next run is and every past run. A Summary tab gives a short, easy-to-read version and a Real Transcript tab shows the full report exactly as /insights wrote it.",
+    ],
+  },
+  {
     date: "2026-10-17",
     title: "Eagle view columns, tidier settings, Infra for every project, shorter changelog",
     items: [
