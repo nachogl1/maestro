@@ -280,6 +280,21 @@
   cursor: row-resize;
 }
 
+/* The bar is only 4px; this invisible strip lets you grab it from the edge of
+   the terminal on either side too. */
+.split-divider::before {
+  content: "";
+  position: absolute;
+}
+
+.split-divider-vertical::before {
+  inset: 0 -4px;
+}
+
+.split-divider-horizontal::before {
+  inset: -4px 0;
+}
+
 /* While dragging a divider, disable pointer events on xterm so mouse isn't captured */
 .split-dragging .xterm {
   pointer-events: none;
