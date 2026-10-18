@@ -9,7 +9,7 @@ import {
 /**
  * First-run question, shown once after the app has loaded: turn the Work
  * Journal on or not. Any answer (closing counts as "Not now") is saved, so
- * the question never comes back; Maestro Settings can change it later.
+ * the question never comes back; Settings → Work Journal can change it later.
  * Waits for the automatic-updates question to be answered first, so the two
  * first-run dialogs never stack (one Escape would otherwise answer both).
  */
@@ -49,7 +49,7 @@ export function WorkJournalOptInDialog() {
         by Claude from your activity.
       </p>
       <p className="text-[11px] text-maestro-muted">
-        You can turn it on or off at any time in Maestro Settings.
+        You can turn it on or off at any time in Settings → Work Journal.
       </p>
     </DialogShell>
   );

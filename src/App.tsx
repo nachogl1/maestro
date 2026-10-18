@@ -782,7 +782,7 @@ function App() {
       <AutoUpdateQuestion />
       <NotificationToasts />
       <ParticleEffectsLayer />
-      <WorkJournalSettingsHost />
+      <WorkJournalSettingsHost theme={theme} onToggleTheme={toggleTheme} />
       <WorkJournalBackgroundWork tabs={tabs} />
       <WorkJournalOptInDialog />
     </div>

@@ -5,7 +5,7 @@ import { WorkJournalEnabledToggle } from "./WorkJournalEnabledToggle";
 import { WorkJournalSettingsSection } from "./WorkJournalSettingsSection";
 
 /**
- * Work Journal part of Maestro Settings: the full section while the journal
+ * Work Journal section of Settings: the full section while the journal
  * is on, otherwise just its on/off switch.
  */
 export function WorkJournalSettingsGate() {

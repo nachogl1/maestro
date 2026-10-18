@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
-import { MaestroSettingsModal } from "../MaestroSettingsModal";
+import { SamuraiSettingsPanel } from "../SamuraiSettingsPanel";
+import { UpdatesSettingsPanel } from "../UpdatesSettingsPanel";
+import { WorkJournalSettingsSection } from "../WorkJournalSettingsSection";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -50,7 +52,7 @@ function hoverText(element: HTMLElement): string | null {
   return element.closest("[title]")?.getAttribute("title") ?? null;
 }
 
-describe("MaestroSettingsModal tooltips", () => {
+describe("settings panel tooltips", () => {
   beforeEach(() => {
     // The full Work Journal section shows only once the user turned the journal on.
     useWorkJournalSettingsStore.setState({ enabled: true });
@@ -59,7 +61,6 @@ describe("MaestroSettingsModal tooltips", () => {
       if (cmd === "samurai_get_config") return SAMURAI_CONFIG;
       if (cmd === "is_cli_installed") return false;
       if (cmd === "get_app_version") return "0.3.9";
-      // The embedded Work Journal section loads its own settings.
       if (cmd === "load_work_journal") {
         return { layout_version: 1, pages: {}, deleted_dates: [], settings: {} };
       }
@@ -69,7 +70,7 @@ describe("MaestroSettingsModal tooltips", () => {
   });
 
   it("explains every Samurai threshold in a hover tooltip", async () => {
-    render(<MaestroSettingsModal onClose={() => {}} />);
+    render(<SamuraiSettingsPanel />);
 
     for (const label of SAMURAI_LABELS) {
       const row = await screen.findByText(label);
@@ -83,7 +84,7 @@ describe("MaestroSettingsModal tooltips", () => {
   });
 
   it("explains the update, CLI and advanced settings in hover tooltips", async () => {
-    render(<MaestroSettingsModal onClose={() => {}} />);
+    render(<UpdatesSettingsPanel />);
 
     expect(hoverText(screen.getByText("Auto-check"))).toMatch(/newer versions/);
     expect(hoverText(screen.getByText("Interval"))).toMatch(/How often/);
@@ -95,7 +96,7 @@ describe("MaestroSettingsModal tooltips", () => {
   });
 
   it("explains the Work Journal settings in hover tooltips", async () => {
-    render(<MaestroSettingsModal onClose={() => {}} />);
+    render(<WorkJournalSettingsSection />);
 
     expect(hoverText(await screen.findByText("Run every"))).toMatch(/How often/);
     expect(hoverText(screen.getByText("Model"))).toMatch(/suggestions and the supervisor report/);

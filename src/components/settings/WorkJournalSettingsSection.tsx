@@ -52,7 +52,7 @@ function confirmRestore(file: string): Promise<boolean> {
 }
 
 /**
- * Work Journal section of Maestro Settings: the backup folder, "Back up now",
+ * Work Journal section of Settings: the backup folder, "Back up now",
  * the last backup time, "Restore from backup" (the folder's backup or a
  * browsed file), "Undo restore" and the report folder.
  */

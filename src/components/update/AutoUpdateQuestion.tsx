@@ -6,7 +6,7 @@ import { settingsHydrated, useUpdateStore } from "@/stores/useUpdateStore";
 /** The one-time question about installing updates when Maestro opens. */
 export const AUTO_UPDATE_QUESTION =
   "Install Maestro updates automatically when you open it? Maestro restarts once to finish. " +
-  "You can change this in Maestro Settings.";
+  "You can change this in Settings → Updates.";
 
 /** Whether the persisted update settings have been read back from disk. */
 function useSettingsLoaded(): boolean {

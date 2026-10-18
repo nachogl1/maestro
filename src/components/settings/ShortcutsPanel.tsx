@@ -1,10 +1,5 @@
-import { Keyboard } from "lucide-react";
-import { DialogSection, DialogShell } from "@/components/shared/DialogShell";
+import { DialogSection } from "@/components/shared/DialogShell";
 import { altLabel, modLabel } from "@/lib/shortcuts";
-
-interface ShortcutsModalProps {
-  onClose: () => void;
-}
 
 interface Shortcut {
   keys: string[];
@@ -74,16 +69,11 @@ function Key({ label }: { label: string }) {
   );
 }
 
-export function ShortcutsModal({ onClose }: ShortcutsModalProps) {
+export function ShortcutsPanel() {
   const groups = buildGroups(modLabel(), altLabel());
 
   return (
-    <DialogShell
-      title="Keyboard Shortcuts"
-      icon={<Keyboard size={16} />}
-      size="lg"
-      onClose={onClose}
-    >
+    <>
       {groups.map((group) => (
         <DialogSection key={group.title} title={group.title}>
           <ul className="space-y-0.5">
@@ -107,6 +97,6 @@ export function ShortcutsModal({ onClose }: ShortcutsModalProps) {
           </ul>
         </DialogSection>
       ))}
-    </DialogShell>
+    </>
   );
 }

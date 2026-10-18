@@ -1,17 +1,12 @@
-import { AlertTriangle, RotateCcw, Terminal } from "lucide-react";
+import { AlertTriangle, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import {
   DialogSection,
-  DialogShell,
   dialogButtonClass,
   dialogInputClass,
 } from "@/components/shared/DialogShell";
 import { AI_CLI_CONFIG, buildCliCommand, type CliAiMode } from "@/lib/terminal";
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
-
-interface CliSettingsModalProps {
-  onClose: () => void;
-}
 
 /** The AI modes that support CLI flags. */
 const CLI_MODES: CliAiMode[] = ["Claude", "Gemini", "Codex", "OpenCode"];
@@ -41,10 +36,10 @@ const MODE_CONFIG: Record<CliAiMode, { color: string; bgColor: string; skipFlagN
 };
 
 /**
- * Modal for managing CLI settings for each AI mode.
+ * Settings section for the CLI flags of each AI mode.
  * Allows configuring flags like --dangerously-skip-permissions and custom flags.
  */
-export function CliSettingsModal({ onClose }: CliSettingsModalProps) {
+export function CliSettingsPanel() {
   const [activeMode, setActiveMode] = useState<CliAiMode>("Claude");
 
   const { flags, setSkipPermissions, setCustomFlags, resetModeToDefaults, resetAllToDefaults } =
@@ -54,33 +49,7 @@ export function CliSettingsModal({ onClose }: CliSettingsModalProps) {
   const previewCommand = buildCliCommand(activeMode, currentFlags);
 
   return (
-    <DialogShell
-      title="CLI Settings"
-      subtitle="Flags Maestro adds when it starts each AI command line."
-      icon={<Terminal size={16} />}
-      size="lg"
-      onClose={onClose}
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={resetAllToDefaults}
-            className={`${dialogButtonClass("ghost")} mr-auto`}
-          >
-            <RotateCcw size={12} />
-            Reset All
-          </button>
-          <button
-            type="button"
-            onClick={() => resetModeToDefaults(activeMode)}
-            className={dialogButtonClass("ghost")}
-          >
-            <RotateCcw size={12} />
-            Reset {activeMode}
-          </button>
-        </>
-      }
-    >
+    <>
       {/* Mode Tabs */}
       <div className="flex rounded-lg border border-maestro-border/60 bg-maestro-card p-0.5">
         {CLI_MODES.map((mode) => {
@@ -160,6 +129,25 @@ export function CliSettingsModal({ onClose }: CliSettingsModalProps) {
           </code>
         </div>
       </DialogSection>
-    </DialogShell>
+
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={resetAllToDefaults}
+          className={`${dialogButtonClass("ghost")} mr-auto`}
+        >
+          <RotateCcw size={12} />
+          Reset All
+        </button>
+        <button
+          type="button"
+          onClick={() => resetModeToDefaults(activeMode)}
+          className={dialogButtonClass("ghost")}
+        >
+          <RotateCcw size={12} />
+          Reset {activeMode}
+        </button>
+      </div>
+    </>
   );
 }

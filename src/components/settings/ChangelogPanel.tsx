@@ -1,20 +1,9 @@
-import { ScrollText } from "lucide-react";
-import { DialogShell, dialogCardClass } from "@/components/shared/DialogShell";
+import { dialogCardClass } from "@/components/shared/DialogShell";
 import { CHANGELOG } from "@/lib/changelog";
 
-interface ChangelogModalProps {
-  onClose: () => void;
-}
-
-export function ChangelogModal({ onClose }: ChangelogModalProps) {
+export function ChangelogPanel() {
   return (
-    <DialogShell
-      title="Changelog"
-      subtitle="What changed in Maestro, newest first."
-      icon={<ScrollText size={16} />}
-      size="lg"
-      onClose={onClose}
-    >
+    <>
       {CHANGELOG.map((entry) => (
         <section key={`${entry.date}-${entry.title}`} className={dialogCardClass}>
           <div className="mb-1.5 flex items-baseline gap-2">
@@ -30,6 +19,6 @@ export function ChangelogModal({ onClose }: ChangelogModalProps) {
           </ul>
         </section>
       ))}
-    </DialogShell>
+    </>
   );
 }

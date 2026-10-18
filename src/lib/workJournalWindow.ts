@@ -36,7 +36,7 @@ export const WORK_JOURNAL_RUN_STATE_REQUEST_EVENT = "work-journal:run-state-requ
 /** Main window → pop-out window: the candidate-run state, whenever it changes. */
 export const WORK_JOURNAL_RUN_STATE_EVENT = "work-journal:run-state";
 /**
- * Pop-out window → main window: open Maestro Settings at the Work Journal
+ * Pop-out window → main window: open Settings at the Work Journal
  * section. Settings opens only in the main window, so the pop-out's own
  * copies of other stores never write stale values back.
  */
@@ -270,7 +270,7 @@ export async function followWorkJournalRunState(): Promise<UnlistenFn> {
 }
 
 /**
- * Pop-out window side: asks the main window to open Maestro Settings at the
+ * Pop-out window side: asks the main window to open Settings at the
  * Work Journal section, and brings the main window forward to show it.
  */
 export async function openWorkJournalSettingsInMainWindow(): Promise<void> {
