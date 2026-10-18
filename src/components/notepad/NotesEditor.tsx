@@ -4,6 +4,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { useMemo } from "react";
 import type { MarkdownStorage } from "tiptap-markdown";
 import { Markdown } from "tiptap-markdown";
+import { NotesListKeymap } from "./notesListKeymap";
 
 interface NotesEditorProps {
   /**
@@ -81,6 +82,7 @@ function RichNotesEditor({
         // don't collapse into one paragraph on reload.
         breaks: true,
       }),
+      NotesListKeymap,
     ],
     content: initialContent,
     onUpdate: ({ editor }) => {
