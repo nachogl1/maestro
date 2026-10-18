@@ -5,6 +5,7 @@ import {
   BrainCircuit,
   GitMerge,
   Hammer,
+  LayoutGrid,
   Minus,
   PanelLeft,
   Plus,
@@ -52,6 +53,8 @@ interface TopBarProps {
   /** Maximum number of sessions allowed */
   maxSessions?: number;
   onAddSession?: () => void;
+  /** Tidy up: give every terminal of the active project an even share of the grid. */
+  onTidyLayout?: () => void;
   /** Whether eagle view (all projects' terminals at once) is active */
   eagleView?: boolean;
   onToggleEagleView?: () => void;
@@ -94,6 +97,7 @@ export function TopBar({
   slotCount = 0,
   maxSessions = MAX_SESSIONS,
   onAddSession,
+  onTidyLayout,
   eagleView = false,
   onToggleEagleView,
   eagleProjects = [],
@@ -166,6 +170,19 @@ export function TopBar({
 
       {/* Right: action icons */}
       <div className="flex items-center gap-0.5 mr-1">
+        {/* Tidy up: evens out terminals the user resized. Eagle view lays
+            tiles out itself, so the button only shows in the project grid. */}
+        {hasActiveProject && !eagleView && onTidyLayout && (
+          <button
+            type="button"
+            onClick={onTidyLayout}
+            className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+            aria-label="Tidy up terminals"
+            title={titleWithShortcut("Tidy up: give every terminal an even share", altLabel(), "T")}
+          >
+            <LayoutGrid size={14} />
+          </button>
+        )}
         {/* Allowance-parked Samurai runs — the one park surface that shows in
             every view. Hides itself when nothing is parked. */}
         <ParkedRunsBadge onNavigate={onParkNavigate} />

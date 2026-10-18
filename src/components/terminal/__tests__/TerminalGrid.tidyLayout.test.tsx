@@ -194,6 +194,17 @@ describe("TerminalGrid tidy up layout (issue #407)", () => {
     expect(paneWidths()).toEqual(["50%", "50%"]);
   });
 
+  it("evens the panes through the tidyLayout handle without zooming", async () => {
+    const handle = await renderTwoPaneGrid();
+    dragDividerTo(0.8);
+    expect(paneWidths()).toEqual(["80%", "20%"]);
+
+    act(() => handle.tidyLayout());
+
+    expect(paneWidths()).toEqual(["50%", "50%"]);
+    expect(handle.isZoomed()).toBe(false);
+  });
+
   it("evens the panes on Alt+T without zooming", async () => {
     await renderTwoPaneGrid();
     dragDividerTo(0.8);

@@ -616,6 +616,7 @@ function App() {
               slotCount={activeTabOccupiedCount}
               maxSessions={MAX_SESSIONS}
               onAddSession={handleAddSessionShortcut}
+              onTidyLayout={() => multiProjectRef.current?.tidyActiveProject()}
               eagleView={eagleView}
               onToggleEagleView={() => setEagleView((v) => !v)}
               eagleProjects={eagleProjects}

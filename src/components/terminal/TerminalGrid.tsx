@@ -161,6 +161,8 @@ export interface TerminalGridHandle {
   killSessionById: (sessionId: number) => boolean;
   /** Whether this grid is currently showing its per-project zoom-in view. */
   isZoomed: () => boolean;
+  /** Tidy up: give every pane an even share of the layout, keeping the arrangement. */
+  tidyLayout: () => void;
 }
 
 /**
@@ -1554,6 +1556,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       zoomSession,
       killSessionById,
       isZoomed: () => zoomedSlotId !== null,
+      tidyLayout: handleTidyLayout,
     }),
     [
       addSession,
@@ -1563,6 +1566,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       zoomSession,
       killSessionById,
       zoomedSlotId,
+      handleTidyLayout,
     ],
   );
 

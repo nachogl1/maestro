@@ -56,3 +56,33 @@ describe("TopBar add-terminal button", () => {
     expect(screen.queryByRole("button", { name: "Add session" })).toBeNull();
   });
 });
+
+describe("TopBar tidy-up button", () => {
+  afterEach(cleanup);
+
+  it("sits left of the action icons outside eagle view and tidies on click", () => {
+    const onTidyLayout = vi.fn();
+    render(
+      <TopBar {...baseProps} hasActiveProject onAddSession={vi.fn()} onTidyLayout={onTidyLayout} />,
+    );
+
+    const tidy = screen.getByRole("button", { name: "Tidy up terminals" });
+    const add = screen.getByRole("button", { name: "Add session" });
+    expect(tidy.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(tidy);
+    expect(onTidyLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides in eagle view", () => {
+    render(<TopBar {...baseProps} hasActiveProject eagleView onTidyLayout={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Tidy up terminals" })).toBeNull();
+  });
+
+  it("hides when no project is open", () => {
+    render(<TopBar {...baseProps} onTidyLayout={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Tidy up terminals" })).toBeNull();
+  });
+});

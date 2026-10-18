@@ -485,8 +485,6 @@ pub fn run() {
             // Hooks commands
             commands::hooks::write_session_hooks_config,
             commands::hooks::remove_session_hooks_config,
-            // Agent graph commands
-            commands::agents::export_agent_run,
             // Samurai supervisor + audit log (Phase 1)
             commands::samurai::samurai_register_session,
             commands::samurai::samurai_revert_launch_line_prompt,

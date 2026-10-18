@@ -1,5 +1,4 @@
 pub mod agent_names;
-pub mod agents;
 pub mod ai_runner;
 pub mod claude_sessions;
 pub mod claudemd;
