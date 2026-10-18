@@ -1,4 +1,5 @@
 import { Bell } from "lucide-react";
+import { DialogToggle } from "@/components/shared/DialogShell";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -37,20 +38,11 @@ export function NotificationsSettingsSection() {
 
       <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-maestro-text hover:bg-maestro-border/40">
         <span className="flex-1">Show notifications</span>
-        <button
-          type="button"
-          onClick={handleToggle}
-          className={`relative h-4 w-7 rounded-full transition-colors ${
-            notificationsEnabled ? "bg-maestro-accent" : "bg-maestro-border"
-          }`}
+        <DialogToggle
+          checked={notificationsEnabled}
+          onChange={handleToggle}
           aria-label="Toggle notifications"
-        >
-          <span
-            className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
-              notificationsEnabled ? "left-3.5" : "left-0.5"
-            }`}
-          />
-        </button>
+        />
       </div>
 
       {status === "gh-missing" && (

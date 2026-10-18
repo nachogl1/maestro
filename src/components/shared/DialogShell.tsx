@@ -188,7 +188,7 @@ export interface DialogToggleProps {
   "aria-label": string;
 }
 
-/** The same switch the sidebar settings cards use. */
+/** An on/off switch whose knob slides across, with a ring for keyboard focus. */
 export function DialogToggle({ checked, onChange, "aria-label": ariaLabel }: DialogToggleProps) {
   return (
     <button
@@ -197,23 +197,28 @@ export function DialogToggle({ checked, onChange, "aria-label": ariaLabel }: Dia
       aria-checked={checked}
       aria-label={ariaLabel}
       onClick={() => onChange(!checked)}
-      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-        checked ? "bg-maestro-accent" : "bg-maestro-border"
+      className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-maestro-accent/40 ${
+        checked
+          ? "border-maestro-accent bg-maestro-accent"
+          : "border-maestro-border bg-maestro-border/70 hover:bg-maestro-border"
       }`}
     >
       <span
-        className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
-          checked ? "left-3.5" : "left-0.5"
+        className={`absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-150 ${
+          checked ? "translate-x-4" : "translate-x-0"
         }`}
       />
     </button>
   );
 }
 
-/** Text, number and select controls inside a dialog. */
+/** Text, number and select controls inside a dialog: rounded, with hover and focus rings. */
 export const dialogInputClass =
-  "rounded border border-maestro-border bg-maestro-bg px-2 py-1 text-[11px] text-maestro-text " +
-  "placeholder-maestro-muted/50 outline-none focus:border-maestro-accent disabled:opacity-50";
+  "h-7 rounded-md border border-maestro-border bg-maestro-bg px-2.5 text-xs text-maestro-text " +
+  "shadow-[inset_0_1px_2px_rgb(0_0_0/0.06)] placeholder-maestro-muted/60 outline-none " +
+  "transition-colors hover:border-maestro-muted/50 focus:border-maestro-accent " +
+  "focus:ring-2 focus:ring-maestro-accent/25 disabled:cursor-not-allowed disabled:opacity-50 " +
+  "[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
 
 export type DialogButtonVariant = "primary" | "ghost" | "accent" | "danger";
 

@@ -1,5 +1,6 @@
 import { Gauge } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DialogToggle, dialogInputClass } from "@/components/shared/DialogShell";
 import {
   DEFAULT_CONTEXT_ALERT_THRESHOLD,
   MAX_CONTEXT_ALERT_THRESHOLD,
@@ -103,29 +104,18 @@ export function ContextAlertSection() {
           }}
           aria-label="Context alert threshold"
           title={`Context window percentage (${MIN_CONTEXT_ALERT_THRESHOLD}-${MAX_CONTEXT_ALERT_THRESHOLD}) at which a Claude terminal's frame blinks red.`}
-          className="w-16 shrink-0 rounded border border-maestro-border/60 bg-maestro-surface px-1.5 py-1 text-right text-[11px] text-maestro-text focus:border-maestro-accent focus:outline-none disabled:opacity-50"
+          className={`w-16 shrink-0 text-right ${dialogInputClass}`}
         />
         <span className="text-maestro-muted">%</span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          aria-label="Toggle context alert"
-          onClick={() => {
+        <DialogToggle
+          checked={enabled}
+          onChange={() => {
             // Switching off must win over a number still waiting to apply.
             cancelPendingApply();
             setThreshold(enabled ? null : lastPercent);
           }}
-          className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-            enabled ? "bg-maestro-accent" : "bg-maestro-border"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
-              enabled ? "left-3.5" : "left-0.5"
-            }`}
-          />
-        </button>
+          aria-label="Toggle context alert"
+        />
       </div>
     </div>
   );

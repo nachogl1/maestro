@@ -26,6 +26,7 @@ const invokeMock = vi.mocked(invoke);
 
 const SECTION_LABELS = [
   "Appearance",
+  "Features",
   "Notifications",
   "Updates",
   "Terminal",
@@ -98,8 +99,11 @@ describe("SettingsDialog", () => {
 
   it("holds the settings that used to live in the sidebar and in separate dialogs", async () => {
     render(<SettingsDialog onClose={vi.fn()} />);
+    openSection("Features");
+    expect(screen.getByRole("switch", { name: "Show Samurai launch" })).toBeInTheDocument();
     openSection("Notifications");
     expect(screen.getByText("Show notifications")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Toggle notifications" })).toBeInTheDocument();
     expect(screen.getByLabelText("Context alert threshold")).toBeInTheDocument();
     openSection("AI command lines");
     expect(screen.getByText("Custom Flags")).toBeInTheDocument();
