@@ -17,7 +17,7 @@ import { cardClass, SectionHeader } from "./sectionChrome";
 export const CONTEXT_ALERT_APPLY_DELAY_MS = 500;
 
 /**
- * Sidebar settings card for the context-usage alert: type the context-window
+ * Settings card for the context-usage alert (Settings → Notifications): type the context-window
  * percentage at which a Claude terminal's frame starts blinking red, or switch
  * the alert off. A valid number is applied once the user pauses typing (see
  * {@link CONTEXT_ALERT_APPLY_DELAY_MS}), and at once on blur or Enter — never

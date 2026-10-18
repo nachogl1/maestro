@@ -4,15 +4,17 @@ import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { WorkJournalSettingsHost } from "../WorkJournalSettingsHost";
 
 // Settings itself has its own tests; here only whether it opens, and where.
-vi.mock("@/components/settings/MaestroSettingsModal", () => ({
-  MaestroSettingsModal: ({
-    focusSection,
+vi.mock("@/components/settings/SettingsDialog", () => ({
+  SettingsDialog: ({
+    initialSection,
+    theme,
     onClose,
   }: {
-    focusSection?: string;
+    initialSection?: string;
+    theme?: string;
     onClose: () => void;
   }) => (
-    <div role="dialog" aria-label="Maestro Settings" data-focus={focusSection}>
+    <div role="dialog" aria-label="Settings" data-section={initialSection} data-theme={theme}>
       <button type="button" onClick={onClose}>
         Close
       </button>
@@ -28,14 +30,13 @@ describe("WorkJournalSettingsHost", () => {
   });
 
   it("shows Settings at the Work Journal section while requested, and closes it", () => {
-    render(<WorkJournalSettingsHost />);
+    render(<WorkJournalSettingsHost theme="light" onToggleTheme={vi.fn()} />);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
     act(() => useWorkJournalBackupStore.getState().openSettings());
-    expect(screen.getByRole("dialog", { name: "Maestro Settings" })).toHaveAttribute(
-      "data-focus",
-      "work-journal",
-    );
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(dialog).toHaveAttribute("data-section", "work-journal");
+    expect(dialog).toHaveAttribute("data-theme", "light");
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

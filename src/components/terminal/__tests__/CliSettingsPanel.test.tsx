@@ -15,12 +15,11 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
-import { CliSettingsModal } from "../CliSettingsModal";
+import { CliSettingsPanel } from "../CliSettingsPanel";
 
-describe("CliSettingsModal", () => {
-  it("opens as a shared settings dialog with the mode tabs, sections and reset actions", () => {
-    render(<CliSettingsModal onClose={vi.fn()} />);
-    expect(screen.getByRole("dialog", { name: "CLI Settings" })).toBeInTheDocument();
+describe("CliSettingsPanel", () => {
+  it("shows the mode tabs, sections and reset actions", () => {
+    render(<CliSettingsPanel />);
     for (const mode of ["Claude", "Gemini", "Codex", "OpenCode"]) {
       expect(screen.getByRole("button", { name: mode })).toBeInTheDocument();
     }
@@ -32,19 +31,12 @@ describe("CliSettingsModal", () => {
   });
 
   it("switches the active mode and stores that mode's custom flags", () => {
-    render(<CliSettingsModal onClose={vi.fn()} />);
+    render(<CliSettingsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Gemini" }));
     expect(screen.getByRole("button", { name: "Reset Gemini" })).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("e.g., --verbose --model opus"), {
       target: { value: "--verbose" },
     });
     expect(useCliSettingsStore.getState().flags.Gemini.customFlags).toBe("--verbose");
-  });
-
-  it("closes from the shared close button", () => {
-    const onClose = vi.fn();
-    render(<CliSettingsModal onClose={onClose} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,22 +4,22 @@ import { createPortal } from "react-dom";
 import { useDismissable } from "@/hooks/useDismissable";
 
 /**
- * The one look for every dialog opened from the Settings tab (Maestro, Terminal
- * and CLI settings, Shortcuts, Changelog): the same backdrop, panel, header,
- * scrollable body and optional footer, with the maestro-* palette so dark and
- * light themes both apply.
+ * The one look for Maestro's dialogs, the Settings dialog among them: the same
+ * backdrop, panel, header, scrollable body, optional side menu and optional
+ * footer, with the maestro-* palette so dark and light themes both apply.
  *
  * Rendered in a portal on `document.body` at `z-[100]`, above the terminals
  * and the project tab bar (which sit at z-50).
  */
 
 /** Panel widths. */
-export type DialogSize = "sm" | "md" | "lg";
+export type DialogSize = "sm" | "md" | "lg" | "xl";
 
 const SIZE_CLASS: Record<DialogSize, string> = {
   sm: "max-w-sm",
   md: "max-w-md",
   lg: "max-w-lg",
+  xl: "max-w-4xl",
 };
 
 export interface DialogShellProps {
@@ -38,6 +38,8 @@ export interface DialogShellProps {
   bodyRef?: RefObject<HTMLDivElement>;
   /** Content pinned under the body, outside the scroll area. */
   footer?: ReactNode;
+  /** A menu beside the body, outside its scroll area; the panel keeps a fixed height with one. */
+  nav?: ReactNode;
   children: ReactNode;
 }
 
@@ -51,6 +53,7 @@ export function DialogShell({
   closeOnEscape = true,
   bodyRef,
   footer,
+  nav,
   children,
 }: DialogShellProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -68,7 +71,7 @@ export function DialogShell({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl border border-maestro-border bg-maestro-surface shadow-2xl ${SIZE_CLASS[size]}`}
+        className={`flex w-full flex-col ${nav ? "h-[85vh]" : "max-h-[85vh]"} overflow-hidden rounded-xl border border-maestro-border bg-maestro-surface shadow-2xl ${SIZE_CLASS[size]}`}
       >
         <div className="flex items-center gap-2.5 border-b border-maestro-border px-4 py-3">
           {icon && <span className="flex shrink-0 text-maestro-accent">{icon}</span>}
@@ -88,8 +91,11 @@ export function DialogShell({
           </button>
         </div>
 
-        <div ref={bodyRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          {children}
+        <div className="flex min-h-0 flex-1">
+          {nav}
+          <div ref={bodyRef} className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto p-4">
+            {children}
+          </div>
         </div>
 
         {footer && (

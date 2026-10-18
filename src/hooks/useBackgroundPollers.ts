@@ -1,23 +1,20 @@
 import { useEffect, useMemo } from "react";
 import { useAgentNameSync } from "@/hooks/useAgentNameSync";
-import { useWorkJournalBackupTimer } from "@/hooks/useWorkJournalBackupTimer";
-import { useWorkJournalCandidateTimer } from "@/hooks/useWorkJournalCandidateTimer";
-import { useWorkJournalDayPages } from "@/hooks/useWorkJournalDayPages";
+import type { useWorkJournalCandidateTimer } from "@/hooks/useWorkJournalCandidateTimer";
 import { useWorkshopTimer } from "@/hooks/useWorkshopTimer";
 import { HEALTH_CHECK_INTERVAL_MS } from "@/lib/healthRules";
 import { useGitHubWatchdogStore, watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
-import { useWorkJournalCandidatesStore } from "@/stores/useWorkJournalCandidatesStore";
 
 /**
  * App-lifetime background polling, mounted once by `App`: the update
  * auto-check interval, the GitHub watchdog (snapshot listener + keeping the
  * Rust poller's project set in sync with `tabs`), the health checker, the
- * Work Journal day pages (on start and when the date changes), the Work
- * Journal daily backup check, the Work Journal candidate run and its
- * suggestions badge listeners, the weekly Workshop `/insights` run, and the
- * Claude agent-name sync that keeps terminal titles on agent names.
+ * weekly Workshop `/insights` run and the Claude agent-name sync that keeps
+ * terminal titles on agent names. The Work Journal's own background work
+ * lives in `WorkJournalBackgroundWork`, which runs only while the journal is
+ * turned on.
  */
 export function useBackgroundPollers(
   tabs: Parameters<typeof useWorkJournalCandidateTimer>[0],
@@ -26,11 +23,14 @@ export function useBackgroundPollers(
   const autoCheckEnabled = useUpdateStore((s) => s.autoCheckEnabled);
   const checkIntervalMinutes = useUpdateStore((s) => s.checkIntervalMinutes);
 
+  // Check once when Maestro opens; this check may install on its own.
+  useEffect(() => {
+    void useUpdateStore.getState().checkOnLaunch();
+  }, []);
+
+  // Then periodically; these checks only offer the update.
   useEffect(() => {
     if (!autoCheckEnabled) return;
-    // Check on mount
-    checkForUpdates();
-    // Then periodically
     const interval = setInterval(checkForUpdates, checkIntervalMinutes * 60 * 1000);
     return () => clearInterval(interval);
   }, [autoCheckEnabled, checkIntervalMinutes, checkForUpdates]);
@@ -72,24 +72,6 @@ export function useBackgroundPollers(
     };
   }, []);
 
-  // Work Journal suggestions: keep the top-bar badge current whether or not
-  // the pane is open (candidates event, window focus, restore or undo).
-  useEffect(() => {
-    const stopPromise = useWorkJournalCandidatesStore
-      .getState()
-      .initListeners()
-      .catch((err) => {
-        console.error("Failed to initialize Work Journal suggestion listeners:", err);
-        return () => {};
-      });
-    return () => {
-      stopPromise.then((stop) => stop());
-    };
-  }, []);
-
-  useWorkJournalDayPages();
-  useWorkJournalBackupTimer();
-  useWorkJournalCandidateTimer(tabs);
   useWorkshopTimer();
   useAgentNameSync();
 }

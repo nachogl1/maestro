@@ -26,6 +26,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
@@ -1029,12 +1030,30 @@ fn terminal_repo_path(config: &SessionConfig) -> &str {
         .unwrap_or(&config.project_path)
 }
 
+/// Whether the user turned the Work Journal on. Off until the frontend says
+/// otherwise: the journal is opt-in, so no terminal is recorded before then.
+static RECORDING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Turns terminal recording on or off with the user's Work Journal setting.
+pub fn set_recording_enabled(enabled: bool) {
+    RECORDING_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// True while the user has the Work Journal turned on.
+pub fn recording_enabled() -> bool {
+    RECORDING_ENABLED.load(Ordering::Relaxed)
+}
+
 /// Notes a newly registered terminal. The open record is written first
 /// (name from the session's project path, branch from the session if set),
 /// so a close that follows always finds it; when the session has no branch,
 /// git is asked in the background and the record updated when it answers.
 /// Errors are only logged: a launch never fails because of the journal.
+/// Nothing is recorded while the Work Journal is turned off.
 pub async fn note_terminal_opened(config: &SessionConfig) {
+    if !recording_enabled() {
+        return;
+    }
     let session_id = config.id;
     let opened = record_opened(
         &activity_dir(),
@@ -1096,6 +1115,14 @@ mod tests {
     use tempfile::tempdir;
 
     const LAUNCH: &str = "launch-a";
+
+    #[test]
+    fn test_terminal_recording_follows_the_work_journal_setting() {
+        set_recording_enabled(true);
+        assert!(recording_enabled());
+        set_recording_enabled(false);
+        assert!(!recording_enabled());
+    }
 
     fn new_candidate(date: &str, time: Option<&str>, text: &str) -> NewCandidate {
         NewCandidate {
