@@ -1,12 +1,18 @@
 name: Release
 
-# Publishes a signed Windows installer on every push to main so the installed
-# app can update itself (Settings → check for updates, or the startup banner).
+# Publishes signed Windows and macOS installers on every push to main so the
+# installed app can update itself (Settings → check for updates, or the
+# startup banner).
 #
 # Version scheme: MAJOR.MINOR come from src-tauri/tauri.conf.json, PATCH is the
 # run number of this workflow, so every run is strictly newer than the last.
 # Renaming this file resets the run number and would make versions go
 # backwards — bump MINOR in tauri.conf.json if that ever has to happen.
+#
+# The macOS job runs after the Windows one and adds its files to the same
+# release, merging its platforms into latest.json. Running them one after the
+# other avoids both jobs rewriting latest.json at once. A manual run from any
+# other branch builds the macOS app without publishing, to test this workflow.
 
 on:
   push:
@@ -50,25 +56,7 @@ jobs:
 
       - name: Compute release version and enable updater artifacts
         id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          base=$(node -p "require('./src-tauri/tauri.conf.json').version.split('.').slice(0, 2).join('.')")
-          version="${base}.${{ github.run_number }}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          # Written into the working copy only (never committed): the build
-          # reads the version from here, and createUpdaterArtifacts makes the
-          # bundler emit the .sig file the updater needs. Local builds keep the
-          # repo's version and stay unsigned.
-          node -e "
-            const fs = require('fs');
-            const path = 'src-tauri/tauri.conf.json';
-            const conf = JSON.parse(fs.readFileSync(path, 'utf8'));
-            conf.version = '$version';
-            conf.bundle.createUpdaterArtifacts = true;
-            fs.writeFileSync(path, JSON.stringify(conf, null, 2) + '\n');
-          "
-          echo "Release version: $version"
+        run: node .github/scripts/prepare-release-config.mjs
 
       - name: Install frontend dependencies
         # npm ci keeps the lockfile's @tauri-apps/* versions, which match the
@@ -93,8 +81,74 @@ jobs:
         with:
           tagName: v${{ steps.version.outputs.version }}
           releaseName: Maestro v${{ steps.version.outputs.version }}
-          releaseBody: "Automated Windows build of ${{ github.sha }}."
+          releaseBody: "Automated Windows and macOS build of ${{ github.sha }}."
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           args: --bundles msi
+
+  macos:
+    name: Build and publish macOS app
+    runs-on: macos-latest
+    needs: windows
+    # On main, wait for the Windows job to create the release. On a manual run
+    # from another branch the Windows job is skipped and this job only builds.
+    if: >-
+      !cancelled() &&
+      (needs.windows.result == 'success' || github.ref != 'refs/heads/main')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Compute release version and enable updater artifacts
+        id: version
+        run: node .github/scripts/prepare-release-config.mjs --ad-hoc-sign
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build MCP server sidecar
+        # A universal (Apple Silicon + Intel) app builds each architecture
+        # separately, so the bundler wants the sidecar under all three names.
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release -p maestro-mcp-server --target "$target"
+            cp "target/$target/release/maestro-mcp-server" \
+              "src-tauri/binaries/maestro-mcp-server-$target"
+          done
+          lipo -create -output src-tauri/binaries/maestro-mcp-server-universal-apple-darwin \
+            src-tauri/binaries/maestro-mcp-server-aarch64-apple-darwin \
+            src-tauri/binaries/maestro-mcp-server-x86_64-apple-darwin
+
+      - name: Build app and add it to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # An empty tag (any branch but main) builds without publishing.
+          tagName: ${{ github.ref == 'refs/heads/main' && format('v{0}', steps.version.outputs.version) || '' }}
+          releaseName: Maestro v${{ steps.version.outputs.version }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin --bundles app,dmg

@@ -25,9 +25,22 @@ Maestro is a desktop app for developers who build software with AI coding assist
 
 You still need Git and an AI assistant such as Claude Code installed (see Step 2, items 3 and 5).
 
-### On macOS and Linux (or if you prefer to build it yourself)
+### On macOS: download the app (easiest)
 
-There is no ready-made installer for these yet, so you build Maestro on your own computer once. It sounds harder than it is: you install a few free tools, copy and paste a handful of commands, and wait.
+1. Go to the [Releases page](https://github.com/nachogl1/maestro/releases) and download the newest `_universal.dmg` file. It works on both Apple Silicon (M1 and newer) and Intel Macs, running macOS 10.15 or later.
+2. Double-click the `.dmg`, then drag **Maestro** into the **Applications** folder.
+3. **First launch only:** Maestro is not registered with Apple (that costs a yearly fee), so macOS blocks it the first time with a message such as *"Maestro cannot be opened"* or *"Maestro is damaged"*. The app is fine. To let it through, open the Terminal app and run:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Maestro.app
+   ```
+   Or try to open Maestro once, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
+4. Open **Maestro** from Applications or Launchpad. Later updates arrive inside the app: open **Settings**, then **Updates**. You won't need step 3 again.
+
+You still need Git and an AI assistant such as Claude Code installed (see Step 2, items 3 and 5).
+
+### On Linux (or if you prefer to build it yourself)
+
+There is no ready-made installer for Linux yet, so you build Maestro on your own computer once. It sounds harder than it is: you install a few free tools, copy and paste a handful of commands, and wait.
 
 ### Step 1: Get the code
 
