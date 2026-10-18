@@ -145,9 +145,13 @@ export const useUpdateStore = create<UpdateState & UpdateActions>()(
             lastCheckedAt: Date.now(),
           });
         } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          // Only a check the user asked for raises the error toast; a failed
+          // background check is retried at the next interval anyway.
+          if (!manual) console.warn("Background update check failed:", error);
           set({
-            status: "error",
-            error: err instanceof Error ? err.message : String(err),
+            status: manual ? "error" : "idle",
+            error,
             lastCheckedAt: Date.now(),
           });
         }

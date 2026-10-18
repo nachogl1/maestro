@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
@@ -20,6 +22,74 @@ struct DownloadProgress {
     pub content_length: Option<u64>,
 }
 
+/// How many times an update check runs before its failure is reported.
+const CHECK_ATTEMPTS: u32 = 3;
+/// Pause between check attempts: long enough for a network blip, or a
+/// release GitHub is still publishing, to clear.
+const CHECK_RETRY_DELAY: Duration = Duration::from_secs(3);
+/// Shown in place of the raw request error, whose long URL means nothing to
+/// the user; the full cause goes to the log.
+const UNREACHABLE_MESSAGE: &str =
+    "Couldn't reach the update server. Check your connection and try again.";
+
+/// Runs `op` up to `attempts` times, waiting `delay` between tries, as long
+/// as it fails with an error `is_transient` accepts. Any other result,
+/// including the last attempt's failure, is returned as is.
+async fn retry_transient<T, E, Op, Fut>(
+    attempts: u32,
+    delay: Duration,
+    is_transient: impl Fn(&E) -> bool,
+    mut op: Op,
+) -> Result<T, E>
+where
+    E: std::error::Error,
+    Op: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut attempt = 1;
+    loop {
+        match op().await {
+            Err(e) if attempt < attempts && is_transient(&e) => {
+                log::warn!(
+                    "Update check attempt {attempt} failed, retrying: {}",
+                    error_chain(&e)
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Whether the request itself failed (DNS, connect, TLS, timeout), which is
+/// worth retrying, as opposed to a bad or missing release manifest.
+fn is_network_error(error: &tauri_plugin_updater::Error) -> bool {
+    matches!(error, tauri_plugin_updater::Error::Reqwest(_))
+}
+
+/// The error's message followed by each underlying cause. A request error's
+/// own message ("error sending request for url ...") hides the real reason.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
+/// The message shown to the user for a failed update check.
+fn describe_check_error(error: &tauri_plugin_updater::Error) -> String {
+    if is_network_error(error) {
+        UNREACHABLE_MESSAGE.to_string()
+    } else {
+        format!("Failed to check for updates: {error}")
+    }
+}
+
 #[tauri::command]
 pub async fn check_for_updates(
     app: AppHandle,
@@ -27,25 +97,26 @@ pub async fn check_for_updates(
 ) -> Result<UpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
 
-    let update = if let Some(endpoint) = custom_endpoint {
+    let mut builder = app.updater_builder();
+    if let Some(endpoint) = custom_endpoint {
         let url: Url = endpoint
             .parse()
             .map_err(|e| format!("Invalid endpoint URL: {e}"))?;
-        app.updater_builder()
+        builder = builder
             .endpoints(vec![url])
-            .map_err(|e| format!("Failed to configure updater: {e}"))?
-            .build()
-            .map_err(|e| format!("Failed to build updater: {e}"))?
-            .check()
-            .await
-            .map_err(|e| format!("Failed to check for updates: {e}"))?
-    } else {
-        app.updater()
-            .map_err(|e| format!("Failed to get updater: {e}"))?
-            .check()
-            .await
-            .map_err(|e| format!("Failed to check for updates: {e}"))?
-    };
+            .map_err(|e| format!("Failed to configure updater: {e}"))?;
+    }
+    let updater = builder
+        .build()
+        .map_err(|e| format!("Failed to build updater: {e}"))?;
+    let update = retry_transient(CHECK_ATTEMPTS, CHECK_RETRY_DELAY, is_network_error, || {
+        updater.check()
+    })
+    .await
+    .map_err(|e| {
+        log::error!("Update check failed: {}", error_chain(&e));
+        describe_check_error(&e)
+    })?;
 
     match update {
         Some(update) => Ok(UpdateInfo {
@@ -185,5 +256,75 @@ mod tests {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    enum TestError {
+        #[error("flaky")]
+        Flaky,
+        #[error("broken")]
+        Broken,
+        #[error("error sending request")]
+        Wrapped(#[source] std::io::Error),
+    }
+
+    fn is_flaky(e: &TestError) -> bool {
+        matches!(e, TestError::Flaky)
+    }
+
+    /// Runs `retry_transient` over a scripted list of outcomes, returning its
+    /// result and how many attempts it made.
+    async fn run_script(script: Vec<Result<u8, TestError>>) -> (Result<u8, TestError>, usize) {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let script = std::sync::Mutex::new(script.into_iter());
+        let result = retry_transient(3, Duration::ZERO, is_flaky, || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let next = script.lock().unwrap().next().expect("script ran out");
+            async move { next }
+        })
+        .await;
+        (result, attempts.into_inner())
+    }
+
+    #[tokio::test]
+    async fn retry_transient_retries_a_transient_failure_until_it_succeeds() {
+        let (result, attempts) = run_script(vec![Err(TestError::Flaky), Ok(7)]).await;
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn retry_transient_gives_up_after_the_last_attempt() {
+        let script = vec![
+            Err(TestError::Flaky),
+            Err(TestError::Flaky),
+            Err(TestError::Flaky),
+        ];
+        let (result, attempts) = run_script(script).await;
+        assert!(matches!(result, Err(TestError::Flaky)));
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn retry_transient_reports_a_permanent_failure_at_once() {
+        let (result, attempts) = run_script(vec![Err(TestError::Broken)]).await;
+        assert!(matches!(result, Err(TestError::Broken)));
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn error_chain_names_the_underlying_cause() {
+        let cause = std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out");
+        let chain = error_chain(&TestError::Wrapped(cause));
+        assert_eq!(chain, "error sending request: connection timed out");
+    }
+
+    #[test]
+    fn describe_check_error_keeps_the_detail_of_a_non_network_error() {
+        let error = tauri_plugin_updater::Error::ReleaseNotFound;
+        assert_eq!(
+            describe_check_error(&error),
+            "Failed to check for updates: Could not fetch a valid release JSON from the remote"
+        );
     }
 }
