@@ -4,22 +4,14 @@ import {
   ChevronDown,
   ChevronRight,
   History,
-  Info,
-  Keyboard,
-  Moon,
   Package,
-  ScrollText,
   Settings,
+  SlidersHorizontal,
   Square,
-  Sun,
-  Wrench,
-  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChangelogModal, MaestroSettingsModal, ShortcutsModal } from "@/components/settings";
-import { CliSettingsModal } from "@/components/terminal/CliSettingsModal";
+import { SettingsDialog } from "@/components/settings";
 import { SamuraiScheduleChip } from "@/components/terminal/SamuraiScheduleChip";
-import { TerminalSettingsModal } from "@/components/terminal/TerminalSettingsModal";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
 import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
@@ -30,10 +22,8 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { type SubagentInfo, useAgentStore } from "@/stores/useAgentStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { ContextAlertSection } from "./ContextAlertSection";
 import { HistorySection } from "./HistorySection";
 import { InfraTab } from "./InfraTab";
-import { NotificationsSettingsSection } from "./NotificationsSettingsSection";
 import {
   badgeBaseClass,
   cardClass,
@@ -340,17 +330,13 @@ function ConfigTab({
     case "settings":
       return (
         <>
-          <AppearanceSection
+          <SettingsLauncherSection
             theme={theme}
-            onToggle={onToggleTheme}
+            onToggleTheme={onToggleTheme}
             launchedCount={launchedCount}
             isStoppingAll={isStoppingAll}
             onStopAll={onStopAll}
           />
-          {divider}
-          <NotificationsSettingsSection />
-          {divider}
-          <ContextAlertSection />
           {divider}
           <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
         </>
@@ -572,25 +558,20 @@ function AgentsSection({
 
 /* ── 7. Settings ── */
 
-function AppearanceSection({
+function SettingsLauncherSection({
   theme,
-  onToggle,
+  onToggleTheme,
   launchedCount = 0,
   isStoppingAll = false,
   onStopAll,
 }: {
   theme?: "dark" | "light";
-  onToggle?: () => void;
+  onToggleTheme?: () => void;
   launchedCount?: number;
   isStoppingAll?: boolean;
   onStopAll?: () => void;
 }) {
-  const isDark = theme !== "light";
-  const [showTerminalSettings, setShowTerminalSettings] = useState(false);
-  const [showCliSettings, setShowCliSettings] = useState(false);
-  const [showMaestroSettings, setShowMaestroSettings] = useState(false);
-  const [showShortcuts, setShowShortcuts] = useState(false);
-  const [showChangelog, setShowChangelog] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const hasRunningSessions = launchedCount > 0;
 
   return (
@@ -602,55 +583,11 @@ function AppearanceSection({
         </div>
         <button
           type="button"
-          onClick={onToggle}
+          onClick={() => setShowSettings(true)}
           className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
         >
-          {isDark ? (
-            <Sun size={14} className="text-maestro-orange" />
-          ) : (
-            <Moon size={14} className="text-maestro-accent" />
-          )}
-          <span>{isDark ? "Switch to Light" : "Switch to Dark"}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowTerminalSettings(true)}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
-        >
-          <Wrench size={14} className="text-maestro-muted" />
-          <span>Terminal Settings</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowCliSettings(true)}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
-        >
-          <Zap size={14} className="text-maestro-accent" />
-          <span>CLI Settings</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowMaestroSettings(true)}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
-        >
-          <Info size={14} className="text-maestro-accent" />
-          <span>Maestro Settings</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowShortcuts(true)}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
-        >
-          <Keyboard size={14} className="text-maestro-muted" />
-          <span>Keyboard Shortcuts</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowChangelog(true)}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-maestro-text transition-colors hover:bg-maestro-border/40"
-        >
-          <ScrollText size={14} className="text-maestro-muted" />
-          <span>Changelog</span>
+          <SlidersHorizontal size={14} className="text-maestro-accent" />
+          <span>Open Settings</span>
         </button>
         {hasRunningSessions && onStopAll && (
           <button
@@ -665,15 +602,13 @@ function AppearanceSection({
         )}
       </div>
 
-      {showTerminalSettings && (
-        <TerminalSettingsModal onClose={() => setShowTerminalSettings(false)} />
+      {showSettings && (
+        <SettingsDialog
+          theme={theme}
+          onToggleTheme={onToggleTheme}
+          onClose={() => setShowSettings(false)}
+        />
       )}
-      {showCliSettings && <CliSettingsModal onClose={() => setShowCliSettings(false)} />}
-      {showMaestroSettings && (
-        <MaestroSettingsModal onClose={() => setShowMaestroSettings(false)} />
-      )}
-      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
-      {showChangelog && <ChangelogModal onClose={() => setShowChangelog(false)} />}
     </>
   );
 }

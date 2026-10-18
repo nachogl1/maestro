@@ -6,6 +6,7 @@ import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidat
 import { flushWorkJournalSaves } from "@/stores/useWorkJournalStore";
 import {
   answerWorkJournalQuitFlush,
+  closeWorkJournalWindow,
   followWorkJournalRunState,
   isWorkJournalWindowView,
   listenWorkJournalChanged,
@@ -97,6 +98,22 @@ describe("openWorkJournalWindow", () => {
     expect(WebviewWindow).not.toHaveBeenCalled();
     expect(existing.unminimize).toHaveBeenCalled();
     expect(existing.setFocus).toHaveBeenCalled();
+  });
+});
+
+describe("closeWorkJournalWindow", () => {
+  it("closes the open journal window", async () => {
+    const existing = { close: vi.fn(() => Promise.resolve()) };
+    getByLabel.mockResolvedValue(existing);
+    await closeWorkJournalWindow();
+
+    expect(getByLabel).toHaveBeenCalledWith(WORK_JOURNAL_WINDOW_LABEL);
+    expect(existing.close).toHaveBeenCalled();
+  });
+
+  it("does nothing when no journal window is open", async () => {
+    getByLabel.mockResolvedValue(null);
+    await expect(closeWorkJournalWindow()).resolves.toBeUndefined();
   });
 });
 

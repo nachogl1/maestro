@@ -9,9 +9,14 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-18",
-    title: "Maestro for Mac",
+    title:
+      "Maestro for Mac, automatic updates when Maestro opens, opt-in Work Journal, one Settings window, Workshop",
     items: [
       "Mac users can download Maestro from the Releases page (Apple Silicon and Intel) and get updates inside the app, like on Windows.",
+      "Updates: turn on Install on launch (Maestro asks once, or in Settings → Updates) and an update found when you open Maestro installs by itself and restarts the app.",
+      "Work Journal is off until you turn it on: Maestro asks once on first launch, remembers your answer across updates, and Settings → Work Journal has a switch to change it any time.",
+      "Settings: every setting now lives in one Settings window with a menu on the left (Appearance, Notifications, Updates, Terminal, AI command lines, Samurai, Work Journal, Keyboard shortcuts and Changelog). Open it with Open Settings in the sidebar's Settings tab.",
+      "Workshop: a new top-bar panel runs Claude Code's /insights once a week while Maestro is open and keeps the report there, showing when it ran, when the next run is and every past run. A Summary tab gives a short, easy-to-read version and a Real Transcript tab shows the full report exactly as /insights wrote it.",
     ],
   },
   {

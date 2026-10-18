@@ -1,3 +1,1 @@
-export { ChangelogModal } from "./ChangelogModal";
-export { MaestroSettingsModal } from "./MaestroSettingsModal";
-export { ShortcutsModal } from "./ShortcutsModal";
+export { SettingsDialog, type SettingsSectionId } from "./SettingsDialog";
