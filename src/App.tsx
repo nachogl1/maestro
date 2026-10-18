@@ -48,6 +48,7 @@ import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useAppListeners } from "./hooks/useAppListeners";
 import { useBackgroundPollers } from "./hooks/useBackgroundPollers";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
+import { useFeatureSettingsStore } from "./stores/useFeatureSettingsStore";
 import { useGitHubStore } from "./stores/useGitHubStore";
 import {
   useGitHubWatchdogStore,
@@ -353,6 +354,17 @@ function App() {
     if (!workJournalEnabled) setUtilityPanel((prev) => (prev === "workjournal" ? null : prev));
   }, [workJournalEnabled]);
 
+  // Samurai launch and Second Brain can be switched off in Settings → Features:
+  // their buttons leave the top bar and an open pane closes.
+  const samuraiLaunchEnabled = useFeatureSettingsStore((s) => s.samuraiLaunchEnabled);
+  const secondBrainEnabled = useFeatureSettingsStore((s) => s.secondBrainEnabled);
+  useEffect(() => {
+    if (!samuraiLaunchEnabled) setUtilityPanel((prev) => (prev === "launch" ? null : prev));
+  }, [samuraiLaunchEnabled]);
+  useEffect(() => {
+    if (!secondBrainEnabled) setUtilityPanel((prev) => (prev === "secondbrain" ? null : prev));
+  }, [secondBrainEnabled]);
+
   // Eagle view add-terminal dropdown: every open project tab is offered.
   // Picking one stays in eagle view: a pre-launch card tiles into the eagle
   // grid for that project, so the terminal is configured (name/branch/worktree/…)
@@ -611,9 +623,13 @@ function App() {
               notesPanelOpen={utilityPanel === "notes"}
               onToggleNotesPanel={() => handleToggleUtilityPanel("notes")}
               secondBrainPanelOpen={utilityPanel === "secondbrain"}
-              onToggleSecondBrainPanel={() => handleToggleUtilityPanel("secondbrain")}
+              onToggleSecondBrainPanel={
+                secondBrainEnabled ? () => handleToggleUtilityPanel("secondbrain") : undefined
+              }
               launchPanelOpen={utilityPanel === "launch"}
-              onToggleLaunchPanel={() => handleToggleUtilityPanel("launch")}
+              onToggleLaunchPanel={
+                samuraiLaunchEnabled ? () => handleToggleUtilityPanel("launch") : undefined
+              }
               workJournalPanelOpen={utilityPanel === "workjournal"}
               onToggleWorkJournalPanel={
                 workJournalEnabled ? () => handleToggleUtilityPanel("workjournal") : undefined

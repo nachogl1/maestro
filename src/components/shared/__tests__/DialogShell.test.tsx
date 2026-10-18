@@ -1,6 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { DialogRow, DialogSection, DialogShell, DialogToggle } from "../DialogShell";
+import {
+  DialogRow,
+  DialogSection,
+  DialogShell,
+  DialogToggle,
+  dialogInputClass,
+} from "../DialogShell";
 
 describe("DialogShell", () => {
   it("renders an accessible dialog with its title, body and footer at the top of the document", () => {
@@ -99,5 +105,17 @@ describe("DialogShell", () => {
     expect(toggle).toHaveAttribute("aria-checked", "false");
     fireEvent.click(toggle);
     expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it("gives the switch a visible keyboard focus ring", () => {
+    render(<DialogToggle checked onChange={vi.fn()} aria-label="Toggle" />);
+    expect(screen.getByRole("switch", { name: "Toggle" }).className).toContain(
+      "focus-visible:ring-2",
+    );
+  });
+
+  it("styles inputs with a focus ring and without native number spinners", () => {
+    expect(dialogInputClass).toContain("focus:ring-2");
+    expect(dialogInputClass).toContain("[&::-webkit-inner-spin-button]:appearance-none");
   });
 });

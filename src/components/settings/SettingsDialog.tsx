@@ -3,6 +3,7 @@ import {
   Bell,
   BookOpen,
   Keyboard,
+  LayoutGrid,
   Monitor,
   Palette,
   ScrollText,
@@ -18,6 +19,7 @@ import { CliSettingsPanel } from "@/components/terminal/CliSettingsPanel";
 import { TerminalSettingsPanel } from "@/components/terminal/TerminalSettingsPanel";
 import { AppearanceSettingsPanel, type Theme } from "./AppearanceSettingsPanel";
 import { ChangelogPanel } from "./ChangelogPanel";
+import { FeaturesSettingsPanel } from "./FeaturesSettingsPanel";
 import { SamuraiSettingsPanel } from "./SamuraiSettingsPanel";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { UpdatesSettingsPanel } from "./UpdatesSettingsPanel";
@@ -25,6 +27,7 @@ import { WorkJournalSettingsGate } from "./WorkJournalSettingsGate";
 
 export type SettingsSectionId =
   | "appearance"
+  | "features"
   | "notifications"
   | "updates"
   | "terminal"
@@ -64,6 +67,12 @@ const SECTION_GROUPS: SettingsSectionGroup[] = [
         label: "Appearance",
         icon: Palette,
         description: "How Maestro looks.",
+      },
+      {
+        id: "features",
+        label: "Features",
+        icon: LayoutGrid,
+        description: "Which tools show in the top bar.",
       },
       {
         id: "notifications",
@@ -158,6 +167,8 @@ export function SettingsDialog({
     switch (id) {
       case "appearance":
         return <AppearanceSettingsPanel theme={theme} onToggleTheme={onToggleTheme} />;
+      case "features":
+        return <FeaturesSettingsPanel />;
       case "notifications":
         return (
           <>
