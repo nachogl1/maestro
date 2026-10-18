@@ -1,4 +1,4 @@
-import { BookOpenCheck, BrainCircuit, Rocket, StickyNote, Syringe, X } from "lucide-react";
+import { BookOpenCheck, BrainCircuit, Hammer, Rocket, StickyNote, Syringe, X } from "lucide-react";
 import { lazy, Suspense } from "react";
 import {
   PanelResizeHandle,
@@ -24,7 +24,20 @@ const WorkJournalPanel = lazy(() =>
   })),
 );
 
-export type UtilityPanelKind = "notes" | "secondbrain" | "launch" | "workjournal" | "inject";
+// WorkshopPanel drags in react-markdown, so it is lazy-loaded the same way.
+const WorkshopPanel = lazy(() =>
+  import("@/components/workshop/WorkshopPanel").then((m) => ({
+    default: m.WorkshopPanel,
+  })),
+);
+
+export type UtilityPanelKind =
+  | "notes"
+  | "secondbrain"
+  | "launch"
+  | "workjournal"
+  | "inject"
+  | "workshop";
 
 const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementType }> = {
   notes: { title: "Notes", icon: StickyNote },
@@ -37,10 +50,12 @@ const PANEL_META: Record<UtilityPanelKind, { title: string; icon: React.ElementT
   launch: { title: "Launch", icon: Rocket },
   // One page per day, edited as rich text (Work Journal PRD, "Layout").
   workjournal: { title: "Work Journal", icon: BookOpenCheck },
+  // The weekly /insights report and its summary (issue #415).
+  workshop: { title: "Workshop", icon: Hammer },
 };
 
 /**
- * Right-side panel for the Notes, Second Brain, Launch and Work Journal views, opened from
+ * Right-side panel for the Notes, Second Brain, Launch, Work Journal and Workshop views, opened from
  * the top-bar buttons. Docked on the right, one panel at a time.
  */
 export function UtilityPanel({
@@ -94,6 +109,11 @@ export function UtilityPanel({
         // Like Notes: a header row plus an editor that scrolls internally.
         <Suspense fallback={<div className="flex-1" />}>
           <WorkJournalPanel />
+        </Suspense>
+      ) : panel === "workshop" ? (
+        // A header plus tabs whose content (the report frame) scrolls internally.
+        <Suspense fallback={<div className="flex-1" />}>
+          <WorkshopPanel />
         </Suspense>
       ) : (
         <div className="flex-1 overflow-y-auto px-2.5 py-3">

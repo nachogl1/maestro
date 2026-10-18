@@ -361,6 +361,10 @@ pub fn run() {
             commands::work_journal::set_work_journal_enabled,
             commands::work_journal::restore_work_journal,
             commands::work_journal::undo_work_journal_restore,
+            // Workshop: the weekly /insights report and its summary
+            commands::workshop::workshop_status,
+            commands::workshop::workshop_run,
+            commands::workshop::workshop_read,
             commands::work_journal::work_journal_restore_state,
             commands::work_journal::list_work_journal_candidates,
             commands::work_journal::work_journal_pending_counts,

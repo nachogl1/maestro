@@ -618,6 +618,8 @@ function App() {
               onToggleWorkJournalPanel={
                 workJournalEnabled ? () => handleToggleUtilityPanel("workjournal") : undefined
               }
+              workshopPanelOpen={utilityPanel === "workshop"}
+              onToggleWorkshopPanel={() => handleToggleUtilityPanel("workshop")}
               injectPanelOpen={utilityPanel === "inject"}
               onToggleInjectPanel={() => handleToggleUtilityPanel("inject")}
               onWatchdogNavigate={handleWatchdogNavigate}

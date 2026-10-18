@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useAgentNameSync } from "@/hooks/useAgentNameSync";
 import type { useWorkJournalCandidateTimer } from "@/hooks/useWorkJournalCandidateTimer";
+import { useWorkshopTimer } from "@/hooks/useWorkshopTimer";
 import { HEALTH_CHECK_INTERVAL_MS } from "@/lib/healthRules";
 import { useGitHubWatchdogStore, watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
@@ -9,10 +10,11 @@ import { useUpdateStore } from "@/stores/useUpdateStore";
 /**
  * App-lifetime background polling, mounted once by `App`: the update
  * auto-check interval, the GitHub watchdog (snapshot listener + keeping the
- * Rust poller's project set in sync with `tabs`), the health checker and the
- * Claude agent-name sync that keeps terminal titles on agent names. The Work
- * Journal's own background work lives in `WorkJournalBackgroundWork`, which
- * runs only while the journal is turned on.
+ * Rust poller's project set in sync with `tabs`), the health checker, the
+ * weekly Workshop `/insights` run and the Claude agent-name sync that keeps
+ * terminal titles on agent names. The Work Journal's own background work
+ * lives in `WorkJournalBackgroundWork`, which runs only while the journal is
+ * turned on.
  */
 export function useBackgroundPollers(
   tabs: Parameters<typeof useWorkJournalCandidateTimer>[0],
@@ -70,5 +72,6 @@ export function useBackgroundPollers(
     };
   }, []);
 
+  useWorkshopTimer();
   useAgentNameSync();
 }

@@ -58,6 +58,7 @@ pub mod work_journal_collect;
 pub mod work_journal_quit;
 pub mod work_journal_report;
 pub mod work_journal_run;
+pub mod workshop;
 pub mod worktree_manager;
 
 pub use claude_event::ClaudeEvent;
