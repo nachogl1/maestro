@@ -543,12 +543,12 @@ describe("PreLaunchCard keyboard launch flow", () => {
     expect(focusable.indexOf(launchButton)).toBe(focusable.indexOf(nameInput) + 1);
   });
 
-  it("lists New Worktree first and reports a change of working directory", () => {
+  it("lists Original Path first and reports a change of working directory", () => {
     render(<PreLaunchCard {...props} slot={{ ...slot, worktreeMode: "new" }} />);
     const dirSelect = screen.getByRole("combobox", { name: "Working directory" });
     const options = screen.getAllByRole("option").map((o) => o.textContent);
 
-    expect(options).toEqual(["New Worktree", "Original Path", "Current Worktree"]);
+    expect(options).toEqual(["Original Path", "New Worktree", "Current Worktree"]);
     expect(dirSelect).toHaveValue("new");
     expect(screen.getByRole("option", { name: "Current Worktree" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "New Worktree" })).toBeNull();

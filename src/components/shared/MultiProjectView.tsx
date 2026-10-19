@@ -138,6 +138,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // global zoom tab bar can be built purely from the stores.
     const [eagleZoom, setEagleZoom] = useState<number | null>(null);
 
+    // Idle project whose grid is mounting because the user asked for a new
+    // terminal: that grid focuses its first card's name input on mount. A ref,
+    // not state: the store update that mounts the grid can render on its own
+    // (sync lane) before a state update would. Cleared after every commit, so
+    // a later remount (e.g. a History launch) won't take focus.
+    const nameFocusTabIdRef = useRef<string | null>(null);
+    useEffect(() => {
+      nameFocusTabIdRef.current = null;
+    });
+
     // Pending (unlaunched) slot count per tab, kept in sync from each grid's
     // onSessionCountChange. A visible pre-launch tile needs a grid column same
     // as a launched session, so eagleTileCount below adds this to
@@ -458,6 +468,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           // mounts with its initial pre-launch card.
           const tab = tabs.find((t) => t.id === tabId);
           if (!tab) return false;
+          nameFocusTabIdRef.current = tabId;
           setSessionsLaunched(tabId, true);
           return true;
         },
@@ -570,6 +581,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       const callbacks = new Map<string, () => void>();
       for (const tab of tabs) {
         callbacks.set(tab.id, () => {
+          nameFocusTabIdRef.current = tab.id;
           setSessionsLaunched(tab.id, true);
         });
       }
@@ -825,6 +837,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   isActive={tab.active}
                   onSessionCountChange={sessionCountChangeCallbacks.get(tab.id)}
                   onAllSessionsClosed={allSessionsClosedCallbacks.get(tab.id)}
+                  focusNameOnMount={nameFocusTabIdRef.current === tab.id}
                   eagleMode={eagleView}
                   projectName={tab.name}
                   eagleZoomedSessionId={eagleZoom}

@@ -159,6 +159,20 @@ describe("TerminalGrid keyboard focus flow", () => {
     expect(document.activeElement).toBe(nameInputs[1]);
   });
 
+  it("focuses the first card's name input when mounted for a new terminal", async () => {
+    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive focusNameOnMount />);
+    await flushFrames();
+
+    expect(document.activeElement).toBe(screen.getByLabelText(/Window Name/));
+  });
+
+  it("leaves focus alone on a plain mount", async () => {
+    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
+    await flushFrames();
+
+    expect(document.activeElement).not.toBe(screen.getByLabelText(/Window Name/));
+  });
+
   it("focuses the terminal input after launching from the card", async () => {
     render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
 
