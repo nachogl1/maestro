@@ -330,15 +330,15 @@ function ConfigTab({
     case "settings":
       return (
         <>
-          <SettingsLauncherSection
-            theme={theme}
-            onToggleTheme={onToggleTheme}
+          <SettingsLauncherSection theme={theme} onToggleTheme={onToggleTheme} />
+          {divider}
+          <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
+          {/* Last in the tab, away from Open Settings, so it is never hit by mistake. */}
+          <StopAllSection
             launchedCount={launchedCount}
             isStoppingAll={isStoppingAll}
             onStopAll={onStopAll}
           />
-          {divider}
-          <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
         </>
       );
   }
@@ -561,18 +561,11 @@ function AgentsSection({
 function SettingsLauncherSection({
   theme,
   onToggleTheme,
-  launchedCount = 0,
-  isStoppingAll = false,
-  onStopAll,
 }: {
   theme?: "dark" | "light";
   onToggleTheme?: () => void;
-  launchedCount?: number;
-  isStoppingAll?: boolean;
-  onStopAll?: () => void;
 }) {
   const [showSettings, setShowSettings] = useState(false);
-  const hasRunningSessions = launchedCount > 0;
 
   return (
     <>
@@ -589,17 +582,6 @@ function SettingsLauncherSection({
           <SlidersHorizontal size={14} className="text-maestro-accent" />
           <span>Open Settings</span>
         </button>
-        {hasRunningSessions && onStopAll && (
-          <button
-            type="button"
-            onClick={isStoppingAll ? undefined : onStopAll}
-            disabled={isStoppingAll}
-            className="mt-1 flex w-full items-center gap-2.5 rounded-md border border-maestro-red/40 bg-maestro-red/10 px-2 py-1.5 text-xs font-medium text-maestro-red transition-colors hover:bg-maestro-red/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Square size={14} />
-            <span>{isStoppingAll ? "Stopping..." : `Stop All (${launchedCount})`}</span>
-          </button>
-        )}
       </div>
 
       {showSettings && (
@@ -609,6 +591,35 @@ function SettingsLauncherSection({
           onClose={() => setShowSettings(false)}
         />
       )}
+    </>
+  );
+}
+
+/* ── 8. Stop All ── */
+
+function StopAllSection({
+  launchedCount = 0,
+  isStoppingAll = false,
+  onStopAll,
+}: {
+  launchedCount?: number;
+  isStoppingAll?: boolean;
+  onStopAll?: () => void;
+}) {
+  if (launchedCount === 0 || !onStopAll) return null;
+
+  return (
+    <>
+      {divider}
+      <button
+        type="button"
+        onClick={isStoppingAll ? undefined : onStopAll}
+        disabled={isStoppingAll}
+        className="flex w-full items-center gap-2.5 rounded-md border border-maestro-red/40 bg-maestro-red/10 px-2 py-1.5 text-xs font-medium text-maestro-red transition-colors hover:bg-maestro-red/20 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Square size={14} />
+        <span>{isStoppingAll ? "Stopping..." : `Stop All (${launchedCount})`}</span>
+      </button>
     </>
   );
 }
