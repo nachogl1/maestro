@@ -9,10 +9,11 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-19",
-    title: "Easier terminal resizing, Tidy up in eagle view, safer Stop All",
+    title: "Easier terminal resizing, Tidy up in eagle view, safer Stop All, quicker new terminals",
     items: [
       "Terminals: grab the edge of a terminal (not just the thin line between two) to resize it, and the top-bar Tidy up button (or Alt+T) now also works in eagle view, putting every tile back to an even size.",
       "Sidebar Settings: the Stop All button now sits at the bottom of the tab, below Agents, so it is no longer clicked by mistake instead of Open Settings.",
+      "New terminals: the working-directory choice starts on Original Path, and Ctrl+T puts the cursor in the name box even when the project has no terminals yet.",
     ],
   },
   {

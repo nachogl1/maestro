@@ -54,7 +54,7 @@ export function createEmptySlot(
     mode: "Claude",
     branch: null,
     customName: "",
-    worktreeMode: "new",
+    worktreeMode: "project",
     sessionId: null,
     worktreePath: null,
     worktreeWarning: null,

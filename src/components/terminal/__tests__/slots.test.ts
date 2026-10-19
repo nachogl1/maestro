@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { createEmptySlot, sessionConfigDir } from "../slots";
 
 describe("createEmptySlot", () => {
-  it("defaults the working directory to a new worktree", () => {
-    expect(createEmptySlot().worktreeMode).toBe("new");
+  it("defaults the working directory to the original project path", () => {
+    expect(createEmptySlot().worktreeMode).toBe("project");
   });
 });
 

@@ -191,6 +191,12 @@ interface TerminalGridProps {
   onSessionCountChange?: (slotCount: number, launchedCount: number, occupiedCount: number) => void;
   onAllSessionsClosed?: () => void;
   /**
+   * Focus the initial card's Window Name input on mount. Set when Cmd/Ctrl+T
+   * (or the landing page's add button) mounts the grid for an idle project,
+   * so naming and launching the first terminal needs no mouse.
+   */
+  focusNameOnMount?: boolean;
+  /**
    * Eagle view: this grid's launched panes AND pre-launch cards become items
    * of the global all-projects grid (via `display: contents` flattening)
    * instead of using the local split-tree layout. Per-project zoom and pane
@@ -295,6 +301,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     isActive = true,
     onSessionCountChange,
     onAllSessionsClosed,
+    focusNameOnMount = false,
     eagleMode = false,
     projectName,
     eagleZoomedSessionId = null,
@@ -346,6 +353,14 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 
   // Track which terminal slot is focused (by slot ID)
   const [focusedSlotId, setFocusedSlotId] = useState<string | null>(null);
+
+  // Read once: only the mount that the add request caused should take focus.
+  const focusNameOnMountRef = useRef(focusNameOnMount);
+  const initialSlotIdRef = useRef(slots[0]?.id);
+  useEffect(() => {
+    const slotId = initialSlotIdRef.current;
+    if (focusNameOnMountRef.current && slotId) focusSlotNameInput(slotId);
+  }, []);
 
   // Track which terminal slot is zoomed (takes full screen)
   const [zoomedSlotId, setZoomedSlotId] = useState<string | null>(null);

@@ -41,8 +41,8 @@ export type WorktreeMode = "auto" | "project" | "new";
 
 /** Dropdown entries for the working-directory choice, in display order (first = default). */
 const WORKTREE_MODE_OPTIONS: { mode: WorktreeMode; label: string }[] = [
-  { mode: "new", label: "New Worktree" },
   { mode: "project", label: "Original Path" },
+  { mode: "new", label: "New Worktree" },
   { mode: "auto", label: "Current Worktree" },
 ];
 
