@@ -314,6 +314,23 @@ describe("Sidebar tab bar", () => {
     });
   });
 
+  it("puts Stop All at the bottom of the Settings tab, after the Agents list", () => {
+    localStorage.setItem("maestro-sidebar-tab", "settings");
+    const onStopAll = vi.fn();
+    render(<ControlledSidebar launchedCount={2} onStopAll={onStopAll} />);
+    const stopAll = screen.getByRole("button", { name: "Stop All (2)" });
+    const agents = screen.getByText("Agents");
+    expect(agents.compareDocumentPosition(stopAll) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(stopAll);
+    expect(onStopAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides Stop All when nothing is running", () => {
+    localStorage.setItem("maestro-sidebar-tab", "settings");
+    render(<ControlledSidebar launchedCount={0} onStopAll={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /Stop All/ })).not.toBeInTheDocument();
+  });
+
   it("opens the one Settings dialog from the Settings tab", () => {
     localStorage.setItem("maestro-sidebar-tab", "settings");
     render(<ControlledSidebar />);
