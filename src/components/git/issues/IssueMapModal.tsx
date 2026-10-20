@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Download, Minus, Plus, RefreshCw, X } from "lucide-react";
+import { Download, GripHorizontal, Minus, Plus, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildIssueMap,
@@ -72,6 +72,8 @@ const MAX_ZOOM = 3;
 const ZOOM_STEP = 1.25;
 /** A press that moves less than this is a click, not a drag. */
 const DRAG_THRESHOLD = 4;
+/** Pixels of a dragged issue card that must stay on screen so it can be grabbed again. */
+const TIP_KEEP = 60;
 
 interface MapView {
   z: number;
@@ -243,6 +245,9 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   const [exportError, setExportError] = useState<string | null>(null);
   const authStatus = useGitHubStore((s) => s.authStatus);
   const tipRef = useRef<HTMLDivElement>(null);
+  // Where the user dragged the card; once set, later cards open there too.
+  const tipSpotRef = useRef<{ left: number; top: number } | null>(null);
+  const tipDragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
 
   useEffect(() => {
     if (!isLoading && !error) setFetchedAt(new Date());
@@ -364,7 +369,8 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
       if (!movedRef.current && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
       movedRef.current = true;
       setDragging(true);
-      setTipHidden(true);
+      // A card the user moved is no longer tied to its box, so it stays up.
+      if (!tipSpotRef.current) setTipHidden(true);
       setView((v) => ({ ...v, tx: drag.tx + dx, ty: drag.ty + dy }));
     };
     const onUp = () => {
@@ -395,12 +401,50 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   useLayoutEffect(() => {
     const tip = tipRef.current;
     if (!tip) return;
-    const { left, top } = fitInWindow(tipAt.x, tipAt.y, tip.getBoundingClientRect());
+    const { left, top } =
+      tipSpotRef.current ?? fitInWindow(tipAt.x, tipAt.y, tip.getBoundingClientRect());
     tip.style.left = `${left}px`;
     tip.style.top = `${top}px`;
   }, [tipAt]);
 
   const place = (ev: React.MouseEvent) => setTipAt({ x: ev.clientX, y: ev.clientY });
+
+  // Drag the card by its title bar so it stops covering the boxes behind it.
+  useEffect(() => {
+    const onMove = (ev: PointerEvent) => {
+      const drag = tipDragRef.current;
+      const tip = tipRef.current;
+      if (!drag || !tip) return;
+      const left = Math.min(
+        window.innerWidth - TIP_KEEP,
+        Math.max(0, drag.left + ev.clientX - drag.x),
+      );
+      const top = Math.min(
+        window.innerHeight - TIP_KEEP,
+        Math.max(0, drag.top + ev.clientY - drag.y),
+      );
+      tipSpotRef.current = { left, top };
+      tip.style.left = `${left}px`;
+      tip.style.top = `${top}px`;
+    };
+    const onUp = () => {
+      tipDragRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
+  const onTipGrab = (ev: React.PointerEvent) => {
+    const tip = tipRef.current;
+    if (ev.button !== 0 || !tip) return;
+    ev.preventDefault();
+    const r = tip.getBoundingClientRect();
+    tipDragRef.current = { x: ev.clientX, y: ev.clientY, left: r.left, top: r.top };
+  };
 
   // Esc backs out one level: unpin, else close the map window.
   useEffect(() => {
@@ -951,9 +995,17 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           className="fixed z-[60] max-w-[480px] rounded-[10px] border border-maestro-border bg-maestro-surface px-3.5 py-2.5 text-[13px] text-maestro-text shadow-xl"
           style={{ left: tipAt.x + 16, top: tipAt.y + 16 }}
         >
-          <h3 className="mb-1 text-[14px] font-bold">
-            #{focusNode.number} {focusNode.title}
-          </h3>
+          <div
+            data-testid="issue-map-tip-handle"
+            title="Drag to move this card"
+            className="-mx-1 mb-1 flex cursor-grab touch-none select-none items-start gap-1.5 rounded px-1 hover:bg-maestro-card active:cursor-grabbing"
+            onPointerDown={onTipGrab}
+          >
+            <GripHorizontal size={14} className="mt-[3px] shrink-0 text-maestro-muted" />
+            <h3 className="text-[14px] font-bold">
+              #{focusNode.number} {focusNode.title}
+            </h3>
+          </div>
           <div className="my-0.5">
             <b>Progress</b>{" "}
             <span
@@ -1071,7 +1123,8 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
               Show in sidebar
             </button>
             <span className="text-[12px] text-maestro-muted">
-              Click the box again to clear · double-click opens it on GitHub
+              Click the box again to clear · double-click opens it on GitHub · drag the title to
+              move this card
             </span>
           </div>
         </div>

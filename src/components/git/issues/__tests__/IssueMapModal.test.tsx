@@ -405,6 +405,48 @@ describe("IssueMapModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("drags the card by its title and keeps it there for the next issue and a map drag", async () => {
+    renderModal();
+    const n2 = await screen.findByTestId("issue-node-2");
+    fireEvent.click(n2, { clientX: 100, clientY: 100 });
+    const tip = screen.getByTestId("issue-map-tip");
+    // happy-dom does no layout, so give the card the box a browser would.
+    vi.spyOn(tip, "getBoundingClientRect").mockReturnValue({
+      left: 116,
+      top: 116,
+      width: 480,
+      height: 600,
+    } as DOMRect);
+    const viewport = screen.getByTestId("issue-map-viewport");
+    const before = viewport.getAttribute("transform");
+
+    const handle = screen.getByTestId("issue-map-tip-handle");
+    fireEvent.pointerDown(handle, { button: 0, clientX: 120, clientY: 120 });
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 320 });
+    fireEvent.pointerUp(window);
+    expect(tip.style.left).toBe("416px");
+    expect(tip.style.top).toBe("316px");
+    // Moving the card does not pan the map.
+    expect(viewport.getAttribute("transform")).toBe(before);
+
+    // The next issue's card opens where the user put the last one.
+    fireEvent.click(screen.getByTestId("issue-node-3"), { clientX: 700, clientY: 500 });
+    expect(screen.getByTestId("issue-map-tip")).toHaveStyle({ left: "416px", top: "316px" });
+
+    // A moved card stays up while the map is dragged.
+    fireEvent.pointerDown(n2, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 50, clientY: 30 });
+    fireEvent.pointerUp(window);
+    expect(screen.getByTestId("issue-map-tip")).toBeInTheDocument();
+
+    // It cannot be dragged off screen.
+    fireEvent.pointerDown(handle, { button: 0, clientX: 420, clientY: 320 });
+    fireEvent.pointerMove(window, { clientX: 5000, clientY: -5000 });
+    fireEvent.pointerUp(window);
+    expect(tip.style.left).toBe(`${window.innerWidth - 60}px`);
+    expect(tip.style.top).toBe("0px");
+  });
+
   it("an epic sits in the Epics column, draws dashed lines to its stories and lists them", async () => {
     renderModal();
     await screen.findByTestId("issue-node-2");
