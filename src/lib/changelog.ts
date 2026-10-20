@@ -9,9 +9,10 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-20",
-    title: "Movable issue card in the issue map",
+    title: "Movable issue card in the issue map, Claude starts in new Mac terminals",
     items: [
       "Issue map: drag the card that opens when you click an issue by its title to move it out of the way; it stays there for the next issue you click and while you drag the map.",
+      "Mac: a new Claude session now starts Claude even when it was installed through nvm or another Node version manager, instead of leaving a plain shell.",
     ],
   },
   {

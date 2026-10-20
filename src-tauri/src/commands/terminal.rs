@@ -337,9 +337,10 @@ pub async fn kill_all_sessions(
 /// Checks if a command is available in the user's PATH.
 ///
 /// On macOS/Linux, when the app is launched from GUI launchers (Raycast, Spotlight),
-/// the PATH is minimal and doesn't include user installations. This function searches
-/// common installation directories directly without spawning a shell (which can cause
-/// issues with shell plugins like powerlevel10k).
+/// the PATH is minimal and doesn't include user installations. This function first
+/// searches common installation directories directly; on a miss it asks the user's
+/// own login shell (issue #443), since that is the shell the session PTY runs the
+/// command in — nvm/fnm/volta installs and `~/.claude/local` aliases live only there.
 ///
 /// On Windows, uses `where.exe` to check.
 #[tauri::command]
@@ -347,8 +348,8 @@ pub async fn check_cli_available(command: String) -> Result<bool, String> {
     #[cfg(unix)]
     {
         // Search the augmented PATH (env PATH + common install dirs missed by
-        // GUI launchers). We avoid spawning a shell because shell plugins
-        // (oh-my-zsh, powerlevel10k) can hang or abort when run without a TTY.
+        // GUI launchers) first: it needs no shell, and shell plugins
+        // (oh-my-zsh, powerlevel10k) can be slow or hang without a TTY.
         use crate::core::cli_path::augmented_path;
 
         for dir in augmented_path().split(':').filter(|s| !s.is_empty()) {
@@ -359,7 +360,13 @@ pub async fn check_cli_available(command: String) -> Result<bool, String> {
             }
         }
 
-        log::debug!("Command {} not found in PATH", command);
+        let shell = crate::core::process_manager::session_shell();
+        if login_shell_has_command(&shell, &command).await {
+            log::debug!("Found {} through the login shell {}", command, shell);
+            return Ok(true);
+        }
+
+        log::warn!("Command {command} not found in PATH or through the login shell {shell}");
         Ok(false)
     }
 
@@ -376,6 +383,59 @@ pub async fn check_cli_available(command: String) -> Result<bool, String> {
     }
 }
 
+/// Line the login-shell probe prints when the command resolves. Matched
+/// instead of the exit status or the whole output because interactive rc
+/// files may print banners or exit non-zero on their own.
+#[cfg(unix)]
+const CLI_FOUND_MARKER: &str = "__MAESTRO_CLI_FOUND__";
+
+/// Upper bound on the login-shell probe, so a slow or hanging rc file cannot
+/// stall a session launch.
+#[cfg(unix)]
+const LOGIN_SHELL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether `command` resolves in `shell` started as an interactive login shell
+/// — the PATH, functions and aliases the session terminal will see (issue #443).
+/// The name is spliced into a shell script, so anything but a plain command
+/// name is refused. A spawn failure, timeout or missing marker reads as absent.
+#[cfg(unix)]
+async fn login_shell_has_command(shell: &str, command: &str) -> bool {
+    if !is_plain_command_name(command) {
+        return false;
+    }
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(["-i", "-l", "-c"])
+        .arg(format!(
+            "command -v {command} >/dev/null 2>&1 && echo {CLI_FOUND_MARKER}"
+        ))
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    match tokio::time::timeout(LOGIN_SHELL_PROBE_TIMEOUT, cmd.output()).await {
+        Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.trim() == CLI_FOUND_MARKER),
+        Ok(Err(e)) => {
+            log::warn!("Could not run the login shell {shell} to look up {command}: {e}");
+            false
+        }
+        Err(_) => {
+            log::warn!("The login shell {shell} took too long to look up {command}");
+            false
+        }
+    }
+}
+
+/// A bare command name: letters, digits, `.`, `_`, `-`, not starting with `-`.
+#[cfg(unix)]
+fn is_plain_command_name(command: &str) -> bool {
+    !command.is_empty()
+        && !command.starts_with('-')
+        && command
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// The quoting family of the shell a session PTY actually runs — `"posix"`,
 /// `"cmd"`, or `null` (issue #158).
 ///
@@ -389,4 +449,45 @@ pub async fn check_cli_available(command: String) -> Result<bool, String> {
 #[tauri::command]
 pub fn terminal_shell_family() -> Option<String> {
     crate::core::process_manager::session_shell_family().map(str::to_string)
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_command_names_are_accepted() {
+        assert!(is_plain_command_name("claude"));
+        assert!(is_plain_command_name("open-code_1.2"));
+    }
+
+    #[test]
+    fn non_plain_command_names_are_refused() {
+        assert!(!is_plain_command_name(""));
+        assert!(!is_plain_command_name("-v"));
+        assert!(!is_plain_command_name("ls; touch pwned"));
+        assert!(!is_plain_command_name("$(id)"));
+        assert!(!is_plain_command_name("bin/claude"));
+    }
+
+    #[tokio::test]
+    async fn login_shell_finds_a_command_on_its_path() {
+        assert!(login_shell_has_command("/bin/sh", "ls").await);
+    }
+
+    #[tokio::test]
+    async fn login_shell_reports_a_missing_command_as_absent() {
+        assert!(!login_shell_has_command("/bin/sh", "maestro-no-such-cli-443").await);
+    }
+
+    #[tokio::test]
+    async fn login_shell_refuses_a_non_plain_name() {
+        assert!(!login_shell_has_command("/bin/sh", "ls; echo __MAESTRO_CLI_FOUND__").await);
+    }
+
+    #[tokio::test]
+    async fn missing_shell_reads_as_absent() {
+        assert!(!login_shell_has_command("/nonexistent/shell", "ls").await);
+    }
 }
