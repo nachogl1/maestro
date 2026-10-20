@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-20",
+    title: "Movable issue card in the issue map",
+    items: [
+      "Issue map: drag the card that opens when you click an issue by its title to move it out of the way; it stays there for the next issue you click and while you drag the map.",
+    ],
+  },
+  {
     date: "2026-10-19",
     title: "Easier terminal resizing, Tidy up in eagle view, safer Stop All, quicker new terminals",
     items: [
