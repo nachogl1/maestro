@@ -472,6 +472,20 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [openMenu, pinned, onClose]);
 
+  // F5 or Ctrl/Cmd+R rebuilds the map instead of reloading the whole window.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isReload =
+        event.key === "F5" ||
+        ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "r");
+      if (!isReload) return;
+      event.preventDefault();
+      if (!event.repeat && !isLoading) void reload();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isLoading, reload]);
+
   const openOnGitHub = (node: IssueMapNode) => {
     openUrl(node.url).catch((err) => console.error("Failed to open issue URL:", err));
   };
@@ -844,7 +858,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             type="button"
             onClick={() => void reload()}
             disabled={isLoading}
-            title="Rebuild the map from GitHub"
+            title="Rebuild the map from GitHub (F5 or Ctrl+R)"
             className={toolbarButton}
           >
             <RefreshCw size={11} className={isLoading ? "animate-spin" : ""} />

@@ -485,6 +485,22 @@ describe("IssueMapModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("F5 and Ctrl+R rebuild the map from GitHub", async () => {
+    renderModal();
+    await screen.findByTestId("issue-node-2");
+    const listCalls = () =>
+      mockedInvoke.mock.calls.filter(([cmd]) => cmd === "github_list_issues").length;
+    const before = listCalls();
+
+    const f5 = fireEvent.keyDown(window, { key: "F5", cancelable: true });
+    expect(f5).toBe(false);
+    await waitFor(() => expect(listCalls()).toBe(before + 1));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Reload/ })).toBeEnabled());
+
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true, cancelable: true });
+    await waitFor(() => expect(listCalls()).toBe(before + 2));
+  });
+
   it("Esc and a press outside close an open filter menu before anything else", async () => {
     const { onClose } = renderModal();
     const n2 = await screen.findByTestId("issue-node-2");

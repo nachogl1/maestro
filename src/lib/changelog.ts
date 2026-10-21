@@ -18,7 +18,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Context alert: a new install now warns when a terminal's context reaches 35% instead of 80%, a value you already chose in Settings stays as it is, the project's tab in the top bar now blinks red too, even when that terminal is parked, and clearing a terminal's context (/clear) stops the red blinking.",
       "Issue map: the filters are now four drop-down menus with tick boxes (Orion labels, progress, assignee and labels); the Labels menu lists every label on the issues, so labels your team adds later show up too.",
       'Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone; a "Blocked by" section that links issues by their web address no longer shows a false disagreement.',
-      "Issue map: the window's title bar now shows the name of the project whose issues it maps.",
+      "Issue map: the window's title bar now shows the name of the project whose issues it maps, and F5 or Ctrl+R reloads the map from GitHub.",
       'Mac: opening a project in Desktop, Documents or Downloads no longer makes macOS ask whether Maestro may "access data from other apps".',
       "Memory: Maestro uses less memory, mostly with many terminals open, because hidden terminals and the particle effects free their graphics memory and History summaries no longer start your MCP tools.",
       "Windows: after Maestro updates itself, builds and tests in its terminals work again; before, they failed on npm workspace folders until you restarted Maestro by hand.",
