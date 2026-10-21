@@ -7,6 +7,7 @@ import {
   ENCODING_EXPLANATION,
   edgePath,
   explainProblem,
+  isKindLabel,
   KIND_FILL,
   KIND_META,
   KIND_ORDER,
@@ -73,6 +74,17 @@ describe("kindOf", () => {
   it("an `epic` label wins over every triage label", () => {
     expect(kindOf(EPIC)).toEqual({ kind: "epic", label: "epic" });
     expect(kindOf([...AGENT, { name: "Epic" }])).toEqual({ kind: "epic", label: "Epic" });
+  });
+});
+
+describe("isKindLabel", () => {
+  it("is true only for the labels that decide who takes an issue", () => {
+    for (const name of ["agent-ready", "needs-human-decision", "outside-change", "Epic"]) {
+      expect(isKindLabel(name)).toBe(true);
+    }
+    for (const name of ["bug", "team:platform", "decision", "wayfinder:map"]) {
+      expect(isKindLabel(name)).toBe(false);
+    }
   });
 });
 
