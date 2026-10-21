@@ -14,6 +14,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Context alert: a new install now warns when a terminal's context reaches 35% instead of 80%; a value you already chose in Settings stays as it is.",
       "Issue map: the filters are now four drop-down menus with tick boxes (who takes it, progress, assignee and labels); the Labels menu lists every label on the issues, so labels your team adds later show up too.",
       "Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone.",
+      "Issue map: the window's title bar now shows the name of the project whose issues it maps.",
     ],
   },
   {

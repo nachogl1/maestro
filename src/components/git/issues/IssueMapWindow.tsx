@@ -7,6 +7,7 @@ import {
   ISSUE_MAP_SELECT_EVENT,
   type IssueMapSelection,
   type IssueMapTarget,
+  issueMapWindowTitle,
 } from "@/lib/issueMapWindow";
 import { IssueMapModal } from "./IssueMapModal";
 
@@ -43,10 +44,14 @@ export function IssueMapWindow({ initial }: IssueMapWindowProps) {
     };
   }, [target]);
 
-  const repoName = target.repoPath.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  // The OS title bar does not follow document.title, so set both.
+  const title = issueMapWindowTitle(target.repoPath);
   useEffect(() => {
-    document.title = repoName ? `Issue map: ${repoName}` : "Issue map";
-  }, [repoName]);
+    document.title = title;
+    getCurrentWindow()
+      .setTitle(title)
+      .catch((err) => console.error("Failed to set the issue map window title:", err));
+  }, [title]);
 
   return (
     <IssueMapModal

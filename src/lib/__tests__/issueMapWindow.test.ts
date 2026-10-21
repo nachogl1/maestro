@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ISSUE_MAP_OPEN_EVENT,
   ISSUE_MAP_WINDOW_LABEL,
+  issueMapWindowTitle,
   openIssueMapWindow,
   readIssueMapTarget,
 } from "../issueMapWindow";
@@ -37,6 +38,17 @@ describe("readIssueMapTarget", () => {
   });
 });
 
+describe("issueMapWindowTitle", () => {
+  it("names the project folder on Windows and Unix paths", () => {
+    expect(issueMapWindowTitle("C:\\git\\maestro")).toBe("Maestro: Issue map - maestro");
+    expect(issueMapWindowTitle("/repos/a b/")).toBe("Maestro: Issue map - a b");
+  });
+
+  it("falls back to a plain title without a repo", () => {
+    expect(issueMapWindowTitle("")).toBe("Maestro: Issue map");
+  });
+});
+
 describe("openIssueMapWindow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -51,6 +63,7 @@ describe("openIssueMapWindow", () => {
     expect(label).toBe(ISSUE_MAP_WINDOW_LABEL);
     const query = (options?.url ?? "").split("?")[1];
     expect(readIssueMapTarget(`?${query}`)).toEqual({ repoPath: "/repos/a b", search: "is:open" });
+    expect(options?.title).toBe("Maestro: Issue map - a b");
   });
 
   it("points an already open window at the repo and brings it forward", async () => {
