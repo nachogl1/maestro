@@ -16,17 +16,7 @@ import {
   type SessionConfig,
   useSessionStore,
 } from "@/stores/useSessionStore";
-
-/** Chip status dot colors — mirrors the sidebar's SESSION_STATUS_BADGES palette. */
-const STATUS_DOT: Record<BackendSessionStatus, string> = {
-  Starting: "bg-orange-400",
-  Idle: "bg-maestro-muted",
-  Working: "bg-maestro-blue",
-  NeedsInput: "bg-maestro-accent",
-  Done: "bg-maestro-green",
-  Error: "bg-red-500",
-  Timeout: "bg-red-500",
-};
+import { sessionDotColor } from "./ThinkingIndicator";
 
 /** Last path segment, used as the project label in the eagle shelf. */
 function basenameOf(path: string): string {
@@ -39,8 +29,8 @@ function basenameOf(path: string): string {
  *
  * The border itself is the project's color (see below), so status lives in the
  * dots — except for the pulse that makes a parked terminal wanting the user
- * impossible to miss, and the terminal Error/Done states, which the dots read
- * as plain "idle".
+ * impossible to miss, and the Error state, which the red dot shares with every
+ * other "waiting on you" state. Done gets no border: green means working.
  */
 function chipAttentionClass(status: BackendSessionStatus): string {
   switch (status) {
@@ -49,8 +39,6 @@ function chipAttentionClass(status: BackendSessionStatus): string {
     case "Error":
     case "Timeout":
       return "border-maestro-red";
-    case "Done":
-      return "border-maestro-green";
     default:
       return "";
   }
@@ -194,9 +182,7 @@ export function ParkedShelf({
                 : restoreTitle
             }
           >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[sess.status] ?? STATUS_DOT.Idle}`}
-            />
+            <span className={`h-1.5 w-1.5 rounded-full ${sessionDotColor(sess.status)}`} />
             {showProjectLabels && (
               <span className="font-bold" style={{ color: projectColor }}>
                 {project}

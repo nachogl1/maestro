@@ -13,6 +13,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Issue map filter menus, a side panel for data problems, earlier context alert, header tooltips and shortcuts, fairer Tidy up, quicker Ctrl+T, one less Mac permission prompt, lower memory use",
     items: [
       "Tooltips: every button in the top bars and terminal headers now says what it does when you hover it, with the keyboard shortcut in brackets where there is one; new terminal shortcuts Alt+R rename, Alt+W close (it still asks first), Alt+Shift+P pin and Alt+Shift+F flag the focused terminal.",
+      "Status dots: the dot on terminal tabs and parked terminals is now green while the agent works and red when it waits for you, and a parked terminal whose Claude stops mid-task comes back into view too.",
       "Ctrl+T: the eagle-view project picker has a search box with the cursor already in it, and a new terminal added while zoomed in opens zoomed in with the cursor in its name box.",
       "Tidy up: every row of terminals now gets the same height as well as the same width, and in eagle view a short last row stretches so the whole screen is used.",
       "Context alert: a new install now warns when a terminal's context reaches 35% instead of 80%, a value you already chose in Settings stays as it is, the project's tab in the top bar now blinks red too, even when that terminal is parked, and clearing a terminal's context (/clear) stops the red blinking.",

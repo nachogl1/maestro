@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
+import { type BackendSessionStatus, isBusyStatus, useSessionStore } from "@/stores/useSessionStore";
 
 /**
  * Derived "thinking" state for a session.
@@ -67,10 +67,17 @@ interface ThinkingIndicatorProps {
  * `prefers-reduced-motion` via the global rule in globals.css.
  */
 /**
- * Live status dot for a session (tab strips, chips): blue while working, red
- * when the agent waits for the user (pulsing), green when done, muted idle.
- * Replaces the previously hardcoded green dots so "your turn" reads at a
- * glance from any tab strip.
+ * Two-state dot color shared by the tab strips and the parked chips: green
+ * while the agent is busy (working or starting up), red whenever it waits on
+ * the user (asked a question, finished, failed or went idle).
+ */
+export function sessionDotColor(status: BackendSessionStatus | undefined): string {
+  return isBusyStatus(status) ? "bg-maestro-green" : "bg-maestro-accent";
+}
+
+/**
+ * Live status dot for a session (tab strips): see {@link sessionDotColor}.
+ * The red dot pulses when the agent asked an explicit question.
  */
 export const SessionStatusDot = memo(function SessionStatusDot({
   sessionId,
@@ -81,18 +88,7 @@ export const SessionStatusDot = memo(function SessionStatusDot({
 }) {
   const status = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId)?.status);
   const label = statusLabel(status);
-  const color =
-    status === "Working"
-      ? "bg-maestro-blue"
-      : status === "NeedsInput"
-        ? "bg-maestro-accent animate-pulse"
-        : status === "Done"
-          ? "bg-maestro-green"
-          : status === "Error" || status === "Timeout"
-            ? "bg-maestro-red"
-            : status === "Starting"
-              ? "bg-maestro-orange"
-              : "bg-maestro-muted/40";
+  const color = `${sessionDotColor(status)}${status === "NeedsInput" ? " animate-pulse" : ""}`;
   // Labelled: a bare coloured dot says nothing on hover and nothing at all to a
   // screen reader, which is its own flavour of "blank status" (issue #77).
   return (
