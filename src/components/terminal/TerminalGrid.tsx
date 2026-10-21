@@ -1851,6 +1851,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             onResumeSessionChange={(sessionId) => updateSlotResumeSession(slot.id, sessionId)}
             isZoomed={isSlotZoomed}
             onToggleZoom={() => handleToggleZoom(slot.id)}
+            showShortcutHints={!flatLayout}
           />
         </DraggablePane>
       );
