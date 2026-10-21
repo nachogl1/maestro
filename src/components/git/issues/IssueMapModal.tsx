@@ -871,7 +871,7 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           <div className="flex flex-wrap items-center gap-1.5" data-testid="issue-map-filters">
             <b className="mr-1 text-maestro-muted">Filters</b>
             <IssueMapFilterMenu
-              name="Who takes it"
+              name="Orion labels"
               options={kindOptions}
               off={kindOff}
               onChange={setKindOff}
