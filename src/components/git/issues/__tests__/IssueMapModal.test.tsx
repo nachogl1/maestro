@@ -244,7 +244,7 @@ describe("IssueMapModal", () => {
     renderModal();
     await screen.findByTestId("issue-node-2");
     // Epics and closed start unticked, so those two menus show a partial count.
-    expect(screen.getByRole("button", { name: /^Who takes it/ })).toHaveTextContent("4/5");
+    expect(screen.getByRole("button", { name: /^Orion labels/ })).toHaveTextContent("4/5");
     expect(screen.getByRole("button", { name: /^Progress/ })).toHaveTextContent("3/4");
     expect(screen.getByRole("button", { name: /^Assignee/ })).toHaveTextContent("all");
     expect(screen.queryByLabelText("Closed")).toBeNull();
@@ -383,7 +383,7 @@ describe("IssueMapModal", () => {
     expect(
       screen.queryByText(/Background = who takes it|Icon = progress|Cross = closed/),
     ).toBeNull();
-    openFilter("Who takes it");
+    openFilter("Orion labels");
     for (const label of [
       "agent-ready",
       "needs-human",
@@ -548,7 +548,7 @@ describe("IssueMapModal", () => {
     renderModal();
     await screen.findByTestId("issue-node-2");
     expect(screen.queryByTestId("issue-map-epic-edge-4-3")).not.toBeInTheDocument();
-    openFilter("Who takes it");
+    openFilter("Orion labels");
     fireEvent.click(screen.getByLabelText("epic"));
     const epic = screen.getByTestId("issue-node-4");
     expect(epic).toHaveAttribute("data-level", "-1");
