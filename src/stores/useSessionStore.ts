@@ -1285,11 +1285,19 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
  * ContextUsageUpdate per session wins — that is the latest assistant
  * message's context. Sessions without new events are left untouched, which
  * is what keeps idle sessions at their last-known percentage.
+ *
+ * A SessionStarted (launch, `/clear`, `claude --resume`) forgets the value:
+ * the old conversation's context no longer applies, so a cleared terminal
+ * stops showing its context alert. The transcript watcher then replays the
+ * new transcript, so a resumed conversation gets its percentage back.
  */
 function applyContextUsageEvents(events: ClaudeEvent[]): void {
-  const updates = new Map<number, ContextUsage>();
+  // null = forget the session's usage (it started a new conversation).
+  const updates = new Map<number, ContextUsage | null>();
   for (const event of events) {
-    if (event.event_type === "ContextUsageUpdate") {
+    if (event.event_type === "SessionStarted") {
+      updates.set(event.session_id, null);
+    } else if (event.event_type === "ContextUsageUpdate") {
       updates.set(event.session_id, {
         percent: event.percent,
         tokens: event.context_tokens,
@@ -1300,14 +1308,29 @@ function applyContextUsageEvents(events: ClaudeEvent[]): void {
   if (updates.size === 0) return;
 
   for (const [sessionId, usage] of updates) {
-    lastContextUsage.set(sessionId, usage);
+    if (usage) {
+      lastContextUsage.set(sessionId, usage);
+    } else {
+      lastContextUsage.delete(sessionId);
+    }
   }
 
   useSessionStore.setState((state) => {
     let changed = false;
     const sessions = state.sessions.map((s) => {
-      const usage = updates.get(s.id);
-      if (!usage || (s.contextPercent === usage.percent && s.contextTokens === usage.tokens)) {
+      if (!updates.has(s.id)) return s;
+      const usage = updates.get(s.id) ?? null;
+      if (!usage) {
+        if (s.contextPercent === undefined && s.contextTokens === undefined) return s;
+        changed = true;
+        return {
+          ...s,
+          contextPercent: undefined,
+          contextTokens: undefined,
+          contextWindow: undefined,
+        };
+      }
+      if (s.contextPercent === usage.percent && s.contextTokens === usage.tokens) {
         return s;
       }
       changed = true;

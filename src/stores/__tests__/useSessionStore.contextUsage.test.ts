@@ -54,6 +54,16 @@ function contextEvent(
   };
 }
 
+function sessionStarted(sessionId: number): ClaudeEvent {
+  return {
+    event_type: "SessionStarted",
+    session_id: sessionId,
+    claude_session_uuid: `uuid-${sessionId}`,
+    transcript_path: "C:/t.jsonl",
+    timestamp: "2026-08-06T10:00:00Z",
+  };
+}
+
 /** Captured `claude-events` handler, so tests can emit event batches. */
 let emitClaudeEvents: (events: ClaudeEvent[]) => void;
 
@@ -137,6 +147,41 @@ describe("useSessionStore context usage (issue #41)", () => {
     const s = useSessionStore.getState().sessions[0];
     expect(s.contextPercent).toBe(55.5);
     expect(s.contextTokens).toBe(555_000);
+  });
+
+  it("SessionStarted (e.g. /clear) forgets the value so the context alert stops", async () => {
+    useSessionStore.setState({ sessions: [session(1), session(2)] });
+    emitClaudeEvents([contextEvent(1, 90.0, 900_000), contextEvent(2, 50.0, 500_000)]);
+
+    emitClaudeEvents([sessionStarted(1)]);
+
+    const [s1, s2] = useSessionStore.getState().sessions;
+    expect(s1.contextPercent).toBeUndefined();
+    expect(s1.contextTokens).toBeUndefined();
+    expect(s1.contextWindow).toBeUndefined();
+    expect(s2.contextPercent).toBe(50.0);
+
+    // The cleared value is not re-applied by a backend refetch either.
+    invokeMock.mockResolvedValueOnce([session(1), session(2)]);
+    await useSessionStore.getState().fetchSessions();
+    expect(useSessionStore.getState().sessions[0].contextPercent).toBeUndefined();
+  });
+
+  it("a resumed transcript replayed after SessionStarted restores its percentage", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    emitClaudeEvents([contextEvent(1, 90.0, 900_000)]);
+
+    emitClaudeEvents([sessionStarted(1), contextEvent(1, 40.0, 400_000)]);
+
+    expect(useSessionStore.getState().sessions[0].contextPercent).toBe(40.0);
+  });
+
+  it("a context event before SessionStarted in the same batch is still forgotten", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+
+    emitClaudeEvents([contextEvent(1, 90.0, 900_000), sessionStarted(1)]);
+
+    expect(useSessionStore.getState().sessions[0].contextPercent).toBeUndefined();
   });
 
   it("removeSession forgets the value so a reused id starts fresh", () => {
