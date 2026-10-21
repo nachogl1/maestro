@@ -4,13 +4,18 @@
 //! providing the `maestro_status` tool that reports agent status to
 //! the Maestro application via HTTP POST.
 
+// No console of its own on Windows: claude talks to it over piped stdio, so a
+// console window host per session would only cost memory.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod mcp_protocol;
 mod status_reporter;
 
 use mcp_protocol::McpServer;
 use std::env;
 
-#[tokio::main]
+// One stdio loop handles requests one at a time, so one thread is enough.
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     // Read configuration from environment variables
     let status_url = env::var("MAESTRO_STATUS_URL").ok();

@@ -188,7 +188,8 @@ export function createParticleEngine(canvas: HTMLCanvasElement): ParticleEngine 
 
   function setupRenderer(T: Three): void {
     try {
-      renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      // No depth buffer: the material never reads or writes depth.
+      renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true, depth: false });
     } catch (err) {
       console.error("Particle effects: WebGL unavailable:", err);
       renderer = null;
@@ -281,6 +282,9 @@ export function createParticleEngine(canvas: HTMLCanvasElement): ParticleEngine 
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", resize);
     canvas.style.display = "none";
+    // A hidden canvas keeps its full-window drawing buffers; shrink them
+    // while idle. start() sizes them back to the window.
+    renderer?.setSize(1, 1, false);
     P.n = 0;
   }
 
