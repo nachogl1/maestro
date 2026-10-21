@@ -454,6 +454,7 @@ pub fn run() {
             commands::usage::get_claude_account,
             // System metrics
             commands::system::get_system_metrics,
+            commands::permissions::check_full_disk_access,
             // Dev process / container visibility (Processes sidebar section)
             commands::processes::list_dev_processes,
             commands::processes::kill_process_tree,

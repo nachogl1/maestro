@@ -3,8 +3,5 @@
   "description": "macOS-only capabilities. Grants the macos-permissions plugin commands used by the Full Disk Access gate — without these grants Tauri denies the invoke, the frontend's catch defaults to \"access granted\", and the FDA prompt can never appear.",
   "platforms": ["macOS"],
   "windows": ["main"],
-  "permissions": [
-    "macos-permissions:allow-check-full-disk-access-permission",
-    "macos-permissions:allow-request-full-disk-access-permission"
-  ]
+  "permissions": ["macos-permissions:allow-request-full-disk-access-permission"]
 }
