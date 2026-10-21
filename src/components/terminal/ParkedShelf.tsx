@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { type CSSProperties, type KeyboardEvent, useEffect, useMemo, useRef } from "react";
 
 import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
+import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { useProjectColors } from "@/lib/useProjectColors";
 import {
   describeContextAlert,
@@ -66,12 +67,24 @@ function isUnacknowledgedPark(
   return parkAlerts.some((a) => !a.acknowledged && samePath(a.project, session.project_path));
 }
 
+/** Alt+U: move keyboard focus to the first parked chip. event.code, so layout-independent. */
+function isFocusShelfKey(event: globalThis.KeyboardEvent): boolean {
+  return (
+    event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.code === "KeyU"
+  );
+}
+
 interface ParkedShelfProps {
   /** When given, only parked sessions of this project are shown (per-project grid). */
   projectPath?: string;
   onUnpark: (sessionId: number) => void;
   /** Eagle view: prefix each chip with its project name (color-coded). */
   showProjectLabels?: boolean;
+  /**
+   * Whether Alt+U focuses this shelf. Only the visible shelf may answer it:
+   * the active project's grid, or the eagle view's shared shelf.
+   */
+  keyboardEnabled?: boolean;
 }
 
 /**
@@ -83,6 +96,7 @@ export function ParkedShelf({
   projectPath,
   onUnpark,
   showProjectLabels = false,
+  keyboardEnabled = false,
 }: ParkedShelfProps) {
   const sessions = useSessionStore((s) => s.sessions);
   const parkedIds = useSessionStore((s) => s.parkedSessionIds);
@@ -111,7 +125,59 @@ export function ParkedShelf({
     [sessions, parkedIds, projectPath],
   );
 
-  if (parkedSessions.length === 0) return null;
+  const shelfRef = useRef<HTMLDivElement>(null);
+  // Where Esc sends focus back to: whatever held it before Alt+U (usually a
+  // terminal), so leaving the shelf drops the user where they were.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const hasParked = parkedSessions.length > 0;
+
+  // Alt+U focuses the first chip. Capture phase, like the terminal shortcuts:
+  // xterm stops the events it handles, so a bubble listener never fires while
+  // a terminal has focus.
+  useEffect(() => {
+    if (!keyboardEnabled || !hasParked) return;
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (!isFocusShelfKey(event)) return;
+      const shelf = shelfRef.current;
+      const firstChip = shelf?.querySelector<HTMLElement>("[data-parked-session-id]");
+      if (!shelf || !firstChip) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const active = document.activeElement;
+      if (!shelf.contains(active)) {
+        returnFocusRef.current = active instanceof HTMLElement ? active : null;
+      }
+      firstChip.focus();
+    }
+    window.addEventListener("keydown", handleKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
+  }, [keyboardEnabled, hasParked]);
+
+  // Inside the shelf: Left/Right move between chips (wrapping), Enter restores
+  // the focused one through its own click handler, Esc goes back.
+  const handleShelfKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const chips = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>("[data-parked-session-id]"),
+    );
+    const index = chips.indexOf(document.activeElement as HTMLElement);
+    if (index === -1) return;
+    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      chips[(index + step + chips.length) % chips.length].focus();
+    } else if (event.key === "Enter") {
+      chips[index].click();
+    } else if (event.key === "Escape") {
+      chips[index].blur();
+      returnFocusRef.current?.focus();
+      returnFocusRef.current = null;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  if (!hasParked) return null;
 
   const hasAttention = parkedSessions.some(
     (sess) =>
@@ -122,6 +188,11 @@ export function ParkedShelf({
 
   return (
     <div
+      ref={shelfRef}
+      // A toolbar: one strip of buttons the arrow keys walk through.
+      role="toolbar"
+      aria-label="Parked terminals"
+      onKeyDown={handleShelfKeyDown}
       className={`scrollbar-none flex h-8 shrink-0 items-center gap-1.5 overflow-x-auto border-t bg-maestro-surface px-2 ${
         hasAttention ? "border-maestro-accent/60" : "border-maestro-border"
       }`}
@@ -130,6 +201,7 @@ export function ParkedShelf({
         className={`shrink-0 text-[10px] font-medium uppercase tracking-wider ${
           hasAttention ? "text-maestro-accent" : "text-maestro-muted"
         }`}
+        title={titleWithShortcut("Pick a parked terminal from the keyboard", altLabel(), "U")}
       >
         Parked
       </span>
@@ -171,11 +243,17 @@ export function ParkedShelf({
             }}
             // The chip's border is its project's color, matching that project's
             // terminals in the grid; the attention classes above override it
-            // for the few states the dots can't show.
-            style={attention ? undefined : { borderColor: projectColor }}
+            // for the few states the dots can't show. --chip-color tints the
+            // liquid fill shown while the chip has keyboard focus.
+            style={
+              {
+                "--chip-color": projectColor,
+                ...(attention ? {} : { borderColor: projectColor }),
+              } as CSSProperties
+            }
             // Anchor for the park/resume particle effects (ParticleEffectsLayer).
             data-parked-session-id={sess.id}
-            className={`flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card px-2.5 py-0.5 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
+            className={`parked-chip flex shrink-0 items-center gap-1.5 rounded-full border bg-maestro-card px-2.5 py-0.5 text-xs text-maestro-text transition-colors hover:border-maestro-accent ${attention}`}
             title={
               contextAlert && sess.contextPercent !== undefined && contextAlertThreshold !== null
                 ? `${describeContextAlert(sess.contextPercent, contextAlertThreshold)} — ${restoreTitle}`

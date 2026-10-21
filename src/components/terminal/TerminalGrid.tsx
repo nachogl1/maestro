@@ -2194,7 +2194,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       </div>
       {/* Parked terminals stay reachable from the zoom-in view too (unpark
           makes the restored terminal the zoomed one — the user stays in zoom) */}
-      {!flatLayout && <ParkedShelf projectPath={projectPath} onUnpark={handleUnpark} />}
+      {!flatLayout && (
+        <ParkedShelf projectPath={projectPath} onUnpark={handleUnpark} keyboardEnabled={isActive} />
+      )}
       {/* Launch errors while sessions run: fixed-position toast (works under
           the eagle display:contents wrapper too) instead of the full-screen
           card, so the running terminals stay mounted. */}

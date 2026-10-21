@@ -314,4 +314,87 @@ describe("ParkedShelf", () => {
       );
     });
   });
+
+  describe("Alt+U keyboard focus", () => {
+    function parkThree() {
+      useSessionStore.setState({
+        sessions: [
+          session(1, "C:/proj", "Alpha"),
+          session(2, "C:/proj", "Bravo"),
+          session(3, "C:/proj", "Charlie"),
+        ],
+        parkedSessionIds: [1, 2, 3],
+      });
+    }
+
+    function chip(name: string): HTMLElement {
+      const el = screen.getByText(name).closest("button");
+      if (!el) throw new Error(`no chip for ${name}`);
+      return el;
+    }
+
+    it("focuses the first chip on Alt+U and remembers the previous focus for Esc", () => {
+      parkThree();
+      render(
+        <>
+          <textarea aria-label="terminal" />
+          <ParkedShelf onUnpark={vi.fn()} keyboardEnabled />
+        </>,
+      );
+      const terminal = screen.getByLabelText("terminal");
+      terminal.focus();
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      expect(chip("Alpha")).toHaveFocus();
+
+      fireEvent.keyDown(chip("Alpha"), { key: "Escape" });
+      expect(terminal).toHaveFocus();
+    });
+
+    it("moves between chips with Left/Right, wrapping at both ends", () => {
+      parkThree();
+      render(<ParkedShelf onUnpark={vi.fn()} keyboardEnabled />);
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+
+      fireEvent.keyDown(chip("Alpha"), { key: "ArrowRight" });
+      expect(chip("Bravo")).toHaveFocus();
+      fireEvent.keyDown(chip("Bravo"), { key: "ArrowRight" });
+      fireEvent.keyDown(chip("Charlie"), { key: "ArrowRight" });
+      expect(chip("Alpha")).toHaveFocus();
+      fireEvent.keyDown(chip("Alpha"), { key: "ArrowLeft" });
+      expect(chip("Charlie")).toHaveFocus();
+    });
+
+    it("restores the focused chip's terminal on Enter", () => {
+      parkThree();
+      const onUnpark = vi.fn();
+      render(<ParkedShelf onUnpark={onUnpark} keyboardEnabled />);
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "ArrowRight" });
+
+      fireEvent.keyDown(chip("Bravo"), { key: "Enter" });
+
+      expect(onUnpark).toHaveBeenCalledTimes(1);
+      expect(onUnpark).toHaveBeenCalledWith(2);
+    });
+
+    it("ignores Alt+U when the shelf is not keyboard-enabled", () => {
+      parkThree();
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+
+      expect(chip("Alpha")).not.toHaveFocus();
+    });
+
+    it("ignores Alt+Shift+U and Ctrl+Alt+U", () => {
+      parkThree();
+      render(<ParkedShelf onUnpark={vi.fn()} keyboardEnabled />);
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "U", altKey: true, shiftKey: true });
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true, ctrlKey: true });
+
+      expect(chip("Alpha")).not.toHaveFocus();
+    });
+  });
 });

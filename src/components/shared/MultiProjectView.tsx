@@ -940,7 +940,9 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           ))}
         </div>
         {/* Eagle shelf: parked chips across ALL projects, labeled by project. */}
-        {eagleView && <ParkedShelf showProjectLabels onUnpark={handleEagleUnpark} />}
+        {eagleView && (
+          <ParkedShelf showProjectLabels keyboardEnabled onUnpark={handleEagleUnpark} />
+        )}
       </div>
     );
   },
