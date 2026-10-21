@@ -19,6 +19,7 @@ pub mod plugin_error;
 pub mod plugin_manager;
 pub mod process_manager;
 pub mod project_key;
+pub mod redirection_guard;
 pub mod samurai_audit;
 pub mod samurai_auth_watch;
 pub mod samurai_brief;

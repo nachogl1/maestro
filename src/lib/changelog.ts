@@ -21,6 +21,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Issue map: the window's title bar now shows the name of the project whose issues it maps.",
       'Mac: opening a project in Desktop, Documents or Downloads no longer makes macOS ask whether Maestro may "access data from other apps".',
       "Memory: Maestro uses less memory, mostly with many terminals open, because hidden terminals and the particle effects free their graphics memory and History summaries no longer start your MCP tools.",
+      "Windows: after Maestro updates itself, builds and tests in its terminals work again; before, they failed on npm workspace folders until you restarted Maestro by hand.",
     ],
   },
   {
