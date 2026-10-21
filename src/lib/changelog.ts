@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-22",
+    title: "Warning before an update closes your terminals",
+    items: [
+      "Updates: when you install an update while terminals are open, Maestro first warns that restarting will close them all, and installs only if you agree.",
+    ],
+  },
+  {
     date: "2026-10-21",
     title:
       "Issue map filter menus, a side panel for data problems, earlier context alert, header tooltips and shortcuts, fairer Tidy up, quicker Ctrl+T, one less Mac permission prompt, lower memory use",

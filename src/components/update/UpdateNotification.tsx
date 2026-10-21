@@ -1,5 +1,17 @@
 import { AlertTriangle, ArrowDownCircle, Download, Loader2, X } from "lucide-react";
+import { useState } from "react";
+import { DialogShell, dialogButtonClass } from "@/components/shared/DialogShell";
+import { useSessionStore } from "@/stores/useSessionStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
+
+/** The warning shown before an update restarts Maestro while terminals are open. */
+export function updateKillsTerminalsWarning(count: number): string {
+  const terminals = count === 1 ? "1 terminal is" : `${count} terminals are`;
+  return (
+    `${terminals} open. Installing the update restarts Maestro, which closes every ` +
+    "terminal and stops anything running in them."
+  );
+}
 
 export function UpdateNotification() {
   const status = useUpdateStore((s) => s.status);
@@ -9,6 +21,8 @@ export function UpdateNotification() {
   const dismissedVersion = useUpdateStore((s) => s.dismissedVersion);
   const downloadAndInstall = useUpdateStore((s) => s.downloadAndInstall);
   const dismissUpdate = useUpdateStore((s) => s.dismissUpdate);
+  const openTerminals = useSessionStore((s) => s.sessions.length);
+  const [confirming, setConfirming] = useState(false);
 
   // Don't show if idle/checking, or if this version was dismissed
   const isVisible =
@@ -27,6 +41,16 @@ export function UpdateNotification() {
   ) {
     return null;
   }
+
+  // An update restarts Maestro, which kills every terminal: ask first when any are open.
+  const requestInstall = () => {
+    if (openTerminals > 0) setConfirming(true);
+    else void downloadAndInstall();
+  };
+  const confirmInstall = () => {
+    setConfirming(false);
+    void downloadAndInstall();
+  };
 
   return (
     <div className="fixed bottom-4 right-4 z-[110] w-80 rounded-lg border border-maestro-border bg-maestro-card shadow-[0_4px_24px_rgb(0_0_0/0.4)] animate-in slide-in-from-bottom-4">
@@ -88,7 +112,7 @@ export function UpdateNotification() {
             )}
             <button
               type="button"
-              onClick={downloadAndInstall}
+              onClick={requestInstall}
               className="flex w-full items-center justify-center gap-2 rounded-md bg-maestro-accent/15 px-3 py-1.5 text-xs font-medium text-maestro-accent transition-colors hover:bg-maestro-accent/25"
             >
               <Download size={13} />
@@ -117,6 +141,38 @@ export function UpdateNotification() {
           </p>
         )}
       </div>
+
+      {/* Portalled to document.body, so it sits above everything despite living in the toast. */}
+      {confirming && status === "available" && (
+        <DialogShell
+          title="Close all terminals?"
+          icon={<AlertTriangle size={16} />}
+          onClose={() => setConfirming(false)}
+          size="sm"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                className={dialogButtonClass("ghost")}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmInstall}
+                className={dialogButtonClass("primary")}
+              >
+                Install and restart
+              </button>
+            </>
+          }
+        >
+          <p className="text-xs leading-relaxed text-maestro-text">
+            {updateKillsTerminalsWarning(openTerminals)}
+          </p>
+        </DialogShell>
+      )}
     </div>
   );
 }

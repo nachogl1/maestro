@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The update store persists through the Tauri store plugin; happy-dom has no
@@ -14,8 +14,9 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   },
 }));
 
+import { type SessionConfig, useSessionStore } from "@/stores/useSessionStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
-import { UpdateNotification } from "../UpdateNotification";
+import { UpdateNotification, updateKillsTerminalsWarning } from "../UpdateNotification";
 
 const LONG_ERROR =
   "Failed to check for updates: error sending request for url " +
@@ -36,5 +37,64 @@ describe("UpdateNotification", () => {
   it("shows the full error on hover", () => {
     render(<UpdateNotification />);
     expect(screen.getByText(LONG_ERROR).getAttribute("title")).toBe(LONG_ERROR);
+  });
+});
+
+describe("UpdateNotification install with open terminals", () => {
+  const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    downloadAndInstall.mockClear();
+    useUpdateStore.setState({
+      status: "available",
+      dismissedVersion: null,
+      updateInfo: {
+        available: true,
+        current_version: "1.0.0",
+        latest_version: "1.1.0",
+        release_notes: null,
+        date: null,
+      },
+      downloadAndInstall,
+    });
+  });
+
+  function openTerminals(count: number) {
+    const sessions = Array.from({ length: count }, (_, i) => ({ id: i + 1 }) as SessionConfig);
+    useSessionStore.setState({ sessions });
+  }
+
+  it("installs straight away when no terminal is open", () => {
+    openTerminals(0);
+    render(<UpdateNotification />);
+    fireEvent.click(screen.getByRole("button", { name: /download and install/i }));
+    expect(downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("warns that the terminals will close and installs only after the user agrees", () => {
+    openTerminals(2);
+    render(<UpdateNotification />);
+    fireEvent.click(screen.getByRole("button", { name: /download and install/i }));
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(updateKillsTerminalsWarning(2))).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /install and restart/i }));
+    expect(downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("does not install when the user cancels the warning", () => {
+    openTerminals(1);
+    render(<UpdateNotification />);
+    fireEvent.click(screen.getByRole("button", { name: /download and install/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("words the warning for one terminal", () => {
+    expect(updateKillsTerminalsWarning(1)).toMatch(/^1 terminal is open\./);
   });
 });
