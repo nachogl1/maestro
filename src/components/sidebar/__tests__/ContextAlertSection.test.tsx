@@ -210,6 +210,6 @@ describe("ContextAlertSection", () => {
     render(<ContextAlertSection />);
     expect(input().disabled).toBe(true);
     fireEvent.click(screen.getByLabelText("Toggle context alert"));
-    expect(useContextAlertStore.getState().threshold).toBe(80);
+    expect(useContextAlertStore.getState().threshold).toBe(35);
   });
 });
