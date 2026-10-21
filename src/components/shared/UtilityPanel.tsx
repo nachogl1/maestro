@@ -8,6 +8,7 @@ import {
 import { InjectorSection } from "@/components/sidebar/InjectorSection";
 import { LaunchSection } from "@/components/sidebar/LaunchSection";
 import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
+import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 
 // NotepadPanel drags in TipTap + ProseMirror, which are only needed once the
 // user opens the Notes panel; a static import parses them all at startup.
@@ -95,6 +96,13 @@ export function UtilityPanel({
           onClick={onClose}
           className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
           aria-label={`Close ${title} panel`}
+          title={
+            panel === "notes"
+              ? titleWithShortcut(`Close ${title} panel`, modLabel(), "5")
+              : panel === "inject"
+                ? titleWithShortcut(`Close ${title} panel`, altLabel(), "4")
+                : `Close ${title} panel`
+          }
         >
           <X size={14} />
         </button>

@@ -482,6 +482,7 @@ export const TerminalView = memo(function TerminalView({
               : "text-neutral-500 hover:text-neutral-300"
           }`}
           onClick={() => (activeTab === "terminal" ? handleToggleFlag() : setActiveTab("terminal"))}
+          title="Show the terminal"
         >
           Terminal
         </button>
@@ -493,6 +494,7 @@ export const TerminalView = memo(function TerminalView({
               : "text-neutral-500 hover:text-neutral-300"
           }`}
           onClick={() => (activeTab === "activity" ? handleToggleFlag() : setActiveTab("activity"))}
+          title="Show this session's activity"
         >
           Activity
         </button>

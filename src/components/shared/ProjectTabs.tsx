@@ -14,6 +14,7 @@ import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
 import { isMac } from "@/lib/platform";
+import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 
 export type ProjectTab = {
   id: string;
@@ -130,6 +131,7 @@ function TabItem({
         onPointerDown={(e) => e.stopPropagation()}
         className="rounded p-0.5 hover:bg-maestro-border"
         aria-label={`Close ${tab.name}`}
+        title={`Close project ${tab.name}`}
       >
         <X size={10} />
       </button>
@@ -244,6 +246,7 @@ export function ProjectTabs({
               : "text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
           }`}
           aria-label="Toggle sidebar"
+          title={titleWithShortcut("Toggle sidebar", altLabel(), "1–3")}
         >
           <PanelLeft size={14} />
         </button>
@@ -286,6 +289,7 @@ export function ProjectTabs({
           onClick={onNewTab}
           className="shrink-0 rounded p-1 text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
           aria-label="Open new project"
+          title="Open a project"
         >
           <Plus size={14} />
         </button>
@@ -302,6 +306,7 @@ export function ProjectTabs({
             onClick={() => appWindow.minimize()}
             className="flex h-9 w-11 items-center justify-center text-maestro-muted transition-colors hover:bg-maestro-muted/10 hover:text-maestro-text"
             aria-label="Minimize"
+            title="Minimize"
           >
             <Minus size={14} />
           </button>
@@ -310,6 +315,7 @@ export function ProjectTabs({
             onClick={() => appWindow.toggleMaximize()}
             className="flex h-9 w-11 items-center justify-center text-maestro-muted transition-colors hover:bg-maestro-muted/10 hover:text-maestro-text"
             aria-label="Maximize"
+            title="Maximize or restore"
           >
             <Square size={12} />
           </button>
@@ -318,6 +324,7 @@ export function ProjectTabs({
             onClick={() => appWindow.close()}
             className="flex h-9 w-11 items-center justify-center text-maestro-muted transition-colors hover:bg-maestro-red/80 hover:text-white"
             aria-label="Close"
+            title={titleWithShortcut("Close Maestro", "Alt", "F4")}
           >
             <X size={14} />
           </button>

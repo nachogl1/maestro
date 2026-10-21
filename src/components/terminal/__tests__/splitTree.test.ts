@@ -243,13 +243,34 @@ describe("equalizeTree", () => {
   });
 
   it("keeps the arrangement, node ids and directions; only ratios change", () => {
+    // d moved to the left edge of [a b / c d]: d | ([a b] / c). The right side
+    // is two columns wide (a, b), so d gets one column of three.
     const t = moveSlotToTreeEdge(buildGridTree(["a", "b", "c", "d"]), "d", "left", 0.2);
     const even = equalizeTree(t);
     expect(collectSlotIds(even)).toEqual(collectSlotIds(t));
     if (even.type !== "split" || t.type !== "split") throw new Error("expected split root");
     expect(even.id).toBe(t.id);
     expect(even.direction).toBe(t.direction);
-    expect(even.ratio).toBeCloseTo(0.25);
+    expect(even.ratio).toBeCloseTo(1 / 3);
+    const right = even.children[1];
+    if (right.type !== "split") throw new Error("expected right split");
+    // [a b] over c: one row each, so the same height.
+    expect(right.ratio).toBe(0.5);
+  });
+
+  it("gives every row the same height when the last row has fewer panes", () => {
+    // 5 panes: a row of 3 over a row of 2, squashed to 80/20 by a drag.
+    const five = buildGridTree(["a", "b", "c", "d", "e"]);
+    if (five.type !== "split") throw new Error("expected split root");
+    const even = equalizeTree({ ...five, ratio: 0.8 });
+    if (even.type !== "split") throw new Error("expected split root");
+    expect(even.direction).toBe("horizontal");
+    expect(even.ratio).toBe(0.5);
+
+    // 7 panes: rows of 3, 3 and 1 — the lone pane's row is as tall as the others.
+    const seven = equalizeTree(buildGridTree(["a", "b", "c", "d", "e", "f", "g"]));
+    if (seven.type !== "split") throw new Error("expected split root");
+    expect(seven.ratio).toBeCloseTo(2 / 3);
   });
 
   it("returns the same tree when every ratio is already even", () => {

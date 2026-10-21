@@ -93,19 +93,24 @@ export function autoColumns(count: number): number {
 /**
  * The automatic layout: `count` tiles in a square-ish grid, row by row, each
  * tile an equal share of the width and height (the cells split as evenly as
- * whole numbers allow). An incomplete last row leaves its cells empty.
+ * whole numbers allow). An incomplete last row's tiles widen to fill the
+ * row, so the whole grid is always covered.
  */
 export function autoPack(count: number, units: number = EAGLE_UNITS): TileRect[] {
   if (count <= 0) return [];
   const cols = autoColumns(count);
   const rows = Math.max(1, Math.ceil(count / cols));
-  const xs = Array.from({ length: cols + 1 }, (_, i) => Math.round((i * units) / cols));
-  const ys = Array.from({ length: rows + 1 }, (_, i) => Math.round((i * units) / rows));
+  const edges = (n: number) => Array.from({ length: n + 1 }, (_, i) => Math.round((i * units) / n));
+  const xs = edges(cols);
+  const ys = edges(rows);
+  const lastRowCount = count - (rows - 1) * cols;
+  const lastXs = edges(lastRowCount);
   const out: TileRect[] = [];
   for (let i = 0; i < count; i++) {
     const c = i % cols;
     const r = Math.floor(i / cols);
-    out.push({ x: xs[c], y: ys[r], w: xs[c + 1] - xs[c], h: ys[r + 1] - ys[r] });
+    const rowXs = r === rows - 1 ? lastXs : xs;
+    out.push({ x: rowXs[c], y: ys[r], w: rowXs[c + 1] - rowXs[c], h: ys[r + 1] - ys[r] });
   }
   return out;
 }

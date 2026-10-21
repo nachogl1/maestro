@@ -28,10 +28,20 @@ describe("autoPack", () => {
     ]);
     const five = autoPack(5);
     expect(five).toHaveLength(5);
-    // 3 columns × 2 rows; the last row is incomplete.
+    // 3 columns × 2 rows; the incomplete last row's 2 tiles widen to fill it.
     expect(five[0]).toEqual({ x: 0, y: 0, w: 20, h: 30 });
     expect(five[2]).toEqual({ x: 40, y: 0, w: 20, h: 30 });
-    expect(five[4]).toEqual({ x: 20, y: 30, w: 20, h: 30 });
+    expect(five[3]).toEqual({ x: 0, y: 30, w: 30, h: 30 });
+    expect(five[4]).toEqual({ x: 30, y: 30, w: 30, h: 30 });
+  });
+
+  it("covers the whole grid, whatever the count", () => {
+    for (let count = 1; count <= 12; count++) {
+      const area = autoPack(count).reduce((sum, r) => sum + r.w * r.h, 0);
+      expect(area).toBe(U * U);
+    }
+    // 7 tiles: 3 × 3, the lone last tile spans the full width at the same height.
+    expect(autoPack(7)[6]).toEqual({ x: 0, y: 40, w: U, h: 20 });
   });
 
   it("splits the cells as evenly as whole numbers allow for 7 columns", () => {

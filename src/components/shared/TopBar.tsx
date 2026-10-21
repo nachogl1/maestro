@@ -159,6 +159,7 @@ export function TopBar({
                 : "border-maestro-border bg-maestro-card text-maestro-muted hover:bg-maestro-surface hover:text-maestro-text hover:shadow"
             }`}
             aria-label="Toggle sidebar"
+            title={titleWithShortcut("Toggle sidebar", altLabel(), "1–3")}
           >
             <PanelLeft size={15} />
           </button>
@@ -178,7 +179,11 @@ export function TopBar({
             onClick={onTidyLayout}
             className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
             aria-label="Tidy up terminals"
-            title={titleWithShortcut("Tidy up: give every terminal an even share", altLabel(), "T")}
+            title={titleWithShortcut(
+              "Tidy up: give every terminal an even share of the screen",
+              altLabel(),
+              "T",
+            )}
           >
             <LayoutGrid size={14} />
           </button>
@@ -388,6 +393,7 @@ export function TopBar({
             onClick={() => appWindow.minimize()}
             className="flex h-8 w-9 items-center justify-center text-maestro-muted transition-colors hover:bg-maestro-muted/10 hover:text-maestro-text"
             aria-label="Minimize"
+            title="Minimize"
           >
             <Minus size={12} />
           </button>
@@ -396,6 +402,7 @@ export function TopBar({
             onClick={() => appWindow.toggleMaximize()}
             className="flex h-8 w-9 items-center justify-center text-maestro-muted transition-colors hover:bg-maestro-muted/10 hover:text-maestro-text"
             aria-label="Maximize"
+            title="Maximize or restore"
           >
             <Square size={10} />
           </button>
@@ -404,6 +411,7 @@ export function TopBar({
             onClick={() => appWindow.close()}
             className="flex h-8 w-9 items-center justify-center text-maestro-muted transition-colors hover:bg-maestro-red/80 hover:text-white"
             aria-label="Close"
+            title={titleWithShortcut("Close Maestro", "Alt", "F4")}
           >
             <X size={12} />
           </button>

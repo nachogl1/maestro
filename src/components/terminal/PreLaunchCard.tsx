@@ -30,6 +30,7 @@ import { formatRecentDate } from "@/lib/format";
 import type { BranchWithWorktreeStatus } from "@/lib/git";
 import type { McpServerConfig } from "@/lib/mcp";
 import type { PluginConfig, SkillConfig } from "@/lib/plugins";
+import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { type ClaudeSessionInfo, deleteClaudeSession, listClaudeSessions } from "@/lib/terminal";
 import type { PrReviewLaunch } from "@/lib/terminalPrompt";
 import type { AiMode } from "@/stores/useSessionStore";
@@ -158,6 +159,11 @@ interface PreLaunchCardProps {
   onResumeSessionChange: (sessionId: string | null) => void;
   isZoomed?: boolean;
   onToggleZoom?: () => void;
+  /**
+   * Whether the zoom tooltip advertises Cmd/Ctrl+1. Off in eagle view, where
+   * that shortcut only acts on launched terminals (the button still works).
+   */
+  showShortcutHints?: boolean;
 }
 
 const AI_MODES: {
@@ -222,6 +228,7 @@ export function PreLaunchCard({
   onResumeSessionChange,
   isZoomed = false,
   onToggleZoom,
+  showShortcutHints = true,
 }: PreLaunchCardProps) {
   const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
@@ -501,7 +508,17 @@ export function PreLaunchCard({
                   type="button"
                   onClick={() => onToggleZoom()}
                   className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-accent"
-                  title={isZoomed ? "Restore grid view" : "Zoom terminal"}
+                  title={
+                    showShortcutHints
+                      ? titleWithShortcut(
+                          isZoomed ? "Restore grid view" : "Zoom terminal",
+                          modLabel(),
+                          "1",
+                        )
+                      : isZoomed
+                        ? "Restore grid view"
+                        : "Zoom terminal"
+                  }
                   aria-label={isZoomed ? "Restore grid view" : "Zoom terminal"}
                 >
                   {isZoomed ? <Minimize size={14} /> : <Expand size={14} />}
