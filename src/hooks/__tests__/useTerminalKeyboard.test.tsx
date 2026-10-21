@@ -304,3 +304,47 @@ describe("useTerminalKeyboard Alt+T tidy layout", () => {
     expect(onTidyLayout).not.toHaveBeenCalled();
   });
 });
+
+describe("useTerminalKeyboard header shortcuts", () => {
+  function dispatchAlt(code: string, extra: KeyboardEventInit = {}): KeyboardEvent {
+    const ev = new KeyboardEvent("keydown", {
+      code,
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+      ...extra,
+    });
+    window.dispatchEvent(ev);
+    return ev;
+  }
+
+  it("maps Alt+R, Alt+W, Alt+Shift+P and Alt+Shift+F to the header actions", () => {
+    const onHeaderActionFocused = vi.fn();
+    const handlers = renderKeyboardHook({ onHeaderActionFocused });
+
+    const ev = dispatchAlt("KeyR");
+    dispatchAlt("KeyW");
+    dispatchAlt("KeyP", { shiftKey: true });
+    dispatchAlt("KeyF", { shiftKey: true });
+
+    expect(onHeaderActionFocused.mock.calls).toEqual([["rename"], ["close"], ["pin"], ["flag"]]);
+    expect(ev.defaultPrevented).toBe(true);
+    // Alt+Shift+P pins; it must not also park.
+    expect(handlers.onParkFocused).not.toHaveBeenCalled();
+  });
+
+  it("ignores the header keys with Ctrl or Meta held", () => {
+    const onHeaderActionFocused = vi.fn();
+    renderKeyboardHook({ onHeaderActionFocused });
+    dispatchAlt("KeyR", { ctrlKey: true });
+    dispatchAlt("KeyW", { metaKey: true });
+    expect(onHeaderActionFocused).not.toHaveBeenCalled();
+  });
+
+  it("does not fire when enabled=false", () => {
+    const onHeaderActionFocused = vi.fn();
+    renderKeyboardHook({ onHeaderActionFocused, enabled: false });
+    dispatchAlt("KeyR");
+    expect(onHeaderActionFocused).not.toHaveBeenCalled();
+  });
+});

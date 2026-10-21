@@ -46,6 +46,7 @@ import {
   getBranchesWithWorktreeStatus,
   invalidateCurrentBranchCache,
 } from "@/lib/git";
+import { clickHeaderAction, type HeaderAction } from "@/lib/headerShortcuts";
 import { type McpServerConfig, removeOpenCodeMcpConfig, removeSessionMcpConfig } from "@/lib/mcp";
 import {
   type MoveDirection,
@@ -151,7 +152,8 @@ function focusSlotNameInput(slotId: string): void {
  * (e.g. a toolbar button) can add sessions or launch all without lifting state up.
  */
 export interface TerminalGridHandle {
-  addSession: () => void;
+  /** Add a pre-launch card; returns its slot id, or null at the session cap. */
+  addSession: () => string | null;
   launchAll: () => Promise<void>;
   refreshBranches: () => void;
   /** Focus the pane running the given session. Returns false if this grid doesn't own it. */
@@ -198,6 +200,11 @@ interface TerminalGridProps {
    */
   focusNameOnMount?: boolean;
   /**
+   * Slot id for the initial card, read on mount only. Lets the owner target
+   * the card (e.g. eagle-zoom it) before this grid exists.
+   */
+  initialSlotId?: string;
+  /**
    * Eagle view: this grid's launched panes AND pre-launch cards become items
    * of the global all-projects grid (via `display: contents` flattening)
    * instead of using the local split-tree layout. Per-project zoom and pane
@@ -212,6 +219,16 @@ interface TerminalGridProps {
    * owner can drive the global zoom tab bar straight from the stores.
    */
   eagleZoomedSessionId?: number | null;
+  /**
+   * Pre-launch card currently zoomed in eagle view (owned by
+   * MultiProjectView): Cmd/Ctrl+T while zoomed zooms the new card.
+   */
+  eagleZoomedSlotId?: string | null;
+  /**
+   * The zoomed card launched (its session id) or went away unlaunched
+   * (null), so the owner moves the eagle zoom on.
+   */
+  onEagleCardZoomEnd?: (sessionId: number | null) => void;
   /**
    * A pane somewhere (any project) is eagle-zoomed. Non-zoomed tiles hide
    * (visibility) so their xterm/WebGL renderers stop painting behind the
@@ -303,9 +320,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onSessionCountChange,
     onAllSessionsClosed,
     focusNameOnMount = false,
+    initialSlotId,
     eagleMode = false,
     projectName,
     eagleZoomedSessionId = null,
+    eagleZoomedSlotId = null,
+    onEagleCardZoomEnd,
     eagleAnyZoomed = false,
     onEagleZoomToggle,
     eagleTileCount = 0,
@@ -349,7 +369,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const fetchPlugins = usePluginStore((s) => s.fetchProjectPlugins);
 
   // Track session slots (pre-launch and launched)
-  const [slots, setSlots] = useState<SessionSlot[]>(() => [createEmptySlot()]);
+  const [slots, setSlots] = useState<SessionSlot[]>(() => {
+    const slot = createEmptySlot();
+    return [initialSlotId ? { ...slot, id: initialSlotId } : slot];
+  });
   const [error, setError] = useState<string | null>(null);
 
   // Track which terminal slot is focused (by slot ID)
@@ -618,6 +641,18 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onParkFocused: useCallback(() => parkFocusedRef.current(), []),
     onMoveFocused: useCallback((direction: MoveDirection) => moveFocusedRef.current(direction), []),
     onTidyLayout: handleTidyLayout,
+    // The pane holding keyboard focus wins (e.g. typing in a pre-launch
+    // card that is not the focused slot); otherwise the focused pane.
+    onHeaderActionFocused: useCallback(
+      (action: HeaderAction) => {
+        const host = document.activeElement?.closest<HTMLElement>("[data-slot-id]");
+        const typingIn = host?.dataset.slotId;
+        const targetId =
+          typingIn && slotsRef.current.some((s) => s.id === typingIn) ? typingIn : focusedSlotId;
+        if (targetId) clickHeaderAction(targetId, action);
+      },
+      [focusedSlotId],
+    ),
     onToggleZoomFocused: useCallback(() => {
       const targetId = focusedSlotId ?? slotsRef.current[0]?.id;
       if (!targetId) return;
@@ -1252,9 +1287,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     handlePark(focusedSlotId);
   };
 
-  // Eagle view: Cmd/Ctrl+1 and Alt+P act on the pane holding keyboard focus.
-  // Only launched panes this grid owns are handled; the rest fall through to
-  // the grid that does own them.
+  // Eagle view: Cmd/Ctrl+1, Alt+P and the header shortcuts act on the pane
+  // holding keyboard focus.
+  // Only panes this grid owns are handled (zoom, park and move: launched ones
+  // only); the rest fall through to the grid that does own them.
   useEagleTerminalKeyboard({
     enabled: eagleMode,
     onToggleZoom: useCallback(
@@ -1284,7 +1320,31 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       },
       [onEagleMoveTile],
     ),
+    onHeaderAction: useCallback((slotId: string, action: HeaderAction) => {
+      if (!slotsRef.current.some((s) => s.id === slotId)) return false;
+      return clickHeaderAction(slotId, action);
+    }, []),
   });
+
+  // Eagle zoom on one of this grid's cards: once it launches its session
+  // takes over the zoom; if it goes away unlaunched the owner restores the
+  // zoom from before. "Seen" marks the card as ours — every grid gets the
+  // same zoomed slot id, and only the owner may report it gone.
+  const zoomedCardSeenRef = useRef(false);
+  useEffect(() => {
+    if (!eagleMode || eagleZoomedSlotId === null) {
+      zoomedCardSeenRef.current = false;
+      return;
+    }
+    const slot = slots.find((s) => s.id === eagleZoomedSlotId);
+    if (!slot) {
+      if (zoomedCardSeenRef.current) onEagleCardZoomEnd?.(null);
+      zoomedCardSeenRef.current = false;
+      return;
+    }
+    zoomedCardSeenRef.current = true;
+    if (slot.sessionId !== null) onEagleCardZoomEnd?.(slot.sessionId);
+  }, [eagleMode, eagleZoomedSlotId, slots, onEagleCardZoomEnd]);
 
   /**
    * Updates the AI mode for a slot.
@@ -1544,8 +1604,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   /**
    * Adds a new pre-launch slot to the grid.
    */
-  const addSession = useCallback(() => {
-    if (occupiedSlotCount(slotsRef.current) >= MAX_SESSIONS) return;
+  const addSession = useCallback((): string | null => {
+    if (occupiedSlotCount(slotsRef.current) >= MAX_SESSIONS) return null;
     const newSlot = createEmptySlot(mcpServers, skills, plugins);
     setSlots((prev) => {
       if (occupiedSlotCount(prev) >= MAX_SESSIONS) return prev;
@@ -1560,6 +1620,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     setZoomedSlotId((prev) => (prev === null ? null : newSlot.id));
     // Refresh branch list so new slots see the latest branches
     refreshBranches();
+    return newSlot.id;
   }, [mcpServers, skills, plugins, refreshBranches, orderedSlotIds]);
 
   useImperativeHandle(
@@ -1718,8 +1779,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         : eagleMode
           ? eagleTileCount > 1 && !eagleAnyZoomed
           : slots.length > 1 && zoomedSlotId === null;
+      // A zoomed card stays zoomed through its launch until the owner moves
+      // the zoom onto its new session (see onEagleCardZoomEnd).
       const isEagleZoomed =
-        eagleMode && slot.sessionId !== null && eagleZoomedSessionId === slot.sessionId;
+        eagleMode &&
+        (eagleZoomedSlotId === slot.id ||
+          (slot.sessionId !== null && eagleZoomedSessionId === slot.sessionId));
       const isEagleObscured = eagleMode && eagleAnyZoomed && !isEagleZoomed;
       const isSlotZoomed = eagleMode ? isEagleZoomed : !pinnedSpotlight && zoomedSlotId === slot.id;
       // Spotlight: only the pinned tiles paint, each into its strip cell.
@@ -1813,7 +1878,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           }
           eagleMode={flatLayout}
           eagleHidden={spotlightHidden}
-          eagleZoomed={false}
+          eagleZoomed={isEagleZoomed}
           eagleObscured={isEagleObscured}
           eagleReserveShelf={parkedSessionIds.length > 0}
         >
@@ -1850,7 +1915,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             onRemove={() => removeSlot(slot.id)}
             onResumeSessionChange={(sessionId) => updateSlotResumeSession(slot.id, sessionId)}
             isZoomed={isSlotZoomed}
-            onToggleZoom={() => handleToggleZoom(slot.id)}
+            // An eagle-zoomed card leaves zoom through the zoom bar's × button.
+            onToggleZoom={isEagleZoomed ? undefined : () => handleToggleZoom(slot.id)}
             showShortcutHints={!flatLayout}
           />
         </DraggablePane>
@@ -1906,6 +1972,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       updateSlotResumeSession,
       eagleMode,
       eagleZoomedSessionId,
+      eagleZoomedSlotId,
       eagleAnyZoomed,
       onEagleZoomToggle,
       projectName,

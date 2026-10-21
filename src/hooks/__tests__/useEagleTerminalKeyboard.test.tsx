@@ -127,4 +127,26 @@ describe("useEagleTerminalKeyboard Alt+Shift+Arrow tile moves", () => {
     expect(onMove).toHaveBeenCalledWith("slot-x", "left");
     expect(ev.defaultPrevented).toBe(false);
   });
+  it("runs the header shortcut on the pane the key was pressed in", () => {
+    const onHeaderAction = vi.fn(() => true);
+    renderHook(() =>
+      useEagleTerminalKeyboard({
+        enabled: true,
+        onToggleZoom: vi.fn(),
+        onPark: vi.fn(),
+        onHeaderAction,
+      }),
+    );
+    const input = mountPane("slot-h");
+    const ev = new KeyboardEvent("keydown", {
+      code: "KeyW",
+      key: "w",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(ev);
+    expect(onHeaderAction).toHaveBeenCalledWith("slot-h", "close");
+    expect(ev.defaultPrevented).toBe(true);
+  });
 });

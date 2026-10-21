@@ -30,7 +30,7 @@ import { formatRecentDate } from "@/lib/format";
 import type { BranchWithWorktreeStatus } from "@/lib/git";
 import type { McpServerConfig } from "@/lib/mcp";
 import type { PluginConfig, SkillConfig } from "@/lib/plugins";
-import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { type ClaudeSessionInfo, deleteClaudeSession, listClaudeSessions } from "@/lib/terminal";
 import type { PrReviewLaunch } from "@/lib/terminalPrompt";
 import type { AiMode } from "@/stores/useSessionStore";
@@ -528,8 +528,9 @@ export function PreLaunchCard({
                 type="button"
                 onClick={onRemove}
                 className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-red"
-                title="Remove session slot"
+                title={titleWithShortcut("Remove session slot", altLabel(), "W")}
                 aria-label="Remove session slot"
+                data-header-action="close"
               >
                 <X size={14} />
               </button>

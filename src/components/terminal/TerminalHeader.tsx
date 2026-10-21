@@ -19,7 +19,7 @@ import { type IconComponent, OpenCodeIcon } from "@/components/icons";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { useDismissable } from "@/hooks/useDismissable";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
-import { altLabel, comboLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { altLabel, comboLabel, modLabel, shiftLabel, titleWithShortcut } from "@/lib/shortcuts";
 
 export type SessionStatus =
   | "idle"
@@ -260,6 +260,11 @@ export const TerminalHeader = memo(function TerminalHeader({
 
   const adaptive = getAdaptiveClasses();
 
+  // Tooltip with the control's keyboard shortcut, when shortcuts reach this
+  // terminal (see showShortcutHints).
+  const hint = (action: string, ...keys: string[]) =>
+    showShortcutHints ? titleWithShortcut(action, ...keys) : action;
+
   // Status-colored underline: blue while the agent works, red when it
   // waits for the user's input (same palette as the tab status dot).
   const statusBorder =
@@ -286,14 +291,21 @@ export const TerminalHeader = memo(function TerminalHeader({
       // TerminalGrid): press and move to pick the terminal up; a plain click
       // still toggles the flag.
       data-pane-drag-handle=""
+      // Alt+Shift+F clicks the header itself (see lib/headerShortcuts).
+      data-header-action={onToggleFlag ? "flag" : undefined}
       onClick={handleHeaderClick}
       title={
         onToggleFlag
-          ? hasAttention
-            ? "Needs input — click to clear the attention highlight"
-            : isFlagged
-              ? "Click to clear warning flag"
-              : "Click to flag as warning"
+          ? hint(
+              hasAttention
+                ? "Needs input — click to clear the attention highlight"
+                : isFlagged
+                  ? "Click to clear warning flag"
+                  : "Click to flag as warning",
+              altLabel(),
+              shiftLabel(),
+              "F",
+            )
           : undefined
       }
     >
@@ -337,8 +349,16 @@ export const TerminalHeader = memo(function TerminalHeader({
             onChange={(e) => setEditNameValue(e.target.value)}
             onBlur={commitName}
             onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== "Escape") return;
               if (e.key === "Enter") commitName();
-              if (e.key === "Escape") cancelEditName();
+              else cancelEditName();
+              // Hand the keyboard back to this terminal so renaming stays
+              // mouse-free. After the field unmounts: focusing now would blur
+              // it and commit the name a second time (or commit a cancel).
+              const textarea = e.currentTarget
+                .closest(".terminal-cell")
+                ?.querySelector<HTMLElement>(".xterm-helper-textarea");
+              requestAnimationFrame(() => textarea?.focus());
             }}
             className={`shrink-0 rounded border border-maestro-accent bg-maestro-card px-1 py-0 font-medium text-maestro-text outline-none ${adaptive.sessionLabelSize}`}
             // biome-ignore lint/a11y/noAutofocus: rename field revealed by an explicit user action (click-to-rename) — autofocus is the expected UX here.
@@ -348,7 +368,12 @@ export const TerminalHeader = memo(function TerminalHeader({
           <button
             type="button"
             className={`shrink-0 cursor-text font-medium text-maestro-text ${adaptive.sessionLabelSize}`}
-            title={onRename ? "Rename terminal — click to edit the name" : undefined}
+            title={
+              onRename
+                ? hint("Rename terminal — click to edit the name", altLabel(), "R")
+                : undefined
+            }
+            data-header-action={onRename ? "rename" : undefined}
             onClick={(e) => {
               // Renaming, not flag-toggling — keep the click off the header.
               e.stopPropagation();
@@ -431,12 +456,16 @@ export const TerminalHeader = memo(function TerminalHeader({
             className={`rounded p-0.5 transition-colors hover:bg-maestro-card hover:text-maestro-accent ${
               isPinned ? "text-maestro-accent" : "text-maestro-muted"
             }`}
-            title={
+            title={hint(
               isPinned
                 ? "Unpin — stop showing this terminal while other projects are open"
-                : "Pin — keep this terminal visible while other projects are open"
-            }
+                : "Pin — keep this terminal visible while other projects are open",
+              altLabel(),
+              shiftLabel(),
+              "P",
+            )}
             aria-label={`${isPinned ? "Unpin" : "Pin"} session ${sessionId}`}
+            data-header-action="pin"
           >
             {isPinned ? (
               <PinOff size={terminalCount <= 4 ? 14 : 12} />
@@ -515,8 +544,9 @@ export const TerminalHeader = memo(function TerminalHeader({
           type="button"
           onClick={() => onKill(sessionId)}
           className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-red"
-          title="Kill session — stop this terminal"
+          title={hint("Kill session — stop this terminal", altLabel(), "W")}
           aria-label={`Kill session ${sessionId}`}
+          data-header-action="close"
         >
           <X size={terminalCount <= 4 ? 11 : 9} />
         </button>
