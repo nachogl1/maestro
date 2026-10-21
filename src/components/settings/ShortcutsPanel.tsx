@@ -39,6 +39,10 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         { keys: [mod, "G"], description: "Toggle eagle view (all projects)" },
 
         { keys: [alt, "P"], description: "Park the focused terminal" },
+        {
+          keys: [alt, "U"],
+          description: "Focus the parked strip: ← → to pick, Enter to restore, Esc to go back",
+        },
         { keys: [alt, "T"], description: "Tidy up: give every terminal an even share" },
         {
           keys: [alt, "Shift", "← ↑ ↓ →"],

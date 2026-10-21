@@ -444,6 +444,55 @@
   animation: thinking-dot 1.2s ease-in-out infinite;
 }
 
+/* Parked-shelf chip holding keyboard focus (Alt+U, then Left/Right): the
+   border doubles in width and a slow wave of the chip's project colour
+   (--chip-color, set inline) rolls inside it. Padding drops 1px to make room
+   for the thicker border, so the strip does not shift. The wave is two
+   oversized rounded squares spinning behind the label; their top edges are
+   the liquid's surface. */
+.parked-chip:focus-visible {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  outline: none;
+  border-width: 2px;
+  padding: 1px 9px;
+}
+
+.parked-chip:focus-visible::before,
+.parked-chip:focus-visible::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 40%;
+  width: 220%;
+  aspect-ratio: 1;
+  background: var(--chip-color, rgb(var(--maestro-accent)));
+  border-radius: 42%;
+  opacity: 0.4;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: parked-chip-liquid 4s linear infinite;
+}
+
+.parked-chip:focus-visible::after {
+  top: 50%;
+  border-radius: 38%;
+  opacity: 0.25;
+  animation-duration: 6.5s;
+  animation-direction: reverse;
+}
+
+@keyframes parked-chip-liquid {
+  from {
+    transform: translateX(-50%) rotate(0deg);
+  }
+  to {
+    transform: translateX(-50%) rotate(360deg);
+  }
+}
+
 /* Parked-shelf chip demanding attention (agent finished its turn / needs
    input while parked). Border stays red even where animations are
    disabled (Linux, reduced motion) so the signal survives. */
@@ -581,6 +630,15 @@
   }
 }
 
+/* Reduced motion: the focused parked chip keeps a still tint, no wave. Its own
+   rule because the block above also resets transform, which centres the fill. */
+@media (prefers-reduced-motion: reduce) {
+  .parked-chip:focus-visible::before,
+  .parked-chip:focus-visible::after {
+    animation: none;
+  }
+}
+
 /* ── Linux (WebKitGTK) Performance Overrides ──
    WebKitGTK cannot GPU-accelerate box-shadows, backdrop-blur, drop-shadow
    filters, or CSS animations. All of these trigger expensive CPU repaints
@@ -604,6 +662,12 @@
 
 /* Disable starting-glow animation */
 .platform-linux .terminal-cell-starting {
+  animation: none;
+}
+
+/* The focused parked chip keeps a still tint instead of the rolling wave */
+.platform-linux .parked-chip:focus-visible::before,
+.platform-linux .parked-chip:focus-visible::after {
   animation: none;
 }
 

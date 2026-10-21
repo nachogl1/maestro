@@ -9,9 +9,10 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-22",
-    title: "Warning before an update closes your terminals",
+    title: "Warning before an update closes your terminals, keyboard picker for parked terminals",
     items: [
       "Updates: when you install an update while terminals are open, Maestro first warns that restarting will close them all, and installs only if you agree.",
+      "Parked terminals: Alt+U jumps to the parked strip; pick a terminal with the left and right arrows and press Enter to bring it back, or Esc to return to where you were.",
     ],
   },
   {
