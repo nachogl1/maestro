@@ -65,6 +65,7 @@ import {
 } from "@/lib/plugins";
 import { projectColorFor } from "@/lib/projectColor";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
+import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { successorLaunchImminent } from "@/lib/spawnSession";
 import {
   killSession,
@@ -1786,7 +1787,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
               projectLabel={flatLayout ? projectName : undefined}
               projectColor={eagleColor}
               hasMoveHandle={showReorderHandle}
-              showShortcutHints={!flatLayout}
+              showShortcutHints={!pinnedSpotlight}
             />
             {dropOverlay}
           </DraggablePane>
@@ -2011,7 +2012,11 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                 type="button"
                 onClick={handleTidyLayout}
                 className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
-                title="Tidy up: give every terminal an even share (Alt+T)"
+                title={titleWithShortcut(
+                  "Tidy up: give every terminal an even share of the screen",
+                  altLabel(),
+                  "T",
+                )}
                 aria-label="Tidy up terminals"
               >
                 <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2078,7 +2083,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                 type="button"
                 onClick={() => handleToggleZoom(zoomedSlotId)}
                 className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
-                title="Exit zoom"
+                title={titleWithShortcut("Exit zoom", modLabel(), "1")}
               >
                 <svg
                   className="h-3.5 w-3.5"

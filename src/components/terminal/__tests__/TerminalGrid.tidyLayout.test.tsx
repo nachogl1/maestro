@@ -190,7 +190,7 @@ describe("TerminalGrid tidy up layout (issue #407)", () => {
     // Still zoomed: tidying never changes what the user is looking at.
     expect(screen.getByRole("button", { name: /tidy up/i })).toBeTruthy();
 
-    fireEvent.click(screen.getByTitle("Exit zoom"));
+    fireEvent.click(screen.getByTitle(/^Exit zoom/));
     expect(paneWidths()).toEqual(["50%", "50%"]);
   });
 

@@ -77,9 +77,9 @@ interface TerminalHeaderProps {
   /** Toggle the warning flag — fired on clicks outside interactive controls. */
   onToggleFlag?: () => void;
   /**
-   * Whether tooltips advertise the park/zoom keyboard shortcuts. Off in eagle
-   * view, where the per-project shortcut handler is suspended (the buttons
-   * themselves still work).
+   * Whether tooltips advertise the park/zoom keyboard shortcuts. Off for a
+   * pinned terminal shown over another project, where no shortcut handler
+   * owns it (the buttons themselves still work).
    */
   showShortcutHints?: boolean;
   /**
@@ -131,7 +131,7 @@ export const TerminalHeader = memo(function TerminalHeader({
   contextAlert = false,
   contextAlertTitle,
 }: TerminalHeaderProps) {
-  const { icon: ProviderIcon } = providerConfig[provider];
+  const { icon: ProviderIcon, label: providerLabel } = providerConfig[provider];
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   const zoomMenuRef = useRef<HTMLDivElement>(null);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -304,7 +304,7 @@ export const TerminalHeader = memo(function TerminalHeader({
           type="button"
           aria-label="Select AI provider"
           aria-disabled="true"
-          title="Provider selection not yet available"
+          title={`${providerLabel} — provider selection not yet available`}
           className="flex shrink-0 items-center gap-0.5 text-maestro-muted hover:text-maestro-text"
         >
           <ProviderIcon
@@ -348,6 +348,7 @@ export const TerminalHeader = memo(function TerminalHeader({
           <button
             type="button"
             className={`shrink-0 cursor-text font-medium text-maestro-text ${adaptive.sessionLabelSize}`}
+            title={onRename ? "Rename terminal — click to edit the name" : undefined}
             onClick={(e) => {
               // Renaming, not flag-toggling — keep the click off the header.
               e.stopPropagation();
@@ -514,7 +515,7 @@ export const TerminalHeader = memo(function TerminalHeader({
           type="button"
           onClick={() => onKill(sessionId)}
           className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-red"
-          title="Kill session"
+          title="Kill session — stop this terminal"
           aria-label={`Kill session ${sessionId}`}
         >
           <X size={terminalCount <= 4 ? 11 : 9} />

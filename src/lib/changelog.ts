@@ -9,8 +9,11 @@ export interface ChangelogEntry {
 export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-21",
-    title: "Issue map filter menus, a side panel for data problems, earlier context alert",
+    title:
+      "Issue map filter menus, a side panel for data problems, earlier context alert, header tooltips, fairer Tidy up",
     items: [
+      "Tooltips: every button in the top bars and terminal headers now says what it does when you hover it, with the keyboard shortcut in brackets where there is one.",
+      "Tidy up: every row of terminals now gets the same height as well as the same width, and in eagle view a short last row stretches so the whole screen is used.",
       "Context alert: a new install now warns when a terminal's context reaches 35% instead of 80%; a value you already chose in Settings stays as it is.",
       "Issue map: the filters are now four drop-down menus with tick boxes (who takes it, progress, assignee and labels); the Labels menu lists every label on the issues, so labels your team adds later show up too.",
       "Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone.",

@@ -7,6 +7,7 @@ import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/li
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
+import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
@@ -676,6 +677,7 @@ function App() {
                     disabled={isRefreshingGit}
                     className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text disabled:opacity-50"
                     aria-label="Refresh commits"
+                    title="Refresh commits"
                   >
                     <RefreshCw size={14} className={isRefreshingGit ? "animate-spin" : ""} />
                   </button>
@@ -685,6 +687,7 @@ function App() {
                   onClick={() => setGitPanelOpen(false)}
                   className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
                   aria-label="Close git panel"
+                  title={titleWithShortcut("Close git panel", modLabel(), "2")}
                 >
                   <X size={14} />
                 </button>

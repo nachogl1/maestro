@@ -323,16 +323,24 @@ export function moveSlotToTreeEdge(
   };
 }
 
-/** Number of panes (leaves) under a node. */
-function countLeaves(node: TreeNode): number {
+/**
+ * How many panes a node lines up along one axis: side-by-side panes add up
+ * across (vertical splits), stacked ones add up down (horizontal splits), and
+ * across the other axis the node is as wide/tall as its bigger side.
+ */
+function axisSpan(node: TreeNode, direction: SplitDirection): number {
   if (node.type === "leaf") return 1;
-  return countLeaves(node.children[0]) + countLeaves(node.children[1]);
+  const a = axisSpan(node.children[0], direction);
+  const b = axisSpan(node.children[1], direction);
+  return node.direction === direction ? a + b : Math.max(a, b);
 }
 
 /**
  * Give every pane an even share of the space while keeping the arrangement:
- * each split's ratio becomes its first side's pane count over the total, so
- * a column of three next to a single pane splits 3:1, not 1:1.
+ * each split's ratio becomes its first side's span along the split axis over
+ * the total, so every row gets the same height and every column the same
+ * width. A grid of 3 over 2 splits its rows 1:1 (not 3:2), and the shorter
+ * row's panes widen to fill the screen.
  *
  * Node ids, directions and pane order are kept. Returns the original tree
  * (same reference) when every ratio is already even.
@@ -343,8 +351,8 @@ export function equalizeTree(tree: TreeNode): TreeNode {
   const [left, right] = tree.children;
   const newLeft = equalizeTree(left);
   const newRight = equalizeTree(right);
-  const leftCount = countLeaves(left);
-  const evenRatio = leftCount / (leftCount + countLeaves(right));
+  const leftSpan = axisSpan(left, tree.direction);
+  const evenRatio = leftSpan / (leftSpan + axisSpan(right, tree.direction));
 
   if (newLeft === left && newRight === right && tree.ratio === evenRatio) return tree;
   return { ...tree, ratio: evenRatio, children: [newLeft, newRight] };
