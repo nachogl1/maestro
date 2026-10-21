@@ -282,9 +282,9 @@ export function createParticleEngine(canvas: HTMLCanvasElement): ParticleEngine 
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", resize);
     canvas.style.display = "none";
-    // A hidden canvas keeps its full-window drawing buffers; shrink them
-    // while idle. start() sizes them back to the window.
-    renderer?.setSize(1, 1, false);
+    // The drawing buffers keep their size while idle: shrinking them and
+    // growing them back on every effect coincided with whole-screen white
+    // flashes on Windows.
     P.n = 0;
   }
 
