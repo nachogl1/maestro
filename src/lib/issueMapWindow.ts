@@ -34,6 +34,12 @@ export function readIssueMapTarget(query: string): IssueMapTarget | null {
   return { repoPath: params.get("repo") ?? "", search: params.get("search") ?? "" };
 }
 
+/** Window title naming the project whose issues the map shows. */
+export function issueMapWindowTitle(repoPath: string): string {
+  const name = repoPath.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  return name ? `Maestro: Issue map - ${name}` : "Maestro: Issue map";
+}
+
 /** Open the map window, or point the open one at this repo and bring it forward. */
 export async function openIssueMapWindow(target: IssueMapTarget): Promise<void> {
   const existing = await WebviewWindow.getByLabel(ISSUE_MAP_WINDOW_LABEL);
@@ -50,7 +56,7 @@ export async function openIssueMapWindow(target: IssueMapTarget): Promise<void> 
   });
   const created = new WebviewWindow(ISSUE_MAP_WINDOW_LABEL, {
     url: `index.html?${params.toString()}`,
-    title: "Maestro: Issue map",
+    title: issueMapWindowTitle(target.repoPath),
     width: 1400,
     height: 900,
     minWidth: 640,
