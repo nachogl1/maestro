@@ -114,6 +114,24 @@ describe("ThinkingIndicator", () => {
     expect(screen.getByRole("img")).toHaveAttribute("aria-label", "Awaiting user input");
   });
 
+  it("paints the bare status dot green while busy and red whenever the user is up", () => {
+    const cases: Array<[BackendSessionStatus, string]> = [
+      ["Starting", "bg-maestro-green"],
+      ["Working", "bg-maestro-green"],
+      ["Idle", "bg-maestro-accent"],
+      ["NeedsInput", "bg-maestro-accent"],
+      ["Done", "bg-maestro-accent"],
+      ["Error", "bg-maestro-accent"],
+      ["Timeout", "bg-maestro-accent"],
+    ];
+    for (const [status, color] of cases) {
+      useSessionStore.setState({ sessions: [session(status)] });
+      const { unmount } = render(<SessionStatusDot sessionId={1} />);
+      expect(screen.getByRole("img")).toHaveClass(color);
+      unmount();
+    }
+  });
+
   it("staggers the three dots so they ripple rather than blink together", () => {
     useSessionStore.setState({ sessions: [session("Working")] });
     render(<ThinkingIndicator sessionId={1} />);

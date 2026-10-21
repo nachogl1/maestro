@@ -34,7 +34,7 @@ function session(
 /** Captured `session-status-changed` handler, so tests can emit events. */
 let emitStatus: (
   sessionId: number,
-  status: BackendSessionStatus | "AwaitingInput" | "IdleReminder",
+  status: BackendSessionStatus | "AwaitingInput" | "IdleReminder" | "SessionEnded",
   projectPath?: string,
 ) => void;
 
@@ -149,6 +149,31 @@ describe("useSessionStore auto-unpark attention", () => {
     const state = useSessionStore.getState();
     expect(state.parkedSessionIds).toEqual([]);
     expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("auto-unparks a parked working session whose claude process exits (Idle)", () => {
+    // Working → Idle turns the session's dot from green to red.
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    useSessionStore.getState().parkSession(1);
+
+    emitStatus(1, "SessionEnded");
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("Idle");
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("does not auto-unpark a parked session that goes Idle after already waiting", () => {
+    // NeedsInput → Idle (e.g. /clear) keeps the dot red: no new transition.
+    useSessionStore.setState({ sessions: [session(1, "NeedsInput")] });
+    useSessionStore.getState().parkSession(1);
+
+    emitStatus(1, "SessionEnded");
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("Idle");
+    expect(state.parkedSessionIds).toEqual([1]);
   });
 
   it("leaves a parked session alone while it is only working", () => {

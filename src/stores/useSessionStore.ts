@@ -61,6 +61,17 @@ const SUBAGENT_STALE_MS = 30 * 60 * 1000;
 const READY_FOR_USER_STATUSES: BackendSessionStatus[] = ["NeedsInput", "Done", "Error", "Timeout"];
 
 /**
+ * Statuses painted green by the session dots (tab strips, parked chips): the
+ * agent is busy, so nothing waits on the user. Every other status is red.
+ */
+const BUSY_STATUSES: BackendSessionStatus[] = ["Starting", "Working"];
+
+/** True while the session's dot is green (see {@link BUSY_STATUSES}). */
+export function isBusyStatus(status: BackendSessionStatus | undefined): boolean {
+  return status !== undefined && BUSY_STATUSES.includes(status);
+}
+
+/**
  * Mirrors the Rust `SessionConfig` struct returned by `get_sessions`.
  *
  * Status is deliberately absent (issue #134): the Rust `SessionManager` is an
@@ -1217,13 +1228,16 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               // not a new transition and must not undo that manual choice.
               // Reminders (`suppressAutoUnpark`) never count either: they
               // repeat a turn end the user already saw and parked away.
+              // A busy session dropping to Idle (the claude process exited
+              // mid-turn) turns its dot red too, so it comes back as well.
               const current = state.sessions.find(
                 (s) => s.id === session_id && samePath(s.project_path, project_path),
               );
               const autoUnpark =
                 current !== undefined &&
                 !resolved.suppressAutoUnpark &&
-                READY_FOR_USER_STATUSES.includes(resolved.status) &&
+                (READY_FOR_USER_STATUSES.includes(resolved.status) ||
+                  (resolved.status === "Idle" && isBusyStatus(current.status))) &&
                 current.status !== resolved.status &&
                 state.parkedSessionIds.includes(session_id);
 
