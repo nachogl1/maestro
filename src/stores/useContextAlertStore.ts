@@ -27,7 +27,7 @@ export function parseContextAlertThreshold(raw: string): number | null {
 }
 
 /** Threshold used until the user picks one. */
-export const DEFAULT_CONTEXT_ALERT_THRESHOLD = 80;
+export const DEFAULT_CONTEXT_ALERT_THRESHOLD = 35;
 
 /**
  * True when the frame should blink: a threshold is set and the session's
