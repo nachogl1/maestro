@@ -118,4 +118,37 @@ describe("header tooltips", () => {
     expect(titleOf("Park session 3")).toMatch(/\(Alt\+P\)$/);
     expect(titleOf("Zoom terminal")).toBe("Zoom terminal (Ctrl+1)");
   });
+
+  it("shows the rename, pin, close and flag shortcuts on the terminal header", () => {
+    const { container } = render(
+      <TerminalHeader
+        sessionId={3}
+        onKill={vi.fn()}
+        onRename={vi.fn()}
+        onTogglePin={vi.fn()}
+        onToggleFlag={vi.fn()}
+      />,
+    );
+
+    expect(titleOf("Terminal 3")).toBe("Rename terminal — click to edit the name (Alt+R)");
+    expect(titleOf("Pin session 3")).toMatch(/\(Alt\+Shift\+P\)$/);
+    expect(titleOf("Kill session 3")).toBe("Kill session — stop this terminal (Alt+W)");
+    const header = container.querySelector('[data-header-action="flag"]');
+    expect(header?.getAttribute("title")).toBe("Click to flag as warning (Alt+Shift+F)");
+  });
+
+  it("leaves the shortcuts out where they do not reach the terminal", () => {
+    render(
+      <TerminalHeader
+        sessionId={3}
+        onKill={vi.fn()}
+        onRename={vi.fn()}
+        onTogglePin={vi.fn()}
+        showShortcutHints={false}
+      />,
+    );
+
+    expect(titleOf("Kill session 3")).toBe("Kill session — stop this terminal");
+    expect(titleOf("Pin session 3")).not.toMatch(/Alt/);
+  });
 });

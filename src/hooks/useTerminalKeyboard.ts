@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import { type HeaderAction, headerActionForKey } from "@/lib/headerShortcuts";
 import type { MoveDirection } from "@/lib/paneMoves";
 
 interface UseTerminalKeyboardOptions {
@@ -21,6 +22,11 @@ interface UseTerminalKeyboardOptions {
   onMoveFocused?: (direction: MoveDirection) => void;
   /** Callback to give every terminal an even share of the layout (Alt+T) */
   onTidyLayout?: () => void;
+  /**
+   * Callback for a header control on the focused terminal: Alt+R rename,
+   * Alt+W close, Alt+Shift+P pin, Alt+Shift+F flag.
+   */
+  onHeaderActionFocused?: (action: HeaderAction) => void;
   /**
    * Whether a single terminal is currently zoomed/maximized. When true, the
    * tab strip is visible and Alt+Left/Alt+Right cycle between tabs. When
@@ -57,6 +63,8 @@ function isMac(): boolean {
  * - Alt+P: Park the focused terminal
  * - Alt+T: Tidy up — give every terminal an even share of the layout
  * - Alt+Shift+Arrow: Move the focused terminal one pane in that direction
+ * - Alt+R / Alt+W / Alt+Shift+P / Alt+Shift+F: Rename / close / pin / flag
+ *   the focused terminal (its header controls)
  */
 export function useTerminalKeyboard({
   terminalCount,
@@ -68,6 +76,7 @@ export function useTerminalKeyboard({
   onParkFocused,
   onMoveFocused,
   onTidyLayout,
+  onHeaderActionFocused,
   isZoomed = false,
   enabled = true,
 }: UseTerminalKeyboardOptions): void {
@@ -87,6 +96,16 @@ export function useTerminalKeyboard({
       if (event.type !== "keydown") return;
 
       const modifierKey = isMac() ? event.metaKey : event.ctrlKey;
+
+      // Alt+R / Alt+W / Alt+Shift+P / Alt+Shift+F: the focused terminal's
+      // header controls (rename, close, pin, flag).
+      const headerAction = headerActionForKey(event);
+      if (headerAction && onHeaderActionFocused) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onHeaderActionFocused(headerAction);
+        return;
+      }
 
       // Cmd/Ctrl+Alt+Left/Right: cycle terminal focus.
       if (modifierKey && event.altKey && !event.shiftKey) {
@@ -165,6 +184,7 @@ export function useTerminalKeyboard({
     onParkFocused,
     onMoveFocused,
     onTidyLayout,
+    onHeaderActionFocused,
   ]);
 
   useEffect(() => {

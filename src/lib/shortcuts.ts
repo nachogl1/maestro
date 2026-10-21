@@ -10,6 +10,11 @@ export function altLabel(): string {
   return isMac() ? "⌥" : "Alt";
 }
 
+/** Shift label: "⇧" on macOS, "Shift" elsewhere. */
+export function shiftLabel(): string {
+  return isMac() ? "⇧" : "Shift";
+}
+
 /** Human-readable key combo: "Ctrl+G" on Windows/Linux, "⌘G" on macOS. */
 export function comboLabel(...keys: string[]): string {
   return keys.join(isMac() ? "" : "+");

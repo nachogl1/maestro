@@ -47,6 +47,21 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
       ],
     },
     {
+      title: "Terminal Header",
+      shortcuts: [
+        { keys: [alt, "R"], description: "Rename the focused terminal" },
+        {
+          keys: [alt, "W"],
+          description: "Close the focused terminal (asks first; removes an unlaunched card)",
+        },
+        {
+          keys: [alt, "Shift", "P"],
+          description: "Pin / unpin the focused terminal (when zoomed or in eagle view)",
+        },
+        { keys: [alt, "Shift", "F"], description: "Flag / unflag the focused terminal (yellow)" },
+      ],
+    },
+    {
       title: "Projects",
       shortcuts: [
         // Ctrl on every platform: macOS reserves Cmd+Tab for the app switcher.

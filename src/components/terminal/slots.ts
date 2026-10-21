@@ -39,7 +39,7 @@ export function sessionConfigDir(
 }
 
 /** Generates a unique ID for a new session slot. */
-function generateSlotId(): string {
+export function generateSlotId(): string {
   return `slot-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 

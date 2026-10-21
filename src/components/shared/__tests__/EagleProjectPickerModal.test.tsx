@@ -135,4 +135,62 @@ describe("EagleProjectPickerModal", () => {
 
     expect(screen.getByRole("button", { name: /bravo/ })).toBeDisabled();
   });
+  it("puts the cursor in the search box on open", () => {
+    render(
+      <EagleProjectPickerModal projects={buildProjects()} onPick={vi.fn()} onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "Search projects" })).toHaveFocus();
+  });
+
+  it("typing narrows the list and Enter picks the first selectable match", () => {
+    const onPick = vi.fn();
+    render(
+      <EagleProjectPickerModal projects={buildProjects()} onPick={onPick} onClose={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search projects" }), {
+      target: { value: "R" },
+    });
+
+    // "bravo" (at the cap) and "charlie" match; alpha is filtered out.
+    expect(screen.queryByRole("button", { name: /alpha/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /bravo/ })).toBeInTheDocument();
+    dispatchKey("Enter");
+    expect(onPick).toHaveBeenCalledWith("c");
+  });
+
+  it("arrow keys move within the matches only", () => {
+    const onPick = vi.fn();
+    const projects: EagleProjectOption[] = [
+      { tabId: "a", name: "api-server", color: "#f00", atMax: false },
+      { tabId: "b", name: "web", color: "#0f0", atMax: false },
+      { tabId: "c", name: "api-client", color: "#00f", atMax: false },
+    ];
+    render(<EagleProjectPickerModal projects={projects} onPick={onPick} onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search projects" }), {
+      target: { value: "api" },
+    });
+    dispatchKey("ArrowDown"); // api-server → api-client (web is filtered out)
+    dispatchKey("ArrowDown"); // last match — stays put
+    dispatchKey("Enter");
+
+    expect(onPick).toHaveBeenCalledWith("c");
+  });
+
+  it("says nothing matches and Enter does nothing when the search finds no project", () => {
+    const onPick = vi.fn();
+    render(
+      <EagleProjectPickerModal projects={buildProjects()} onPick={onPick} onClose={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search projects" }), {
+      target: { value: "zzz" },
+    });
+    dispatchKey("Enter");
+
+    expect(screen.getByText("No projects match")).toBeInTheDocument();
+    expect(onPick).not.toHaveBeenCalled();
+  });
 });

@@ -39,6 +39,7 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ParkedShelf } from "../terminal/ParkedShelf";
+import { generateSlotId } from "../terminal/slots";
 import {
   type EagleDropTarget,
   TerminalGrid,
@@ -137,6 +138,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // Keyed by backend session ID (globally unique across projects) so the
     // global zoom tab bar can be built purely from the stores.
     const [eagleZoom, setEagleZoom] = useState<number | null>(null);
+    // Eagle view: a pre-launch card zoomed instead of a session — Cmd/Ctrl+T
+    // while zoomed keeps the zoom on the new card. `returnTo` is the session
+    // zoomed before, which takes the zoom back if the card goes away
+    // unlaunched. While a card is zoomed `eagleZoom` is null.
+    const [eagleZoomCard, setEagleZoomCard] = useState<{
+      tabId: string;
+      slotId: string;
+      returnTo: number | null;
+    } | null>(null);
+    const eagleZoomed = eagleZoom !== null || eagleZoomCard !== null;
 
     // Idle project whose grid is mounting because the user asked for a new
     // terminal: that grid focuses its first card's name input on mount. A ref,
@@ -144,8 +155,12 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // (sync lane) before a state update would. Cleared after every commit, so
     // a later remount (e.g. a History launch) won't take focus.
     const nameFocusTabIdRef = useRef<string | null>(null);
+    // Same lifetime: the id the mounting grid gives its first card, so an
+    // eagle zoom can target that card before the grid exists.
+    const initialCardRef = useRef<{ tabId: string; slotId: string } | null>(null);
     useEffect(() => {
       nameFocusTabIdRef.current = null;
+      initialCardRef.current = null;
     });
 
     // Pending (unlaunched) slot count per tab, kept in sync from each grid's
@@ -176,8 +191,31 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
 
     // Leaving eagle view always drops the zoom.
     useEffect(() => {
-      if (!eagleView) setEagleZoom(null);
+      if (!eagleView) {
+        setEagleZoom(null);
+        setEagleZoomCard(null);
+      }
     }, [eagleView]);
+
+    // A zoomed card whose project closed (or went back to its landing page)
+    // can no longer report its end — hand the zoom back here instead.
+    useEffect(() => {
+      if (!eagleZoomCard) return;
+      if (tabs.some((t) => t.id === eagleZoomCard.tabId && t.sessionsLaunched)) return;
+      setEagleZoomCard(null);
+      setEagleZoom(eagleZoomCard.returnTo);
+    }, [tabs, eagleZoomCard]);
+
+    // The zoomed card launched (its session takes over the zoom) or was
+    // removed unlaunched (null: the session zoomed before comes back).
+    const handleEagleCardZoomEnd = useCallback(
+      (sessionId: number | null) => {
+        if (!eagleZoomCard) return;
+        setEagleZoomCard(null);
+        setEagleZoom(sessionId ?? eagleZoomCard.returnTo);
+      },
+      [eagleZoomCard],
+    );
 
     // All running sessions across projects in tab/launch order — drives the
     // global zoom tab bar and Alt+Arrow cycling.
@@ -206,7 +244,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // every grid; only visible while the bar is showing.
     const sessionNames = useSessionStore(
       useShallow((s) => {
-        if (!eagleView || eagleZoom === null) return EMPTY_SESSION_NAMES;
+        if (!eagleView || !eagleZoomed) return EMPTY_SESSION_NAMES;
         const names: Record<number, string> = {};
         for (const sess of s.sessions) {
           if (sess.name) names[sess.id] = sess.name;
@@ -426,6 +464,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // Single stable toggle shared by every grid — session IDs are global, so
     // no per-tab closure is needed.
     const handleEagleZoomToggle = useCallback((sessionId: number) => {
+      setEagleZoomCard(null);
       setEagleZoom((prev) => (prev === sessionId ? null : sessionId));
     }, []);
 
@@ -435,13 +474,19 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // would appear to do nothing); otherwise it reappears as a grid tile. Only
     // the grid that owns the session accepts the focus call, same pattern as
     // the zoom-focus effect.
-    const handleEagleUnpark = useCallback((sessionId: number) => {
-      useSessionStore.getState().unparkSession(sessionId);
-      setEagleZoom((prev) => (prev === null ? null : sessionId));
-      for (const handle of gridRefs.current.values()) {
-        if (handle.focusSession(sessionId)) break;
-      }
-    }, []);
+    const handleEagleUnpark = useCallback(
+      (sessionId: number) => {
+        useSessionStore.getState().unparkSession(sessionId);
+        if (eagleZoomed) {
+          setEagleZoomCard(null);
+          setEagleZoom(sessionId);
+        }
+        for (const handle of gridRefs.current.values()) {
+          if (handle.focusSession(sessionId)) break;
+        }
+      },
+      [eagleZoomed],
+    );
 
     // Expose methods to parent
     useImperativeHandle(
@@ -455,13 +500,22 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           }
         },
         addSessionInProject: (tabId: string) => {
-          // Drop any eagle zoom first — otherwise the new pre-launch tile
-          // mounts behind the zoomed pane's opaque overlay, invisible to the
-          // user until they exit zoom themselves.
-          if (eagleView) setEagleZoom(null);
+          // Eagle zoom stays on: the new pre-launch card takes over the zoom
+          // (same as the per-project zoom), so it is not left hidden behind
+          // the zoomed pane's opaque overlay.
+          const keepZoom = eagleView && eagleZoomed;
+          const zoomCard = (slotId: string) => {
+            setEagleZoom(null);
+            setEagleZoomCard({
+              tabId,
+              slotId,
+              returnTo: eagleZoom ?? eagleZoomCard?.returnTo ?? null,
+            });
+          };
           const gridRef = gridRefs.current.get(tabId);
           if (gridRef) {
-            gridRef.addSession();
+            const slotId = gridRef.addSession();
+            if (keepZoom && slotId) zoomCard(slotId);
             return true;
           }
           // Idle project: no grid mounted yet. Mark it as launched so the grid
@@ -469,6 +523,11 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           const tab = tabs.find((t) => t.id === tabId);
           if (!tab) return false;
           nameFocusTabIdRef.current = tabId;
+          if (keepZoom) {
+            const slotId = generateSlotId();
+            initialCardRef.current = { tabId, slotId };
+            zoomCard(slotId);
+          }
           setSessionsLaunched(tabId, true);
           return true;
         },
@@ -499,6 +558,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         },
         zoomSessionInProject: (tabId: string, sessionId: number) => {
           if (eagleView) {
+            setEagleZoomCard(null);
             setEagleZoom(sessionId);
             // Focus directly too: if this session is ALREADY eagle-zoomed the
             // focus-follows-zoom effect won't re-run (state unchanged).
@@ -520,8 +580,9 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           }
 
           if (eagleView) {
-            if (eagleZoom !== null) {
+            if (eagleZoomed) {
               // Already in eagle zoom: swap the zoomed session.
+              setEagleZoomCard(null);
               setEagleZoom(sessionId);
               for (const handle of gridRefs.current.values()) {
                 if (handle.focusSession(sessionId)) break;
@@ -548,7 +609,15 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           return wasZoomed ? grid.zoomSession(sessionId) : grid.focusSession(sessionId);
         },
       }),
-      [tabs, setSessionsLaunched, eagleView, eagleZoom, setEagleTileRects],
+      [
+        tabs,
+        setSessionsLaunched,
+        eagleView,
+        eagleZoom,
+        eagleZoomCard,
+        eagleZoomed,
+        setEagleTileRects,
+      ],
     );
 
     // Create stable callbacks per tab to avoid infinite re-render loops
@@ -677,13 +746,15 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           leaves top-8 for it. Staying inside <main> keeps the sidebar and git
           panel usable while zoomed, same as the per-project zoom. */}
           {eagleView &&
-            eagleZoom !== null &&
+            eagleZoomed &&
             (() => {
               const zoomedIndex = orderedEagleSessions.findIndex((s) => s.sessionId === eagleZoom);
               return (
                 <div className="absolute inset-x-0 top-0 z-50 flex h-8 items-center gap-2 border-b border-maestro-border bg-maestro-surface px-3">
                   <span className="text-[11px] font-medium uppercase tracking-wider text-maestro-muted">
-                    Terminal {zoomedIndex + 1}/{orderedEagleSessions.length}
+                    {eagleZoomCard
+                      ? "New terminal"
+                      : `Terminal ${zoomedIndex + 1}/${orderedEagleSessions.length}`}
                   </span>
                   <div className="h-3.5 w-px bg-maestro-border" />
                   <div
@@ -723,7 +794,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   </div>
                   <button
                     type="button"
-                    onClick={() => setEagleZoom(null)}
+                    onClick={() => {
+                      setEagleZoom(null);
+                      setEagleZoomCard(null);
+                    }}
                     className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
                     title="Exit zoom"
                   >
@@ -840,9 +914,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   focusNameOnMount={nameFocusTabIdRef.current === tab.id}
                   eagleMode={eagleView}
                   projectName={tab.name}
+                  initialSlotId={
+                    initialCardRef.current?.tabId === tab.id
+                      ? initialCardRef.current.slotId
+                      : undefined
+                  }
                   eagleZoomedSessionId={eagleZoom}
-                  eagleAnyZoomed={eagleView && eagleZoom !== null}
+                  eagleZoomedSlotId={eagleZoomCard?.slotId ?? null}
+                  eagleAnyZoomed={eagleView && eagleZoomed}
                   onEagleZoomToggle={handleEagleZoomToggle}
+                  onEagleCardZoomEnd={handleEagleCardZoomEnd}
                   eagleTileCount={eagleTileCount}
                   pinnedTileStyles={pinnedStrip?.get(tab.id) ?? null}
                   eagleTileRects={eagleLayout.tiles}
