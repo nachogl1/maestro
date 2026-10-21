@@ -47,6 +47,14 @@ describe("parseBlockedBySection", () => {
     expect(parseBlockedBySection("Intro\r\n### Blocked by\r\n#7")).toEqual([7]);
   });
 
+  it("reads issue links of the same repository, never of another one", () => {
+    const body =
+      "### Blocked by\n- [Backend](https://github.com/x/y/issues/305)\n" +
+      "- https://github.com/x/other/issues/9\n- #4\n";
+    expect(parseBlockedBySection(body, "https://github.com/x/y")).toEqual([305, 4]);
+    expect(parseBlockedBySection(body)).toEqual([4]);
+  });
+
   it("ignores prose references outside the section; null when there is no section", () => {
     expect(parseBlockedBySection("Blocked by #12 and #13.\nDepends on #14\nblocks #2")).toBeNull();
     expect(parseBlockedBySection("Part of epic #216")).toBeNull();
@@ -117,6 +125,17 @@ describe("buildIssueGraph", () => {
     expect(graph.problems).toEqual([
       { kind: "disagreement", number: 3, sectionOnly: [2], nativeOnly: [1] },
     ]);
+  });
+
+  it("does not call a section of same-repo issue links a disagreement", () => {
+    const graph = buildIssueGraph([issue(305), issue(306)], {
+      306: links(306, {
+        blockedBy: [305],
+        body: "### Blocked by\n- [Backend](https://github.com/x/y/issues/305)\n\n## Done means\n",
+      }),
+    });
+    expect(graph.edges.map((e) => e.id)).toEqual(["305->306"]);
+    expect(graph.problems).toEqual([]);
   });
 
   it("does not call a native-only link a disagreement when the body has no section", () => {

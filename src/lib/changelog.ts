@@ -17,7 +17,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Tidy up: every row of terminals now gets the same height as well as the same width, and in eagle view a short last row stretches so the whole screen is used.",
       "Context alert: a new install now warns when a terminal's context reaches 35% instead of 80%; a value you already chose in Settings stays as it is.",
       "Issue map: the filters are now four drop-down menus with tick boxes (who takes it, progress, assignee and labels); the Labels menu lists every label on the issues, so labels your team adds later show up too.",
-      "Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone.",
+      'Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone; a "Blocked by" section that links issues by their web address no longer shows a false disagreement.',
       "Issue map: the window's title bar now shows the name of the project whose issues it maps.",
     ],
   },
