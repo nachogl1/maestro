@@ -20,7 +20,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       'Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone; a "Blocked by" section that links issues by their web address no longer shows a false disagreement.',
       "Issue map: the window's title bar now shows the name of the project whose issues it maps, and F5 or Ctrl+R reloads the map from GitHub.",
       'Mac: opening a project in Desktop, Documents or Downloads no longer makes macOS ask whether Maestro may "access data from other apps".',
-      "Memory: Maestro uses less memory, mostly with many terminals open, because hidden terminals and the particle effects free their graphics memory and History summaries no longer start your MCP tools.",
+      "Memory and parking: History summaries no longer start your MCP tools, so Maestro uses less memory; parking, resuming or switching projects no longer flashes the whole screen white, and the parked-terminals strip scrolls sideways without a scroll bar.",
       "Windows: after Maestro updates itself, builds and tests in its terminals work again; before, they failed on npm workspace folders until you restarted Maestro by hand.",
     ],
   },

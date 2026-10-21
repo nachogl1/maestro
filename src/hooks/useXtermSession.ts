@@ -12,7 +12,7 @@ import { createPtyOutputBatcher } from "@/lib/ptyOutputBatcher";
 import { onPtyOutput, signalTerminalReady } from "@/lib/terminal";
 import { DEFAULT_THEME, LIGHT_THEME, toXtermTheme } from "@/lib/terminalTheme";
 import { attachXtermInput, registerOsc52Clipboard } from "@/lib/xtermInput";
-import { attachTerminalRenderer } from "@/lib/xtermRenderer";
+import { loadTerminalRenderer } from "@/lib/xtermRenderer";
 import { type ContainerResizeFit, observeContainerResize } from "@/lib/xtermResize";
 import { DEFAULT_SCROLLBACK, useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 
@@ -112,7 +112,6 @@ export function useXtermSession({
     const activity = createActivityStatusTracker(sessionId, isDisposed);
     let detachInput: (() => void) | null = null;
     let resizeFit: ContainerResizeFit | null = null;
-    let detachRenderer: (() => void) | null = null;
 
     // Wait for font to load before initializing terminal
     const initTerminal = async (): Promise<void> => {
@@ -131,7 +130,7 @@ export function useXtermSession({
       // current value, not the mount-time closure's.
       if (isFocusedRef.current) term.focus();
 
-      detachRenderer = attachTerminalRenderer(term, container);
+      loadTerminalRenderer(term);
       registerOsc52Clipboard(term);
 
       termRef.current = term;
@@ -194,7 +193,6 @@ export function useXtermSession({
       activity.dispose();
       output.drain();
       resizeFit?.disconnect();
-      detachRenderer?.();
       detachInput?.();
       if (unlisten) unlisten();
       term?.dispose();
