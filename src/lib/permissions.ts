@@ -6,6 +6,8 @@
  * to access these. External drives and network mounts do NOT need FDA.
  */
 
+import { invoke } from "@tauri-apps/api/core";
+
 // Dynamic import for macOS-only permissions plugin
 let macPermissions: {
   checkFullDiskAccessPermission: () => Promise<boolean>;
@@ -35,7 +37,9 @@ export function initPermissions(): Promise<void> {
     try {
       const mod = await import("tauri-plugin-macos-permissions-api");
       macPermissions = {
-        checkFullDiskAccessPermission: mod.checkFullDiskAccessPermission,
+        // Maestro's own check: the plugin's reads another app's container,
+        // which makes macOS ask for "data from other apps" access.
+        checkFullDiskAccessPermission: () => invoke<boolean>("check_full_disk_access"),
         requestFullDiskAccessPermission: mod.requestFullDiskAccessPermission,
       };
     } catch {

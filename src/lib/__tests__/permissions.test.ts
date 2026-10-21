@@ -97,28 +97,26 @@ describe("ensurePathAccess", () => {
   });
 
   it("returns hasAccess: true, needsFDA: true for FDA path with access", async () => {
-    // The setup.ts mock makes checkFullDiskAccessPermission return true by default
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+
     const { ensurePathAccess } = await import("../permissions");
     const result = await ensurePathAccess("/Users/john/Desktop/project");
     expect(result).toEqual({ hasAccess: true, needsFDA: true });
   });
 
   it("returns hasAccess: false, needsFDA: true for FDA path without access", async () => {
-    // Override the mock to return false
-    const macPerms = await import("tauri-plugin-macos-permissions-api");
-    vi.mocked(macPerms.checkFullDiskAccessPermission).mockResolvedValueOnce(false);
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(false);
 
     const { ensurePathAccess } = await import("../permissions");
     const result = await ensurePathAccess("/Users/john/Desktop/project");
     expect(result).toEqual({ hasAccess: false, needsFDA: true });
   });
 
-  it("falls back to hasAccess: true when plugin throws", async () => {
-    // Override the mock to throw
-    const macPerms = await import("tauri-plugin-macos-permissions-api");
-    vi.mocked(macPerms.checkFullDiskAccessPermission).mockRejectedValueOnce(
-      new Error("plugin error"),
-    );
+  it("falls back to hasAccess: true when the check throws", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("check error"));
 
     const { ensurePathAccess } = await import("../permissions");
     const result = await ensurePathAccess("/Users/john/Desktop/project");
@@ -131,24 +129,38 @@ describe("checkFullDiskAccess", () => {
     vi.resetModules();
   });
 
-  it("returns true when plugin reports access", async () => {
+  it("returns true when the check reports access", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+
     const { checkFullDiskAccess } = await import("../permissions");
     const result = await checkFullDiskAccess();
     expect(result).toBe(true);
   });
 
-  it("returns false when plugin reports no access", async () => {
+  it("asks Maestro's own command, not the plugin's container probe", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
     const macPerms = await import("tauri-plugin-macos-permissions-api");
-    vi.mocked(macPerms.checkFullDiskAccessPermission).mockResolvedValueOnce(false);
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+
+    const { checkFullDiskAccess } = await import("../permissions");
+    await checkFullDiskAccess();
+    expect(invoke).toHaveBeenCalledWith("check_full_disk_access");
+    expect(macPerms.checkFullDiskAccessPermission).not.toHaveBeenCalled();
+  });
+
+  it("returns false when the check reports no access", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce(false);
 
     const { checkFullDiskAccess } = await import("../permissions");
     const result = await checkFullDiskAccess();
     expect(result).toBe(false);
   });
 
-  it("returns true when plugin throws (fail-open)", async () => {
-    const macPerms = await import("tauri-plugin-macos-permissions-api");
-    vi.mocked(macPerms.checkFullDiskAccessPermission).mockRejectedValueOnce(new Error("crash"));
+  it("returns true when the check throws (fail-open)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("crash"));
 
     const { checkFullDiskAccess } = await import("../permissions");
     const result = await checkFullDiskAccess();
