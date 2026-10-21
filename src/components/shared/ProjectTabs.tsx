@@ -51,7 +51,7 @@ function TabItem({
   onKeyDown: (e: React.KeyboardEvent) => void;
   tabRefCallback: (node: HTMLElement | null) => void;
 }) {
-  const { status, sessionCount } = useProjectStatus(tab.id);
+  const { status, sessionCount, contextAlert } = useProjectStatus(tab.id);
   const shouldPulse = status === "working" || status === "needs-input";
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -93,11 +93,13 @@ function TabItem({
       tabIndex={tab.active ? 0 : -1}
       onClick={onSelect}
       onKeyDown={onKeyDown}
+      data-context-alert={contextAlert ? "true" : undefined}
+      title={contextAlert ? "A terminal in this project reached the context alert" : undefined}
       className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
         tab.active
           ? "bg-maestro-bg text-maestro-text"
           : "text-maestro-muted hover:text-maestro-text"
-      }`}
+      } ${contextAlert ? "project-tab-context-alert" : ""}`}
     >
       <span className="flex items-center gap-1.5">
         <span
