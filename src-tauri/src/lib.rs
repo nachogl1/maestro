@@ -55,6 +55,13 @@ fn log_level_from_env() -> log::LevelFilter {
 /// command handlers for the terminal, git, and session subsystems.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Windows: an MSI-updater relaunch also hands the app RedirectionGuard,
+    // which every child inherits and which blocks npm workspace junctions.
+    // Start again through the desktop shell instead (see core::redirection_guard).
+    if core::redirection_guard::relaunch_if_redirection_trust_enforced() {
+        return;
+    }
+
     // Windows: an MSI-updater relaunch hands the app a PATH without the
     // user's entries, so `claude` is "not found" for every child process.
     // Repair it before anything is spawned (see core::cli_path).
