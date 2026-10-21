@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { samePath } from "@/lib/path";
+import { isContextAlert, useContextAlertStore } from "@/stores/useContextAlertStore";
 import {
   type BackendSessionStatus,
   type SessionConfig,
@@ -50,25 +51,40 @@ export const STATUS_COLORS: Record<ProjectStatus, string> = {
 /**
  * Hook to get the aggregated status for a project tab.
  * Derives status from all sessions belonging to the project.
+ *
+ * `contextAlert` is true when any of the project's terminals, parked or not,
+ * is past the context alert threshold picked in Settings.
  */
 export function useProjectStatus(tabId: string): {
   status: ProjectStatus;
   sessionCount: number;
   activeSessionCount: number;
+  contextAlert: boolean;
 } {
   const tab = useWorkspaceStore((s) => s.tabs.find((t) => t.id === tabId));
   const sessions = useSessionStore((s) => s.sessions);
+  const contextAlertThreshold = useContextAlertStore((s) => s.threshold);
 
   return useMemo(() => {
     if (!tab) {
-      return { status: "idle" as ProjectStatus, sessionCount: 0, activeSessionCount: 0 };
+      return {
+        status: "idle" as ProjectStatus,
+        sessionCount: 0,
+        activeSessionCount: 0,
+        contextAlert: false,
+      };
     }
 
     const projectSessions = sessionsForTab(tab, sessions);
     const sessionCount = projectSessions.length;
 
     if (sessionCount === 0) {
-      return { status: "idle" as ProjectStatus, sessionCount: 0, activeSessionCount: 0 };
+      return {
+        status: "idle" as ProjectStatus,
+        sessionCount: 0,
+        activeSessionCount: 0,
+        contextAlert: false,
+      };
     }
 
     // Count active sessions (not Done, Error or Timeout — a startup timeout is a failure)
@@ -96,6 +112,11 @@ export function useProjectStatus(tabId: string): {
       status = "idle";
     }
 
-    return { status, sessionCount, activeSessionCount };
-  }, [tab, sessions]);
+    // Parking keeps a session in its tab's sessionIds, so parked terminals count.
+    const contextAlert = projectSessions.some((s) =>
+      isContextAlert(s.contextPercent, contextAlertThreshold),
+    );
+
+    return { status, sessionCount, activeSessionCount, contextAlert };
+  }, [tab, sessions, contextAlertThreshold]);
 }

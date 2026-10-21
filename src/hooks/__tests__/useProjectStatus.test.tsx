@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { useProjectStatus } from "@/hooks/useProjectStatus";
+import { useContextAlertStore } from "@/stores/useContextAlertStore";
 import {
   type BackendSessionStatus,
   type SessionConfig,
@@ -40,7 +41,8 @@ function withSessions(...sessions: SessionConfig[]) {
 describe("useProjectStatus", () => {
   beforeEach(() => {
     useWorkspaceStore.setState({ tabs: [] });
-    useSessionStore.setState({ sessions: [] });
+    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
+    useContextAlertStore.setState({ threshold: 80 });
   });
 
   it("paints the project red when its only terminal timed out at startup", () => {
@@ -57,5 +59,34 @@ describe("useProjectStatus", () => {
 
     expect(result.current.status).toBe("needs-input");
     expect(result.current.activeSessionCount).toBe(1);
+  });
+
+  it("raises the context alert when any terminal is past the threshold", () => {
+    withSessions(
+      { ...session(1, "Working"), contextPercent: 40 },
+      { ...session(2, "Idle"), contextPercent: 85 },
+    );
+    const { result } = renderHook(() => useProjectStatus("tab-1"));
+
+    expect(result.current.contextAlert).toBe(true);
+  });
+
+  it("raises the context alert for a parked terminal too", () => {
+    withSessions({ ...session(1, "Idle"), contextPercent: 90 });
+    useSessionStore.setState({ parkedSessionIds: [1] });
+    const { result } = renderHook(() => useProjectStatus("tab-1"));
+
+    expect(result.current.contextAlert).toBe(true);
+  });
+
+  it("stays quiet below the threshold or when the alert is off", () => {
+    withSessions({ ...session(1, "Working"), contextPercent: 79 });
+    const { result, rerender } = renderHook(() => useProjectStatus("tab-1"));
+    expect(result.current.contextAlert).toBe(false);
+
+    withSessions({ ...session(1, "Working"), contextPercent: 99 });
+    useContextAlertStore.setState({ threshold: null });
+    rerender();
+    expect(result.current.contextAlert).toBe(false);
   });
 });

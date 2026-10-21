@@ -7,7 +7,11 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@/lib/platform", () => ({ isMac: () => false }));
 vi.mock("@/hooks/useProjectStatus", () => ({
   STATUS_COLORS: { idle: "bg-idle" },
-  useProjectStatus: () => ({ status: "idle", sessionCount: 0 }),
+  useProjectStatus: (tabId: string) => ({
+    status: "idle",
+    sessionCount: 0,
+    contextAlert: tabId === "tab-1",
+  }),
 }));
 
 import { type ProjectTab, ProjectTabs } from "../ProjectTabs";
@@ -94,5 +98,15 @@ describe("ProjectTabs layout: window controls and tab strip overflow", () => {
     expect(scrollIntoView).toHaveBeenCalled();
     const activeTab = screen.getByRole("tab", { selected: true });
     expect(scrollIntoView.mock.instances.at(-1)).toBe(activeTab);
+  });
+
+  it("blinks red only the tabs whose project has a terminal past the context alert", () => {
+    renderTabs(makeTabs(3));
+
+    const [first, second] = screen.getAllByRole("tab");
+    expect(second.className).toContain("project-tab-context-alert");
+    expect(second.getAttribute("data-context-alert")).toBe("true");
+    expect(first.className).not.toContain("project-tab-context-alert");
+    expect(first.hasAttribute("data-context-alert")).toBe(false);
   });
 });
