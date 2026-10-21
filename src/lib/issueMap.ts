@@ -144,6 +144,11 @@ export function kindOf(labels: Array<{ name: string }>): {
   return { kind: "decision", label: null };
 }
 
+/** True when this label alone decides who takes an issue (agent-ready, epic, ...). */
+export function isKindLabel(name: string): boolean {
+  return kindOf([{ name }]).kind !== "decision";
+}
+
 /** One blocker as the tooltip lists it. */
 export interface IssueMapBlocker {
   number: number;

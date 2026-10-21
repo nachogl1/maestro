@@ -111,7 +111,9 @@ function renderModal() {
   return { onSelectIssue, onClose };
 }
 
-const hint = () => screen.getByTestId("issue-map-hint").textContent;
+/** Opens one filter menu by its button (the button also shows "all", "4/5", ...). */
+const openFilter = (name: string) =>
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${name}`) }));
 
 describe("IssueMapModal", () => {
   beforeEach(() => {
@@ -192,16 +194,21 @@ describe("IssueMapModal", () => {
     ]);
   });
 
-  it("explains the levels and lists the data problems in the footer", async () => {
+  it("lists the data problems in a right-hand pane that starts open and toggles", async () => {
     renderModal();
     await screen.findByTestId("issue-node-2");
-    expect(screen.getByText(/An issue's level is 1 \+ the highest level/)).toBeInTheDocument();
-    const problems = screen.getByTestId("issue-map-problems");
-    // Open by default, so the user sees what is wrong without hunting for a fold-out.
-    expect(problems).toHaveAttribute("open");
-    expect(
-      within(problems).getByText(/2 data problems: some "blocked by" links/),
-    ).toBeInTheDocument();
+    // No legend, explanation lines or footer any more.
+    expect(screen.queryByText(/An issue's level is 1 \+ the highest level/)).toBeNull();
+    expect(screen.queryByTestId("issue-map-encoding")).toBeNull();
+    expect(screen.queryByTestId("issue-map-hint")).toBeNull();
+    expect(screen.queryByRole("contentinfo")).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: "2 data problems" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // Open by default, so the user sees what is wrong without hunting for it.
+    const problems = screen.getByRole("complementary", { name: "Data problems" });
+    expect(problems).toHaveAttribute("data-testid", "issue-map-problems");
+    expect(within(problems).getByText(/^Some "blocked by" links could not/)).toBeInTheDocument();
     expect(
       within(problems).getByText('#3 "Ship it": its two "blocked by" sources disagree'),
     ).toBeInTheDocument();
@@ -212,18 +219,36 @@ describe("IssueMapModal", () => {
     ).toBeInTheDocument();
     expect(problems.textContent).toContain("Epics are containers, not work");
     expect(problems.textContent).toContain("Fix: On GitHub, make the section and the relation");
+
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId("issue-map-problems")).toBeNull();
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("issue-map-problems")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Hide data problems" }));
+    expect(screen.queryByTestId("issue-map-problems")).toBeNull();
   });
 
-  it("says 'No data problems' when every link was kept", async () => {
+  it("says 'No data problems' and keeps the pane shut when every link was kept", async () => {
     mockBackend({ issues: ISSUES.slice(0, 2) });
     renderModal();
     await screen.findByTestId("issue-node-2");
-    expect(screen.getByTestId("issue-map-problems")).toHaveTextContent("No data problems.");
+    expect(screen.queryByTestId("issue-map-problems")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "No data problems" }));
+    expect(screen.getByTestId("issue-map-problems")).toHaveTextContent(
+      'No data problemsEvery "blocked by" link was drawn and no two sources disagree.',
+    );
   });
 
-  it("legend entries take a type off the map, re-pack the rest, and 'show all' restores", async () => {
+  it("filter menus take a type off the map, re-pack the rest, and 'show all' restores", async () => {
     renderModal();
     await screen.findByTestId("issue-node-2");
+    // Epics and closed start unticked, so those two menus show a partial count.
+    expect(screen.getByRole("button", { name: /^Who takes it/ })).toHaveTextContent("4/5");
+    expect(screen.getByRole("button", { name: /^Progress/ })).toHaveTextContent("3/4");
+    expect(screen.getByRole("button", { name: /^Assignee/ })).toHaveTextContent("all");
+    expect(screen.queryByLabelText("Closed")).toBeNull();
+    openFilter("Progress");
     const closed = screen.getByLabelText("Closed");
     expect(closed).not.toBeChecked();
     expect(closed.parentElement?.textContent).toContain("0/1");
@@ -243,13 +268,73 @@ describe("IssueMapModal", () => {
     expect(xOf(2)).toBe("320");
     expect(screen.getByText(/Showing 3 of 4 issues/)).toBeInTheDocument();
     expect(closed.parentElement?.textContent).toContain("1/1");
+    expect(screen.getByRole("button", { name: /^Progress/ })).toHaveTextContent("all");
 
+    // Opening another menu closes the first.
+    openFilter("Assignee");
+    expect(screen.queryByLabelText("Closed")).toBeNull();
     fireEvent.click(screen.getByLabelText("👤 alice"));
     expect(screen.queryByTestId("issue-node-3")).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 2 of 4 issues/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "show all" }));
     expect(screen.getByText(/Showing 4 of 4 issues/)).toBeInTheDocument();
+  });
+
+  it("the Labels menu lists every label except the kind ones, new ones included", async () => {
+    mockBackend({
+      issues: [
+        ...ISSUES.slice(0, 3),
+        buildIssue({
+          number: 5,
+          title: "Brand new label",
+          labels: [
+            { name: "agent-ready", color: "0e8a16" },
+            { name: "team:platform", color: "bfd4f2" },
+          ],
+        }),
+      ],
+    });
+    renderModal();
+    await screen.findByTestId("issue-node-2");
+    openFilter("Labels");
+    const menu = screen.getByRole("dialog", { name: "Labels filter" });
+    const names = within(menu)
+      .getAllByRole("checkbox")
+      .map((c) => c.getAttribute("aria-label"));
+    expect(names).toEqual(["bug", "team:platform", "no other label"]);
+    // The GitHub colour sits next to the name.
+    expect(
+      within(menu).getByLabelText("team:platform").parentElement?.querySelector("i"),
+    ).toHaveStyle({ background: "#bfd4f2" });
+    expect(within(menu).getByText(/labels the team adds later show up here/)).toBeInTheDocument();
+
+    // #3's only other label is bug, so unticking it hides #3; #2 has none, #5 keeps its own.
+    fireEvent.click(within(menu).getByLabelText("bug"));
+    expect(screen.queryByTestId("issue-node-3")).toBeNull();
+    expect(screen.getByTestId("issue-node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("issue-node-5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Labels/ })).toHaveTextContent("2/3");
+
+    // "only" keeps just that label; "no other label" covers #2.
+    fireEvent.click(within(menu).getByRole("button", { name: "Only team:platform" }));
+    expect(screen.getByTestId("issue-node-5")).toBeInTheDocument();
+    expect(screen.queryByTestId("issue-node-2")).toBeNull();
+    fireEvent.click(within(menu).getByLabelText("no other label"));
+    expect(screen.getByTestId("issue-node-2")).toBeInTheDocument();
+
+    // The search box narrows the list; None and All flip the family.
+    fireEvent.change(within(menu).getByLabelText("Find labels"), { target: { value: "TEAM" } });
+    expect(
+      within(menu)
+        .getAllByRole("checkbox")
+        .map((c) => c.getAttribute("aria-label")),
+    ).toEqual(["team:platform"]);
+    fireEvent.click(within(menu).getByRole("button", { name: "None" }));
+    expect(screen.getByText(/Showing 0 of 4 issues/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Labels/ })).toHaveTextContent("none");
+    fireEvent.click(within(menu).getByRole("button", { name: "All" }));
+    expect(screen.getByText(/Showing 3 of 4 issues/)).toBeInTheDocument();
   });
 
   it("colours the box by who takes it, crosses closed ones and shows one status icon", async () => {
@@ -294,11 +379,11 @@ describe("IssueMapModal", () => {
       /\u{1F916}|\u{1F64B}|\u{1F3E2}|❓|✕|✔/u,
     );
 
-    // Legend: three groups, new labels, kind toggle filters.
-    expect(screen.getByText("Background = who takes it")).toBeInTheDocument();
-    expect(screen.getByText("Icon = progress")).toBeInTheDocument();
-    expect(screen.getByText("Cross = closed")).toBeInTheDocument();
-    expect(screen.queryByText(/Background = progress|Border = who takes it/)).toBeNull();
+    // No legend rows: the menus carry the swatches and icons instead.
+    expect(
+      screen.queryByText(/Background = who takes it|Icon = progress|Cross = closed/),
+    ).toBeNull();
+    openFilter("Who takes it");
     for (const label of [
       "agent-ready",
       "needs-human",
@@ -306,15 +391,8 @@ describe("IssueMapModal", () => {
       "decision / planning",
       "epic",
     ]) {
-      expect(screen.getByLabelText(label)).toBeInTheDocument();
+      expect(screen.getByLabelText(label).parentElement?.querySelector("i")).not.toBeNull();
     }
-    expect(screen.getByLabelText("\u{1F528} In progress")).toBeInTheDocument();
-    expect(screen.getByLabelText("\u{1F7E2} Ready to take")).toBeInTheDocument();
-    expect(screen.getByLabelText("\u{1F512} Blocked")).toBeInTheDocument();
-    expect(screen.getByLabelText("Closed").parentElement?.querySelector("svg line")).not.toBeNull();
-    expect(screen.getByTestId("issue-map-encoding")).toHaveTextContent(
-      "Background = who takes it (green agent-ready, red needs-human, blue outside-change, yellow anything else, purple epic). Icon = progress (\u{1F528} in progress, \u{1F7E2} ready, \u{1F512} blocked). A cross means closed.",
-    );
     const agent = screen.getByLabelText("agent-ready");
     expect(agent.parentElement?.textContent).toContain("2/2");
     fireEvent.click(agent);
@@ -323,7 +401,11 @@ describe("IssueMapModal", () => {
     expect(screen.getByTestId("issue-node-3")).toHaveAttribute("opacity", "1");
     expect(screen.getByText(/Showing 4 of 6 issues/)).toBeInTheDocument();
     expect(agent.parentElement?.textContent).toContain("0/2");
-    // Visibility = status toggle AND kind toggle: hiding "blocked" too drops #3.
+    openFilter("Progress");
+    expect(screen.getByLabelText("\u{1F528} In progress")).toBeInTheDocument();
+    expect(screen.getByLabelText("\u{1F7E2} Ready to take")).toBeInTheDocument();
+    expect(screen.getByLabelText("Closed").parentElement?.querySelector("svg line")).not.toBeNull();
+    // Visibility = status filter AND kind filter: hiding "blocked" too drops #3.
     fireEvent.click(screen.getByLabelText("\u{1F512} Blocked"));
     expect(screen.queryByTestId("issue-node-3")).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 3 of 6 issues/)).toBeInTheDocument();
@@ -341,15 +423,13 @@ describe("IssueMapModal", () => {
     expect(screen.getByTestId("issue-map-tip-progress")).toHaveTextContent("✕ Closed");
   });
 
-  it("click focuses the chain, shows the tooltip and explains the hint; hover does nothing", async () => {
+  it("click focuses the chain and shows the tooltip; hover does nothing", async () => {
     renderModal();
     const n2 = await screen.findByTestId("issue-node-2");
     fireEvent.mouseEnter(n2, { clientX: 100, clientY: 100 });
     expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
-    expect(hint()).toMatch(/^Drag to move around/);
 
     fireEvent.click(n2, { clientX: 100, clientY: 100 });
-    expect(hint()).toBe("#2: 1 issue(s) upstream must close first (left), 1 wait on it (right).");
     const tip = screen.getByTestId("issue-map-tip");
     expect(within(tip).getByText("#2 Build the canvas")).toBeInTheDocument();
     expect(
@@ -375,7 +455,7 @@ describe("IssueMapModal", () => {
 
     fireEvent.click(n2);
     expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
-    expect(hint()).toMatch(/^Drag to move around/);
+    expect(screen.getByTestId("issue-node-3")).not.toHaveAttribute("data-hl");
 
     // An issue with several labels marks only the deciding one; it names its epic.
     fireEvent.click(screen.getByTestId("issue-node-3"), { clientX: 100, clientY: 100 });
@@ -403,6 +483,23 @@ describe("IssueMapModal", () => {
     expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Esc and a press outside close an open filter menu before anything else", async () => {
+    const { onClose } = renderModal();
+    const n2 = await screen.findByTestId("issue-node-2");
+    fireEvent.click(n2, { clientX: 100, clientY: 100 });
+    openFilter("Assignee");
+    expect(screen.getByRole("dialog", { name: "Assignee filter" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Assignee filter" })).toBeNull();
+    expect(screen.getByTestId("issue-map-tip")).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+
+    openFilter("Assignee");
+    fireEvent.pointerDown(screen.getByTestId("issue-map-canvas"));
+    expect(screen.queryByRole("dialog", { name: "Assignee filter" })).toBeNull();
   });
 
   it("drags the card by its title and keeps it there for the next issue and a map drag", async () => {
@@ -451,6 +548,7 @@ describe("IssueMapModal", () => {
     renderModal();
     await screen.findByTestId("issue-node-2");
     expect(screen.queryByTestId("issue-map-epic-edge-4-3")).not.toBeInTheDocument();
+    openFilter("Who takes it");
     fireEvent.click(screen.getByLabelText("epic"));
     const epic = screen.getByTestId("issue-node-4");
     expect(epic).toHaveAttribute("data-level", "-1");
@@ -460,7 +558,6 @@ describe("IssueMapModal", () => {
     expect(line).toHaveAttribute("stroke", "rgb(var(--maestro-purple))");
 
     fireEvent.click(epic, { clientX: 10, clientY: 10 });
-    expect(hint()).toBe("#4: 1 stories in this epic, lit up across the levels.");
     expect(screen.getByTestId("issue-map-tip-stories")).toHaveTextContent("Stories:");
     expect(
       within(screen.getByTestId("issue-map-tip")).getByText("#3 Ship it (open)"),

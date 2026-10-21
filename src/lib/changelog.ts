@@ -8,6 +8,14 @@ export interface ChangelogEntry {
 /** Newest first. Keep each item to one short line. */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-10-21",
+    title: "Issue map filter menus and a side panel for data problems",
+    items: [
+      "Issue map: the filters are now four drop-down menus with tick boxes (who takes it, progress, assignee and labels); the Labels menu lists every label on the issues, so labels your team adds later show up too.",
+      "Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone.",
+    ],
+  },
+  {
     date: "2026-10-20",
     title: "Movable issue card in the issue map, Claude starts in new Mac terminals",
     items: [

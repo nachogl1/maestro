@@ -1,23 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Download, GripHorizontal, Minus, Plus, RefreshCw, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  Download,
+  GripHorizontal,
+  Minus,
+  PanelRight,
+  Plus,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildIssueMap,
   descriptionText,
-  ENCODING_EXPLANATION,
   EPICS_COLUMN,
   edgeKey,
   explainProblem,
-  HINT,
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
+  isKindLabel,
   KIND_FILL,
   KIND_META,
   KIND_ORDER,
-  LEVEL_EXPLANATION,
   LIMIT_WARNING,
   MAP_BAND_Y,
   MAP_CHIP_FONT,
@@ -39,6 +47,7 @@ import {
 } from "@/lib/issueMap";
 import { buildIssueMapHtml } from "@/lib/issueMapHtml";
 import { type AuthStatus, useGitHubStore } from "@/stores/useGitHubStore";
+import { IssueMapFilterMenu, type IssueMapFilterOption } from "./IssueMapFilterMenu";
 import { type RepoAssignee, useIssueMap } from "./useIssueMap";
 
 interface IssueMapModalProps {
@@ -51,6 +60,16 @@ interface IssueMapModalProps {
 
 /** Assignee filter key for "nobody assigned". */
 const NOBODY = "\u0000nobody";
+/** Label filter key for "no other label". */
+const NO_LABEL = "\u0000nolabel";
+
+/** The filter menus; at most one is open at a time. */
+type FilterMenu = "kind" | "status" | "who" | "label";
+
+const LABELS_NOTE =
+  "Every label on the loaded issues except the ones that decide who takes it, so labels the " +
+  "team adds later show up here on the next Reload. An issue stays on the map while any of " +
+  "its labels is ticked.";
 
 /** Background = who takes it: the kind's palette colour at the box alpha. */
 const kindFill = (kind: IssueMapKind): string => `rgb(var(--maestro-${KIND_FILL[kind]}) / 0.22)`;
@@ -84,11 +103,11 @@ interface MapView {
 const toolbarButton =
   "flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-maestro-border bg-maestro-card px-1.5 py-1 text-[11px] text-maestro-muted transition-colors hover:text-maestro-text disabled:opacity-40";
 
-/** Legend swatch for "closed": a neutral box with the same red cross the boxes get. */
+/** Filter swatch for "closed": a neutral box with the same red cross the boxes get. */
 function ClosedSwatch() {
   return (
     <svg
-      className="inline-block h-[18px] w-[18px] rounded-[5px] border-[3px] border-maestro-border"
+      className="inline-block h-[14px] w-[14px] shrink-0 rounded-[4px] border-2 border-maestro-border"
       viewBox="0 0 12 12"
       aria-hidden="true"
     >
@@ -123,38 +142,6 @@ function fitInWindow(x: number, y: number, box: { width: number; height: number 
   if (left + box.width > window.innerWidth - 8) left = x - box.width - 16;
   if (top + box.height > window.innerHeight - 8) top = y - box.height - 16;
   return { left: Math.max(8, left), top: Math.max(8, top) };
-}
-
-interface LegendEntryProps {
-  checked: boolean;
-  label: string;
-  shown: number;
-  total: number;
-  swatch?: React.ReactNode;
-  onToggle: () => void;
-}
-
-function LegendEntry({ checked, label, shown, total, swatch, onToggle }: LegendEntryProps) {
-  return (
-    <label
-      className={`inline-flex cursor-pointer select-none items-center gap-1 rounded-full px-2 py-px text-[12px] text-maestro-text hover:bg-maestro-card ${
-        checked ? "" : "line-through opacity-40"
-      }`}
-    >
-      <input
-        type="checkbox"
-        className="hidden"
-        checked={checked}
-        onChange={onToggle}
-        aria-label={label}
-      />
-      {swatch}
-      {label}
-      <span className="text-[11px] text-maestro-muted">
-        {shown}/{total}
-      </span>
-    </label>
-  );
 }
 
 interface AssignSectionProps {
@@ -232,6 +219,10 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   );
   const [kindOff, setKindOff] = useState<Set<IssueMapKind>>(() => new Set(START_HIDDEN_KINDS));
   const [whoOff, setWhoOff] = useState<Set<string>>(new Set());
+  const [labelOff, setLabelOff] = useState<Set<string>>(new Set());
+  const [openMenu, setOpenMenu] = useState<FilterMenu | null>(null);
+  // Null until the user toggles the pane; until then it is open whenever there are problems.
+  const [problemsPick, setProblemsPick] = useState<boolean | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const [tipAt, setTipAt] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [tipHidden, setTipHidden] = useState(false);
@@ -263,12 +254,31 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [map]);
 
+  // Every label except the ones that decide who takes it, so new team labels show up too.
+  const otherLabels = useMemo(
+    () => new Map(map.nodes.map((n) => [n.number, n.labels.filter((l) => !isKindLabel(l))])),
+    [map],
+  );
+  const labelNames = useMemo(
+    () => Array.from(new Set([...otherLabels.values()].flat())).sort((a, b) => a.localeCompare(b)),
+    [otherLabels],
+  );
+  const labelColor = useMemo(() => {
+    const colors = new Map<string, string>();
+    for (const issue of issues) for (const l of issue.labels) colors.set(l.name, l.color);
+    return colors;
+  }, [issues]);
+
   /* ── Filters ── */
   const whoMatches = useCallback(
     (node: IssueMapNode, who: string) =>
       who === NOBODY ? node.assignees.length === 0 : node.assignees.includes(who),
     [],
   );
+  const labelMatches = (node: IssueMapNode, label: string): boolean => {
+    const own = otherLabels.get(node.number) ?? [];
+    return label === NO_LABEL ? own.length === 0 : own.includes(label);
+  };
   const visible = useMemo(() => {
     const set = new Set<number>();
     for (const node of map.nodes) {
@@ -277,22 +287,24 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
         node.assignees.length > 0
           ? node.assignees.some((a) => !whoOff.has(a))
           : !whoOff.has(NOBODY);
-      if (whoOk) set.add(node.number);
+      const own = otherLabels.get(node.number) ?? [];
+      const labelOk = own.length > 0 ? own.some((l) => !labelOff.has(l)) : !labelOff.has(NO_LABEL);
+      if (whoOk && labelOk) set.add(node.number);
     }
     return set;
-  }, [map, statusOff, kindOff, whoOff]);
+  }, [map, statusOff, kindOff, whoOff, labelOff, otherLabels]);
 
-  const toggleIn = <T,>(set: Set<T>, value: T): Set<T> => {
-    const next = new Set(set);
-    if (next.has(value)) next.delete(value);
-    else next.add(value);
-    return next;
-  };
   const showAll = () => {
     setStatusOff(new Set());
     setKindOff(new Set());
     setWhoOff(new Set());
+    setLabelOff(new Set());
   };
+  const menuProps = (menu: FilterMenu) => ({
+    open: openMenu === menu,
+    onOpenChange: (open: boolean) => setOpenMenu(open ? menu : null),
+  });
+  const problemsOpen = problemsPick ?? map.problems.length > 0;
 
   const count = (pred: (node: IssueMapNode) => boolean) => ({
     total: map.nodes.filter(pred).length,
@@ -446,18 +458,19 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
     tipDragRef.current = { x: ev.clientX, y: ev.clientY, left: r.left, top: r.top };
   };
 
-  // Esc backs out one level: unpin, else close the map window.
+  // Esc backs out one level: close a filter menu, else unpin, else close the map window.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (pinned !== null) setPinned(null);
+      if (openMenu !== null) setOpenMenu(null);
+      else if (pinned !== null) setPinned(null);
       else onClose();
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [pinned, onClose]);
+  }, [openMenu, pinned, onClose]);
 
   const openOnGitHub = (node: IssueMapNode) => {
     openUrl(node.url).catch((err) => console.error("Failed to open issue URL:", err));
@@ -499,13 +512,6 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   };
 
   /* ── Body ── */
-  let hint = HINT;
-  if (focus && focusNode?.kind === "epic") {
-    hint = `#${focusNode.number}: ${focusNode.stories.length} stories in this epic, lit up across the levels.`;
-  } else if (focus && focusId !== null) {
-    hint = `#${focusId}: ${focus.up.size} issue(s) upstream must close first (left), ${focus.down.size} wait on it (right).`;
-  }
-
   let body: React.ReactNode;
   if (error) {
     body = (
@@ -734,6 +740,64 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   const epicCount = map.nodes.filter((n) => n.kind === "epic").length;
   const issueCount = map.nodes.length - epicCount;
 
+  /* ── Filter menus ── */
+  const kindOptions: IssueMapFilterOption<IssueMapKind>[] = KIND_ORDER.map((kind) => ({
+    value: kind,
+    label: KIND_META[kind].name,
+    swatch: (
+      <i
+        className="inline-block h-[14px] w-[14px] shrink-0 rounded-[4px] border-2 border-maestro-border"
+        style={{ background: kindFill(kind) }}
+      />
+    ),
+    ...count((n) => n.kind === kind),
+  }));
+  // The open states first, then Closed.
+  const progressOrder: IssueMapStatus[] = [
+    ...STATUS_ORDER.filter((status) => status !== "closed"),
+    "closed",
+  ];
+  const statusOptions: IssueMapFilterOption<IssueMapStatus>[] = progressOrder.map((status) => ({
+    value: status,
+    label:
+      status === "closed"
+        ? STATUS_META.closed.name
+        : `${STATUS_META[status].icon} ${STATUS_META[status].name}`,
+    swatch: status === "closed" ? <ClosedSwatch /> : undefined,
+    ...count((n) => n.status === status),
+  }));
+  const whoOptions: IssueMapFilterOption<string>[] = [...logins, NOBODY].map((who) => ({
+    value: who,
+    label: who === NOBODY ? "nobody assigned" : `\u{1F464} ${who}`,
+    apart: who === NOBODY,
+    ...count((n) => whoMatches(n, who)),
+  }));
+  const labelOptions: IssueMapFilterOption<string>[] = [...labelNames, NO_LABEL].map((label) => ({
+    value: label,
+    label: label === NO_LABEL ? "no other label" : label,
+    apart: label === NO_LABEL,
+    swatch:
+      label === NO_LABEL ? undefined : (
+        <i
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-maestro-border"
+          style={{ background: `#${labelColor.get(label) ?? "cfd3d7"}` }}
+        />
+      ),
+    ...count((n) => labelMatches(n, label)),
+  }));
+
+  /* ── Data problems pane ── */
+  const problemCount = map.problems.length;
+  const problemsTitle =
+    problemCount === 0
+      ? "No data problems"
+      : `${problemCount} data problem${problemCount === 1 ? "" : "s"}`;
+  let problemsTone = "border-maestro-border text-maestro-muted hover:text-maestro-text";
+  if (problemCount > 0) problemsTone = "border-maestro-yellow/40 text-maestro-yellow";
+  let problemsFill = "bg-maestro-card";
+  if (problemsOpen)
+    problemsFill = problemCount > 0 ? "bg-maestro-yellow/10" : "bg-maestro-border/50";
+
   return (
     <div className="fixed inset-0 flex bg-maestro-bg">
       <main aria-label="Issue map" className="flex h-full w-full flex-col overflow-hidden">
@@ -752,6 +816,19 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
             <span className="truncate text-[11px] text-maestro-red" title={exportError}>
               Save failed: {exportError}
             </span>
+          )}
+          {map.nodes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setProblemsPick(!problemsOpen)}
+              aria-pressed={problemsOpen}
+              title="Show or hide the data problems"
+              className={`flex shrink-0 items-center gap-1 whitespace-nowrap rounded border px-1.5 py-1 text-[11px] transition-colors ${problemsTone} ${problemsFill}`}
+            >
+              {problemCount > 0 ? <AlertTriangle size={11} /> : <Check size={11} />}
+              {problemsTitle}
+              <PanelRight size={11} />
+            </button>
           )}
           <button
             type="button"
@@ -784,206 +861,172 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           </button>
         </div>
 
-        {/* Banner + legend */}
+        {/* Banner + filters */}
         <div className="shrink-0 border-b border-maestro-border px-3 py-2 text-[12px]">
           <div className="mb-2 rounded-md border border-maestro-yellow/40 bg-maestro-yellow/10 px-3 py-1 text-maestro-yellow">
             ⚠ Transient snapshot, not a source of truth. Built from the GitHub issues as they were
             {fetchedAt ? ` at ${fetchedAt.toLocaleString()}` : " when fetched"}; it goes stale as
             soon as any issue changes. Rebuild it with Reload. The live state is always GitHub.
           </div>
-          <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Background = who takes it</b>
-            {KIND_ORDER.map((kind) => {
-              const c = count((n) => n.kind === kind);
-              return (
-                <LegendEntry
-                  key={kind}
-                  checked={!kindOff.has(kind)}
-                  label={KIND_META[kind].name}
-                  shown={c.shown}
-                  total={c.total}
-                  swatch={
-                    <i
-                      className="inline-block h-[18px] w-[18px] rounded-[5px] border-[3px] border-maestro-border"
-                      style={{ background: kindFill(kind) }}
-                    />
-                  }
-                  onToggle={() => setKindOff((s) => toggleIn(s, kind))}
-                />
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Icon = progress</b>
-            {STATUS_ORDER.filter((status) => status !== "closed").map((status) => {
-              const c = count((n) => n.status === status);
-              return (
-                <LegendEntry
-                  key={status}
-                  checked={!statusOff.has(status)}
-                  label={`${STATUS_META[status].icon} ${STATUS_META[status].name}`}
-                  shown={c.shown}
-                  total={c.total}
-                  onToggle={() => setStatusOff((s) => toggleIn(s, status))}
-                />
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Cross = closed</b>
-            <LegendEntry
-              checked={!statusOff.has("closed")}
-              label={STATUS_META.closed.name}
-              shown={count((n) => n.status === "closed").shown}
-              total={count((n) => n.status === "closed").total}
-              swatch={<ClosedSwatch />}
-              onToggle={() => setStatusOff((s) => toggleIn(s, "closed"))}
+          <div className="flex flex-wrap items-center gap-1.5" data-testid="issue-map-filters">
+            <b className="mr-1 text-maestro-muted">Filters</b>
+            <IssueMapFilterMenu
+              name="Who takes it"
+              options={kindOptions}
+              off={kindOff}
+              onChange={setKindOff}
+              {...menuProps("kind")}
             />
-          </div>
-          <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Assignee</b>
-            {[...logins, NOBODY].map((who) => {
-              const c = count((n) => whoMatches(n, who));
-              return (
-                <LegendEntry
-                  key={who}
-                  checked={!whoOff.has(who)}
-                  label={who === NOBODY ? "nobody assigned" : `\u{1F464} ${who}`}
-                  shown={c.shown}
-                  total={c.total}
-                  onToggle={() => setWhoOff((s) => toggleIn(s, who))}
-                />
-              );
-            })}
-            <span className="ml-2 font-bold text-maestro-text">
+            <IssueMapFilterMenu
+              name="Progress"
+              options={statusOptions}
+              off={statusOff}
+              onChange={setStatusOff}
+              {...menuProps("status")}
+            />
+            <IssueMapFilterMenu
+              name="Assignee"
+              options={whoOptions}
+              off={whoOff}
+              onChange={setWhoOff}
+              {...menuProps("who")}
+            />
+            <IssueMapFilterMenu
+              name="Labels"
+              options={labelOptions}
+              off={labelOff}
+              onChange={setLabelOff}
+              searchable
+              note={LABELS_NOTE}
+              {...menuProps("label")}
+            />
+            <span className="ml-1 font-bold text-maestro-text">
               Showing {visible.size} of {map.nodes.length} issues
             </span>
             <button
               type="button"
               onClick={showAll}
-              className="ml-2 text-[11px] text-maestro-blue hover:underline"
+              className="text-[11px] text-maestro-blue hover:underline"
             >
               show all
             </button>
           </div>
-          <div className="flex flex-wrap items-center">
-            <b className="inline-block w-40 text-maestro-muted">Lines</b>
-            <span className="mr-3 inline-flex items-center gap-1">
-              <i
-                className="inline-block h-0 w-[18px] border-t-[3px]"
-                style={{ borderColor: EDGE_CLOSED }}
-              />
-              blocker closed
-            </span>
-            <span className="mr-3 inline-flex items-center gap-1">
-              <i
-                className="inline-block h-0 w-[18px] border-t-[3px]"
-                style={{ borderColor: EDGE_OPEN }}
-              />
-              blocker still open
-            </span>
-            <span className="mr-3 inline-flex items-center gap-1">
-              <i
-                className="inline-block h-0 w-[18px] border-t-[3px] border-dashed"
-                style={{ borderColor: EDGE_EPIC }}
-              />
-              epic to its story
-            </span>
-          </div>
-          <div className="mt-1 text-maestro-muted" data-testid="issue-map-encoding">
-            {ENCODING_EXPLANATION}
-          </div>
-          <div className="mt-1 text-maestro-muted" data-testid="issue-map-hint">
-            {hint}
-          </div>
         </div>
 
-        {/* Canvas */}
-        <div
-          ref={wrapRef}
-          data-testid="issue-map-canvas"
-          className={`relative min-h-0 flex-1 touch-none overflow-hidden ${
-            dragging ? "cursor-grabbing" : "cursor-grab"
-          }`}
-          onPointerDown={onPointerDown}
-          onClickCapture={onClickCapture}
-        >
+        <div className="flex min-h-0 flex-1">
+          {/* Canvas */}
           <div
-            data-zoom-controls
-            className="absolute top-3 right-4 z-10 flex items-center gap-1.5 rounded-lg border border-maestro-border bg-maestro-surface px-2 py-1 shadow-xl"
+            ref={wrapRef}
+            data-testid="issue-map-canvas"
+            className={`relative min-h-0 min-w-0 flex-1 touch-none overflow-hidden ${
+              dragging ? "cursor-grabbing" : "cursor-grab"
+            }`}
+            onPointerDown={onPointerDown}
+            onClickCapture={onClickCapture}
           >
-            <button
-              type="button"
-              onClick={() => zoomMid(ZOOM_STEP)}
-              title="Zoom in"
-              aria-label="Zoom in"
-              className={toolbarButton}
+            <div
+              data-zoom-controls
+              className="absolute top-3 right-4 z-10 flex items-center gap-1.5 rounded-lg border border-maestro-border bg-maestro-surface px-2 py-1 shadow-xl"
             >
-              <Plus size={11} />
-            </button>
-            <button
-              type="button"
-              onClick={() => zoomMid(1 / ZOOM_STEP)}
-              title="Zoom out"
-              aria-label="Zoom out"
-              className={toolbarButton}
-            >
-              <Minus size={11} />
-            </button>
-            <button
-              type="button"
-              onClick={() => fitMap(true)}
-              title="Fit the whole map"
-              className={toolbarButton}
-            >
-              Fit
-            </button>
-            <button
-              type="button"
-              onClick={() => zoomMid(1 / view.z)}
-              title="Actual size"
-              className={toolbarButton}
-            >
-              100%
-            </button>
-            <span
-              data-testid="issue-map-zoom"
-              className="min-w-[40px] text-right text-[11px] text-maestro-muted"
-            >
-              {Math.round(view.z * 100)}%
-            </span>
+              <button
+                type="button"
+                onClick={() => zoomMid(ZOOM_STEP)}
+                title="Zoom in"
+                aria-label="Zoom in"
+                className={toolbarButton}
+              >
+                <Plus size={11} />
+              </button>
+              <button
+                type="button"
+                onClick={() => zoomMid(1 / ZOOM_STEP)}
+                title="Zoom out"
+                aria-label="Zoom out"
+                className={toolbarButton}
+              >
+                <Minus size={11} />
+              </button>
+              <button
+                type="button"
+                onClick={() => fitMap(true)}
+                title="Fit the whole map"
+                className={toolbarButton}
+              >
+                Fit
+              </button>
+              <button
+                type="button"
+                onClick={() => zoomMid(1 / view.z)}
+                title="Actual size"
+                className={toolbarButton}
+              >
+                100%
+              </button>
+              <span
+                data-testid="issue-map-zoom"
+                className="min-w-[40px] text-right text-[11px] text-maestro-muted"
+              >
+                {Math.round(view.z * 100)}%
+              </span>
+            </div>
+            {body}
           </div>
-          {body}
-        </div>
-
-        <footer className="shrink-0 border-t border-maestro-border px-3 py-1.5 text-[11px] text-maestro-muted">
-          {LEVEL_EXPLANATION} A line always runs from the blocker to the issue that waits for it; an
-          issue opens the moment every line coming into it is grey.
-          {map.problems.length === 0 ? (
-            <span data-testid="issue-map-problems"> No data problems.</span>
-          ) : (
-            <details data-testid="issue-map-problems" className="mt-1" open>
-              <summary className="cursor-pointer font-semibold text-maestro-yellow">
-                ⚠ {map.problems.length} data problem{map.problems.length === 1 ? "" : "s"}:{" "}
-                {PROBLEMS_EXPLANATION}
-              </summary>
-              <ul className="mt-1 max-h-40 list-disc overflow-auto pl-4">
-                {map.problems.map((p) => {
-                  const { headline, effect, fix } = explainProblem(p, titleOf);
-                  return (
-                    <li key={headline} className="mb-1">
-                      <span className="text-maestro-text">{headline}</span>
-                      <br />
-                      {effect}
-                      <br />
-                      <span className="text-maestro-text">Fix:</span> {fix}
-                    </li>
-                  );
-                })}
-              </ul>
-            </details>
+          {problemsOpen && map.nodes.length > 0 && (
+            <aside
+              aria-label="Data problems"
+              data-testid="issue-map-problems"
+              className="flex w-[380px] shrink-0 flex-col border-l border-maestro-border bg-maestro-surface"
+            >
+              <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-maestro-border pr-1.5 pl-3 text-[13px] font-semibold text-maestro-text">
+                {problemCount > 0 ? (
+                  <AlertTriangle size={14} className="shrink-0 text-maestro-yellow" />
+                ) : (
+                  <Check size={14} className="shrink-0 text-maestro-green" />
+                )}
+                {problemsTitle}
+                <div className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() => setProblemsPick(false)}
+                  aria-label="Hide data problems"
+                  title="Hide"
+                  className="shrink-0 rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {problemCount === 0 ? (
+                <p className="m-0 px-3 py-4 text-[12px] text-maestro-muted">
+                  Every "blocked by" link was drawn and no two sources disagree.
+                </p>
+              ) : (
+                <>
+                  <p className="m-0 shrink-0 border-b border-maestro-border px-3 py-2 text-[11px] text-maestro-muted">
+                    {PROBLEMS_EXPLANATION.charAt(0).toUpperCase()}
+                    {PROBLEMS_EXPLANATION.slice(1)}
+                  </p>
+                  <ul className="m-0 min-h-0 flex-1 list-none overflow-auto px-2.5 py-2">
+                    {map.problems.map((p) => {
+                      const { headline, effect, fix } = explainProblem(p, titleOf);
+                      return (
+                        <li
+                          key={headline}
+                          className="mb-2 rounded-md border border-l-[3px] border-maestro-border border-l-maestro-yellow bg-maestro-card px-2.5 py-2 text-[12px]"
+                        >
+                          <div className="font-semibold text-maestro-text">{headline}</div>
+                          <div className="mt-[3px] text-maestro-muted">{effect}</div>
+                          <div className="mt-1 text-maestro-muted">
+                            <b className="text-maestro-text">Fix:</b> {fix}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+            </aside>
           )}
-        </footer>
+        </div>
       </main>
 
       {/* Tooltip */}
