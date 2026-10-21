@@ -74,19 +74,26 @@ export interface IssueGraph {
 const BLOCKED_BY_SECTION_RE =
   /^#{1,6}[ \t]*blocked by[ \t]*:?[ \t]*(?:\n|$)((?:(?!#{1,6}[ \t]+\S)[^\n]*\n?)*)/gim;
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * Every `#N` under a "### Blocked by" heading of `body`, in order, deduped;
  * null when the body has no such section at all. CRLF bodies are normalised.
+ * With `repoUrl` (e.g. `https://github.com/o/r`), links to `<repoUrl>/issues/N`
+ * count too; links to other repositories never do.
  */
-export function parseBlockedBySection(rawBody: string): number[] | null {
+export function parseBlockedBySection(rawBody: string, repoUrl?: string): number[] | null {
   const body = rawBody.replace(/\r\n?/g, "\n");
+  const refRe = repoUrl
+    ? new RegExp(`#(\\d+)|${escapeRegExp(repoUrl)}/issues/(\\d+)`, "gi")
+    : /#(\d+)/g;
   const refs: number[] = [];
   let found = false;
   BLOCKED_BY_SECTION_RE.lastIndex = 0;
   for (let m = BLOCKED_BY_SECTION_RE.exec(body); m !== null; m = BLOCKED_BY_SECTION_RE.exec(body)) {
     found = true;
-    for (const n of m[1].matchAll(/#(\d+)/g)) {
-      const ref = Number(n[1]);
+    for (const n of m[1].matchAll(refRe)) {
+      const ref = Number(n[1] ?? n[2]);
       if (!refs.includes(ref)) refs.push(ref);
     }
   }
@@ -111,6 +118,8 @@ export function buildIssueGraph(
   const fetched = new Map<number, IssueInfo>();
   for (const issue of issues) fetched.set(issue.number, issue);
   const ordered = [...issues].sort((a, b) => a.number - b.number);
+  // Issue URLs are `<repo>/issues/N`, so any one of them names the repository.
+  const repoUrl = issues[0]?.url.replace(/\/issues\/\d+$/, "");
 
   const nodes: IssueGraphNode[] = [];
   const edges: IssueGraphEdge[] = [];
@@ -132,7 +141,7 @@ export function buildIssueGraph(
     if (!link) continue;
 
     const native = new Set(link.blockedBy.filter((b) => b !== n));
-    const sectionRefs = parseBlockedBySection(link.body);
+    const sectionRefs = parseBlockedBySection(link.body, repoUrl);
     const section = new Set((sectionRefs ?? []).filter((b) => b !== n));
     // Only a body that has a "### Blocked by" section can disagree with GitHub.
     if (sectionRefs !== null) {
