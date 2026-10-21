@@ -12,6 +12,7 @@ pub mod initial_prompt;
 pub mod injector;
 pub mod marketplace;
 pub mod mcp;
+pub mod permissions;
 pub mod plugin;
 pub mod processes;
 pub mod samurai;
