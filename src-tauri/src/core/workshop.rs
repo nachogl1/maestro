@@ -39,8 +39,14 @@ const RUN_ID_FORMAT: &str = "%Y-%m-%d-%H%M%S";
 const EMPTY_SUMMARY_ERROR: &str = "The summary came back empty.";
 
 /// The `claude` arguments of the insights run: print mode, no session of
-/// its own (so next week's report does not count it), the built-in command.
-pub const INSIGHTS_ARGS: [&str; 3] = ["-p", "--no-session-persistence", "/insights"];
+/// its own (so next week's report does not count it), no MCP servers (it
+/// reads local usage data only), the built-in command.
+pub const INSIGHTS_ARGS: [&str; 4] = [
+    "-p",
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "/insights",
+];
 
 /// System prompt of the summary call. The report is DATA.
 pub const SUMMARY_SYSTEM_PROMPT: &str = "You summarise a Claude Code insights report for the \

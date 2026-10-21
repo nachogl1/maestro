@@ -262,7 +262,9 @@ fn fit_budget(lines: &[String]) -> String {
 
 /// Runs `claude -p` on Haiku with no tools, no saved session (so the run never
 /// appears in History itself) and the temp dir as cwd (so no project
-/// CLAUDE.md is picked up). The transcript goes in on stdin.
+/// CLAUDE.md is picked up). `--strict-mcp-config` keeps the user's MCP
+/// servers (e.g. Playwright) from starting for a run that has no tools.
+/// The transcript goes in on stdin.
 async fn run_claude(transcript: &str) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("claude");
     cmd.args([
@@ -272,6 +274,7 @@ async fn run_claude(transcript: &str) -> Result<String, String> {
         "--tools",
         "",
         "--no-session-persistence",
+        "--strict-mcp-config",
         "--system-prompt",
         SYSTEM_PROMPT,
         "Label the conversation transcript given on stdin.",

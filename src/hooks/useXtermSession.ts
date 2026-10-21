@@ -1,9 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import type { MutableRefObject, RefObject } from "react";
 import { useEffect } from "react";
@@ -14,6 +12,7 @@ import { createPtyOutputBatcher } from "@/lib/ptyOutputBatcher";
 import { onPtyOutput, signalTerminalReady } from "@/lib/terminal";
 import { DEFAULT_THEME, LIGHT_THEME, toXtermTheme } from "@/lib/terminalTheme";
 import { attachXtermInput, registerOsc52Clipboard } from "@/lib/xtermInput";
+import { attachTerminalRenderer } from "@/lib/xtermRenderer";
 import { type ContainerResizeFit, observeContainerResize } from "@/lib/xtermResize";
 import { DEFAULT_SCROLLBACK, useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 
@@ -76,32 +75,6 @@ function createXterm(
 }
 
 /**
- * GPU-accelerated rendering (must be loaded after open()).
- * Try WebGL first, fall back to Canvas2D (much faster than DOM on Linux).
- */
-function loadRenderer(term: Terminal): void {
-  try {
-    const webglAddon = new WebglAddon();
-    webglAddon.onContextLoss(() => {
-      webglAddon.dispose();
-      try {
-        term.loadAddon(new CanvasAddon());
-      } catch {
-        /* DOM renderer as final fallback */
-      }
-    });
-    term.loadAddon(webglAddon);
-  } catch {
-    // WebGL not available — use Canvas2D renderer
-    try {
-      term.loadAddon(new CanvasAddon());
-    } catch {
-      /* DOM renderer as final fallback */
-    }
-  }
-}
-
-/**
  * Owns the lifetime of one xterm.js terminal bound to a backend PTY session.
  *
  * On mount (and on sessionId change): waits for the font, creates the Terminal
@@ -139,6 +112,7 @@ export function useXtermSession({
     const activity = createActivityStatusTracker(sessionId, isDisposed);
     let detachInput: (() => void) | null = null;
     let resizeFit: ContainerResizeFit | null = null;
+    let detachRenderer: (() => void) | null = null;
 
     // Wait for font to load before initializing terminal
     const initTerminal = async (): Promise<void> => {
@@ -157,7 +131,7 @@ export function useXtermSession({
       // current value, not the mount-time closure's.
       if (isFocusedRef.current) term.focus();
 
-      loadRenderer(term);
+      detachRenderer = attachTerminalRenderer(term, container);
       registerOsc52Clipboard(term);
 
       termRef.current = term;
@@ -220,6 +194,7 @@ export function useXtermSession({
       activity.dispose();
       output.drain();
       resizeFit?.disconnect();
+      detachRenderer?.();
       detachInput?.();
       if (unlisten) unlisten();
       term?.dispose();
