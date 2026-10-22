@@ -30,6 +30,7 @@ import {
 import { useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
 import { usePendingLaunch } from "@/hooks/usePendingLaunch";
 import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
+import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import { useSlotLaunch } from "@/hooks/useSlotLaunch";
 import { useTerminalDragDrop } from "@/hooks/useTerminalDragDrop";
 import { useTerminalKeyboard } from "@/hooks/useTerminalKeyboard";
@@ -2862,6 +2863,8 @@ function ZoomTab({
   const hasAttention = useSessionStore(
     (s) => sessionId !== null && s.attentionSessionIds.includes(sessionId),
   );
+  // Context alert (Settings): the tab blinks red like the frame it stands for.
+  const contextAlert = useSessionContextAlert(sessionId);
 
   // Attention-first click semantics on the active tab: the first click only
   // acknowledges the attention highlight — it must not also set the warning
@@ -2888,16 +2891,22 @@ function ZoomTab({
       {...attributes}
       {...listeners}
       onClick={isActive && onToggleFlag ? handleActiveClick : onSelect}
+      // Context alert outranks the flag/attention yellow (doubled CSS class):
+      // the terminal is about to run out of room whatever else it is doing.
+      // The active tab is a solid fill with bright bold text and a blue
+      // outline, so the focused terminal is found at a glance rather than by
+      // reading the names.
       className={`
         flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors
-        ${isFlagged || hasAttention ? "warning-flag" : ""}
+        ${contextAlert.active ? "zoom-tab-context-alert" : isFlagged || hasAttention ? "warning-flag" : ""}
         ${
           isActive
-            ? "bg-maestro-blue/15 text-maestro-blue"
+            ? "bg-maestro-blue/35 font-bold text-maestro-text shadow-[inset_0_0_0_1px_rgb(var(--maestro-blue))]"
             : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
         }
       `}
-      title={
+      data-context-alert={contextAlert.active ? "true" : undefined}
+      title={`${contextAlert.title ? `${contextAlert.title} — ` : ""}${
         isActive
           ? onToggleFlag
             ? hasAttention
@@ -2905,7 +2914,7 @@ function ZoomTab({
               : `${label} (click to ${isFlagged ? "clear" : "set"} warning flag)`
             : `${label} (click to exit zoom)`
           : `Switch to ${label}`
-      }
+      }`}
     >
       <span className="font-mono text-[10px] opacity-60">{index + 1}</span>
       <span className="max-w-[180px] truncate">{label}</span>

@@ -567,11 +567,40 @@
 }
 
 /* A parked terminal past the threshold: its shelf chip blinks the same red
-   rhythm as the frame it stands in for. Doubled class so it outranks the
-   status and attention chip classes. */
+   rhythm as the frame it stands in for. The whole chip (fill, text, border,
+   glow) blinks, not just the 1px border, which was too thin to notice on a
+   chip. Doubled class so it outranks the status and attention chip classes. */
+@keyframes parked-chip-context-alert-blink {
+  0%,
+  49% {
+    background-color: rgb(var(--maestro-red) / 0.35);
+    color: rgb(var(--maestro-red));
+    border-color: rgb(var(--maestro-red));
+    box-shadow: 0 0 10px rgb(var(--maestro-red) / 0.6);
+  }
+  50%,
+  100% {
+    background-color: rgb(var(--maestro-red) / 0.08);
+    border-color: rgb(var(--maestro-red) / 0.4);
+    box-shadow: none;
+  }
+}
+
 .parked-chip-context-alert.parked-chip-context-alert {
+  background-color: rgb(var(--maestro-red) / 0.2);
+  color: rgb(var(--maestro-red));
   border-color: rgb(var(--maestro-red));
-  animation: context-alert-blink 1s step-end infinite;
+  animation: parked-chip-context-alert-blink 1s step-end infinite;
+}
+
+/* A zoom-strip tab (per-project or eagle) whose terminal is past the
+   threshold: blinks like the project tab, so the alarm shows while another
+   terminal is zoomed in. Doubled class so it outranks the active-tab fill. */
+.zoom-tab-context-alert.zoom-tab-context-alert {
+  background-color: rgb(var(--maestro-red) / 0.2);
+  color: rgb(var(--maestro-red));
+  box-shadow: inset 0 0 0 1px rgb(var(--maestro-red));
+  animation: project-tab-context-alert-blink 1s step-end infinite;
 }
 
 /* A project tab with any terminal (parked or not) past the threshold: the tab
@@ -624,6 +653,7 @@
   .terminal-cell.terminal-cell-context-alert,
   .parked-chip-context-alert.parked-chip-context-alert,
   .project-tab-context-alert.project-tab-context-alert,
+  .zoom-tab-context-alert.zoom-tab-context-alert,
   .context-alert-pill {
     animation: none;
     transform: none;
@@ -675,6 +705,7 @@
 .platform-linux .terminal-cell-context-alert,
 .platform-linux .parked-chip-context-alert.parked-chip-context-alert,
 .platform-linux .project-tab-context-alert.project-tab-context-alert,
+.platform-linux .zoom-tab-context-alert.zoom-tab-context-alert,
 .platform-linux .context-alert-pill {
   animation: none;
   box-shadow: none;
