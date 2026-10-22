@@ -1,0 +1,1 @@
+Updates: turn on Install on launch (Maestro asks once, or in Settings → Updates) and an update found when you open Maestro installs by itself and restarts the app. A background check that can't reach the server retries quietly instead of showing an error, and update errors are short and fit their popup.

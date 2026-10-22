@@ -1,0 +1,1 @@
+Memory and parking: History summaries no longer start your MCP tools, so Maestro uses less memory; parking, resuming or switching projects no longer flashes the whole screen white, and the parked-terminals strip scrolls sideways without a scroll bar.

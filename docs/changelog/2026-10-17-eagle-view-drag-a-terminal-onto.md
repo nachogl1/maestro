@@ -1,0 +1,1 @@
+Eagle view: drag a terminal onto the outer edge of the grid to give it its own full column or row, or onto the edge of another terminal to sit beside it. The Sort terminals by project button is gone, and the new-terminal project picker is bigger, scrolls with the arrow keys and hides its scrollbar.

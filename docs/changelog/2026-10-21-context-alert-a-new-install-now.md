@@ -1,0 +1,1 @@
+Context alert: a new install now warns when a terminal's context reaches 35% instead of 80%, a value you already chose in Settings stays as it is, the project's tab in the top bar now blinks red too, even when that terminal is parked, and clearing a terminal's context (/clear) stops the red blinking.

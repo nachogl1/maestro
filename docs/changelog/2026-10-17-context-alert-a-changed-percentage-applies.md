@@ -1,0 +1,1 @@
+Context alert: a changed percentage applies as soon as you stop typing, terminals showing the threshold percentage blink reliably, and every alerting terminal (parked ones too) gets a blinking red Context threshold reached banner in its header.

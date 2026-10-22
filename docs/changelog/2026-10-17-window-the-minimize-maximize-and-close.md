@@ -1,0 +1,1 @@
+Window: the minimize, maximize and close buttons stay visible however narrow the window gets, project tabs scroll sideways with the mouse wheel when there are too many to fit, and the window can be made as small as you like.

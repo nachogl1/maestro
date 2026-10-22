@@ -1,0 +1,1 @@
+Parked terminals: a parked terminal that has stopped and is waiting for you now always comes back into view with the yellow attention frame, also when Claude had handed work to helper agents just before stopping; before, it only turned red in the parked strip and stayed hidden.

@@ -4,16 +4,13 @@ import { CHANGELOG } from "@/lib/changelog";
 import { ChangelogPanel } from "../ChangelogPanel";
 
 describe("ChangelogPanel", () => {
-  it("renders every changelog entry title and the latest date", () => {
+  it("renders every day and the lines of the latest day", () => {
     render(<ChangelogPanel />);
     for (const entry of CHANGELOG) {
-      expect(screen.getByText(entry.title)).toBeTruthy();
+      expect(screen.getByText(entry.date)).toBeTruthy();
     }
-    expect(screen.getAllByText(CHANGELOG[0].date).length).toBeGreaterThan(0);
-  });
-
-  it("lists entries newest first", () => {
-    const dates = CHANGELOG.map((e) => e.date);
-    expect([...dates].sort().reverse()).toEqual(dates);
+    for (const item of CHANGELOG[0].items) {
+      expect(screen.getByText(item)).toBeTruthy();
+    }
   });
 });

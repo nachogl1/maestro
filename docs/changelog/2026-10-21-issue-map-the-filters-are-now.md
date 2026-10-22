@@ -1,0 +1,1 @@
+Issue map: the filters are now four drop-down menus with tick boxes (Orion labels, progress, assignee and labels); the Labels menu lists every label on the issues, so labels your team adds later show up too.

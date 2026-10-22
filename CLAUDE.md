@@ -191,14 +191,9 @@ Use this workflow when implementing a task or story, refactoring, or fixing a bu
 ## Changelog
 
 Every pull request adds its own one-line file under `docs/changelog/` as the mandatory rules describe
-(`docs/changelog/YYYY-MM-DD-branch-name.md`, one line per pull request). **Every user-visible change to Maestro must also be recorded in
-`src/lib/changelog.ts`** (shown in Settings → Changelog) in the same PR as the change, until that panel reads the
-`docs/changelog/` folder instead.
+(`docs/changelog/YYYY-MM-DD-branch-name.md`, one line per pull request). Settings → Changelog in the app reads that
+folder at build time, grouped by day and newest first, so that file is the only place a change is recorded.
 
-- Add to today's entry (`date: "YYYY-MM-DD"`) if one exists; otherwise add a new entry at the top
-  — the list is newest first and a test enforces that order.
-- Do NOT add a line per commit or PR. First look for a line in today's entry about the same
-  feature or area and extend or reword it; add a new line only for a different feature.
-- A day's entry stays at about 6 lines or fewer. One short plain sentence per line, written for a
-  user (what they can now see or do), with no implementation detail — that belongs in the PR.
-- Pure refactors, test-only and CI-only changes get no entry.
+- Write the line for a user: one short plain sentence saying what they can now see or do, with no
+  implementation detail — that belongs in the PR.
+- A pull request with no user-visible change (refactor, tests, CI) still gets its line, kept to a few words.
