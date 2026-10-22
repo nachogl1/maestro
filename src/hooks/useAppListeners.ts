@@ -6,6 +6,10 @@ import { initSamuraiSpawnListener, stopSamuraiSpawnListener } from "@/lib/spawnS
 import { initActivityListener, stopActivityListener } from "@/stores/useActivityStore";
 import { initAgentListener, stopAgentListener } from "@/stores/useAgentStore";
 import {
+  initBackgroundTaskListener,
+  stopBackgroundTaskListener,
+} from "@/stores/useBackgroundTaskStore";
+import {
   initContextUsageListener,
   initSamuraiSupervisorListener,
   stopContextUsageListener,
@@ -140,6 +144,17 @@ export function useAppListeners(): void {
     });
     return () => {
       stopAgentListener();
+    };
+  }, []);
+
+  // Initialize background-work listener (keeps a session Working while its
+  // agent waits on background commands, monitors, workflows or loops)
+  useEffect(() => {
+    initBackgroundTaskListener().catch((err) => {
+      console.error("Failed to initialize background task listener:", err);
+    });
+    return () => {
+      stopBackgroundTaskListener();
     };
   }, []);
 

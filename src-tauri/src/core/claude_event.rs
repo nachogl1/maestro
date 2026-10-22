@@ -31,6 +31,16 @@ pub struct SubagentToolStats {
     pub other_tool_count: u64,
 }
 
+/// Which kind of scheduled loop a [`ClaudeEvent::BackgroundLoopStopped`] ends.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundLoopKind {
+    /// A `/loop` wakeup scheduled with `ScheduleWakeup`.
+    Wakeup,
+    /// A recurring job scheduled with `CronCreate`.
+    Cron,
+}
+
 /// A single event emitted by, or on behalf of, a Claude Code session.
 ///
 /// Variants are internally tagged via `event_type` so the serialized JSON
@@ -176,6 +186,39 @@ pub enum ClaudeEvent {
         timestamp: String,
     },
 
+    // === Background work (Transcript-sourced) ===
+    /// The agent started work that keeps running after its turn ends and
+    /// re-invokes it later: a background shell command, a Monitor, a
+    /// Workflow, a scheduled wakeup or a cron job.
+    BackgroundTaskStarted {
+        session_id: u32,
+        tool_use_id: String,
+        tool_name: String,
+        /// The tool input's `description`, or the tool name when it has none.
+        description: String,
+        /// How long the task may stay silent before it no longer counts as
+        /// pending, when the tool states a bound (Monitor, ScheduleWakeup).
+        expires_in_ms: Option<u64>,
+        timestamp: String,
+    },
+
+    /// A background task reported back through a `<task-notification>`
+    /// (completed, failed or killed).
+    BackgroundTaskFinished {
+        session_id: u32,
+        tool_use_id: String,
+        timestamp: String,
+    },
+
+    /// The agent cancelled its scheduled loop (`ScheduleWakeup` with
+    /// `stop: true`, or `CronDelete`). The parser sees one line at a time and
+    /// cannot name the pending items, so consumers clear every item of `kind`.
+    BackgroundLoopStopped {
+        session_id: u32,
+        kind: BackgroundLoopKind,
+        timestamp: String,
+    },
+
     // === Status (MCP-sourced) ===
     /// A status/state change reported by the session.
     StatusUpdate {
@@ -237,6 +280,9 @@ impl ClaudeEvent {
             | ClaudeEvent::SubagentSpawned { session_id, .. }
             | ClaudeEvent::SubagentLaunched { session_id, .. }
             | ClaudeEvent::SubagentCompleted { session_id, .. }
+            | ClaudeEvent::BackgroundTaskStarted { session_id, .. }
+            | ClaudeEvent::BackgroundTaskFinished { session_id, .. }
+            | ClaudeEvent::BackgroundLoopStopped { session_id, .. }
             | ClaudeEvent::StatusUpdate { session_id, .. }
             | ClaudeEvent::TokenUsageUpdate { session_id, .. }
             | ClaudeEvent::ContextUsageUpdate { session_id, .. } => *session_id,
@@ -337,6 +383,28 @@ impl ClaudeEvent {
                 ..
             } => {
                 format!("SubagentCompleted:{session_id}:{agent_id}:{timestamp}")
+            }
+            ClaudeEvent::BackgroundTaskStarted {
+                session_id,
+                tool_use_id,
+                ..
+            } => {
+                format!("BackgroundTaskStarted:{session_id}:{tool_use_id}")
+            }
+            ClaudeEvent::BackgroundTaskFinished {
+                session_id,
+                tool_use_id,
+                ..
+            } => {
+                format!("BackgroundTaskFinished:{session_id}:{tool_use_id}")
+            }
+            // Timestamped: a loop can be stopped, restarted and stopped again.
+            ClaudeEvent::BackgroundLoopStopped {
+                session_id,
+                kind,
+                timestamp,
+            } => {
+                format!("BackgroundLoopStopped:{session_id}:{kind:?}:{timestamp}")
             }
             ClaudeEvent::StatusUpdate {
                 session_id,

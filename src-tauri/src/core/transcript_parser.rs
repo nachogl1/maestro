@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::Value;
 
-use super::claude_event::{ClaudeEvent, SubagentToolStats, TokenUsage};
+use super::claude_event::{BackgroundLoopKind, ClaudeEvent, SubagentToolStats, TokenUsage};
 
 // ---------------------------------------------------------------------------
 // Line shapes
@@ -360,6 +360,70 @@ fn subagent_completed(
     }
 }
 
+/// Grace past a background tool's own bound (Monitor timeout, wakeup delay)
+/// before it stops counting as pending work.
+const BACKGROUND_EXPIRY_GRACE_MS: u64 = 60_000;
+/// The range a `ScheduleWakeup` delay is clamped to before the grace is added.
+const WAKEUP_MIN_DELAY_SECS: f64 = 60.0;
+const WAKEUP_MAX_DELAY_SECS: f64 = 3600.0;
+
+/// The background-work event a tool_use stands for, if any (issue #469).
+///
+/// These are the tools that let the agent end its turn and be re-invoked
+/// later: a Stop hook while one of them is pending means "handed off", not
+/// "waiting on you". `ScheduleWakeup { stop: true }` and `CronDelete` cancel
+/// such a loop instead.
+fn background_work_event(
+    session_id: u32,
+    tool_name: &str,
+    tool_use_id: &str,
+    input: &Value,
+    timestamp: &str,
+) -> Option<ClaudeEvent> {
+    let started = |expires_in_ms: Option<u64>| ClaudeEvent::BackgroundTaskStarted {
+        session_id,
+        tool_use_id: tool_use_id.to_string(),
+        tool_name: tool_name.to_string(),
+        description: input
+            .get("description")
+            .and_then(|v| v.as_str())
+            .filter(|d| !d.is_empty())
+            .unwrap_or(tool_name)
+            .to_string(),
+        expires_in_ms,
+        timestamp: timestamp.to_string(),
+    };
+    let stopped = |kind: BackgroundLoopKind| ClaudeEvent::BackgroundLoopStopped {
+        session_id,
+        kind,
+        timestamp: timestamp.to_string(),
+    };
+    let flag = |key: &str| input.get(key).and_then(|v| v.as_bool()) == Some(true);
+
+    match tool_name {
+        "Bash" | "PowerShell" if flag("run_in_background") => Some(started(None)),
+        "Monitor" => Some(started(
+            input
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .map(|ms| ms + BACKGROUND_EXPIRY_GRACE_MS),
+        )),
+        "Workflow" | "CronCreate" => Some(started(None)),
+        "ScheduleWakeup" if flag("stop") => Some(stopped(BackgroundLoopKind::Wakeup)),
+        "ScheduleWakeup" => Some(started(
+            input
+                .get("delaySeconds")
+                .and_then(|v| v.as_f64())
+                .map(|secs| {
+                    let delay = secs.clamp(WAKEUP_MIN_DELAY_SECS, WAKEUP_MAX_DELAY_SECS);
+                    (delay * 1000.0) as u64 + BACKGROUND_EXPIRY_GRACE_MS
+                }),
+        )),
+        "CronDelete" => Some(stopped(BackgroundLoopKind::Cron)),
+        _ => None,
+    }
+}
+
 fn parse_user_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
     let uuid = raw_str(entry.uuid).unwrap_or_default();
     let timestamp = raw_str(entry.timestamp).unwrap_or_default();
@@ -404,6 +468,18 @@ fn parse_user_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
         // summary at all is the older, agent-only format and passes.
         let is_agent_notification =
             tag_value(&text, "summary").is_none_or(|summary| summary.starts_with("Agent \""));
+        // Every other notification naming a tool_use reports that background
+        // task finished (completed, failed or killed). A Monitor's streamed
+        // event names none: the monitor is still running.
+        if !is_agent_notification {
+            if let Some(tool_use_id) = tag_value(&text, "tool-use-id") {
+                events.push(ClaudeEvent::BackgroundTaskFinished {
+                    session_id,
+                    tool_use_id,
+                    timestamp: timestamp.clone(),
+                });
+            }
+        }
         if let Some(agent_id) = tag_value(&text, "tool-use-id").filter(|_| is_agent_notification) {
             let status = tag_value(&text, "status");
             let failed = matches!(
@@ -576,6 +652,8 @@ fn parse_assistant_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
                 .to_string();
             let input = block.get("input").cloned().unwrap_or(Value::Null);
             let input_summary = summarize_tool_input(&tool_name, &input);
+            let background_work =
+                background_work_event(session_id, &tool_name, &tool_use_id, &input, &timestamp);
 
             events.push(ClaudeEvent::ToolUseStarted {
                 session_id,
@@ -584,6 +662,7 @@ fn parse_assistant_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
                 input_summary,
                 timestamp: timestamp.clone(),
             });
+            events.extend(background_work);
 
             // Emit higher-level events for specific tools.
             match tool_name.as_str() {
@@ -1375,5 +1454,187 @@ mod tests {
             e,
             ClaudeEvent::ToolUseCompleted { tool_use_id, .. } if tool_use_id == "toolu_task1"
         )));
+    }
+
+    // -----------------------------------------------------------------------
+    // Background work (issue #469)
+    // -----------------------------------------------------------------------
+
+    /// An assistant entry holding one tool_use of `name` with `input`.
+    fn tool_use_line(id: &str, name: &str, input: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"model":"claude-fable-5","content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}},"uuid":"a-{id}","timestamp":"2026-10-22T10:00:00Z"}}"#
+        )
+    }
+
+    /// The `(tool_use_id, tool_name, description, expires_in_ms)` of every
+    /// `BackgroundTaskStarted` in `events`.
+    fn background_starts(events: &[ClaudeEvent]) -> Vec<(String, String, String, Option<u64>)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ClaudeEvent::BackgroundTaskStarted {
+                    tool_use_id,
+                    tool_name,
+                    description,
+                    expires_in_ms,
+                    ..
+                } => Some((
+                    tool_use_id.clone(),
+                    tool_name.clone(),
+                    description.clone(),
+                    *expires_in_ms,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_background_tools_emit_background_task_started() {
+        // (tool, input, expected description, why, expected expiry)
+        let cases: &[(&str, &str, &str, &str, Option<u64>)] = &[
+            (
+                "Bash",
+                r#"{"command":"gh pr checks 7 --watch","description":"Watch CI","run_in_background":true}"#,
+                "Watch CI",
+                "background shell command, no own bound",
+                None,
+            ),
+            (
+                "PowerShell",
+                r#"{"command":"npm test","run_in_background":true}"#,
+                "PowerShell",
+                "no description falls back to the tool name",
+                None,
+            ),
+            (
+                "Monitor",
+                r#"{"command":"tail -f build.log","description":"Build log","timeout_ms":300000}"#,
+                "Build log",
+                "monitor: its timeout plus one minute",
+                Some(360_000),
+            ),
+            (
+                "Workflow",
+                r#"{"scriptPath":"wf.js","description":"Audit run"}"#,
+                "Audit run",
+                "workflow, no own bound",
+                None,
+            ),
+            (
+                "ScheduleWakeup",
+                r#"{"delaySeconds":1200,"reason":"poll CI","prompt":"check again"}"#,
+                "ScheduleWakeup",
+                "wakeup: its delay plus one minute",
+                Some(1_260_000),
+            ),
+            (
+                "ScheduleWakeup",
+                r#"{"delaySeconds":5,"prompt":"check again"}"#,
+                "ScheduleWakeup",
+                "wakeup delay clamped up to 60 s",
+                Some(120_000),
+            ),
+            (
+                "ScheduleWakeup",
+                r#"{"delaySeconds":7200,"prompt":"check again"}"#,
+                "ScheduleWakeup",
+                "wakeup delay clamped down to 3600 s",
+                Some(3_660_000),
+            ),
+            (
+                "CronCreate",
+                r#"{"cron":"*/5 * * * *","prompt":"poll","recurring":true}"#,
+                "CronCreate",
+                "cron job, never expires on its own",
+                None,
+            ),
+        ];
+
+        for (i, (name, input, description, why, expiry)) in cases.iter().enumerate() {
+            let id = format!("toolu_bg{i}");
+            let events = parse_transcript_line(3, &tool_use_line(&id, name, input));
+            assert_eq!(
+                background_starts(&events),
+                vec![(id, name.to_string(), description.to_string(), *expiry)],
+                "{name}: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_foreground_and_stopping_tools_emit_no_background_task() {
+        let cases: &[(&str, &str)] = &[
+            ("Bash", r#"{"command":"ls","description":"List files"}"#),
+            ("Bash", r#"{"command":"ls","run_in_background":false}"#),
+            ("ScheduleWakeup", r#"{"stop":true}"#),
+            ("Read", r#"{"file_path":"/src/a.rs"}"#),
+        ];
+        for (name, input) in cases {
+            let events = parse_transcript_line(3, &tool_use_line("toolu_fg", name, input));
+            assert!(
+                background_starts(&events).is_empty(),
+                "{name} {input} must not start background work, got {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_agent_task_notification_finishes_its_background_task() {
+        let bash = r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b9wqvjtm1</task-id>\n<tool-use-id>toolu_bash1</tool-use-id>\n<status>killed</status>\n<summary>Background command \"heartbeat watch\" was stopped</summary>\n</task-notification>"},"uuid":"u1","timestamp":"2026-08-07T10:00:00Z"}"#;
+        let events = parse_transcript_line(4, bash);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ClaudeEvent::BackgroundTaskFinished { session_id: 4, tool_use_id, .. }
+                    if tool_use_id == "toolu_bash1"
+            )),
+            "expected BackgroundTaskFinished for toolu_bash1, got {events:?}"
+        );
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, ClaudeEvent::SubagentCompleted { .. })));
+
+        // An agent's notification belongs to the agent graph, not to background work.
+        let agent = r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>a6cd66348</task-id>\n<tool-use-id>toolu_agent1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"fix-review-findings\" finished</summary>\n</task-notification>"},"uuid":"u2","timestamp":"2026-08-07T10:00:00Z"}"#;
+        // A Monitor's streamed event names no tool_use: the monitor runs on.
+        let monitor_event = r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>m1</task-id>\n<summary>Monitor event: \"Build log\"</summary>\n<event>line 3</event>\n</task-notification>"},"uuid":"u3","timestamp":"2026-08-07T10:00:00Z"}"#;
+        for line in [agent, monitor_event] {
+            let events = parse_transcript_line(4, line);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, ClaudeEvent::BackgroundTaskFinished { .. })),
+                "no BackgroundTaskFinished expected, got {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_loop_cancellations_emit_background_loop_stopped() {
+        let cases: &[(&str, &str, BackgroundLoopKind)] = &[
+            (
+                "ScheduleWakeup",
+                r#"{"stop":true}"#,
+                BackgroundLoopKind::Wakeup,
+            ),
+            ("CronDelete", r#"{"id":"job-1"}"#, BackgroundLoopKind::Cron),
+        ];
+        for (name, input, expected) in cases {
+            let events = parse_transcript_line(6, &tool_use_line("toolu_stop", name, input));
+            let kinds: Vec<BackgroundLoopKind> = events
+                .iter()
+                .filter_map(|e| match e {
+                    ClaudeEvent::BackgroundLoopStopped {
+                        session_id: 6,
+                        kind,
+                        ..
+                    } => Some(*kind),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(kinds, vec![*expected], "{name}");
+        }
     }
 }

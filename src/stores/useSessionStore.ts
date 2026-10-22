@@ -10,6 +10,11 @@ import {
   type SamuraiSupervisorState,
 } from "@/lib/samurai";
 import { useAgentStore } from "@/stores/useAgentStore";
+import {
+  msUntilBackgroundTasksExpire,
+  pendingBackgroundTasks,
+  useBackgroundTaskStore,
+} from "@/stores/useBackgroundTaskStore";
 import type { ClaudeEvent } from "@/types/claude-events";
 
 export type { SamuraiScheduleEntry, SamuraiSupervisorState };
@@ -48,6 +53,55 @@ const SESSION_STARTUP_TIMEOUT_MS = 30000;
  * the stale state instead of leaving it permanent.
  */
 const SUBAGENT_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Work a session's agent handed off and is waiting on, by kind (issue #469):
+ * while any is pending, a Stop hook means "handed off", not "waiting on you".
+ */
+export interface PendingWork {
+  subagents: number;
+  /** Background `Bash` / `PowerShell` commands. */
+  commands: number;
+  monitors: number;
+  workflows: number;
+  /** `/loop` wakeups scheduled with `ScheduleWakeup`. */
+  wakeups: number;
+  /** Cron jobs scheduled with `CronCreate`. */
+  loops: number;
+}
+
+/** Which {@link PendingWork} count each background tool adds to. */
+const PENDING_WORK_KIND: Record<string, keyof PendingWork> = {
+  Bash: "commands",
+  PowerShell: "commands",
+  Monitor: "monitors",
+  Workflow: "workflows",
+  ScheduleWakeup: "wakeups",
+  CronCreate: "loops",
+};
+
+function totalPendingWork(work: PendingWork): number {
+  return (
+    work.subagents + work.commands + work.monitors + work.workflows + work.wakeups + work.loops
+  );
+}
+
+function countOf(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** What a session held at `Working` is waiting on, in plain words. */
+function describePendingWork(work: PendingWork): string {
+  const parts: string[] = [];
+  if (work.subagents > 0) parts.push(`${countOf(work.subagents, "subagent")} running`);
+  if (work.commands > 0) parts.push(`waiting on ${countOf(work.commands, "background command")}`);
+  if (work.monitors > 0) parts.push(`watching ${countOf(work.monitors, "monitor")}`);
+  if (work.workflows > 0) parts.push(`${countOf(work.workflows, "workflow")} running`);
+  if (work.wakeups > 0) parts.push("scheduled to wake up");
+  if (work.loops > 0) parts.push("loop active");
+  const text = parts.join(", ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 /**
  * Statuses that mean the terminal is done running and the next move is the
@@ -173,8 +227,9 @@ interface ResolvedStatus {
  * @param payload - The raw wire payload (status + message + prompt).
  * @param existingStatus - The session's current status, or undefined when the
  *   session isn't in the store yet (the event will be buffered).
- * @param runningSubagents - Count of this session's still-running background
- *   subagents (only consulted for "AwaitingInput").
+ * @param pendingWork - This session's pending hand-offs: running background
+ *   subagents and background work (issue #469). A bare number counts
+ *   subagents only. Consulted for "AwaitingInput" and "IdleReminder".
  * @param terminalReportedThisTurn - Whether the agent reported Done/Error over
  *   MCP during the turn an "AwaitingInput" closes.
  * @param turnEndPending - Whether the last applied signal was a Stop read as
@@ -190,15 +245,16 @@ interface ResolvedStatus {
  *      status is deliberately not consulted: one stale Done would otherwise
  *      swallow every later turn end, forever (issue #77 cause 1), and a live
  *      Stop is better evidence than a startup Timeout heuristic;
- *    - while background subagents still run it means "handed off", not
- *      "waiting on you" → Working;
+ *    - while background subagents still run, or other background work is
+ *      pending (a command, monitor, workflow, wakeup or cron loop), it means
+ *      "handed off", not "waiting on you" → Working, naming what is pending;
  *    - otherwise → NeedsInput.
  * 2. "SessionEnded" (SessionEnd hook, the claude process exited): whatever
  *    the session showed is stale → Idle, clearing any needs-input prompt.
  *    Done/Error survive — the user still wants to see the outcome.
  * 3. "IdleReminder" (Notification hook `idle_prompt`, ~60s after a turn ends
  *    with nothing typed since): dropped on Done/Error, and dropped while
- *    background subagents still run (the session IS working); otherwise it
+ *    any pending work remains (the session IS working); otherwise it
  *    repaints NeedsInput — recovering a turn end that was lost or overwritten
  *    by a late async tool hook — but with `suppressAutoUnpark`, because the
  *    turn end itself already brought the session back once and a reminder
@@ -216,11 +272,16 @@ interface ResolvedStatus {
 export function resolveStatusEvent(
   payload: Pick<RawSessionStatusPayload, "status" | "message" | "needs_input_prompt">,
   existingStatus: BackendSessionStatus | undefined,
-  runningSubagents: number,
+  pendingWork: number | PendingWork,
   terminalReportedThisTurn = false,
   turnEndPending = false,
 ): ResolvedStatus | null {
   const terminal: BackendSessionStatus[] = ["Done", "Error"];
+  const work: PendingWork =
+    typeof pendingWork === "number"
+      ? { subagents: pendingWork, commands: 0, monitors: 0, workflows: 0, wakeups: 0, loops: 0 }
+      : pendingWork;
+  const pendingCount = totalPendingWork(work);
 
   if (payload.status === "AwaitingInput") {
     if (terminalReportedThisTurn) {
@@ -228,13 +289,14 @@ export function resolveStatusEvent(
     }
     // The Stop hook fires whenever the agent ends its turn — including when
     // it ends the turn precisely because it handed work off to background
-    // subagents. Those are still running, so the session is working, not
-    // waiting on the user. Self-correcting: the next turn end, once no
-    // subagent is running, reports NeedsInput as normal.
-    if (runningSubagents > 0) {
+    // subagents or background work (CI waits, monitors, loops). That is
+    // still running, so the session is working, not waiting on the user.
+    // Self-correcting: the next turn end, once nothing is pending, reports
+    // NeedsInput as normal.
+    if (pendingCount > 0) {
       return {
         status: "Working",
-        statusMessage: `${runningSubagents} subagent${runningSubagents === 1 ? "" : "s"} running`,
+        statusMessage: describePendingWork(work),
         needsInputPrompt: payload.needs_input_prompt,
       };
     }
@@ -256,7 +318,7 @@ export function resolveStatusEvent(
     if (existingStatus !== undefined && terminal.includes(existingStatus)) {
       return null;
     }
-    if (runningSubagents > 0) {
+    if (pendingCount > 0) {
       return null;
     }
     return {
@@ -673,12 +735,38 @@ function countRunningSubagents(sessionId: number): number {
 }
 
 /**
- * Milliseconds until the last of this session's running subagents goes stale,
- * or null when none of them counts as running right now.
+ * This session's pending work: running subagents plus the background tasks
+ * that have neither finished nor expired (issue #469).
+ */
+function countPendingWork(sessionId: number): PendingWork {
+  const work: PendingWork = {
+    subagents: countRunningSubagents(sessionId),
+    commands: 0,
+    monitors: 0,
+    workflows: 0,
+    wakeups: 0,
+    loops: 0,
+  };
+  const tasks = useBackgroundTaskStore.getState().tasks;
+  for (const task of pendingBackgroundTasks(tasks, sessionId, Date.now(), SUBAGENT_STALE_MS)) {
+    work[PENDING_WORK_KIND[task.toolName] ?? "commands"] += 1;
+  }
+  return work;
+}
+
+/**
+ * Milliseconds until the last of this session's pending work goes stale —
+ * running subagents and background tasks alike — or null when nothing that
+ * can go stale is pending right now (a cron loop never does on its own).
  */
 function msUntilSubagentsGoStale(sessionId: number): number | null {
   const now = Date.now();
-  let longest: number | null = null;
+  let longest = msUntilBackgroundTasksExpire(
+    useBackgroundTaskStore.getState().tasks,
+    sessionId,
+    now,
+    SUBAGENT_STALE_MS,
+  );
   for (const a of useAgentStore.getState().agents) {
     if (a.sessionId !== sessionId || a.completedAt !== null) continue;
     const spawned = Date.parse(a.spawnedAt);
@@ -703,9 +791,10 @@ function clearSubagentWatchdog(sessionId: number): void {
  * Schedules the re-check that bounds a subagent-driven `Working` state.
  *
  * When it fires, subagents still without a completion have aged past
- * `SUBAGENT_STALE_MS`: either newer ones are genuinely running (re-arm), or
- * the session has actually stopped and its dots must stop with it, so it lands
- * on the `NeedsInput` the Stop hook would have produced.
+ * `SUBAGENT_STALE_MS` and background tasks past their expiry: either newer
+ * work is genuinely pending (re-arm), or the session has actually stopped and
+ * its dots must stop with it, so it lands on the `NeedsInput` the Stop hook
+ * would have produced.
  */
 function armSubagentWatchdog(sessionId: number, projectPath: string): void {
   clearSubagentWatchdog(sessionId);
@@ -714,10 +803,14 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
 
   const timer = setTimeout(() => {
     subagentWatchdogs.delete(sessionId);
-    if (countRunningSubagents(sessionId) > 0) {
+    if (totalPendingWork(countPendingWork(sessionId)) > 0) {
       armSubagentWatchdog(sessionId, projectPath);
       return;
     }
+    // Background tasks that never reported are what went silent, if any.
+    const silentBackgroundWork = useBackgroundTaskStore
+      .getState()
+      .tasks.some((t) => t.sessionId === sessionId && t.finishedAt === null);
     useSessionStore.setState((state) => {
       const target = state.sessions.find(
         (s) => s.id === sessionId && samePath(s.project_path, projectPath),
@@ -733,7 +826,9 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
             ? {
                 ...s,
                 status: "NeedsInput" as BackendSessionStatus,
-                statusMessage: "Subagents stopped reporting - waiting for your input",
+                statusMessage: silentBackgroundWork
+                  ? "Background work stopped reporting - waiting for your input"
+                  : "Subagents stopped reporting - waiting for your input",
               }
             : s,
         ),
@@ -1207,13 +1302,14 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               (s) => s.id === session_id && samePath(s.project_path, project_path),
             );
 
-            // Subagent count is only consulted for the Stop-hook signal and
-            // the idle reminder. Bounded by SUBAGENT_STALE_MS (and the
-            // watchdog armed below), so a completion event that never arrives
-            // cannot pin the session at Working (issue #77 cause 4).
-            const runningSubagents =
+            // Pending work is only consulted for the Stop-hook signal and the
+            // idle reminder. Bounded by SUBAGENT_STALE_MS and each background
+            // task's expiry (and the watchdog armed below), so a completion
+            // that never arrives cannot pin the session at Working (issue #77
+            // cause 4, issue #469).
+            const pendingWork =
               event.payload.status === "AwaitingInput" || event.payload.status === "IdleReminder"
-                ? countRunningSubagents(session_id)
+                ? countPendingWork(session_id)
                 : 0;
 
             // Same-turn terminal bookkeeping (issue #77 cause 1): the Stop
@@ -1229,14 +1325,14 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               resolved = resolveStatusEvent(
                 event.payload,
                 existing?.status,
-                runningSubagents,
+                pendingWork,
                 reportedThisTurn,
               );
             } else {
               resolved = resolveStatusEvent(
                 event.payload,
                 existing?.status,
-                runningSubagents,
+                pendingWork,
                 false,
                 turnEndPending.has(session_id),
               );
