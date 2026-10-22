@@ -17,9 +17,17 @@ export const ISSUE_MAP_SELECT_EVENT = "issue-map:select";
 /** Map window → main window: the map closed, so refresh the issue list. */
 export const ISSUE_MAP_CLOSED_EVENT = "issue-map:closed";
 
+/** An open Maestro project the map can switch to. */
+export interface IssueMapProject {
+  name: string;
+  repoPath: string;
+}
+
 export interface IssueMapTarget {
   repoPath: string;
   search: string;
+  /** The open projects, for the map's project picker. */
+  projects?: IssueMapProject[];
 }
 
 export interface IssueMapSelection {
@@ -31,7 +39,27 @@ export interface IssueMapSelection {
 export function readIssueMapTarget(query: string): IssueMapTarget | null {
   const params = new URLSearchParams(query);
   if (params.get("view") !== ISSUE_MAP_VIEW) return null;
-  return { repoPath: params.get("repo") ?? "", search: params.get("search") ?? "" };
+  const target: IssueMapTarget = {
+    repoPath: params.get("repo") ?? "",
+    search: params.get("search") ?? "",
+  };
+  const projects = parseProjects(params.get("projects"));
+  if (projects) target.projects = projects;
+  return target;
+}
+
+/** The project list from the URL; null when missing or malformed. */
+function parseProjects(raw: string | null): IssueMapProject[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter(
+      (p): p is IssueMapProject => typeof p?.name === "string" && typeof p?.repoPath === "string",
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** Window title naming the project whose issues the map shows. */
@@ -54,6 +82,7 @@ export async function openIssueMapWindow(target: IssueMapTarget): Promise<void> 
     repo: target.repoPath,
     search: target.search,
   });
+  if (target.projects) params.set("projects", JSON.stringify(target.projects));
   const created = new WebviewWindow(ISSUE_MAP_WINDOW_LABEL, {
     url: `index.html?${params.toString()}`,
     title: issueMapWindowTitle(target.repoPath),

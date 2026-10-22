@@ -32,6 +32,17 @@ describe("readIssueMapTarget", () => {
     });
   });
 
+  it("reads the open projects and ignores a malformed list", () => {
+    const projects = [{ name: "maestro", repoPath: "/repos/maestro" }];
+    const query = new URLSearchParams({
+      view: "issue-map",
+      repo: "/repos/maestro",
+      projects: JSON.stringify([...projects, { name: 3 }]),
+    });
+    expect(readIssueMapTarget(`?${query}`)?.projects).toEqual(projects);
+    expect(readIssueMapTarget("?view=issue-map&projects=%7Bbad")?.projects).toBeUndefined();
+  });
+
   it("returns null for the main window", () => {
     expect(readIssueMapTarget("")).toBeNull();
     expect(readIssueMapTarget("?view=other")).toBeNull();
@@ -64,6 +75,16 @@ describe("openIssueMapWindow", () => {
     const query = (options?.url ?? "").split("?")[1];
     expect(readIssueMapTarget(`?${query}`)).toEqual({ repoPath: "/repos/a b", search: "is:open" });
     expect(options?.title).toBe("Maestro: Issue map - a b");
+  });
+
+  it("carries the open projects in the window URL", async () => {
+    getByLabel.mockResolvedValue(null);
+    const projects = [{ name: "b", repoPath: "/repos/b" }];
+    await openIssueMapWindow({ repoPath: "/repos/a", search: "", projects });
+
+    const options = vi.mocked(WebviewWindow).mock.calls[0][1];
+    const query = (options?.url ?? "").split("?")[1];
+    expect(readIssueMapTarget(`?${query}`)?.projects).toEqual(projects);
   });
 
   it("points an already open window at the repo and brings it forward", async () => {

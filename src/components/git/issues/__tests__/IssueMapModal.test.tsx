@@ -609,6 +609,40 @@ describe("IssueMapModal", () => {
     expect(screen.getByTestId("issue-map-tip")).toBeInTheDocument();
   });
 
+  it("the project picker switches the map to another open project", async () => {
+    const onSwitchProject = vi.fn();
+    render(
+      <IssueMapModal
+        repoPath={REPO}
+        search=""
+        onSelectIssue={vi.fn()}
+        onClose={vi.fn()}
+        projects={[
+          { name: "repo", repoPath: "/repo/" },
+          { name: "other", repoPath: "/other" },
+        ]}
+        onSwitchProject={onSwitchProject}
+      />,
+    );
+    await screen.findByTestId("issue-node-2");
+    const picker = screen.getByRole("combobox", { name: "Project" });
+    // The same path written with a trailing slash still counts as this project.
+    expect(
+      within(picker)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["repo", "other"]);
+    expect(picker).toHaveValue("/repo/");
+    fireEvent.change(picker, { target: { value: "/other" } });
+    expect(onSwitchProject).toHaveBeenCalledWith("/other");
+  });
+
+  it("hides the project picker when no other project is open", async () => {
+    renderModal();
+    await screen.findByTestId("issue-node-2");
+    expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull();
+  });
+
   it("double-click opens the issue on GitHub", async () => {
     renderModal();
     fireEvent.doubleClick(await screen.findByTestId("issue-node-3"));
