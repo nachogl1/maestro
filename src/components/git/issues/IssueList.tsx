@@ -9,6 +9,7 @@ import {
   type IssueMapTarget,
   openIssueMapWindow,
 } from "@/lib/issueMapWindow";
+import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { useGitHubStore } from "../../../stores/useGitHubStore";
 import { IssueFilters } from "./IssueFilters";
 import { IssueRow } from "./IssueRow";
@@ -42,7 +43,12 @@ export function IssueList({ repoPath, onSelectIssue, selectedIssueNumber }: Issu
   }, [repoPath, fetchIssues]);
 
   const openMap = () => {
-    openIssueMapWindow({ repoPath, search: issueSearch }).catch((err) =>
+    // Git projects only, with the repo the git panel would show for each.
+    const projects = useWorkspaceStore
+      .getState()
+      .tabs.filter((tab) => tab.workspaceType !== "non-git")
+      .map((tab) => ({ name: tab.name, repoPath: tab.selectedRepoPath ?? tab.projectPath }));
+    openIssueMapWindow({ repoPath, search: issueSearch, projects }).catch((err) =>
       console.error("Failed to open the issue map window:", err),
     );
   };

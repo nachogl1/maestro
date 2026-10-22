@@ -58,6 +58,8 @@ export function IssueMapWindow({ initial }: IssueMapWindowProps) {
       key={target.repoPath}
       repoPath={target.repoPath}
       search={target.search}
+      projects={target.projects ?? []}
+      onSwitchProject={(repoPath) => setTarget({ ...target, repoPath })}
       onSelectIssue={(number) => {
         const selection: IssueMapSelection = { repoPath: target.repoPath, number };
         void emitTo("main", ISSUE_MAP_SELECT_EVENT, selection);

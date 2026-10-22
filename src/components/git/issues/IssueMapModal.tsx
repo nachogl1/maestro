@@ -46,6 +46,8 @@ import {
   walk,
 } from "@/lib/issueMap";
 import { buildIssueMapHtml } from "@/lib/issueMapHtml";
+import type { IssueMapProject } from "@/lib/issueMapWindow";
+import { samePath } from "@/lib/path";
 import { type AuthStatus, useGitHubStore } from "@/stores/useGitHubStore";
 import { IssueMapFilterMenu, type IssueMapFilterOption } from "./IssueMapFilterMenu";
 import { type RepoAssignee, useIssueMap } from "./useIssueMap";
@@ -56,6 +58,9 @@ interface IssueMapModalProps {
   search: string;
   onSelectIssue: (issueNumber: number) => void;
   onClose: () => void;
+  /** Open projects the picker can switch the map to. */
+  projects?: IssueMapProject[];
+  onSwitchProject?: (repoPath: string) => void;
 }
 
 /** Assignee filter key for "nobody assigned". */
@@ -209,7 +214,14 @@ function AssignSection({ node, repoAssignees, setAssignees }: AssignSectionProps
  * a cross means closed, and every line runs from a blocker to the issue that
  * waits for it.
  */
-export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: IssueMapModalProps) {
+export function IssueMapModal({
+  repoPath,
+  search,
+  onSelectIssue,
+  onClose,
+  projects = [],
+  onSwitchProject,
+}: IssueMapModalProps) {
   const { issues, links, assignees, isLoading, error, truncated, reload, setAssignees } =
     useIssueMap(repoPath, search);
 
@@ -812,6 +824,16 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
   if (problemsOpen)
     problemsFill = problemCount > 0 ? "bg-maestro-yellow/10" : "bg-maestro-border/50";
 
+  /* ── Project picker: the open projects, plus this one if it is not among them ── */
+  const projectChoices = projects.filter(
+    (p, i) => projects.findIndex((q) => samePath(q.repoPath, p.repoPath)) === i,
+  );
+  let currentProject = projectChoices.find((p) => samePath(p.repoPath, repoPath));
+  if (!currentProject) {
+    currentProject = { name: repoLabel(repoPath, undefined), repoPath };
+    projectChoices.unshift(currentProject);
+  }
+
   return (
     <div className="fixed inset-0 flex bg-maestro-bg">
       <main aria-label="Issue map" className="flex h-full w-full flex-col overflow-hidden">
@@ -820,6 +842,21 @@ export function IssueMapModal({ repoPath, search, onSelectIssue, onClose }: Issu
           <h2 className="text-sm font-semibold text-maestro-text">
             Issue map: what is blocked by what, level by level
           </h2>
+          {onSwitchProject && projectChoices.length > 1 && (
+            <select
+              aria-label="Project"
+              title="Show the issue map of another open project"
+              value={currentProject.repoPath}
+              onChange={(e) => onSwitchProject(e.target.value)}
+              className="shrink-0 rounded border border-maestro-border bg-maestro-card px-1.5 py-1 text-[11px] text-maestro-text"
+            >
+              {projectChoices.map((p) => (
+                <option key={p.repoPath} value={p.repoPath}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
           <span className="text-[11px] text-maestro-muted">
             {issueCount} issue{issueCount === 1 ? "" : "s"} + {epicCount} epic
             {epicCount === 1 ? "" : "s"} · {linkCount} blocked-by link{linkCount === 1 ? "" : "s"}
