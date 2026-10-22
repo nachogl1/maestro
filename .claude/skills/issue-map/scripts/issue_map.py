@@ -7,7 +7,7 @@ never committed, and carries a banner saying who built it and when. Rebuild it w
 
     python .claude/skills/issue-map/scripts/issue_map.py            # rebuild the map, print its path
     python .claude/skills/issue-map/scripts/issue_map.py --open     # rebuild, then open it in the default browser
-    python .claude/skills/issue-map/scripts/issue_map.py --silent   # rebuild only (what /dev-next calls)
+    python .claude/skills/issue-map/scripts/issue_map.py --silent   # rebuild only, print nothing
 
 Needs Python 3.9+ and `gh` signed in. No third-party packages. One run is one issue list plus one GraphQL call
 per 25 issues for the native links.
