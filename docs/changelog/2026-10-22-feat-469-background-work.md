@@ -1,0 +1,1 @@
+Session status: a terminal whose agent is waiting on background work, such as a CI check, a monitor, a workflow or a loop, now keeps showing as working, stays parked and says what it is waiting on, and comes back as waiting for you only when the agent really stops; before, it turned red and unparked as soon as the agent paused to wait.

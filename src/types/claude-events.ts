@@ -97,6 +97,32 @@ export type ClaudeEvent =
       timestamp: string;
     }
   | {
+      /** Work that outlives the agent's turn and re-invokes it later (issue #469). */
+      event_type: "BackgroundTaskStarted";
+      session_id: number;
+      tool_use_id: string;
+      tool_name: string;
+      description: string;
+      /** How long the task may stay silent, when the tool states a bound. */
+      expires_in_ms: number | null;
+      /** A recurring cron job: it has no end of its own. */
+      recurring: boolean;
+      timestamp: string;
+    }
+  | {
+      event_type: "BackgroundTaskFinished";
+      session_id: number;
+      tool_use_id: string;
+      timestamp: string;
+    }
+  | {
+      /** `ScheduleWakeup { stop: true }` (wakeup) or `CronDelete` (cron). */
+      event_type: "BackgroundLoopStopped";
+      session_id: number;
+      kind: "wakeup" | "cron";
+      timestamp: string;
+    }
+  | {
       event_type: "StatusUpdate";
       session_id: number;
       state: string;

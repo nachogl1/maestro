@@ -10,7 +10,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { listen } from "@tauri-apps/api/event";
 
+import type { ClaudeEvent } from "@/types/claude-events";
 import { type SubagentInfo, useAgentStore } from "../useAgentStore";
+import { useBackgroundTaskStore } from "../useBackgroundTaskStore";
 import { type BackendSessionStatus, type SessionConfig, useSessionStore } from "../useSessionStore";
 
 const listenMock = vi.mocked(listen);
@@ -58,6 +60,39 @@ function agent(
     toolStats: null,
     agentRunId: null,
   };
+}
+
+/** The transcript reporting that the agent started background work just now. */
+function backgroundStarted(
+  sessionId: number,
+  toolUseId: string,
+  toolName: string,
+  expiresInMs: number | null = null,
+  options: { recurring?: boolean; timestamp?: string } = {},
+): void {
+  useBackgroundTaskStore.getState().handleEvents([
+    {
+      event_type: "BackgroundTaskStarted",
+      session_id: sessionId,
+      tool_use_id: toolUseId,
+      tool_name: toolName,
+      description: toolName,
+      expires_in_ms: expiresInMs,
+      recurring: options.recurring ?? toolName === "CronCreate",
+      timestamp: options.timestamp ?? new Date().toISOString(),
+    },
+  ]);
+}
+
+/** The transcript's task notification for a finished background task. */
+function backgroundFinished(sessionId: number, toolUseId: string): void {
+  const finished: ClaudeEvent = {
+    event_type: "BackgroundTaskFinished",
+    session_id: sessionId,
+    tool_use_id: toolUseId,
+    timestamp: new Date().toISOString(),
+  };
+  useBackgroundTaskStore.getState().handleEvents([finished]);
 }
 
 /**
@@ -131,6 +166,7 @@ describe("session status: the Stop hook vs. running subagents", () => {
       flaggedSessionIds: [],
     });
     useAgentStore.setState({ agents: [] });
+    useBackgroundTaskStore.setState({ tasks: [], sessionStarts: {} });
   });
 
   it("reports NeedsInput when nothing else is running", () => {
@@ -390,5 +426,104 @@ describe("session status: the Stop hook vs. running subagents", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * Issue #469: an agent that ends its turn to wait on a background command
+   * (CI, a build) is still working. The parked terminal stays parked and quiet
+   * until the command reports back and the agent truly stops.
+   */
+  it("a parked session waiting on a background command stays parked until the agent stops", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    useSessionStore.getState().parkSession(1);
+    backgroundStarted(1, "toolu_ci", "Bash");
+
+    emit(awaitingInput(1));
+
+    let state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("Working");
+    expect(state.sessions[0].statusMessage).toBe("Waiting on 1 background command");
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([]);
+
+    // The command's notification wakes the agent; its next Stop finds nothing pending.
+    backgroundFinished(1, "toolu_ci");
+    emit(awaitingInput(1));
+
+    state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("stops holding Working once background work passes its expiry without reporting", () => {
+    vi.useFakeTimers();
+    try {
+      useSessionStore.setState({ sessions: [session(1)] });
+      useSessionStore.getState().parkSession(1);
+      backgroundStarted(1, "toolu_monitor", "Monitor", 6 * 60 * 1000);
+
+      emit(awaitingInput(1));
+      expect(useSessionStore.getState().sessions[0].status).toBe("Working");
+
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(useSessionStore.getState().sessions[0].status).toBe("Working");
+
+      // The monitor never reports back.
+      vi.advanceTimersByTime(2 * 60 * 1000);
+
+      const state = useSessionStore.getState();
+      expect(state.sessions[0].status).toBe("NeedsInput");
+      expect(state.sessions[0].statusMessage).toBe(
+        "Background work stopped reporting - waiting for your input",
+      );
+      expect(state.parkedSessionIds).toEqual([]);
+      expect(state.attentionSessionIds).toEqual([1]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a one-shot cron job that has fired no longer holds the session at Working", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    backgroundStarted(1, "toolu_once", "CronCreate", null, { recurring: false });
+
+    emit(awaitingInput(1));
+    expect(useSessionStore.getState().sessions[0].status).toBe("Working");
+    expect(useSessionStore.getState().sessions[0].statusMessage).toBe("Scheduled to wake up");
+
+    // The job fires its prompt; the agent handles it and stops.
+    useBackgroundTaskStore.getState().handleEvents([
+      {
+        event_type: "UserMessage",
+        session_id: 1,
+        uuid: "u-fired",
+        text: "check the deploy",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    emit(awaitingInput(1));
+
+    expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
+  });
+
+  it("a resumed session is not pinned by a cron loop its earlier process started", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    const anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    useBackgroundTaskStore.getState().handleEvents([
+      {
+        event_type: "SessionStarted",
+        session_id: 1,
+        claude_session_uuid: "00000000-0000-4000-8000-000000000001",
+        transcript_path: "C:/synthetic/transcript.jsonl",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    // The watcher replays the transcript from its first byte.
+    backgroundStarted(1, "toolu_old_cron", "CronCreate", null, { timestamp: anHourAgo });
+
+    emit(awaitingInput(1));
+
+    expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
   });
 });

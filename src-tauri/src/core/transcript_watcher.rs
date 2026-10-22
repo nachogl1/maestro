@@ -1050,6 +1050,48 @@ mod tests {
         );
     }
 
+    /// Background work only holds a session at Working when the session
+    /// itself started it: a subagent's own background command must never
+    /// count for its parent (issue #469).
+    #[test]
+    fn test_background_work_reaches_the_bus_from_the_sessions_own_transcript_only() {
+        let start = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_bg","name":"Bash","input":{"command":"gh pr checks 7 --watch","run_in_background":true}}]},"uuid":"bg1","timestamp":"2026-10-22T10:00:00Z"}"#;
+        let finish = r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Watch CI\" completed</summary>\n</task-notification>"},"uuid":"bg2","timestamp":"2026-10-22T10:05:00Z"}"#;
+        // A second command that finishes mid-turn, recorded as an attachment.
+        let start_mid = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_mid","name":"Bash","input":{"command":"npm test","run_in_background":true}}]},"uuid":"bg3","timestamp":"2026-10-22T10:06:00Z"}"#;
+        let finish_mid = r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>b2</task-id>\n<tool-use-id>toolu_mid</tool-use-id>\n<status>completed</status>\n<summary>Background command \"npm test\" completed</summary>\n</task-notification>","commandMode":"task-notification"},"uuid":"bg4","timestamp":"2026-10-22T10:07:00Z"}"#;
+        let is_background = |e: &ClaudeEvent| {
+            matches!(
+                e,
+                ClaudeEvent::BackgroundTaskStarted { .. }
+                    | ClaudeEvent::BackgroundTaskFinished { .. }
+            )
+        };
+
+        for (parent, expected) in [(None, 4), (Some("toolu_parent"), 0)] {
+            let mut file = NamedTempFile::new().expect("create temp file");
+            writeln!(file, "{start}\n{finish}\n{start_mid}\n{finish_mid}").unwrap();
+            file.flush().unwrap();
+            let (bus, collected) = test_event_bus();
+            read_new_lines(
+                1,
+                &file.path().to_path_buf(),
+                0,
+                &bus,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                parent,
+            );
+            let events = collected.lock().unwrap();
+            assert_eq!(
+                events.iter().filter(|e| is_background(e)).count(),
+                expected,
+                "parent {parent:?}: {:?}",
+                *events
+            );
+        }
+    }
+
     /// A background agent must stay RUNNING between its launch acknowledgement
     /// and its task notification. Emitting a completion off the immediate
     /// `async_launched` result would mark it done the moment it started.

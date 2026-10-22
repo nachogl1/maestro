@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   type BackendSessionStatus,
+  type PendingWork,
   resolveStatusEvent,
   type SessionConfig,
   useSessionStore,
@@ -20,6 +21,11 @@ import {
 const listenMock = vi.mocked(listen);
 
 const PROJECT = "C:/proj";
+
+/** Pending work of the kinds given, zero of every other kind. */
+function pending(work: Partial<PendingWork>): PendingWork {
+  return { subagents: 0, commands: 0, monitors: 0, workflows: 0, wakeups: 0, loops: 0, ...work };
+}
 
 function session(id: number, status: BackendSessionStatus = "Working"): SessionConfig {
   return {
@@ -64,6 +70,8 @@ describe("resolveStatusEvent: signal → state table", () => {
     existing: BackendSessionStatus | undefined;
     incoming: string;
     subagents?: number;
+    /** Pending background work (issue #469); overrides `subagents` when set. */
+    work?: Partial<PendingWork>;
     /** The agent reported Done/Error during the turn this Stop closes. */
     reportedThisTurn?: boolean;
     expected: BackendSessionStatus | null;
@@ -150,6 +158,20 @@ describe("resolveStatusEvent: signal → state table", () => {
       subagents: 2,
       expected: "Working",
     },
+    {
+      name: "Stop hook with a pending background command and no subagents",
+      existing: "Working",
+      incoming: "AwaitingInput",
+      work: { commands: 1 },
+      expected: "Working",
+    },
+    {
+      name: "Stop hook with an active cron loop",
+      existing: "Working",
+      incoming: "AwaitingInput",
+      work: { loops: 1 },
+      expected: "Working",
+    },
     // SessionEnd hook (SessionEnded): process gone → Idle; outcome survives.
     {
       name: "SessionEnd onto Working",
@@ -225,6 +247,13 @@ describe("resolveStatusEvent: signal → state table", () => {
       subagents: 1,
       expected: null,
     },
+    {
+      name: "Idle reminder dropped while background work is pending",
+      existing: "Working",
+      incoming: "IdleReminder",
+      work: { wakeups: 1 },
+      expected: null,
+    },
   ];
 
   it("the idle reminder is marked so it never auto-unparks", () => {
@@ -242,11 +271,11 @@ describe("resolveStatusEvent: signal → state table", () => {
     expect(stop?.suppressAutoUnpark).toBeUndefined();
   });
 
-  it.each(rows)("$name", ({ existing, incoming, subagents, reportedThisTurn, expected }) => {
+  it.each(rows)("$name", ({ existing, incoming, subagents, work, reportedThisTurn, expected }) => {
     const resolved = resolveStatusEvent(
       { status: incoming as BackendSessionStatus, message: "msg" },
       existing,
-      subagents ?? 0,
+      work ? pending(work) : (subagents ?? 0),
       reportedThisTurn ?? false,
     );
     if (expected === null) {
@@ -254,6 +283,31 @@ describe("resolveStatusEvent: signal → state table", () => {
     } else {
       expect(resolved?.status).toBe(expected);
     }
+  });
+
+  it.each([
+    { work: { commands: 1 }, message: "Waiting on 1 background command" },
+    { work: { commands: 2 }, message: "Waiting on 2 background commands" },
+    { work: { monitors: 1 }, message: "Watching 1 monitor" },
+    { work: { workflows: 1 }, message: "1 workflow running" },
+    { work: { wakeups: 1 }, message: "Scheduled to wake up" },
+    { work: { loops: 1 }, message: "Loop active" },
+    { work: { subagents: 2 }, message: "2 subagents running" },
+    {
+      work: { subagents: 2, commands: 1, wakeups: 1 },
+      message: "2 subagents running, waiting on 1 background command, scheduled to wake up",
+    },
+  ])("a Stop held at Working by pending work says: $message", ({ work, message }) => {
+    const resolved = resolveStatusEvent(
+      { status: "AwaitingInput", message: "Waiting for your input" },
+      "Working",
+      pending(work),
+    );
+    expect(resolved).toEqual({
+      status: "Working",
+      statusMessage: message,
+      needsInputPrompt: undefined,
+    });
   });
 
   it("labels the subagent hand-off and clears the prompt on SessionEnded", () => {
