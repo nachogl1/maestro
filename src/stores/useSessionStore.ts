@@ -175,6 +175,11 @@ interface ResolvedStatus {
  *   session isn't in the store yet (the event will be buffered).
  * @param runningSubagents - Count of this session's still-running background
  *   subagents (only consulted for "AwaitingInput").
+ * @param terminalReportedThisTurn - Whether the agent reported Done/Error over
+ *   MCP during the turn an "AwaitingInput" closes.
+ * @param turnEndPending - Whether the last applied signal was a Stop read as
+ *   "handed off" to subagents, so the user was never told the turn ended
+ *   (only consulted for "IdleReminder").
  * @returns The fields to write, or null when the event must be DROPPED.
  *
  * Rules, in order:
@@ -197,7 +202,10 @@ interface ResolvedStatus {
  *    repaints NeedsInput — recovering a turn end that was lost or overwritten
  *    by a late async tool hook — but with `suppressAutoUnpark`, because the
  *    turn end itself already brought the session back once and a reminder
- *    is not a new reason to pull it out of the parking tray.
+ *    is not a new reason to pull it out of the parking tray. The exception is
+ *    `turnEndPending`: the Stop was read as "handed off" (rule 1) and no later
+ *    signal told the user the agent stopped, so this reminder IS that news and
+ *    auto-unparks like the Stop would have.
  * 4. "NeedsInput" (Notification hook, AskUserQuestion, or the MCP tool):
  *    dropped on Done/Error — a prompt reminder after the agent reported must
  *    not repaint a finished session red. Timeout is deliberately NOT
@@ -210,6 +218,7 @@ export function resolveStatusEvent(
   existingStatus: BackendSessionStatus | undefined,
   runningSubagents: number,
   terminalReportedThisTurn = false,
+  turnEndPending = false,
 ): ResolvedStatus | null {
   const terminal: BackendSessionStatus[] = ["Done", "Error"];
 
@@ -254,7 +263,7 @@ export function resolveStatusEvent(
       status: "NeedsInput",
       statusMessage: payload.message,
       needsInputPrompt: payload.needs_input_prompt,
-      suppressAutoUnpark: true,
+      suppressAutoUnpark: !turnEndPending,
     };
   }
 
@@ -611,10 +620,44 @@ function statusBufferKey(sessionId: number, projectPath: string): string {
 const terminalReportedThisTurn: Set<number> = new Set();
 
 /**
+ * Sessions whose last applied signal was a Stop hook read as "handed off" —
+ * background subagents were still running, so the turn end was painted
+ * `Working` and the user was never told the agent stopped.
+ *
+ * The idle reminder normally must not auto-unpark (PR #345: it repeats a turn
+ * end the Stop already surfaced). For these sessions it is the FIRST news that
+ * the turn is over — the Stop beat the subagent completion into the store, or
+ * that completion never arrived — so a parked terminal would otherwise turn
+ * red in the tray and stay there until someone happened to look. Cleared by
+ * any other applied event: the agent moved on, or the turn end reached the
+ * user through another signal.
+ */
+const turnEndPending: Set<number> = new Set();
+
+/**
  * Pending re-checks for sessions held at `Working` by subagents that never
  * reported completion. Key is session ID (see `SUBAGENT_STALE_MS`).
  */
 const subagentWatchdogs: Map<number, ReturnType<typeof setTimeout>> = new Map();
+
+/**
+ * The store patch that brings a parked session back into the grid, marked for
+ * attention (yellow chrome) until the user selects it. Shared by every path
+ * that paints a ready-for-the-user state (the status listener and the
+ * subagent watchdog) so none of them can leave a terminal red but hidden in
+ * the parking tray.
+ */
+function unparkWithAttention(
+  state: Pick<SessionState, "parkedSessionIds" | "attentionSessionIds">,
+  sessionId: number,
+): Pick<SessionState, "parkedSessionIds" | "attentionSessionIds"> {
+  return {
+    parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
+    attentionSessionIds: state.attentionSessionIds.includes(sessionId)
+      ? state.attentionSessionIds
+      : [...state.attentionSessionIds, sessionId],
+  };
+}
 
 /** Subagents of a session that are still plausibly running (see SUBAGENT_STALE_MS). */
 function countRunningSubagents(sessionId: number): number {
@@ -681,6 +724,9 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
       );
       // Anything else that moved the session on already knows better.
       if (target?.status !== "Working") return state;
+      // This is the turn end the user never saw, so a parked session comes
+      // back into the grid exactly as the Stop hook would have brought it.
+      turnEndPending.delete(sessionId);
       return {
         sessions: state.sessions.map((s) =>
           s === target
@@ -691,6 +737,9 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
               }
             : s,
         ),
+        ...(state.parkedSessionIds.includes(sessionId)
+          ? unparkWithAttention(state, sessionId)
+          : {}),
       };
     });
   }, delay);
@@ -1030,6 +1079,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     // this id must not inherit a pending re-check or a "reported done" mark.
     clearSubagentWatchdog(sessionId);
     terminalReportedThisTurn.delete(sessionId);
+    turnEndPending.delete(sessionId);
 
     // Forget the context usage so a future session reusing this id doesn't
     // inherit a stale percentage.
@@ -1069,6 +1119,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         lastContextUsage.delete(session.id);
         clearSubagentWatchdog(session.id);
         terminalReportedThisTurn.delete(session.id);
+        turnEndPending.delete(session.id);
       }
       // Remove the sessions from local state
       set((state) => {
@@ -1114,6 +1165,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         lastContextUsage.delete(session.id);
         clearSubagentWatchdog(session.id);
         terminalReportedThisTurn.delete(session.id);
+        turnEndPending.delete(session.id);
       }
       set((state) => {
         const samuraiBySessionId = { ...state.samuraiBySessionId };
@@ -1181,7 +1233,13 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
                 reportedThisTurn,
               );
             } else {
-              resolved = resolveStatusEvent(event.payload, existing?.status, runningSubagents);
+              resolved = resolveStatusEvent(
+                event.payload,
+                existing?.status,
+                runningSubagents,
+                false,
+                turnEndPending.has(session_id),
+              );
               if (resolved) {
                 if (resolved.status === "Done" || resolved.status === "Error") {
                   terminalReportedThisTurn.add(session_id);
@@ -1191,6 +1249,15 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               }
             }
             if (!resolved) return;
+
+            // A Stop read as "handed off" (painted Working because subagents
+            // still run) leaves the turn end untold; any other applied signal
+            // either tells it or shows the agent moved on.
+            if (event.payload.status === "AwaitingInput" && resolved.status === "Working") {
+              turnEndPending.add(session_id);
+            } else {
+              turnEndPending.delete(session_id);
+            }
 
             if (!existing) {
               // Buffer this status update - it will be applied when the session is added
@@ -1253,14 +1320,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
                       }
                     : s,
                 ),
-                ...(autoUnpark
-                  ? {
-                      parkedSessionIds: state.parkedSessionIds.filter((id) => id !== session_id),
-                      attentionSessionIds: state.attentionSessionIds.includes(session_id)
-                        ? state.attentionSessionIds
-                        : [...state.attentionSessionIds, session_id],
-                    }
-                  : {}),
+                ...(autoUnpark ? unparkWithAttention(state, session_id) : {}),
               };
             });
           })
