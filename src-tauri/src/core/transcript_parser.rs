@@ -43,6 +43,19 @@ struct Entry<'a> {
     message: Option<&'a RawValue>,
     #[serde(rename = "toolUseResult", borrow)]
     tool_use_result: Option<&'a RawValue>,
+    #[serde(borrow)]
+    attachment: Option<&'a RawValue>,
+}
+
+/// The fields of an `attachment` entry that are read. A task that finishes
+/// while the agent's turn is still running is queued as one of these
+/// (`commandMode: "task-notification"`) rather than written as a user entry.
+#[derive(Deserialize)]
+struct Attachment<'a> {
+    #[serde(rename = "commandMode", borrow)]
+    command_mode: Option<&'a RawValue>,
+    #[serde(borrow)]
+    prompt: Option<&'a RawValue>,
 }
 
 /// A message envelope; only its `content` is ever read.
@@ -154,6 +167,7 @@ pub fn parse_transcript_line(session_id: u32, line: &str) -> Vec<ClaudeEvent> {
     match raw_str(entry.kind).as_deref().unwrap_or("") {
         "user" => parse_user_message(session_id, &entry),
         "assistant" => parse_assistant_message(session_id, &entry),
+        "attachment" => parse_attachment(session_id, &entry),
         _ => Vec::new(), // skip file-history-snapshot, unknown types
     }
 }
@@ -426,6 +440,53 @@ fn background_work_event(
     }
 }
 
+/// Whether a `<task-notification>` blob is a sub-agent's. Notifications are
+/// not agent-only: background Bash commands, workflows and monitors send the
+/// same blob (their summaries read `Background command "…"` / `Dynamic
+/// workflow "…"` / `Monitor event: …`). A notification with no summary at all
+/// is the older, agent-only format.
+fn is_agent_notification(text: &str) -> bool {
+    tag_value(text, "summary").is_none_or(|summary| summary.starts_with("Agent \""))
+}
+
+/// The [`ClaudeEvent::BackgroundTaskFinished`] a non-agent task notification
+/// stands for (completed, failed or killed). A Monitor's streamed event names
+/// no tool_use: the monitor is still running, so it yields nothing.
+fn background_task_finished(
+    session_id: u32,
+    notification: &str,
+    timestamp: &str,
+) -> Option<ClaudeEvent> {
+    if is_agent_notification(notification) {
+        return None;
+    }
+    Some(ClaudeEvent::BackgroundTaskFinished {
+        session_id,
+        tool_use_id: tag_value(notification, "tool-use-id")?,
+        timestamp: timestamp.to_string(),
+    })
+}
+
+/// An `attachment` entry: only a mid-turn task notification is read. It is
+/// often the only record of a background task finishing while the agent was
+/// still working (issue #469); a later user-entry copy is a harmless repeat.
+fn parse_attachment(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
+    let Some(attachment) = entry
+        .attachment
+        .and_then(|a| serde_json::from_str::<Attachment>(a.get()).ok())
+    else {
+        return Vec::new();
+    };
+    if raw_str(attachment.command_mode).as_deref() != Some("task-notification") {
+        return Vec::new();
+    }
+    let prompt = raw_str(attachment.prompt).unwrap_or_default();
+    let timestamp = raw_str(entry.timestamp).unwrap_or_default();
+    background_task_finished(session_id, &prompt, &timestamp)
+        .into_iter()
+        .collect()
+}
+
 fn parse_user_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
     let uuid = raw_str(entry.uuid).unwrap_or_default();
     let timestamp = raw_str(entry.timestamp).unwrap_or_default();
@@ -460,28 +521,12 @@ fn parse_user_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
     // launch time only said "started". The notification carries the agent's full
     // report but none of the counters a foreground result has.
     if text.contains("<task-notification>") {
-        // Task notifications are not agent-only: background Bash commands,
-        // workflows and monitors send the same blob (their summaries read
-        // `Background command "…"` / `Dynamic workflow "…"` / `Monitor
-        // event: …`). Only an agent's belongs on the agent graph — the
+        // Only an agent's notification belongs on the agent graph — the
         // completions this parser emits can now reach the store without a
         // matching spawn, so this is the line that keeps a killed background
-        // shell from showing up as a phantom agent. A notification with no
-        // summary at all is the older, agent-only format and passes.
-        let is_agent_notification =
-            tag_value(&text, "summary").is_none_or(|summary| summary.starts_with("Agent \""));
-        // Every other notification naming a tool_use reports that background
-        // task finished (completed, failed or killed). A Monitor's streamed
-        // event names none: the monitor is still running.
-        if !is_agent_notification {
-            if let Some(tool_use_id) = tag_value(&text, "tool-use-id") {
-                events.push(ClaudeEvent::BackgroundTaskFinished {
-                    session_id,
-                    tool_use_id,
-                    timestamp: timestamp.clone(),
-                });
-            }
-        }
+        // shell from showing up as a phantom agent.
+        let is_agent_notification = is_agent_notification(&text);
+        events.extend(background_task_finished(session_id, &text, &timestamp));
         if let Some(agent_id) = tag_value(&text, "tool-use-id").filter(|_| is_agent_notification) {
             let status = tag_value(&text, "status");
             let failed = matches!(
@@ -1644,6 +1689,32 @@ mod tests {
                     .any(|e| matches!(e, ClaudeEvent::BackgroundTaskFinished { .. })),
                 "no BackgroundTaskFinished expected, got {events:?}"
             );
+        }
+    }
+
+    /// A task that finishes while the agent's turn is still running is written
+    /// as a queued-command attachment, not as a user entry, and is often the
+    /// only record of the finish.
+    #[test]
+    fn test_mid_turn_attachment_notification_finishes_its_background_task() {
+        let line = r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>b7q2</task-id>\n<tool-use-id>toolu_mid1</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Run tests\" completed (exit code 0)</summary>\n</task-notification>","commandMode":"task-notification","origin":{"kind":"task-notification","producer":"session-task"},"timestamp":"2026-10-22T10:02:00.000Z"},"uuid":"att1","timestamp":"2026-10-22T10:02:00.100Z","sessionId":"00000000-0000-4000-8000-000000000002"}"#;
+        let events = parse_transcript_line(7, line);
+        assert_eq!(events.len(), 1, "only the finish, got {events:?}");
+        assert!(
+            matches!(
+                &events[0],
+                ClaudeEvent::BackgroundTaskFinished { session_id: 7, tool_use_id, timestamp }
+                    if tool_use_id == "toolu_mid1" && timestamp == "2026-10-22T10:02:00.100Z"
+            ),
+            "got {events:?}"
+        );
+
+        // An agent's mid-turn notification and other queued commands finish nothing.
+        let agent = r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_agent2</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Map the repo\" finished</summary>\n</task-notification>","commandMode":"task-notification"},"uuid":"att2","timestamp":"2026-10-22T10:03:00.000Z"}"#;
+        let typed = r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"also check <tool-use-id>toolu_x</tool-use-id>","commandMode":"prompt"},"uuid":"att3","timestamp":"2026-10-22T10:04:00.000Z"}"#;
+        for line in [agent, typed] {
+            let events = parse_transcript_line(7, line);
+            assert!(events.is_empty(), "nothing expected, got {events:?}");
         }
     }
 
