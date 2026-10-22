@@ -1,0 +1,1 @@
+orion is installed: mandatory working rules, 14 skills (/dev-next, /dev-quick, /harvest, /issue-map and more) and a session-start update check now ship with the project, and AGENTS.md moved into CLAUDE.md.
