@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261022-125516-4996",
+  "issue": 469,
+  "title": "Keep a terminal working and parked while its agent waits on background work (CI waits, monitors, workflows, loops)",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 471,
+  "merged_at": "2026-10-22T14:38:11Z",
+  "merge_commit": "2197b93",
+  "seam": "session-status pipeline: src-tauri/src/core/transcript_parser.rs, src/types/claude-events.ts, src/stores/useBackgroundTaskStore.ts, src/stores/useSessionStore.ts",
+  "story": "When Claude paused to wait on a CI check, a build, a monitor or a /loop, Maestro used to treat that pause as 'waiting for you': the terminal turned red and jumped out of the parked strip while nothing needed the user. Now it keeps showing as working, stays parked and says what it is waiting on. It turns red and comes back only when Claude really stops, or when the background work goes silent for too long (30 minutes, or the tool's own timeout).",
+  "checks": [
+    {
+      "key": "session-status/background-command-holds-working",
+      "criterion": "A terminal waiting on a background command keeps showing as working, stays parked and raises no attention",
+      "steps": "Start Maestro on a throwaway project and open a Claude terminal. Ask it to run `sleep 120` as a background command and then end its turn. Park the terminal right away.",
+      "expected": "The dot shows working, the status reads 'Waiting on 1 background command', and the terminal stays in the parked strip with no yellow frame."
+    },
+    {
+      "key": "session-status/agent-truly-stops",
+      "criterion": "Once the background work reports back and the agent stops with nothing pending, the terminal turns red and unparks with attention",
+      "steps": "Continue from the previous check and wait about 2 minutes for the command to finish and the agent to reply.",
+      "expected": "The dot turns red (waiting for you) and the terminal leaves the parked strip with the yellow attention frame."
+    },
+    {
+      "key": "session-status/silent-work-fallback",
+      "criterion": "Background work that never reports flips the terminal to waiting-for-you when its expiry passes",
+      "steps": "Ask Claude to start a Monitor on a command that never prints, with timeout_ms 60000, and end its turn. Park the terminal.",
+      "expected": "It shows working at first; within about 2 minutes (unless Claude Code reports the monitor's timeout first) it turns red with 'Background work stopped reporting - waiting for your input' and unparks with the yellow frame. A command with no limit of its own holds for the 30-minute fallback instead."
+    }
+  ],
+  "no_qa_reason": null
+}

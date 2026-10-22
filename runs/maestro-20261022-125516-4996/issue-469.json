@@ -1,0 +1,86 @@
+{
+  "run_id": "maestro-20261022-125516-4996",
+  "issue": 469,
+  "title": "Keep a terminal working and parked while its agent waits on background work (CI waits, monitors, workflows, loops)",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-10-22T12:55:16Z",
+  "finished_at": "2026-10-22T14:38:11Z",
+  "outcome": "merged",
+  "pr": 471,
+  "summary": "A terminal whose agent ended its turn only to wait on background work (a background command, a Monitor, a Workflow, a /loop wakeup or a cron) used to turn red and unpark as if it needed the user. The transcript parser now tracks that work and the Stop hook keeps the terminal Working and parked until the work reports back, the agent truly stops, or the work goes silent past its expiry.",
+  "agents": [
+    {
+      "name": "dev-469",
+      "model": "opus",
+      "tokens_total": 253669
+    },
+    {
+      "name": "review-469-r1",
+      "model": "opus",
+      "tokens_total": 165539
+    },
+    {
+      "name": "review-469-r2",
+      "model": "opus",
+      "tokens_total": 174629
+    },
+    {
+      "name": "review-469-r3",
+      "model": "opus",
+      "tokens_total": 157381
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2085,
+    "review_seconds": 3681,
+    "ci_seconds": 180
+  },
+  "rounds": {
+    "review": 3,
+    "ci": 1
+  },
+  "friction": [
+    "the Rust CI job on the round-2 head sat 40 minutes on 'Install Linux build dependencies' without starting it (runner capacity, not the change); the reviewer waited its full 30-minute cap and then ran the Rust gate locally; the next push cancelled the run and the fresh one took 2 minutes"
+  ],
+  "lessons_learned": [
+    "Claude Code writes a mid-turn task notification as an `attachment` line (commandMode task-notification), not a `user` line; a parser rule that reads only user/assistant entries misses it — check every entry type's real shape before relying on two of them"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/stores/useBackgroundTaskStore.ts",
+      "what": "A conversation resumed in a new terminal replays its transcript, so an older recurring CronCreate with no CronDelete makes the resumed terminal show 'Loop active'; one-shot crons and work older than the latest SessionStarted are now dropped, but a recurring cron the new process does not run still pins the session",
+      "why": "Telling replayed work from live work needs a process-start marker beyond the SessionStarted rule; outside this issue",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src/stores/useBackgroundTaskStore.ts",
+      "what": "SessionStarted also fires on /clear, so pending background work is dropped on clear and a terminal whose background command keeps running turns red too early (the old, safe direction)",
+      "why": "Out of scope; needs the start reason (clear vs startup/resume) threaded through",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src/stores/useSessionStore.ts",
+      "what": "A background command that never ends by design (a dev server, tail -f) keeps the session Working, quiet and parked for up to 30 minutes after the agent handed back to the user",
+      "why": "The issue's Decisions fixed the 30-minute bound; changing it is a product decision",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/transcript_parser.rs",
+      "what": "A background command the agent ends itself with TaskStop gets no task-notification at all, so it stays pending until 30 minutes after its start and the terminal shows 'Waiting on 1 background command' while parked",
+      "why": "Matching the TaskStop's task id to the start needs the id from the start's tool_result, outside the notification-only finish rule",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/transcript_parser.rs",
+      "what": "A subagent that finishes mid-turn seems to report only as a queued-command attachment line; if no user-entry copy follows, the next Stop shows '1 subagent running' for up to 30 minutes (pre-existing; unverified whether a copy always follows)",
+      "why": "Subagent tracking is outside this issue",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
