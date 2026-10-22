@@ -85,6 +85,17 @@ function awaitingInput(sessionId: number) {
   };
 }
 
+/** The CLI's 60s idle_prompt Notification, as the status server forwards it. */
+function idleReminder(sessionId: number) {
+  return {
+    session_id: sessionId,
+    project_path: PROJECT,
+    status: "IdleReminder",
+    message: "Claude is waiting for your input",
+    needs_input_prompt: null,
+  };
+}
+
 /** A status the agent reported itself over MCP. */
 function mcpStatus(sessionId: number, status: BackendSessionStatus, message: string) {
   return {
@@ -113,7 +124,12 @@ describe("session status: the Stop hook vs. running subagents", () => {
     // subagent re-checks, "already reported done" marks) that lives outside the
     // store state, so one test cannot leak into the next.
     for (const id of [1, 2, 9]) useSessionStore.getState().removeSession(id);
-    useSessionStore.setState({ sessions: [], parkedSessionIds: [], flaggedSessionIds: [] });
+    useSessionStore.setState({
+      sessions: [],
+      parkedSessionIds: [],
+      attentionSessionIds: [],
+      flaggedSessionIds: [],
+    });
     useAgentStore.setState({ agents: [] });
   });
 
@@ -283,5 +299,96 @@ describe("session status: the Stop hook vs. running subagents", () => {
     });
 
     expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
+  });
+
+  /**
+   * A parked terminal whose Stop was read as "handed off" (subagents still
+   * running) was painted Working, so the user never heard the turn ended. When
+   * the subagent completion lands afterwards and the CLI's 60s idle reminder
+   * repaints NeedsInput, that reminder IS the news — the terminal must come
+   * back into the grid, not just turn red inside the parking tray.
+   */
+  it("the idle reminder unparks a session whose stop was read as handed off", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    useSessionStore.getState().parkSession(1);
+    useAgentStore.setState({ agents: [agent(1, "a1", null)] });
+
+    emit(awaitingInput(1));
+    expect(useSessionStore.getState().sessions[0].status).toBe("Working");
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([1]);
+
+    useAgentStore.setState({ agents: [agent(1, "a1", Date.now())] });
+    emit(idleReminder(1));
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  /**
+   * PR #345 still holds: a turn end the user already saw and parked away is
+   * not re-surfaced by the reminder, even after a late tool hook repainted the
+   * session Working in between.
+   */
+  it("the idle reminder still leaves a re-parked session alone after a late Working repaint", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    useSessionStore.getState().parkSession(1);
+
+    emit(awaitingInput(1));
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([]);
+    useSessionStore.getState().parkSession(1);
+
+    emit(mcpStatus(1, "Working", "late PostToolUse"));
+    emit(idleReminder(1));
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
+    expect(state.parkedSessionIds).toEqual([1]);
+  });
+
+  it("a fresh turn after the hand-off resets the reminder back to repaint-only", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    useSessionStore.getState().parkSession(1);
+    useAgentStore.setState({ agents: [agent(1, "a1", null)] });
+
+    emit(awaitingInput(1));
+    // The agent resumed (UserPromptSubmit / PreToolUse paint Working) and its
+    // next stop found nothing running: the turn end reached the user there.
+    emit(mcpStatus(1, "Working", "Processing your prompt"));
+    useAgentStore.setState({ agents: [agent(1, "a1", Date.now())] });
+    emit(awaitingInput(1));
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([]);
+    useSessionStore.getState().parkSession(1);
+
+    emit(idleReminder(1));
+
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([1]);
+  });
+
+  /**
+   * Same gap on the other exit from the handed-off state: the 30-minute
+   * re-check that stops trusting silent subagents painted NeedsInput straight
+   * into the store, bypassing the auto-unpark rule.
+   */
+  it("the subagent re-check unparks a parked session when it flips it to NeedsInput", () => {
+    vi.useFakeTimers();
+    try {
+      useSessionStore.setState({ sessions: [session(1)] });
+      useSessionStore.getState().parkSession(1);
+      useAgentStore.setState({ agents: [agent(1, "a1", null)] });
+
+      emit(awaitingInput(1));
+      expect(useSessionStore.getState().sessions[0].status).toBe("Working");
+
+      vi.advanceTimersByTime(31 * 60 * 1000);
+
+      const state = useSessionStore.getState();
+      expect(state.sessions[0].status).toBe("NeedsInput");
+      expect(state.parkedSessionIds).toEqual([]);
+      expect(state.attentionSessionIds).toEqual([1]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
