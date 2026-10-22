@@ -1,0 +1,1 @@
+Workshop: a new top-bar panel runs Claude Code's /insights once a week while Maestro is open and keeps the report there, showing when it ran, when the next run is and every past run. A Summary tab gives a short, easy-to-read version and a Real Transcript tab shows the full report exactly as /insights wrote it.

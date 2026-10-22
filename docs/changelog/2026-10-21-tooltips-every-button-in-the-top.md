@@ -1,0 +1,1 @@
+Tooltips: every button in the top bars and terminal headers now says what it does when you hover it, with the keyboard shortcut in brackets where there is one; new terminal shortcuts Alt+R rename, Alt+W close (it still asks first), Alt+Shift+P pin and Alt+Shift+F flag the focused terminal.

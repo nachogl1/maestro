@@ -1,0 +1,1 @@
+Status dots: the dot on terminal tabs and parked terminals is now green while the agent works and red when it waits for you, and a parked terminal whose Claude stops mid-task comes back into view too.

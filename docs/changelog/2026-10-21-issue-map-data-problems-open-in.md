@@ -1,0 +1,1 @@
+Issue map: data problems open in a panel on the right that a top-bar button shows or hides, and the legend rows, explanation lines and footer text are gone; a "Blocked by" section that links issues by their web address no longer shows a false disagreement.

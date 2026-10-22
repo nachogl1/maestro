@@ -1,0 +1,1 @@
+Work Journal: suggestions now give one line per project that sums up the features worked on that day, instead of a line for every commit, pull request or session. Each suggestion's tag has its own colour per source, and git and GitHub work shows as one Git tag that says whether it came from a commit, a PR or an issue.

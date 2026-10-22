@@ -1,0 +1,1 @@
+Terminals: grab the edge of a terminal (not just the thin line between two) to resize it, and the top-bar Tidy up button (or Alt+T) now also works in eagle view, putting every tile back to an even size.
