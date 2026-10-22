@@ -6,6 +6,7 @@ import {
   RIGHT_PANEL_MIN_WIDTH,
 } from "@/components/shared/PanelResizeHandle";
 import { InjectorSection } from "@/components/sidebar/InjectorSection";
+import { InjectorTriggersSection } from "@/components/sidebar/InjectorTriggersSection";
 import { LaunchSection } from "@/components/sidebar/LaunchSection";
 import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
@@ -128,7 +129,10 @@ export function UtilityPanel({
           {panel === "secondbrain" ? (
             <SecondBrainSection />
           ) : panel === "inject" ? (
-            <InjectorSection />
+            <>
+              <InjectorSection />
+              <InjectorTriggersSection />
+            </>
           ) : (
             <LaunchSection onNavigate={onNavigateToSession} />
           )}
