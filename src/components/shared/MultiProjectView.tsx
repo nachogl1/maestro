@@ -20,6 +20,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import {
   compareRowMajor,
   dropBesideTile,
@@ -995,6 +996,8 @@ function EagleZoomTab({
   // Attention highlight (auto-unparked because the agent needs input) —
   // same yellow chrome as the warning flag, cleared by selecting the session.
   const hasAttention = useSessionStore((s) => s.attentionSessionIds.includes(sessionId));
+  // Context alert (Settings): the tab blinks red like the frame it stands for.
+  const contextAlert = useSessionContextAlert(sessionId);
   // Attention-first click semantics on the active tab: the first click only
   // acknowledges the attention highlight — it must not also set the warning
   // flag. Subsequent clicks toggle the flag as before.
@@ -1012,10 +1015,16 @@ function EagleZoomTab({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
-    ...(isActive && !isFlagged && !hasAttention
+    // The active tab is a solid fill of the project colour with bright bold
+    // text and a matching outline, so the focused terminal is found at a
+    // glance rather than by reading the names. Skipped (inline styles would
+    // win over the class) while the yellow flag or the red context alert
+    // paints the tab instead.
+    ...(isActive && !isFlagged && !hasAttention && !contextAlert.active
       ? {
-          backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
-          color,
+          backgroundColor: `color-mix(in srgb, ${color} 35%, transparent)`,
+          color: "rgb(var(--maestro-text))",
+          boxShadow: `inset 0 0 0 1px ${color}`,
         }
       : {}),
   };
@@ -1028,15 +1037,20 @@ function EagleZoomTab({
       {...listeners}
       onClick={handleClick}
       className={`flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-        isFlagged || hasAttention ? "warning-flag" : ""
-      } ${isActive ? "" : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"}`}
-      title={
+        contextAlert.active
+          ? "zoom-tab-context-alert"
+          : isFlagged || hasAttention
+            ? "warning-flag"
+            : ""
+      } ${isActive ? "font-bold" : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"}`}
+      data-context-alert={contextAlert.active ? "true" : undefined}
+      title={`${contextAlert.title ? `${contextAlert.title} — ` : ""}${
         isActive
           ? hasAttention
             ? `${projectName} · ${label} (needs input — click to clear the attention highlight)`
             : `${projectName} · ${label} (click to ${isFlagged ? "clear" : "set"} warning flag)`
           : `Switch to ${projectName} · ${label}`
-      }
+      }`}
     >
       <span className="font-mono text-[10px] opacity-60">{index + 1}</span>
       <span className="font-bold" style={{ color }}>
