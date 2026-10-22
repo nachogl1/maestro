@@ -48,7 +48,6 @@ repository's files). This skill expects that file to state the items below; the 
 | **Domain invariants** — a record that must be written, a documented schema kept in step with code | None. |
 | **Read-only repositories** — repositories this team does not own that may sit on the same machine | None. |
 | **Questions to settle before the first story** — a list the project keeps open | None. |
-| **Issue map** — the blocked-by graph `/issue-map` draws | Rebuilt silently after every claim and every merge when `.claude/skills/issue-map/` is installed. |
 | **Requirements document (PRD)** — where it lives | None. |
 | **Findings bar** — what is fixed now, deferred, filed or dropped | The rubric in phase 4. |
 
@@ -230,10 +229,8 @@ Claim, in this order — the order matters:
 4. Add the issue's entry to the in-flight file: the first claim fills its number into this run's issue-less entry, a
    further claim adds an entry of its own. From here the issue is listed as in flight until phase 5 clean-up or a
    `needs-human` release removes it.
-5. Rebuild the issue map silently when `.claude/skills/issue-map/` is installed: `/issue-map --silent` (runs
-   `python .claude/skills/issue-map/scripts/issue_map.py`; shows nothing). Run it in the background, as its own command,
-   never chained with another — after the phase 3 worktree exists, so a slow rebuild can never push `git worktree add`
-   past the tool timeout. A failure is one logged line and never stops the run.
+
+This skill never rebuilds the issue map: `/issue-map` rebuilds it from the live issues whenever the person asks for it.
 
 Re-read the issue immediately before writing to it. Another terminal may have claimed it in the last few seconds; if the
 assignee is not you, release nothing and pick the next candidate. **A non-empty assignee on this re-read aborts the
@@ -354,9 +351,7 @@ request already changes** → fixed in this pull request. Critical → a GitHub 
 
 Follow `references/merge-and-ci.md`. In short: take the `merging` slot in the in-flight file → merge `origin/main` into
 the branch and push so CI runs on what will actually land → poll for the check run id, then watch it → squash-merge →
-release the slot → verify the issue closed → delete worktree and branch → remove the issue from the in-flight file →
-rebuild the issue map silently when `.claude/skills/issue-map/` is installed (`/issue-map --silent`, in the background,
-as its own command, never chained; it shows nothing and never blocks the run).
+release the slot → verify the issue closed → delete worktree and branch → remove the issue from the in-flight file.
 
 **Never merge on red or pending. "No checks reported" is red.** Red after two rounds → `needs-human` and the issue released.
 
@@ -392,11 +387,9 @@ run /harvest-qa`, after the `Harvest due` line if both apply. Each pile is judge
 Counting only; this skill never runs the QA.
 
 Then probe for drift between the issues and the PRD — **mechanical only, from data this run already holds**, never a
-sub-agent and never a judgement. Three signs, any one of which is enough: (a) the issue map's footer, when `issue-map`
-is installed and was rebuilt this run, says the body sections and native relations DISAGREE or that it dropped a link
-(to an epic, to a missing issue, or one closing a cycle); (b) an open non-epic issue in the phase 0 snapshot with no
+sub-agent and never a judgement. Two signs, either of which is enough: (a) an open non-epic issue in the phase 0 snapshot with no
 `wayfinder:*` label (planning tickets hang under their map, not under an epic) carries both `agent-ready` and `needs-human`, or is in no open epic's sub-issue list
-(`gh api repos/{owner}/{repo}/issues/<epic>/sub_issues --jq 'map(.number)'`, one call per open epic); (c)
+(`gh api repos/{owner}/{repo}/issues/<epic>/sub_issues --jq 'map(.number)'`, one call per open epic); (b)
 `docs/PRDs/` changed on `main` since the bookmark `docs/reconcile-state.json` records, not counting the reconcile's
 own commits: a commit in `git log --format=%H <reconciled_at>..origin/main -- docs/PRDs/` that is **not** also in
 `git log --format=%H <reconciled_at>..origin/main -- docs/reconcile-state.json` is drift (the reconcile's pull request

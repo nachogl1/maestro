@@ -270,8 +270,8 @@ PRD wins on product, the rules files win on process.
   broken issue map (no epic, blocker forms that disagree, impossible label pairs, two stories on one folder, built
   out of order), work the code and the issues disagree on — then fixes each with the person's word, under the
   ownership rules above. A bookmark file on `main` records what was reconciled and what the person accepted as fine.
-  `/dev-next` only probes: a disagreement in the issue map's footer, an impossible label pair or a story without an
-  epic, or a PRD changed since the bookmark, and it ends its run with `Drift found: run /reconcile-issue-map`.
+  `/dev-next` only probes: an impossible label pair or a story without an epic, or a PRD changed since the bookmark,
+  and it ends its run with `Drift found: run /reconcile-issue-map`.
 - **Sub-agents:** name each one after what it does (`review-auth-tests`, never `agent-3`); mechanical work runs on a
   cheap model at low effort, hard decisions and reviews on the top model; every spawn prompt asks for a bounded result
   (a verdict plus a few bullets, never an essay). A sub-agent never uses `git stash` and never switches branches — it
@@ -296,7 +296,7 @@ PRD wins on product, the rules files win on process.
 - `/dev-next` takes the next free story end to end: claim, build in a worktree, fresh-agent review, merge on green,
   close, report.
 - `/issue-map` draws the blocked-by graph of every issue, level by level, into `docs/issue_map/issue_map.html` — a
-  local, never-committed snapshot that `/dev-next` rebuilds after every claim and merge. The issues stay the truth.
+  local, never-committed snapshot rebuilt only when a person asks for it. The issues stay the truth.
 - `/harvest` works through the run reports on the audit branches with the person and turns what matters into tickets
   or rule edits.
 - `/harvest-qa` drives the QA checks every merged story left behind against `main`, in sequential rounds until every

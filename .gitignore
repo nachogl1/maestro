@@ -74,3 +74,6 @@ website/.jekyll-metadata
 
 # Langfuse telemetry
 .langfuse/
+
+# Python bytecode (orion skill scripts)
+__pycache__/
