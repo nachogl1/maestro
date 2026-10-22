@@ -20,12 +20,23 @@ export interface BackgroundTaskInfo {
   startedAt: number;
   /** Epoch ms past which the task no longer counts, when the tool states a bound. */
   expiresAt: number | null;
+  /** A recurring cron job, which runs until deleted or the session ends. */
+  recurring: boolean;
   /** Epoch ms the task reported back or was cancelled; null while pending. */
   finishedAt: number | null;
 }
 
-interface BackgroundTaskState {
+/** What the store tracks; every event folds into a new one of these. */
+interface TrackedWork {
   tasks: BackgroundTaskInfo[];
+  /**
+   * Epoch ms of each session's latest `SessionStarted`: a new claude process.
+   * Work started before it belonged to an earlier process and is gone with it.
+   */
+  sessionStarts: Record<number, number>;
+}
+
+interface BackgroundTaskState extends TrackedWork {
   /** Fold a whole `claude-events` batch in ONE set() call. */
   handleEvents: (events: ClaudeEvent[]) => void;
 }
@@ -36,53 +47,79 @@ const LOOP_TOOL: Record<"wakeup" | "cron", string> = {
   cron: "CronCreate",
 };
 
+/**
+ * A task that fires the agent's next prompt once: a `/loop` wakeup, or a
+ * one-shot cron job (Claude Code removes it after it fires, with no
+ * `CronDelete`). The next real prompt of the session means it has fired.
+ */
+export function isScheduledWakeup(task: BackgroundTaskInfo): boolean {
+  return (
+    task.toolName === LOOP_TOOL.wakeup || (task.toolName === LOOP_TOOL.cron && !task.recurring)
+  );
+}
+
 /** Transcript timestamp as epoch ms; a replay must keep its own dates. */
 function eventTime(timestamp: string): number {
   const parsed = Date.parse(timestamp);
   return Number.isNaN(parsed) ? Date.now() : parsed;
 }
 
-/** Marks every pending task of `sessionId` that `matches` as finished at `at`. */
+/**
+ * Marks every pending task of `sessionId` that `matches` as finished at `at`.
+ *
+ * Only tasks started at or before `at`: a live re-read of the transcript from
+ * its first byte replays old prompts and loop stops after the current loop's
+ * start (skipped as a duplicate), and an older event cannot end newer work.
+ */
 function finishWhere(
-  tasks: BackgroundTaskInfo[],
+  work: TrackedWork,
   sessionId: number,
   at: number,
   matches: (task: BackgroundTaskInfo) => boolean,
-): BackgroundTaskInfo[] {
-  if (!tasks.some((t) => t.sessionId === sessionId && t.finishedAt === null && matches(t))) {
-    return tasks;
-  }
-  return tasks.map((t) =>
-    t.sessionId === sessionId && t.finishedAt === null && matches(t) ? { ...t, finishedAt: at } : t,
-  );
+): TrackedWork {
+  const finishes = (t: BackgroundTaskInfo) =>
+    t.sessionId === sessionId && t.finishedAt === null && t.startedAt <= at && matches(t);
+  if (!work.tasks.some(finishes)) return work;
+  return {
+    ...work,
+    tasks: work.tasks.map((t) => (finishes(t) ? { ...t, finishedAt: at } : t)),
+  };
 }
 
 /**
- * Apply one event, returning the SAME array when nothing changed so `set` can
+ * Apply one event, returning the SAME object when nothing changed so `set` can
  * skip notifying subscribers (same contract as the agent store's applyEvent).
  */
-function applyEvent(tasks: BackgroundTaskInfo[], event: ClaudeEvent): BackgroundTaskInfo[] {
+function applyEvent(work: TrackedWork, event: ClaudeEvent): TrackedWork {
+  const { tasks } = work;
   switch (event.event_type) {
     case "BackgroundTaskStarted": {
       if (tasks.some((t) => t.toolUseId === event.tool_use_id && t.sessionId === event.session_id))
-        return tasks;
+        return work;
       const startedAt = eventTime(event.timestamp);
-      return [
-        ...tasks,
-        {
-          toolUseId: event.tool_use_id,
-          sessionId: event.session_id,
-          toolName: event.tool_name,
-          description: event.description,
-          startedAt,
-          expiresAt: event.expires_in_ms === null ? null : startedAt + event.expires_in_ms,
-          finishedAt: null,
-        },
-      ];
+      // Replayed from a resumed transcript: an earlier process started it.
+      if (startedAt < (work.sessionStarts[event.session_id] ?? Number.NEGATIVE_INFINITY))
+        return work;
+      return {
+        ...work,
+        tasks: [
+          ...tasks,
+          {
+            toolUseId: event.tool_use_id,
+            sessionId: event.session_id,
+            toolName: event.tool_name,
+            description: event.description,
+            startedAt,
+            expiresAt: event.expires_in_ms === null ? null : startedAt + event.expires_in_ms,
+            recurring: event.recurring,
+            finishedAt: null,
+          },
+        ],
+      };
     }
     case "BackgroundTaskFinished":
       return finishWhere(
-        tasks,
+        work,
         event.session_id,
         eventTime(event.timestamp),
         (t) => t.toolUseId === event.tool_use_id,
@@ -91,40 +128,47 @@ function applyEvent(tasks: BackgroundTaskInfo[], event: ClaudeEvent): Background
     // means the agent runs again. A tool_result entry (no text) and a task
     // notification are neither, so they leave the wakeup scheduled.
     case "UserMessage":
-      if (!event.text.trim() || event.text.includes("<task-notification>")) return tasks;
-      return finishWhere(
-        tasks,
-        event.session_id,
-        eventTime(event.timestamp),
-        (t) => t.toolName === LOOP_TOOL.wakeup,
-      );
+      if (!event.text.trim() || event.text.includes("<task-notification>")) return work;
+      return finishWhere(work, event.session_id, eventTime(event.timestamp), isScheduledWakeup);
     // The parser cannot name the cancelled items, so every one of the kind goes.
     case "BackgroundLoopStopped":
       return finishWhere(
-        tasks,
+        work,
         event.session_id,
         eventTime(event.timestamp),
         (t) => t.toolName === LOOP_TOOL[event.kind],
       );
+    // A new claude process (startup, resume or /clear; compaction emits no
+    // SessionStarted). The watcher re-reads the transcript from its first
+    // byte, and that replay can land on either side of this event: drop what
+    // is already here from before it, and remember it to ignore the rest.
+    case "SessionStarted": {
+      const startedAt = eventTime(event.timestamp);
+      return {
+        tasks: tasks.filter((t) => t.sessionId !== event.session_id || t.startedAt >= startedAt),
+        sessionStarts: { ...work.sessionStarts, [event.session_id]: startedAt },
+      };
+    }
     // The claude process exited, taking its background work with it. The Stop
     // hook reports every turn end under the same variant as `reason: "stop"`.
     case "SessionEnded":
       if (event.reason === "stop" || !tasks.some((t) => t.sessionId === event.session_id))
-        return tasks;
-      return tasks.filter((t) => t.sessionId !== event.session_id);
+        return work;
+      return { ...work, tasks: tasks.filter((t) => t.sessionId !== event.session_id) };
     default:
-      return tasks;
+      return work;
   }
 }
 
 /**
  * Epoch ms after which `task` stops counting as pending, or null when it never
- * expires on its own (a cron job runs until deleted or the session ends).
+ * expires on its own (a recurring cron job runs until deleted or the session
+ * ends).
  * A task whose tool states no bound gets `unboundedLimitMs` from its start.
  */
 function taskDeadline(task: BackgroundTaskInfo, unboundedLimitMs: number): number | null {
   if (task.expiresAt !== null) return task.expiresAt;
-  if (task.toolName === LOOP_TOOL.cron) return null;
+  if (task.toolName === LOOP_TOOL.cron && task.recurring) return null;
   return task.startedAt + unboundedLimitMs;
 }
 
@@ -165,15 +209,17 @@ export function msUntilBackgroundTasksExpire(
 /** Store of the background work seen in each session's own transcript. In memory only. */
 export const useBackgroundTaskStore = create<BackgroundTaskState>((set) => ({
   tasks: [],
+  sessionStarts: {},
 
   handleEvents: (events: ClaudeEvent[]) => {
     if (events.length === 0) return;
     set((state) => {
-      let tasks = state.tasks;
+      const before: TrackedWork = { tasks: state.tasks, sessionStarts: state.sessionStarts };
+      let work = before;
       for (const event of events) {
-        tasks = applyEvent(tasks, event);
+        work = applyEvent(work, event);
       }
-      return tasks === state.tasks ? state : { tasks };
+      return work === before ? state : work;
     });
   },
 }));

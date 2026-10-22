@@ -17,11 +17,17 @@ const MINUTE = 60 * 1000;
 /** The limit for tasks that state no bound of their own. */
 const STALE_MS = 30 * MINUTE;
 
+/** ISO timestamp `minutes` after T0 (negative: before it). */
+function at(minutes: number): string {
+  return new Date(T0 + minutes * MINUTE).toISOString();
+}
+
 function started(
   sessionId: number,
   toolUseId: string,
   toolName: string,
   expiresInMs: number | null = null,
+  options: { recurring?: boolean; timestamp?: string } = {},
 ): ClaudeEvent {
   return {
     event_type: "BackgroundTaskStarted",
@@ -30,17 +36,29 @@ function started(
     tool_name: toolName,
     description: toolName,
     expires_in_ms: expiresInMs,
-    timestamp: STARTED_AT,
+    // As the parser reports it: a cron job recurs unless it says otherwise.
+    recurring: options.recurring ?? toolName === "CronCreate",
+    timestamp: options.timestamp ?? STARTED_AT,
   };
 }
 
-function userMessage(sessionId: number, text: string): ClaudeEvent {
+function userMessage(sessionId: number, text: string, timestamp = at(1)): ClaudeEvent {
   return {
     event_type: "UserMessage",
     session_id: sessionId,
-    uuid: `u-${sessionId}-${text.length}`,
+    uuid: `u-${sessionId}-${text.length}-${timestamp}`,
     text,
-    timestamp: "2026-10-22T10:01:00.000Z",
+    timestamp,
+  };
+}
+
+function sessionStarted(sessionId: number, timestamp: string): ClaudeEvent {
+  return {
+    event_type: "SessionStarted",
+    session_id: sessionId,
+    claude_session_uuid: "00000000-0000-4000-8000-000000000001",
+    transcript_path: "C:/synthetic/transcript.jsonl",
+    timestamp,
   };
 }
 
@@ -56,7 +74,7 @@ function pendingIds(sessionId: number, minutesLater = 1): string[] {
 
 describe("useBackgroundTaskStore", () => {
   beforeEach(() => {
-    useBackgroundTaskStore.setState({ tasks: [] });
+    useBackgroundTaskStore.setState({ tasks: [], sessionStarts: {} });
   });
 
   it("a started task is pending until its notification finishes it", () => {
@@ -147,5 +165,62 @@ describe("useBackgroundTaskStore", () => {
     ]);
     expect(pendingIds(1)).toEqual([]);
     expect(pendingIds(2)).toEqual(["toolu_other"]);
+  });
+
+  /**
+   * A one-shot cron job fires once and Claude Code removes it without a
+   * CronDelete, so it behaves like a wakeup: the prompt it fires clears it,
+   * and the 30-minute limit bounds it. A recurring job is left alone.
+   */
+  it("a one-shot cron job is cleared when it fires and bounded like a wakeup", () => {
+    const store = useBackgroundTaskStore.getState();
+    store.handleEvents([
+      started(1, "toolu_once", "CronCreate", null, { recurring: false }),
+      started(1, "toolu_loop", "CronCreate"),
+    ]);
+    expect(pendingIds(1, 31)).toEqual(["toolu_loop"]);
+
+    store.handleEvents([userMessage(1, "check the deploy")]);
+    expect(pendingIds(1)).toEqual(["toolu_loop"]);
+  });
+
+  /**
+   * A resumed session re-reads its transcript from the start: work an earlier
+   * claude process started is gone with that process and must not count,
+   * whether the replay reaches the store before or after the SessionStarted.
+   */
+  it("work started before the session's latest start never counts", () => {
+    const store = useBackgroundTaskStore.getState();
+    // Replay before the start signal, then the start signal.
+    store.handleEvents([started(1, "toolu_old_cron", "CronCreate", null, { timestamp: at(-60) })]);
+    store.handleEvents([sessionStarted(1, at(0))]);
+    expect(pendingIds(1)).toEqual([]);
+
+    // Start signal first, then the replay, then live work of the new process.
+    store.handleEvents([
+      sessionStarted(2, at(0)),
+      started(2, "toolu_old_ci", "Bash", null, { timestamp: at(-60) }),
+      started(2, "toolu_new_ci", "Bash", null, { timestamp: at(0.5) }),
+    ]);
+    expect(pendingIds(2)).toEqual(["toolu_new_ci"]);
+  });
+
+  /**
+   * A live re-read from byte 0 replays an OLD prompt or CronDelete after the
+   * current loop started (the current start is skipped as a duplicate). It
+   * must not finish work that began after it.
+   */
+  it("a replayed older prompt or loop stop leaves newer work pending", () => {
+    const store = useBackgroundTaskStore.getState();
+    store.handleEvents([
+      started(1, "toolu_wake", "ScheduleWakeup", 21 * MINUTE, { timestamp: at(0) }),
+      started(1, "toolu_cron", "CronCreate", null, { timestamp: at(0) }),
+    ]);
+
+    store.handleEvents([
+      userMessage(1, "an earlier prompt", at(-30)),
+      { event_type: "BackgroundLoopStopped", session_id: 1, kind: "cron", timestamp: at(-20) },
+    ]);
+    expect(pendingIds(1)).toEqual(["toolu_wake", "toolu_cron"]);
   });
 });

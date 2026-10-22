@@ -380,6 +380,7 @@ fn background_work_event(
     input: &Value,
     timestamp: &str,
 ) -> Option<ClaudeEvent> {
+    let flag = |key: &str| input.get(key).and_then(|v| v.as_bool());
     let started = |expires_in_ms: Option<u64>| ClaudeEvent::BackgroundTaskStarted {
         session_id,
         tool_use_id: tool_use_id.to_string(),
@@ -391,6 +392,8 @@ fn background_work_event(
             .unwrap_or(tool_name)
             .to_string(),
         expires_in_ms,
+        // A cron job recurs unless its input says otherwise.
+        recurring: tool_name == "CronCreate" && flag("recurring") != Some(false),
         timestamp: timestamp.to_string(),
     };
     let stopped = |kind: BackgroundLoopKind| ClaudeEvent::BackgroundLoopStopped {
@@ -398,10 +401,9 @@ fn background_work_event(
         kind,
         timestamp: timestamp.to_string(),
     };
-    let flag = |key: &str| input.get(key).and_then(|v| v.as_bool()) == Some(true);
 
     match tool_name {
-        "Bash" | "PowerShell" if flag("run_in_background") => Some(started(None)),
+        "Bash" | "PowerShell" if flag("run_in_background") == Some(true) => Some(started(None)),
         "Monitor" => Some(started(
             input
                 .get("timeout_ms")
@@ -409,7 +411,7 @@ fn background_work_event(
                 .map(|ms| ms + BACKGROUND_EXPIRY_GRACE_MS),
         )),
         "Workflow" | "CronCreate" => Some(started(None)),
-        "ScheduleWakeup" if flag("stop") => Some(stopped(BackgroundLoopKind::Wakeup)),
+        "ScheduleWakeup" if flag("stop") == Some(true) => Some(stopped(BackgroundLoopKind::Wakeup)),
         "ScheduleWakeup" => Some(started(
             input
                 .get("delaySeconds")
@@ -1467,9 +1469,11 @@ mod tests {
         )
     }
 
-    /// The `(tool_use_id, tool_name, description, expires_in_ms)` of every
-    /// `BackgroundTaskStarted` in `events`.
-    fn background_starts(events: &[ClaudeEvent]) -> Vec<(String, String, String, Option<u64>)> {
+    /// The `(tool_use_id, tool_name, description, expires_in_ms, recurring)`
+    /// of every `BackgroundTaskStarted` in `events`.
+    fn background_starts(
+        events: &[ClaudeEvent],
+    ) -> Vec<(String, String, String, Option<u64>, bool)> {
         events
             .iter()
             .filter_map(|e| match e {
@@ -1478,12 +1482,14 @@ mod tests {
                     tool_name,
                     description,
                     expires_in_ms,
+                    recurring,
                     ..
                 } => Some((
                     tool_use_id.clone(),
                     tool_name.clone(),
                     description.clone(),
                     *expires_in_ms,
+                    *recurring,
                 )),
                 _ => None,
             })
@@ -1492,14 +1498,15 @@ mod tests {
 
     #[test]
     fn test_background_tools_emit_background_task_started() {
-        // (tool, input, expected description, why, expected expiry)
-        let cases: &[(&str, &str, &str, &str, Option<u64>)] = &[
+        // (tool, input, expected description, why, expected expiry, recurring)
+        let cases: &[(&str, &str, &str, &str, Option<u64>, bool)] = &[
             (
                 "Bash",
                 r#"{"command":"gh pr checks 7 --watch","description":"Watch CI","run_in_background":true}"#,
                 "Watch CI",
                 "background shell command, no own bound",
                 None,
+                false,
             ),
             (
                 "PowerShell",
@@ -1507,6 +1514,7 @@ mod tests {
                 "PowerShell",
                 "no description falls back to the tool name",
                 None,
+                false,
             ),
             (
                 "Monitor",
@@ -1514,6 +1522,7 @@ mod tests {
                 "Build log",
                 "monitor: its timeout plus one minute",
                 Some(360_000),
+                false,
             ),
             (
                 "Workflow",
@@ -1521,6 +1530,7 @@ mod tests {
                 "Audit run",
                 "workflow, no own bound",
                 None,
+                false,
             ),
             (
                 "ScheduleWakeup",
@@ -1528,6 +1538,7 @@ mod tests {
                 "ScheduleWakeup",
                 "wakeup: its delay plus one minute",
                 Some(1_260_000),
+                false,
             ),
             (
                 "ScheduleWakeup",
@@ -1535,6 +1546,7 @@ mod tests {
                 "ScheduleWakeup",
                 "wakeup delay clamped up to 60 s",
                 Some(120_000),
+                false,
             ),
             (
                 "ScheduleWakeup",
@@ -1542,22 +1554,46 @@ mod tests {
                 "ScheduleWakeup",
                 "wakeup delay clamped down to 3600 s",
                 Some(3_660_000),
+                false,
             ),
             (
                 "CronCreate",
                 r#"{"cron":"*/5 * * * *","prompt":"poll","recurring":true}"#,
                 "CronCreate",
-                "cron job, never expires on its own",
+                "recurring cron job",
                 None,
+                true,
+            ),
+            (
+                "CronCreate",
+                r#"{"cron":"*/5 * * * *","prompt":"poll"}"#,
+                "CronCreate",
+                "a cron job recurs unless it says otherwise",
+                None,
+                true,
+            ),
+            (
+                "CronCreate",
+                r#"{"cron":"30 14 * * *","prompt":"check the deploy","recurring":false}"#,
+                "CronCreate",
+                "one-shot cron job: fires once, then Claude Code removes it",
+                None,
+                false,
             ),
         ];
 
-        for (i, (name, input, description, why, expiry)) in cases.iter().enumerate() {
+        for (i, (name, input, description, why, expiry, recurring)) in cases.iter().enumerate() {
             let id = format!("toolu_bg{i}");
             let events = parse_transcript_line(3, &tool_use_line(&id, name, input));
             assert_eq!(
                 background_starts(&events),
-                vec![(id, name.to_string(), description.to_string(), *expiry)],
+                vec![(
+                    id,
+                    name.to_string(),
+                    description.to_string(),
+                    *expiry,
+                    *recurring
+                )],
                 "{name}: {why}"
             );
         }

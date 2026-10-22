@@ -199,6 +199,12 @@ pub enum ClaudeEvent {
         /// How long the task may stay silent before it no longer counts as
         /// pending, when the tool states a bound (Monitor, ScheduleWakeup).
         expires_in_ms: Option<u64>,
+        /// A recurring cron job: it re-invokes the agent again and again with
+        /// no end of its own. A one-shot job (`recurring: false`) fires once
+        /// and Claude Code removes it without a `CronDelete`. `default` so
+        /// events serialized before this field existed still deserialize.
+        #[serde(default)]
+        recurring: bool,
         timestamp: String,
     },
 

@@ -11,6 +11,7 @@ import {
 } from "@/lib/samurai";
 import { useAgentStore } from "@/stores/useAgentStore";
 import {
+  isScheduledWakeup,
   msUntilBackgroundTasksExpire,
   pendingBackgroundTasks,
   useBackgroundTaskStore,
@@ -64,9 +65,9 @@ export interface PendingWork {
   commands: number;
   monitors: number;
   workflows: number;
-  /** `/loop` wakeups scheduled with `ScheduleWakeup`. */
+  /** `/loop` wakeups scheduled with `ScheduleWakeup`, and one-shot cron jobs. */
   wakeups: number;
-  /** Cron jobs scheduled with `CronCreate`. */
+  /** Recurring cron jobs scheduled with `CronCreate`. */
   loops: number;
 }
 
@@ -749,7 +750,8 @@ function countPendingWork(sessionId: number): PendingWork {
   };
   const tasks = useBackgroundTaskStore.getState().tasks;
   for (const task of pendingBackgroundTasks(tasks, sessionId, Date.now(), SUBAGENT_STALE_MS)) {
-    work[PENDING_WORK_KIND[task.toolName] ?? "commands"] += 1;
+    const kind = isScheduledWakeup(task) ? "wakeups" : PENDING_WORK_KIND[task.toolName];
+    work[kind ?? "commands"] += 1;
   }
   return work;
 }

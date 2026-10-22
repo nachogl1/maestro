@@ -68,6 +68,7 @@ function backgroundStarted(
   toolUseId: string,
   toolName: string,
   expiresInMs: number | null = null,
+  options: { recurring?: boolean; timestamp?: string } = {},
 ): void {
   useBackgroundTaskStore.getState().handleEvents([
     {
@@ -77,7 +78,8 @@ function backgroundStarted(
       tool_name: toolName,
       description: toolName,
       expires_in_ms: expiresInMs,
-      timestamp: new Date().toISOString(),
+      recurring: options.recurring ?? toolName === "CronCreate",
+      timestamp: options.timestamp ?? new Date().toISOString(),
     },
   ]);
 }
@@ -164,7 +166,7 @@ describe("session status: the Stop hook vs. running subagents", () => {
       flaggedSessionIds: [],
     });
     useAgentStore.setState({ agents: [] });
-    useBackgroundTaskStore.setState({ tasks: [] });
+    useBackgroundTaskStore.setState({ tasks: [], sessionStarts: {} });
   });
 
   it("reports NeedsInput when nothing else is running", () => {
@@ -480,5 +482,48 @@ describe("session status: the Stop hook vs. running subagents", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a one-shot cron job that has fired no longer holds the session at Working", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    backgroundStarted(1, "toolu_once", "CronCreate", null, { recurring: false });
+
+    emit(awaitingInput(1));
+    expect(useSessionStore.getState().sessions[0].status).toBe("Working");
+    expect(useSessionStore.getState().sessions[0].statusMessage).toBe("Scheduled to wake up");
+
+    // The job fires its prompt; the agent handles it and stops.
+    useBackgroundTaskStore.getState().handleEvents([
+      {
+        event_type: "UserMessage",
+        session_id: 1,
+        uuid: "u-fired",
+        text: "check the deploy",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    emit(awaitingInput(1));
+
+    expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
+  });
+
+  it("a resumed session is not pinned by a cron loop its earlier process started", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    const anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    useBackgroundTaskStore.getState().handleEvents([
+      {
+        event_type: "SessionStarted",
+        session_id: 1,
+        claude_session_uuid: "00000000-0000-4000-8000-000000000001",
+        transcript_path: "C:/synthetic/transcript.jsonl",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    // The watcher replays the transcript from its first byte.
+    backgroundStarted(1, "toolu_old_cron", "CronCreate", null, { timestamp: anHourAgo });
+
+    emit(awaitingInput(1));
+
+    expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
   });
 });

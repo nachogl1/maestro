@@ -105,6 +105,8 @@ export type ClaudeEvent =
       description: string;
       /** How long the task may stay silent, when the tool states a bound. */
       expires_in_ms: number | null;
+      /** A recurring cron job: it has no end of its own. */
+      recurring: boolean;
       timestamp: string;
     }
   | {
