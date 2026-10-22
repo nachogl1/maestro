@@ -31,14 +31,14 @@ src-tauri/gen/
 .DS_Store
 Thumbs.db
 
-# Local Claude session context
-claude.md
-
 # Local MCP configuration (contains machine-specific paths)
 .mcp.json
 
-# Claude Code local config
-.claude/
+# Claude Code local config (orion's files and the shared settings are tracked)
+.claude/*
+!.claude/orion/
+!.claude/skills/
+!.claude/settings.json
 
 # Plugins config
 .plugins.json
