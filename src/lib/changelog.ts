@@ -10,11 +10,12 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     date: "2026-10-22",
     title:
-      "Warning before an update closes your terminals, keyboard picker for parked terminals, project picker in the issue map",
+      "Warning before an update closes your terminals, keyboard picker for parked terminals, project picker in the issue map, Injector triggers",
     items: [
       "Updates: when you install an update while terminals are open, Maestro first warns that restarting will close them all, and installs only if you agree.",
       "Parked terminals: Alt+U jumps to the parked strip; pick a terminal with the left and right arrows and press Enter to bring it back, or Esc to return to where you were.",
       "Issue map: a project picker next to the title switches the map to any other open project without going back to Maestro.",
+      "Injector: new Triggers under the Injector watch the ticked terminals and send your message on their own when one of them reaches a context level you choose.",
     ],
   },
   {

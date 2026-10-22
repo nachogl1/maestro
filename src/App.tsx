@@ -48,6 +48,7 @@ import { WorkJournalSettingsHost } from "./components/workjournal/WorkJournalSet
 import { useAppKeyboard } from "./hooks/useAppKeyboard";
 import { useAppListeners } from "./hooks/useAppListeners";
 import { useBackgroundPollers } from "./hooks/useBackgroundPollers";
+import { useInjectorTriggers } from "./hooks/useInjectorTriggers";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useFeatureSettingsStore } from "./stores/useFeatureSettingsStore";
 import { useGitHubStore } from "./stores/useGitHubStore";
@@ -149,6 +150,7 @@ function App() {
 
   useAppListeners();
   useBackgroundPollers(tabs);
+  useInjectorTriggers();
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
   const macTitleBarPadding = useMacTitleBarPadding();
