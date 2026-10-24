@@ -198,6 +198,12 @@ Then walk the levels: from the contract level on, the number of stories that bec
 re-cut: split a seam that is really two, promote a shared piece to a contract story, or drop a blocker that is not a
 real dependency. Write the per-level counts into the plan; the person sees them.
 
+**No decision-record story, no decision-record blocker.** A hard-to-reverse decision the cut needs (a new mechanism, a
+format, a dependency, a change of scope) is a PRD fact: it is asked in phase 4, recorded under the stories it shapes
+(`## Decisions (agent-ready)`) and offered as one line of phase 6's PRD question for the PRD's build-decisions section.
+The standing rule's ADR applies outside a split; here it is never a story, never a blocker and never a reason for the
+plan check to send the cut back.
+
 **Size the whole.** A PRD that cuts into more than about thirty stories is split by epic into several runs of this
 skill, the first run filing the scaffold, the contracts and the first epic's fan-out; say so rather than filing a
 hundred tickets nobody can read.
@@ -218,6 +224,9 @@ A story filed `agent-ready` with a question left becomes a guess the dev agent b
   its last comment. Nothing is guessed on anyone's behalf. The rest of the plan is unaffected.
 - **A reversible decision the person could take now but did not** → recommend the simplest option that meets the
   acceptance bar, say it is reversible, record the answer under that story's `## Decisions (agent-ready)`.
+- **A hard-to-reverse decision the PRD leaves open** → ask it like any other question, recommended answer first;
+  the answer goes under the `## Decisions (agent-ready)` of every story it shapes and is one of the lines of phase 6's
+  PRD question (the PRD's build-decisions section). No ADR, no story for it, no blocker on it.
 - **Work the PRD gives no tier** → one question per epic: which tier its stories take (`mvp` recommended, the PRD's
   other tiers as the other options). The answer is a PRD fact, so it is one of the lines of phase 6's PRD question.
 
