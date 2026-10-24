@@ -113,7 +113,11 @@ PRD wins on product, the rules files win on process.
   - **A hard-to-reverse decision** (a new mechanism, a format, a dependency, a change of scope: something costly to
     undo, or that a later reader will ask "why?" about) gets an **ADR** (a short decision record: context, decision,
     consequences, alternatives) at `docs/ADRs/adr-<change-name>.md`. The agent proposes it and the person confirms
-    one is needed; the person approves the ADR before any ticket or code for that change exists.
+    one is needed; the person approves the ADR before any ticket or code for that change exists. **During a PRD
+    split (`/prd-to-tickets`) this rule does not apply**: a hard-to-reverse decision taken there is recorded under
+    the stories it shapes and offered for the PRD's build-decisions section through the PRD pull request the split
+    already asks about, so the backlog and the drift checks see it; an ADR is optional rationale there and never
+    blocks a story.
   - **A big change or a product update:** the agent only asks whether the person wants a PRD. Creating or updating a
     PRD is the person's process, on their terms — planned with `/wayfinder`, then written or provided by the person.
     **An agent never drafts a PRD on its own.**
