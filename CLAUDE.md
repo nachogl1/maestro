@@ -185,8 +185,7 @@ Use this workflow when implementing a task or story, refactoring, or fixing a bu
 3. Implement the changes needed. Do not apply changes (formatting, style, refactoring) to any other part of the code.
 4. Run tests related to the changes.
 5. Record the change in the changelog (see "Changelog" below).
-6. Briefly summarize the changes made and print them.
-7. Describe and suggest next steps.
+6. Report the result the way the mandatory rules say: problems first, then the result, then exactly one next action.
 
 ## Changelog
 

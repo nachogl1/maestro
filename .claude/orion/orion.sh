@@ -480,7 +480,7 @@ copy_managed() {  # src dst
     rm -rf "$2"
     mkdir -p "$2"
     # marker first: an interrupted copy still looks orion-managed and gets redone next time
-    printf '%s' "orion" > "$2/$MARKER"
+    printf 'orion\n' > "$2/$MARKER"
     cp -R "$1"/. "$2"
     # a local checkout that ran Python carries compiled caches; they are not part of the skill
     find "$2" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -592,6 +592,16 @@ has no use for. A rule written here must not contradict the mandatory rules.
 |---|---|---|---|
 | P1 | \`CLAUDE.md\` build and test commands | <e.g. Which stack, and so which build/test/lint commands?> | <role> |
 EOF
+}
+
+# The starter's own <placeholder> slots, one per line, for verify to look for. A <...> the project wrote itself (a
+# test filter's <test-name>) is a real command, never a slot. <angle-bracket> only names the slots in the starter's
+# intro, and the bare <N> is looked for with its label, as a branch pattern's <N> is no slot.
+starter_slots() {
+    local tmp; tmp=$(mktemp)
+    write_claude_md_starter "$tmp"
+    grep -oE '<[^<>]+>' "$tmp" | grep -vxF '<angle-bracket>' | sed 's/^<N>$/baseline: <N>/' | sort -u
+    rm -f "$tmp"
 }
 
 apply_claude_md() {
@@ -1278,8 +1288,8 @@ cmd_verify() {
             *) v_fail claude-md-import "CLAUDE.md carries the import line $n times (fix: keep the first, delete the others)" ;;
         esac
         grep -qxF "$OLD_IMPORT_LINE" "$claude" && v_fail claude-md-old-import "CLAUDE.md still imports the retired ORION.md (fix: delete that line; the BASE_CLAUDE.md import replaces it)"
-        slots=$(grep -cE '`TBD`|<[a-z][^<>]*>' "$claude" || true)
-        [ "$slots" -gt 0 ] 2>/dev/null && v_warn claude-md-slots "CLAUDE.md has $slots line(s) with an unfilled slot (TBD or <placeholder>); the rules that rely on them cannot run until they are filled"
+        slots=$(grep -cF -e '`TBD`' -f <(starter_slots) "$claude" || true)
+        [ "$slots" -gt 0 ] 2>/dev/null && v_warn claude-md-slots "CLAUDE.md has $slots line(s) with an unfilled slot (TBD or a starter <placeholder>); the rules that rely on them cannot run until they are filled"
         while IFS= read -r p; do
             [ -n "$p" ] && [ ! -e "$PROJECT/$p" ] && v_warn claude-md-reference "CLAUDE.md refers to $p, which does not exist"
         done <<< "$(grep -oE '\.claude/skills/[A-Za-z0-9_./-]+' "$claude" 2>/dev/null | sed 's/[.]*$//' | sort -u || true)"

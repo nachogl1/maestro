@@ -129,12 +129,15 @@ PRD wins on product, the rules files win on process.
 - **A boundary the project's `CLAUDE.md` draws is never moved by an agent.**
 - **A repository the project's `CLAUDE.md` lists as external is read-only from here.** Never build it, run it, commit
   to it or change its git state. A change that must land there is an `outside-change` issue: it stops at a pull
-  request its own reviewer merges.
+  request its own reviewer merges. **One exemption:** the fresh copy (a new clone made only for this) used to draft
+  that pull request may run that repository's own gate (its build, lint, typecheck and tests, inside the copy and
+  never against a live system) and may be committed to on the pull request's branch. Nowhere else: never the
+  person's own checkout of that repository, never its `main`.
 - **Never change another project without asking first.** This project, its worktrees and their root are the only
   projects an agent changes on its own: any other repository or project folder, even one on the same computer, is
   edited, committed to or pushed to only after the person says yes to that change, and one listed as external stays
-  read-only even then (rule above). Reading it is fine, and so is a file a skill is built to write elsewhere (a
-  report in `~/Downloads`). In a run nobody is watching, the answer is no.
+  read-only even then (rule above, with its one exemption). Reading it is fine, and so is a file a skill is built to
+  write elsewhere (a report in `~/Downloads`). In a run nobody is watching, the answer is no.
 - **If the project calls an AI model, the model provider sits behind one swappable interface.** Tests never reach
   the network; a test that needs the model mocks the interface. No API key is ever committed or written into an
   issue.
