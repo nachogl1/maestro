@@ -132,6 +132,17 @@ function quitFlushHandler(): () => Promise<void> {
   return () => handler({ payload: null });
 }
 
+/** The button right of the date title that opens the page actions menu. */
+function menuButton(): HTMLElement {
+  return screen.getByRole("button", { name: "Page actions" });
+}
+
+/** Opens the page actions menu (if closed) and returns one of its items. */
+function pageAction(name: string): HTMLElement {
+  if (menuButton().getAttribute("aria-expanded") !== "true") fireEvent.click(menuButton());
+  return screen.getByRole("menuitem", { name });
+}
+
 /** The TipTap editor behind the page body (TipTap puts it on its DOM node). */
 function pageEditor(): Editor {
   const dom = screen.getByLabelText("Work Journal page") as HTMLElement & { editor: Editor };
@@ -210,6 +221,130 @@ describe("WorkJournalPanel", () => {
     expect(callsTo("create_work_journal_page")).toEqual([]);
   });
 
+  it("Today goes back to today's page from an earlier or a later date", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    const title = screen.getByLabelText("Page title");
+
+    // Two days back lands on a page, two days ahead on a day with none.
+    for (const away of ["Previous day", "Next day"]) {
+      fireEvent.click(screen.getByRole("button", { name: away }));
+      fireEvent.click(screen.getByRole("button", { name: away }));
+      expect(title).not.toHaveValue("Wed 14 Oct 2026");
+      fireEvent.click(screen.getByRole("button", { name: "Today" }));
+      expect(title).toHaveValue("Wed 14 Oct 2026");
+    }
+  });
+
+  it("keeps only the day controls in the header and the page actions in a menu", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    for (const name of [
+      "Jump to date",
+      "New page for a date",
+      "Delete page",
+      "Report",
+      "Pop out",
+    ]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    fireEvent.click(menuButton());
+    expect(menuButton()).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Jump to date",
+      "New page for a date",
+      "Delete page",
+      "Report",
+      "Pop out",
+    ]);
+
+    // A click anywhere else closes it, and so does the button again.
+    fireEvent.mouseDown(screen.getByLabelText("Page title"));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(menuButton());
+    fireEvent.click(menuButton());
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("moves through the menu with the arrow keys, skipping actions that cannot run now", async () => {
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+    // A day with no page: Delete page cannot run.
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+    const trigger = menuButton();
+    const press = (key: string): void => {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key });
+    };
+
+    trigger.focus();
+    press("ArrowDown");
+    expect(screen.getByRole("menuitem", { name: "Jump to date" })).toHaveFocus();
+    expect(screen.getByRole("menuitem", { name: "Delete page" })).toBeDisabled();
+    const steps: [string, string][] = [
+      ["ArrowDown", "New page for a date"],
+      ["ArrowDown", "Report"],
+      ["ArrowDown", "Pop out"],
+      ["ArrowDown", "Jump to date"],
+      ["ArrowUp", "Pop out"],
+      ["Home", "Jump to date"],
+      ["End", "Pop out"],
+    ];
+    for (const [key, focused] of steps) {
+      press(key);
+      expect(screen.getByRole("menuitem", { name: focused })).toHaveFocus();
+    }
+
+    press("Escape");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    // Arrow up opens on the last action; Tab leaves the menu closed.
+    press("ArrowUp");
+    expect(screen.getByRole("menuitem", { name: "Pop out" })).toHaveFocus();
+    press("Tab");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("runs every page action from the menu by keyboard", async () => {
+    askMock.mockResolvedValue(false);
+    vi.mocked(WebviewWindow).mockClear();
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue("Wed 14 Oct 2026");
+
+    /** Opens the menu from its button, arrows down to `name` and presses Enter. */
+    const chooseByKeyboard = (name: string): void => {
+      menuButton().focus();
+      fireEvent.keyDown(menuButton(), { key: "ArrowDown" });
+      const item = screen.getByRole("menuitem", { name });
+      for (let i = 0; i < 5 && document.activeElement !== item; i++) {
+        fireEvent.keyDown(document.activeElement ?? document.body, { key: "ArrowDown" });
+      }
+      fireEvent.keyDown(item, { key: "Enter" });
+    };
+    const actions: [string, () => Promise<void>][] = [
+      ["Jump to date", async () => expect(screen.getByLabelText("Date to jump to")).toHaveFocus()],
+      [
+        "New page for a date",
+        async () => expect(screen.getByLabelText("Date for the new page")).toHaveFocus(),
+      ],
+      ["Delete page", () => waitFor(() => expect(askMock).toHaveBeenCalledTimes(1))],
+      ["Pop out", () => waitFor(() => expect(WebviewWindow).toHaveBeenCalledTimes(1))],
+      [
+        "Report",
+        async () => expect(screen.getByRole("dialog", { name: "Work report" })).toBeInTheDocument(),
+      ],
+    ];
+    for (const [name, check] of actions) {
+      chooseByKeyboard(name);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      await check();
+    }
+  });
+
   it("saves the body as editor JSON after the debounce, and the title on blur", async () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
@@ -263,7 +398,7 @@ describe("WorkJournalPanel", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+    fireEvent.click(pageAction("Delete page"));
 
     expect(await screen.findByDisplayValue("Tue 13 Oct 2026")).toBeInTheDocument();
     expect(askMock).toHaveBeenCalledTimes(1);
@@ -278,7 +413,7 @@ describe("WorkJournalPanel", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+    fireEvent.click(pageAction("Delete page"));
 
     await waitFor(() => expect(askMock).toHaveBeenCalledTimes(1));
     expect(callsTo("delete_work_journal_page")).toEqual([]);
@@ -289,7 +424,7 @@ describe("WorkJournalPanel", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "New page for a date" }));
+    fireEvent.click(pageAction("New page for a date"));
     fireEvent.change(screen.getByLabelText("Date for the new page"), {
       target: { value: "2026-10-20" },
     });
@@ -310,7 +445,7 @@ describe("WorkJournalPanel", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "Jump to date" }));
+    fireEvent.click(pageAction("Jump to date"));
     const input = screen.getByLabelText("Date to jump to");
     // Typing "1" of "12" in the day field already reports 1 Oct.
     fireEvent.change(input, { target: { value: "2026-10-01" } });
@@ -327,7 +462,7 @@ describe("WorkJournalPanel", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "Jump to date" }));
+    fireEvent.click(pageAction("Jump to date"));
     fireEvent.change(screen.getByLabelText("Date to jump to"), {
       target: { value: "2026-10-01" },
     });
@@ -347,7 +482,7 @@ describe("WorkJournalPanel", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+    fireEvent.click(pageAction("Delete page"));
     await screen.findByDisplayValue("Tue 13 Oct 2026");
     await act(async () => {
       await useWorkJournalStore.getState().ensurePages("2026-10-14");
@@ -356,7 +491,7 @@ describe("WorkJournalPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
     expect(screen.getByText("No page for Wed 14 Oct 2026.")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "New page for a date" }));
+    fireEvent.click(pageAction("New page for a date"));
     fireEvent.change(screen.getByLabelText("Date for the new page"), {
       target: { value: "2026-10-14" },
     });
@@ -430,7 +565,7 @@ describe("WorkJournalPanel", () => {
       pageEditor().commands.insertContent("Shipped the export");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Report" }));
+    fireEvent.click(pageAction("Report"));
     expect(screen.getByRole("dialog", { name: "Work report" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
@@ -821,15 +956,24 @@ describe("WorkJournalPanel and the pop-out window", () => {
     render(<WorkJournalPanel />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
-    fireEvent.click(screen.getByRole("button", { name: "Pop out" }));
+    fireEvent.click(pageAction("Pop out"));
     await waitFor(() => expect(WebviewWindow).toHaveBeenCalledTimes(1));
     expect(vi.mocked(WebviewWindow).mock.calls[0][0]).toBe(WORK_JOURNAL_WINDOW_LABEL);
   });
 
-  it("has no pop-out button inside the pop-out window", async () => {
+  it("has the same header inside the pop-out window, without Pop out", async () => {
     render(<WorkJournalPanel inWindow />);
     await screen.findByDisplayValue("Wed 14 Oct 2026");
-    expect(screen.queryByRole("button", { name: "Pop out" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Today" })).toBeInTheDocument();
+
+    fireEvent.click(menuButton());
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Jump to date",
+      "New page for a date",
+      "Delete page",
+      "Report",
+    ]);
+    expect(screen.queryByRole("menuitem", { name: "Pop out" })).not.toBeInTheDocument();
   });
 
   it("shows an edit and a title change made in the other window, without saving them back", async () => {
@@ -918,15 +1062,15 @@ describe("WorkJournalPanel and the pop-out window", () => {
     expect(pageEditor().isEditable).toBe(false);
     expect(screen.getByRole("button", { name: "Bold" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Text colour" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete page" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "New page for a date" })).toBeDisabled();
+    expect(pageAction("Delete page")).toBeDisabled();
+    expect(pageAction("New page for a date")).toBeDisabled();
 
     file.pages["2026-10-14"] = { ...file.pages["2026-10-14"], body: OTHER_BODY };
     await act(async () => changed({ source: WORK_JOURNAL_WINDOW_LABEL, replaced: true }));
     expect(await screen.findByText("Typed in the window")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Bold" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Delete page" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "New page for a date" })).toBeEnabled();
+    expect(pageAction("Delete page")).toBeEnabled();
+    expect(pageAction("New page for a date")).toBeEnabled();
     expect(pageEditor().isEditable).toBe(true);
   });
 
@@ -935,9 +1079,9 @@ describe("WorkJournalPanel and the pop-out window", () => {
     await screen.findByDisplayValue("Wed 14 Oct 2026");
 
     await act(async () => replacing({ source: WORK_JOURNAL_WINDOW_LABEL, active: true }));
-    expect(screen.getByRole("button", { name: "Delete page" })).toBeDisabled();
+    expect(pageAction("Delete page")).toBeDisabled();
     await act(async () => replacing({ source: WORK_JOURNAL_WINDOW_LABEL, active: false }));
-    expect(screen.getByRole("button", { name: "Delete page" })).toBeEnabled();
+    expect(pageAction("Delete page")).toBeEnabled();
     expect(pageEditor().isEditable).toBe(true);
   });
 
