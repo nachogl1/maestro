@@ -24,3 +24,18 @@ blocker sources (the body's `### Blocked by` section and GitHub's own blocked-by
   can never name a pull request. Fix it by naming the issue that pull request serves instead.
 - Closed issues never appear in the list or its count. Their links still place them on the map.
 - An open issue whose two sources name different issues is still reported as a disagreement.
+
+## Terminals: moving focus between terminals
+
+**Ctrl+Alt+Right** and **Ctrl+Alt+Left** (Cmd+Alt on a Mac) move the focus to the next and previous terminal,
+and the cursor goes with it, so typing lands in the newly focused terminal. They work in every view:
+
+- **Project view**: the project's terminals in layout order.
+- **Project view, zoomed**: the zoom tabs in their order; the zoom moves to the newly focused terminal.
+- **Eagle view**: every project's terminals in the order the tiles read on screen, top to bottom and left to
+  right.
+- **Eagle view, zoomed**: the same tile order; the zoom moves to the newly focused terminal.
+
+From the last terminal the keys wrap to the first, and from the first to the last. Parked terminals and
+unlaunched cards are skipped. In eagle view the keys act from the terminal the cursor is in; with the cursor in
+an unlaunched card they do nothing.

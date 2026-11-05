@@ -4,6 +4,9 @@ import { type HeaderAction, headerActionForKey } from "@/lib/headerShortcuts";
 import type { MoveDirection } from "@/lib/paneMoves";
 import { isMac } from "@/lib/platform";
 
+/** Which way Cmd/Ctrl+Alt+Arrow moves the focus along the tile order. */
+export type FocusStep = "next" | "previous";
+
 interface UseEagleTerminalKeyboardOptions {
   /** Whether the handler is listening (eagle view is showing). */
   enabled: boolean;
@@ -22,6 +25,11 @@ interface UseEagleTerminalKeyboardOptions {
    * pin or flag it through its header. Same ownership contract.
    */
   onHeaderAction?: (slotId: string, action: HeaderAction) => boolean;
+  /**
+   * Cmd/Ctrl+Alt+Right / Left inside a pane: focus the next / previous
+   * terminal in tile order. Same ownership contract.
+   */
+  onCycleFocus?: (slotId: string, step: FocusStep) => boolean;
 }
 
 /** Arrow key → move direction for Alt+Shift+Arrow. */
@@ -30,6 +38,12 @@ const ARROW_DIRECTIONS: Record<string, MoveDirection | undefined> = {
   ArrowRight: "right",
   ArrowUp: "up",
   ArrowDown: "down",
+};
+
+/** Arrow key → focus step for Cmd/Ctrl+Alt+Arrow. */
+const CYCLE_STEPS: Record<string, FocusStep | undefined> = {
+  ArrowRight: "next",
+  ArrowLeft: "previous",
 };
 
 /** The pane (slot) that owns a keyboard event's target, if any. */
@@ -41,7 +55,8 @@ function targetSlotId(event: KeyboardEvent): string | null {
 
 /**
  * Eagle view's Cmd/Ctrl+1 (zoom), Alt+P (park), Alt+Shift+Arrow (move the
- * tile) and the header shortcuts (rename, close, pin, flag). Per-project grids get
+ * tile), Cmd/Ctrl+Alt+Arrow (focus the next / previous terminal) and the
+ * header shortcuts (rename, close, pin, flag). Per-project grids get
  * these from `useTerminalKeyboard`, which is off in eagle view because every
  * project's grid is on screen at once and each would act on its own focused
  * pane. Here the target is the pane the keyboard focus is actually in.
@@ -55,6 +70,7 @@ export function useEagleTerminalKeyboard({
   onPark,
   onMove,
   onHeaderAction,
+  onCycleFocus,
 }: UseEagleTerminalKeyboardOptions): void {
   useEffect(() => {
     if (!enabled) return;
@@ -76,8 +92,10 @@ export function useEagleTerminalKeyboard({
         event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey
           ? ARROW_DIRECTIONS[event.key]
           : undefined;
+      const cycleStep =
+        modifierKey && event.altKey && !event.shiftKey ? CYCLE_STEPS[event.key] : undefined;
       const headerAction = headerActionForKey(event);
-      if (!isZoom && !isPark && !moveDirection && !headerAction) return;
+      if (!isZoom && !isPark && !moveDirection && !cycleStep && !headerAction) return;
 
       const slotId = targetSlotId(event);
       if (!slotId) return;
@@ -87,9 +105,11 @@ export function useEagleTerminalKeyboard({
           ? onPark(slotId)
           : moveDirection && onMove
             ? onMove(slotId, moveDirection)
-            : headerAction && onHeaderAction
-              ? onHeaderAction(slotId, headerAction)
-              : false;
+            : cycleStep && onCycleFocus
+              ? onCycleFocus(slotId, cycleStep)
+              : headerAction && onHeaderAction
+                ? onHeaderAction(slotId, headerAction)
+                : false;
       if (!handled) return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -97,5 +117,5 @@ export function useEagleTerminalKeyboard({
 
     window.addEventListener("keydown", handleCapture, { capture: true });
     return () => window.removeEventListener("keydown", handleCapture, { capture: true });
-  }, [enabled, onToggleZoom, onPark, onMove, onHeaderAction]);
+  }, [enabled, onToggleZoom, onPark, onMove, onHeaderAction, onCycleFocus]);
 }
