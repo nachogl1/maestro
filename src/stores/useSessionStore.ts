@@ -83,6 +83,59 @@ const PENDING_WORK_KIND: Record<string, keyof PendingWork> = {
   CronCreate: "loops",
 };
 
+const PENDING_WORK_KINDS: (keyof PendingWork)[] = [
+  "subagents",
+  "commands",
+  "monitors",
+  "workflows",
+  "wakeups",
+  "loops",
+];
+
+/**
+ * What a Stop hook says about the turn it closes (issue #501), as the status
+ * server forwards it: counts only, never the payload's text.
+ */
+interface TurnEnd {
+  /** Absent when the Stop payload carried no usable lists (older Claude Code). */
+  pending_work?: PendingWork;
+  /** Whether the agent's last message, trimmed, ends with `?`. */
+  ends_with_question?: boolean;
+}
+
+function isTurnEnd(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The pending work a Stop listed, or null when it listed none in a usable
+ * shape — the caller then falls back to the transcript count. Every kind must
+ * be a whole number of zero or more.
+ */
+function listedPendingWork(turnEnd: unknown): PendingWork | null {
+  if (!isTurnEnd(turnEnd) || !isTurnEnd(turnEnd.pending_work)) return null;
+  const listed = turnEnd.pending_work;
+  const work: PendingWork = {
+    subagents: 0,
+    commands: 0,
+    monitors: 0,
+    workflows: 0,
+    wakeups: 0,
+    loops: 0,
+  };
+  for (const kind of PENDING_WORK_KINDS) {
+    const count = listed[kind];
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0) return null;
+    work[kind] = count;
+  }
+  return work;
+}
+
+/** Whether a Stop's last message ended with a question mark (issue #501). */
+function endsWithQuestion(turnEnd: unknown): boolean {
+  return isTurnEnd(turnEnd) && turnEnd.ends_with_question === true;
+}
+
 function totalPendingWork(work: PendingWork): number {
   return (
     work.subagents + work.commands + work.monitors + work.workflows + work.wakeups + work.loops
@@ -207,6 +260,8 @@ type WireOnlyStatus = "AwaitingInput" | "SessionEnded" | "IdleReminder";
  */
 type RawSessionStatusPayload = Omit<SessionStatusPayload, "status"> & {
   status: BackendSessionStatus | WireOnlyStatus;
+  /** Set on "AwaitingInput" only: what the Stop said about its turn (issue #501). */
+  turn_end?: TurnEnd | null;
 };
 
 /** Output of resolveStatusEvent: what to write onto the session. */
@@ -227,7 +282,8 @@ interface ResolvedStatus {
  * The single signal→state merge rule for `session-status-changed` events
  * (issue #105). Pure so the mapping is unit-testable as a table.
  *
- * @param payload - The raw wire payload (status + message + prompt).
+ * @param payload - The raw wire payload (status + message + prompt, and a
+ *   Stop's `turn_end`).
  * @param existingStatus - The session's current status, or undefined when the
  *   session isn't in the store yet (the event will be buffered).
  * @param pendingWork - This session's pending hand-offs: running background
@@ -248,6 +304,9 @@ interface ResolvedStatus {
  *      status is deliberately not consulted: one stale Done would otherwise
  *      swallow every later turn end, forever (issue #77 cause 1), and a live
  *      Stop is better evidence than a startup Timeout heuristic;
+ *    - when the agent's last message ended with a question mark
+ *      (`turn_end.ends_with_question`, issue #501) → NeedsInput, whatever is
+ *      pending: it asked the user something in plain text;
  *    - while background subagents still run, or other background work is
  *      pending (a command, monitor, workflow, wakeup or cron loop), it means
  *      "handed off", not "waiting on you" → Working, naming what is pending;
@@ -273,7 +332,7 @@ interface ResolvedStatus {
  * 5. Everything else applies verbatim (last writer wins).
  */
 export function resolveStatusEvent(
-  payload: Pick<RawSessionStatusPayload, "status" | "message" | "needs_input_prompt">,
+  payload: Pick<RawSessionStatusPayload, "status" | "message" | "needs_input_prompt" | "turn_end">,
   existingStatus: BackendSessionStatus | undefined,
   pendingWork: number | PendingWork,
   terminalReportedThisTurn = false,
@@ -289,6 +348,13 @@ export function resolveStatusEvent(
   if (payload.status === "AwaitingInput") {
     if (terminalReportedThisTurn) {
       return null;
+    }
+    if (endsWithQuestion(payload.turn_end)) {
+      return {
+        status: "NeedsInput",
+        statusMessage: payload.message,
+        needsInputPrompt: payload.needs_input_prompt,
+      };
     }
     // The Stop hook fires whenever the agent ends its turn — including when
     // it ends the turn precisely because it handed work off to background
@@ -698,6 +764,21 @@ const terminalReportedThisTurn: Set<number> = new Set();
  * user through another signal.
  */
 const turnEndPending: Set<number> = new Set();
+
+/**
+ * The running work each session's last Stop listed (issue #501), taken from
+ * Claude Code's own `background_tasks` and `session_crons`. It counts until
+ * the next Stop replaces it or the session ends — finished work wakes the
+ * agent, so another Stop always follows — and is never aged out the way the
+ * transcript count is (`SUBAGENT_STALE_MS`). Absent when that Stop carried no
+ * lists: the transcript stores are then the count.
+ */
+const stopListedWork: Map<number, PendingWork> = new Map();
+
+/** This session's pending work: what its last Stop listed, else the transcript count. */
+function pendingWorkOf(sessionId: number): PendingWork {
+  return stopListedWork.get(sessionId) ?? countPendingWork(sessionId);
+}
 
 /**
  * Pending re-checks for sessions held at `Working` by subagents that never
@@ -1191,6 +1272,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     clearSubagentWatchdog(sessionId);
     terminalReportedThisTurn.delete(sessionId);
     turnEndPending.delete(sessionId);
+    stopListedWork.delete(sessionId);
 
     // Forget the context usage so a future session reusing this id doesn't
     // inherit a stale percentage.
@@ -1319,13 +1401,23 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             );
 
             // Pending work is only consulted for the Stop-hook signal and the
-            // idle reminder. Bounded by SUBAGENT_STALE_MS and each background
-            // task's expiry (and the watchdog armed below), so a completion
-            // that never arrives cannot pin the session at Working (issue #77
-            // cause 4, issue #469).
+            // idle reminder. A Stop that lists its running work is the count
+            // until the next Stop or the session's end (issue #501). Without
+            // lists, the transcript count is bounded by SUBAGENT_STALE_MS and
+            // each background task's expiry (and the watchdog armed below), so
+            // a completion that never arrives cannot pin the session at
+            // Working (issue #77 cause 4, issue #469).
+            let listedWork: PendingWork | null = null;
+            if (event.payload.status === "AwaitingInput") {
+              listedWork = listedPendingWork(event.payload.turn_end);
+              if (listedWork) stopListedWork.set(session_id, listedWork);
+              else stopListedWork.delete(session_id);
+            } else if (event.payload.status === "SessionEnded") {
+              stopListedWork.delete(session_id);
+            }
             const pendingWork =
               event.payload.status === "AwaitingInput" || event.payload.status === "IdleReminder"
-                ? countPendingWork(session_id)
+                ? pendingWorkOf(session_id)
                 : 0;
 
             // Same-turn terminal bookkeeping (issue #77 cause 1): the Stop
@@ -1391,9 +1483,15 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               clearStartupTimeout(session_id);
             }
 
-            // This event is fresher than any pending subagent re-check.
+            // This event is fresher than any pending subagent re-check. Work
+            // the Stop listed is never aged out, so only the transcript count
+            // gets one (issue #501).
             clearSubagentWatchdog(session_id);
-            if (resolved.status === "Working" && event.payload.status === "AwaitingInput") {
+            if (
+              resolved.status === "Working" &&
+              event.payload.status === "AwaitingInput" &&
+              !listedWork
+            ) {
               armSubagentWatchdog(session_id, project_path);
             }
 
