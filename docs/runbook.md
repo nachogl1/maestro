@@ -102,6 +102,22 @@ another one or onto an edge of the screen.
 - Each conversation shows its last message time beside the relative label: `3h ago · 14:32` for today, and the date
   as well for an earlier day, such as `yesterday · Nov 4, 09:10`. Hover the label for the full date and time.
 
+## Attention cues: sound, glow and blinking tabs
+
+When a terminal needs you, Maestro tells you in three ways:
+
+- **Sound (optional)**: Settings → Notifications → **Play a sound when a terminal needs you** (off by default).
+  With it on, a short beep plays once when a parked terminal comes back by itself (it finished, failed, or waits
+  for an answer) and once when a terminal starts waiting for your input. A reminder about a turn you already saw
+  does not beep again.
+- **Glow**: a terminal waiting for input has a brighter red glow around its frame, and its parking-tray chip
+  glows brighter too.
+- **Blinking tabs**: a terminal that came back from the parking tray by itself makes its tab in the zoom strip and
+  its project tab at the top blink yellow, at the same moment and rhythm. Select the terminal (click it, its tab,
+  or move focus to it) to stop the blink. A red context alert takes the place of the blink, and a warning flag you
+  set by hand stays solid yellow. With reduced motion turned on in the system, or on Linux, the tabs stay solid
+  yellow instead of blinking.
+
 ## Parked strip: reordering and picking from the keyboard (Alt+U)
 
 - **Drag a pill** along the parked strip to change its place. The order holds while other terminals park and

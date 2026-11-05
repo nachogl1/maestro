@@ -11,6 +11,8 @@ vi.mock("@/hooks/useProjectStatus", () => ({
     status: "idle",
     sessionCount: 0,
     contextAlert: tabId === "tab-1",
+    // tab-1 also needs the user, to show the red alert outranks the blink.
+    hasAttention: tabId === "tab-1" || tabId === "tab-2",
   }),
 }));
 
@@ -108,5 +110,20 @@ describe("ProjectTabs layout: window controls and tab strip overflow", () => {
     expect(second.getAttribute("data-context-alert")).toBe("true");
     expect(first.className).not.toContain("project-tab-context-alert");
     expect(first.hasAttribute("data-context-alert")).toBe(false);
+  });
+
+  it("blinks yellow, on the shared clock, the tab whose project has a terminal needing the user", () => {
+    vi.spyOn(performance, "now").mockReturnValue(2_300);
+    renderTabs(makeTabs(3));
+
+    const [quiet, redAlert, attention] = screen.getAllByRole("tab");
+    expect(attention.className).toContain("attention-blink");
+    expect(attention.getAttribute("data-attention")).toBe("true");
+    expect(attention.style.animationDuration).toBe("1200ms");
+    expect(attention.style.animationDelay).toBe("-1100ms");
+    expect(redAlert.className).not.toContain("attention-blink");
+    expect(quiet.className).not.toContain("attention-blink");
+    expect(quiet.style.animationDelay).toBe("");
+    vi.restoreAllMocks();
   });
 });

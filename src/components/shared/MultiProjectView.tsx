@@ -20,6 +20,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import type { FocusStep } from "@/hooks/useEagleTerminalKeyboard";
 import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import {
@@ -1032,6 +1033,10 @@ function EagleZoomTab({
   const hasAttention = useSessionStore((s) => s.attentionSessionIds.includes(sessionId));
   // Context alert (Settings): the tab blinks red like the frame it stands for.
   const contextAlert = useSessionContextAlert(sessionId);
+  // Attention blinks yellow in step with the project tab (issue #496); the
+  // red context alert outranks it.
+  const attentionBlinking = hasAttention && !contextAlert.active;
+  const attentionBlinkStyle = useAttentionBlink(attentionBlinking);
   // Attention-first click semantics on the active tab: the first click only
   // acknowledges the attention highlight — it must not also set the warning
   // flag. Subsequent clicks toggle the flag as before.
@@ -1061,6 +1066,7 @@ function EagleZoomTab({
           boxShadow: `inset 0 0 0 1px ${color}`,
         }
       : {}),
+    ...attentionBlinkStyle,
   };
 
   return (
@@ -1073,9 +1079,11 @@ function EagleZoomTab({
       className={`flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
         contextAlert.active
           ? "zoom-tab-context-alert"
-          : isFlagged || hasAttention
-            ? "warning-flag"
-            : ""
+          : attentionBlinking
+            ? "attention-blink"
+            : isFlagged
+              ? "warning-flag"
+              : ""
       } ${isActive ? "font-bold" : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"}`}
       data-context-alert={contextAlert.active ? "true" : undefined}
       title={`${contextAlert.title ? `${contextAlert.title} — ` : ""}${

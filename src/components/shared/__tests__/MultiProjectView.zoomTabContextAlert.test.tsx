@@ -173,7 +173,7 @@ describe("MultiProjectView eagle zoom strip tabs: context alert and active fill"
       return [];
     });
     useWorkspaceStore.setState({ tabs: [{ ...launchedTab }] });
-    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
+    useSessionStore.setState({ sessions: [], parkedSessionIds: [], attentionSessionIds: [] });
     useContextAlertStore.setState({ threshold: 80 });
   });
 
@@ -228,5 +228,20 @@ describe("MultiProjectView eagle zoom strip tabs: context alert and active fill"
     tabs = eagleZoomTabs();
     expect(tabs[0].className).not.toContain("zoom-tab-context-alert");
     expect(tabs[0].style.boxShadow).toContain("inset 0 0 0 1px");
+  });
+
+  it("blinks the tab of a terminal that needs the user on the shared clock", async () => {
+    await renderZoomedWithTwoTerminals();
+
+    const clock = vi.spyOn(performance, "now").mockReturnValue(2_300);
+    act(() => {
+      useSessionStore.setState({ attentionSessionIds: [2] });
+    });
+    const [active, attention] = eagleZoomTabs();
+    expect(attention.className).toContain("attention-blink");
+    expect(attention.className).not.toContain("warning-flag");
+    expect(attention.style.animationDelay).toBe("-1100ms");
+    expect(active.className).not.toContain("attention-blink");
+    clock.mockRestore();
   });
 });

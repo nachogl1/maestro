@@ -54,15 +54,21 @@ export const STATUS_COLORS: Record<ProjectStatus, string> = {
  *
  * `contextAlert` is true when any of the project's terminals, parked or not,
  * is past the context alert threshold picked in Settings.
+ *
+ * `hasAttention` is true when any of the project's terminals carries the
+ * attention highlight (it came back from the parking tray by itself), so the
+ * project tab can blink with that terminal's tab (issue #496).
  */
 export function useProjectStatus(tabId: string): {
   status: ProjectStatus;
   sessionCount: number;
   activeSessionCount: number;
   contextAlert: boolean;
+  hasAttention: boolean;
 } {
   const tab = useWorkspaceStore((s) => s.tabs.find((t) => t.id === tabId));
   const sessions = useSessionStore((s) => s.sessions);
+  const attentionSessionIds = useSessionStore((s) => s.attentionSessionIds);
   const contextAlertThreshold = useContextAlertStore((s) => s.threshold);
 
   return useMemo(() => {
@@ -72,6 +78,7 @@ export function useProjectStatus(tabId: string): {
         sessionCount: 0,
         activeSessionCount: 0,
         contextAlert: false,
+        hasAttention: false,
       };
     }
 
@@ -84,6 +91,7 @@ export function useProjectStatus(tabId: string): {
         sessionCount: 0,
         activeSessionCount: 0,
         contextAlert: false,
+        hasAttention: false,
       };
     }
 
@@ -117,6 +125,8 @@ export function useProjectStatus(tabId: string): {
       isContextAlert(s.contextPercent, contextAlertThreshold),
     );
 
-    return { status, sessionCount, activeSessionCount, contextAlert };
-  }, [tab, sessions, contextAlertThreshold]);
+    const hasAttention = projectSessions.some((s) => attentionSessionIds.includes(s.id));
+
+    return { status, sessionCount, activeSessionCount, contextAlert, hasAttention };
+  }, [tab, sessions, contextAlertThreshold, attentionSessionIds]);
 }
