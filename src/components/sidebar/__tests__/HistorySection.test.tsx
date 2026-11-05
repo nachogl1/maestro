@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The persisted zustand stores hydrate through the Tauri store plugin at
 // import time; happy-dom has no Tauri backend, so stub it out.
@@ -519,5 +519,85 @@ describe("HistorySection (issue #78)", () => {
     expect(resumeRows()).toHaveLength(1);
     expect(screen.queryByText("No conversations match your search.")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("Search conversations...")).toHaveValue("");
+  });
+});
+
+describe("HistorySection — newest first, with the clock time (issue #497)", () => {
+  const OTHER_DIR = "C:\\old\\scratch";
+  // Local wall-clock times, so "today" holds in every time zone the suite runs in.
+  const NOW = new Date(2026, 7, 11, 15, 0);
+  const at = (day: number, hour: number, minute: number): string =>
+    new Date(2026, 7, day, hour, minute).toISOString();
+  const clock = (iso: string): string =>
+    new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const dateAndClock = (iso: string): string =>
+    new Date(iso).toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    invokeMock.mockReset();
+    useWorkspaceStore.setState({ tabs: [buildTab()] });
+    useSessionStore.setState({ sessions: [] });
+    useActivityStore.setState({ sessions: {} });
+    usePendingLaunchStore.setState({ pending: [] });
+    useSessionSummaryStore.setState({ entries: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("puts the group with the most recent message first, whatever its kind", async () => {
+    mockInvoke({
+      worktrees: [worktree()],
+      listing: buildListing([
+        // Newest first, as the backend returns them.
+        conversation({
+          session_id: "conv-gone",
+          cwd: OTHER_DIR,
+          cwd_exists: false,
+          last_active: at(11, 14, 0),
+        }),
+        conversation({ session_id: "conv-wt", cwd: WORKTREE, last_active: at(11, 12, 0) }),
+        conversation({ session_id: "conv-repo", last_active: at(10, 9, 0) }),
+      ]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    const headers = [OTHER_DIR, WORKTREE, REPO].map((path) => screen.getByTitle(path));
+    for (let i = 1; i < headers.length; i++) {
+      expect(
+        headers[i - 1].compareDocumentPosition(headers[i]) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+  });
+
+  it("shows each conversation's last message time beside the relative label", async () => {
+    const today = at(11, 12, 32);
+    const earlier = at(8, 9, 5);
+    const longAgo = new Date(2026, 5, 1, 16, 45).toISOString();
+    mockInvoke({
+      listing: buildListing([
+        conversation({ session_id: "conv-today", last_active: today }),
+        conversation({ session_id: "conv-earlier", last_active: earlier }),
+        conversation({ session_id: "conv-long-ago", last_active: longAgo }),
+      ]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    // Today: the clock time alone. Another day: the date as well — unless the
+    // relative label already is the date, which is then not repeated.
+    expect(screen.getByText(`2h ago · ${clock(today)}`)).toBeInTheDocument();
+    expect(screen.getByText(`3d ago · ${dateAndClock(earlier)}`)).toBeInTheDocument();
+    const longAgoDate = new Date(longAgo).toLocaleDateString();
+    expect(screen.getByText(`${longAgoDate} · ${clock(longAgo)}`)).toBeInTheDocument();
   });
 });
