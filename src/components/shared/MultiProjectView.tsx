@@ -20,6 +20,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import type { FocusStep } from "@/hooks/useEagleTerminalKeyboard";
 import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import {
   compareRowMajor,
@@ -461,6 +462,28 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         if (handle.focusSession(eagleZoom)) break;
       }
     }, [eagleView, eagleZoom]);
+
+    // Cmd/Ctrl+Alt+Arrow in eagle view: focus the next / previous terminal in
+    // tile reading order, wrapping at the ends. While eagle-zoomed the zoom
+    // moves with it (the zoom-focus effect above then focuses the terminal);
+    // otherwise only the grid that owns the target accepts the focus call.
+    const handleEagleCycleFocus = useCallback(
+      (sessionId: number, step: FocusStep) => {
+        const count = orderedEagleSessions.length;
+        const idx = orderedEagleSessions.findIndex((s) => s.sessionId === (eagleZoom ?? sessionId));
+        if (idx < 0) return;
+        const delta = step === "next" ? 1 : -1;
+        const target = orderedEagleSessions[(idx + delta + count) % count].sessionId;
+        if (eagleZoom !== null) {
+          setEagleZoom(target);
+          return;
+        }
+        for (const handle of gridRefs.current.values()) {
+          if (handle.focusSession(target)) break;
+        }
+      },
+      [orderedEagleSessions, eagleZoom],
+    );
 
     // Single stable toggle shared by every grid — session IDs are global, so
     // no per-tab closure is needed.
@@ -932,6 +955,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   eagleOccupied={eagleLayout.occupied}
                   onEagleDrop={handleEagleDrop}
                   onEagleMoveTile={handleEagleMoveTile}
+                  onEagleCycleFocus={handleEagleCycleFocus}
                   onEagleResizeTile={handleEagleResizeTile}
                 />
               ) : (

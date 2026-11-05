@@ -150,3 +150,56 @@ describe("useEagleTerminalKeyboard Alt+Shift+Arrow tile moves", () => {
     expect(ev.defaultPrevented).toBe(true);
   });
 });
+
+describe("useEagleTerminalKeyboard Cmd/Ctrl+Alt+Arrow focus cycling", () => {
+  /** metaKey AND ctrlKey both set so the test passes whatever isMac() reports. */
+  function pressCycle(target: EventTarget, key: string): KeyboardEvent {
+    const ev = new KeyboardEvent("keydown", {
+      key,
+      altKey: true,
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    target.dispatchEvent(ev);
+    return ev;
+  }
+
+  it.each([
+    ["ArrowRight", "next"],
+    ["ArrowLeft", "previous"],
+  ])("%s asks for the %s terminal from the pane the key was pressed in", (key, step) => {
+    const onCycleFocus = vi.fn(() => true);
+    renderHook(() =>
+      useEagleTerminalKeyboard({
+        enabled: true,
+        onToggleZoom: vi.fn(),
+        onPark: vi.fn(),
+        onCycleFocus,
+      }),
+    );
+    const input = mountPane("slot-f");
+    const inner = vi.fn();
+    input.addEventListener("keydown", inner);
+    const ev = pressCycle(input, key);
+    expect(onCycleFocus).toHaveBeenCalledWith("slot-f", step);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(inner).not.toHaveBeenCalled();
+  });
+
+  it("lets the key through when no grid owns the pane", () => {
+    const onCycleFocus = vi.fn(() => false);
+    renderHook(() =>
+      useEagleTerminalKeyboard({
+        enabled: true,
+        onToggleZoom: vi.fn(),
+        onPark: vi.fn(),
+        onCycleFocus,
+      }),
+    );
+    const ev = pressCycle(mountPane("slot-y"), "ArrowRight");
+    expect(onCycleFocus).toHaveBeenCalledWith("slot-y", "next");
+    expect(ev.defaultPrevented).toBe(false);
+  });
+});
