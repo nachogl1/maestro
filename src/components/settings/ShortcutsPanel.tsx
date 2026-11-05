@@ -46,7 +46,10 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
           keys: [alt, "U"],
           description: "Focus the parked strip: ← → to pick, Enter to restore, Esc to go back",
         },
-        { keys: [alt, "T"], description: "Tidy up: give every terminal an even share" },
+        {
+          keys: [alt, "T"],
+          description: "Tidy up: every terminal in one row of full-height columns",
+        },
         {
           keys: [alt, "Shift", "← ↑ ↓ →"],
           description: "Move the focused terminal in that direction",

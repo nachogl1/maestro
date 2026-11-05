@@ -357,3 +357,17 @@ export function equalizeTree(tree: TreeNode): TreeNode {
   if (newLeft === left && newRight === right && tree.ratio === evenRatio) return tree;
   return { ...tree, ratio: evenRatio, children: [newLeft, newRight] };
 }
+
+function collectLeaves(tree: TreeNode): LeafNode[] {
+  if (tree.type === "leaf") return [tree];
+  return [...collectLeaves(tree.children[0]), ...collectLeaves(tree.children[1])];
+}
+
+/**
+ * Tidy up: every pane in one row of equal, full-height columns, in the order
+ * they had (left-to-right, top-to-bottom). The leaves are kept, so each pane
+ * keeps its identity; the splits are rebuilt. A single pane is returned as is.
+ */
+export function tidyIntoRow(tree: TreeNode): TreeNode {
+  return buildBalancedSplit(collectLeaves(tree), "vertical");
+}

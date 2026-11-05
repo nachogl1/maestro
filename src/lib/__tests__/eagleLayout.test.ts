@@ -13,6 +13,7 @@ import {
   placeTileAt,
   rectsOverlap,
   resizeTile,
+  rowOfColumns,
   type TileRect,
 } from "../eagleLayout";
 import { STAGE_EDGE_RATIO } from "../paneMoves";
@@ -332,5 +333,51 @@ describe("insertColumnAtEdge", () => {
 
   it("is invalid for an unknown tile", () => {
     expect(insertColumnAtEdge(tiles, 99, "right")).toBeNull();
+  });
+});
+
+describe("rowOfColumns", () => {
+  it.each([
+    2, 3, 4, 5, 6,
+  ])("lays %i tiles out as one row of equal full-height columns in the given order", (count) => {
+    const ids = [40, 10, 30, 20, 60, 50].slice(0, count);
+    const tiles = rowOfColumns(ids);
+    if (!tiles) throw new Error("expected a row");
+    expect([...tiles.keys()]).toEqual(ids);
+    let x = 0;
+    for (const id of ids) {
+      expect(tiles.get(id)).toEqual({ x, y: 0, w: U / count, h: U });
+      x += U / count;
+    }
+  });
+
+  it("splits the width as evenly as whole cells allow and covers the whole grid", () => {
+    const tiles = rowOfColumns([1, 2, 3, 4, 5, 6, 7]);
+    if (!tiles) throw new Error("expected a row");
+    const widths = [...tiles.values()].map((r) => r.w);
+    expect(widths.reduce((a, b) => a + b, 0)).toBe(U);
+    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+  });
+
+  it("returns null when a column would be narrower than the smallest tile", () => {
+    const tooMany = Array.from({ length: U / MIN_TILE_UNITS + 1 }, (_, i) => i + 1);
+    expect(rowOfColumns(tooMany)).toBeNull();
+    expect(rowOfColumns([])).toBeNull();
+  });
+
+  it("is kept by the layout and can still be resized and moved", () => {
+    const tiles = rowOfColumns([1, 2, 3, 4]);
+    if (!tiles) throw new Error("expected a row");
+    const layout = layoutEagleTiles({
+      sessionIds: [1, 2, 3, 4],
+      pendingByTab: [],
+      stored: Object.fromEntries(tiles),
+    });
+    expect(layout.tiles).toEqual(tiles);
+
+    const first = tiles.get(1) as TileRect;
+    const others = [...tiles].filter(([id]) => id !== 1).map(([, r]) => r);
+    expect(resizeTile(first, "bottom", -30, others)).toEqual({ ...first, h: 30 });
+    expect(dropBesideTile(tiles, 1, 4, "bottom")?.get(1)).toEqual({ x: 45, y: 30, w: 15, h: 30 });
   });
 });

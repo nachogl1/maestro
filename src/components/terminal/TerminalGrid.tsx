@@ -97,7 +97,6 @@ import {
   buildGridTree,
   collectSlotIds,
   createLeaf,
-  equalizeTree,
   findSiblingSlotId,
   MAX_SESSIONS,
   moveSlotToSide,
@@ -106,6 +105,7 @@ import {
   removeLeaf,
   swapSlots,
   type TreeNode,
+  tidyIntoRow,
   updateRatio,
 } from "./splitTree";
 import { TerminalView } from "./TerminalView";
@@ -214,7 +214,7 @@ export interface TerminalGridHandle {
   killSessionById: (sessionId: number) => boolean;
   /** Whether this grid is currently showing its per-project zoom-in view. */
   isZoomed: () => boolean;
-  /** Tidy up: give every pane an even share of the layout, keeping the arrangement. */
+  /** Tidy up: every pane in one row of equal, full-height columns, keeping their order. */
   tidyLayout: () => void;
 }
 
@@ -658,8 +658,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // further down (it needs handleSwapSlots), so the hook reads it at call time.
   const moveFocusedRef = useRef<(direction: MoveDirection) => void>(() => {});
 
-  /** Tidy up: every pane gets an even share of the layout; the arrangement stays. */
-  const handleTidyLayout = useCallback(() => setLayoutTree(equalizeTree), []);
+  /** Tidy up: every pane in one row of equal, full-height columns, in their order. */
+  const handleTidyLayout = useCallback(() => setLayoutTree(tidyIntoRow), []);
 
   useTerminalKeyboard({
     terminalCount: launchedSlots.length,
@@ -2143,7 +2143,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                 onClick={handleTidyLayout}
                 className="rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
                 title={titleWithShortcut(
-                  "Tidy up: give every terminal an even share of the screen",
+                  "Tidy up: every terminal side by side, one row of full-height columns",
                   altLabel(),
                   "T",
                 )}

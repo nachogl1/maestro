@@ -53,7 +53,7 @@ interface TopBarProps {
   /** Maximum number of sessions allowed */
   maxSessions?: number;
   onAddSession?: () => void;
-  /** Tidy up: give every terminal of the active project an even share of the grid. */
+  /** Tidy up: the terminals in one row of full-height columns (project or eagle view). */
   onTidyLayout?: () => void;
   /** Whether eagle view (all projects' terminals at once) is active */
   eagleView?: boolean;
@@ -171,7 +171,7 @@ export function TopBar({
 
       {/* Right: action icons */}
       <div className="flex items-center gap-0.5 mr-1">
-        {/* Tidy up: evens out terminals the user resized — the project grid,
+        {/* Tidy up: one row of full-height columns — the project grid,
             or in eagle view every tile. */}
         {(hasActiveProject || eagleView) && onTidyLayout && (
           <button
@@ -180,7 +180,7 @@ export function TopBar({
             className="rounded p-1.5 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
             aria-label="Tidy up terminals"
             title={titleWithShortcut(
-              "Tidy up: give every terminal an even share of the screen",
+              "Tidy up: every terminal side by side, one row of full-height columns",
               altLabel(),
               "T",
             )}

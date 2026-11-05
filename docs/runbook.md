@@ -65,3 +65,16 @@ an unlaunched card they do nothing.
 - For about a second after the card appears, the name box keeps the cursor even if a terminal tries to take it
   back. Clicking somewhere, pressing a shortcut, or tabbing to another field in that time leaves the cursor where
   you put it.
+
+## Terminals: Tidy up (Alt+T)
+
+The **Tidy up** button at the top right (or **Alt+T**) puts every terminal side by side in **one row of equal,
+full-height columns**:
+
+- **Project view**: the project's terminals, in the order they had (left to right, then top to bottom). It also
+  works while a terminal is zoomed; the new layout shows when you leave the zoom.
+- **Eagle view**: every tile, in the order the tiles read on screen (top to bottom, then left to right). With more
+  than ten tiles a column would be too narrow, so the tiles go back to the automatic grid instead.
+
+After tidying, terminals still move and resize as usual: drag a divider or a tile edge, or drag a terminal onto
+another one or onto an edge of the screen.
