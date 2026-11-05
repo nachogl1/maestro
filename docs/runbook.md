@@ -152,6 +152,23 @@ When a terminal needs you, Maestro tells you in three ways:
   zoomed, each restored terminal takes over the zoom, so leaving puts the cursor in the last one restored.
 - Restoring the last pill leaves the strip and puts the cursor in that terminal, the same as clicking it.
 
+## Parking: which notifications bring a parked terminal back
+
+Claude Code sends a notification with a type. Maestro reads the type to decide whether a parked terminal comes back
+into the grid.
+
+- **Brings it back (its status turns to waiting for you):** a permission prompt (`permission_prompt`), a question
+  dialog from an MCP server (`elicitation_dialog`, `elicitation_url_dialog`), and a usage-limit wait that will not
+  resume by itself, so you must resume it by hand (`quota_auto_resume_stale`, `quota_auto_resume_disabled`).
+- **Never brings it back, and the status stays as it was:** sign-in done (`auth_success`), an MCP question answered
+  (`elicitation_complete`, `elicitation_response`), a background agent that finished or needs input in agent view
+  (`agent_completed`, `agent_needs_input`), a usage-limit wait that resumed by itself (`quota_auto_resume_fired`),
+  and a plugin's own message (`plugin_notification`).
+- **The 60-second reminder** (`idle_prompt`) repaints the status but never brings a parked terminal back.
+- **A type Maestro does not know yet**, or a notification with no type, still counts as a wait and brings the
+  terminal back, so a new kind of prompt is never missed. Its type name is written to the app log as
+  `unknown type`.
+
 ## Work Journal header: Today and the page actions menu
 
 - The header shows **Previous day**, the page title, the **page actions** button (three dots, right of the title),

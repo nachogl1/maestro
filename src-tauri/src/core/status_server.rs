@@ -822,24 +822,37 @@ enum NotificationKind {
     /// The `idle_prompt` reminder: Claude finished ~60s ago and nothing was
     /// typed since. Not a new wait — the Stop hook announced that turn end.
     IdleReminder,
-    /// Purely informational (sign-in done, a background agent finished, an
-    /// MCP elicitation round-tripped, a usage-limit wait resumed by itself):
-    /// nobody has to do anything, so it must not touch the status.
+    /// Purely informational (sign-in done, a background agent finished or
+    /// needs input in agent view, an MCP elicitation round-tripped, a
+    /// usage-limit wait resumed by itself, a plugin's own message): nobody
+    /// has to act in this terminal, so it must not touch the status.
     Informational,
+    /// A type Maestro does not know (or an absent one). Handled as a `Wait`,
+    /// which is what every Notification used to mean — the safe default when
+    /// a new kind of prompt appears — but logged by name so it can be sorted.
+    Unknown,
 }
 
-/// Sorts a Notification by `notification_type`. Unknown or absent types are
-/// treated as a wait, which is what every Notification used to mean — the
-/// safe default when a new kind of prompt appears.
+/// Sorts a Notification by `notification_type`, using Claude Code's
+/// documented values (issue #477).
 fn classify_notification(notification_type: &str) -> NotificationKind {
     match notification_type {
+        "permission_prompt"
+        | "elicitation_dialog"
+        | "elicitation_url_dialog"
+        // Issue #500: the usage-limit wait will not resume by itself; the
+        // person has to resume by hand.
+        | "quota_auto_resume_stale"
+        | "quota_auto_resume_disabled" => NotificationKind::Wait,
         "idle_prompt" => NotificationKind::IdleReminder,
         "auth_success"
         | "elicitation_complete"
         | "elicitation_response"
         | "agent_completed"
-        | "quota_auto_resume_fired" => NotificationKind::Informational,
-        _ => NotificationKind::Wait,
+        | "agent_needs_input"
+        | "quota_auto_resume_fired"
+        | "plugin_notification" => NotificationKind::Informational,
+        _ => NotificationKind::Unknown,
     }
 }
 
@@ -901,6 +914,10 @@ async fn handle_hook_notification(
             emit_hook_status(&state, maestro_session_id, "IdleReminder", &message, None).await;
             return StatusCode::OK;
         }
+        NotificationKind::Unknown => log::warn!(
+            "[HOOK] notification: unknown type {:?}, treated as a wait",
+            notification_type
+        ),
         NotificationKind::Wait => {}
     }
 
@@ -1533,16 +1550,22 @@ mod tests {
             "permission_prompt",
             "elicitation_dialog",
             "elicitation_url_dialog",
-            "agent_needs_input",
             "quota_auto_resume_stale",
             "quota_auto_resume_disabled",
-            "some_future_prompt",
-            "",
         ] {
             assert_eq!(
                 classify_notification(wait),
                 NotificationKind::Wait,
                 "{wait}"
+            );
+        }
+        // Issue #500: a type Claude Code adds later is still a wait, but is
+        // told apart so the handler can log its name.
+        for unknown in ["some_future_prompt", "PLUGIN_NOTIFICATION", ""] {
+            assert_eq!(
+                classify_notification(unknown),
+                NotificationKind::Unknown,
+                "{unknown:?}"
             );
         }
         assert_eq!(
@@ -1555,6 +1578,8 @@ mod tests {
             "elicitation_response",
             "agent_completed",
             "quota_auto_resume_fired",
+            "plugin_notification",
+            "agent_needs_input",
         ] {
             assert_eq!(
                 classify_notification(info),
@@ -1606,7 +1631,13 @@ mod tests {
             .await
             .insert(1, "/path/project".to_string());
 
-        for notification_type in ["auth_success", "agent_completed", "quota_auto_resume_fired"] {
+        for notification_type in [
+            "auth_success",
+            "agent_completed",
+            "quota_auto_resume_fired",
+            "plugin_notification",
+            "agent_needs_input",
+        ] {
             let body = serde_json::json!({
                 "session_id": "claude-uuid",
                 "hook_event_name": "Notification",
@@ -1621,6 +1652,48 @@ mod tests {
 
         assert!(events.lock().unwrap().is_empty());
         assert!(state.notified_at.read().await.get(&1).is_none());
+    }
+
+    /// Issue #500: the quota waits the person must resume by hand, an unknown
+    /// type, and a `notification_type` of the wrong shape all stay a wait.
+    #[tokio::test]
+    async fn notification_hook_treats_manual_quota_and_unknown_types_as_a_wait() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, state) = start_test_http_server_with_state("inst-secret", emit_fn).await;
+        state
+            .session_projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let notification_types = [
+            serde_json::json!("quota_auto_resume_stale"),
+            serde_json::json!("quota_auto_resume_disabled"),
+            serde_json::json!("some_future_prompt"),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!({"kind": "plugin_notification"}),
+            serde_json::json!(["agent_needs_input"]),
+        ];
+        for notification_type in &notification_types {
+            let body = serde_json::json!({
+                "session_id": "claude-uuid",
+                "hook_event_name": "Notification",
+                "notification_type": notification_type,
+                "message": "Usage limit reached",
+            });
+            assert_eq!(
+                post_hook(addr, "/hook/notification", Some("inst-secret"), body).await,
+                200,
+                "{notification_type}"
+            );
+        }
+
+        let emitted = events.lock().unwrap();
+        assert_eq!(emitted.len(), notification_types.len());
+        assert!(emitted.iter().all(|e| e.status == "NeedsInput"));
+        drop(emitted);
+        assert!(state.notified_at.read().await.get(&1).is_some());
     }
 
     #[tokio::test]
