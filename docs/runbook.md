@@ -78,3 +78,12 @@ full-height columns**:
 
 After tidying, terminals still move and resize as usual: drag a divider or a tile edge, or drag a terminal onto
 another one or onto an edge of the screen.
+
+## History tab: order and last message time
+
+- Inside each project, the directory groups (the checkout, each worktree, and any other directory a conversation
+  ran in) are ordered by their newest message, whatever kind of directory they are. A worktree with a conversation
+  from five minutes ago sits above a checkout last used yesterday.
+- Groups with no conversations yet (an unused worktree, say) come last.
+- Each conversation shows its last message time beside the relative label: `3h ago · 14:32` for today, and the date
+  as well for an earlier day, such as `yesterday · Nov 4, 09:10`. Hover the label for the full date and time.
