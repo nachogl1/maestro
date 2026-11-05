@@ -45,7 +45,8 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         { keys: [alt, "P"], description: "Park the focused terminal" },
         {
           keys: [alt, "U"],
-          description: "Focus the parked strip: ← → to pick, Enter to restore, Esc to go back",
+          description:
+            "Enter or leave the parked strip: ← → to pick, Enter to restore and stay, Esc to go back",
         },
         {
           keys: [alt, "T"],

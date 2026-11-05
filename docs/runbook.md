@@ -117,3 +117,15 @@ When a terminal needs you, Maestro tells you in three ways:
   or move focus to it) to stop the blink. A red context alert takes the place of the blink, and a warning flag you
   set by hand stays solid yellow. With reduced motion turned on in the system, or on Linux, the tabs stay solid
   yellow instead of blinking.
+
+## Parked strip: reordering and picking from the keyboard (Alt+U)
+
+- **Drag a pill** along the parked strip to change its place. The order holds while other terminals park and
+  unpark: a terminal you park later joins the end, and one you unpark leaves the others where they were. The
+  order lasts until the app closes. A plain click on a pill still restores its terminal; a drag never does.
+- **Alt+U** moves the cursor to the first pill. **← →** pick a pill, and **Enter** restores its terminal while
+  the cursor stays in the strip on the next pill (or the one before it, at the end of the row), so several
+  terminals can be restored in a row.
+- **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. While a terminal is
+  zoomed, each restored terminal takes over the zoom, so leaving puts the cursor in the last one restored.
+- Restoring the last pill leaves the strip and puts the cursor in that terminal, the same as clicking it.
