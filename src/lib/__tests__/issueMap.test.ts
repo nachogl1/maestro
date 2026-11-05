@@ -243,8 +243,7 @@ describe("buildIssueMap", () => {
       2: link({ number: 2, blockedBy: [1], body: "### Blocked by\n#1 #5" }),
     });
     expect(disagree.problems.map((p) => problemText(p))).toEqual([
-      '#2: its two "blocked by" sources disagree',
-      "#2 is blocked by #5, which is not on the map: link dropped",
+      "#2 is blocked by #5, which is not an issue on the map: link dropped",
     ]);
     expect(
       problemText({ kind: "disagreement", number: 7, sectionOnly: [1, 2], nativeOnly: [3] }),
@@ -293,6 +292,13 @@ describe("buildIssueMap", () => {
       nativeOnly: [3],
     });
     expect(nativeOnly.effect).toContain("GitHub's own blocked-by relation of #7 names #3 but the");
+
+    const notIssue = explainProblem({ kind: "not-issue", blocked: 8, blocker: 40 }, titleOf);
+    expect(notIssue.headline).toBe(
+      '#8 "Issue 8" is blocked by #40, which is not an issue on the map: link dropped',
+    );
+    expect(notIssue.effect).toContain("most often a pull request");
+    expect(notIssue.fix).toContain('"### Blocked by" section of #8 "Issue 8"');
 
     const cycle = explainProblem({ kind: "cycle", blocked: 1, blocker: 3 }, titleOf);
     expect(cycle.effect).toContain("leads back to #1");

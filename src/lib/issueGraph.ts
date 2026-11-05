@@ -8,7 +8,11 @@
  * - a link is "blocked by", from GitHub's native relation OR a "### Blocked by"
  *   section of the body (union); nothing else counts;
  * - a link to an epic, to an issue that was not fetched, or one that closes a
- *   cycle is dropped and reported.
+ *   cycle is dropped and reported;
+ * - a section blocker that is not a fetched issue (most often a pull request,
+ *   which GitHub's own relation can never name) is reported once, as not an
+ *   issue, and never also as a disagreement;
+ * - a closed issue's problems are not reported: its links still shape the map.
  *
  * Pure functions, no React.
  */
@@ -60,7 +64,7 @@ export type IssueLinkProblem =
       /** Blockers only GitHub's native relation names. */
       nativeOnly: number[];
     }
-  | { kind: "epic" | "not-loaded" | "cycle"; blocked: number; blocker: number };
+  | { kind: "epic" | "not-loaded" | "not-issue" | "cycle"; blocked: number; blocker: number };
 
 export interface IssueGraph {
   nodes: IssueGraphNode[];
@@ -107,6 +111,8 @@ export function isEpic(labels: Array<{ name: string }>): boolean {
 
 const byNumberAsc = (a: number, b: number) => a - b;
 
+const isOpen = (issue: IssueInfo | undefined) => issue?.state.toUpperCase() === "OPEN";
+
 /**
  * Build the graph for the fetched issues: non-epic nodes, kept "blocked by"
  * edges, and the data problems (dropped links, disagreeing sources).
@@ -143,26 +149,36 @@ export function buildIssueGraph(
     const native = new Set(link.blockedBy.filter((b) => b !== n));
     const sectionRefs = parseBlockedBySection(link.body, repoUrl);
     const section = new Set((sectionRefs ?? []).filter((b) => b !== n));
+    // GitHub's own relation names issues only, so a section blocker that is not
+    // a fetched issue cannot be compared with it: it gets its own problem.
+    const notIssue = (b: number) => !native.has(b) && !fetched.has(b);
+    // A closed issue waits for nothing, so its problems are not reported.
+    const report = (problem: IssueLinkProblem) => {
+      if (isOpen(issue)) problems.push(problem);
+    };
     // Only a body that has a "### Blocked by" section can disagree with GitHub.
     if (sectionRefs !== null) {
-      const sectionOnly = [...section].filter((b) => !native.has(b)).sort(byNumberAsc);
+      const sectionOnly = [...section]
+        .filter((b) => !native.has(b) && !notIssue(b))
+        .sort(byNumberAsc);
       const nativeOnly = [...native].filter((b) => !section.has(b)).sort(byNumberAsc);
       if (sectionOnly.length > 0 || nativeOnly.length > 0) {
-        problems.push({ kind: "disagreement", number: n, sectionOnly, nativeOnly });
+        report({ kind: "disagreement", number: n, sectionOnly, nativeOnly });
       }
     }
 
     for (const blocker of [...new Set([...native, ...section])].sort(byNumberAsc)) {
       const target = fetched.get(blocker);
-      if (!target) problems.push({ kind: "not-loaded", blocked: n, blocker });
-      else if (isEpic(target.labels)) problems.push({ kind: "epic", blocked: n, blocker });
+      if (notIssue(blocker)) report({ kind: "not-issue", blocked: n, blocker });
+      else if (!target) report({ kind: "not-loaded", blocked: n, blocker });
+      else if (isEpic(target.labels)) report({ kind: "epic", blocked: n, blocker });
       else edges.push({ id: `${blocker}->${n}`, source: blocker, target: n });
     }
   }
 
   const backEdges = findBackEdges(nodes, edges);
   for (const edge of edges) {
-    if (backEdges.has(edge.id)) {
+    if (backEdges.has(edge.id) && isOpen(fetched.get(edge.target))) {
       problems.push({ kind: "cycle", blocked: edge.target, blocker: edge.source });
     }
   }
