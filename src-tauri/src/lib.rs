@@ -476,6 +476,7 @@ pub fn run() {
             commands::github::github_list_issues,
             commands::github::github_issue_links,
             commands::github::github_list_assignees,
+            commands::github::github_list_labels,
             commands::github::github_update_issue_assignees,
             commands::github::github_list_discussions,
             commands::github::github_get_issue,

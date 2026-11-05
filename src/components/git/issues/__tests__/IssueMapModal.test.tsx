@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueLinks } from "@/lib/issueGraph";
 import { type IssueInfo, useGitHubStore } from "@/stores/useGitHubStore";
 import { IssueMapModal } from "../IssueMapModal";
@@ -69,11 +69,28 @@ const LINKS: IssueLinks[] = [
 const mockedInvoke = vi.mocked(invoke);
 const REPO = "/repo";
 
+/** Every label of the made-up repository, orion's included; "docs" is on no issue. */
+const REPO_LABELS = [
+  { name: "agent-ready", color: "0e8a16" },
+  { name: "bug", color: "ff0000" },
+  { name: "docs", color: "0075ca" },
+  { name: "epic", color: "5319e7" },
+  { name: "needs-human-decision", color: "d93f0b" },
+];
+
 function mockBackend(
-  options: { failAssign?: boolean; failExport?: boolean; issues?: IssueInfo[] } = {},
+  options: {
+    failAssign?: boolean;
+    failExport?: boolean;
+    failLabels?: boolean;
+    issues?: IssueInfo[];
+  } = {},
 ) {
   mockedInvoke.mockImplementation(async (cmd: string) => {
     switch (cmd) {
+      case "github_list_labels":
+        if (options.failLabels) throw new Error("labels unavailable");
+        return REPO_LABELS;
       case "github_auth_status":
         return { logged_in: true, username: "alice-from-gh", scopes: [] };
       case "export_issue_map":
@@ -281,7 +298,7 @@ describe("IssueMapModal", () => {
     expect(screen.getByText(/Showing 4 of 4 issues/)).toBeInTheDocument();
   });
 
-  it("the Labels menu lists every label except the kind ones, new ones included", async () => {
+  it("the Labels menu lists every repository label, orion's included, and 'only' picks one", async () => {
     mockBackend({
       issues: [
         ...ISSUES.slice(0, 3),
@@ -293,35 +310,47 @@ describe("IssueMapModal", () => {
             { name: "team:platform", color: "bfd4f2" },
           ],
         }),
+        buildIssue({ number: 6, title: "Nothing on it" }),
       ],
     });
     renderModal();
     await screen.findByTestId("issue-node-2");
+    expect(mockedInvoke).toHaveBeenCalledWith("github_list_labels", { repoPath: REPO });
     openFilter("Labels");
     const menu = screen.getByRole("dialog", { name: "Labels filter" });
     const names = within(menu)
       .getAllByRole("checkbox")
       .map((c) => c.getAttribute("aria-label"));
-    expect(names).toEqual(["bug", "team:platform", "no other label"]);
+    // Repository labels (docs is on no issue) plus one only an issue carries; listed once each.
+    expect(names).toEqual([
+      "agent-ready",
+      "bug",
+      "docs",
+      "epic",
+      "needs-human-decision",
+      "team:platform",
+      "no label",
+    ]);
+    expect(within(menu).getByLabelText("docs").parentElement?.textContent).toContain("0/0");
     // The GitHub colour sits next to the name.
-    expect(
-      within(menu).getByLabelText("team:platform").parentElement?.querySelector("i"),
-    ).toHaveStyle({ background: "#bfd4f2" });
-    expect(within(menu).getByText(/labels the team adds later show up here/)).toBeInTheDocument();
+    expect(within(menu).getByLabelText("docs").parentElement?.querySelector("i")).toHaveStyle({
+      background: "#0075ca",
+    });
+    expect(within(menu).getByText(/orion's included/)).toBeInTheDocument();
 
-    // #3's only other label is bug, so unticking it hides #3; #2 has none, #5 keeps its own.
-    fireEvent.click(within(menu).getByLabelText("bug"));
-    expect(screen.queryByTestId("issue-node-3")).toBeNull();
+    // "only" on an orion label shows exactly the issues that carry it: #2 and #5.
+    fireEvent.click(within(menu).getByRole("button", { name: "Only agent-ready" }));
     expect(screen.getByTestId("issue-node-2")).toBeInTheDocument();
     expect(screen.getByTestId("issue-node-5")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Labels/ })).toHaveTextContent("2/3");
-
-    // "only" keeps just that label; "no other label" covers #2.
+    expect(screen.queryByTestId("issue-node-3")).toBeNull();
+    expect(screen.queryByTestId("issue-node-6")).toBeNull();
+    // "no label" covers only #6, which has none at all.
+    fireEvent.click(within(menu).getByRole("button", { name: "Only no label" }));
+    expect(screen.getByTestId("issue-node-6")).toBeInTheDocument();
+    expect(screen.queryByTestId("issue-node-2")).toBeNull();
     fireEvent.click(within(menu).getByRole("button", { name: "Only team:platform" }));
     expect(screen.getByTestId("issue-node-5")).toBeInTheDocument();
     expect(screen.queryByTestId("issue-node-2")).toBeNull();
-    fireEvent.click(within(menu).getByLabelText("no other label"));
-    expect(screen.getByTestId("issue-node-2")).toBeInTheDocument();
 
     // The search box narrows the list; None and All flip the family.
     fireEvent.change(within(menu).getByLabelText("Find labels"), { target: { value: "TEAM" } });
@@ -331,10 +360,125 @@ describe("IssueMapModal", () => {
         .map((c) => c.getAttribute("aria-label")),
     ).toEqual(["team:platform"]);
     fireEvent.click(within(menu).getByRole("button", { name: "None" }));
-    expect(screen.getByText(/Showing 0 of 4 issues/)).toBeInTheDocument();
+    expect(screen.getByText(/Showing 0 of 5 issues/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Labels/ })).toHaveTextContent("none");
     fireEvent.click(within(menu).getByRole("button", { name: "All" }));
-    expect(screen.getByText(/Showing 3 of 4 issues/)).toBeInTheDocument();
+    expect(screen.getByText(/Showing 4 of 5 issues/)).toBeInTheDocument();
+  });
+
+  it("still lists the labels on the loaded issues when the repository labels fail to load", async () => {
+    mockBackend({ failLabels: true });
+    renderModal();
+    await screen.findByTestId("issue-node-2");
+    openFilter("Labels");
+    const menu = screen.getByRole("dialog", { name: "Labels filter" });
+    expect(
+      within(menu)
+        .getAllByRole("checkbox")
+        .map((c) => c.getAttribute("aria-label")),
+    ).toEqual(["agent-ready", "bug", "epic", "needs-human-decision", "no label"]);
+  });
+
+  it("with every filter at its default, every open issue but an epic is shown, whatever its labels", async () => {
+    mockBackend({
+      issues: [
+        buildIssue({ number: 1, labels: [{ name: "agent-ready", color: "0e8a16" }] }),
+        buildIssue({ number: 2, labels: [{ name: "needs-human", color: "d93f0b" }] }),
+        buildIssue({ number: 3, labels: [{ name: "in-progress", color: "fbca04" }] }),
+        buildIssue({ number: 4 }),
+        buildIssue({ number: 5, labels: [{ name: "not-in-the-repo", color: "" }] }),
+        buildIssue({ number: 6, labels: [{ name: "epic", color: "5319e7" }] }),
+        buildIssue({ number: 7, state: "CLOSED" }),
+      ],
+    });
+    renderModal();
+    await screen.findByTestId("issue-node-1");
+    for (const n of [1, 2, 3, 4, 5]) expect(screen.getByTestId(`issue-node-${n}`)).toBeVisible();
+    expect(screen.queryByTestId("issue-node-6")).toBeNull();
+    expect(screen.queryByTestId("issue-node-7")).toBeNull();
+    expect(screen.getByText(/Showing 5 of 7 issues/)).toBeInTheDocument();
+  });
+
+  it("the search box keeps issues matching a number or title words, and clearing restores", async () => {
+    renderModal();
+    await screen.findByTestId("issue-node-2");
+    const box = screen.getByRole("searchbox", { name: "Search the map" });
+    const shown = () => [2, 3].filter((n) => screen.queryByTestId(`issue-node-${n}`) !== null);
+
+    for (const query of ["#3", "3", " #3 "]) {
+      fireEvent.change(box, { target: { value: query } });
+      expect(shown()).toEqual([3]);
+    }
+    // A number matches the number only, never a digit in another number or title.
+    fireEvent.change(box, { target: { value: "#30" } });
+    expect(shown()).toEqual([]);
+    expect(screen.getByText(/Showing 0 of 4 issues/)).toBeInTheDocument();
+    // Words match the title, case-insensitive; every word must be in it.
+    fireEvent.change(box, { target: { value: "CANVAS" } });
+    expect(shown()).toEqual([2]);
+    fireEvent.change(box, { target: { value: "ship   it" } });
+    expect(shown()).toEqual([3]);
+    fireEvent.change(box, { target: { value: "ship canvas" } });
+    expect(shown()).toEqual([]);
+
+    fireEvent.change(box, { target: { value: "" } });
+    expect(shown()).toEqual([2, 3]);
+    expect(screen.getByText(/Showing 2 of 4 issues/)).toBeInTheDocument();
+
+    // "show all" also clears the search.
+    fireEvent.change(box, { target: { value: "canvas" } });
+    fireEvent.click(screen.getByRole("button", { name: "show all" }));
+    expect(box).toHaveValue("");
+    expect(screen.getByText(/Showing 4 of 4 issues/)).toBeInTheDocument();
+  });
+
+  describe("with a sized canvas", () => {
+    const sizes = { clientWidth: 600, clientHeight: 400 };
+    const originals = Object.fromEntries(
+      Object.keys(sizes).map((k) => [k, Object.getOwnPropertyDescriptor(HTMLElement.prototype, k)]),
+    );
+    beforeEach(() => {
+      for (const [k, v] of Object.entries(sizes))
+        Object.defineProperty(HTMLElement.prototype, k, { configurable: true, get: () => v });
+    });
+    afterEach(() => {
+      for (const [k, d] of Object.entries(originals))
+        if (d) Object.defineProperty(HTMLElement.prototype, k, d);
+    });
+
+    it("fits the map on first open and on Fit, and keeps zoom and pan on filter or search changes", async () => {
+      renderModal();
+      await screen.findByTestId("issue-node-2");
+      const viewport = screen.getByTestId("issue-map-viewport");
+      const fitted = viewport.getAttribute("transform");
+      // The first open fitted the map to the width, so it no longer sits at the origin.
+      expect(fitted).not.toBe("translate(0,0) scale(1)");
+
+      fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+      const n2 = screen.getByTestId("issue-node-2");
+      fireEvent.pointerDown(n2, { button: 0, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(window, { clientX: 40, clientY: 25 });
+      fireEvent.pointerUp(window);
+      // The browser's click that ends the drag.
+      fireEvent.click(n2, { clientX: 40, clientY: 25 });
+      const zoomed = viewport.getAttribute("transform");
+      expect(zoomed).not.toBe(fitted);
+
+      openFilter("Progress");
+      fireEvent.click(screen.getByLabelText("Closed"));
+      expect(screen.getByTestId("issue-node-1")).toBeInTheDocument();
+      expect(viewport.getAttribute("transform")).toBe(zoomed);
+      fireEvent.click(screen.getByRole("button", { name: "show all" }));
+      expect(viewport.getAttribute("transform")).toBe(zoomed);
+      fireEvent.change(screen.getByRole("searchbox", { name: "Search the map" }), {
+        target: { value: "#2" },
+      });
+      expect(screen.queryByTestId("issue-node-1")).toBeNull();
+      expect(viewport.getAttribute("transform")).toBe(zoomed);
+
+      fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+      expect(viewport.getAttribute("transform")).not.toBe(zoomed);
+    });
   });
 
   it("colours the box by who takes it, crosses closed ones and shows one status icon", async () => {
@@ -482,6 +626,21 @@ describe("IssueMapModal", () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Esc in the search box clears the search first and closes the map only after", async () => {
+    const { onClose } = renderModal();
+    await screen.findByTestId("issue-node-2");
+    const box = screen.getByRole("searchbox", { name: "Search the map" });
+    fireEvent.change(box, { target: { value: "canvas" } });
+    expect(screen.queryByTestId("issue-node-3")).toBeNull();
+
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(box).toHaveValue("");
+    expect(screen.getByTestId("issue-node-3")).toBeInTheDocument();
+    fireEvent.keyDown(box, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

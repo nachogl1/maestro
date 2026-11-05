@@ -12,10 +12,19 @@ export interface RepoAssignee {
   avatarUrl: string;
 }
 
+/** A label defined in the repo, whether or not any issue carries it. */
+export interface RepoLabel {
+  name: string;
+  /** Hex colour without the leading `#`. */
+  color: string;
+}
+
 export interface IssueMapState {
   issues: IssueInfo[];
   links: Record<number, IssueLinks>;
   assignees: RepoAssignee[];
+  /** Every label of the repo; empty when they could not be fetched. */
+  repoLabels: RepoLabel[];
   isLoading: boolean;
   error: string | null;
   /** True when the fetch hit MAP_ISSUE_LIMIT, so issues (and links) may be missing. */
@@ -36,6 +45,7 @@ export function useIssueMap(repoPath: string, search: string): IssueMapState {
   const [issues, setIssues] = useState<IssueInfo[]>([]);
   const [links, setLinks] = useState<Record<number, IssueLinks>>({});
   const [assignees, setRepoAssignees] = useState<RepoAssignee[]>([]);
+  const [repoLabels, setRepoLabels] = useState<RepoLabel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bumped per load, so a slow response from an older load is dropped.
@@ -60,11 +70,16 @@ export function useIssueMap(repoPath: string, search: string): IssueMapState {
       });
       if (token !== tokenRef.current) return;
       const numbers = fetched.map((issue) => issue.number);
-      const [linkList, repoAssignees] = await Promise.all([
+      const [linkList, repoAssignees, labels] = await Promise.all([
         numbers.length > 0
           ? invoke<IssueLinks[]>("github_issue_links", { repoPath, numbers })
           : Promise.resolve([] as IssueLinks[]),
         invoke<RepoAssignee[]>("github_list_assignees", { repoPath }),
+        // The labels only widen a filter menu, so failing to read them must not sink the map.
+        invoke<RepoLabel[]>("github_list_labels", { repoPath }).catch((err: unknown) => {
+          console.error("Failed to load the repository labels:", err);
+          return [] as RepoLabel[];
+        }),
       ]);
       if (token !== tokenRef.current) return;
       const byNumber: Record<number, IssueLinks> = {};
@@ -72,6 +87,7 @@ export function useIssueMap(repoPath: string, search: string): IssueMapState {
       setIssues(fetched);
       setLinks(byNumber);
       setRepoAssignees(repoAssignees);
+      setRepoLabels(labels);
       setIsLoading(false);
     } catch (err) {
       if (token !== tokenRef.current) return;
@@ -118,6 +134,7 @@ export function useIssueMap(repoPath: string, search: string): IssueMapState {
     issues,
     links,
     assignees,
+    repoLabels,
     isLoading,
     error,
     truncated: issues.length >= MAP_ISSUE_LIMIT,

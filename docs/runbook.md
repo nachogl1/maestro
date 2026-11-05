@@ -25,6 +25,21 @@ blocker sources (the body's `### Blocked by` section and GitHub's own blocked-by
 - Closed issues never appear in the list or its count. Their links still place them on the map.
 - An open issue whose two sources name different issues is still reported as a disagreement.
 
+## Issue map: search, labels, zoom and pan
+
+- **Search box** (next to the filter menus): `#123` or `123` keeps only issue 123; any other text keeps the issues
+  whose title contains every word typed, ignoring case. It narrows the map together with the filter menus.
+  Clearing the box, pressing Esc in it, or "show all" brings the issues back. Esc closes the map only once
+  the search is empty.
+- **Labels menu** lists every label defined in the repository, orion's labels (`agent-ready`, `needs-human`,
+  `epic`, ...) included, even labels no loaded issue carries yet (they show `0/0`). "only" next to a label keeps
+  the issues that carry it. "no label" covers issues with no label at all; an issue whose only label is an orion
+  label is listed under that label, not under "no label". If the repository's labels cannot be read, the menu
+  falls back to the labels on the loaded issues.
+- With every filter at its default, every open issue that is not an epic is on the map, whatever its labels.
+- **Zoom and pan** are set once, when the map first opens (fit to the width), and again only when you press
+  **Fit**. Changing a filter, typing a search or pressing Reload keeps the zoom and position you chose.
+
 ## Terminals: moving focus between terminals
 
 **Ctrl+Alt+Right** and **Ctrl+Alt+Left** (Cmd+Alt on a Mac) move the focus to the next and previous terminal,

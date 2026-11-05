@@ -280,6 +280,16 @@ fn parse_assignees_pages(stdout: &str) -> Result<Vec<RepoAssignee>, GitHubError>
     Ok(all)
 }
 
+/// Parses `gh api --paginate` output of the repository labels endpoint, one
+/// JSON array per page back to back.
+fn parse_label_pages(stdout: &str) -> Result<Vec<RepoLabel>, GitHubError> {
+    let mut all = Vec::new();
+    for page in serde_json::Deserializer::from_str(stdout).into_iter::<Vec<RepoLabel>>() {
+        all.extend(page?);
+    }
+    Ok(all)
+}
+
 /// Args for [`GitHub::update_issue_assignees`]; empty lists omit their flag.
 fn issue_assignee_args(number: &str, add: &[String], remove: &[String]) -> Vec<String> {
     let mut args = vec!["issue".to_string(), "edit".to_string(), number.to_string()];
@@ -409,6 +419,15 @@ pub struct RepoAssignee {
     pub login: String,
     #[serde(default, alias = "avatar_url")]
     pub avatar_url: String,
+}
+
+/// A label defined in the repository, whether or not any issue carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RepoLabel {
+    pub name: String,
+    /// Hex colour without the leading `#`; empty when GitHub gave none.
+    #[serde(default)]
+    pub color: String,
 }
 
 /// Discussion information returned from GraphQL API.
@@ -1062,6 +1081,14 @@ impl GitHub {
         parse_assignees_pages(&output.stdout)
     }
 
+    /// Lists every label defined in this repository.
+    pub async fn list_labels(&self) -> Result<Vec<RepoLabel>, GitHubError> {
+        let output = self
+            .run(&["api", "repos/{owner}/{repo}/labels", "--paginate"])
+            .await?;
+        parse_label_pages(&output.stdout)
+    }
+
     /// Adds and/or removes assignees on an issue.
     pub async fn update_issue_assignees(
         &self,
@@ -1572,6 +1599,38 @@ mod tests {
         assert_eq!(users[0].login, "a");
         assert_eq!(users[0].avatar_url, "http://x/a");
         assert_eq!(users[1].avatar_url, "");
+    }
+
+    #[test]
+    fn test_parse_label_pages_concatenated_arrays() {
+        let out =
+            r#"[{"id":1,"name":"agent-ready","color":"0e8a16","default":false}][{"name":"bug"}]"#;
+        let labels = parse_label_pages(out).unwrap();
+        assert_eq!(
+            labels,
+            vec![
+                RepoLabel {
+                    name: "agent-ready".to_string(),
+                    color: "0e8a16".to_string(),
+                },
+                RepoLabel {
+                    name: "bug".to_string(),
+                    color: String::new(),
+                },
+            ]
+        );
+        assert!(parse_label_pages("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_label_pages_rejects_malformed_pages() {
+        for out in [
+            r#"[null]"#,
+            r#"[{"color":"fff"}]"#,
+            r#"{"message":"Not Found"}"#,
+        ] {
+            assert!(parse_label_pages(out).is_err(), "accepted {out}");
+        }
     }
 
     #[test]
