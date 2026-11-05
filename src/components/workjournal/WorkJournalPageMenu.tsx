@@ -124,7 +124,7 @@ export function WorkJournalPageMenu({ items, buttonClassName }: WorkJournalPageM
           role="menu"
           aria-label="Page actions"
           onKeyDown={handleMenuKey}
-          className="absolute left-0 top-full z-20 mt-1 flex min-w-44 flex-col rounded border border-maestro-border bg-maestro-surface py-1 shadow-lg"
+          className="absolute right-0 top-full z-20 mt-1 flex min-w-44 flex-col rounded border border-maestro-border bg-maestro-surface py-1 shadow-lg"
         >
           {items.map((item, index) => {
             const Icon = item.icon;
