@@ -151,3 +151,18 @@ When a terminal needs you, Maestro tells you in three ways:
 - **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. While a terminal is
   zoomed, each restored terminal takes over the zoom, so leaving puts the cursor in the last one restored.
 - Restoring the last pill leaves the strip and puts the cursor in that terminal, the same as clicking it.
+
+## Work Journal header: Today and the page actions menu
+
+- The header shows **Previous day**, the page title, the **page actions** button (three dots, right of the title),
+  **Next day** and **Today**. The same header shows in the side pane and in the pop-out window.
+- **Today** goes to today's page from any other date, earlier or later.
+- The **page actions** menu holds Jump to date, New page for a date, Delete page, Report and Pop out. Pop out is
+  not in the menu inside the pop-out window. An action that cannot run now (Delete page on a day with no page, or
+  Delete and New page while a restore runs) is greyed out and skipped.
+- **Keyboard**: on the page actions button, Enter, Space or ↓ opens the menu on its first action, and ↑ on its
+  last. In the menu, ↑ and ↓ move (wrapping round), Home and End go to the first and last action, Enter or Space
+  runs the action, and Esc closes the menu and puts the cursor back on the button. Tab closes the menu and moves
+  on. A click anywhere else also closes it.
+- Jump to date and New page for a date open their date row under the header with the cursor already in the date
+  field, so a date can be typed straight away.
