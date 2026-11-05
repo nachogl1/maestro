@@ -41,7 +41,7 @@ function withSessions(...sessions: SessionConfig[]) {
 describe("useProjectStatus", () => {
   beforeEach(() => {
     useWorkspaceStore.setState({ tabs: [] });
-    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
+    useSessionStore.setState({ sessions: [], parkedSessionIds: [], attentionSessionIds: [] });
     useContextAlertStore.setState({ threshold: 80 });
   });
 
@@ -88,5 +88,17 @@ describe("useProjectStatus", () => {
     useContextAlertStore.setState({ threshold: null });
     rerender();
     expect(result.current.contextAlert).toBe(false);
+  });
+
+  it("flags attention only while one of its own terminals carries the highlight", () => {
+    withSessions(session(1, "NeedsInput"), session(2, "Working"));
+    // Session 7 belongs to another project: it must not make this tab blink.
+    useSessionStore.setState({ attentionSessionIds: [7] });
+    const { result, rerender } = renderHook(() => useProjectStatus("tab-1"));
+    expect(result.current.hasAttention).toBe(false);
+
+    useSessionStore.setState({ attentionSessionIds: [7, 1] });
+    rerender();
+    expect(result.current.hasAttention).toBe(true);
   });
 });

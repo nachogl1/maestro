@@ -1,5 +1,6 @@
 import { Bell } from "lucide-react";
 import { DialogToggle } from "@/components/shared/DialogShell";
+import { useAttentionSoundStore } from "@/stores/useAttentionSoundStore";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -14,6 +15,10 @@ import { cardClass, SectionHeader } from "./sectionChrome";
  * (issue #174). It mutes toasts only: all keep watching, and their
  * badges (top-bar totals, panel attention counts, session attention
  * highlights) stay on either way, so nothing is ever silently missed.
+ *
+ * A second switch, off by default, plays a short tone when a terminal needs
+ * the user: a parked one comes back by itself, or one starts waiting for
+ * input (issue #496).
  */
 export function NotificationsSettingsSection() {
   const notificationsEnabled = useGitHubWatchdogStore((s) => s.notificationsEnabled);
@@ -21,6 +26,8 @@ export function NotificationsSettingsSection() {
   const status = useGitHubWatchdogStore((s) => s.status);
   const dismissHealthToasts = useHealthStore((s) => s.dismissAllToasts);
   const dismissSamuraiToasts = useSessionStore((s) => s.dismissAllSamuraiToasts);
+  const soundEnabled = useAttentionSoundStore((s) => s.enabled);
+  const setSoundEnabled = useAttentionSoundStore((s) => s.setEnabled);
 
   const handleToggle = () => {
     const next = !notificationsEnabled;
@@ -42,6 +49,15 @@ export function NotificationsSettingsSection() {
           checked={notificationsEnabled}
           onChange={handleToggle}
           aria-label="Toggle notifications"
+        />
+      </div>
+
+      <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-maestro-text hover:bg-maestro-border/40">
+        <span className="flex-1">Play a sound when a terminal needs you</span>
+        <DialogToggle
+          checked={soundEnabled}
+          onChange={setSoundEnabled}
+          aria-label="Toggle attention sound"
         />
       </div>
 

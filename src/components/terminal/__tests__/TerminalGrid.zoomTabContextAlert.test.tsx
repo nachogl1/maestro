@@ -160,7 +160,13 @@ describe("TerminalGrid zoom strip tabs: context alert and active fill", () => {
     spawnShellMock.mockReset();
     let nextSessionId = 1;
     spawnShellMock.mockImplementation(async () => nextSessionId++);
-    useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
+    useSessionStore.setState({
+      sessions: [],
+      samuraiBySessionId: {},
+      parkedSessionIds: [],
+      attentionSessionIds: [],
+      flaggedSessionIds: [],
+    });
     useContextAlertStore.setState({ threshold: 80 });
   });
 
@@ -218,5 +224,83 @@ describe("TerminalGrid zoom strip tabs: context alert and active fill", () => {
     expect(active.className).toContain("shadow-[inset_0_0_0_1px_rgb(var(--maestro-blue))]");
     expect(other.className).toContain("text-maestro-muted");
     expect(other.className).not.toContain("font-bold");
+  });
+
+  it("blinks the tab of a terminal that needs the user on the shared clock, under the red alert", async () => {
+    const handle = await renderTwoPaneGrid();
+    const [first, second] = useSessionStore.getState().sessions;
+    await act(async () => {
+      expect(handle.zoomSession(first.id)).toBe(true);
+    });
+
+    // The hidden terminal came back from the parking tray by itself.
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    act(() => {
+      useSessionStore.setState({ attentionSessionIds: [second.id] });
+    });
+    let tabs = zoomTabs();
+    expect(tabs[1].className).toContain("attention-blink");
+    expect(tabs[1].className).not.toContain("warning-flag");
+    expect(tabs[1].style.animationDuration).toBe("1200ms");
+    expect(tabs[1].style.animationDelay).toBe("-1000ms");
+    expect(tabs[0].className).not.toContain("attention-blink");
+    clock.mockRestore();
+
+    // Past the context threshold too: the red alert wins.
+    setContextPercent(second.id, 85);
+    tabs = zoomTabs();
+    expect(tabs[1].className).toContain("zoom-tab-context-alert");
+    expect(tabs[1].className).not.toContain("attention-blink");
+
+    // A flag the user set by hand stays solid yellow: it is a note, not a call.
+    act(() => {
+      useSessionStore.setState({ flaggedSessionIds: [first.id] });
+    });
+    tabs = zoomTabs();
+    expect(tabs[0].className).toContain("warning-flag");
+    expect(tabs[0].className).not.toContain("attention-blink");
+  });
+
+  it("re-aligns the blink when a background project is shown again", async () => {
+    // Inactive projects stay mounted under display:none, where no animation
+    // runs: shown again, the blink restarts then and must take the clock's
+    // phase at that moment, not the one from when the attention began.
+    const ref = createRef<TerminalGridHandle>();
+    const grid = (isActive: boolean) => (
+      <TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive={isActive} />
+    );
+    const { rerender } = render(grid(true));
+    const handle = ref.current;
+    if (!handle) throw new Error("expected TerminalGrid ref to be attached");
+    await act(async () => {
+      handle.addSession();
+    });
+    await act(async () => {
+      await handle.launchAll();
+    });
+    await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(2));
+    const [first, second] = useSessionStore.getState().sessions;
+    await act(async () => {
+      expect(handle.zoomSession(first.id)).toBe(true);
+    });
+
+    const clock = vi.spyOn(performance, "now").mockReturnValue(9_000);
+    rerender(grid(false)); // the user switched to another project
+    clock.mockReturnValue(10_000);
+    act(() => {
+      useSessionStore.setState({ attentionSessionIds: [second.id] });
+    });
+    clock.mockReturnValue(10_600);
+    rerender(grid(true)); // ...and comes back
+
+    expect(zoomTabs()[1].className).toContain("attention-blink");
+    expect(zoomTabs()[1].style.animationDelay).toBe(`-${10_600 % 1_200}ms`);
+
+    // Leaving and coming back while the attention is still on re-aligns too.
+    rerender(grid(false));
+    clock.mockReturnValue(12_500);
+    rerender(grid(true));
+    expect(zoomTabs()[1].style.animationDelay).toBe(`-${12_500 % 1_200}ms`);
+    clock.mockRestore();
   });
 });

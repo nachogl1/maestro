@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { type FocusStep, useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
 import { usePendingLaunch } from "@/hooks/usePendingLaunch";
 import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
@@ -89,7 +90,7 @@ import {
   type WorkspaceType,
 } from "@/stores/useWorkspaceStore";
 import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
-import { ParkedShelf } from "./ParkedShelf";
+import { ParkedShelf, type ParkedShelfUnparkOptions } from "./ParkedShelf";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
 import { createEmptySlot, occupiedSlotCount, sessionConfigDir } from "./slots";
@@ -1318,11 +1319,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
    * stays in zoom-in), otherwise it reappears in the split grid. Focused
    * either way.
    */
-  const handleUnpark = useCallback((sessionId: number) => {
+  const handleUnpark = useCallback((sessionId: number, options?: ParkedShelfUnparkOptions) => {
     useSessionStore.getState().unparkSession(sessionId);
     const slot = slotsRef.current.find((s) => s.sessionId === sessionId);
     if (!slot) return;
     setZoomedSlotId((prev) => (prev === null ? null : slot.id));
+    // Restored from the shelf by keyboard: the user is still picking in the shelf.
+    if (options?.keepFocus) return;
     setFocusedSlotId(slot.id);
     focusSlotTextarea(slot.id);
   }, []);
@@ -2200,6 +2203,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                           label={label}
                           hasSession={sessionId !== null}
                           sessionId={sessionId}
+                          stripShown={isActive}
                           onSelect={() => handleToggleZoom(slot.id)}
                           onToggleFlag={
                             sessionId !== null
@@ -2885,6 +2889,7 @@ function ZoomTab({
   label,
   hasSession,
   sessionId,
+  stripShown,
   onSelect,
   onToggleFlag,
 }: {
@@ -2894,6 +2899,11 @@ function ZoomTab({
   label: string;
   hasSession: boolean;
   sessionId: number | null;
+  /**
+   * Whether this grid's project is on screen. A background project stays
+   * mounted under display:none, where no animation runs.
+   */
+  stripShown: boolean;
   onSelect: () => void;
   /** Clicking the already-active tab toggles the warning flag (header parity). */
   onToggleFlag?: () => void;
@@ -2929,6 +2939,12 @@ function ZoomTab({
   );
   // Context alert (Settings): the tab blinks red like the frame it stands for.
   const contextAlert = useSessionContextAlert(sessionId);
+  // Attention blinks yellow in step with the project tab (issue #496); the
+  // red context alert outranks it. Only while the strip is shown: a hidden
+  // tab's animation restarts when it is shown again, so the blink's phase is
+  // taken from the clock at that moment.
+  const attentionBlinking = hasAttention && !contextAlert.active && stripShown;
+  const attentionBlinkStyle = useAttentionBlink(attentionBlinking);
 
   // Attention-first click semantics on the active tab: the first click only
   // acknowledges the attention highlight — it must not also set the warning
@@ -2946,6 +2962,7 @@ function ZoomTab({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
+    ...attentionBlinkStyle,
   };
 
   return (
@@ -2955,14 +2972,15 @@ function ZoomTab({
       {...attributes}
       {...listeners}
       onClick={isActive && onToggleFlag ? handleActiveClick : onSelect}
-      // Context alert outranks the flag/attention yellow (doubled CSS class):
-      // the terminal is about to run out of room whatever else it is doing.
+      // Context alert outranks the attention blink and the flag yellow
+      // (doubled CSS class): the terminal is about to run out of room
+      // whatever else it is doing. The blink outranks a solid flag.
       // The active tab is a solid fill with bright bold text and a blue
       // outline, so the focused terminal is found at a glance rather than by
       // reading the names.
       className={`
         flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors
-        ${contextAlert.active ? "zoom-tab-context-alert" : isFlagged || hasAttention ? "warning-flag" : ""}
+        ${contextAlert.active ? "zoom-tab-context-alert" : attentionBlinking ? "attention-blink" : isFlagged ? "warning-flag" : ""}
         ${
           isActive
             ? "bg-maestro-blue/35 font-bold text-maestro-text shadow-[inset_0_0_0_1px_rgb(var(--maestro-blue))]"

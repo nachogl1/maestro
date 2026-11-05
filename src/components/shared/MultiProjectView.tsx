@@ -20,6 +20,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import type { FocusStep } from "@/hooks/useEagleTerminalKeyboard";
 import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import {
@@ -41,7 +42,7 @@ import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { ParkedShelf } from "../terminal/ParkedShelf";
+import { ParkedShelf, type ParkedShelfUnparkOptions } from "../terminal/ParkedShelf";
 import { generateSlotId } from "../terminal/slots";
 import {
   type EagleDropTarget,
@@ -462,10 +463,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
     }, [eagleView, tidyEagleTiles]);
 
+    // A terminal restored from the shelf by keyboard takes over the zoom, but
+    // the cursor stays in the shelf: the zoom-focus effect below skips it once.
+    const zoomWithoutFocusRef = useRef<number | null>(null);
+
     // Focus follows the zoomed terminal (tab click / Alt+Arrow). Only the grid
     // that owns the session accepts the call, same pattern as killSessionInProject.
     useEffect(() => {
-      if (!eagleView || eagleZoom === null) return;
+      const skipFocus = zoomWithoutFocusRef.current;
+      zoomWithoutFocusRef.current = null;
+      if (!eagleView || eagleZoom === null || eagleZoom === skipFocus) return;
       for (const handle of gridRefs.current.values()) {
         if (handle.focusSession(eagleZoom)) break;
       }
@@ -507,12 +514,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // the grid that owns the session accepts the focus call, same pattern as
     // the zoom-focus effect.
     const handleEagleUnpark = useCallback(
-      (sessionId: number) => {
+      (sessionId: number, options?: ParkedShelfUnparkOptions) => {
         useSessionStore.getState().unparkSession(sessionId);
+        // Restored from the shelf by keyboard: the user is still picking in the shelf.
+        const keepFocus = options?.keepFocus === true;
         if (eagleZoomed) {
           setEagleZoomCard(null);
+          if (keepFocus) zoomWithoutFocusRef.current = sessionId;
           setEagleZoom(sessionId);
         }
+        if (keepFocus) return;
         for (const handle of gridRefs.current.values()) {
           if (handle.focusSession(sessionId)) break;
         }
@@ -1022,6 +1033,10 @@ function EagleZoomTab({
   const hasAttention = useSessionStore((s) => s.attentionSessionIds.includes(sessionId));
   // Context alert (Settings): the tab blinks red like the frame it stands for.
   const contextAlert = useSessionContextAlert(sessionId);
+  // Attention blinks yellow in step with the project tab (issue #496); the
+  // red context alert outranks it.
+  const attentionBlinking = hasAttention && !contextAlert.active;
+  const attentionBlinkStyle = useAttentionBlink(attentionBlinking);
   // Attention-first click semantics on the active tab: the first click only
   // acknowledges the attention highlight — it must not also set the warning
   // flag. Subsequent clicks toggle the flag as before.
@@ -1051,6 +1066,7 @@ function EagleZoomTab({
           boxShadow: `inset 0 0 0 1px ${color}`,
         }
       : {}),
+    ...attentionBlinkStyle,
   };
 
   return (
@@ -1063,9 +1079,11 @@ function EagleZoomTab({
       className={`flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
         contextAlert.active
           ? "zoom-tab-context-alert"
-          : isFlagged || hasAttention
-            ? "warning-flag"
-            : ""
+          : attentionBlinking
+            ? "attention-blink"
+            : isFlagged
+              ? "warning-flag"
+              : ""
       } ${isActive ? "font-bold" : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"}`}
       data-context-alert={contextAlert.active ? "true" : undefined}
       title={`${contextAlert.title ? `${contextAlert.title} — ` : ""}${

@@ -358,12 +358,15 @@
     0 0 24px rgb(var(--maestro-blue) / 0.2);
 }
 
-/* Red = the agent finished its turn and waits for the user. */
+/* Red = the agent finished its turn and waits for the user. A brighter,
+   fluorescent glow than the other states (issue #496): a tight bright ring
+   plus a wide halo, so a waiting terminal stands out from a working one. */
 .terminal-cell-needs-input {
   border-color: rgb(var(--maestro-accent));
   box-shadow:
-    0 0 12px rgb(var(--maestro-accent) / 0.5),
-    0 0 24px rgb(var(--maestro-accent) / 0.25);
+    0 0 0 1px rgb(var(--maestro-accent) / 0.9),
+    0 0 14px rgb(var(--maestro-accent) / 0.85),
+    0 0 32px rgb(var(--maestro-accent) / 0.5);
 }
 
 .terminal-cell-done {
@@ -499,10 +502,12 @@
 @keyframes parked-attention {
   0%,
   100% {
-    box-shadow: 0 0 6px rgb(var(--maestro-accent) / 0.25);
+    box-shadow: 0 0 8px rgb(var(--maestro-accent) / 0.5);
   }
   50% {
-    box-shadow: 0 0 14px rgb(var(--maestro-accent) / 0.55);
+    box-shadow:
+      0 0 0 1px rgb(var(--maestro-accent) / 0.9),
+      0 0 18px rgb(var(--maestro-accent) / 0.85);
   }
 }
 
@@ -626,6 +631,44 @@
   animation: project-tab-context-alert-blink 1s step-end infinite;
 }
 
+/* Attention blink (issue #496): a terminal came back from the parking tray
+   by itself or needs input. Its session tab (zoom strip) and its project tab
+   blink yellow in one shared rhythm: the duration and a phase-setting
+   negative delay come from the inline style `useAttentionBlink` returns, so
+   tabs that start at different moments still blink together. Without
+   animation (Linux, reduced motion) the tab stays solid yellow, like the
+   warning flag. Only background and text change, so the project tab's
+   colour underline (an inline box-shadow) stays put. Doubled class so it
+   outranks the tabs' own background and text utilities. */
+@keyframes attention-blink {
+  0%,
+  49% {
+    background-color: rgb(var(--maestro-yellow));
+    color: rgb(20 20 24 / 0.9);
+  }
+  50%,
+  100% {
+    background-color: rgb(var(--maestro-yellow) / 0.18);
+    color: rgb(var(--maestro-yellow));
+  }
+}
+
+.attention-blink.attention-blink {
+  background-color: rgb(var(--maestro-yellow));
+  color: rgb(20 20 24 / 0.9);
+  animation-name: attention-blink;
+  animation-timing-function: step-end;
+  animation-iteration-count: infinite;
+}
+
+/* Text inside the tab follows the blinking colour, including spans with
+   their own colour utility or inline colour (the eagle tab's project name). */
+.attention-blink.attention-blink *:not(input) {
+  /* biome-ignore lint/complexity/noImportantStyles: must outrank inline colour
+     styles on the tab's descendants so their text follows the blink. */
+  color: inherit !important;
+}
+
 /* "Context threshold reached" pill in the terminal header: fades in step with
    the frame's blink (same 1s step-end rhythm) so the two read as one alarm. */
 @keyframes context-alert-pill-blink {
@@ -654,7 +697,8 @@
   .parked-chip-context-alert.parked-chip-context-alert,
   .project-tab-context-alert.project-tab-context-alert,
   .zoom-tab-context-alert.zoom-tab-context-alert,
-  .context-alert-pill {
+  .context-alert-pill,
+  .attention-blink.attention-blink {
     animation: none;
     transform: none;
   }
@@ -709,6 +753,12 @@
 .platform-linux .context-alert-pill {
   animation: none;
   box-shadow: none;
+}
+
+/* Attention blink keeps its solid yellow, loses the blink. No box-shadow
+   reset: the project tab's colour underline is an inline box-shadow. */
+.platform-linux .attention-blink.attention-blink {
+  animation: none;
 }
 
 /* Disable breathe/glow animations */

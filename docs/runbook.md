@@ -111,3 +111,31 @@ another one or onto an edge of the screen.
   The two sit apart, with more than a button's width between them, so one is not hit for the other.
 - A project the suggestion run names that does not appear in that day's activity is left out, so a pill only ever
   names a real project.
+
+## Attention cues: sound, glow and blinking tabs
+
+When a terminal needs you, Maestro tells you in three ways:
+
+- **Sound (optional)**: Settings → Notifications → **Play a sound when a terminal needs you** (off by default).
+  With it on, a short beep plays once when a parked terminal comes back by itself (it finished, failed, or waits
+  for an answer) and once when a terminal starts waiting for your input. A reminder about a turn you already saw
+  does not beep again.
+- **Glow**: a terminal waiting for input has a brighter red glow around its frame, and its parking-tray chip
+  glows brighter too.
+- **Blinking tabs**: a terminal that came back from the parking tray by itself makes its tab in the zoom strip and
+  its project tab at the top blink yellow, at the same moment and rhythm. Select the terminal (click it, its tab,
+  or move focus to it) to stop the blink. A red context alert takes the place of the blink, and a warning flag you
+  set by hand stays solid yellow. With reduced motion turned on in the system, or on Linux, the tabs stay solid
+  yellow instead of blinking.
+
+## Parked strip: reordering and picking from the keyboard (Alt+U)
+
+- **Drag a pill** along the parked strip to change its place. The order holds while other terminals park and
+  unpark: a terminal you park later joins the end, and one you unpark leaves the others where they were. The
+  order lasts until the app closes. A plain click on a pill still restores its terminal; a drag never does.
+- **Alt+U** moves the cursor to the first pill. **← →** pick a pill, and **Enter** restores its terminal while
+  the cursor stays in the strip on the next pill (or the one before it, at the end of the row), so several
+  terminals can be restored in a row.
+- **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. While a terminal is
+  zoomed, each restored terminal takes over the zoom, so leaving puts the cursor in the last one restored.
+- Restoring the last pill leaves the strip and puts the cursor in that terminal, the same as clicking it.
