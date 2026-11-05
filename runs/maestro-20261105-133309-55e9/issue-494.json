@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261105-133309-55e9",
+  "issue": 494,
+  "title": "Ctrl+Alt+Left/Right moves terminal focus in every view: eagle view, zoomed or not",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T13:33:25Z",
+  "finished_at": "2026-11-05T14:06:00Z",
+  "outcome": "merged",
+  "pr": 513,
+  "summary": "Ctrl+Alt+Left/Right now moves terminal focus in eagle view, zoomed or not, across every project's terminals in tile order, as well as in project view.",
+  "agents": [
+    {
+      "name": "dev-494",
+      "model": "opus",
+      "tokens_total": 158641
+    },
+    {
+      "name": "review-494",
+      "model": "opus",
+      "tokens_total": 119214
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1506,
+    "review_seconds": 308,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [
+    "The issue's Seam named only the two keyboard hooks, but the cross-project tile order lives in TerminalGrid.tsx and MultiProjectView.tsx, so it collided with the Ctrl+T story's seam in the same batch; a Seam for eagle-view keys should name those files."
+  ],
+  "deferred": []
+}

@@ -1,0 +1,49 @@
+{
+  "run_id": "maestro-20261105-133309-55e9",
+  "issue": 489,
+  "title": "Issue map: search by issue number or keyword, every repository label in the Labels menu, and zoom and pan kept when filters change",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T13:33:25Z",
+  "finished_at": "2026-11-05T14:31:00Z",
+  "outcome": "merged",
+  "pr": 515,
+  "summary": "The issue map gained a search box (number or title words, Esc clears it first), the Labels menu lists every repository label via a new Rust command, and the map keeps zoom and pan across filter changes.",
+  "agents": [
+    {
+      "name": "dev-489",
+      "model": "opus",
+      "tokens_total": 181639
+    },
+    {
+      "name": "review-489",
+      "model": "opus",
+      "tokens_total": 113709
+    },
+    {
+      "name": "review-489-r2",
+      "model": "opus",
+      "tokens_total": 112262
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2690,
+    "review_seconds": 632,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/mcp_settings.rs",
+      "what": "One Rust test in core/mcp_settings.rs is marked #[ignore] on main, so cargo test reports 1 ignored while CLAUDE.md states a skip-count baseline of 0; every reviewer has to stop and judge whether it is this PR's fault.",
+      "why": "Pre-existing on main and outside this issue's seam.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261105-133309-55e9",
+  "issue": 492,
+  "title": "Ctrl+T always puts the cursor in the new terminal's name box, in every view",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T13:33:25Z",
+  "finished_at": "2026-11-05T14:17:30Z",
+  "outcome": "merged",
+  "pr": 514,
+  "summary": "Ctrl+T now keeps trying for about a second to put the cursor in the new terminal card's name box, in every view, and Enter in that box launches the terminal.",
+  "agents": [
+    {
+      "name": "dev-492",
+      "model": "opus",
+      "tokens_total": 181234
+    },
+    {
+      "name": "review-492",
+      "model": "opus",
+      "tokens_total": 116050
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2065,
+    "review_seconds": 437,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 2
+  },
+  "friction": [
+    "Running three dev agents plus reviewers at once left the machine with about 0.02 GB free: local full Vitest runs timed out (12 tests on a main baseline, 3 files on a branch) and one reviewer could not run the build. CI stayed the reliable suite; three full local suites at once is more than this machine holds."
+  ],
+  "lessons_learned": [
+    "Every parallel story that changes user-visible behaviour appends to docs/runbook.md, so the second and third merges of a batch hit an add/add conflict there and cost a dev round each; expect it, or pick at most one runbook-touching story per batch."
+  ],
+  "deferred": []
+}

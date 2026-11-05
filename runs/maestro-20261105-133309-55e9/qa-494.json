@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-133309-55e9",
+  "issue": 494,
+  "title": "Ctrl+Alt+Left/Right moves terminal focus in every view: eagle view, zoomed or not",
+  "login": "nachogl1",
+  "pr": 513,
+  "merged_at": "2026-11-05T14:05:31Z",
+  "merge_commit": "fe44f04b64a15f4fc8f748e9b619f000cf0af10d",
+  "seam": "src/hooks/useEagleTerminalKeyboard.ts",
+  "story": "Ctrl+Alt+Left and Right (Cmd+Alt on a Mac) used to move between terminals only inside one project's view. Now they also work in eagle view, zoomed or not, across every project's terminals in the order the tiles read on screen; while zoomed, the zoom moves along with the focus. Settings > Shortcuts now says the keys work 'in every view'.",
+  "checks": [
+    {
+      "key": "terminals/ctrl-alt-arrows-eagle",
+      "criterion": "In eagle view, Ctrl+Alt+Right and Left move focus to the next and previous terminal, wrapping at the ends, and typing goes to the new terminal.",
+      "steps": "Open two projects, 'alpha' and 'beta'. Launch two terminals in alpha and one in beta. Press Ctrl+G for eagle view. Click into the first tile and press Ctrl+Alt+Right three times, then Ctrl+Alt+Left once. After each press, type 'echo hi'.",
+      "expected": "Focus moves through the tiles in reading order and wraps from the last tile to the first. Each 'echo hi' appears in the terminal that just got focus."
+    },
+    {
+      "key": "terminals/ctrl-alt-arrows-eagle-zoomed",
+      "criterion": "The same keys work while eagle-zoomed.",
+      "steps": "With the same setup, in eagle view press Ctrl+1 on the first tile. Press Ctrl+Alt+Right three times, then Ctrl+Alt+Left once.",
+      "expected": "The zoom moves to the next or previous terminal and wraps, the tab strip follows, and typing lands in the zoomed terminal."
+    },
+    {
+      "key": "terminals/ctrl-alt-arrows-project",
+      "criterion": "Project view and project zoom behave as before.",
+      "steps": "In alpha's project view with three terminals, press Ctrl+Alt+Right and Left. Then press Ctrl+1 and repeat.",
+      "expected": "Focus moves to the next or previous terminal and wraps. In zoom, the zoomed tab changes."
+    }
+  ],
+  "no_qa_reason": null
+}

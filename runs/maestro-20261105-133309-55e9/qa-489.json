@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261105-133309-55e9",
+  "issue": 489,
+  "title": "Issue map: search by issue number or keyword, every repository label in the Labels menu, and zoom and pan kept when filters change",
+  "login": "nachogl1",
+  "pr": 515,
+  "merged_at": "2026-11-05T14:30:33Z",
+  "merge_commit": "6329bd04e007815fa8b400be95424daf11ba24c3",
+  "seam": "src/components/git/issues/",
+  "story": "The issue map gained a search box beside the filter menus, and Esc clears it before closing the map. The Labels menu now lists every repository label, orion's included, instead of only non-orion labels found on loaded issues; 'no other label' became 'no label'. The map no longer refits on every filter change, Reload included; it fits on first open and on Fit only.",
+  "checks": [
+    {
+      "key": "src/components/git/issues/map-search",
+      "criterion": "Typing a number or a word narrows the map, and clearing it restores the issues.",
+      "steps": "Open a repository with made-up open issues, for example #3 'Ship it' and #2 'Build the canvas'. Open the issue map. Type '#3', then '3', then 'canvas', then clear the box.",
+      "expected": "Only #3 for the first two, only #2 for 'canvas', and every open non-epic issue again after clearing. 'Showing N of M' updates each time."
+    },
+    {
+      "key": "src/components/git/issues/map-search-esc",
+      "criterion": "Esc clears a search before it closes the map.",
+      "steps": "With no filter menu open and no card pinned, type 'canvas' in the search box and press Esc, then press Esc again.",
+      "expected": "The first Esc empties the box and brings the issues back while the map stays open; the second Esc closes the map window."
+    },
+    {
+      "key": "src/components/git/issues/labels-menu",
+      "criterion": "The Labels menu lists every repository label, and selecting one shows the issues that carry it.",
+      "steps": "Create a label 'docs-test' that no issue carries. Open the map, then open Labels.",
+      "expected": "'docs-test' listed with 0/0, and 'agent-ready', 'needs-human' and 'epic' listed too. 'only' next to 'agent-ready' leaves just the agent-ready issues. 'no label' covers only issues with no label at all."
+    },
+    {
+      "key": "src/components/git/issues/default-visibility",
+      "criterion": "With every filter at its default, every open issue that is not an epic is visible, whatever its labels.",
+      "steps": "Have open issues with only 'agent-ready', with only 'in-progress', and with no label. Open the map and touch nothing.",
+      "expected": "All of them on the map; epics and closed issues hidden."
+    },
+    {
+      "key": "src/components/git/issues/zoom-pan-kept",
+      "criterion": "Zoom and pan are unchanged after a filter or search change.",
+      "steps": "Open the map, zoom in twice and drag the map aside. Tick Closed under Progress, press 'show all', then type a search.",
+      "expected": "The zoom percentage and the position stay the same each time. Pressing Fit refits the map."
+    }
+  ],
+  "no_qa_reason": null
+}

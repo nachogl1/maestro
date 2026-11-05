@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261105-133309-55e9",
+  "issue": 492,
+  "title": "Ctrl+T always puts the cursor in the new terminal's name box, in every view",
+  "login": "nachogl1",
+  "pr": 514,
+  "merged_at": "2026-11-05T14:17:02Z",
+  "merge_commit": "c53f68bb6e88ef3b6db26347dee55e98839d0fc2",
+  "seam": "src/components/terminal/TerminalGrid.tsx",
+  "story": "Ctrl+T used to try once to put the cursor in the new card's name box, and often missed (idle project, hidden eagle tile, a terminal taking the cursor back). Now it keeps trying for about a second and takes the cursor back from a terminal; a click, a shortcut or tabbing away ends that early. Enter in the name box now launches the terminal; before, it did nothing.",
+  "checks": [
+    {
+      "key": "terminal/ctrl-t-idle-project",
+      "criterion": "An idle project gets the cursor in the new name box.",
+      "steps": "Open a project with no terminals and press Ctrl+T.",
+      "expected": "The cursor is in the Window Name box."
+    },
+    {
+      "key": "terminal/ctrl-t-with-terminals",
+      "criterion": "With a running terminal focused, Ctrl+T moves the cursor to the new card's name box.",
+      "steps": "In a project with one running terminal, click into it and press Ctrl+T.",
+      "expected": "A new card appears and the cursor is in its name box, not the terminal."
+    },
+    {
+      "key": "terminal/ctrl-t-zoomed",
+      "criterion": "Ctrl+T while zoomed focuses the new card's name box.",
+      "steps": "Zoom a terminal (Ctrl+1) and press Ctrl+T.",
+      "expected": "You stay zoomed, the new card is shown and its name box has the cursor."
+    },
+    {
+      "key": "terminal/ctrl-t-eagle-picker",
+      "criterion": "Ctrl+T in eagle view focuses the name box after the project picker.",
+      "steps": "Press Ctrl+G for eagle view, press Ctrl+T, pick a project with the arrow keys and Enter.",
+      "expected": "The new card's name box has the cursor."
+    },
+    {
+      "key": "terminal/name-enter-launches",
+      "criterion": "Enter in the name box launches the terminal.",
+      "steps": "Press Ctrl+T, type 'demo shell', press Enter.",
+      "expected": "The terminal launches named 'demo shell', with no mouse used."
+    }
+  ],
+  "no_qa_reason": null
+}
