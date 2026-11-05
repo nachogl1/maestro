@@ -1,13 +1,29 @@
 import { emitTo } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import {
   ISSUE_MAP_OPEN_EVENT,
+  ISSUE_MAP_PROJECTS_EVENT,
   ISSUE_MAP_WINDOW_LABEL,
+  issueMapProjects,
   issueMapWindowTitle,
   openIssueMapWindow,
   readIssueMapTarget,
+  syncIssueMapProjects,
 } from "../issueMapWindow";
+
+// The workspace store hydrates through the Tauri store plugin at import time.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
 
 vi.mock("@tauri-apps/api/event", () => ({
   emitTo: vi.fn(() => Promise.resolve()),
@@ -100,5 +116,108 @@ describe("openIssueMapWindow", () => {
     expect(emitTo).toHaveBeenCalledWith(ISSUE_MAP_WINDOW_LABEL, ISSUE_MAP_OPEN_EVENT, target);
     expect(existing.unminimize).toHaveBeenCalled();
     expect(existing.setFocus).toHaveBeenCalled();
+  });
+});
+
+function buildTab(overrides: Partial<WorkspaceTab> & { name: string }): WorkspaceTab {
+  return {
+    id: overrides.name,
+    projectPath: `/repos/${overrides.name}`,
+    active: false,
+    sessionIds: [],
+    sessionsLaunched: false,
+    workspaceType: "single-repo",
+    repositories: [],
+    selectedRepoPath: null,
+    worktreeBasePath: null,
+    ...overrides,
+  };
+}
+
+function repo(path: string, isGitRepo = true): WorkspaceTab["repositories"][number] {
+  const name = path.split("/").pop() ?? path;
+  return { path, name, isGitRepo, currentBranch: null, remoteUrl: null };
+}
+
+describe("issueMapProjects", () => {
+  it("lists each git repository of a multi-repository tab, not only the selected one", () => {
+    const tab = buildTab({
+      name: "suite",
+      projectPath: "/repos/suite",
+      workspaceType: "multi-repo",
+      repositories: [
+        repo("/repos/suite", false),
+        repo("/repos/suite/api"),
+        repo("/repos/suite/web"),
+      ],
+      selectedRepoPath: "/repos/suite/api",
+    });
+    expect(issueMapProjects([tab])).toEqual([
+      { name: "suite / api", repoPath: "/repos/suite/api" },
+      { name: "suite / web", repoPath: "/repos/suite/web" },
+    ]);
+  });
+
+  it("names a multi-repository root that is itself a repository after the tab", () => {
+    const tab = buildTab({
+      name: "mono",
+      workspaceType: "multi-repo",
+      repositories: [repo("/repos/mono"), repo("/repos/mono/tools")],
+    });
+    expect(issueMapProjects([tab]).map((p) => p.name)).toEqual(["mono", "mono / tools"]);
+  });
+
+  it("keeps single-repository tabs and tabs marked 'not git', in tab order", () => {
+    const tabs = [
+      buildTab({ name: "alpha" }),
+      buildTab({ name: "beta", workspaceType: "non-git" }),
+      buildTab({ name: "gamma", workspaceType: "multi-repo", repositories: [repo("/x", false)] }),
+    ];
+    expect(issueMapProjects(tabs)).toEqual([
+      { name: "alpha", repoPath: "/repos/alpha" },
+      { name: "beta", repoPath: "/repos/beta" },
+      { name: "gamma", repoPath: "/repos/gamma" },
+    ]);
+  });
+});
+
+describe("syncIssueMapProjects", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useWorkspaceStore.setState({ tabs: [buildTab({ name: "alpha" })] });
+  });
+
+  it("sends the new project list to the map window when a tab opens or closes", () => {
+    const stop = syncIssueMapProjects();
+    const beta = buildTab({ name: "beta" });
+    useWorkspaceStore.setState({ tabs: [buildTab({ name: "alpha" }), beta] });
+    useWorkspaceStore.setState({ tabs: [beta] });
+    stop();
+    useWorkspaceStore.setState({ tabs: [] });
+
+    expect(vi.mocked(emitTo).mock.calls).toEqual([
+      [
+        ISSUE_MAP_WINDOW_LABEL,
+        ISSUE_MAP_PROJECTS_EVENT,
+        [
+          { name: "alpha", repoPath: "/repos/alpha" },
+          { name: "beta", repoPath: "/repos/beta" },
+        ],
+      ],
+      [
+        ISSUE_MAP_WINDOW_LABEL,
+        ISSUE_MAP_PROJECTS_EVENT,
+        [{ name: "beta", repoPath: "/repos/beta" }],
+      ],
+    ]);
+  });
+
+  it("sends nothing when a tab changes without changing the project list", () => {
+    const stop = syncIssueMapProjects();
+    useWorkspaceStore.setState({
+      tabs: [buildTab({ name: "alpha", active: true, sessionIds: [7] })],
+    });
+    stop();
+    expect(emitTo).not.toHaveBeenCalled();
   });
 });

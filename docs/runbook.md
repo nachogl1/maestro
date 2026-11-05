@@ -40,6 +40,19 @@ blocker sources (the body's `### Blocked by` section and GitHub's own blocked-by
 - **Zoom and pan** are set once, when the map first opens (fit to the width), and again only when you press
   **Fit**. Changing a filter, typing a search or pressing Reload keeps the zoom and position you chose.
 
+## Issue map: opening it with Alt+M, and the project list
+
+- **Alt+M** (Option+M on a Mac) opens the issue map from anywhere, the same as the map button in the git panel's
+  Issues tab. It shows the project the git panel is on: the active project tab, or in eagle view the project of the
+  git panel's carousel card. If the map window is already open, it switches to that project and comes to the front.
+  The shortcut is listed in Settings → Shortcuts.
+- **Project list** (the picker in the map's header, shown when more than one project is open) holds every open
+  project tab. A tab that holds several repositories lists each repository as its own entry, named
+  `<tab> / <repository>`. A tab marked "not a git project" is listed too, because a failed detection can mark a
+  real repository that way; if it really has no repository, the map shows an error for it.
+- Opening or closing a project tab updates the list in an open map window; there is no need to reopen the map.
+  Projects whose tab is closed are not listed.
+
 ## Terminals: moving focus between terminals
 
 **Ctrl+Alt+Right** and **Ctrl+Alt+Left** (Cmd+Alt on a Mac) move the focus to the next and previous terminal,

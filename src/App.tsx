@@ -4,6 +4,7 @@ import { GitFork, RefreshCw, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
+import { openIssueMapFor, syncIssueMapProjects } from "@/lib/issueMapWindow";
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
@@ -531,6 +532,15 @@ function App() {
     [selectTab],
   );
 
+  // Alt+M: the Waypoints button's path, for the project the git panel targets
+  // (the active tab, or the eagle view carousel's project).
+  const handleOpenIssueMap = useCallback(() => {
+    if (gitRepoPath) openIssueMapFor(gitRepoPath, useGitHubStore.getState().issueSearch);
+  }, [gitRepoPath]);
+
+  // An open map window lists every open project; keep it in step with the tabs.
+  useEffect(() => syncIssueMapProjects(), []);
+
   useAppKeyboard({
     onAddSession: handleAddSessionShortcut,
     // Eagle view: Cmd/Ctrl+T opens the project picker instead of adding
@@ -542,6 +552,7 @@ function App() {
     onToggleEagleView: useCallback(() => setEagleView((v) => !v), []),
     onNextProject: switchToNextTab,
     onPrevProject: switchToPrevTab,
+    onOpenIssueMap: handleOpenIssueMap,
   });
 
   // Handler to enter grid view for the active project
