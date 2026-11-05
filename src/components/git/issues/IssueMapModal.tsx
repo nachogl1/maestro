@@ -503,7 +503,7 @@ export function IssueMapModal({
     tipDragRef.current = { x: ev.clientX, y: ev.clientY, left: r.left, top: r.top };
   };
 
-  // Esc backs out one level: close a filter menu, else unpin, else close the map window.
+  // Esc backs out one level: close a filter menu, else unpin, else clear the search, else close.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -511,11 +511,12 @@ export function IssueMapModal({
       event.stopImmediatePropagation();
       if (openMenu !== null) setOpenMenu(null);
       else if (pinned !== null) setPinned(null);
+      else if (query !== "") setQuery("");
       else onClose();
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [openMenu, pinned, onClose]);
+  }, [openMenu, pinned, query, onClose]);
 
   // F5 or Ctrl/Cmd+R rebuilds the map instead of reloading the whole window.
   useEffect(() => {

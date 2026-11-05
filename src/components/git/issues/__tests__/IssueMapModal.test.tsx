@@ -629,6 +629,21 @@ describe("IssueMapModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("Esc in the search box clears the search first and closes the map only after", async () => {
+    const { onClose } = renderModal();
+    await screen.findByTestId("issue-node-2");
+    const box = screen.getByRole("searchbox", { name: "Search the map" });
+    fireEvent.change(box, { target: { value: "canvas" } });
+    expect(screen.queryByTestId("issue-node-3")).toBeNull();
+
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(box).toHaveValue("");
+    expect(screen.getByTestId("issue-node-3")).toBeInTheDocument();
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("F5 and Ctrl+R rebuild the map from GitHub", async () => {
     renderModal();
     await screen.findByTestId("issue-node-2");

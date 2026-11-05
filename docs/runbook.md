@@ -29,7 +29,8 @@ blocker sources (the body's `### Blocked by` section and GitHub's own blocked-by
 
 - **Search box** (next to the filter menus): `#123` or `123` keeps only issue 123; any other text keeps the issues
   whose title contains every word typed, ignoring case. It narrows the map together with the filter menus.
-  Clearing the box, or "show all", brings the issues back.
+  Clearing the box, pressing Esc in it, or "show all" brings the issues back. Esc closes the map only once
+  the search is empty.
 - **Labels menu** lists every label defined in the repository, orion's labels (`agent-ready`, `needs-human`,
   `epic`, ...) included, even labels no loaded issue carries yet (they show `0/0`). "only" next to a label keeps
   the issues that carry it. "no label" covers issues with no label at all; an issue whose only label is an orion
