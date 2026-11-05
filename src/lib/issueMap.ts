@@ -561,7 +561,7 @@ export function descriptionText(body: string): string {
 /** What the footer's data-problem line says after the count. */
 export const PROBLEMS_EXPLANATION =
   'some "blocked by" links could not be drawn, or two sources disagree. Each one says what ' +
-  "it changes on the map and how to fix it on GitHub.";
+  "it changes on the map and how to fix it on GitHub. Closed issues are left out.";
 
 /** Looks up an issue's title for the problem texts; undefined when it is not on the map. */
 export type IssueTitleLookup = (number: number) => string | undefined;
@@ -644,13 +644,28 @@ export function explainProblem(
       return {
         headline: `${blocked} is blocked by #${problem.blocker}, which is not on the map: link dropped`,
         effect:
-          `#${problem.blocker} is not among the issues the map loaded. It is probably a pull ` +
-          "request, an issue in another repository, a typo, or an issue beyond the " +
+          `#${problem.blocker} is not among the issues the map loaded. It is probably an ` +
+          "issue in another repository, a typo, or an issue beyond the " +
           `${MAP_ISSUE_LIMIT}-issue load limit. Without this link ${blocked} may sit at a lower ` +
           "level than it should.",
         fix:
           `Open #${problem.blocker} on GitHub. If it is a real issue of this repository, the ` +
           "map hit its load limit; otherwise point the link at the right issue or remove it.",
+      };
+    }
+    case "not-issue": {
+      const blocked = ref(problem.blocked, titleOf);
+      return {
+        headline: `${blocked} is blocked by #${problem.blocker}, which is not an issue on the map: link dropped`,
+        effect:
+          `Only the "### Blocked by" section of ${blocked} names #${problem.blocker}, and it is ` +
+          "not among the issues the map loaded. It is most often a pull request, which " +
+          "GitHub's own blocked-by relation can never name; otherwise an issue in another " +
+          `repository, a typo, or an issue beyond the ${MAP_ISSUE_LIMIT}-issue load limit. ` +
+          `Without this link ${blocked} may sit at a lower level than it should.`,
+        fix:
+          `On GitHub, point the "### Blocked by" section of ${blocked} at the issue that pull ` +
+          "request serves, and block it by that issue with GitHub's own relation too.",
       };
     }
     default: {

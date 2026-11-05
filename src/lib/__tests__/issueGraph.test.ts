@@ -117,6 +117,45 @@ describe("buildIssueGraph", () => {
     ]);
   });
 
+  it("reports a section blocker that is not a loaded issue once, as not an issue", () => {
+    // #40 is a pull request: GitHub's own relation can never name it.
+    const graph = buildIssueGraph([issue(1), issue(2), issue(3)], {
+      2: links(2, { blockedBy: [1], body: "### Blocked by\n- #1\n- #40\n" }),
+      3: links(3, { body: "### Blocked by\n- #40\n" }),
+    });
+    expect(graph.edges.map((e) => e.id)).toEqual(["1->2"]);
+    expect(graph.problems).toEqual([
+      { kind: "not-issue", blocked: 2, blocker: 40 },
+      { kind: "not-issue", blocked: 3, blocker: 40 },
+    ]);
+  });
+
+  it("lists no problem of a closed issue, keeps its links, and still reports open ones", () => {
+    const graph = buildIssueGraph(
+      [
+        issue(1),
+        issue(2, { state: "CLOSED" }),
+        issue(3),
+        issue(4, { state: "closed" }),
+        issue(5, { state: "CLOSED" }),
+        issue(6),
+        issue(7, { labels: EPIC }),
+      ],
+      {
+        // Closed #2: a disagreement, an epic, an unloaded issue and a pull request.
+        2: links(2, { blockedBy: [1, 7, 99], body: "### Blocked by\n#3 #40" }),
+        3: links(3, { blockedBy: [1], body: "### Blocked by\n#6" }),
+        // Closed #4 and #5 block each other: the loop is still broken on the map.
+        4: links(4, { blockedBy: [5] }),
+        5: links(5, { blockedBy: [4] }),
+      },
+    );
+    expect(graph.edges.map((e) => e.id)).toEqual(["1->2", "3->2", "1->3", "6->3", "4->5"]);
+    expect(graph.problems).toEqual([
+      { kind: "disagreement", number: 3, sectionOnly: [6], nativeOnly: [1] },
+    ]);
+  });
+
   it("keeps section links and detects disagreements in a CRLF body", () => {
     const graph = buildIssueGraph([issue(1), issue(2), issue(3)], {
       3: links(3, { blockedBy: [1], body: "### Blocked by\r\n- #2\r\n" }),
