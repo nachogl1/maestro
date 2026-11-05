@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The session store subscribes to Tauri events at listener-init time; the
 // global setup already mocks @tauri-apps/api/core, event needs its own stub.
@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { useContextAlertStore } from "@/stores/useContextAlertStore";
+import { useParkedOrderStore } from "@/stores/useParkedOrderStore";
 import {
   type BackendSessionStatus,
   type SessionConfig,
@@ -51,6 +52,8 @@ describe("ParkedShelf", () => {
       samuraiParkAlerts: [],
       runFatalSessionIds: [],
     });
+    // The dragged order is app-wide state; every test starts from the natural order.
+    useParkedOrderStore.setState({ order: [] });
   });
 
   it("renders nothing when no session is parked", () => {
@@ -315,6 +318,91 @@ describe("ParkedShelf", () => {
     });
   });
 
+  describe("dragging pills to reorder them", () => {
+    const CHIP_WIDTH = 80;
+    const CHIP_STRIDE = 100;
+
+    beforeEach(() => {
+      // happy-dom has no layout: lay the chips out in a row, one stride apart,
+      // in the order they currently sit in the DOM, so dnd-kit can measure them.
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+        this: Element,
+      ) {
+        const chips = Array.from(document.querySelectorAll("[data-parked-session-id]"));
+        const index = chips.indexOf(this);
+        const left = index === -1 ? 0 : index * CHIP_STRIDE;
+        const width = index === -1 ? 0 : CHIP_WIDTH;
+        return DOMRect.fromRect({ x: left, y: 0, width, height: 20 });
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    function chipNames(): string[] {
+      return Array.from(document.querySelectorAll("[data-parked-session-id]")).map(
+        (el) => el.textContent ?? "",
+      );
+    }
+
+    function parkThree() {
+      useSessionStore.setState({
+        sessions: [
+          session(1, "C:/proj", "Alpha"),
+          session(2, "C:/proj", "Bravo"),
+          session(3, "C:/proj", "Charlie"),
+        ],
+        parkedSessionIds: [1, 2, 3],
+      });
+    }
+
+    async function drag(name: string, deltaX: number) {
+      const el = screen.getByText(name).closest("button");
+      if (!el) throw new Error(`no chip for ${name}`);
+      const startX = Number(el.getBoundingClientRect().left) + CHIP_WIDTH / 2;
+      await act(async () => {
+        fireEvent.pointerDown(el, { isPrimary: true, button: 0, clientX: startX, clientY: 10 });
+      });
+      await act(async () => {
+        fireEvent.pointerMove(document, { clientX: startX + deltaX / 2, clientY: 10 });
+      });
+      await act(async () => {
+        fireEvent.pointerMove(document, { clientX: startX + deltaX, clientY: 10 });
+      });
+      await act(async () => {
+        fireEvent.pointerUp(document, { clientX: startX + deltaX, clientY: 10 });
+      });
+    }
+
+    it("moves a pill to where it is dropped, without restoring it", async () => {
+      parkThree();
+      const onUnpark = vi.fn();
+      render(<ParkedShelf onUnpark={onUnpark} />);
+
+      await drag("Charlie", -2 * CHIP_STRIDE);
+
+      expect(chipNames()).toEqual(["Charlie", "Alpha", "Bravo"]);
+      expect(onUnpark).not.toHaveBeenCalled();
+    });
+
+    it("keeps the dragged order while terminals park and unpark", async () => {
+      parkThree();
+      // Listed first among the sessions, so only the kept order puts it last.
+      useSessionStore.setState({
+        sessions: [session(4, "C:/proj", "Delta"), ...useSessionStore.getState().sessions],
+      });
+      render(<ParkedShelf onUnpark={vi.fn()} />);
+      await drag("Charlie", -2 * CHIP_STRIDE);
+
+      act(() => useSessionStore.getState().parkSession(4));
+      expect(chipNames()).toEqual(["Charlie", "Alpha", "Bravo", "Delta"]);
+
+      act(() => useSessionStore.getState().unparkSession(1));
+      expect(chipNames()).toEqual(["Charlie", "Bravo", "Delta"]);
+    });
+  });
+
   describe("Alt+U keyboard focus", () => {
     function parkThree() {
       useSessionStore.setState({
@@ -375,7 +463,111 @@ describe("ParkedShelf", () => {
       fireEvent.keyDown(chip("Bravo"), { key: "Enter" });
 
       expect(onUnpark).toHaveBeenCalledTimes(1);
-      expect(onUnpark).toHaveBeenCalledWith(2);
+      // keepFocus: the grid must not pull focus into the restored terminal.
+      expect(onUnpark).toHaveBeenCalledWith(2, { keepFocus: true });
+    });
+
+    it("Alt+U again leaves the shelf and puts focus back where it was", () => {
+      parkThree();
+      render(
+        <>
+          <textarea aria-label="terminal" />
+          <ParkedShelf onUnpark={vi.fn()} keyboardEnabled />
+        </>,
+      );
+      const terminal = screen.getByLabelText("terminal");
+      terminal.focus();
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "ArrowRight" });
+      expect(chip("Bravo")).toHaveFocus();
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      expect(terminal).toHaveFocus();
+    });
+
+    it("Alt+U, Enter, Enter restores two terminals and stays in the shelf until Alt+U", () => {
+      parkThree();
+      const onUnpark = vi.fn((sessionId: number) =>
+        useSessionStore.getState().unparkSession(sessionId),
+      );
+      render(
+        <>
+          <textarea aria-label="terminal" />
+          <ParkedShelf onUnpark={onUnpark} keyboardEnabled />
+        </>,
+      );
+      const terminal = screen.getByLabelText("terminal");
+      terminal.focus();
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "Enter" });
+      expect(chip("Bravo")).toHaveFocus();
+      fireEvent.keyDown(chip("Bravo"), { key: "Enter" });
+      expect(chip("Charlie")).toHaveFocus();
+      expect(useSessionStore.getState().parkedSessionIds).toEqual([3]);
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      expect(terminal).toHaveFocus();
+    });
+
+    it("restoring the last pill in the row moves focus to the one before it", () => {
+      parkThree();
+      const onUnpark = vi.fn((sessionId: number) =>
+        useSessionStore.getState().unparkSession(sessionId),
+      );
+      render(<ParkedShelf onUnpark={onUnpark} keyboardEnabled />);
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "ArrowLeft" });
+      fireEvent.keyDown(chip("Charlie"), { key: "Enter" });
+
+      expect(chip("Bravo")).toHaveFocus();
+    });
+
+    it("restoring the only pill is a plain restore, so the grid puts the cursor in it", () => {
+      useSessionStore.setState({
+        sessions: [session(1, "C:/proj", "Alpha")],
+        parkedSessionIds: [1],
+      });
+      const onUnpark = vi.fn((sessionId: number) =>
+        useSessionStore.getState().unparkSession(sessionId),
+      );
+      render(<ParkedShelf onUnpark={onUnpark} keyboardEnabled />);
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "Enter" });
+
+      expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+      expect(onUnpark.mock.calls).toEqual([[1]]);
+    });
+
+    it("leaving lands in the last restored terminal when the pane Alt+U came from is hidden", () => {
+      parkThree();
+      const onUnpark = vi.fn((sessionId: number) =>
+        useSessionStore.getState().unparkSession(sessionId),
+      );
+      render(
+        <>
+          <textarea aria-label="terminal" />
+          <ParkedShelf onUnpark={onUnpark} keyboardEnabled />
+        </>,
+      );
+      const terminal = screen.getByLabelText("terminal");
+      terminal.focus();
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "Enter" });
+      fireEvent.keyDown(chip("Bravo"), { key: "Enter" });
+
+      // The restored terminal took over the zoom: the pane Alt+U came from is
+      // hidden and can no longer take focus.
+      terminal.setAttribute("disabled", "");
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+
+      expect(terminal).not.toHaveFocus();
+      // A plain restore of the terminal already back: the grid brings it forward and focuses it.
+      expect(onUnpark).toHaveBeenLastCalledWith(2);
+      expect(onUnpark.mock.lastCall).toHaveLength(1);
     });
 
     it("ignores Alt+U when the shelf is not keyboard-enabled", () => {

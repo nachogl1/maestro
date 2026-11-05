@@ -89,7 +89,7 @@ import {
   type WorkspaceType,
 } from "@/stores/useWorkspaceStore";
 import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
-import { ParkedShelf } from "./ParkedShelf";
+import { ParkedShelf, type ParkedShelfUnparkOptions } from "./ParkedShelf";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
 import { createEmptySlot, occupiedSlotCount, sessionConfigDir } from "./slots";
@@ -1318,11 +1318,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
    * stays in zoom-in), otherwise it reappears in the split grid. Focused
    * either way.
    */
-  const handleUnpark = useCallback((sessionId: number) => {
+  const handleUnpark = useCallback((sessionId: number, options?: ParkedShelfUnparkOptions) => {
     useSessionStore.getState().unparkSession(sessionId);
     const slot = slotsRef.current.find((s) => s.sessionId === sessionId);
     if (!slot) return;
     setZoomedSlotId((prev) => (prev === null ? null : slot.id));
+    // Restored from the shelf by keyboard: the user is still picking in the shelf.
+    if (options?.keepFocus) return;
     setFocusedSlotId(slot.id);
     focusSlotTextarea(slot.id);
   }, []);
