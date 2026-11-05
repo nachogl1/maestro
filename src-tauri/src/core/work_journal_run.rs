@@ -65,16 +65,21 @@ const GRANOLA_RUN_TIMEOUT: Duration = Duration::from_secs(300);
 /// time, and the limit only ever ends a hung call.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The only Granola tools a run may call: the read tools, listed one by one
-/// (never a wildcard; never transcripts, attachments, search, sign-out or
-/// switching workspace).
-pub const GRANOLA_TOOLS: [&str; 2] = ["mcp__granola__list_meetings", "mcp__granola__get_meetings"];
+/// The only Granola tools a run may call: finding the date's meetings and
+/// reading them, listed one by one (never a wildcard; never transcripts,
+/// attachments, sign-out or switching workspace). Each run checks that both
+/// exist (see [`granola_tool_check`]), so a rename shows up as a warning.
+pub const GRANOLA_TOOLS: [&str; 2] = [
+    "mcp__granola__search_meetings",
+    "mcp__granola__get_meetings",
+];
 
 /// Granola tools a Granola run denies by name, so a user's own "always
 /// allow" rule for one of them never reaches the run (a deny beats an
-/// allow): transcripts, attachments, search, sign-out, switching
-/// workspace, meeting folders and account info.
-pub const GRANOLA_DENIED_TOOLS: [&str; 7] = [
+/// allow): transcripts, attachments, sign-out, switching workspace, the
+/// natural-language query, meeting folders, account info, and every tool
+/// that writes or sends something (notes, summaries, folders, feedback).
+pub const GRANOLA_DENIED_TOOLS: [&str; 16] = [
     "mcp__granola__get_meeting_transcript",
     "mcp__granola__get_meeting_attachment",
     "mcp__granola__sign_out",
@@ -82,6 +87,15 @@ pub const GRANOLA_DENIED_TOOLS: [&str; 7] = [
     "mcp__granola__query_granola_meetings",
     "mcp__granola__list_meeting_folders",
     "mcp__granola__get_account_info",
+    "mcp__granola__search_transcripts",
+    "mcp__granola__update_private_notes",
+    "mcp__granola__generate_summary",
+    "mcp__granola__create_folder",
+    "mcp__granola__update_folder",
+    "mcp__granola__add_note_to_folder",
+    "mcp__granola__remove_note_from_folder",
+    "mcp__granola__list_templates",
+    "mcp__granola__give_feedback",
 ];
 
 /// How far before the run's window a meeting may start and still count, so
@@ -126,10 +140,10 @@ add a line for that project only for a different piece of work.\n\
 /// [`granola_input`]). The model never converts a time: it copies
 /// `meeting_at` as given and [`parse_reply`] turns it into local `HH:MM`.
 const GRANOLA_RULES: &str = "Meetings: this run also has two Granola tools, \
-mcp__granola__list_meetings and mcp__granola__get_meetings.\n\
-- Call mcp__granola__list_meetings once with time_range custom and the custom_start and \
-custom_end given at the end of the input, copied exactly. Then read with \
-mcp__granola__get_meetings only the meetings that list returned. Skip meetings held on any \
+mcp__granola__search_meetings and mcp__granola__get_meetings.\n\
+- Call mcp__granola__search_meetings once with the from_date and to_date given at the end of \
+the input, copied exactly, max_participants 0 and no keywords. Then read with \
+mcp__granola__get_meetings only the meetings that search returned. Skip meetings held on any \
 other date.\n\
 - Write one line per meeting worth a journal line, in the form: <meeting_at> - Meeting: \
 <title>, <outcome> | granola\n\
@@ -255,8 +269,11 @@ pub async fn granola_preflight_url() -> Option<String> {
 
 /// The part of `[start, end)`, widened back by [`MEETING_LOOKBACK`], that
 /// falls on `date` in `tz`, as ISO 8601 times in `tz` with their own UTC
-/// offset (`2026-10-16T09:00:00+01:00`; the end of the day is the next
-/// midnight). `None` when it misses the date.
+/// offset (`2026-10-16T09:00:00+01:00`). Both bounds are included, as
+/// `search_meetings` reads `from_date` and `to_date`, so the end is one
+/// second before the window's end (windows are whole seconds): the end of
+/// the day is `23:59:59` on `date`, never the next midnight. `None` when it
+/// misses the date.
 fn meetings_window_on<Tz: TimeZone>(
     tz: &Tz,
     date: NaiveDate,
@@ -284,11 +301,11 @@ where
         at.with_timezone(tz)
             .to_rfc3339_opts(SecondsFormat::Secs, false)
     };
-    Some((local(from), local(to)))
+    Some((local(from), local(to - TimeDelta::seconds(1))))
 }
 
-/// The lines a Granola run adds to a date's input: the `custom_start` and
-/// `custom_end` to list the date's meetings with, in the user's time zone
+/// The lines a Granola run adds to a date's input: the `from_date` and
+/// `to_date` to search the date's meetings with, in the user's time zone
 /// with its UTC offset, so neither Granola nor the model has to guess it.
 fn granola_input(date: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
     granola_input_in(&Local, date, start, end)
@@ -306,17 +323,15 @@ where
     let Ok(day) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
         return String::new();
     };
-    // A window that misses the date (never expected) lists the whole date:
-    // a date-only end is that date's midnight and excluded, so the next date.
-    let (from, to) = meetings_window_on(tz, day, start, end).unwrap_or_else(|| {
-        let next = day.succ_opt().unwrap_or(day).format("%Y-%m-%d").to_string();
-        (date.to_string(), next)
-    });
+    // A window that misses the date (never expected) searches the whole
+    // date: a date-only `to_date` includes that whole day.
+    let (from, to) = meetings_window_on(tz, day, start, end)
+        .unwrap_or_else(|| (date.to_string(), date.to_string()));
     format!(
-        "\n\nMeetings for this date: call mcp__granola__list_meetings with time_range: custom, \
-         custom_start: {from}, custom_end: {to}. A meeting line starts with its meeting_at \
-         exactly as Granola gives it, not HH:MM: <meeting_at> - Meeting: <title>, <outcome> \
-         | granola"
+        "\n\nMeetings for this date: call mcp__granola__search_meetings with from_date: {from}, \
+         to_date: {to}, max_participants: 0 and no keywords. A meeting line starts with its \
+         meeting_at exactly as Granola gives it, not HH:MM: <meeting_at> - Meeting: <title>, \
+         <outcome> | granola"
     )
 }
 
@@ -372,6 +387,10 @@ pub struct RunReport {
     /// [`MAX_CATCH_UP_DAYS`] cap; set only when the cap cut it, so the
     /// activity from here up to the window start was skipped.
     pub truncated_from: Option<DateTime<Utc>>,
+    /// The [`GRANOLA_TOOLS`] a Granola run found missing while Granola was
+    /// connected (Granola renamed or removed a tool, so Maestro needs an
+    /// update), sorted; empty when none was missing or Granola was off.
+    pub missing_granola_tools: Vec<String>,
 }
 
 /// "Run every X hours" as used: absent or 0 is the default, more than
@@ -528,7 +547,10 @@ pub(crate) fn is_safe_model(model: &str) -> bool {
 ///   (which reuses the stored sign-in) loads no other MCP server. The system prompt
 ///   carries the Granola rules, the two [`GRANOLA_TOOLS`] are allowed, the
 ///   [`GRANOLA_DENIED_TOOLS`] are denied by name, and `--permission-mode
-///   dontAsk` denies everything not allowed. `--mcp-config`,
+///   dontAsk` denies everything not allowed. `--output-format stream-json
+///   --verbose` makes the output an event stream whose first `init` event
+///   lists the run's tools (see [`granola_tool_check`]) and whose `result`
+///   event carries the reply (see [`stream_reply`]). `--mcp-config`,
 ///   `--allowedTools` and `--disallowedTools` take several values, so each
 ///   is followed by another flag, and `--permission-mode` ends the lists
 ///   before the prompt.
@@ -565,6 +587,7 @@ pub fn claude_args(model: Option<&str>, granola: Option<&str>) -> Result<Vec<Str
         args.push(model.to_string());
     }
     if granola.is_some() {
+        args.extend(["--output-format", "stream-json", "--verbose"].map(str::to_string));
         args.push("--allowedTools".to_string());
         args.extend(GRANOLA_TOOLS.iter().map(|tool| tool.to_string()));
         args.push("--disallowedTools".to_string());
@@ -580,6 +603,96 @@ pub fn claude_args(model: Option<&str>, granola: Option<&str>) -> Result<Vec<Str
 /// server at `url`.
 fn granola_mcp_config(url: &str) -> String {
     serde_json::json!({ "mcpServers": { "granola": { "type": "http", "url": url } } }).to_string()
+}
+
+/// How a Granola run fails when its event stream has no `init` event with a
+/// tool list, so the run's tools cannot be checked.
+const STREAM_NO_TOOLS_ERROR: &str = "claude's Granola run did not list its tools";
+
+/// How a Granola run fails when Granola was not connected in that call (a
+/// slow or failed connection): the date is tried again, and no "needs an
+/// update" warning shows.
+const GRANOLA_NOT_CONNECTED_ERROR: &str = "Granola did not connect for this run";
+
+/// How a Granola run fails when its event stream has no usable `result`.
+const STREAM_NO_REPLY_ERROR: &str = "claude's Granola run gave no reply";
+
+/// How a Granola run fails when its `result` event says it ended in an error.
+const STREAM_ERROR_RESULT: &str = "claude's Granola run ended with an error";
+
+/// The JSON objects of a `--output-format stream-json` output, one per line;
+/// a line that is not a JSON object is skipped. The stream can hold meeting
+/// notes (every tool result is in it), so nothing of it is ever logged.
+fn stream_events(output: &str) -> impl Iterator<Item = serde_json::Map<String, Value>> + '_ {
+    output
+        .lines()
+        .filter_map(|line| match serde_json::from_str::<Value>(line.trim()) {
+            Ok(Value::Object(event)) => Some(event),
+            _ => None,
+        })
+}
+
+/// Whether `event`'s `key` field is the string `value`.
+fn field_is(event: &serde_json::Map<String, Value>, key: &str, value: &str) -> bool {
+    event.get(key).and_then(Value::as_str) == Some(value)
+}
+
+/// The tool check of a Granola run, read from the first `system` / `init`
+/// event of its stream (a deterministic source, never the model's word):
+/// the [`GRANOLA_TOOLS`] entries missing from its `tools` list, empty when
+/// both are there. An error when there is no such event or it has no
+/// `tools` list, or when its `mcp_servers` list does not show the `granola`
+/// server as `connected` (a server that did not connect lists no tools, which
+/// is not a renamed tool). Elements that are not strings or objects are
+/// skipped.
+fn granola_tool_check(output: &str) -> Result<Vec<&'static str>, String> {
+    let init = stream_events(output)
+        .find(|event| field_is(event, "type", "system") && field_is(event, "subtype", "init"))
+        .ok_or_else(|| STREAM_NO_TOOLS_ERROR.to_string())?;
+    let connected = init
+        .get("mcp_servers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .find(|server| field_is(server, "name", "granola"))
+        .is_some_and(|server| field_is(server, "status", "connected"));
+    if !connected {
+        return Err(GRANOLA_NOT_CONNECTED_ERROR.to_string());
+    }
+    let tools: HashSet<&str> = init
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| STREAM_NO_TOOLS_ERROR.to_string())?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    Ok(GRANOLA_TOOLS
+        .into_iter()
+        .filter(|tool| !tools.contains(tool))
+        .collect())
+}
+
+/// The reply text of a Granola run: the `result` field of the last `result`
+/// event of its stream. An error when there is none, when its `result` is
+/// not a string, or when its `is_error` is anything but absent, `null` or
+/// `false`. The error never quotes the stream.
+fn stream_reply(output: &str) -> Result<String, String> {
+    let result = stream_events(output)
+        .filter(|event| field_is(event, "type", "result"))
+        .last()
+        .ok_or_else(|| STREAM_NO_REPLY_ERROR.to_string())?;
+    if !matches!(
+        result.get("is_error"),
+        None | Some(Value::Null) | Some(Value::Bool(false))
+    ) {
+        return Err(STREAM_ERROR_RESULT.to_string());
+    }
+    result
+        .get("result")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| STREAM_NO_REPLY_ERROR.to_string())
 }
 
 /// The tag a source has in prompts and replies.
@@ -1013,8 +1126,9 @@ trait RunSources {
         projects: &[String],
     ) -> Vec<ActivityItem>;
     async fn candidates(&self, date: &str) -> Result<Vec<Candidate>, String>;
-    /// `granola`: Granola is on for the call (longer timeout, and no reply
-    /// text in the error, see [`run_claude`]).
+    /// `claude`'s stdout. `granola`: Granola is on for the call (longer
+    /// timeout, and no reply text in the error, see [`run_claude`]); the
+    /// stdout is then the `stream-json` event stream (see [`claude_args`]).
     async fn ask_claude(
         &self,
         args: &[String],
@@ -1447,6 +1561,7 @@ async fn run_with<S: RunSources>(
             settings.run_every_hours,
             now,
         ),
+        missing_granola_tools: Vec::new(),
     };
     let retries = pending_retries(&settings.retry_dates, end);
     // One preflight per run, and only for a "yes": a "no" or a choice not
@@ -1540,6 +1655,7 @@ async fn run_with<S: RunSources>(
     // `DateFailure`).
     let mut retry_dates = BTreeMap::new();
     let mut errors: Vec<String> = Vec::new();
+    let mut missing_tools: BTreeSet<&'static str> = BTreeSet::new();
     for (date, items) in by_date {
         let items: Vec<ActivityItem> = items
             .into_iter()
@@ -1556,7 +1672,16 @@ async fn run_with<S: RunSources>(
             |retry| retry.since,
         );
         let window = granola.then_some((since.min(start), end));
-        let result = run_date(sources, journal, &args, window, &date, &items).await;
+        let result = run_date(
+            sources,
+            journal,
+            &args,
+            window,
+            &date,
+            &items,
+            &mut missing_tools,
+        )
+        .await;
         if result.is_ok() {
             let done = items.iter().map(sent_item).collect();
             if let Err(e) = sources.mark_sent(done).await {
@@ -1587,6 +1712,15 @@ async fn run_with<S: RunSources>(
     }
     report.covered_until = end;
     report.retry_dates = retry_dates;
+    if !missing_tools.is_empty() {
+        // Tool names only: nothing of the run's output is ever logged.
+        let names: Vec<&str> = missing_tools.iter().copied().collect();
+        log::warn!(
+            "Work journal: Granola is connected, but the run lacks {}; Maestro needs an update",
+            names.join(", ")
+        );
+        report.missing_granola_tools = names.into_iter().map(str::to_string).collect();
+    }
     if !errors.is_empty() {
         report.error = Some(errors.join("; "));
     }
@@ -1657,7 +1791,12 @@ fn known_projects(candidates: Vec<NewCandidate>, items: &[ActivityItem]) -> Vec<
 }
 
 /// One `claude` call for one date; returns how many candidates were added.
-/// `granola_window` is the run's window when Granola is on (`None` = off).
+/// `granola_window` is the run's window when Granola is on (`None` = off);
+/// the call's output is then an event stream, whose tool check (see
+/// [`granola_tool_check`]) adds the missing [`GRANOLA_TOOLS`] to
+/// `missing_tools`. A missing tool does not fail the date: its other lines
+/// are kept. A stream that cannot be checked or read fails the date like an
+/// unusable reply.
 async fn run_date<S: RunSources>(
     sources: &S,
     journal: &WorkJournal,
@@ -1665,6 +1804,7 @@ async fn run_date<S: RunSources>(
     granola_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     date: &str,
     items: &[ActivityItem],
+    missing_tools: &mut BTreeSet<&'static str>,
 ) -> Result<usize, DateFailure> {
     let existing = sources
         .candidates(date)
@@ -1680,13 +1820,23 @@ async fn run_date<S: RunSources>(
     if let Some((start, end)) = granola_window {
         input.push_str(&granola_input(date, start, end));
     }
-    let reply = sources
+    let output = sources
         .ask_claude(args, &input, granola)
         .await
         .map_err(|message| DateFailure {
             counts: message.starts_with(TIMEOUT_ERROR),
             message,
         })?;
+    let unusable = |message| DateFailure {
+        message,
+        counts: true,
+    };
+    let reply = if granola {
+        missing_tools.extend(granola_tool_check(&output).map_err(unusable)?);
+        stream_reply(&output).map_err(unusable)?
+    } else {
+        output
+    };
     let parsed = parse_reply(&reply, date, &existing, granola).map_err(|message| DateFailure {
         message,
         counts: true,
@@ -2040,6 +2190,9 @@ mod tests {
             assert!(!args.iter().any(|a| a == "--permission-mode"));
             assert!(!args.iter().any(|a| a == "dontAsk"));
             assert!(!args.iter().any(|a| a == "--mcp-config"));
+            assert!(!args
+                .iter()
+                .any(|a| a == "--output-format" || a == "--verbose"));
             assert!(args.iter().any(|a| a == "--strict-mcp-config"));
             assert!(
                 args.iter().any(|a| a == "--safe-mode"),
@@ -2086,7 +2239,7 @@ mod tests {
             args[at..],
             [
                 "--allowedTools",
-                "mcp__granola__list_meetings",
+                "mcp__granola__search_meetings",
                 "mcp__granola__get_meetings",
                 "--disallowedTools",
                 "mcp__granola__get_meeting_transcript",
@@ -2096,11 +2249,25 @@ mod tests {
                 "mcp__granola__query_granola_meetings",
                 "mcp__granola__list_meeting_folders",
                 "mcp__granola__get_account_info",
+                "mcp__granola__search_transcripts",
+                "mcp__granola__update_private_notes",
+                "mcp__granola__generate_summary",
+                "mcp__granola__create_folder",
+                "mcp__granola__update_folder",
+                "mcp__granola__add_note_to_folder",
+                "mcp__granola__remove_note_from_folder",
+                "mcp__granola__list_templates",
+                "mcp__granola__give_feedback",
                 "--permission-mode",
                 "dontAsk",
                 USER_PROMPT,
             ],
             "--permission-mode ends the tool lists, and the prompt stays last"
+        );
+        assert_eq!(
+            args[at - 3..at],
+            ["--output-format", "stream-json", "--verbose"],
+            "the event stream lists the run's tools"
         );
         let allowed: Vec<&String> = args[at + 1..at + 3].iter().collect();
         assert_eq!(allowed, GRANOLA_TOOLS);
@@ -2139,6 +2306,25 @@ mod tests {
         assert_eq!(args[model + 1], "sonnet");
         let prompt = args.iter().position(|a| a == "--system-prompt").unwrap();
         assert_eq!(args[prompt + 1], system_prompt(true));
+    }
+
+    #[test]
+    fn test_granola_tool_lists_name_each_tool_and_never_overlap() {
+        for tool in GRANOLA_TOOLS.iter().chain(&GRANOLA_DENIED_TOOLS) {
+            let name = tool.strip_prefix("mcp__granola__").expect("a Granola tool");
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{tool} names one tool, never a wildcard"
+            );
+        }
+        for allowed in GRANOLA_TOOLS {
+            assert!(
+                !GRANOLA_DENIED_TOOLS.contains(&allowed),
+                "{allowed} is both allowed and denied"
+            );
+        }
+        let denied: HashSet<&str> = GRANOLA_DENIED_TOOLS.into_iter().collect();
+        assert_eq!(denied.len(), GRANOLA_DENIED_TOOLS.len(), "no duplicates");
     }
 
     #[test]
@@ -2181,12 +2367,12 @@ mod tests {
         let on = system_prompt(true);
         assert!(on.starts_with(SYSTEM_PROMPT));
         for needle in [
-            "mcp__granola__list_meetings",
+            "mcp__granola__search_meetings",
             "mcp__granola__get_meetings",
             "<meeting_at> - Meeting: <title>, <outcome> | granola",
             "Meeting - <title>: <outcome> | granola",
-            "time_range custom",
-            "custom_start and custom_end given at the end of the input, copied exactly",
+            "from_date and to_date given at the end of the input, copied exactly",
+            "max_participants 0 and no keywords",
             "meeting_at value copied exactly",
             "UTC offset",
             "Never convert it to another time zone",
@@ -2269,79 +2455,87 @@ mod tests {
         let (start, end) = (utc("2026-10-24T08:00:00Z"), utc("2026-10-26T10:00:00Z"));
         assert!(
             granola_input_in(&UkLike, "2026-10-24", start, end).contains(
-                "custom_start: 2026-10-24T06:00:00+01:00, custom_end: 2026-10-25T00:00:00+01:00. "
+                "from_date: 2026-10-24T06:00:00+01:00, to_date: 2026-10-24T23:59:59+01:00, "
             )
         );
         assert!(
             granola_input_in(&UkLike, "2026-10-26", start, end).contains(
-                "custom_start: 2026-10-26T00:00:00+00:00, custom_end: 2026-10-26T10:00:00+00:00. "
+                "from_date: 2026-10-26T00:00:00+00:00, to_date: 2026-10-26T09:59:59+00:00, "
             )
         );
     }
 
     #[test]
-    fn test_meetings_window_is_the_run_window_clipped_to_the_date() {
-        let utc_zone = Utc;
-        // An hourly run: the window, widened back by the lookback.
-        assert_eq!(
-            meetings_window_on(
-                &utc_zone,
-                day("2026-10-15"),
-                utc("2026-10-15T11:00:00Z"),
-                utc("2026-10-15T12:00:00Z")
+    fn test_meetings_window_is_the_run_window_clipped_to_the_date_with_both_ends_included() {
+        // (zone, date, window start, window end, expected from_date and to_date)
+        let utc_zone = chrono::FixedOffset::east_opt(0).unwrap();
+        let uk_summer = chrono::FixedOffset::east_opt(3600).unwrap();
+        let cases = [
+            // A mid-day hourly window, widened back by the lookback.
+            (
+                utc_zone,
+                "2026-10-15",
+                "2026-10-15T11:00:00Z",
+                "2026-10-15T12:00:00Z",
+                Some(("2026-10-15T08:00:00+00:00", "2026-10-15T11:59:59+00:00")),
             ),
-            Some((
-                "2026-10-15T08:00:00+00:00".to_string(),
-                "2026-10-15T12:00:00+00:00".to_string()
-            ))
-        );
-        // Early in the day the lookback stops at midnight.
-        assert_eq!(
-            meetings_window_on(
-                &utc_zone,
-                day("2026-10-15"),
-                utc("2026-10-15T01:00:00Z"),
-                utc("2026-10-15T02:00:00Z")
+            // Early in the day the lookback stops at midnight.
+            (
+                utc_zone,
+                "2026-10-15",
+                "2026-10-15T01:00:00Z",
+                "2026-10-15T02:00:00Z",
+                Some(("2026-10-15T00:00:00+00:00", "2026-10-15T01:59:59+00:00")),
             ),
-            Some((
-                "2026-10-15T00:00:00+00:00".to_string(),
-                "2026-10-15T02:00:00+00:00".to_string()
-            ))
-        );
-        // A catch-up over two days: the first date to its end, the second
-        // from midnight; a date the window misses has none.
-        let (start, end) = (utc("2026-10-14T16:00:00Z"), utc("2026-10-15T09:30:00Z"));
-        assert_eq!(
-            meetings_window_on(&utc_zone, day("2026-10-14"), start, end),
-            Some((
-                "2026-10-14T13:00:00+00:00".to_string(),
-                "2026-10-15T00:00:00+00:00".to_string()
-            ))
-        );
-        assert_eq!(
-            meetings_window_on(&utc_zone, day("2026-10-15"), start, end),
-            Some((
-                "2026-10-15T00:00:00+00:00".to_string(),
-                "2026-10-15T09:30:00+00:00".to_string()
-            ))
-        );
-        assert_eq!(
-            meetings_window_on(&utc_zone, day("2026-10-16"), start, end),
-            None
-        );
-        // Local time, not UTC.
-        assert_eq!(
-            meetings_window_on(
-                &UkLike,
-                day("2026-10-15"),
-                utc("2026-10-15T11:00:00Z"),
-                utc("2026-10-15T12:00:00Z")
+            // A catch-up over two days: the first date up to its last second,
+            // never the next midnight (to_date includes its instant)...
+            (
+                utc_zone,
+                "2026-10-14",
+                "2026-10-14T16:00:00Z",
+                "2026-10-15T09:30:00Z",
+                Some(("2026-10-14T13:00:00+00:00", "2026-10-14T23:59:59+00:00")),
             ),
-            Some((
-                "2026-10-15T09:00:00+01:00".to_string(),
-                "2026-10-15T13:00:00+01:00".to_string()
-            ))
-        );
+            // ...and the second from midnight.
+            (
+                utc_zone,
+                "2026-10-15",
+                "2026-10-14T16:00:00Z",
+                "2026-10-15T09:30:00Z",
+                Some(("2026-10-15T00:00:00+00:00", "2026-10-15T09:29:59+00:00")),
+            ),
+            // A window ending exactly at the next local midnight.
+            (
+                uk_summer,
+                "2026-10-15",
+                "2026-10-15T20:00:00Z",
+                "2026-10-15T23:00:00Z",
+                Some(("2026-10-15T18:00:00+01:00", "2026-10-15T23:59:59+01:00")),
+            ),
+            // Local time, not UTC.
+            (
+                uk_summer,
+                "2026-10-15",
+                "2026-10-15T11:00:00Z",
+                "2026-10-15T12:00:00Z",
+                Some(("2026-10-15T09:00:00+01:00", "2026-10-15T12:59:59+01:00")),
+            ),
+            // A date the window misses has none.
+            (
+                utc_zone,
+                "2026-10-16",
+                "2026-10-14T16:00:00Z",
+                "2026-10-15T09:30:00Z",
+                None,
+            ),
+        ];
+        for (zone, date, start, end, expected) in cases {
+            assert_eq!(
+                meetings_window_on(&zone, day(date), utc(start), utc(end)),
+                expected.map(|(from, to)| (from.to_string(), to.to_string())),
+                "{date} in [{start}, {end})"
+            );
+        }
     }
 
     #[test]
@@ -2354,19 +2548,37 @@ mod tests {
         );
         assert_eq!(
             input,
-            "\n\nMeetings for this date: call mcp__granola__list_meetings with time_range: \
-             custom, custom_start: 2026-10-15T09:00:00+01:00, custom_end: \
-             2026-10-15T13:00:00+01:00. A meeting line starts with its meeting_at exactly as \
-             Granola gives it, not HH:MM: <meeting_at> - Meeting: <title>, <outcome> | granola"
+            "\n\nMeetings for this date: call mcp__granola__search_meetings with from_date: \
+             2026-10-15T09:00:00+01:00, to_date: 2026-10-15T12:59:59+01:00, max_participants: \
+             0 and no keywords. A meeting line starts with its meeting_at exactly as Granola \
+             gives it, not HH:MM: <meeting_at> - Meeting: <title>, <outcome> | granola"
         );
-        // A window that misses the date lists the whole date.
+        // A window that misses the date searches that date only: a
+        // date-only to_date includes the whole day, so never the next date.
         let missed = granola_input_in(
             &UkLike,
             "2026-10-16",
             utc("2026-10-15T11:00:00Z"),
             utc("2026-10-15T12:00:00Z"),
         );
-        assert!(missed.contains("custom_start: 2026-10-16, custom_end: 2026-10-17."));
+        assert!(
+            missed.contains("from_date: 2026-10-16, to_date: 2026-10-16, "),
+            "{missed}"
+        );
+        assert!(!missed.contains("2026-10-17"), "{missed}");
+    }
+
+    #[test]
+    fn test_a_meeting_held_on_another_date_never_becomes_a_suggestion() {
+        // The second guard behind the search window: whatever Granola lists,
+        // a meeting whose local date is not the run's date is dropped,
+        // including one at the next midnight (the old exclusive end).
+        let reply = "2026-10-15T23:30:00+01:00 - Meeting: Late sync, agreed | granola\n\
+                     2026-10-16T00:00:00+01:00 - Meeting: Midnight call, agreed | granola\n\
+                     2026-10-14T23:59:59+01:00 - Meeting: Day before, agreed | granola";
+        let parsed = parse_reply_in(&UkLike, reply, "2026-10-15", &[], true).unwrap();
+        let texts: Vec<&str> = parsed.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["Meeting: Late sync, agreed"]);
     }
 
     // --- Granola: preflight ---
@@ -3725,7 +3937,7 @@ mod tests {
             granola: true,
             ..Fake::default()
         };
-        fake.replies.insert(today.clone(), "NONE".into());
+        fake.replies.insert(today.clone(), stream("NONE"));
         let mut journal = granola_journal(Some(true));
         journal.settings.last_run_at = Some((now() - TimeDelta::hours(1)).to_rfc3339());
         let first = run_with(&fake, &journal, &[], now()).await;
@@ -4018,6 +4230,7 @@ mod tests {
             );
             let report = run_with(&fake, &granola_journal(opt_in), &[], now()).await;
             assert!(report.error.is_none());
+            assert!(report.missing_granola_tools.is_empty(), "no tool check");
             assert_eq!(*fake.preflights.lock().unwrap(), 0, "{opt_in:?}");
             let asked = fake.asked.lock().unwrap();
             assert_eq!(asked[0].0, claude_args(None, None).unwrap());
@@ -4062,13 +4275,18 @@ mod tests {
         };
         fake.replies.insert(
             today.clone(),
-            "14:30 - Meeting: Design sync, agreed the backup plan | granola\n\
-             Meeting - Planning: picked the next issue | granola"
-                .into(),
+            stream(
+                "14:30 - Meeting: Design sync, agreed the backup plan | granola\n\
+                 Meeting - Planning: picked the next issue | granola",
+            ),
         );
         let report = run_with(&fake, &granola_journal(Some(true)), &[], now()).await;
 
         assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(
+            report.missing_granola_tools.is_empty(),
+            "both tools listed: no warning"
+        );
         assert_eq!(report.added, 2);
         assert_eq!(*fake.preflights.lock().unwrap(), 1);
         let asked = fake.asked.lock().unwrap();
@@ -4131,6 +4349,283 @@ mod tests {
         assert!(report.error.is_none());
         assert_eq!(*fake.preflights.lock().unwrap(), 0);
         assert!(fake.asked.lock().unwrap().is_empty());
+    }
+
+    // --- Granola: the event stream and the tool check ---
+
+    /// A synthetic `stream-json` init event with these tools and this
+    /// `granola` server status (the shape probed with Claude Code 2.1.318).
+    fn init_event(tools: &[&str], status: &str) -> String {
+        json!({
+            "type": "system",
+            "subtype": "init",
+            "tools": tools,
+            "mcp_servers": [{"name": "granola", "status": status, "source": "dynamic"}],
+        })
+        .to_string()
+    }
+
+    /// A synthetic `result` event carrying `reply`.
+    fn result_event(reply: &str) -> String {
+        json!({"type": "result", "subtype": "success", "is_error": false, "result": reply})
+            .to_string()
+    }
+
+    /// A Granola run's whole stream: init with both tools, connected, other
+    /// events, then the result carrying `reply`.
+    fn stream(reply: &str) -> String {
+        stream_with_tools(&GRANOLA_TOOLS, reply)
+    }
+
+    fn stream_with_tools(tools: &[&str], reply: &str) -> String {
+        [
+            init_event(tools, "connected"),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}]}})
+                .to_string(),
+            json!({"type": "rate_limit_event"}).to_string(),
+            result_event(reply),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn test_granola_tool_check_names_each_missing_tool_from_the_init_event() {
+        let search = "mcp__granola__search_meetings";
+        let get = "mcp__granola__get_meetings";
+        let cases: [(&[&str], Vec<&str>); 5] = [
+            (&[search, get], vec![]),
+            (&[get, search, get, "mcp__granola__other"], vec![]),
+            (&[get], vec![search]),
+            (&["mcp__granola__find_meetings", get], vec![search]),
+            (&[], vec![search, get]),
+        ];
+        for (tools, missing) in cases {
+            let output = format!(
+                "{}\n{}",
+                init_event(tools, "connected"),
+                result_event("NONE")
+            );
+            assert_eq!(granola_tool_check(&output), Ok(missing), "{tools:?}");
+        }
+    }
+
+    #[test]
+    fn test_granola_tool_check_reads_untrusted_streams_without_panicking() {
+        let search = "mcp__granola__search_meetings";
+        let get = "mcp__granola__get_meetings";
+        let connected = json!([{"name": "granola", "status": "connected"}]);
+        let init = |extra: Value| {
+            let mut event = json!({"type": "system", "subtype": "init"});
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            event.to_string()
+        };
+        let both = json!([search, get]);
+        let cases: Vec<(String, Result<Vec<&str>, &str>)> = vec![
+            // Non-JSON lines, unknown event types, blank lines and nulls are
+            // skipped; the first init counts.
+            (
+                format!(
+                    "not json\n\n[1,2]\nnull\n{}\n{}\n{}",
+                    json!({"type": "mystery"}),
+                    init(json!({"tools": both, "mcp_servers": connected})),
+                    init(json!({"tools": [], "mcp_servers": connected})),
+                ),
+                Ok(vec![]),
+            ),
+            // Null and non-string tools are skipped, not read as names.
+            (
+                init(json!({"tools": [null, 7, {"name": search}, get], "mcp_servers": connected})),
+                Ok(vec![search]),
+            ),
+            // No init at all, an init without a tool list, or with a tool
+            // list that is not a list.
+            (result_event("NONE"), Err(STREAM_NO_TOOLS_ERROR)),
+            (String::new(), Err(STREAM_NO_TOOLS_ERROR)),
+            (
+                init(json!({"mcp_servers": connected})),
+                Err(STREAM_NO_TOOLS_ERROR),
+            ),
+            (
+                init(json!({"tools": "all", "mcp_servers": connected})),
+                Err(STREAM_NO_TOOLS_ERROR),
+            ),
+            (
+                json!({"type": "system", "tools": both, "mcp_servers": connected}).to_string(),
+                Err(STREAM_NO_TOOLS_ERROR),
+            ),
+            // Granola not connected in this call (or not listed): never the
+            // "needs an update" warning, even with no Granola tool listed.
+            (init_event(&[], "failed"), Err(GRANOLA_NOT_CONNECTED_ERROR)),
+            (init_event(&[], "pending"), Err(GRANOLA_NOT_CONNECTED_ERROR)),
+            (
+                init(
+                    json!({"tools": [], "mcp_servers": [null, {"name": "other", "status": "connected"}]}),
+                ),
+                Err(GRANOLA_NOT_CONNECTED_ERROR),
+            ),
+            (
+                init(json!({"tools": both})),
+                Err(GRANOLA_NOT_CONNECTED_ERROR),
+            ),
+            (
+                init(json!({"tools": both, "mcp_servers": [{"name": "granola"}]})),
+                Err(GRANOLA_NOT_CONNECTED_ERROR),
+            ),
+            (
+                init(json!({"tools": both, "mcp_servers": {"granola": "connected"}})),
+                Err(GRANOLA_NOT_CONNECTED_ERROR),
+            ),
+        ];
+        for (output, expected) in cases {
+            assert_eq!(
+                granola_tool_check(&output),
+                expected.map_err(str::to_string),
+                "{output}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stream_reply_takes_the_last_result_and_refuses_anything_else() {
+        let cases: Vec<(String, Result<&str, &str>)> = vec![
+            (stream("09:00 - Did a | git"), Ok("09:00 - Did a | git")),
+            (
+                format!(
+                    "{}\nnot json\n{}",
+                    result_event("first"),
+                    result_event("last")
+                ),
+                Ok("last"),
+            ),
+            (
+                json!({"type": "result", "result": "no flag"}).to_string(),
+                Ok("no flag"),
+            ),
+            (
+                json!({"type": "result", "is_error": null, "result": "null flag"}).to_string(),
+                Ok("null flag"),
+            ),
+            (
+                init_event(&GRANOLA_TOOLS, "connected"),
+                Err(STREAM_NO_REPLY_ERROR),
+            ),
+            (String::new(), Err(STREAM_NO_REPLY_ERROR)),
+            (
+                json!({"type": "result", "is_error": false}).to_string(),
+                Err(STREAM_NO_REPLY_ERROR),
+            ),
+            (
+                json!({"type": "result", "is_error": false, "result": null}).to_string(),
+                Err(STREAM_NO_REPLY_ERROR),
+            ),
+            (
+                json!({"type": "result", "is_error": false, "result": ["a"]}).to_string(),
+                Err(STREAM_NO_REPLY_ERROR),
+            ),
+            (
+                json!({"type": "result", "is_error": true, "result": "secret note"}).to_string(),
+                Err(STREAM_ERROR_RESULT),
+            ),
+            (
+                json!({"type": "result", "is_error": "yes", "result": "secret note"}).to_string(),
+                Err(STREAM_ERROR_RESULT),
+            ),
+        ];
+        for (output, expected) in cases {
+            let got = stream_reply(&output);
+            assert_eq!(
+                got,
+                expected.map(str::to_string).map_err(str::to_string),
+                "{output}"
+            );
+            if let Err(message) = got {
+                assert!(
+                    !message.contains("secret"),
+                    "an error never quotes the stream"
+                );
+            }
+        }
+    }
+
+    /// A Granola run on today with one git commit and this stream as reply.
+    async fn granola_run_with_stream(output: String) -> (Fake, RunReport) {
+        let today = now().with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let mut fake = Fake {
+            items: vec![item(&today, "11:05", CandidateSource::Git, "Commit b")],
+            granola: true,
+            ..Fake::default()
+        };
+        fake.replies.insert(today, output);
+        let mut journal = granola_journal(Some(true));
+        journal.settings.last_run_at = Some((now() - TimeDelta::hours(1)).to_rfc3339());
+        let report = run_with(&fake, &journal, &[], now()).await;
+        (fake, report)
+    }
+
+    #[tokio::test]
+    async fn test_a_granola_run_without_an_allowed_tool_warns_and_keeps_its_other_lines() {
+        let (fake, report) = granola_run_with_stream(stream_with_tools(
+            &["mcp__granola__get_meetings", "mcp__granola__find_meetings"],
+            "11:05 - Committed b | git",
+        ))
+        .await;
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(
+            report.missing_granola_tools,
+            vec!["mcp__granola__search_meetings".to_string()]
+        );
+        assert_eq!(report.added, 1);
+        assert!(report.retry_dates.is_empty(), "the date is done");
+        let added = fake.added.lock().unwrap();
+        assert_eq!(added[0].source, CandidateSource::Git);
+        assert_eq!(added[0].text, "Committed b");
+    }
+
+    #[tokio::test]
+    async fn test_a_granola_run_with_both_tools_reports_no_warning() {
+        let (fake, report) = granola_run_with_stream(stream(
+            "11:05 - Committed b | git\n\
+             2026-10-15T09:00:00+00:00 - Meeting: Sync, agreed | granola",
+        ))
+        .await;
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(report.missing_granola_tools.is_empty());
+        let added = fake.added.lock().unwrap();
+        assert!(added.iter().any(|c| c.source == CandidateSource::Git));
+    }
+
+    #[tokio::test]
+    async fn test_a_granola_run_whose_stream_is_unusable_fails_the_date_without_a_warning() {
+        for (output, error) in [
+            (
+                format!(
+                    "{}\n{}",
+                    init_event(&[], "failed"),
+                    result_event("11:05 - Committed b | git")
+                ),
+                GRANOLA_NOT_CONNECTED_ERROR,
+            ),
+            (
+                result_event("11:05 - Committed b | git"),
+                STREAM_NO_TOOLS_ERROR,
+            ),
+            (
+                init_event(&GRANOLA_TOOLS, "connected"),
+                STREAM_NO_REPLY_ERROR,
+            ),
+            ("plain text reply\n".to_string(), STREAM_NO_TOOLS_ERROR),
+        ] {
+            let (fake, report) = granola_run_with_stream(output).await;
+            let message = report.error.expect("the date failed");
+            assert!(message.ends_with(error), "{message}");
+            assert!(report.missing_granola_tools.is_empty(), "{message}");
+            assert_eq!(report.retry_dates.len(), 1, "tried again: {message}");
+            assert_eq!(report.retry_dates.values().next().unwrap().failures, 1);
+            assert!(fake.added.lock().unwrap().is_empty());
+        }
     }
 
     #[test]

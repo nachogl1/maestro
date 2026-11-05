@@ -122,6 +122,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
 
   const running = useWorkJournalCandidateRunStore((s) => s.running);
   const runNotice = useWorkJournalCandidateRunStore((s) => s.runNotice);
+  const granolaNotice = useWorkJournalCandidateRunStore((s) => s.granolaNotice);
   const runError = useWorkJournalCandidateRunStore((s) => s.runError);
   const nextRunAt = useWorkJournalCandidateRunStore((s) => s.nextRunAt);
   const catchUpPending = useWorkJournalCandidateRunStore((s) => s.catchUpPending);
@@ -209,6 +210,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
       )}
 
       {runNotice && <p className="mt-1 text-[10px] text-maestro-muted">{runNotice}</p>}
+      {granolaNotice && <p className="mt-1 text-[10px] text-maestro-muted">{granolaNotice}</p>}
       {runError && <p className="mt-1 text-[10px] text-maestro-red">{runError}</p>}
 
       {error && (
