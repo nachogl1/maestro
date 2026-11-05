@@ -143,12 +143,25 @@ describe("NotesListKeymap", () => {
   });
 
   it.each([
-    ["- a\n  - b\n  - c\n- d", "- a\n- b\n  - c\n- d"],
-    ["- a\n  - b\n    - b1\n  - c\n- d", "- a\n- b\n  - b1\n  - c\n- d"],
+    ["- a\n  - b\n  - c\n- d", "- a\n  - c\n- b\n- d"],
+    ["- a\n  - b\n    - b1\n  - c\n- d", "- a\n  - c\n- b\n  - b1\n- d"],
+    ["- a\n  - x\n    - b\n    - c\n  - y", "- a\n  - x\n    - c\n  - b\n  - y"],
+    ["- a\n  - b\n- d", "- a\n- b\n- d"],
   ])("Shift+Tab on a nested bullet leaves the bullets below it at their level: %j", (before, after) => {
     const note = notesEditor(before);
     placeCaret(note, "b");
     press(note, "Tab", true);
+    expect(markdownOf(note)).toBe(after);
+  });
+
+  it.each([
+    ["- a\n  - b\n  - c\n- d", "b", "b", "- a\n  - c\n  - b\n- d"],
+    ["- a\n  - b\n  - c\n  - d\n- e", "b", "c", "- a\n  - d\n  - b\n  - c\n- e"],
+  ])("Shift+Tab then Tab keeps the selection and never indents the bullets that followed: %j", (before, first, last, after) => {
+    const note = notesEditor(before);
+    selectLines(note, first, last);
+    press(note, "Tab", true);
+    press(note, "Tab");
     expect(markdownOf(note)).toBe(after);
   });
 
@@ -176,7 +189,7 @@ describe("NotesListKeymap", () => {
   });
 
   it.each([
-    ["- a\n  - b\n  - c\n  - d\n- e", "b", "c", "- a\n- b\n- c\n  - d\n- e"],
+    ["- a\n  - b\n  - c\n  - d\n- e", "b", "c", "- a\n  - d\n- b\n- c\n- e"],
     ["- a\n- b\n  - b1\n- c", "b1", "c", "- a\n- b\n- b1\n- c"],
     ["- a\n  - b\n- c\n- d", "b", "c", "- a\n- b\n- c\n- d"],
   ])("Shift+Tab on a selection outdents exactly the selected bullets: %j", (before, first, last, after) => {
