@@ -20,7 +20,7 @@ interface UseTerminalKeyboardOptions {
   onParkFocused?: () => void;
   /** Callback to move the focused terminal one pane in a direction (Alt+Shift+Arrow) */
   onMoveFocused?: (direction: MoveDirection) => void;
-  /** Callback to give every terminal an even share of the layout (Alt+T) */
+  /** Callback to put every terminal in one row of full-height columns (Alt+T) */
   onTidyLayout?: () => void;
   /**
    * Callback for a header control on the focused terminal: Alt+R rename,
