@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261105-125113-5140",
+  "issue": 491,
+  "title": "Notes: Tab and Shift+Tab move only the bullet you are on",
+  "login": "nachogl1",
+  "pr": 512,
+  "merged_at": "2026-11-05T13:30:55Z",
+  "merge_commit": "204dc70c9d08de9af6c85a49d06e65bfa41395b1",
+  "seam": "src/components/notepad/",
+  "story": "In Notes, Tab and Shift+Tab now move only the selected bullet or bullets, each with its own nested bullets. Shift+Tab puts the outdented bullet just after the bullet that held it, so the bullets that followed stay where they were; before, they ended up nested under it and a later Tab dragged them deeper. Tab on a first bullet no longer jumps out of the editor, and Shift+Tab on a top-level bullet still turns it into plain text.",
+  "checks": [
+    {
+      "key": "notepad/tab-middle-bullet",
+      "criterion": "Tab on a middle bullet indents only it and its own nested bullets.",
+      "steps": "Open a note, type three bullets 'alpha', 'beta', 'gamma'. Put the caret on 'beta' and press Tab.",
+      "expected": "'beta' moves under 'alpha'; 'gamma' stays at the top level."
+    },
+    {
+      "key": "notepad/shift-tab-nested-bullet",
+      "criterion": "Shift+Tab on a nested bullet leaves the bullets below it at their level.",
+      "steps": "Make 'alpha' with two nested bullets 'beta' and 'gamma', then a top-level 'delta'. Put the caret on 'beta', press Shift+Tab, then press Tab.",
+      "expected": "After Shift+Tab, 'gamma' stays under 'alpha' and 'beta' sits between 'alpha' and 'delta'. After Tab, 'beta' is back under 'alpha' after 'gamma', and 'gamma' never went deeper."
+    },
+    {
+      "key": "notepad/tab-first-bullet",
+      "criterion": "Tab on the first bullet keeps the cursor in the editor and changes nothing.",
+      "steps": "Type bullets 'alpha' and 'beta', put the caret on 'alpha', press Tab, then type 'x'.",
+      "expected": "Nothing moves, and 'x' appears in 'alpha'."
+    },
+    {
+      "key": "notepad/tab-selection",
+      "criterion": "A selection over several bullets indents and outdents exactly those bullets.",
+      "steps": "Make 'alpha' with nested 'beta', 'gamma' and 'delta'. Select 'beta' through 'gamma' and press Shift+Tab.",
+      "expected": "'beta' and 'gamma' go to the top level after 'alpha'; 'delta' stays under 'alpha'."
+    }
+  ],
+  "no_qa_reason": null
+}

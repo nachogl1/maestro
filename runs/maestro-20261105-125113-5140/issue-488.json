@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261105-125113-5140",
+  "issue": 488,
+  "title": "Issue map: a pull request in 'Blocked by' counts as one problem, and closed issues leave the data problems",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T12:53:28Z",
+  "finished_at": "2026-11-05T13:12:30Z",
+  "outcome": "merged",
+  "pr": 511,
+  "summary": "The issue map's data-problems pane now reports a pull request named under 'Blocked by' once, as 'not an issue on the map', and leaves closed issues out of the list and count.",
+  "agents": [
+    {
+      "name": "dev-488",
+      "model": "opus",
+      "tokens_total": 128322
+    },
+    {
+      "name": "review-488",
+      "model": "opus",
+      "tokens_total": 97575
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 676,
+    "review_seconds": 232,
+    "ci_seconds": 150
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 2
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-125113-5140",
+  "issue": 488,
+  "title": "Issue map: a pull request in 'Blocked by' counts as one problem, and closed issues leave the data problems",
+  "login": "nachogl1",
+  "pr": 511,
+  "merged_at": "2026-11-05T13:12:00Z",
+  "merge_commit": "4b1b45925e77941d1c2e8ce6065bcdacb210fc02",
+  "seam": "src/lib/issueGraph.ts",
+  "story": "The issue map's data-problems pane used to count a pull request named under 'Blocked by' twice, once as a disagreement and once as 'not on the map'. It now shows a single 'not an issue on the map' entry. Closed issues no longer appear in the problem list or its count, but they and their links stay on the map; the pane's explanation ends with 'Closed issues are left out.'",
+  "checks": [
+    {
+      "key": "issue-map/pr-blocker-one-problem",
+      "criterion": "An issue whose 'Blocked by' section names a pull request shows exactly one problem, 'not an issue', and the count rises by one.",
+      "steps": "In a test repo, open pull request P. Open issue A with a body of '### Blocked by' then '- #P', and no GitHub blocked-by relation. In Maestro, open the issue map for that repo.",
+      "expected": "The data-problems pane lists exactly one entry for A: '#A ... is blocked by #P, which is not an issue on the map: link dropped'. No 'sources disagree' entry for A."
+    },
+    {
+      "key": "issue-map/closed-issue-no-problems",
+      "criterion": "A closed issue's problems are not listed and not counted.",
+      "steps": "Create issues B, C and D. Give C a '### Blocked by' section naming B, and set C's GitHub blocked-by relation to D. Close C. Open the issue map.",
+      "expected": "No problem mentions C and the count leaves it out; C is still drawn, with its links."
+    },
+    {
+      "key": "issue-map/open-disagreement-still-reported",
+      "criterion": "An open issue's real disagreement is still reported.",
+      "steps": "Repeat the C setup above but leave C open, then open the issue map.",
+      "expected": "'#C ...: its two \"blocked by\" sources disagree' is listed."
+    }
+  ],
+  "no_qa_reason": null
+}

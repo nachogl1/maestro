@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261105-125113-5140",
+  "issue": 416,
+  "title": "Remove unused GitSettingsModal (no caller since #396)",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T12:51:48Z",
+  "finished_at": "2026-11-05T13:07:30Z",
+  "outcome": "merged",
+  "pr": 510,
+  "summary": "Deleted the unused Git settings dialog and its export; no user-visible change, no new tests.",
+  "agents": [
+    {
+      "name": "dev-416",
+      "model": "opus",
+      "tokens_total": 79185
+    },
+    {
+      "name": "review-416",
+      "model": "opus",
+      "tokens_total": 88825
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 510,
+    "review_seconds": 228,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/git/",
+      "what": "Since the pull request for issue #396 removed the sidebar Git card, no screen lets a user set their git identity, add/remove/edit/test remotes, set the default branch, pick a project's worktree folder or change the worktree close action; the issue's premise that the Git panel covers these does not hold on main.",
+      "why": "Out of scope: the issue chose delete over re-wiring (reversible; the file is recoverable from 7098033).",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

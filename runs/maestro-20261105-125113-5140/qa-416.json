@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261105-125113-5140",
+  "issue": 416,
+  "title": "Remove unused GitSettingsModal (no caller since #396)",
+  "login": "nachogl1",
+  "pr": 510,
+  "merged_at": "2026-11-05T13:06:44Z",
+  "merge_commit": "f942276d086f70344c0a14b97782c9827992a8b0",
+  "seam": "src/components/git/",
+  "story": "The unused Git settings dialog was deleted. It had no caller, so no screen, command or flow changed.",
+  "checks": [],
+  "no_qa_reason": "Deleted dead code with no caller; nothing a user can drive changed."
+}

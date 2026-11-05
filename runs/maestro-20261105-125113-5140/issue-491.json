@@ -1,0 +1,45 @@
+{
+  "run_id": "maestro-20261105-125113-5140",
+  "issue": 491,
+  "title": "Notes: Tab and Shift+Tab move only the bullet you are on",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T12:53:28Z",
+  "finished_at": "2026-11-05T13:31:30Z",
+  "outcome": "merged",
+  "pr": 512,
+  "summary": "Tab and Shift+Tab in Notes now move only the selected bullets with their children; Shift+Tab places the outdented bullet after its former parent so following bullets stay put, and Tab on a first bullet no longer leaves the editor.",
+  "agents": [
+    {
+      "name": "dev-491",
+      "model": "opus",
+      "tokens_total": 156768
+    },
+    {
+      "name": "review-491",
+      "model": "opus",
+      "tokens_total": 121527
+    },
+    {
+      "name": "review-491-r2",
+      "model": "opus",
+      "tokens_total": 107697
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1700,
+    "review_seconds": 715,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [
+    "Claude Code killed the dev agent's local full `npm test` for low memory after a merge, and the agent reported FAILED on finished code; the orchestrator had it push and use CI as the suite run instead of releasing the story. Several full Vitest suites at once on this machine risk the same kill."
+  ],
+  "lessons_learned": [
+    "A dev agent that reads a 'today X happens' note in an issue's Scope as unavoidable should test the claim against main first: round 1 shipped Shift+Tab unchanged from main and cost a review round."
+  ],
+  "deferred": []
+}
