@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-151041-8e38",
+  "issue": 496,
+  "title": "Attention cues: optional sound, a brighter tab, and session and project tabs that blink together",
+  "login": "nachogl1",
+  "pr": 520,
+  "merged_at": "2026-11-05T16:01:59Z",
+  "merge_commit": "1d08bc6832399a9a0f2bffc2bb8fcae0bf2a3675",
+  "seam": "src/hooks/useAttentionBlink.ts",
+  "story": "A terminal that needs you can now play an optional beep, off until you turn it on in Settings > Notifications. A terminal waiting for input glows brighter red, and so does its chip in the parking tray. A terminal that comes back from the parking tray by itself makes its zoom-strip tab and its project tab blink yellow together, also after you switch between projects; before, the zoom tab was solid yellow and the project tab did not change. A warning flag set by hand still stays solid yellow.",
+  "checks": [
+    {
+      "key": "attention/sound-switch",
+      "criterion": "With the switch on, a sound plays once when a parked terminal comes back by itself and once when a terminal needs input; with it off, no sound plays.",
+      "steps": "Open Settings > Notifications and turn on 'Play a sound when a terminal needs you'. Launch a Claude terminal, ask it to 'wait 30 seconds, then ask me a yes/no question', park it and wait. Repeat with an unparked terminal. Turn the switch off and repeat both.",
+      "expected": "One short beep when the parked terminal comes back and one when the visible terminal starts waiting; no second beep for the same wait; no beep with the switch off."
+    },
+    {
+      "key": "attention/tabs-blink-together",
+      "criterion": "A session tab and its project tab blink in step, even when they start at different moments.",
+      "steps": "Open two projects. In project A launch two terminals and zoom into terminal 1. In terminal 2 ask a question that takes about 20 seconds, then park terminal 2. Switch to project B before the answer arrives. When terminal 2 comes back, watch project A's tab, then switch to A and compare it with terminal 2's zoom-strip tab. Switch to B and back to A once more.",
+      "expected": "Both tabs blink yellow at the same moment and rhythm, including after each switch back. Clicking terminal 2's tab stops both blinks."
+    },
+    {
+      "key": "attention/needs-input-glow",
+      "criterion": "The glow on a terminal that needs input is visibly brighter than before.",
+      "steps": "Let an agent finish a turn so its terminal waits for input. Compare its frame with a working terminal next to it.",
+      "expected": "A bright red ring with a wide halo, clearly stronger than the working terminal's blue glow."
+    }
+  ],
+  "no_qa_reason": null
+}

@@ -1,0 +1,43 @@
+{
+  "run_id": "maestro-20261105-151041-8e38",
+  "issue": 498,
+  "title": "Work Journal suggestions: show the project in its colour, and keep Accept and Reject apart, green and red",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T15:10:54Z",
+  "finished_at": "2026-11-05T16:44:30Z",
+  "outcome": "merged",
+  "pr": 521,
+  "summary": "Work Journal suggestion cards now show the project the work came from as a pill in that project's colour, and Accept (green) and Reject (red) sit 24px apart; the model's output format gained an optional project field validated against the day's activity.",
+  "agents": [
+    {
+      "name": "dev-498",
+      "model": "opus",
+      "tokens_total": 191608
+    },
+    {
+      "name": "review-498",
+      "model": "opus",
+      "tokens_total": 128397
+    },
+    {
+      "name": "review-498-r2",
+      "model": "opus",
+      "tokens_total": 111036
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 3790,
+    "review_seconds": 1545,
+    "ci_seconds": 900
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [
+    "A GitHub 502 lost the push event for the fix commit: the branch had the new head but the PR kept the old one and no CI ran for 30 minutes, so the dev agent reported FAILED. Closing and reopening the PR made GitHub pick up the head and start CI. Check `gh pr view --json headRefOid` against `git ls-remote` when a push shows no checks."
+  ],
+  "lessons_learned": [],
+  "deferred": []
+}

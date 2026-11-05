@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-151041-8e38",
+  "issue": 495,
+  "title": "Parked shelf: drag pills to reorder them, and Alt+U keeps you in the shelf until Alt+U again",
+  "login": "nachogl1",
+  "pr": 519,
+  "merged_at": "2026-11-05T15:51:12Z",
+  "merge_commit": "877cbcee452f7b26dd16fb4d7516652725540ac9",
+  "seam": "src/components/terminal/ParkedShelf.tsx",
+  "story": "You can now drag parked pills along the parked strip to put them in any order; the order lasts until the app closes, and a terminal you park later joins the end. Alt+U used to only jump into the strip; now a second press leaves it. Enter restores a terminal and keeps you in the strip on the next pill, in every view, zoomed or not; before, Enter moved the cursor into the restored terminal. The Alt+U description in Settings > Shortcuts was updated.",
+  "checks": [
+    {
+      "key": "terminal/parked-shelf-reorder",
+      "criterion": "Dragging a pill changes the order, and the order holds while terminals park and unpark.",
+      "steps": "Open a project and launch terminals named Alpha, Bravo and Charlie. Park all three with Alt+P. Drag the Charlie pill to the left end of the parked strip. Launch a terminal named Delta and park it. Click the Alpha pill.",
+      "expected": "After the drag the strip reads Charlie, Alpha, Bravo and Charlie is not restored. Delta joins last. After clicking Alpha the strip reads Charlie, Bravo, Delta."
+    },
+    {
+      "key": "terminal/parked-shelf-reorder-across-projects",
+      "criterion": "A drag in one project's strip leaves other projects' pills in place in the eagle strip.",
+      "steps": "Open two projects, Alpha and Beta. Park two terminals in each, alternating Alpha, Beta, Alpha, Beta. In Alpha's own strip, drag its second pill onto its first. Switch to eagle view.",
+      "expected": "Alpha's two pills have swapped places, and Beta's pills sit in the same slots as before."
+    },
+    {
+      "key": "terminal/parked-shelf-keyboard",
+      "criterion": "Alt+U, Enter, Enter restores two terminals and the cursor stays in the strip; Alt+U then returns the cursor.",
+      "steps": "Park three terminals. Click into a fourth terminal that is not parked. Press Alt+U, Enter, Enter, then Alt+U. Repeat in project view, project view zoomed, eagle view and eagle view zoomed.",
+      "expected": "After the two Enters, two terminals are restored and the third pill has the cursor. Not zoomed, the last Alt+U puts the cursor back in the fourth terminal; zoomed, it lands in the last restored terminal, which holds the zoom."
+    }
+  ],
+  "no_qa_reason": null
+}

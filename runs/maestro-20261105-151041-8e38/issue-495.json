@@ -1,0 +1,43 @@
+{
+  "run_id": "maestro-20261105-151041-8e38",
+  "issue": 495,
+  "title": "Parked shelf: drag pills to reorder them, and Alt+U keeps you in the shelf until Alt+U again",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T15:10:54Z",
+  "finished_at": "2026-11-05T15:51:30Z",
+  "outcome": "merged",
+  "pr": 519,
+  "summary": "Parked pills can be dragged into any order (kept for the app session), and Alt+U now toggles the shelf: Enter restores a terminal and keeps the cursor in the shelf, in every view, zoomed or not.",
+  "agents": [
+    {
+      "name": "dev-495",
+      "model": "opus",
+      "tokens_total": 189818
+    },
+    {
+      "name": "review-495",
+      "model": "opus",
+      "tokens_total": 130600
+    },
+    {
+      "name": "review-495-r2",
+      "model": "opus",
+      "tokens_total": 132280
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1572,
+    "review_seconds": 743,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [],
+  "lessons_learned": [
+    "Keyboard-focus stories must be tested in all four views (project, project zoomed, eagle, eagle zoomed): eagle zoom has its own zoom-focus effect that steals focus, and a zoomed-away pane is invisible and cannot take focus; round 1 missed both."
+  ],
+  "deferred": []
+}

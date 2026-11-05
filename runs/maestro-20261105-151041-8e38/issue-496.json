@@ -1,0 +1,49 @@
+{
+  "run_id": "maestro-20261105-151041-8e38",
+  "issue": 496,
+  "title": "Attention cues: optional sound, a brighter tab, and session and project tabs that blink together",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T15:10:54Z",
+  "finished_at": "2026-11-05T16:02:30Z",
+  "outcome": "merged",
+  "pr": 520,
+  "summary": "An optional beep (off by default) when a terminal needs you, a brighter red needs-input glow, and the zoom-strip tab and project tab of a terminal back from parking blink yellow in step, re-synced when a hidden project is shown.",
+  "agents": [
+    {
+      "name": "dev-496",
+      "model": "opus",
+      "tokens_total": 213088
+    },
+    {
+      "name": "review-496",
+      "model": "opus",
+      "tokens_total": 142178
+    },
+    {
+      "name": "review-496-r2",
+      "model": "opus",
+      "tokens_total": 163900
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1736,
+    "review_seconds": 1166,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 3
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/hooks/useAttentionBlink.ts",
+      "what": "The blink phase is fixed once at render, but the browser restarts a CSS animation when React moves a keyed tab's DOM node; moving a blinking project tab (keyboard move or drag) makes it blink out of step with its zoom tab (measured 461 ms off in Chromium) until the terminal is selected.",
+      "why": "The robust fix changes the mechanism (re-align each element's getAnimations() start time to the shared clock in a layout effect); out of scope for the confirming round.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

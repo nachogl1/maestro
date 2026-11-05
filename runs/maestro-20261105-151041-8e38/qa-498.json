@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261105-151041-8e38",
+  "issue": 498,
+  "title": "Work Journal suggestions: show the project in its colour, and keep Accept and Reject apart, green and red",
+  "login": "nachogl1",
+  "pr": 521,
+  "merged_at": "2026-11-05T16:43:54Z",
+  "merge_commit": "6e555ec9b8301415b5dda87ca799db3bd26d1fa5",
+  "seam": "src/components/workjournal/SuggestionsBox.tsx",
+  "story": "Work Journal suggestion cards now name the project the work came from, in that project's colour, next to the source tag; before, only the source tag showed. Accept and Reject used to be grey and 8px apart; now Accept is green and Reject is red, 24px apart. Meeting suggestions still show no project.",
+  "checks": [
+    {
+      "key": "workjournal/suggestion-project-pill",
+      "criterion": "A suggestion from project work shows that project's name in its colour; one with no project (or an older one) shows no pill and no error.",
+      "steps": "Open a made-up project folder such as 'demo-shop' in Maestro. Make a commit in it. Open the Work Journal and click 'run now'. If Granola is connected, have a test meeting that day.",
+      "expected": "The project suggestion shows a small 'demo-shop' pill in the same colour as that project's terminal border. A meeting suggestion, or one stored before this change, shows no pill and no error."
+    },
+    {
+      "key": "workjournal/accept-reject-buttons",
+      "criterion": "Accept is green, Reject is red, with at least a button's width between them.",
+      "steps": "With any pending suggestion, look at its row. Click the red cross on one suggestion. Create the day's page, then click the green tick on another.",
+      "expected": "The tick and the cross are clearly apart. The cross hides its suggestion. The tick adds the line to the page."
+    }
+  ],
+  "no_qa_reason": null
+}
