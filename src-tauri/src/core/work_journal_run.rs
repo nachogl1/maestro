@@ -741,15 +741,26 @@ where
     })
 }
 
+/// The text of a meeting line before its `| granola` tag; `None` when the
+/// line is not tagged `granola`. The main contract asks for a project after
+/// the source, so one field after `granola` (`| granola | demo-shop`, or an
+/// empty `| granola |`) is read past and dropped: meetings keep no project.
+fn meeting_text(line: &str) -> Option<&str> {
+    let is_granola = |tag: &str| {
+        tag.trim()
+            .eq_ignore_ascii_case(source_tag(CandidateSource::Granola))
+    };
+    let (head, last) = line.trim().rsplit_once('|')?;
+    if is_granola(last) {
+        return Some(head);
+    }
+    let (text, tag) = head.rsplit_once('|')?;
+    is_granola(tag).then_some(text)
+}
+
 /// The time-less meeting line `Meeting - <title>: <outcome> | granola`.
 fn parse_untimed_meeting(line: &str, date: &str) -> Option<NewCandidate> {
-    let (text, source) = line.trim().rsplit_once('|')?;
-    if !source
-        .trim()
-        .eq_ignore_ascii_case(source_tag(CandidateSource::Granola))
-    {
-        return None;
-    }
+    let text = meeting_text(line)?;
     let text = one_line(text);
     let (head, rest) = text.split_once(" - ")?;
     if !head.eq_ignore_ascii_case("Meeting") || rest.trim().is_empty() {
@@ -814,13 +825,7 @@ fn parse_stamped_meeting<Tz: TimeZone>(tz: &Tz, line: &str, date: &str) -> Optio
 where
     Tz::Offset: std::fmt::Display,
 {
-    let (text, source) = line.trim().rsplit_once('|')?;
-    if !source
-        .trim()
-        .eq_ignore_ascii_case(source_tag(CandidateSource::Granola))
-    {
-        return None;
-    }
+    let text = meeting_text(line)?;
     let (stamp, text) = text.trim().split_once(" - ")?;
     let stamp = stamp.trim();
     let text = one_line(text);
@@ -2662,7 +2667,9 @@ mod tests {
     fn test_parse_reply_with_granola_reads_timed_and_untimed_meetings() {
         let reply = "14:30 - Meeting: Design sync, agreed the backup plan | granola\n\
                      Meeting - Planning: picked the next issue | Granola\n\
-                     09:05 - Fixed the login bug | git";
+                     09:05 - Fixed the login bug | git\n\
+                     Meeting - Retro: kept the standup time | granola | demo-shop\n\
+                     Meeting - Review: shipped the beta | granola | ";
         let parsed = parse_reply(reply, "2026-10-15", &[], true).unwrap();
         assert_eq!(
             parsed,
@@ -2686,6 +2693,22 @@ mod tests {
                     time: Some("09:05".to_string()),
                     text: "Fixed the login bug".to_string(),
                     source: CandidateSource::Git,
+                    project: None,
+                },
+                // A trailing project field after `granola` is read past and
+                // dropped: meetings keep no project.
+                NewCandidate {
+                    date: "2026-10-15".to_string(),
+                    time: None,
+                    text: "Meeting - Retro: kept the standup time".to_string(),
+                    source: CandidateSource::Granola,
+                    project: None,
+                },
+                NewCandidate {
+                    date: "2026-10-15".to_string(),
+                    time: None,
+                    text: "Meeting - Review: shipped the beta".to_string(),
+                    source: CandidateSource::Granola,
                     project: None,
                 },
             ]
@@ -2761,9 +2784,21 @@ mod tests {
                      2026-10-15T13:30+00:00 - Meeting: D, agreed | granola\n\
                      2026-10-15T13:30:00+0000 - Meeting: E, agreed | granola\n\
                      2026-10-15 14:30 - Meeting: F, agreed | granola\n\
-                     Thu, 15 Oct 2026 13:30:00 +0000 - Meeting: G, agreed | granola";
+                     Thu, 15 Oct 2026 13:30:00 +0000 - Meeting: G, agreed | granola\n\
+                     2026-10-15T14:30:00+01:00 - Meeting: H, agreed | granola | demo-shop\n\
+                     2026-10-15T14:30:00+01:00 - Meeting: I, agreed | granola | ";
         let parsed = parse_reply_in(&UkLike, reply, "2026-10-15", &[], true).unwrap();
         let times: Vec<Option<&str>> = parsed.iter().map(|c| c.time.as_deref()).collect();
+        // A trailing project field after `granola` is read past and dropped:
+        // meetings keep no project.
+        let tail: Vec<(&str, Option<&str>)> = parsed[7..]
+            .iter()
+            .map(|c| (c.text.as_str(), c.project.as_deref()))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![("Meeting: H, agreed", None), ("Meeting: I, agreed", None)]
+        );
         // With an offset it is converted; without one it is already local.
         assert_eq!(
             times,
@@ -2771,6 +2806,8 @@ mod tests {
                 Some("14:30"),
                 Some("10:00"),
                 Some("11:20"),
+                Some("14:30"),
+                Some("14:30"),
                 Some("14:30"),
                 Some("14:30"),
                 Some("14:30"),
