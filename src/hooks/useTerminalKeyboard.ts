@@ -20,7 +20,7 @@ interface UseTerminalKeyboardOptions {
   onParkFocused?: () => void;
   /** Callback to move the focused terminal one pane in a direction (Alt+Shift+Arrow) */
   onMoveFocused?: (direction: MoveDirection) => void;
-  /** Callback to give every terminal an even share of the layout (Alt+T) */
+  /** Callback to put every terminal in one row of full-height columns (Alt+T) */
   onTidyLayout?: () => void;
   /**
    * Callback for a header control on the focused terminal: Alt+R rename,
@@ -61,7 +61,7 @@ function isMac(): boolean {
  * - Cmd/Ctrl+Alt+Left/Right: Cycle focus to the previous/next terminal
  * - Alt+Left/Right: Previous/next terminal tab while zoomed
  * - Alt+P: Park the focused terminal
- * - Alt+T: Tidy up — give every terminal an even share of the layout
+ * - Alt+T: Tidy up — every terminal in one row of full-height columns
  * - Alt+Shift+Arrow: Move the focused terminal one pane in that direction
  * - Alt+R / Alt+W / Alt+Shift+P / Alt+Shift+F: Rename / close / pin / flag
  *   the focused terminal (its header controls)

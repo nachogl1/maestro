@@ -12,6 +12,7 @@ import {
   splitLeaf,
   swapSlots,
   type TreeNode,
+  tidyIntoRow,
   updateRatio,
 } from "../splitTree";
 
@@ -288,5 +289,82 @@ describe("equalizeTree", () => {
     };
     equalizeTree(t);
     expect(t.ratio).toBe(0.9);
+  });
+});
+
+describe("tidyIntoRow", () => {
+  /** Each pane's [width, height] share of the layout, in layout order. */
+  function paneShares(node: TreeNode, w = 1, h = 1): [string, number, number][] {
+    if (node.type === "leaf") return [[node.slotId, w, h]];
+    const [a, b] = node.children;
+    const r = node.ratio;
+    return node.direction === "vertical"
+      ? [...paneShares(a, w * r, h), ...paneShares(b, w * (1 - r), h)]
+      : [...paneShares(a, w, h * r), ...paneShares(b, w, h * (1 - r))];
+  }
+
+  it.each([
+    2, 3, 4, 5, 6,
+  ])("puts %i panes in one row of equal full-height columns, keeping their order", (count) => {
+    const ids = ["a", "b", "c", "d", "e", "f"].slice(0, count);
+    // Start from a resized grid with a pane moved to an edge.
+    const edged = moveSlotToTreeEdge(buildGridTree(ids), ids[0], "bottom", 0.2);
+    const messy = updateRatio(edged, edged.id, 0.9);
+    const order = collectSlotIds(messy);
+
+    const shares = paneShares(tidyIntoRow(messy));
+
+    expect(shares.map(([id]) => id)).toEqual(order);
+    for (const [, w, h] of shares) {
+      expect(w).toBeCloseTo(1 / count);
+      expect(h).toBe(1);
+    }
+  });
+
+  it("keeps each pane's leaf so the panes stay where they are in the DOM", () => {
+    const grid = buildGridTree(["a", "b", "c", "d"]);
+    const leafIds = (n: TreeNode): string[] =>
+      n.type === "leaf" ? [n.id] : [...leafIds(n.children[0]), ...leafIds(n.children[1])];
+    expect(leafIds(tidyIntoRow(grid))).toEqual(leafIds(grid));
+  });
+
+  it("leaves a single pane untouched", () => {
+    const single = createLeaf("a");
+    expect(tidyIntoRow(single)).toBe(single);
+  });
+
+  it("shares the row among visible panes only, a parked pane kept beside its neighbour", () => {
+    /** Visible panes' width shares; a fully hidden side gives its room to the other. */
+    function visibleWidths(node: TreeNode, hidden: Set<string>, w = 1): [string, number][] {
+      if (node.type === "leaf") return hidden.has(node.slotId) ? [] : [[node.slotId, w]];
+      const [a, b] = node.children;
+      const aHidden = collectSlotIds(a).every((id) => hidden.has(id));
+      const bHidden = collectSlotIds(b).every((id) => hidden.has(id));
+      if (aHidden || bHidden)
+        return [...visibleWidths(a, hidden, w), ...visibleWidths(b, hidden, w)];
+      const r = node.direction === "vertical" ? node.ratio : 1;
+      const r2 = node.direction === "vertical" ? 1 - node.ratio : 1;
+      return [...visibleWidths(a, hidden, w * r), ...visibleWidths(b, hidden, w * r2)];
+    }
+
+    for (const parked of [["c"], ["a"], ["d"], ["a", "c"]]) {
+      const hidden = new Set(parked);
+      const tidy = tidyIntoRow(buildGridTree(["a", "b", "c", "d"]), hidden);
+      const widths = visibleWidths(tidy, hidden);
+      expect(collectSlotIds(tidy)).toEqual(["a", "b", "c", "d"]);
+      expect(widths.map(([id]) => id)).toEqual(
+        ["a", "b", "c", "d"].filter((id) => !hidden.has(id)),
+      );
+      for (const [, w] of widths) expect(w).toBeCloseTo(1 / widths.length);
+    }
+  });
+
+  it("can still be resized and rearranged afterwards", () => {
+    const row = tidyIntoRow(buildGridTree(["a", "b", "c", "d"]));
+    if (row.type !== "split") throw new Error("expected split root");
+    const resized = updateRatio(row, row.id, 0.7);
+    expect(resized.type === "split" && resized.ratio).toBe(0.7);
+    const moved = moveSlotToSide(resized, "a", "d", "bottom");
+    expect(collectSlotIds(moved)).toEqual(["b", "c", "d", "a"]);
   });
 });

@@ -31,6 +31,7 @@ import {
   layoutEagleTiles,
   rectsEqual,
   resizeTile,
+  rowOfColumns,
   type TileRect,
 } from "@/lib/eagleLayout";
 import { type MoveDirection, neighbourInDirection, type PaneEdge } from "@/lib/paneMoves";
@@ -102,8 +103,8 @@ export interface MultiProjectViewHandle {
   launchAllInActiveProject: () => Promise<void>;
   refreshBranchesInActiveProject: () => void;
   /**
-   * Tidy up: give every terminal of the active project an even share of its
-   * grid — in eagle view, put every tile back on the automatic even layout.
+   * Tidy up: the active project's terminals in one row of equal, full-height
+   * columns — in eagle view, every tile, in reading order.
    */
   tidyActiveProject: () => void;
   /** Focus the pane running the given session. False if that grid isn't mounted or doesn't own it. */
@@ -302,6 +303,13 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       (tiles: ReadonlyMap<number, TileRect>) => setEagleTileRects(Object.fromEntries(tiles)),
       [setEagleTileRects],
     );
+    // Tidy up: every tile in one row of full-height columns, in reading order.
+    // Too many tiles for a column each: back to the automatic layout.
+    const tidyEagleTiles = useCallback(() => {
+      const row = rowOfColumns(orderedEagleSessions.map((s) => s.sessionId));
+      if (row) commitEagleRects(row);
+      else setEagleTileRects({});
+    }, [orderedEagleSessions, commitEagleRects, setEagleTileRects]);
     const handleEagleDrop = useCallback(
       (sessionId: number, target: EagleDropTarget) => {
         const tiles = new Map(eagleLayout.tiles);
@@ -438,8 +446,8 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
     }, [eagleView, eagleZoom, orderedEagleSessions]);
 
-    // Alt+T in eagle view: tidy up — every tile back on the automatic even
-    // layout (the per-project Alt+T in useTerminalKeyboard is off here).
+    // Alt+T in eagle view: tidy up — every tile in one row of full-height
+    // columns (the per-project Alt+T in useTerminalKeyboard is off here).
     // Capture phase for the same xterm reason as above.
     useEffect(() => {
       if (!eagleView) return;
@@ -448,11 +456,11 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         if (e.code !== "KeyT") return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        setEagleTileRects({});
+        tidyEagleTiles();
       };
       window.addEventListener("keydown", handleKeyDown, { capture: true });
       return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
-    }, [eagleView, setEagleTileRects]);
+    }, [eagleView, tidyEagleTiles]);
 
     // Focus follows the zoomed terminal (tab click / Alt+Arrow). Only the grid
     // that owns the session accepts the call, same pattern as killSessionInProject.
@@ -571,7 +579,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         },
         tidyActiveProject: () => {
           if (eagleView) {
-            setEagleTileRects({});
+            tidyEagleTiles();
             return;
           }
           const activeTab = tabs.find((t) => t.active);
@@ -633,15 +641,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           return wasZoomed ? grid.zoomSession(sessionId) : grid.focusSession(sessionId);
         },
       }),
-      [
-        tabs,
-        setSessionsLaunched,
-        eagleView,
-        eagleZoom,
-        eagleZoomCard,
-        eagleZoomed,
-        setEagleTileRects,
-      ],
+      [tabs, setSessionsLaunched, eagleView, eagleZoom, eagleZoomCard, eagleZoomed, tidyEagleTiles],
     );
 
     // Create stable callbacks per tab to avoid infinite re-render loops

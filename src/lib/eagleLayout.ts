@@ -116,6 +116,23 @@ export function autoPack(count: number, units: number = EAGLE_UNITS): TileRect[]
 }
 
 /**
+ * Tidy up: the given tiles as one row of full-height columns, in the given
+ * order, the width split as evenly as whole cells allow. Null when there is
+ * nothing to lay out or a column would be narrower than MIN_TILE_UNITS.
+ */
+export function rowOfColumns(
+  sessionIds: readonly number[],
+  units: number = EAGLE_UNITS,
+): Map<number, TileRect> | null {
+  const count = sessionIds.length;
+  if (count === 0 || units / count < MIN_TILE_UNITS) return null;
+  const edge = (i: number) => Math.round((i * units) / count);
+  return new Map(
+    sessionIds.map((id, i) => [id, { x: edge(i), y: 0, w: edge(i + 1) - edge(i), h: units }]),
+  );
+}
+
+/**
  * The largest empty rectangle of the grid (by area), or null when every cell
  * is taken. Row-by-row histogram scan: O(units²).
  */

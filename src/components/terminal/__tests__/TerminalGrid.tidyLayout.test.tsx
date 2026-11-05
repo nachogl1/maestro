@@ -134,6 +134,36 @@ async function renderTwoPaneGrid(): Promise<TerminalGridHandle> {
   return handle;
 }
 
+/**
+ * Renders the grid with four launched slots, laid out two over two. Returns a
+ * getter: the handle is rebuilt on every render, so read it at call time.
+ */
+async function renderFourPaneGrid(): Promise<() => TerminalGridHandle> {
+  const ref = createRef<TerminalGridHandle>();
+  render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+  const current = (): TerminalGridHandle => {
+    if (!ref.current) throw new Error("expected TerminalGrid ref to be attached");
+    return ref.current;
+  };
+  for (let i = 0; i < 3; i++) {
+    await act(async () => {
+      current().addSession();
+    });
+  }
+  await act(async () => {
+    await current().launchAll();
+  });
+  await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(4));
+  return current;
+}
+
+/** Each pane host's share of the stage height in layout order, ignoring the divider gutter. */
+function paneHeights(): string[] {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-slot-id]")).map(
+    (host) => `${Math.round(Number(PERCENT_PATTERN.exec(host.style.height)?.[1]))}%`,
+  );
+}
+
 /** Matches the percentage part of a host width such as `calc(80% + -2px)`. */
 const PERCENT_PATTERN = /([\d.]+)%/;
 
@@ -203,6 +233,56 @@ describe("TerminalGrid tidy up layout (issue #407)", () => {
 
     expect(paneWidths()).toEqual(["50%", "50%"]);
     expect(handle.isZoomed()).toBe(false);
+  });
+
+  it("puts four panes laid out two over two in one row of full-height columns, still resizable", async () => {
+    const handle = await renderFourPaneGrid();
+    expect(paneHeights()).toEqual(["50%", "50%", "50%", "50%"]);
+    const order = Array.from(document.querySelectorAll<HTMLElement>("[data-slot-id]")).map(
+      (host) => host.dataset.slotId,
+    );
+
+    act(() => handle().tidyLayout());
+
+    expect(paneWidths()).toEqual(["25%", "25%", "25%", "25%"]);
+    expect(paneHeights()).toEqual(["100%", "100%", "100%", "100%"]);
+    expect(
+      Array.from(document.querySelectorAll<HTMLElement>("[data-slot-id]")).map(
+        (host) => host.dataset.slotId,
+      ),
+    ).toEqual(order);
+
+    // The middle divider still drags: the left half grows to 80%.
+    const dividers = document.querySelectorAll<HTMLElement>(".split-divider");
+    expect(dividers).toHaveLength(3);
+    const root = dividers[0].parentElement;
+    if (!root) throw new Error("expected a split stage");
+    root.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: STAGE_WIDTH, height: STAGE_HEIGHT }) as DOMRect;
+    const middle = Array.from(dividers).find((d) => d.style.left.startsWith("calc(50%"));
+    if (!middle) throw new Error("expected the middle divider");
+    fireEvent.mouseDown(middle);
+    fireEvent.mouseMove(window, { clientX: STAGE_WIDTH * 0.8, clientY: 0 });
+    fireEvent.mouseUp(window);
+    expect(paneWidths()).toEqual(["40%", "40%", "10%", "10%"]);
+  });
+
+  it("shares the row among the visible panes when one is parked", async () => {
+    const handle = await renderFourPaneGrid();
+    const third = useSessionStore.getState().sessions[2];
+    act(() => {
+      useSessionStore.setState({ parkedSessionIds: [third.id] });
+    });
+
+    act(() => handle().tidyLayout());
+
+    const visible = Array.from(document.querySelectorAll<HTMLElement>("[data-slot-id]")).filter(
+      (host) => !host.classList.contains("hidden"),
+    );
+    expect(visible).toHaveLength(3);
+    expect(
+      visible.map((host) => `${Math.round(Number(PERCENT_PATTERN.exec(host.style.width)?.[1]))}%`),
+    ).toEqual(["33%", "33%", "33%"]);
   });
 
   it("evens the panes on Alt+T without zooming", async () => {
