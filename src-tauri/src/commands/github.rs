@@ -1,7 +1,7 @@
 use crate::github::{
     AuthStatus, BranchPullRequest, CreatePullRequestOptions, DiscussionDetail, DiscussionInfo,
     GitHub, GitHubError, GitHubWatchdog, IssueDetail, IssueFilter, IssueInfo, IssueLinks,
-    PullRequestDetail, PullRequestFilter, PullRequestInfo, RepoAssignee, WatchedProject,
+    PullRequestDetail, PullRequestFilter, PullRequestInfo, RepoAssignee, RepoLabel, WatchedProject,
 };
 
 /// Checks if the user is authenticated with GitHub CLI.
@@ -104,6 +104,13 @@ pub async fn github_issue_links(
 pub async fn github_list_assignees(repo_path: String) -> Result<Vec<RepoAssignee>, GitHubError> {
     let gh = GitHub::new(&repo_path);
     gh.list_assignees().await
+}
+
+/// Lists every label defined in the repository, including ones no issue carries.
+#[tauri::command]
+pub async fn github_list_labels(repo_path: String) -> Result<Vec<RepoLabel>, GitHubError> {
+    let gh = GitHub::new(&repo_path);
+    gh.list_labels().await
 }
 
 /// Adds and/or removes assignees on an issue.

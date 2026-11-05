@@ -10,6 +10,7 @@ import {
   PanelRight,
   Plus,
   RefreshCw,
+  Search,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -22,7 +23,6 @@ import {
   type IssueMapKind,
   type IssueMapNode,
   type IssueMapStatus,
-  isKindLabel,
   KIND_FILL,
   KIND_META,
   KIND_ORDER,
@@ -65,16 +65,31 @@ interface IssueMapModalProps {
 
 /** Assignee filter key for "nobody assigned". */
 const NOBODY = "\u0000nobody";
-/** Label filter key for "no other label". */
+/** Label filter key for "no label at all". */
 const NO_LABEL = "\u0000nolabel";
+/** Shown for a label whose colour GitHub did not give. */
+const DEFAULT_LABEL_COLOR = "cfd3d7";
 
 /** The filter menus; at most one is open at a time. */
 type FilterMenu = "kind" | "status" | "who" | "label";
 
 const LABELS_NOTE =
-  "Every label on the loaded issues except the ones that decide who takes it, so labels the " +
-  "team adds later show up here on the next Reload. An issue stays on the map while any of " +
-  "its labels is ticked.";
+  "Every label of the repository, orion's included, even those no issue carries yet; labels " +
+  "the team adds later show up here on the next Reload. An issue stays on the map while any " +
+  "of its labels is ticked.";
+
+/** `#123` or `123`: a search for that issue number. */
+const NUMBER_QUERY = /^#?(\d+)$/;
+
+/** True when the node matches the map search: its number, or every word in its title. */
+function matchesSearch(node: IssueMapNode, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const number = q.match(NUMBER_QUERY);
+  if (number) return node.number === Number(number[1]);
+  const title = node.title.toLowerCase();
+  return q.split(/\s+/).every((word) => title.includes(word));
+}
 
 /** Background = who takes it: the kind's palette colour at the box alpha. */
 const kindFill = (kind: IssueMapKind): string => `rgb(var(--maestro-${KIND_FILL[kind]}) / 0.22)`;
@@ -222,8 +237,17 @@ export function IssueMapModal({
   projects = [],
   onSwitchProject,
 }: IssueMapModalProps) {
-  const { issues, links, assignees, isLoading, error, truncated, reload, setAssignees } =
-    useIssueMap(repoPath, search);
+  const {
+    issues,
+    links,
+    assignees,
+    repoLabels,
+    isLoading,
+    error,
+    truncated,
+    reload,
+    setAssignees,
+  } = useIssueMap(repoPath, search);
 
   // Epics and closed issues start hidden, so the first view is the open work.
   const [statusOff, setStatusOff] = useState<Set<IssueMapStatus>>(
@@ -232,6 +256,7 @@ export function IssueMapModal({
   const [kindOff, setKindOff] = useState<Set<IssueMapKind>>(() => new Set(START_HIDDEN_KINDS));
   const [whoOff, setWhoOff] = useState<Set<string>>(new Set());
   const [labelOff, setLabelOff] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<FilterMenu | null>(null);
   // Null until the user toggles the pane; until then it is open whenever there are problems.
   const [problemsPick, setProblemsPick] = useState<boolean | null>(null);
@@ -241,6 +266,8 @@ export function IssueMapModal({
   const [view, setView] = useState<MapView>({ z: 1, tx: 0, ty: 0 });
   const [dragging, setDragging] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Set once the first loaded map has been fitted; later changes keep the user's zoom and pan.
+  const fittedRef = useRef(false);
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const movedRef = useRef(false);
   const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
@@ -266,20 +293,19 @@ export function IssueMapModal({
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [map]);
 
-  // Every label except the ones that decide who takes it, so new team labels show up too.
-  const otherLabels = useMemo(
-    () => new Map(map.nodes.map((n) => [n.number, n.labels.filter((l) => !isKindLabel(l))])),
-    [map],
-  );
-  const labelNames = useMemo(
-    () => Array.from(new Set([...otherLabels.values()].flat())).sort((a, b) => a.localeCompare(b)),
-    [otherLabels],
-  );
+  // Every repository label, plus any an issue carries that the repository list lacks.
+  const labelNames = useMemo(() => {
+    const names = new Set(repoLabels.map((l) => l.name));
+    for (const node of map.nodes) for (const l of node.labels) names.add(l);
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [repoLabels, map]);
   const labelColor = useMemo(() => {
     const colors = new Map<string, string>();
-    for (const issue of issues) for (const l of issue.labels) colors.set(l.name, l.color);
+    for (const l of repoLabels) if (l.color) colors.set(l.name, l.color);
+    for (const issue of issues)
+      for (const l of issue.labels) if (l.color && !colors.has(l.name)) colors.set(l.name, l.color);
     return colors;
-  }, [issues]);
+  }, [repoLabels, issues]);
 
   /* ── Filters ── */
   const whoMatches = useCallback(
@@ -287,30 +313,32 @@ export function IssueMapModal({
       who === NOBODY ? node.assignees.length === 0 : node.assignees.includes(who),
     [],
   );
-  const labelMatches = (node: IssueMapNode, label: string): boolean => {
-    const own = otherLabels.get(node.number) ?? [];
-    return label === NO_LABEL ? own.length === 0 : own.includes(label);
-  };
+  const labelMatches = (node: IssueMapNode, label: string): boolean =>
+    label === NO_LABEL ? node.labels.length === 0 : node.labels.includes(label);
   const visible = useMemo(() => {
     const set = new Set<number>();
     for (const node of map.nodes) {
       if (statusOff.has(node.status) || kindOff.has(node.kind)) continue;
+      if (!matchesSearch(node, query)) continue;
       const whoOk =
         node.assignees.length > 0
           ? node.assignees.some((a) => !whoOff.has(a))
           : !whoOff.has(NOBODY);
-      const own = otherLabels.get(node.number) ?? [];
-      const labelOk = own.length > 0 ? own.some((l) => !labelOff.has(l)) : !labelOff.has(NO_LABEL);
+      const labelOk =
+        node.labels.length > 0
+          ? node.labels.some((l) => !labelOff.has(l))
+          : !labelOff.has(NO_LABEL);
       if (whoOk && labelOk) set.add(node.number);
     }
     return set;
-  }, [map, statusOff, kindOff, whoOff, labelOff, otherLabels]);
+  }, [map, statusOff, kindOff, whoOff, labelOff, query]);
 
   const showAll = () => {
     setStatusOff(new Set());
     setKindOff(new Set());
     setWhoOff(new Set());
     setLabelOff(new Set());
+    setQuery("");
   };
   const menuProps = (menu: FilterMenu) => ({
     open: openMenu === menu,
@@ -341,10 +369,11 @@ export function IssueMapModal({
 
   /* ── Zoom and drag ── */
   // Fit the map's width (capped at 100%) and pin it to the top, like morph.
+  // Returns false when the canvas has no size yet, so nothing was fitted.
   const fitMap = useCallback(
-    (all: boolean) => {
+    (all: boolean): boolean => {
       const wrap = wrapRef.current;
-      if (!wrap || wrap.clientWidth <= 0 || wrap.clientHeight <= 0) return;
+      if (!wrap || wrap.clientWidth <= 0 || wrap.clientHeight <= 0) return false;
       const w = wrap.clientWidth;
       const h = wrap.clientHeight;
       const byHeight = all ? (h - 20) / layout.height : Number.POSITIVE_INFINITY;
@@ -354,11 +383,15 @@ export function IssueMapModal({
         tx: (w - layout.width * z) / 2,
         ty: all ? (h - layout.height * z) / 2 : 10,
       });
+      return true;
     },
     [layout],
   );
-  // Refit whenever the packed layout changes (a filter, a reload).
-  useLayoutEffect(() => fitMap(false), [fitMap]);
+  // Fit once, when the first map is loaded; a filter, a search or a reload keeps the view.
+  useLayoutEffect(() => {
+    if (fittedRef.current || map.nodes.length === 0) return;
+    fittedRef.current = fitMap(false);
+  }, [fitMap, map]);
 
   const zoomAt = useCallback((factor: number, cx: number, cy: number) => {
     setView((v) => {
@@ -800,13 +833,13 @@ export function IssueMapModal({
   }));
   const labelOptions: IssueMapFilterOption<string>[] = [...labelNames, NO_LABEL].map((label) => ({
     value: label,
-    label: label === NO_LABEL ? "no other label" : label,
+    label: label === NO_LABEL ? "no label" : label,
     apart: label === NO_LABEL,
     swatch:
       label === NO_LABEL ? undefined : (
         <i
           className="inline-block h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-maestro-border"
-          style={{ background: `#${labelColor.get(label) ?? "cfd3d7"}` }}
+          style={{ background: `#${labelColor.get(label) ?? DEFAULT_LABEL_COLOR}` }}
         />
       ),
     ...count((n) => labelMatches(n, label)),
@@ -951,6 +984,21 @@ export function IssueMapModal({
               note={LABELS_NOTE}
               {...menuProps("label")}
             />
+            <div className="relative">
+              <Search
+                size={11}
+                className="absolute top-1/2 left-2 -translate-y-1/2 text-maestro-muted/60"
+              />
+              <input
+                type="search"
+                value={query}
+                onChange={(ev) => setQuery(ev.target.value)}
+                placeholder="#123 or words in the title"
+                aria-label="Search the map"
+                title="Keep the issues with this number (#123 or 123) or every word in the title"
+                className="h-[26px] w-[200px] rounded-md border border-maestro-border bg-maestro-card pr-2 pl-6 text-[12px] text-maestro-text placeholder:text-maestro-muted/50 focus:border-maestro-accent focus:outline-none"
+              />
+            </div>
             <span className="ml-1 font-bold text-maestro-text">
               Showing {visible.size} of {map.nodes.length} issues
             </span>

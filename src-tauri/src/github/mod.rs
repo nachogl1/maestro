@@ -7,7 +7,7 @@ pub use error::GitHubError;
 pub use ops::{
     AuthStatus, BranchPullRequest, CreatePullRequestOptions, DiscussionDetail, DiscussionInfo,
     IssueDetail, IssueFilter, IssueInfo, IssueLinks, PullRequestDetail, PullRequestFilter,
-    PullRequestInfo, RepoAssignee,
+    PullRequestInfo, RepoAssignee, RepoLabel,
 };
 pub use runner::GitHub;
 pub use watchdog::{GitHubWatchdog, WatchedProject};
