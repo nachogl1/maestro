@@ -24,13 +24,15 @@ export interface WorkJournalCandidateRunFile {
 }
 
 /**
- * What a finished run reports: how far it covered, when it started, and where
- * the catch-up would have started when the 7-day cap cut it.
+ * What a finished run reports: how far it covered, when it started, where
+ * the catch-up would have started when the 7-day cap cut it, and the Granola
+ * tools it found missing while Granola was connected.
  */
 interface CandidateRunTimes {
   lastRunAt: string;
   lastAttemptAt: string;
   truncatedFrom?: string;
+  missingGranolaTools?: string[];
 }
 
 /** What `work_journal_run_candidates` did, tagged by `status`. */
@@ -50,6 +52,10 @@ export const RUN_NO_PROJECTS_NOTICE =
 /** Shown after a catch-up run that the 7-day cap cut short. */
 export const CATCH_UP_TRUNCATED_NOTICE =
   "Only the last 7 days were checked; earlier activity was skipped.";
+
+/** Shown after a run whose Granola connection lacked a tool Maestro relies on. */
+export const GRANOLA_TOOLS_MISSING_NOTICE =
+  "Granola is connected, but Maestro could not read your meetings. Maestro needs an update.";
 
 export interface WorkJournalCandidateRunState {
   /** Hours between runs while Maestro is open (1–24). */
@@ -73,6 +79,11 @@ export interface WorkJournalCandidateRunState {
    * older days; cleared by the next run.
    */
   runNotice: string | null;
+  /**
+   * {@link GRANOLA_TOOLS_MISSING_NOTICE} when the last run that ran found a Granola tool
+   * missing; set or cleared by every run that runs, failed runs included.
+   */
+  granolaNotice: string | null;
   /** The last failure to read or save the run settings; cleared on success. */
   settingsError: string | null;
   /** The open projects' paths, kept current by the background timer for "Run now". */
@@ -150,6 +161,7 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
   running: false,
   runError: null,
   runNotice: null,
+  granolaNotice: null,
   settingsError: null,
   projects: [],
   nextRunAt: null,
@@ -185,6 +197,10 @@ export const useWorkJournalCandidateRunStore = create<WorkJournalCandidateRunSta
           lastAttemptAt: outcome.lastAttemptAt ?? null,
           runError: outcome.status === "failed" ? outcome.message : null,
           runNotice: outcome.truncatedFrom ? CATCH_UP_TRUNCATED_NOTICE : null,
+          granolaNotice:
+            Array.isArray(outcome.missingGranolaTools) && outcome.missingGranolaTools.length > 0
+              ? GRANOLA_TOOLS_MISSING_NOTICE
+              : null,
         });
       } else if (outcome?.status === "busy") {
         set({ runNotice: RUN_BUSY_NOTICE });

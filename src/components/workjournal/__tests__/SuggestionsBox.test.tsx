@@ -6,6 +6,7 @@ import { projectColorFor, resolveProjectColors } from "@/lib/projectColor";
 import {
   CATCH_UP_TRUNCATED_NOTICE,
   type CandidateRunOutcome,
+  GRANOLA_TOOLS_MISSING_NOTICE,
   useWorkJournalCandidateRunStore,
 } from "@/stores/useWorkJournalCandidateRunStore";
 import {
@@ -480,6 +481,44 @@ describe("SuggestionsBox", () => {
     };
     fireEvent.click(within(box()).getByRole("button", { name: "run now" }));
     await waitFor(() => expect(within(box()).queryByText(CATCH_UP_TRUNCATED_NOTICE)).toBeNull());
+  });
+
+  it("says Maestro needs an update when a run found a Granola tool missing, beside the run's own messages", async () => {
+    candidates = [];
+    const times = { lastRunAt: "2026-10-14T10:00:00Z", lastAttemptAt: "2026-10-14T10:00:00Z" };
+    const failure = "Candidate run for 2026-10-13 failed: claude did not answer within 300s";
+    runOutcome = {
+      status: "failed",
+      message: failure,
+      added: 0,
+      dates: [],
+      ...times,
+      truncatedFrom: "2026-10-04T09:00:00Z",
+      missingGranolaTools: ["mcp__granola__search_meetings"],
+    };
+    render(<WorkJournalPanel />);
+    await screen.findByDisplayValue(`Page ${TODAY}`);
+    expect(within(box()).queryByText(GRANOLA_TOOLS_MISSING_NOTICE)).toBeNull();
+
+    fireEvent.click(within(box()).getByRole("button", { name: "run now" }));
+
+    expect(await within(box()).findByText(GRANOLA_TOOLS_MISSING_NOTICE)).toBeInTheDocument();
+    expect(within(box()).getByText(CATCH_UP_TRUNCATED_NOTICE)).toBeInTheDocument();
+    expect(within(box()).getByText(failure)).toBeInTheDocument();
+
+    // A later run that found both tools (the field left out, or empty) clears it.
+    const runAgain = async (missingGranolaTools?: string[]): Promise<void> => {
+      runOutcome = { status: "ran", added: 0, dates: [], ...times, missingGranolaTools };
+      fireEvent.click(await within(box()).findByRole("button", { name: "run now" }));
+    };
+    for (const none of [undefined, []]) {
+      await runAgain(none);
+      await waitFor(() =>
+        expect(within(box()).queryByText(GRANOLA_TOOLS_MISSING_NOTICE)).toBeNull(),
+      );
+      await runAgain(["mcp__granola__get_meetings"]);
+      expect(await within(box()).findByText(GRANOLA_TOOLS_MISSING_NOTICE)).toBeInTheDocument();
+    }
   });
   /** Clicks a box row's button. */
   function clickRow(text: string, button: "Accept suggestion" | "Reject suggestion"): void {

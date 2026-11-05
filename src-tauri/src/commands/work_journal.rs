@@ -444,6 +444,9 @@ pub enum CandidateRunOutcome {
         last_attempt_at: String,
         #[serde(rename = "truncatedFrom", skip_serializing_if = "Option::is_none")]
         truncated_from: Option<String>,
+        /// See [`RunReport::missing_granola_tools`]; left out when empty.
+        #[serde(rename = "missingGranolaTools", skip_serializing_if = "Vec::is_empty")]
+        missing_granola_tools: Vec<String>,
     },
     /// Another run is still going; nothing was started.
     Busy,
@@ -466,6 +469,9 @@ pub enum CandidateRunOutcome {
         last_attempt_at: String,
         #[serde(rename = "truncatedFrom", skip_serializing_if = "Option::is_none")]
         truncated_from: Option<String>,
+        /// See [`RunReport::missing_granola_tools`]; left out when empty.
+        #[serde(rename = "missingGranolaTools", skip_serializing_if = "Vec::is_empty")]
+        missing_granola_tools: Vec<String>,
     },
 }
 
@@ -486,6 +492,7 @@ fn candidate_run_outcome(
             last_run_at,
             last_attempt_at,
             truncated_from,
+            missing_granola_tools: report.missing_granola_tools,
         },
         Some(message) => CandidateRunOutcome::Failed {
             message,
@@ -494,6 +501,7 @@ fn candidate_run_outcome(
             last_run_at,
             last_attempt_at,
             truncated_from,
+            missing_granola_tools: report.missing_granola_tools,
         },
     }
 }
@@ -1003,6 +1011,7 @@ mod tests {
             retry_dates: BTreeMap::new(),
             error: error.map(str::to_string),
             truncated_from: None,
+            missing_granola_tools: Vec::new(),
         };
         let tried = "2026-10-15T11:59:00Z".to_string();
 
@@ -1031,8 +1040,27 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         );
-        let value = serde_json::to_value(candidate_run_outcome(capped, at.clone(), tried)).unwrap();
+        let value =
+            serde_json::to_value(candidate_run_outcome(capped, at.clone(), tried.clone())).unwrap();
         assert_eq!(value["truncatedFrom"], "2026-10-05T12:00:00Z");
+        assert!(
+            value.get("missingGranolaTools").is_none(),
+            "left out when none"
+        );
+
+        // The Granola warning travels with both a finished and a failed run.
+        for error in [None, Some("claude timed out")] {
+            let mut warned = report(error);
+            warned.missing_granola_tools = vec!["mcp__granola__search_meetings".to_string()];
+            let value =
+                serde_json::to_value(candidate_run_outcome(warned, at.clone(), tried.clone()))
+                    .unwrap();
+            assert_eq!(
+                value["missingGranolaTools"],
+                serde_json::json!(["mcp__granola__search_meetings"]),
+                "{error:?}"
+            );
+        }
 
         assert_eq!(
             serde_json::to_value(CandidateRunOutcome::Busy).unwrap(),
