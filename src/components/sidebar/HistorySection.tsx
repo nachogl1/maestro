@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
-import { formatRecentDate } from "@/lib/format";
+import { formatRecentDate, RECENT_DATE_CUTOFF_DAYS } from "@/lib/format";
 import { normalizePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import {
@@ -67,17 +67,30 @@ function formatAbsoluteTime(isoDate: string): string {
   return Number.isFinite(then.getTime()) ? then.toLocaleString() : isoDate;
 }
 
+/**
+ * The clock time of a conversation's last message, with the date when it was
+ * not today — the relative label alone cannot say which hour "3h ago" was.
+ * The time alone once the relative label is itself a date. Empty when the time
+ * is unparsable.
+ */
+function formatLastMessageTime(isoDate: string): string {
+  const then = new Date(isoDate);
+  if (!Number.isFinite(then.getTime())) return "";
+  const time = { hour: "2-digit", minute: "2-digit" } as const;
+  const ageDays = (Date.now() - then.getTime()) / 86_400_000;
+  if (then.toDateString() === new Date().toDateString() || ageDays >= RECENT_DATE_CUTOFF_DAYS) {
+    return then.toLocaleTimeString([], time);
+  }
+  return then.toLocaleString([], { month: "short", day: "numeric", ...time });
+}
+
+/** "3h ago · 14:32": the relative label, then the last message's clock time. */
+function formatLastActive(isoDate: string): string {
+  return [formatRecentDate(isoDate), formatLastMessageTime(isoDate)].filter(Boolean).join(" · ");
+}
+
 /** What a conversation's directory IS, relative to this project tab. */
 type GroupKind = "checkout" | "worktree" | "other" | "missing" | "unknown";
-
-/** Checkout first, then live worktrees, then the directories that are gone. */
-const KIND_RANK: Record<GroupKind, number> = {
-  checkout: 0,
-  worktree: 1,
-  other: 2,
-  missing: 3,
-  unknown: 4,
-};
 
 /** Group key for transcripts that never recorded a working directory. */
 const NO_DIR_KEY = "\u0000no-directory";
@@ -203,13 +216,12 @@ function groupConversations(
     });
   }
 
-  // Conversations arrive newest-first, so `[0]` is each group's newest.
-  return [...groups.values()].sort((a, b) => {
-    if (KIND_RANK[a.kind] !== KIND_RANK[b.kind]) return KIND_RANK[a.kind] - KIND_RANK[b.kind];
-    return (b.conversations[0]?.last_active ?? "").localeCompare(
-      a.conversations[0]?.last_active ?? "",
-    );
-  });
+  // Newest message first, whatever the group's kind. Conversations arrive
+  // newest-first, so `[0]` is each group's newest; empty groups sink to the end
+  // in insertion order (checkout, then worktrees) because the sort is stable.
+  return [...groups.values()].sort((a, b) =>
+    (b.conversations[0]?.last_active ?? "").localeCompare(a.conversations[0]?.last_active ?? ""),
+  );
 }
 
 interface HistorySectionProps {
@@ -586,7 +598,7 @@ export function HistorySection({ onLaunch, onNavigate }: HistorySectionProps) {
                                             className="shrink-0"
                                             title={formatAbsoluteTime(conv.last_active)}
                                           >
-                                            {formatRecentDate(conv.last_active)}
+                                            {formatLastActive(conv.last_active)}
                                           </span>
                                           {conv.git_branch && (
                                             <span className="flex min-w-0 items-center gap-0.5">
