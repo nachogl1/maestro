@@ -134,18 +134,67 @@ function focusSlotTextarea(slotId: string): void {
   });
 }
 
+/** How long a new card's Window Name input keeps claiming keyboard focus. */
+const NAME_FOCUS_CLAIM_MS = 1000;
+
+/** Ends the running name-focus claim; a newer card's claim replaces it. */
+let endNameFocusClaim: (() => void) | null = null;
+
 /**
  * Move keyboard focus into a pre-launch card's Window Name input, so a new
  * terminal can be named, Tabbed to Launch and started without the mouse.
- * Double rAF for the same reason as `focusSlotTextarea`: the card mounts in
- * the render the caller just triggered.
+ *
+ * Checked once per frame for a short while instead of once: the card can
+ * mount a render or more later (an idle project's grid, a closing modal),
+ * and the browser refuses focus while an eagle tile is still hidden waiting
+ * for its place. Once the input has focus, the claim keeps it from a
+ * terminal's own focus (an xterm initialising or remounting as the focused
+ * pane) or a closing modal dropping it on the page body. The user's own
+ * click, a shortcut, or moving focus elsewhere in the card ends the claim.
  */
 function focusSlotNameInput(slotId: string): void {
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      document.getElementById(`session-name-${slotId}`)?.focus();
-    });
-  });
+  endNameFocusClaim?.();
+  const deadline = performance.now() + NAME_FOCUS_CLAIM_MS;
+  const findInput = (): HTMLElement | null => document.getElementById(`session-name-${slotId}`);
+  let landed = false;
+  let frame = 0;
+
+  const end = (): void => {
+    cancelAnimationFrame(frame);
+    window.removeEventListener("pointerdown", end, true);
+    window.removeEventListener("keydown", handleKeyDown, true);
+    if (endNameFocusClaim === end) endNameFocusClaim = null;
+  };
+  // Typing the name keeps the claim; any other key is the user acting.
+  const handleKeyDown = (e: KeyboardEvent): void => {
+    const typingName = e.target === findInput() && !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (!typingName) end();
+  };
+  /** One frame of the claim; false once there is nothing left to claim. */
+  const claimFrame = (): boolean => {
+    const input = findInput();
+    // Gone after it had focus: the card launched or was removed.
+    if (!input) return !landed && performance.now() < deadline;
+    if (document.activeElement !== input) {
+      const active = document.activeElement;
+      const lostToNobody =
+        !active || active === document.body || active.matches(".xterm-helper-textarea");
+      // After landing, focus moved on purpose (Tab to Launch, another field).
+      if (landed && !lostToNobody) return false;
+      input.focus();
+    }
+    if (document.activeElement === input) landed = true;
+    return performance.now() < deadline;
+  };
+  const tick = (): void => {
+    if (claimFrame()) frame = requestAnimationFrame(tick);
+    else end();
+  };
+
+  endNameFocusClaim = end;
+  window.addEventListener("pointerdown", end, true);
+  window.addEventListener("keydown", handleKeyDown, true);
+  frame = requestAnimationFrame(tick);
 }
 
 /**

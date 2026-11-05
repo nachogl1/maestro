@@ -554,6 +554,14 @@ export function PreLaunchCard({
                 type="text"
                 value={slot.customName}
                 onChange={(e) => onCustomNameChange(e.target.value)}
+                // Enter launches straight from the name, so Cmd/Ctrl+T, a
+                // name and Enter start a terminal without the mouse.
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                  if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+                  e.preventDefault();
+                  onLaunch();
+                }}
                 placeholder="e.g. backend bugfix"
                 maxLength={60}
                 className="w-full rounded border border-maestro-border bg-maestro-card px-3 py-2 text-sm text-maestro-text outline-none transition-colors placeholder:text-maestro-muted/50 hover:border-maestro-accent/50 focus:border-maestro-accent"

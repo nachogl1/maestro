@@ -159,6 +159,102 @@ describe("TerminalGrid keyboard focus flow", () => {
     expect(document.activeElement).toBe(nameInputs[1]);
   });
 
+  it("keeps trying until the new card's name input accepts focus", async () => {
+    // A browser refuses focus while the card is still hidden (an eagle tile
+    // waiting for its place), so the first attempts do nothing.
+    const realFocus = HTMLInputElement.prototype.focus;
+    let refusals = 3;
+    const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus").mockImplementation(function (
+      this: HTMLInputElement,
+      options?: FocusOptions,
+    ) {
+      if (this.id.startsWith("session-name-") && refusals > 0) {
+        refusals--;
+        return;
+      }
+      realFocus.call(this, options);
+    });
+    const ref = createRef<TerminalGridHandle>();
+    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+
+    try {
+      await act(async () => {
+        ref.current?.addSession();
+      });
+      const nameInputs = screen.getAllByLabelText(/Window Name/);
+      await waitFor(() => expect(document.activeElement).toBe(nameInputs[1]));
+      expect(refusals).toBe(0);
+    } finally {
+      focusSpy.mockRestore();
+    }
+  });
+
+  it("takes focus back when a terminal grabs it right after the card is added", async () => {
+    const ref = createRef<TerminalGridHandle>();
+    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Launch Session" }));
+    });
+    const terminal = await screen.findByTestId("terminal-view");
+
+    await act(async () => {
+      ref.current?.addSession();
+    });
+    await flushFrames();
+    const nameInput = screen.getByLabelText(/Window Name/);
+    expect(document.activeElement).toBe(nameInput);
+
+    // A terminal's own focus (its xterm initialising as the focused pane).
+    act(() => terminal.focus());
+    await waitFor(() => expect(document.activeElement).toBe(nameInput));
+  });
+
+  it("leaves focus where the user clicks after the card is added", async () => {
+    const ref = createRef<TerminalGridHandle>();
+    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Launch Session" }));
+    });
+    const terminal = await screen.findByTestId("terminal-view");
+
+    await act(async () => {
+      ref.current?.addSession();
+    });
+    await flushFrames();
+
+    fireEvent.pointerDown(terminal);
+    act(() => terminal.focus());
+    await flushFrames();
+    await flushFrames();
+
+    expect(document.activeElement).toBe(terminal);
+  });
+
+  it("names and launches a new terminal from the keyboard alone", async () => {
+    const ref = createRef<TerminalGridHandle>();
+    render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
+
+    await act(async () => {
+      ref.current?.addSession();
+    });
+    await flushFrames();
+    const nameInput = document.activeElement as HTMLInputElement;
+    expect(nameInput).toBe(screen.getAllByLabelText(/Window Name/)[1]);
+
+    fireEvent.change(nameInput, { target: { value: "backend bugfix" } });
+    await act(async () => {
+      fireEvent.keyDown(nameInput, { key: "Enter" });
+    });
+
+    await waitFor(() => expect(screen.getByTestId("terminal-view")).toBeInTheDocument());
+    expect(spawnShellMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "rename_session",
+      expect.objectContaining({ name: expect.stringContaining("backend") }),
+    );
+    expect(screen.getAllByLabelText(/Window Name/)).toHaveLength(1);
+  });
+
   it("focuses the first card's name input when mounted for a new terminal", async () => {
     render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive focusNameOnMount />);
     await flushFrames();
