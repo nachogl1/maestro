@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261105-192159-ed90",
+  "issue": 522,
+  "title": "Work Journal: Granola meetings arrive again after Granola renamed its listing tool, and a missing Granola tool shows a warning",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 523,
+  "merged_at": "2026-11-05T19:55:49Z",
+  "merge_commit": "16c04c5ae8b7c7f3550f41ec07e596cf55e6276f",
+  "seam": "The Work Journal candidate run: src-tauri/src/core/work_journal_run.rs, with one optional field carried through src-tauri/src/commands/work_journal.rs, src/stores/useWorkJournalCandidateRunStore.ts and the notice line of src/components/workjournal/SuggestionsBox.tsx",
+  "story": "Work Journal suggestions include Granola meetings again; they had stopped after Granola renamed the tool Maestro used to list a day's meetings. Each run now checks that Granola still has the two tools Maestro needs. If one is missing while Granola is connected, the suggestions box shows a plain 'Maestro needs an update' line, and git, GitHub, Claude and terminal suggestions still arrive.",
+  "checks": [
+    {
+      "key": "work-journal/granola-meeting-suggestions",
+      "criterion": "A day with Granola meetings gives at least one suggestion with the Granola source",
+      "steps": "Connect Granola in Claude Code and answer Yes to the Granola question in the suggestions box. Hold a test meeting today, for example 'Demo sync', and keep today's journal page free of it. Click 'run now'.",
+      "expected": "A suggestion for that meeting tagged Granola, and no 'Maestro needs an update' line."
+    },
+    {
+      "key": "work-journal/granola-missing-tool-warning",
+      "criterion": "The warning line shows only when a run reported a missing Granola tool",
+      "steps": "With Granola working normally, click 'run now'. Read the notice lines under the suggestions header.",
+      "expected": "No line 'Granola is connected, but Maestro could not read your meetings. Maestro needs an update.' The case where it does show only happens if Granola drops a tool, so the component test covers it."
+    }
+  ],
+  "no_qa_reason": null
+}

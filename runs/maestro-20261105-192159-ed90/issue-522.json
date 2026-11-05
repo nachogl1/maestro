@@ -1,0 +1,30 @@
+{
+  "run_id": "maestro-20261105-192159-ed90",
+  "issue": 522,
+  "title": "Work Journal: Granola meetings arrive again after Granola renamed its listing tool, and a missing Granola tool shows a warning",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-05T19:21:59Z",
+  "finished_at": "2026-11-05T19:56:40Z",
+  "outcome": "merged",
+  "pr": 523,
+  "summary": "Granola renamed the tool the Work Journal run used to list a day's meetings, so meeting suggestions silently stopped. The run now uses search_meetings, denies the nine tools Granola added since, and checks the run's own tool list so a missing Granola tool shows one plain 'Maestro needs an update' line while the other suggestions keep arriving.",
+  "agents": [
+    { "name": "dev-522", "model": "opus", "tokens_total": 262357 },
+    { "name": "review-522", "model": "opus", "tokens_total": 143612 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1569, "review_seconds": 351, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [
+    "A live check of Granola suggestions needs a day whose journal page does not already list the meetings: the first live run returned 0 meeting suggestions because the model rightly skipped meetings already on the page, which looks like the bug it was checking for."
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "CLAUDE.md (skip-count baseline) and src-tauri/src/core/mcp_settings",
+      "what": "The project's CLAUDE.md says the skip-count baseline is 0, but main carries one #[ignore] on mcp_settings::smoke_get_status_real_files, so every Rust run reports '1 ignored' and a dev or review agent may read that as a broken baseline",
+      "why": "Not in this story's seam",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
