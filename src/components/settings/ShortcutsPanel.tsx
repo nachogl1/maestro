@@ -40,6 +40,7 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
           description: "Focus the previous / next terminal, in every view",
         },
         { keys: [mod, "G"], description: "Toggle eagle view (all projects)" },
+        { keys: [alt, "M"], description: "Open the issue map for the focused project" },
 
         { keys: [alt, "P"], description: "Park the focused terminal" },
         {

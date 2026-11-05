@@ -25,6 +25,8 @@ interface UseAppKeyboardOptions {
   onNextProject?: () => void;
   /** Ctrl+Shift+Tab (all platforms): switch to the previous project tab */
   onPrevProject?: () => void;
+  /** Alt+M: open the issue map for the focused project */
+  onOpenIssueMap?: () => void;
 }
 
 /**
@@ -40,6 +42,7 @@ function isMac(): boolean {
  * Shortcuts:
  * - Alt+1-3: Toggle the left sidebar on tab N (History/Infra/Settings)
  * - Alt+4: Toggle the Injector panel
+ * - Alt+M: Open the issue map for the focused project
  * - Cmd/Ctrl+2: Toggle the git panel
  * - Cmd/Ctrl+5: Toggle the Notes panel
  * - Cmd/Ctrl+T: Add a new terminal (project picker in eagle view)
@@ -55,6 +58,7 @@ export function useAppKeyboard({
   onToggleEagleView,
   onNextProject,
   onPrevProject,
+  onOpenIssueMap,
 }: UseAppKeyboardOptions): void {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -76,6 +80,13 @@ export function useAppKeyboard({
           event.preventDefault();
           event.stopImmediatePropagation();
           onToggleUtilityPanel("inject");
+          return;
+        }
+        // Alt+M: the issue map window for the focused project.
+        if (event.code === "KeyM" && onOpenIssueMap) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onOpenIssueMap();
         }
         return;
       }
@@ -149,5 +160,6 @@ export function useAppKeyboard({
     onToggleEagleView,
     onNextProject,
     onPrevProject,
+    onOpenIssueMap,
   ]);
 }

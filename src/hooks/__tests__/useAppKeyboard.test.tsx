@@ -18,6 +18,7 @@ function renderAppKeyboard(overrides: Partial<Parameters<typeof useAppKeyboard>[
     onToggleEagleView: vi.fn(),
     onNextProject: vi.fn(),
     onPrevProject: vi.fn(),
+    onOpenIssueMap: vi.fn(),
   };
   renderHook(() =>
     useAppKeyboard({
@@ -148,5 +149,21 @@ describe("useAppKeyboard project cycling (Ctrl+Tab on all platforms)", () => {
     dispatch({ key: "Tab", code: "Tab" });
     dispatch({ key: "Tab", code: "Tab", metaKey: true });
     expect(onNextProject).not.toHaveBeenCalled();
+  });
+});
+
+describe("useAppKeyboard issue map (Alt+M)", () => {
+  it("opens the issue map and keeps the key from reaching the terminal", () => {
+    const { onOpenIssueMap } = renderAppKeyboard();
+    const ev = dispatch({ key: "m", code: "KeyM", altKey: true });
+    expect(ev.defaultPrevented).toBe(true);
+    expect(onOpenIssueMap).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Alt+Shift+M and Ctrl+Alt+M alone", () => {
+    const { onOpenIssueMap } = renderAppKeyboard();
+    dispatch({ key: "M", code: "KeyM", altKey: true, shiftKey: true });
+    dispatch({ key: "m", code: "KeyM", altKey: true, ctrlKey: true });
+    expect(onOpenIssueMap).not.toHaveBeenCalled();
   });
 });

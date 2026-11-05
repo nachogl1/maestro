@@ -1,5 +1,7 @@
 import { emitTo } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { samePath } from "@/lib/path";
+import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 
 /**
  * The issue map lives in its own OS window (not a modal inside Maestro), so
@@ -16,6 +18,8 @@ export const ISSUE_MAP_OPEN_EVENT = "issue-map:open";
 export const ISSUE_MAP_SELECT_EVENT = "issue-map:select";
 /** Map window → main window: the map closed, so refresh the issue list. */
 export const ISSUE_MAP_CLOSED_EVENT = "issue-map:closed";
+/** Main → map window: the open projects changed, so refresh the picker. */
+export const ISSUE_MAP_PROJECTS_EVENT = "issue-map:projects";
 
 /** An open Maestro project the map can switch to. */
 export interface IssueMapProject {
@@ -33,6 +37,50 @@ export interface IssueMapTarget {
 export interface IssueMapSelection {
   repoPath: string;
   number: number;
+}
+
+type IssueMapTab = Pick<WorkspaceTab, "name" | "projectPath" | "workspaceType" | "repositories">;
+
+/**
+ * Every open project the map can show, in tab order: each git repository of a
+ * multi-repository tab, and the folder of every other tab. A tab marked
+ * "not git" is kept, since a failed detection can mark a real repository so.
+ */
+export function issueMapProjects(tabs: IssueMapTab[]): IssueMapProject[] {
+  return tabs.flatMap((tab) => {
+    const repos =
+      tab.workspaceType === "multi-repo" ? tab.repositories.filter((r) => r.isGitRepo) : [];
+    if (repos.length === 0) return [{ name: tab.name, repoPath: tab.projectPath }];
+    return repos.map((repo) => ({
+      name: samePath(repo.path, tab.projectPath) ? tab.name : `${tab.name} / ${repo.name}`,
+      repoPath: repo.path,
+    }));
+  });
+}
+
+/** Open the map on this repo, with every open project in its picker. */
+export function openIssueMapFor(repoPath: string, search: string): void {
+  const projects = issueMapProjects(useWorkspaceStore.getState().tabs);
+  openIssueMapWindow({ repoPath, search, projects }).catch((err) =>
+    console.error("Failed to open the issue map window:", err),
+  );
+}
+
+/**
+ * Keep an open map window's picker in step with the open tabs: each time the
+ * project list changes, send it to the window. Returns the unsubscribe.
+ */
+export function syncIssueMapProjects(): () => void {
+  let sent = JSON.stringify(issueMapProjects(useWorkspaceStore.getState().tabs));
+  return useWorkspaceStore.subscribe((state) => {
+    const projects = issueMapProjects(state.tabs);
+    const key = JSON.stringify(projects);
+    if (key === sent) return;
+    sent = key;
+    emitTo(ISSUE_MAP_WINDOW_LABEL, ISSUE_MAP_PROJECTS_EVENT, projects).catch((err) =>
+      console.error("Failed to send the open projects to the issue map:", err),
+    );
+  });
 }
 
 /** The repo/search the map window was opened with, read from its URL. */
