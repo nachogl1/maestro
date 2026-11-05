@@ -18,6 +18,10 @@ import {
   WorkJournalEditor,
 } from "@/components/workjournal/WorkJournalEditor";
 import {
+  WorkJournalPageMenu,
+  type WorkJournalPageMenuItem,
+} from "@/components/workjournal/WorkJournalPageMenu";
+import {
   defaultWorkJournalTitle,
   isValidJournalDate,
   localDateString,
@@ -62,10 +66,11 @@ export interface WorkJournalPanelProps {
 
 /**
  * Right-pane Work Journal view: one day page at a time. The header has
- * previous/next day arrows, the editable title, a jump-to-date picker, "new
- * page for a date", delete, Report (the supervisor report dialog) and
- * pop-out (the journal in its own window); the page body is a TipTap editor
- * below, and the day's suggestions box under it.
+ * previous/next day arrows, the editable title, Today, and a menu right of
+ * the title with a jump-to-date picker, "new page for a date", delete, Report
+ * (the supervisor report dialog) and pop-out (the journal in its own window);
+ * the page body is a TipTap editor below, and the day's suggestions box under
+ * it.
  *
  * Opens on today's page (local date). On open, and whenever the local date
  * changes while open (midnight timer, window focus or visibility, a
@@ -221,6 +226,11 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
     setFormMode((prev) => (prev === mode ? null : mode));
     setFormDate(viewedDate ?? "");
   };
+  // The form opens from the menu: put the cursor in its date field.
+  const formInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (formMode) formInputRef.current?.focus();
+  }, [formMode]);
 
   // Jump only on Enter or Go: the date input reports a value on every typed
   // digit (typing "12" in the day field passes through "01" first).
@@ -273,9 +283,37 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
     await deletePage(page.date);
   };
 
+  const menuItems: WorkJournalPageMenuItem[] = [
+    { label: "Jump to date", icon: CalendarSearch, onSelect: () => toggleForm("jump") },
+    {
+      label: "New page for a date",
+      icon: CalendarPlus,
+      onSelect: () => toggleForm("new"),
+      disabled: replacing,
+    },
+    {
+      label: "Delete page",
+      icon: Trash2,
+      onSelect: () => void handleDelete(),
+      disabled: !page || replacing,
+      danger: true,
+    },
+    { label: "Report", icon: FileText, onSelect: () => setReportOpen(true) },
+  ];
+  if (!inWindow) {
+    menuItems.push({
+      label: "Pop out",
+      icon: ExternalLink,
+      onSelect: () =>
+        void openWorkJournalWindow().catch((err) =>
+          console.error("Failed to open the Work Journal window:", err),
+        ),
+    });
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Header: arrows, title, jump, new page, delete, report */}
+      {/* Header: arrows, title, the page actions menu and Today */}
       <div className="flex shrink-0 items-center gap-1 border-b border-maestro-border px-2 py-1.5">
         <button
           type="button"
@@ -297,6 +335,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
           placeholder={viewedDate ? defaultWorkJournalTitle(viewedDate) : ""}
           className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-sm font-medium text-maestro-text outline-none hover:border-maestro-border focus:border-maestro-accent disabled:hover:border-transparent"
         />
+        <WorkJournalPageMenu items={menuItems} buttonClassName={ICON_BUTTON} />
         <button
           type="button"
           onClick={goNext}
@@ -308,57 +347,12 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         </button>
         <button
           type="button"
-          onClick={() => toggleForm("jump")}
-          className={`${ICON_BUTTON} ${formMode === "jump" ? "text-maestro-accent" : ""}`}
-          aria-label="Jump to date"
-          title="Jump to date"
+          onClick={() => selectDate(localDateString(new Date()))}
+          className="rounded px-1.5 py-0.5 text-xs text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+          title="Go to today's page"
         >
-          <CalendarSearch size={14} />
+          Today
         </button>
-        <button
-          type="button"
-          onClick={() => toggleForm("new")}
-          disabled={replacing}
-          className={`${ICON_BUTTON} ${formMode === "new" ? "text-maestro-accent" : ""}`}
-          aria-label="New page for a date"
-          title="New page for a date"
-        >
-          <CalendarPlus size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleDelete()}
-          disabled={!page || replacing}
-          className={`${ICON_BUTTON} hover:text-maestro-red`}
-          aria-label="Delete page"
-          title="Delete page"
-        >
-          <Trash2 size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={() => setReportOpen(true)}
-          className={ICON_BUTTON}
-          aria-label="Report"
-          title="Work report for a date range"
-        >
-          <FileText size={14} />
-        </button>
-        {!inWindow && (
-          <button
-            type="button"
-            onClick={() =>
-              void openWorkJournalWindow().catch((err) =>
-                console.error("Failed to open the Work Journal window:", err),
-              )
-            }
-            className={ICON_BUTTON}
-            aria-label="Pop out"
-            title="Open the journal in its own window"
-          >
-            <ExternalLink size={14} />
-          </button>
-        )}
       </div>
 
       {/* Stays until the text is saved: closing and reopening the pane does not clear it. */}
@@ -411,6 +405,7 @@ export function WorkJournalPanel({ inWindow = false }: WorkJournalPanelProps) {
         <div className="flex shrink-0 items-center gap-2 border-b border-maestro-border/60 px-3 py-1.5 text-xs text-maestro-muted">
           <span>{formMode === "jump" ? "Go to" : "New page for"}</span>
           <input
+            ref={formInputRef}
             type="date"
             value={formDate}
             onChange={(e) => setFormDate(e.target.value)}
