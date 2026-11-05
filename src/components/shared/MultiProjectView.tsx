@@ -462,10 +462,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
     }, [eagleView, tidyEagleTiles]);
 
+    // A terminal restored from the shelf by keyboard takes over the zoom, but
+    // the cursor stays in the shelf: the zoom-focus effect below skips it once.
+    const zoomWithoutFocusRef = useRef<number | null>(null);
+
     // Focus follows the zoomed terminal (tab click / Alt+Arrow). Only the grid
     // that owns the session accepts the call, same pattern as killSessionInProject.
     useEffect(() => {
-      if (!eagleView || eagleZoom === null) return;
+      const skipFocus = zoomWithoutFocusRef.current;
+      zoomWithoutFocusRef.current = null;
+      if (!eagleView || eagleZoom === null || eagleZoom === skipFocus) return;
       for (const handle of gridRefs.current.values()) {
         if (handle.focusSession(eagleZoom)) break;
       }
@@ -509,12 +515,14 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     const handleEagleUnpark = useCallback(
       (sessionId: number, options?: ParkedShelfUnparkOptions) => {
         useSessionStore.getState().unparkSession(sessionId);
+        // Restored from the shelf by keyboard: the user is still picking in the shelf.
+        const keepFocus = options?.keepFocus === true;
         if (eagleZoomed) {
           setEagleZoomCard(null);
+          if (keepFocus) zoomWithoutFocusRef.current = sessionId;
           setEagleZoom(sessionId);
         }
-        // Restored from the shelf by keyboard: the user is still picking in the shelf.
-        if (options?.keepFocus) return;
+        if (keepFocus) return;
         for (const handle of gridRefs.current.values()) {
           if (handle.focusSession(sessionId)) break;
         }

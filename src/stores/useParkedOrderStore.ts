@@ -15,9 +15,10 @@ interface ParkedOrderState {
   /**
    * Drop `activeId` onto `overId`'s place among `shownIds` (the ids one shelf
    * shows, in the order it shows them). Pills the shelf does not show keep
-   * their places in the list.
+   * their places in the list. `parkedIds` is every parked id in its natural
+   * order, so the first drag in one project's shelf also places the others.
    */
-  move: (shownIds: number[], activeId: number, overId: number) => void;
+  move: (shownIds: number[], activeId: number, overId: number, parkedIds: number[]) => void;
   /**
    * Follow the parked set: an unparked id is forgotten, and once the user has
    * arranged the pills, a newly parked one joins the end.
@@ -28,16 +29,18 @@ interface ParkedOrderState {
 export const useParkedOrderStore = create<ParkedOrderState>((set) => ({
   order: [],
 
-  move: (shownIds, activeId, overId) =>
+  move: (shownIds, activeId, overId, parkedIds) =>
     set((state) => {
       const from = shownIds.indexOf(activeId);
       const to = shownIds.indexOf(overId);
       if (from === -1 || to === -1 || from === to) return state;
       const arranged = arrayMove(shownIds, from, to);
       const shown = new Set(shownIds);
-      // The shown ids sit in the list in the order the shelf shows them;
-      // refill exactly those slots so every other shelf's pills stay put.
-      const base = [...state.order, ...shownIds.filter((id) => !state.order.includes(id))];
+      // Every pill in the order the eagle shelf shows it (see sortByParkedOrder),
+      // so the shown ids sit in it in the order this shelf shows them; refill
+      // exactly those slots so every other shelf's pills stay put.
+      const unplaced = [...parkedIds, ...shownIds].filter((id) => !state.order.includes(id));
+      const base = [...state.order, ...new Set(unplaced)];
       let next = 0;
       return { order: base.map((id) => (shown.has(id) ? arranged[next++] : id)) };
     }),

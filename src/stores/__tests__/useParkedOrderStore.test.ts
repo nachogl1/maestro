@@ -19,15 +19,15 @@ describe("useParkedOrderStore", () => {
   });
 
   it("moves a pill onto another one's place, in both directions", () => {
-    useParkedOrderStore.getState().move([1, 2, 3], 3, 1);
+    useParkedOrderStore.getState().move([1, 2, 3], 3, 1, [1, 2, 3]);
     expect(shown(1, 2, 3)).toEqual([3, 1, 2]);
 
-    useParkedOrderStore.getState().move([3, 1, 2], 3, 2);
+    useParkedOrderStore.getState().move([3, 1, 2], 3, 2, [1, 2, 3]);
     expect(shown(1, 2, 3)).toEqual([1, 2, 3]);
   });
 
   it("keeps the moved order while other terminals park and unpark", () => {
-    useParkedOrderStore.getState().move([1, 2, 3], 3, 1);
+    useParkedOrderStore.getState().move([1, 2, 3], 3, 1, [1, 2, 3]);
 
     // Terminal 4 parks: it joins the end, the dragged order stays.
     useParkedOrderStore.getState().syncParked([1, 2, 3, 4]);
@@ -43,21 +43,24 @@ describe("useParkedOrderStore", () => {
   });
 
   it("a move in one project's shelf leaves the other projects' pills where they were", () => {
-    // Eagle order: alpha 1, beta 5, alpha 2, beta 6.
-    useParkedOrderStore.getState().move([1, 5, 2, 6], 5, 2);
-    expect(shown(1, 2, 5, 6)).toEqual([1, 2, 5, 6]);
-    useParkedOrderStore.getState().move([1, 2, 5, 6], 2, 5);
-    expect(shown(1, 2, 5, 6)).toEqual([1, 5, 2, 6]);
+    // Sessions alpha 1, beta 5, alpha 2, beta 6, all parked: the eagle shelf shows 1, 5, 2, 6.
+    const allParked = [1, 5, 2, 6];
 
-    // Alpha's own shelf shows only 1 and 2; swapping them must not move beta's.
-    useParkedOrderStore.getState().move([1, 2], 2, 1);
+    // The first drag ever, in alpha's own shelf (it shows only 1 and 2).
+    useParkedOrderStore.getState().move([1, 2], 2, 1, allParked);
     expect(shown(1, 2)).toEqual([2, 1]);
-    expect(shown(1, 2, 5, 6)).toEqual([2, 5, 1, 6]);
+    expect(shown(...allParked)).toEqual([2, 5, 1, 6]);
+
+    // A later drag in the eagle shelf, then another in alpha's.
+    useParkedOrderStore.getState().move([2, 5, 1, 6], 6, 5, allParked);
+    expect(shown(...allParked)).toEqual([2, 6, 5, 1]);
+    useParkedOrderStore.getState().move([2, 1], 1, 2, allParked);
+    expect(shown(...allParked)).toEqual([1, 6, 5, 2]);
   });
 
   it("ignores a drop on itself or on an id the shelf does not show", () => {
-    useParkedOrderStore.getState().move([1, 2, 3], 2, 2);
-    useParkedOrderStore.getState().move([1, 2, 3], 2, 9);
+    useParkedOrderStore.getState().move([1, 2, 3], 2, 2, [1, 2, 3]);
+    useParkedOrderStore.getState().move([1, 2, 3], 2, 9, [1, 2, 3]);
     expect(useParkedOrderStore.getState().order).toEqual([]);
   });
 });

@@ -235,6 +235,7 @@ export function ParkedShelf({
       parkedSessions.map((sess) => sess.id),
       Number(active.id),
       Number(over.id),
+      sessions.filter((sess) => parkedIds.includes(sess.id)).map((sess) => sess.id),
     );
   };
 
@@ -242,17 +243,26 @@ export function ParkedShelf({
   // Where leaving the shelf sends focus back to: whatever held it before Alt+U
   // (usually a terminal), so leaving drops the user where they were.
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  // The terminal last restored with Enter since entering the shelf.
+  const lastRestoredIdRef = useRef<number | null>(null);
   const hasParked = parkedSessions.length > 0;
 
   const leaveShelf = useCallback(() => {
     const target = returnFocusRef.current;
+    const restoredId = lastRestoredIdRef.current;
     returnFocusRef.current = null;
-    if (target?.isConnected) {
-      target.focus();
+    lastRestoredIdRef.current = null;
+    if (target?.isConnected) target.focus();
+    if (target && document.activeElement === target) return;
+    if (restoredId !== null) {
+      // The pane Alt+U came from cannot take focus: a terminal restored while
+      // zoomed took over the zoom and hid it. Land in that terminal instead;
+      // unparking a terminal that is already back only brings it forward.
+      onUnpark(restoredId);
     } else if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
-  }, []);
+  }, [onUnpark]);
 
   // Alt+U enters the shelf on its first chip; pressed again inside, it leaves.
   // Capture phase, like the terminal shortcuts: xterm stops the events it
@@ -272,6 +282,7 @@ export function ParkedShelf({
         return;
       }
       returnFocusRef.current = active instanceof HTMLElement ? active : null;
+      lastRestoredIdRef.current = null;
       firstChip.focus();
     }
     window.addEventListener("keydown", handleKeyDown, { capture: true });
@@ -307,14 +318,18 @@ export function ParkedShelf({
       );
       if (!sess) return;
       // Focus moves before the chip disappears: to the next chip, or the one
-      // before it at the end of the row; with no chip left, out of the shelf.
+      // before it at the end of the row. With no chip left the shelf is done:
+      // a plain restore puts the cursor in the restored terminal.
       const nextChip = chips[index + 1] ?? chips[index - 1];
-      if (nextChip) {
-        nextChip.focus();
+      if (!nextChip) {
+        returnFocusRef.current = null;
+        lastRestoredIdRef.current = null;
+        restore(sess);
       } else {
-        leaveShelf();
+        nextChip.focus();
+        lastRestoredIdRef.current = sess.id;
+        restore(sess, { keepFocus: true });
       }
-      restore(sess, { keepFocus: true });
     } else if (event.key === "Escape") {
       leaveShelf();
     } else {

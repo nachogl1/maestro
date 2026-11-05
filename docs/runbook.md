@@ -110,5 +110,6 @@ another one or onto an edge of the screen.
 - **Alt+U** moves the cursor to the first pill. **← →** pick a pill, and **Enter** restores its terminal while
   the cursor stays in the strip on the next pill (or the one before it, at the end of the row), so several
   terminals can be restored in a row.
-- **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. Restoring the last
-  pill leaves the strip the same way.
+- **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. While a terminal is
+  zoomed, each restored terminal takes over the zoom, so leaving puts the cursor in the last one restored.
+- Restoring the last pill leaves the strip and puts the cursor in that terminal, the same as clicking it.

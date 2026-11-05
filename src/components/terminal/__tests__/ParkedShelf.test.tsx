@@ -525,11 +525,25 @@ describe("ParkedShelf", () => {
       expect(chip("Bravo")).toHaveFocus();
     });
 
-    it("restoring the only pill leaves the shelf and puts focus back where it was", () => {
+    it("restoring the only pill is a plain restore, so the grid puts the cursor in it", () => {
       useSessionStore.setState({
         sessions: [session(1, "C:/proj", "Alpha")],
         parkedSessionIds: [1],
       });
+      const onUnpark = vi.fn((sessionId: number) =>
+        useSessionStore.getState().unparkSession(sessionId),
+      );
+      render(<ParkedShelf onUnpark={onUnpark} keyboardEnabled />);
+
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+      fireEvent.keyDown(chip("Alpha"), { key: "Enter" });
+
+      expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+      expect(onUnpark.mock.calls).toEqual([[1]]);
+    });
+
+    it("leaving lands in the last restored terminal when the pane Alt+U came from is hidden", () => {
+      parkThree();
       const onUnpark = vi.fn((sessionId: number) =>
         useSessionStore.getState().unparkSession(sessionId),
       );
@@ -541,12 +555,19 @@ describe("ParkedShelf", () => {
       );
       const terminal = screen.getByLabelText("terminal");
       terminal.focus();
-
       fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
       fireEvent.keyDown(chip("Alpha"), { key: "Enter" });
+      fireEvent.keyDown(chip("Bravo"), { key: "Enter" });
 
-      expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
-      expect(terminal).toHaveFocus();
+      // The restored terminal took over the zoom: the pane Alt+U came from is
+      // hidden and can no longer take focus.
+      terminal.setAttribute("disabled", "");
+      fireEvent.keyDown(window, { code: "KeyU", key: "u", altKey: true });
+
+      expect(terminal).not.toHaveFocus();
+      // A plain restore of the terminal already back: the grid brings it forward and focuses it.
+      expect(onUnpark).toHaveBeenLastCalledWith(2);
+      expect(onUnpark.mock.lastCall).toHaveLength(1);
     });
 
     it("ignores Alt+U when the shelf is not keyboard-enabled", () => {
