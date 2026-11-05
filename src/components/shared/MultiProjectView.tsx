@@ -41,7 +41,7 @@ import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { ParkedShelf } from "../terminal/ParkedShelf";
+import { ParkedShelf, type ParkedShelfUnparkOptions } from "../terminal/ParkedShelf";
 import { generateSlotId } from "../terminal/slots";
 import {
   type EagleDropTarget,
@@ -507,12 +507,14 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // the grid that owns the session accepts the focus call, same pattern as
     // the zoom-focus effect.
     const handleEagleUnpark = useCallback(
-      (sessionId: number) => {
+      (sessionId: number, options?: ParkedShelfUnparkOptions) => {
         useSessionStore.getState().unparkSession(sessionId);
         if (eagleZoomed) {
           setEagleZoomCard(null);
           setEagleZoom(sessionId);
         }
+        // Restored from the shelf by keyboard: the user is still picking in the shelf.
+        if (options?.keepFocus) return;
         for (const handle of gridRefs.current.values()) {
           if (handle.focusSession(sessionId)) break;
         }

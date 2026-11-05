@@ -101,3 +101,14 @@ another one or onto an edge of the screen.
 - Groups with no conversations yet (an unused worktree, say) come last.
 - Each conversation shows its last message time beside the relative label: `3h ago · 14:32` for today, and the date
   as well for an earlier day, such as `yesterday · Nov 4, 09:10`. Hover the label for the full date and time.
+
+## Parked strip: reordering and picking from the keyboard (Alt+U)
+
+- **Drag a pill** along the parked strip to change its place. The order holds while other terminals park and
+  unpark: a terminal you park later joins the end, and one you unpark leaves the others where they were. The
+  order lasts until the app closes. A plain click on a pill still restores its terminal; a drag never does.
+- **Alt+U** moves the cursor to the first pill. **← →** pick a pill, and **Enter** restores its terminal while
+  the cursor stays in the strip on the next pill (or the one before it, at the end of the row), so several
+  terminals can be restored in a row.
+- **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. Restoring the last
+  pill leaves the strip the same way.
