@@ -23,8 +23,11 @@ export function attentionBlinkDelayMs(nowMs: number): number {
  * #496): the session tab and the project tab of a terminal that needs the
  * user blink in step, even when one of them starts later.
  *
- * Pass `blinking` exactly when the class is applied: the phase is computed
- * when it turns on, which is when the browser starts the animation. The clock
+ * Pass `blinking` exactly when the class is applied AND the element is on
+ * screen: the phase is computed when it turns on, which is when the browser
+ * starts the animation. An element under display:none runs no animation and
+ * restarts it when shown, so a caller that can be hidden (a background
+ * project's zoom strip) folds its visibility into `blinking`. The clock
  * is `performance.now()`, the same origin as the document timeline CSS
  * animations run on.
  */

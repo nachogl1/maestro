@@ -260,4 +260,47 @@ describe("TerminalGrid zoom strip tabs: context alert and active fill", () => {
     expect(tabs[0].className).toContain("warning-flag");
     expect(tabs[0].className).not.toContain("attention-blink");
   });
+
+  it("re-aligns the blink when a background project is shown again", async () => {
+    // Inactive projects stay mounted under display:none, where no animation
+    // runs: shown again, the blink restarts then and must take the clock's
+    // phase at that moment, not the one from when the attention began.
+    const ref = createRef<TerminalGridHandle>();
+    const grid = (isActive: boolean) => (
+      <TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive={isActive} />
+    );
+    const { rerender } = render(grid(true));
+    const handle = ref.current;
+    if (!handle) throw new Error("expected TerminalGrid ref to be attached");
+    await act(async () => {
+      handle.addSession();
+    });
+    await act(async () => {
+      await handle.launchAll();
+    });
+    await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(2));
+    const [first, second] = useSessionStore.getState().sessions;
+    await act(async () => {
+      expect(handle.zoomSession(first.id)).toBe(true);
+    });
+
+    const clock = vi.spyOn(performance, "now").mockReturnValue(9_000);
+    rerender(grid(false)); // the user switched to another project
+    clock.mockReturnValue(10_000);
+    act(() => {
+      useSessionStore.setState({ attentionSessionIds: [second.id] });
+    });
+    clock.mockReturnValue(10_600);
+    rerender(grid(true)); // ...and comes back
+
+    expect(zoomTabs()[1].className).toContain("attention-blink");
+    expect(zoomTabs()[1].style.animationDelay).toBe(`-${10_600 % 1_200}ms`);
+
+    // Leaving and coming back while the attention is still on re-aligns too.
+    rerender(grid(false));
+    clock.mockReturnValue(12_500);
+    rerender(grid(true));
+    expect(zoomTabs()[1].style.animationDelay).toBe(`-${12_500 % 1_200}ms`);
+    clock.mockRestore();
+  });
 });

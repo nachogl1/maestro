@@ -2201,6 +2201,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                           label={label}
                           hasSession={sessionId !== null}
                           sessionId={sessionId}
+                          stripShown={isActive}
                           onSelect={() => handleToggleZoom(slot.id)}
                           onToggleFlag={
                             sessionId !== null
@@ -2886,6 +2887,7 @@ function ZoomTab({
   label,
   hasSession,
   sessionId,
+  stripShown,
   onSelect,
   onToggleFlag,
 }: {
@@ -2895,6 +2897,11 @@ function ZoomTab({
   label: string;
   hasSession: boolean;
   sessionId: number | null;
+  /**
+   * Whether this grid's project is on screen. A background project stays
+   * mounted under display:none, where no animation runs.
+   */
+  stripShown: boolean;
   onSelect: () => void;
   /** Clicking the already-active tab toggles the warning flag (header parity). */
   onToggleFlag?: () => void;
@@ -2931,8 +2938,10 @@ function ZoomTab({
   // Context alert (Settings): the tab blinks red like the frame it stands for.
   const contextAlert = useSessionContextAlert(sessionId);
   // Attention blinks yellow in step with the project tab (issue #496); the
-  // red context alert outranks it.
-  const attentionBlinking = hasAttention && !contextAlert.active;
+  // red context alert outranks it. Only while the strip is shown: a hidden
+  // tab's animation restarts when it is shown again, so the blink's phase is
+  // taken from the clock at that moment.
+  const attentionBlinking = hasAttention && !contextAlert.active && stripShown;
   const attentionBlinkStyle = useAttentionBlink(attentionBlinking);
 
   // Attention-first click semantics on the active tab: the first click only
