@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-143159-cf6d",
+  "issue": 490,
+  "title": "Issue map: open it with Alt+M, and list every open project (each repository of a multi-repo project too), kept up to date",
+  "login": "nachogl1",
+  "pr": 517,
+  "merged_at": "2026-11-05T14:49:11Z",
+  "merge_commit": "545e1304c332587f6a05cf3c1121b798aaf1b3ed",
+  "seam": "src/lib/issueMapWindow.ts",
+  "story": "Alt+M is a new shortcut that opens the issue map the same way as the map button in the git panel's Issues tab, in project view and eagle view. The map's Project picker used to show only the selected repository of a multi-repo project and hid projects marked 'not git'. It now lists every open tab, each repository separately, and refreshes while the map stays open.",
+  "checks": [
+    {
+      "key": "issue-map/alt-m-open",
+      "criterion": "Alt+M opens the issue map in project view and in eagle view.",
+      "steps": "Open a git project such as a made-up 'demo-repo', click inside a terminal, press Alt+M (Option+M on a Mac). Then press Ctrl/Cmd+G for eagle view, use the git panel arrows to pick a project, and press Alt+M again.",
+      "expected": "The map window opens on the active project; in eagle view it switches to the carousel's project and comes to the front. Settings > Shortcuts lists 'Alt + M: Open the issue map for the focused project'."
+    },
+    {
+      "key": "issue-map/multi-repo-projects",
+      "criterion": "A multi-repository project lists each of its repositories.",
+      "steps": "Make a folder 'suite' with two git repos 'api' and 'web' inside it, and open 'suite' plus one single-repo project. Open the map and open the Project picker in its header.",
+      "expected": "'suite / api', 'suite / web' and the single-repo project's name, not only the selected repository."
+    },
+    {
+      "key": "issue-map/projects-live-update",
+      "criterion": "A project opened while the map is open shows up in its list without reopening the map.",
+      "steps": "With one project open, press Alt+M and leave the map open. In the main window, open a second git project, then open the map's Project picker. Close that tab and look again.",
+      "expected": "The new project appears in the list, then disappears, and the map is never reopened."
+    }
+  ],
+  "no_qa_reason": null
+}

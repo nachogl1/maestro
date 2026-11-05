@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261105-143159-cf6d",
+  "issue": 497,
+  "title": "History: projects ordered by their latest message, and each conversation shows its last message time",
+  "login": "nachogl1",
+  "pr": 516,
+  "merged_at": "2026-11-05T14:43:48Z",
+  "merge_commit": "004ec10f870a4228c9167bbbbd2e51f644892839",
+  "seam": "src/components/sidebar/HistorySection.tsx",
+  "story": "In the History tab, each project's directory groups (the checkout, each worktree, any other folder) used to always start with the checkout; now the group with the newest message comes first. Each conversation row used to show only '3h ago'; now it also shows the time of its last message, and the date when that was not today. The order of projects themselves and the Resume picker are unchanged.",
+  "checks": [
+    {
+      "key": "sidebar-history/group-order",
+      "criterion": "The group with the most recent message is first, whatever its kind.",
+      "steps": "Open a project that has at least one worktree. Start a conversation in the worktree and send 'hello test', with the checkout's newest conversation older than that. Open the History tab and expand the project.",
+      "expected": "The worktree's group is listed above the checkout's group; groups with no conversations come last."
+    },
+    {
+      "key": "sidebar-history/last-message-time",
+      "criterion": "Each conversation shows its last message time.",
+      "steps": "Open the History tab and expand a project. Look at the line under a conversation's name, for one from today and one from an earlier day.",
+      "expected": "Today's reads like '3h ago · 14:32' (time in the user's locale); an earlier day adds the date, like '3d ago · Aug 8, 09:05'; a conversation older than 30 days shows its date and time once each. Hovering still shows the full date and time."
+    }
+  ],
+  "no_qa_reason": null
+}

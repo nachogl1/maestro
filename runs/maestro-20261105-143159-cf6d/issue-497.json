@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261105-143159-cf6d",
+  "issue": 497,
+  "title": "History: projects ordered by their latest message, and each conversation shows its last message time",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T14:32:24Z",
+  "finished_at": "2026-11-05T14:44:10Z",
+  "outcome": "merged",
+  "pr": 516,
+  "summary": "In the History tab, the folder group with the newest message now comes first within each project, and each conversation row shows its last message time (and date when not today).",
+  "agents": [
+    {
+      "name": "dev-497",
+      "model": "opus",
+      "tokens_total": 97591
+    },
+    {
+      "name": "review-497",
+      "model": "opus",
+      "tokens_total": 87851
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 381,
+    "review_seconds": 214,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

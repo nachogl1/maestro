@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261105-143159-cf6d",
+  "issue": 493,
+  "title": "Tidy up puts every terminal in one row of full-height columns, still free to move and resize",
+  "login": "nachogl1",
+  "pr": 518,
+  "merged_at": "2026-11-05T15:09:33Z",
+  "merge_commit": "8ad1f7498041cb795e1616d19e29a50224098709",
+  "seam": "src/components/terminal/splitTree.ts",
+  "story": "Tidy up (the top-right button and Alt+T) used to give terminals an even share while keeping their arrangement, and in eagle view it went back to the automatic square grid. Now both views put the terminals you can see in one row of full-height columns, keeping their order; parked terminals take no space, and moving and resizing still work afterwards. With more than ten tiles, eagle view falls back to the old automatic grid.",
+  "checks": [
+    {
+      "key": "terminals/tidy-up-project-row",
+      "criterion": "With 2 to 6 terminals, Tidy up gives one row of equal, full-height columns in project view, and they can still be resized and moved afterwards.",
+      "steps": "Open a test project and add four terminals (they appear two over two). Drag a divider to make one bigger. Click Tidy up at the top right, or press Alt+T. Then drag a divider, and drag one terminal onto another terminal's bottom edge.",
+      "expected": "Four equal full-height columns in their earlier order. The divider drag resizes them, and the dropped terminal stacks under its target."
+    },
+    {
+      "key": "terminals/tidy-up-project-row-parked",
+      "criterion": "Parked terminals take no column, so the visible terminals are still equal.",
+      "steps": "Open a test project with four terminals and park the third one. Press Alt+T. Then unpark it.",
+      "expected": "Three equal columns of about 33% each; the unparked terminal comes back beside the second terminal, sharing that column."
+    },
+    {
+      "key": "terminals/tidy-up-eagle-row",
+      "criterion": "With 2 to 6 terminals, Tidy up gives one row of equal, full-height columns in eagle view, and the tiles can still be moved and resized.",
+      "steps": "Launch four terminals across test projects and open eagle view. Move one tile to change the order. Press Alt+T. Then drag a tile's bottom edge up, and drag one tile onto another.",
+      "expected": "Four full-height tiles side by side in the order they read on screen before tidying. The edge drag shrinks the tile, and the drop splits its target."
+    },
+    {
+      "key": "settings/shortcuts-tidy-description",
+      "criterion": "The shortcut description and the tooltip are updated.",
+      "steps": "Open Settings, then Shortcuts. Hover over the Tidy up button.",
+      "expected": "Alt+T reads 'Tidy up: every terminal in one row of full-height columns'. The tooltip reads 'Tidy up: every terminal side by side, one row of full-height columns (Alt+T)'."
+    }
+  ],
+  "no_qa_reason": null
+}

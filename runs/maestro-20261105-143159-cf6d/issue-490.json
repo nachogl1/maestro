@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261105-143159-cf6d",
+  "issue": 490,
+  "title": "Issue map: open it with Alt+M, and list every open project (each repository of a multi-repo project too), kept up to date",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T14:32:24Z",
+  "finished_at": "2026-11-05T14:49:30Z",
+  "outcome": "merged",
+  "pr": 517,
+  "summary": "Alt+M now opens the issue map in project and eagle view, and the map's Project picker lists every open tab and each repository of a multi-repo project, refreshing while the map is open.",
+  "agents": [
+    {
+      "name": "dev-490",
+      "model": "opus",
+      "tokens_total": 135172
+    },
+    {
+      "name": "review-490",
+      "model": "opus",
+      "tokens_total": 107804
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 564,
+    "review_seconds": 204,
+    "ci_seconds": 170
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 2
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/git/issues/",
+      "what": "The issue-map test 'F5 and Ctrl+R rebuild the map from GitHub' waits only about 1 second, so it times out under full-suite load on a busy machine and makes a good branch look red locally.",
+      "why": "Outside this issue, and widening a timeout is not allowed; the test needs a wait that does not depend on machine speed.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

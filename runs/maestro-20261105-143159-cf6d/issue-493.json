@@ -1,0 +1,48 @@
+{
+  "run_id": "maestro-20261105-143159-cf6d",
+  "issue": 493,
+  "title": "Tidy up puts every terminal in one row of full-height columns, still free to move and resize",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T14:32:24Z",
+  "finished_at": "2026-11-05T15:10:00Z",
+  "outcome": "merged",
+  "pr": 518,
+  "summary": "Tidy up (button and Alt+T) now puts the visible terminals in one row of equal full-height columns in both project and eagle view, keeping order; parked terminals take no column.",
+  "agents": [
+    {
+      "name": "dev-493",
+      "model": "opus",
+      "tokens_total": 164247
+    },
+    {
+      "name": "review-493",
+      "model": "opus",
+      "tokens_total": 116059
+    },
+    {
+      "name": "review-493-r2",
+      "model": "opus",
+      "tokens_total": 122822
+    },
+    {
+      "name": "review-493-r3",
+      "model": "opus",
+      "tokens_total": 98774
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1340,
+    "review_seconds": 736,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 3,
+    "ci": 3
+  },
+  "friction": [],
+  "lessons_learned": [
+    "Layout stories in project view must treat parked terminals as hidden leaves: SplitPaneView hands a parked leaf's share to its sibling, so any 'equal columns' rule has to balance over visible leaves only (cost a review round here)."
+  ],
+  "deferred": []
+}
