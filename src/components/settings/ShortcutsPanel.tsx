@@ -35,7 +35,10 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         { keys: [mod, "T"], description: "New terminal (project picker in eagle view)" },
         { keys: [mod, "1"], description: "Zoom the focused terminal (toggle)" },
         { keys: [alt, "← →"], description: "Previous / next tab while zoomed" },
-        { keys: [mod, alt, "← →"], description: "Focus the previous / next terminal" },
+        {
+          keys: [mod, alt, "← →"],
+          description: "Focus the previous / next terminal, in every view",
+        },
         { keys: [mod, "G"], description: "Toggle eagle view (all projects)" },
 
         { keys: [alt, "P"], description: "Park the focused terminal" },

@@ -27,7 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
+import { type FocusStep, useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
 import { usePendingLaunch } from "@/hooks/usePendingLaunch";
 import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
 import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
@@ -313,6 +313,8 @@ interface TerminalGridProps {
   onEagleDrop?: (sessionId: number, target: EagleDropTarget) => void;
   /** Eagle view: Alt+Shift+Arrow — swap a tile with its neighbour in that direction. */
   onEagleMoveTile?: (sessionId: number, direction: MoveDirection) => void;
+  /** Eagle view: Cmd/Ctrl+Alt+Arrow — focus the next / previous terminal in tile order. */
+  onEagleCycleFocus?: (sessionId: number, step: FocusStep) => void;
   /**
    * Eagle view: an edge of a tile is being dragged. `start` is the rect when
    * the drag began, `delta` the cells travelled since, `others` the tiles
@@ -385,6 +387,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     eagleOccupied,
     onEagleDrop,
     onEagleMoveTile,
+    onEagleCycleFocus,
     onEagleResizeTile,
   },
   ref,
@@ -1337,8 +1340,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     handlePark(focusedSlotId);
   };
 
-  // Eagle view: Cmd/Ctrl+1, Alt+P and the header shortcuts act on the pane
-  // holding keyboard focus.
+  // Eagle view: Cmd/Ctrl+1, Alt+P, Cmd/Ctrl+Alt+Arrow and the header shortcuts
+  // act on the pane holding keyboard focus.
   // Only panes this grid owns are handled (zoom, park and move: launched ones
   // only); the rest fall through to the grid that does own them.
   useEagleTerminalKeyboard({
@@ -1369,6 +1372,15 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         return true;
       },
       [onEagleMoveTile],
+    ),
+    onCycleFocus: useCallback(
+      (slotId: string, step: FocusStep) => {
+        const sessionId = slotsRef.current.find((s) => s.id === slotId)?.sessionId ?? null;
+        if (sessionId === null || !onEagleCycleFocus) return false;
+        onEagleCycleFocus(sessionId, step);
+        return true;
+      },
+      [onEagleCycleFocus],
     ),
     onHeaderAction: useCallback((slotId: string, action: HeaderAction) => {
       if (!slotsRef.current.some((s) => s.id === slotId)) return false;
