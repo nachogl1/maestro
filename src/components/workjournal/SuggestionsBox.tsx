@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Check, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { projectColorFor } from "@/lib/projectColor";
+import { useProjectColors } from "@/lib/useProjectColors";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import {
   candidateLine,
@@ -31,7 +33,13 @@ const SOURCE_TAG_COLORS: Record<WorkJournalCandidateSource, string> = {
 const DEFAULT_TAG_COLOR = "border-maestro-border text-maestro-muted";
 
 const ICON_BUTTON =
-  "rounded p-0.5 text-maestro-muted transition-colors hover:bg-maestro-card disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
+  "rounded p-0.5 transition-colors hover:bg-maestro-card disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
+
+/** The candidate's project name, or null when it has none (a meeting, an older suggestion). */
+function candidateProject(candidate: WorkJournalCandidate): string | null {
+  const project = candidate.project;
+  return typeof project === "string" && project.trim() !== "" ? project.trim() : null;
+}
 
 export interface SuggestionsBoxProps {
   /** The viewed day (`YYYY-MM-DD`). */
@@ -96,7 +104,8 @@ function nextRunLabel(catchUpPending: boolean, nextRunAt: number | null): string
 
 /**
  * The suggestions box under a Work Journal page: the day's pending
- * candidates, each with its text, source tag, and Accept and Reject icons,
+ * candidates, each with its text, its project (in that project's colour, when
+ * it has one), its source tag, and green Accept and red Reject icons kept apart,
  * and a footer "next run · run now". With nothing pending only the footer
  * shows, so "run now" is always reachable.
  */
@@ -109,6 +118,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
   const reject = useWorkJournalCandidatesStore((s) => s.reject);
   const clearError = useWorkJournalCandidatesStore((s) => s.clearError);
   const replacing = useWorkJournalStore((s) => s.replacing);
+  const projectColors = useProjectColors();
 
   const running = useWorkJournalCandidateRunStore((s) => s.running);
   const runNotice = useWorkJournalCandidateRunStore((s) => s.runNotice);
@@ -232,6 +242,10 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
           {pending.map((candidate) => {
             const busy = busyIds.includes(candidate.id);
             const label = labelText(candidate);
+            const project = candidateProject(candidate);
+            const projectColor = project
+              ? (projectColors.get(project) ?? projectColorFor(project))
+              : null;
             return (
               <li
                 key={candidate.id}
@@ -240,6 +254,16 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                 <span className="min-w-0 flex-1 break-words text-maestro-text">
                   {candidateLine(candidate)}
                 </span>
+                {project && projectColor && (
+                  <span
+                    data-testid="suggestion-project"
+                    className="max-w-[10rem] shrink-0 truncate rounded-full border px-1.5 text-[10px]"
+                    style={{ color: projectColor, borderColor: projectColor }}
+                    title={`Project: ${project}`}
+                  >
+                    {project}
+                  </span>
+                )}
                 <span
                   className={`shrink-0 rounded border px-1 text-[10px] ${
                     SOURCE_TAG_COLORS[candidate.source] ?? DEFAULT_TAG_COLOR
@@ -247,26 +271,29 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                 >
                   {WORK_JOURNAL_SOURCE_LABELS[candidate.source] ?? candidate.source}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => void accept(candidate)}
-                  disabled={busy || acceptHint !== null}
-                  className={`${ICON_BUTTON} hover:text-maestro-green`}
-                  aria-label={`Accept suggestion: ${label}`}
-                  title={acceptHint ?? "Accept: add this line to the page"}
-                >
-                  <Check size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void reject(candidate)}
-                  disabled={busy || replacing}
-                  className={`${ICON_BUTTON} hover:text-maestro-red`}
-                  aria-label={`Reject suggestion: ${label}`}
-                  title="Reject: hide it for today"
-                >
-                  <X size={13} />
-                </button>
+                {/* gap-6 (24px) is wider than one button (17px), so one is not hit for the other. */}
+                <div className="flex shrink-0 items-center gap-6">
+                  <button
+                    type="button"
+                    onClick={() => void accept(candidate)}
+                    disabled={busy || acceptHint !== null}
+                    className={`${ICON_BUTTON} text-maestro-green`}
+                    aria-label={`Accept suggestion: ${label}`}
+                    title={acceptHint ?? "Accept: add this line to the page"}
+                  >
+                    <Check size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void reject(candidate)}
+                    disabled={busy || replacing}
+                    className={`${ICON_BUTTON} text-maestro-red`}
+                    aria-label={`Reject suggestion: ${label}`}
+                    title="Reject: hide it for today"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
               </li>
             );
           })}

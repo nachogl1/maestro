@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { JSONContent } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { projectColorFor, resolveProjectColors } from "@/lib/projectColor";
 import {
   CATCH_UP_TRUNCATED_NOTICE,
   type CandidateRunOutcome,
@@ -19,8 +20,22 @@ import {
   type WorkJournalFile,
   type WorkJournalPage,
 } from "@/stores/useWorkJournalStore";
+import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { GRANOLA_OPT_IN_QUESTION } from "../SuggestionsBox";
 import { WorkJournalPanel } from "../WorkJournalPanel";
+
+// The workspace store (the open projects, for their colours) persists through
+// the Tauri store plugin; happy-dom has no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
 
 const invokeMock = vi.mocked(invoke);
 const RUN_INITIAL = useWorkJournalCandidateRunStore.getState();
@@ -167,6 +182,7 @@ describe("SuggestionsBox", () => {
     });
     useWorkJournalCandidatesStore.setState(CANDIDATES_INITIAL, true);
     useWorkJournalCandidateRunStore.setState(RUN_INITIAL, true);
+    useWorkspaceStore.setState({ tabs: [] });
   });
 
   afterEach(() => {
@@ -249,6 +265,56 @@ describe("SuggestionsBox", () => {
     }
     const families = ["Git · commit", "Claude", "Terminal", "Granola"].map(color);
     expect(new Set(families).size).toBe(4);
+  });
+
+  it("shows a suggestion's project in that project's colour, and no pill without one", async () => {
+    const tabNames = ["demo-shop", "demo-blog"];
+    useWorkspaceStore.setState({
+      tabs: tabNames.map((name) => ({ name }) as WorkspaceTab),
+    });
+    candidates = [
+      candidate("p1", "Worked on the cart page", { project: "demo-shop" }),
+      candidate("p2", "Wrote the release notes", { project: "demo-notes" }),
+      candidate("p3", "Design sync", { source: "granola", time: null, project: null }),
+      candidate("p4", "Older suggestion"),
+      candidate("p5", "Blank project", { project: "" }),
+      candidate("p6", "Not a name", {
+        project: 42 as unknown as WorkJournalCandidate["project"],
+      }),
+    ];
+    render(<WorkJournalPanel />);
+    await screen.findByText("14:05 - Worked on the cart page");
+
+    const items = within(box()).getAllByRole("listitem");
+    const open = within(items[0]).getByText("demo-shop");
+    expect(open).toHaveStyle({ color: resolveProjectColors(tabNames).get("demo-shop") });
+    // A project with no open tab still gets its stable colour.
+    const closed = within(items[1]).getByText("demo-notes");
+    expect(closed).toHaveStyle({ color: projectColorFor("demo-notes") });
+    for (const item of items.slice(2)) {
+      expect(within(item).queryByTestId("suggestion-project")).not.toBeInTheDocument();
+    }
+    expect(within(box()).getAllByTestId("suggestion-project")).toHaveLength(2);
+  });
+
+  it("colours Accept green and Reject red, at least a button's width apart", async () => {
+    candidates = [candidate("g1", "Merged the login fix")];
+    render(<WorkJournalPanel />);
+    await screen.findByText("14:05 - Merged the login fix");
+
+    const accept = within(box()).getByRole("button", { name: /^Accept suggestion: / });
+    const reject = within(box()).getByRole("button", { name: /^Reject suggestion: / });
+    expect(accept).toHaveClass("text-maestro-green");
+    expect(accept).not.toHaveClass("text-maestro-muted");
+    expect(reject).toHaveClass("text-maestro-red");
+    expect(reject).not.toHaveClass("text-maestro-muted");
+    // Both sit in one group whose gap (gap-6, 24px) is wider than a button
+    // (13px icon plus 2px padding each side, 17px).
+    const group = accept.parentElement as HTMLElement;
+    expect(group).toBe(reject.parentElement);
+    expect(group).toHaveClass("gap-6");
+    expect(accept.querySelector("svg")).toHaveAttribute("width", "13");
+    expect(accept).toHaveClass("p-0.5");
   });
 
   it("accept appends `time - action` at the end of the page and removes the candidate", async () => {

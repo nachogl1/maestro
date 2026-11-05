@@ -180,6 +180,10 @@ pub struct Candidate {
     pub text: String,
     /// Which activity source proposed it (its source tag).
     pub source: CandidateSource,
+    /// The project the work was in (its folder name); none for a source with
+    /// no project (a meeting) and for candidates stored before projects were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// Pending (waiting for the user) or rejected.
     pub state: CandidateState,
     /// When the candidate was added (RFC 3339) — the pruning clock.
@@ -200,6 +204,10 @@ pub struct NewCandidate {
     pub text: String,
     /// Which activity source proposed it.
     pub source: CandidateSource,
+    /// The project the work was in; folded to one line when stored, and
+    /// dropped when blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// One terminal: where it ran and when. Never what was typed in it.
@@ -723,11 +731,17 @@ pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandida
     }
     let text =
         cap_candidate_text(&text, candidate.source).ok_or(ActivityError::MeetingTextTooLong)?;
+    let project = candidate
+        .project
+        .as_deref()
+        .map(|project| project.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|project| !project.is_empty());
     Ok(NewCandidate {
         date: date.format("%Y-%m-%d").to_string(),
         time,
         text,
         source: candidate.source,
+        project,
     })
 }
 
@@ -744,6 +758,7 @@ pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> ActivityResul
             time: valid.time,
             text: valid.text,
             source: valid.source,
+            project: valid.project,
             state: CandidateState::Pending,
             created_at: stamp(now),
         });
@@ -1130,6 +1145,7 @@ mod tests {
             time: time.map(str::to_string),
             text: text.to_string(),
             source: CandidateSource::Git,
+            project: None,
         }
     }
 
@@ -1178,6 +1194,7 @@ mod tests {
             time: Some("09:00".into()),
             text: "t".into(),
             source: CandidateSource::Git,
+            project: None,
             state: CandidateState::Pending,
             created_at: created_at.into(),
         }
@@ -1853,6 +1870,45 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_a_candidate_keeps_its_project_and_an_older_one_reads_without() {
+        let dir = tempdir().unwrap();
+        let with = |project: Option<&str>, text: &str| NewCandidate {
+            project: project.map(str::to_string),
+            ..new_candidate("2026-10-15", Some("14:05"), text)
+        };
+        let added = add_candidates(
+            dir.path(),
+            vec![
+                with(Some(" demo\n shop "), "Worked on the cart"),
+                with(Some("   "), "Blank project"),
+                with(None, "No project"),
+            ],
+        )
+        .await
+        .unwrap();
+        let projects: Vec<Option<&str>> = added.iter().map(|c| c.project.as_deref()).collect();
+        assert_eq!(projects, vec![Some("demo shop"), None, None]);
+        let listed = list_candidates(dir.path(), "2026-10-15").await.unwrap();
+        assert_eq!(listed[0].project.as_deref(), Some("demo shop"));
+
+        // Shown to the front end as `project`, left out when there is none.
+        let json = serde_json::to_value(&listed[0]).unwrap();
+        assert_eq!(json["project"], "demo shop");
+        assert!(serde_json::to_value(&listed[2])
+            .unwrap()
+            .get("project")
+            .is_none());
+
+        // A candidate stored before projects were still reads, with none.
+        let older: Candidate = serde_json::from_value(serde_json::json!({
+            "id": "c-old", "date": "2026-10-15", "time": "09:00", "text": "Older line",
+            "source": "git", "state": "pending", "createdAt": "2026-10-15T09:00:00+01:00"
+        }))
+        .unwrap();
+        assert_eq!(older.project, None);
     }
 
     #[tokio::test]

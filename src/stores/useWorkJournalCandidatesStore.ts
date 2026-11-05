@@ -32,6 +32,11 @@ export interface WorkJournalCandidate {
   time?: string | null;
   text: string;
   source: WorkJournalCandidateSource;
+  /**
+   * The project the work was in (its folder name); absent for a source with
+   * no project (a meeting) and for candidates stored before projects were.
+   */
+  project?: string | null;
   state: WorkJournalCandidateState;
   createdAt: string;
 }

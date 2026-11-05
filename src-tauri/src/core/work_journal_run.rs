@@ -6,7 +6,8 @@
 //! PRD "Candidates": the run is given, per date, that date's activity, its
 //! page text and its pending and rejected candidates (same-day duplicate
 //! removal only, never older pages). The reply contract is one candidate per
-//! line, `HH:MM - action | source`, parsed strictly. When the user opted in
+//! line, `HH:MM - action | source | project`, parsed strictly (issue #498 added
+//! the project; a line without one is still read). When the user opted in
 //! to Granola and it is connected (issue #315), a run may also read that
 //! date's meetings and reply `Meeting - <title>: <outcome> | granola` for a
 //! meeting without a time.
@@ -102,7 +103,7 @@ day. Turn the activity into a few short journal lines that sum up the day's work
 Output contract, follow it exactly:\n\
 - Plain text lines only: no markdown, no bullets, no numbering, no preamble, no closing \
 remarks.\n\
-- One line per journal entry, in the form: HH:MM - action | source\n\
+- One line per journal entry, in the form: HH:MM - action | source | project\n\
 - Write one line per project, summing up the features or outcomes worked on in that \
 project that day, not one line per commit, pull request, file, session or terminal. Give a \
 project a second line only for a clearly separate piece of work.\n\
@@ -113,6 +114,7 @@ login fix: new password rules and the PR merged\n\
 - Keep each line under 200 characters.\n\
 - source is the source tag of the activity lines it came from: git (a commit), pr, issue, \
 claude or terminal; for a line that sums up several sources, the one with most of the work.\n\
+- project is the project name of the activity lines it came from, copied exactly.\n\
 - Do not repeat anything already on the page or in the suggested or rejected lines, even \
 in other words. When a suggested or rejected line already covers a project's work that day, \
 add a line for that project only for a different piece of work.\n\
@@ -624,9 +626,15 @@ pub fn build_prompt(
     let suggested: Vec<String> = existing
         .iter()
         .filter(|c| c.date == date)
-        .map(|c| match &c.time {
-            Some(time) => format!("{time} - {} | {}", one_line(&c.text), source_tag(c.source)),
-            None => format!("{} | {}", one_line(&c.text), source_tag(c.source)),
+        .map(|c| {
+            let line = match &c.time {
+                Some(time) => format!("{time} - {} | {}", one_line(&c.text), source_tag(c.source)),
+                None => format!("{} | {}", one_line(&c.text), source_tag(c.source)),
+            };
+            match &c.project {
+                Some(project) => format!("{line} | {}", one_line(project)),
+                None => line,
+            }
         })
         .collect();
     let page = if page_text.trim().is_empty() {
@@ -650,7 +658,8 @@ pub fn build_prompt(
          Activity (HH:MM [source] project: text):\n{activity}\n\n\
          Already on the journal page for this date (do not repeat):\n{page}\n\n\
          Already suggested or rejected for this date (do not repeat):\n{suggested}\n\n\
-         Reply with one line per project with new work, HH:MM - action | source, or NONE."
+         Reply with one line per project with new work, \
+         HH:MM - action | source | project, or NONE."
     )
 }
 
@@ -678,9 +687,20 @@ fn dedupe_key(text: &str) -> String {
     one_line(text).to_lowercase()
 }
 
-/// Parses one reply line, `HH:MM - action | source`; `None` when it does
-/// not match. With `granola` on, `granola` is a valid source too, and a
-/// meeting without a time, `Meeting - <title>: <outcome> | granola`, is a
+/// The source a reply line's tag names; `granola` only when Granola is on.
+fn reply_source(tag: &str, granola: bool) -> Option<CandidateSource> {
+    let tag = tag.trim();
+    REPLY_SOURCES
+        .into_iter()
+        .chain(granola.then_some(CandidateSource::Granola))
+        .find(|s| source_tag(*s).eq_ignore_ascii_case(tag))
+}
+
+/// Parses one reply line, `HH:MM - action | source | project` (the project
+/// as the model wrote it, checked later by [`known_projects`]), or the older
+/// `HH:MM - action | source` with no project; `None` when it does not match.
+/// With `granola` on, `granola` is a valid source too, and a meeting
+/// without a time, `Meeting - <title>: <outcome> | granola`, is a
 /// candidate with no time whose text is the whole `Meeting - ...` part,
 /// and a meeting line led by its `meeting_at` is read by
 /// [`parse_stamped_meeting`].
@@ -698,21 +718,26 @@ where
     let (time, rest) = line.trim().split_once('-')?;
     let time = time.trim();
     chrono::NaiveTime::parse_from_str(time, "%H:%M").ok()?;
-    let (action, source) = rest.rsplit_once('|')?;
+    let (head, last) = rest.rsplit_once('|')?;
+    // `action | source | project` when the field before the last is a source
+    // tag; otherwise the last field is the source and there is no project.
+    let (action, source, project) = match head.rsplit_once('|') {
+        Some((action, tag)) if reply_source(tag, granola).is_some() => {
+            (action, tag, Some(one_line(last)).filter(|p| !p.is_empty()))
+        }
+        _ => (head, last, None),
+    };
     let action = one_line(action);
     if action.is_empty() {
         return None;
     }
-    let source = source.trim();
-    let source = REPLY_SOURCES
-        .into_iter()
-        .chain(granola.then_some(CandidateSource::Granola))
-        .find(|s| source_tag(*s).eq_ignore_ascii_case(source))?;
+    let source = reply_source(source, granola)?;
     Some(NewCandidate {
         date: date.to_string(),
         time: Some(time.to_string()),
         text: action,
         source,
+        project,
     })
 }
 
@@ -735,6 +760,7 @@ fn parse_untimed_meeting(line: &str, date: &str) -> Option<NewCandidate> {
         time: None,
         text,
         source: CandidateSource::Granola,
+        project: None,
     })
 }
 
@@ -816,6 +842,7 @@ where
             time: None,
             text,
             source: CandidateSource::Granola,
+            project: None,
         });
     };
     Some(NewCandidate {
@@ -823,6 +850,7 @@ where
         time: Some(at.format("%H:%M").to_string()),
         text,
         source: CandidateSource::Granola,
+        project: None,
     })
 }
 
@@ -1598,6 +1626,31 @@ impl DateFailure {
     }
 }
 
+/// Keeps a candidate's project only when the date's activity names it
+/// (ignoring case and spacing), spelled as the activity spells it; a project
+/// the model made up or misspelled is dropped, so no pill names it.
+fn known_projects(candidates: Vec<NewCandidate>, items: &[ActivityItem]) -> Vec<NewCandidate> {
+    let names: BTreeMap<String, String> = items
+        .iter()
+        .map(|item| one_line(&item.project))
+        .filter(|name| !name.is_empty())
+        .map(|name| (name.to_lowercase(), name))
+        .collect();
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let project = candidate
+                .project
+                .as_deref()
+                .and_then(|project| names.get(&one_line(project).to_lowercase()).cloned());
+            NewCandidate {
+                project,
+                ..candidate
+            }
+        })
+        .collect()
+}
+
 /// One `claude` call for one date; returns how many candidates were added.
 /// `granola_window` is the run's window when Granola is on (`None` = off).
 async fn run_date<S: RunSources>(
@@ -1629,11 +1682,11 @@ async fn run_date<S: RunSources>(
             counts: message.starts_with(TIMEOUT_ERROR),
             message,
         })?;
-    let valid: Vec<NewCandidate> = parse_reply(&reply, date, &existing, granola)
-        .map_err(|message| DateFailure {
-            message,
-            counts: true,
-        })?
+    let parsed = parse_reply(&reply, date, &existing, granola).map_err(|message| DateFailure {
+        message,
+        counts: true,
+    })?;
+    let valid: Vec<NewCandidate> = known_projects(parsed, items)
         .iter()
         .filter_map(|candidate| match validate_candidate(candidate) {
             Ok(valid) => Some(valid),
@@ -1683,6 +1736,7 @@ mod tests {
             time: Some("09:00".to_string()),
             text: text.to_string(),
             source: CandidateSource::Git,
+            project: None,
             state,
             created_at: "2026-10-15T09:00:00Z".to_string(),
         }
@@ -1918,8 +1972,55 @@ mod tests {
     fn test_build_prompt_closes_with_the_one_line_per_project_rule() {
         let prompt = build_prompt("2026-10-15", &[], "", &[]);
         assert!(prompt.ends_with(
-            "Reply with one line per project with new work, HH:MM - action | source, or NONE."
+            "Reply with one line per project with new work, \
+             HH:MM - action | source | project, or NONE."
         ));
+    }
+
+    #[test]
+    fn test_system_prompt_asks_for_the_project_after_the_source() {
+        for needle in [
+            "HH:MM - action | source | project",
+            "project is the project name of the activity lines it came from, copied exactly",
+        ] {
+            assert!(SYSTEM_PROMPT.contains(needle), "missing {needle}");
+        }
+    }
+
+    #[test]
+    fn test_build_prompt_feeds_back_a_suggestion_with_its_project() {
+        let existing = vec![
+            Candidate {
+                project: Some("demo-shop".to_string()),
+                ..candidate("2026-10-15", "Worked on the cart", CandidateState::Pending)
+            },
+            candidate("2026-10-15", "Older line", CandidateState::Rejected),
+        ];
+        let prompt = build_prompt("2026-10-15", &[], "", &existing);
+        assert!(prompt.contains("09:00 - Worked on the cart | git | demo-shop\n"));
+        assert!(prompt.contains("09:00 - Older line | git\n"));
+    }
+
+    #[test]
+    fn test_parse_reply_reads_the_project_after_the_source() {
+        let reply = "09:05 - Fixed the login | git | demo-shop\n\
+                     09:10 - Ran the tests | Terminal\n\
+                     09:15 - Blank project | claude |   \n\
+                     09:20 - Wrote a | b | pr | demo-blog";
+        let parsed = parse_reply(reply, "2026-10-15", &[], false).unwrap();
+        let got: Vec<(&str, CandidateSource, Option<&str>)> = parsed
+            .iter()
+            .map(|c| (c.text.as_str(), c.source, c.project.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Fixed the login", CandidateSource::Git, Some("demo-shop")),
+                ("Ran the tests", CandidateSource::Terminal, None),
+                ("Blank project", CandidateSource::Claude, None),
+                ("Wrote a | b", CandidateSource::Pr, Some("demo-blog")),
+            ]
+        );
     }
 
     // --- Granola: command line and system prompt ---
@@ -2461,12 +2562,14 @@ mod tests {
                     time: Some("09:05".to_string()),
                     text: "Fixed the login bug".to_string(),
                     source: CandidateSource::Git,
+                    project: None,
                 },
                 NewCandidate {
                     date: "2026-10-15".to_string(),
                     time: Some("14:30".to_string()),
                     text: "Merged the PR for the backup".to_string(),
                     source: CandidateSource::Github,
+                    project: None,
                 },
             ]
         );
@@ -2569,18 +2672,21 @@ mod tests {
                     time: Some("14:30".to_string()),
                     text: "Meeting: Design sync, agreed the backup plan".to_string(),
                     source: CandidateSource::Granola,
+                    project: None,
                 },
                 NewCandidate {
                     date: "2026-10-15".to_string(),
                     time: None,
                     text: "Meeting - Planning: picked the next issue".to_string(),
                     source: CandidateSource::Granola,
+                    project: None,
                 },
                 NewCandidate {
                     date: "2026-10-15".to_string(),
                     time: Some("09:05".to_string()),
                     text: "Fixed the login bug".to_string(),
                     source: CandidateSource::Git,
+                    project: None,
                 },
             ]
         );
@@ -3038,6 +3144,40 @@ mod tests {
         assert!(asked[1].1.contains("08:00 - Standup"));
         assert!(asked[1].1.contains("Already there"));
         assert!(!asked[0].1.contains("08:00 - Standup"));
+    }
+
+    #[tokio::test]
+    async fn test_run_keeps_only_a_project_named_in_that_dates_activity() {
+        let in_project = |project: &str, time: &str, text: &str| ActivityItem {
+            project: project.to_string(),
+            ..item("2026-10-15", time, CandidateSource::Git, text)
+        };
+        let mut fake = Fake {
+            items: vec![
+                in_project("demo-shop", "09:00", "Commit a"),
+                in_project("Demo Blog", "09:30", "Commit b"),
+            ],
+            ..Fake::default()
+        };
+        fake.replies.insert(
+            "2026-10-15".into(),
+            "09:00 - Worked on the cart | git | DEMO-SHOP\n\
+             09:30 - Wrote a post | git |  demo   blog \n\
+             09:40 - Made it up | git | invented-project\n\
+             09:50 - No project given | git"
+                .into(),
+        );
+        let journal = journal_with(Some((now() - TimeDelta::hours(5)).to_rfc3339()), None);
+
+        run_with(&fake, &journal, &["C:\\git\\p".to_string()], now()).await;
+
+        let added = fake.added.lock().unwrap();
+        let projects: Vec<Option<&str>> = added.iter().map(|c| c.project.as_deref()).collect();
+        assert_eq!(
+            projects,
+            vec![Some("demo-shop"), Some("Demo Blog"), None, None],
+            "the activity's own spelling, and nothing the activity does not name"
+        );
     }
 
     /// The start of `date` as a run starting at `start` records it.
