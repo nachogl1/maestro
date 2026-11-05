@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import {
   ISSUE_MAP_CLOSED_EVENT,
   ISSUE_MAP_OPEN_EVENT,
+  ISSUE_MAP_PROJECTS_EVENT,
   ISSUE_MAP_SELECT_EVENT,
+  type IssueMapProject,
   type IssueMapSelection,
   type IssueMapTarget,
   issueMapWindowTitle,
@@ -28,6 +30,14 @@ export function IssueMapWindow({ initial }: IssueMapWindowProps) {
     applyTheme();
     window.addEventListener("storage", applyTheme);
     return () => window.removeEventListener("storage", applyTheme);
+  }, []);
+
+  // Tabs opened or closed in the main window while the map stays open.
+  useEffect(() => {
+    const unlisten = listen<IssueMapProject[]>(ISSUE_MAP_PROJECTS_EVENT, (event) =>
+      setTarget((current) => ({ ...current, projects: event.payload })),
+    );
+    return () => void unlisten.then((fn) => fn());
   }, []);
 
   useEffect(() => {
