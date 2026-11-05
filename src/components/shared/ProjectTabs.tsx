@@ -12,6 +12,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
 import { isMac } from "@/lib/platform";
 import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
@@ -51,8 +52,12 @@ function TabItem({
   onKeyDown: (e: React.KeyboardEvent) => void;
   tabRefCallback: (node: HTMLElement | null) => void;
 }) {
-  const { status, sessionCount, contextAlert } = useProjectStatus(tab.id);
+  const { status, sessionCount, contextAlert, hasAttention } = useProjectStatus(tab.id);
   const shouldPulse = status === "working" || status === "needs-input";
+  // Blinks with the session tab of the terminal that needs the user (issue
+  // #496), on the same clock; the red context alert outranks it.
+  const attentionBlinking = hasAttention && !contextAlert;
+  const attentionBlinkStyle = useAttentionBlink(attentionBlinking);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,
@@ -80,6 +85,7 @@ function TabItem({
           }`,
         }
       : {}),
+    ...attentionBlinkStyle,
   };
 
   return (
@@ -94,12 +100,19 @@ function TabItem({
       onClick={onSelect}
       onKeyDown={onKeyDown}
       data-context-alert={contextAlert ? "true" : undefined}
-      title={contextAlert ? "A terminal in this project reached the context alert" : undefined}
+      data-attention={attentionBlinking ? "true" : undefined}
+      title={
+        contextAlert
+          ? "A terminal in this project reached the context alert"
+          : attentionBlinking
+            ? "A terminal in this project needs you"
+            : undefined
+      }
       className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
         tab.active
           ? "bg-maestro-bg text-maestro-text"
           : "text-maestro-muted hover:text-maestro-text"
-      } ${contextAlert ? "project-tab-context-alert" : ""}`}
+      } ${contextAlert ? "project-tab-context-alert" : attentionBlinking ? "attention-blink" : ""}`}
     >
       <span className="flex items-center gap-1.5">
         <span

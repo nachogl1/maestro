@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { type FocusStep, useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
 import { usePendingLaunch } from "@/hooks/usePendingLaunch";
 import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
@@ -2929,6 +2930,10 @@ function ZoomTab({
   );
   // Context alert (Settings): the tab blinks red like the frame it stands for.
   const contextAlert = useSessionContextAlert(sessionId);
+  // Attention blinks yellow in step with the project tab (issue #496); the
+  // red context alert outranks it.
+  const attentionBlinking = hasAttention && !contextAlert.active;
+  const attentionBlinkStyle = useAttentionBlink(attentionBlinking);
 
   // Attention-first click semantics on the active tab: the first click only
   // acknowledges the attention highlight — it must not also set the warning
@@ -2946,6 +2951,7 @@ function ZoomTab({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
+    ...attentionBlinkStyle,
   };
 
   return (
@@ -2955,14 +2961,15 @@ function ZoomTab({
       {...attributes}
       {...listeners}
       onClick={isActive && onToggleFlag ? handleActiveClick : onSelect}
-      // Context alert outranks the flag/attention yellow (doubled CSS class):
-      // the terminal is about to run out of room whatever else it is doing.
+      // Context alert outranks the attention blink and the flag yellow
+      // (doubled CSS class): the terminal is about to run out of room
+      // whatever else it is doing. The blink outranks a solid flag.
       // The active tab is a solid fill with bright bold text and a blue
       // outline, so the focused terminal is found at a glance rather than by
       // reading the names.
       className={`
         flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors
-        ${contextAlert.active ? "zoom-tab-context-alert" : isFlagged || hasAttention ? "warning-flag" : ""}
+        ${contextAlert.active ? "zoom-tab-context-alert" : attentionBlinking ? "attention-blink" : isFlagged ? "warning-flag" : ""}
         ${
           isActive
             ? "bg-maestro-blue/35 font-bold text-maestro-text shadow-[inset_0_0_0_1px_rgb(var(--maestro-blue))]"

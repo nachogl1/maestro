@@ -160,7 +160,13 @@ describe("TerminalGrid zoom strip tabs: context alert and active fill", () => {
     spawnShellMock.mockReset();
     let nextSessionId = 1;
     spawnShellMock.mockImplementation(async () => nextSessionId++);
-    useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
+    useSessionStore.setState({
+      sessions: [],
+      samuraiBySessionId: {},
+      parkedSessionIds: [],
+      attentionSessionIds: [],
+      flaggedSessionIds: [],
+    });
     useContextAlertStore.setState({ threshold: 80 });
   });
 
@@ -218,5 +224,40 @@ describe("TerminalGrid zoom strip tabs: context alert and active fill", () => {
     expect(active.className).toContain("shadow-[inset_0_0_0_1px_rgb(var(--maestro-blue))]");
     expect(other.className).toContain("text-maestro-muted");
     expect(other.className).not.toContain("font-bold");
+  });
+
+  it("blinks the tab of a terminal that needs the user on the shared clock, under the red alert", async () => {
+    const handle = await renderTwoPaneGrid();
+    const [first, second] = useSessionStore.getState().sessions;
+    await act(async () => {
+      expect(handle.zoomSession(first.id)).toBe(true);
+    });
+
+    // The hidden terminal came back from the parking tray by itself.
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    act(() => {
+      useSessionStore.setState({ attentionSessionIds: [second.id] });
+    });
+    let tabs = zoomTabs();
+    expect(tabs[1].className).toContain("attention-blink");
+    expect(tabs[1].className).not.toContain("warning-flag");
+    expect(tabs[1].style.animationDuration).toBe("1200ms");
+    expect(tabs[1].style.animationDelay).toBe("-1000ms");
+    expect(tabs[0].className).not.toContain("attention-blink");
+    clock.mockRestore();
+
+    // Past the context threshold too: the red alert wins.
+    setContextPercent(second.id, 85);
+    tabs = zoomTabs();
+    expect(tabs[1].className).toContain("zoom-tab-context-alert");
+    expect(tabs[1].className).not.toContain("attention-blink");
+
+    // A flag the user set by hand stays solid yellow: it is a note, not a call.
+    act(() => {
+      useSessionStore.setState({ flaggedSessionIds: [first.id] });
+    });
+    tabs = zoomTabs();
+    expect(tabs[0].className).toContain("warning-flag");
+    expect(tabs[0].className).not.toContain("attention-blink");
   });
 });

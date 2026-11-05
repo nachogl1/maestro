@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { playAttentionTone } from "@/lib/attentionSound";
 import { emitParticleEffect } from "@/lib/particleEffects";
 import { normalizePath, samePath } from "@/lib/path";
 import {
@@ -10,6 +11,7 @@ import {
   type SamuraiSupervisorState,
 } from "@/lib/samurai";
 import { useAgentStore } from "@/stores/useAgentStore";
+import { useAttentionSoundStore } from "@/stores/useAttentionSoundStore";
 import {
   isScheduledWakeup,
   msUntilBackgroundTasksExpire,
@@ -722,6 +724,15 @@ function unparkWithAttention(
   };
 }
 
+/**
+ * Plays the attention tone when the Settings switch is on (issue #496). Called
+ * at most once per status change of a terminal, so a parked terminal that
+ * comes back because it needs input sounds once, not twice.
+ */
+function cueAttentionSound(): void {
+  if (useAttentionSoundStore.getState().enabled) playAttentionTone();
+}
+
 /** Subagents of a session that are still plausibly running (see SUBAGENT_STALE_MS). */
 function countRunningSubagents(sessionId: number): number {
   const now = Date.now();
@@ -813,6 +824,7 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
     const silentBackgroundWork = useBackgroundTaskStore
       .getState()
       .tasks.some((t) => t.sessionId === sessionId && t.finishedAt === null);
+    let landedOnNeedsInput = false;
     useSessionStore.setState((state) => {
       const target = state.sessions.find(
         (s) => s.id === sessionId && samePath(s.project_path, projectPath),
@@ -822,6 +834,7 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
       // This is the turn end the user never saw, so a parked session comes
       // back into the grid exactly as the Stop hook would have brought it.
       turnEndPending.delete(sessionId);
+      landedOnNeedsInput = true;
       return {
         sessions: state.sessions.map((s) =>
           s === target
@@ -839,6 +852,7 @@ function armSubagentWatchdog(sessionId: number, projectPath: string): void {
           : {}),
       };
     });
+    if (landedOnNeedsInput) cueAttentionSound();
   }, delay);
 
   subagentWatchdogs.set(sessionId, timer);
@@ -1383,6 +1397,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               armSubagentWatchdog(session_id, project_path);
             }
 
+            // Whether this change calls the user: a parked terminal coming
+            // back by itself, or a terminal starting to need input. A
+            // reminder (`suppressAutoUnpark`) repeats news already given.
+            let callsForUser = false;
             set((state) => {
               // Auto-unpark on the TRANSITION into a ready-for-the-user state:
               // a parked agent that stops — because it needs an answer, or
@@ -1405,6 +1423,12 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
                   (resolved.status === "Idle" && isBusyStatus(current.status))) &&
                 current.status !== resolved.status &&
                 state.parkedSessionIds.includes(session_id);
+              callsForUser =
+                autoUnpark ||
+                (current !== undefined &&
+                  !resolved.suppressAutoUnpark &&
+                  resolved.status === "NeedsInput" &&
+                  current.status !== "NeedsInput");
 
               return {
                 sessions: state.sessions.map((s) =>
@@ -1421,6 +1445,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
                 ...(autoUnpark ? unparkWithAttention(state, session_id) : {}),
               };
             });
+            if (callsForUser) cueAttentionSound();
           })
             .then((unlisten) => {
               activeUnlisten = unlisten;
