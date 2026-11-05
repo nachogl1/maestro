@@ -134,11 +134,13 @@ async function renderTwoPaneGrid(): Promise<TerminalGridHandle> {
   return handle;
 }
 
-/** Renders the grid with four launched slots, laid out two over two. */
-async function renderFourPaneGrid(): Promise<TerminalGridHandle> {
+/**
+ * Renders the grid with four launched slots, laid out two over two. Returns a
+ * getter: the handle is rebuilt on every render, so read it at call time.
+ */
+async function renderFourPaneGrid(): Promise<() => TerminalGridHandle> {
   const ref = createRef<TerminalGridHandle>();
   render(<TerminalGrid ref={ref} projectPath="C:/proj" tabId="tab-1" isActive />);
-  // The handle is rebuilt on every render, so read it fresh for each call.
   const current = (): TerminalGridHandle => {
     if (!ref.current) throw new Error("expected TerminalGrid ref to be attached");
     return ref.current;
@@ -152,7 +154,7 @@ async function renderFourPaneGrid(): Promise<TerminalGridHandle> {
     await current().launchAll();
   });
   await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(4));
-  return current();
+  return current;
 }
 
 /** Each pane host's share of the stage height in layout order, ignoring the divider gutter. */
@@ -240,7 +242,7 @@ describe("TerminalGrid tidy up layout (issue #407)", () => {
       (host) => host.dataset.slotId,
     );
 
-    act(() => handle.tidyLayout());
+    act(() => handle().tidyLayout());
 
     expect(paneWidths()).toEqual(["25%", "25%", "25%", "25%"]);
     expect(paneHeights()).toEqual(["100%", "100%", "100%", "100%"]);
@@ -263,6 +265,24 @@ describe("TerminalGrid tidy up layout (issue #407)", () => {
     fireEvent.mouseMove(window, { clientX: STAGE_WIDTH * 0.8, clientY: 0 });
     fireEvent.mouseUp(window);
     expect(paneWidths()).toEqual(["40%", "40%", "10%", "10%"]);
+  });
+
+  it("shares the row among the visible panes when one is parked", async () => {
+    const handle = await renderFourPaneGrid();
+    const third = useSessionStore.getState().sessions[2];
+    act(() => {
+      useSessionStore.setState({ parkedSessionIds: [third.id] });
+    });
+
+    act(() => handle().tidyLayout());
+
+    const visible = Array.from(document.querySelectorAll<HTMLElement>("[data-slot-id]")).filter(
+      (host) => !host.classList.contains("hidden"),
+    );
+    expect(visible).toHaveLength(3);
+    expect(
+      visible.map((host) => `${Math.round(Number(PERCENT_PATTERN.exec(host.style.width)?.[1]))}%`),
+    ).toEqual(["33%", "33%", "33%"]);
   });
 
   it("evens the panes on Alt+T without zooming", async () => {

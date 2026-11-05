@@ -333,6 +333,32 @@ describe("tidyIntoRow", () => {
     expect(tidyIntoRow(single)).toBe(single);
   });
 
+  it("shares the row among visible panes only, a parked pane kept beside its neighbour", () => {
+    /** Visible panes' width shares; a fully hidden side gives its room to the other. */
+    function visibleWidths(node: TreeNode, hidden: Set<string>, w = 1): [string, number][] {
+      if (node.type === "leaf") return hidden.has(node.slotId) ? [] : [[node.slotId, w]];
+      const [a, b] = node.children;
+      const aHidden = collectSlotIds(a).every((id) => hidden.has(id));
+      const bHidden = collectSlotIds(b).every((id) => hidden.has(id));
+      if (aHidden || bHidden)
+        return [...visibleWidths(a, hidden, w), ...visibleWidths(b, hidden, w)];
+      const r = node.direction === "vertical" ? node.ratio : 1;
+      const r2 = node.direction === "vertical" ? 1 - node.ratio : 1;
+      return [...visibleWidths(a, hidden, w * r), ...visibleWidths(b, hidden, w * r2)];
+    }
+
+    for (const parked of [["c"], ["a"], ["d"], ["a", "c"]]) {
+      const hidden = new Set(parked);
+      const tidy = tidyIntoRow(buildGridTree(["a", "b", "c", "d"]), hidden);
+      const widths = visibleWidths(tidy, hidden);
+      expect(collectSlotIds(tidy)).toEqual(["a", "b", "c", "d"]);
+      expect(widths.map(([id]) => id)).toEqual(
+        ["a", "b", "c", "d"].filter((id) => !hidden.has(id)),
+      );
+      for (const [, w] of widths) expect(w).toBeCloseTo(1 / widths.length);
+    }
+  });
+
   it("can still be resized and rearranged afterwards", () => {
     const row = tidyIntoRow(buildGridTree(["a", "b", "c", "d"]));
     if (row.type !== "split") throw new Error("expected split root");

@@ -363,11 +363,32 @@ function collectLeaves(tree: TreeNode): LeafNode[] {
   return [...collectLeaves(tree.children[0]), ...collectLeaves(tree.children[1])];
 }
 
+function besideEachOther(first: TreeNode, second: TreeNode): SplitNode {
+  return { type: "split", id: uid(), direction: "vertical", children: [first, second], ratio: 0.5 };
+}
+
 /**
- * Tidy up: every pane in one row of equal, full-height columns, in the order
- * they had (left-to-right, top-to-bottom). The leaves are kept, so each pane
- * keeps its identity; the splits are rebuilt. A single pane is returned as is.
+ * Tidy up: every visible pane in one row of equal, full-height columns, in the
+ * order they had (left-to-right, top-to-bottom). A hidden (parked) pane takes
+ * no column: it shares a split with the visible pane before it (the one after
+ * it when none comes before), which gets the whole column while it is hidden,
+ * so an unparked pane comes back beside that neighbour. The leaves are kept,
+ * so each pane keeps its identity; the splits are rebuilt. A single pane is
+ * returned as is.
  */
-export function tidyIntoRow(tree: TreeNode): TreeNode {
-  return buildBalancedSplit(collectLeaves(tree), "vertical");
+export function tidyIntoRow(tree: TreeNode, hidden: ReadonlySet<string> = new Set()): TreeNode {
+  const leaves = collectLeaves(tree);
+  const columns: TreeNode[] = [];
+  let leadingHidden: LeafNode[] = [];
+  for (const leaf of leaves) {
+    if (!hidden.has(leaf.slotId)) {
+      columns.push(leadingHidden.reduceRight<TreeNode>((col, h) => besideEachOther(h, col), leaf));
+      leadingHidden = [];
+    } else if (columns.length === 0) {
+      leadingHidden.push(leaf);
+    } else {
+      columns[columns.length - 1] = besideEachOther(columns[columns.length - 1], leaf);
+    }
+  }
+  return buildBalancedSplit(columns.length > 0 ? columns : leaves, "vertical");
 }

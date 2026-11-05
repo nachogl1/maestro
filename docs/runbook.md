@@ -72,7 +72,8 @@ The **Tidy up** button at the top right (or **Alt+T**) puts every terminal side 
 full-height columns**:
 
 - **Project view**: the project's terminals, in the order they had (left to right, then top to bottom). It also
-  works while a terminal is zoomed; the new layout shows when you leave the zoom.
+  works while a terminal is zoomed; the new layout shows when you leave the zoom. Parked terminals take no
+  column; one you unpark later comes back beside the terminal that was next to it.
 - **Eagle view**: every tile, in the order the tiles read on screen (top to bottom, then left to right). With more
   than ten tiles a column would be too narrow, so the tiles go back to the automatic grid instead.
 

@@ -658,8 +658,11 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // further down (it needs handleSwapSlots), so the hook reads it at call time.
   const moveFocusedRef = useRef<(direction: MoveDirection) => void>(() => {});
 
-  /** Tidy up: every pane in one row of equal, full-height columns, in their order. */
-  const handleTidyLayout = useCallback(() => setLayoutTree(tidyIntoRow), []);
+  /** Tidy up: every visible pane in one row of equal, full-height columns, in their order. */
+  const handleTidyLayout = useCallback(
+    () => setLayoutTree((tree) => tidyIntoRow(tree, parkedSlotIds)),
+    [parkedSlotIds],
+  );
 
   useTerminalKeyboard({
     terminalCount: launchedSlots.length,
