@@ -112,6 +112,18 @@ another one or onto an edge of the screen.
 - A project the suggestion run names that does not appear in that day's activity is left out, so a pill only ever
   names a real project.
 
+## Work Journal suggestions: Granola meetings
+
+- With Granola turned on (the Yes answer to the Granola question), each suggestion run looks up that day's meetings
+  in Granola and suggests one line per meeting, tagged `Granola`. A meeting already on the page, or already
+  suggested or rejected, is not suggested again.
+- Each run checks that Granola still offers the two tools Maestro uses (searching the day's meetings and reading
+  them). When Granola is connected but one of them is missing, the suggestions box shows: "Granola is connected,
+  but Maestro could not read your meetings. Maestro needs an update." Suggestions from git, GitHub, Claude and
+  terminals still arrive. The line goes away after the next run that finds both tools.
+- When Granola did not connect during a run (a slow or failed connection), that day is tried again on the next runs,
+  like any other failed day; the "needs an update" line does not show.
+
 ## Attention cues: sound, glow and blinking tabs
 
 When a terminal needs you, Maestro tells you in three ways:
