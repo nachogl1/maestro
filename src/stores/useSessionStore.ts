@@ -262,6 +262,11 @@ type RawSessionStatusPayload = Omit<SessionStatusPayload, "status"> & {
   status: BackendSessionStatus | WireOnlyStatus;
   /** Set on "AwaitingInput" only: what the Stop said about its turn (issue #501). */
   turn_end?: TurnEnd | null;
+  /**
+   * Set on the NeedsInput the question dialog (PreToolUse AskUserQuestion)
+   * paints (issue #502). Untrusted wire input: only a literal `true` counts.
+   */
+  question_dialog?: unknown;
 };
 
 /** Output of resolveStatusEvent: what to write onto the session. */
@@ -326,13 +331,18 @@ interface ResolvedStatus {
  *    auto-unparks like the Stop would have.
  * 4. "NeedsInput" (Notification hook, AskUserQuestion, or the MCP tool):
  *    dropped on Done/Error — a prompt reminder after the agent reported must
- *    not repaint a finished session red. Timeout is deliberately NOT
- *    protected: an explicit needs-input proves the CLI is alive, recovering
- *    a false startup timeout.
+ *    not repaint a finished session red. The question dialog
+ *    (`question_dialog: true`) is the exception: it is a tool call, never a
+ *    reminder, so an agent that reports finished and then asks still asks
+ *    (issue #502). Timeout is deliberately NOT protected: an explicit
+ *    needs-input proves the CLI is alive, recovering a false startup timeout.
  * 5. Everything else applies verbatim (last writer wins).
  */
 export function resolveStatusEvent(
-  payload: Pick<RawSessionStatusPayload, "status" | "message" | "needs_input_prompt" | "turn_end">,
+  payload: Pick<
+    RawSessionStatusPayload,
+    "status" | "message" | "needs_input_prompt" | "turn_end" | "question_dialog"
+  >,
   existingStatus: BackendSessionStatus | undefined,
   pendingWork: number | PendingWork,
   terminalReportedThisTurn = false,
@@ -398,7 +408,7 @@ export function resolveStatusEvent(
     };
   }
 
-  if (payload.status === "NeedsInput") {
+  if (payload.status === "NeedsInput" && payload.question_dialog !== true) {
     if (existingStatus !== undefined && terminal.includes(existingStatus)) {
       return null;
     }
@@ -807,7 +817,7 @@ function unparkWithAttention(
 
 /**
  * Plays the attention tone when the Settings switch is on (issue #496). Called
- * at most once per status change of a terminal, so a parked terminal that
+ * at most once per status event of a terminal, so a parked terminal that
  * comes back because it needs input sounds once, not twice.
  */
 function cueAttentionSound(): void {
@@ -1500,17 +1510,18 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             // reminder (`suppressAutoUnpark`) repeats news already given.
             let callsForUser = false;
             set((state) => {
-              // Auto-unpark on the TRANSITION into a ready-for-the-user state:
-              // a parked agent that stops — because it needs an answer, or
-              // because it finished or failed — must come back into view,
-              // marked for attention (yellow chrome) until the user selects
-              // it. Edge-triggered on purpose — if the user re-parks the
-              // still-stopped session, repeated events for the same status are
-              // not a new transition and must not undo that manual choice.
-              // Reminders (`suppressAutoUnpark`) never count either: they
-              // repeat a turn end the user already saw and parked away.
-              // A busy session dropping to Idle (the claude process exited
-              // mid-turn) turns its dot red too, so it comes back as well.
+              // Auto-unpark on every new ready-for-the-user event: a parked
+              // agent that stops — because it needs an answer, or because it
+              // finished or failed — must come back into view, marked for
+              // attention (yellow chrome) until the user selects it. Every
+              // such event handled here arrived after the user last parked
+              // the terminal, so it is news even when the dot already showed
+              // the same status (issue #502: a re-parked waiting terminal used
+              // to stay parked through every later question). Reminders
+              // (`suppressAutoUnpark`) never count: they repeat a turn end the
+              // user already saw and parked away. A busy session dropping to
+              // Idle (the claude process exited mid-turn) turns its dot red
+              // too, so it comes back as well.
               const current = state.sessions.find(
                 (s) => s.id === session_id && samePath(s.project_path, project_path),
               );
@@ -1519,7 +1530,6 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
                 !resolved.suppressAutoUnpark &&
                 (READY_FOR_USER_STATUSES.includes(resolved.status) ||
                   (resolved.status === "Idle" && isBusyStatus(current.status))) &&
-                current.status !== resolved.status &&
                 state.parkedSessionIds.includes(session_id);
               callsForUser =
                 autoUnpark ||

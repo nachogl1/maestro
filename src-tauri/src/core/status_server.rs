@@ -129,6 +129,11 @@ pub struct SessionStatusPayload {
     /// Set on a Stop hook's `AwaitingInput` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_end: Option<TurnEnd>,
+    /// True only on the `NeedsInput` the question dialog (PreToolUse
+    /// `AskUserQuestion`) paints: a tool call, never a reminder, so the
+    /// frontend applies it even over a reported Done/Error (issue #502).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub question_dialog: bool,
 }
 
 /// Request payload for the session-start hook.
@@ -367,6 +372,7 @@ fn emit_status(emit_fn: &EmitFn, session_id: u32, project_path: &str, payload: &
         message: payload.message.clone(),
         needs_input_prompt: payload.needs_input_prompt.clone(),
         turn_end: payload.turn_end.clone(),
+        question_dialog: false,
     };
 
     (emit_fn)(event_payload);
@@ -501,6 +507,27 @@ async fn emit_hook_status(
     message: &str,
     needs_input_prompt: Option<String>,
 ) {
+    emit_hook_payload(
+        state,
+        session_id,
+        status,
+        message,
+        needs_input_prompt,
+        false,
+    )
+    .await;
+}
+
+/// [`emit_hook_status`] with the question-dialog marker (see
+/// [`SessionStatusPayload::question_dialog`]).
+async fn emit_hook_payload(
+    state: &Arc<ServerState>,
+    session_id: u32,
+    status: &str,
+    message: &str,
+    needs_input_prompt: Option<String>,
+    question_dialog: bool,
+) {
     let project_path = {
         let projects = state.session_projects.read().await;
         projects.get(&session_id).cloned()
@@ -514,6 +541,7 @@ async fn emit_hook_status(
                 message: message.to_string(),
                 needs_input_prompt,
                 turn_end: None,
+                question_dialog,
             });
         }
         None => {
@@ -742,12 +770,13 @@ async fn handle_hook_pre_tool(
         return StatusCode::OK;
     }
     if tool_name == "AskUserQuestion" {
-        emit_hook_status(
+        emit_hook_payload(
             &state,
             maestro_session_id,
             "NeedsInput",
             "Waiting for you to answer a question",
             Some("The agent asked a question in the terminal".to_string()),
+            true,
         )
         .await;
     } else {
@@ -1129,6 +1158,7 @@ async fn handle_hook_stop(
             message: "Waiting for your input".to_string(),
             needs_input_prompt: None,
             turn_end: Some(turn_end),
+            question_dialog: false,
         });
     } else {
         // Not registered (yet): the CLI can end a turn before session
@@ -1810,6 +1840,50 @@ mod tests {
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].status, "NeedsInput");
         assert!(emitted[0].needs_input_prompt.is_some());
+    }
+
+    #[tokio::test]
+    async fn only_the_question_dialog_marks_its_needs_input_on_the_wire() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let question = serde_json::json!({
+            "session_id": "claude-uuid",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": "tu-q",
+            "tool_input": {"questions": []},
+        });
+        let prompt = serde_json::json!({
+            "session_id": "claude-uuid",
+            "hook_event_name": "Notification",
+            "notification_type": "permission_prompt",
+            "message": "synthetic prompt",
+        });
+        assert_eq!(
+            post_hook(addr, "/hook/pre-tool", Some("inst-secret"), question).await,
+            200
+        );
+        assert_eq!(
+            post_hook(addr, "/hook/notification", Some("inst-secret"), prompt).await,
+            200
+        );
+
+        let emitted = events.lock().unwrap();
+        assert_eq!(emitted.len(), 2);
+        let question_wire = serde_json::to_value(&emitted[0]).unwrap();
+        let prompt_wire = serde_json::to_value(&emitted[1]).unwrap();
+        assert_eq!(question_wire["status"], "NeedsInput");
+        assert_eq!(question_wire["question_dialog"], true, "{question_wire}");
+        assert_eq!(prompt_wire["status"], "NeedsInput");
+        assert!(
+            prompt_wire.get("question_dialog").is_none(),
+            "{prompt_wire}"
+        );
     }
 
     #[tokio::test]

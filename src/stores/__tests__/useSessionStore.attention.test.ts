@@ -36,13 +36,19 @@ let emitStatus: (
   sessionId: number,
   status: BackendSessionStatus | "AwaitingInput" | "IdleReminder" | "SessionEnded",
   projectPath?: string,
+  extra?: Record<string, unknown>,
 ) => void;
+
+/** The question dialog's NeedsInput, marked by the PreToolUse hook (issue #502). */
+function emitQuestionDialog(sessionId: number): void {
+  emitStatus(sessionId, "NeedsInput", "C:/proj", { question_dialog: true });
+}
 
 beforeAll(async () => {
   listenMock.mockImplementation(((_event: string, handler: (e: unknown) => void) => {
-    emitStatus = (sessionId, status, projectPath = "C:/proj") => {
+    emitStatus = (sessionId, status, projectPath = "C:/proj", extra = {}) => {
       handler({
-        payload: { session_id: sessionId, project_path: projectPath, status },
+        payload: { session_id: sessionId, project_path: projectPath, status, ...extra },
       });
     };
     return Promise.resolve(() => {});
@@ -97,17 +103,102 @@ describe("useSessionStore auto-unpark attention", () => {
     expect(state.sessions[0].status).toBe("NeedsInput");
   });
 
-  it("edge-triggered: a manual re-park is not undone by repeated NeedsInput events", () => {
+  /**
+   * Issue #502 (issue #478 cause 4): the unpark used to need a status change,
+   * so a terminal re-parked while its dot read NeedsInput stayed parked
+   * through every later question. Each new "needs you" event after the
+   * re-park brings it back.
+   */
+  it.each([
+    { name: "the question dialog", send: () => emitQuestionDialog(1) },
+    { name: "a permission prompt", send: () => emitStatus(1, "NeedsInput") },
+    { name: "a Stop resolved to NeedsInput", send: () => emitStatus(1, "AwaitingInput") },
+  ])("a terminal re-parked while waiting comes back on $name", ({ send }) => {
     useSessionStore.setState({ sessions: [session(1, "Working")] });
     useSessionStore.getState().parkSession(1);
-    emitStatus(1, "NeedsInput"); // auto-unparked
+    emitStatus(1, "AwaitingInput"); // auto-unparked
+    useSessionStore.getState().parkSession(1); // the user re-parks it, still NeedsInput
 
-    useSessionStore.getState().parkSession(1); // user re-parks it
-    emitStatus(1, "NeedsInput"); // same state, not a new transition
+    send();
 
     const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it.each([
+    "Done",
+    "Error",
+  ] as const)("a terminal re-parked after a %s report comes back on the next one, with attention", (reported) => {
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    useSessionStore.getState().parkSession(1);
+    emitStatus(1, reported); // auto-unparked
+    useSessionStore.getState().parkSession(1); // the user re-parks it, dot unchanged
+
+    emitStatus(1, reported);
+
+    const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("a terminal parked while already waiting comes back on the question dialog", () => {
+    useSessionStore.setState({ sessions: [session(1, "NeedsInput")] });
+    useSessionStore.getState().parkSession(1);
+
+    emitQuestionDialog(1);
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("a terminal re-parked after a turn end stays parked on the idle reminder that follows", () => {
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    useSessionStore.getState().parkSession(1);
+    emitStatus(1, "AwaitingInput"); // auto-unparked
+    useSessionStore.getState().parkSession(1); // the user re-parks it
+
+    emitStatus(1, "IdleReminder");
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
     expect(state.parkedSessionIds).toEqual([1]);
     expect(state.attentionSessionIds).toEqual([]);
+  });
+
+  /** Issue #502 (issue #478 cause 6): a question right after a "finished" report. */
+  it.each([
+    "Done",
+    "Error",
+  ] as const)("the question dialog after a %s report paints NeedsInput and unparks", (reported) => {
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    emitStatus(1, reported);
+    useSessionStore.getState().parkSession(1);
+
+    emitQuestionDialog(1);
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it.each([
+    { name: "no marker", extra: {} },
+    { name: "a string marker", extra: { question_dialog: "true" } },
+    { name: "a number marker", extra: { question_dialog: 1 } },
+  ])("a NeedsInput with $name after a finished report is still dropped", ({ extra }) => {
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    emitStatus(1, "Done");
+    useSessionStore.getState().parkSession(1);
+
+    emitStatus(1, "NeedsInput", "C:/proj", extra);
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("Done");
+    expect(state.parkedSessionIds).toEqual([1]);
   });
 
   it("a NEW transition into NeedsInput after a manual re-park auto-unparks again", () => {
@@ -181,19 +272,6 @@ describe("useSessionStore auto-unpark attention", () => {
     useSessionStore.getState().parkSession(1);
 
     emitStatus(1, "Working");
-
-    const state = useSessionStore.getState();
-    expect(state.parkedSessionIds).toEqual([1]);
-    expect(state.attentionSessionIds).toEqual([]);
-  });
-
-  it("edge-triggered: a manual re-park survives repeated Done events", () => {
-    useSessionStore.setState({ sessions: [session(1, "Working")] });
-    useSessionStore.getState().parkSession(1);
-    emitStatus(1, "Done"); // auto-unparked
-
-    useSessionStore.getState().parkSession(1); // user re-parks it
-    emitStatus(1, "Done"); // same state, not a new transition
 
     const state = useSessionStore.getState();
     expect(state.parkedSessionIds).toEqual([1]);
