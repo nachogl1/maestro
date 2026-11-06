@@ -13,7 +13,12 @@ import { listen } from "@tauri-apps/api/event";
 import type { ClaudeEvent } from "@/types/claude-events";
 import { type SubagentInfo, useAgentStore } from "../useAgentStore";
 import { useBackgroundTaskStore } from "../useBackgroundTaskStore";
-import { type BackendSessionStatus, type SessionConfig, useSessionStore } from "../useSessionStore";
+import {
+  type BackendSessionStatus,
+  type PendingWork,
+  type SessionConfig,
+  useSessionStore,
+} from "../useSessionStore";
 
 const listenMock = vi.mocked(listen);
 
@@ -117,6 +122,23 @@ function awaitingInput(sessionId: number) {
     status: "AwaitingInput",
     message: "Waiting for your input",
     needs_input_prompt: null,
+  };
+}
+
+/** Pending work of the kinds given, zero of every other kind. */
+function listed(work: Partial<PendingWork> = {}): PendingWork {
+  return { subagents: 0, commands: 0, monitors: 0, workflows: 0, wakeups: 0, loops: 0, ...work };
+}
+
+/**
+ * A Stop whose payload carried Claude Code's own lists of running work, as the
+ * status server forwards them (issue #501): counts per kind and whether the
+ * last message ended with a question mark.
+ */
+function stopWithLists(sessionId: number, work: PendingWork, endsWithQuestion = false) {
+  return {
+    ...awaitingInput(sessionId),
+    turn_end: { pending_work: work, ends_with_question: endsWithQuestion },
   };
 }
 
@@ -525,5 +547,143 @@ describe("session status: the Stop hook vs. running subagents", () => {
     emit(awaitingInput(1));
 
     expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
+  });
+
+  // ── Issue #501: the Stop payload's own lists of running work ──────────────
+
+  it("a stop listing a running background task holds Working when the transcript knows none", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    useSessionStore.getState().parkSession(1);
+
+    emit(stopWithLists(1, listed({ commands: 1 })));
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("Working");
+    expect(state.sessions[0].statusMessage).toBe("Waiting on 1 background command");
+    expect(state.parkedSessionIds).toEqual([1]);
+    expect(state.attentionSessionIds).toEqual([]);
+  });
+
+  it("a stop with empty lists paints NeedsInput over a stale transcript task", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+    useSessionStore.getState().parkSession(1);
+    backgroundStarted(1, "toolu_stale", "Bash");
+    useAgentStore.setState({ agents: [agent(1, "a1", null)] });
+
+    emit(stopWithLists(1, listed()));
+
+    const state = useSessionStore.getState();
+    expect(state.sessions[0].status).toBe("NeedsInput");
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it("a stop ending on a question paints NeedsInput and unparks while work still runs", () => {
+    const stops = [
+      stopWithLists(1, listed({ commands: 1, subagents: 1 }), true),
+      // An older payload with no lists: the transcript count is pending.
+      { ...awaitingInput(1), turn_end: { ends_with_question: true } },
+    ];
+    for (const stop of stops) {
+      useSessionStore.getState().removeSession(1);
+      useSessionStore.setState({ sessions: [session(1)], attentionSessionIds: [] });
+      useSessionStore.getState().parkSession(1);
+      useAgentStore.setState({ agents: [agent(1, "a1", null)] });
+
+      emit(stop);
+
+      const state = useSessionStore.getState();
+      expect(state.sessions[0].status).toBe("NeedsInput");
+      expect(state.parkedSessionIds).toEqual([]);
+      expect(state.attentionSessionIds).toEqual([1]);
+    }
+  });
+
+  it("a Done the agent reported this turn survives a stop ending on a question", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+
+    emit(mcpStatus(1, "Done", "all finished"));
+    emit(stopWithLists(1, listed(), true));
+
+    expect(useSessionStore.getState().sessions[0].status).toBe("Done");
+  });
+
+  it("work the stop listed keeps the session Working and parked past 30 minutes", () => {
+    vi.useFakeTimers();
+    try {
+      useSessionStore.setState({ sessions: [session(1)] });
+      useSessionStore.getState().parkSession(1);
+      // The transcript saw the subagent too, so the old 30-minute re-check
+      // would have aged it out and painted NeedsInput.
+      useAgentStore.setState({ agents: [agent(1, "a1", null)] });
+
+      emit(stopWithLists(1, listed({ subagents: 1 })));
+      vi.advanceTimersByTime(31 * 60 * 1000);
+      emit(idleReminder(1));
+
+      let state = useSessionStore.getState();
+      expect(state.sessions[0].status).toBe("Working");
+      expect(state.sessions[0].statusMessage).toBe("1 subagent running");
+      expect(state.parkedSessionIds).toEqual([1]);
+
+      // The subagent finished and woke the agent; its next Stop lists nothing.
+      emit(stopWithLists(1, listed()));
+
+      state = useSessionStore.getState();
+      expect(state.sessions[0].status).toBe("NeedsInput");
+      expect(state.parkedSessionIds).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("work the stop listed stops counting when the session ends", () => {
+    useSessionStore.setState({ sessions: [session(1)] });
+
+    emit(stopWithLists(1, listed({ loops: 1 })));
+    emit({ ...mcpStatus(1, "Idle", "Session ended"), status: "SessionEnded" });
+    emit(idleReminder(1));
+
+    expect(useSessionStore.getState().sessions[0].status).toBe("NeedsInput");
+  });
+
+  /**
+   * The turn end is untrusted structured input: whatever shape it arrives in,
+   * a malformed one falls back to today's transcript-based count (here, one
+   * background command the transcript saw) and never throws.
+   */
+  it("a malformed turn end falls back to the transcript count", () => {
+    const full = listed({ commands: 1 });
+    const malformed: unknown[] = [
+      null,
+      "turn end",
+      5,
+      [],
+      { pending_work: null },
+      { pending_work: "shell" },
+      { pending_work: [1] },
+      { pending_work: { commands: 1 } },
+      { pending_work: { ...full, subagents: "1" } },
+      { pending_work: { ...full, subagents: -1 } },
+      { pending_work: { ...full, subagents: 1.5 } },
+      { pending_work: { ...full, subagents: Number.NaN } },
+      { pending_work: { ...full, subagents: null } },
+      { ends_with_question: "true" },
+      { ends_with_question: 1 },
+    ];
+    for (const turnEnd of malformed) {
+      useSessionStore.getState().removeSession(1);
+      useSessionStore.setState({ sessions: [session(1)] });
+      useBackgroundTaskStore.setState({ tasks: [], sessionStarts: {} });
+      backgroundStarted(1, "toolu_ci", "Bash");
+
+      emit({ ...awaitingInput(1), turn_end: turnEnd });
+
+      const updated = useSessionStore.getState().sessions[0];
+      expect(updated.status, JSON.stringify(turnEnd)).toBe("Working");
+      expect(updated.statusMessage, JSON.stringify(turnEnd)).toBe(
+        "Waiting on 1 background command",
+      );
+    }
   });
 });

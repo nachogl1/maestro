@@ -169,6 +169,23 @@ into the grid.
   terminal back, so a new kind of prompt is never missed. Its type name is written to the app log as
   `unknown type`.
 
+## Parking: when a parked terminal comes back at a turn end
+
+When the agent ends its turn, Claude Code lists the work it left running: background commands, subagents, monitors,
+workflows, scheduled wakeups and loops. Maestro counts that list to decide whether a parked terminal comes back.
+
+- **Stays parked, status green ("working"):** the list still holds running work. The status line names it, for
+  example "Waiting on 1 background command". This holds for as long as the work runs, even past 30 minutes,
+  until the agent's next turn end or until the agent's process ends.
+- **Comes back (status turns to waiting for you):** the list is empty, so the agent has really finished.
+- **Comes back even while work runs:** the agent's last message ends with a question mark (spaces and new lines
+  after it do not count). It asked you something in plain text.
+- **An older Claude Code that sends no list** (or a list Maestro cannot read): Maestro counts the background work
+  it saw in the conversation file instead, as before. That count stops trusting work after 30 minutes, and the
+  terminal then comes back with "Background work stopped reporting" or "Subagents stopped reporting".
+- **The agent reported "finished" itself during that turn:** the terminal shows done and comes back, even when
+  its last message ends with a question mark.
+
 ## Work Journal header: Today and the page actions menu
 
 - The header shows **Previous day**, the page title, the **page actions** button (three dots, right of the title),

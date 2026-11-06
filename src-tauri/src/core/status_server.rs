@@ -87,6 +87,35 @@ pub struct StatusRequest {
     pub needs_input_prompt: Option<String>,
     #[allow(dead_code)]
     pub timestamp: String,
+    /// What a buffered Stop said about its turn. Never read from `/status`:
+    /// only the Stop hook fills it in.
+    #[serde(skip)]
+    pub turn_end: Option<TurnEnd>,
+}
+
+/// Work a Stop payload lists as still running, counted by the frontend's
+/// `PendingWork` kinds (issue #501).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PendingWorkCounts {
+    pub subagents: u32,
+    pub commands: u32,
+    pub monitors: u32,
+    pub workflows: u32,
+    pub wakeups: u32,
+    pub loops: u32,
+}
+
+/// What a Stop hook says about the turn it closes (issue #501). Only counts
+/// and a flag: no text from the payload ever reaches the frontend.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TurnEnd {
+    /// `None` when the payload carries no usable `background_tasks` and
+    /// `session_crons` lists (an older Claude Code, or a malformed payload):
+    /// the frontend then counts from the transcript as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_work: Option<PendingWorkCounts>,
+    /// Whether `last_assistant_message`, trimmed, ends with `?`.
+    pub ends_with_question: bool,
 }
 
 /// Payload emitted to the frontend for status changes.
@@ -97,6 +126,9 @@ pub struct SessionStatusPayload {
     pub status: String,
     pub message: String,
     pub needs_input_prompt: Option<String>,
+    /// Set on a Stop hook's `AwaitingInput` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_end: Option<TurnEnd>,
 }
 
 /// Request payload for the session-start hook.
@@ -334,6 +366,7 @@ fn emit_status(emit_fn: &EmitFn, session_id: u32, project_path: &str, payload: &
         status: status.to_string(),
         message: payload.message.clone(),
         needs_input_prompt: payload.needs_input_prompt.clone(),
+        turn_end: payload.turn_end.clone(),
     };
 
     (emit_fn)(event_payload);
@@ -480,6 +513,7 @@ async fn emit_hook_status(
                 status: status.to_string(),
                 message: message.to_string(),
                 needs_input_prompt,
+                turn_end: None,
             });
         }
         None => {
@@ -989,6 +1023,55 @@ async fn handle_hook_user_prompt_submit(
     StatusCode::OK
 }
 
+/// Adds one `background_tasks[]` entry to the count of its kind (issue #477
+/// lists the documented `type` values). A teammate or a cloud session is an
+/// agent at work, so it reads as a subagent; an unknown type, an `MCP task`
+/// or a missing type counts as a command.
+fn add_background_task(counts: &mut PendingWorkCounts, task_type: Option<&str>) {
+    let count = match task_type {
+        Some("subagent" | "teammate" | "cloud session") => &mut counts.subagents,
+        Some("monitor") => &mut counts.monitors,
+        Some("workflow") => &mut counts.workflows,
+        _ => &mut counts.commands,
+    };
+    *count += 1;
+}
+
+/// Counts the Stop payload's `background_tasks` and `session_crons` lists.
+///
+/// The payload is untrusted input: anything but two arrays of objects (an
+/// older Claude Code sends neither) returns `None`, so the frontend falls
+/// back to its transcript-based count instead of trusting a partial list.
+fn count_listed_work(extra: &serde_json::Value) -> Option<PendingWorkCounts> {
+    let tasks = extra.get("background_tasks")?.as_array()?;
+    let crons = extra.get("session_crons")?.as_array()?;
+    let mut counts = PendingWorkCounts::default();
+    for task in tasks {
+        let task_type = task.as_object()?.get("type").and_then(|t| t.as_str());
+        add_background_task(&mut counts, task_type);
+    }
+    for cron in crons {
+        // `recurring: false` is a one-shot wakeup; anything else repeats.
+        match cron.as_object()?.get("recurring") {
+            Some(serde_json::Value::Bool(false)) => counts.wakeups += 1,
+            _ => counts.loops += 1,
+        }
+    }
+    Some(counts)
+}
+
+/// Reads what a Stop payload says about its turn (see [`TurnEnd`]).
+fn read_turn_end(extra: &serde_json::Value) -> TurnEnd {
+    let ends_with_question = extra
+        .get("last_assistant_message")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| m.trim_end().ends_with('?'));
+    TurnEnd {
+        pending_work: count_listed_work(extra),
+        ends_with_question,
+    }
+}
+
 /// Handle the Stop hook callback.
 async fn handle_hook_stop(
     State(state): State<Arc<ServerState>>,
@@ -1031,6 +1114,9 @@ async fn handle_hook_stop(
     // the terminal as waiting for a reply. The frontend normalizes it to
     // NeedsInput unless the agent already reported a terminal state
     // (Done/Error) via MCP, or it handed work off to running subagents.
+    // Issue #501: the payload's own lists of running work, and whether the
+    // agent closed on a question, travel with it.
+    let turn_end = read_turn_end(&payload.extra);
     let project_path = {
         let projects = state.session_projects.read().await;
         projects.get(&maestro_session_id).cloned()
@@ -1042,6 +1128,7 @@ async fn handle_hook_stop(
             status: "AwaitingInput".to_string(),
             message: "Waiting for your input".to_string(),
             needs_input_prompt: None,
+            turn_end: Some(turn_end),
         });
     } else {
         // Not registered (yet): the CLI can end a turn before session
@@ -1065,6 +1152,7 @@ async fn handle_hook_stop(
                     message: "Waiting for your input".to_string(),
                     needs_input_prompt: None,
                     timestamp: Utc::now().to_rfc3339(),
+                    turn_end: Some(turn_end),
                 },
             );
         } else {
@@ -1179,6 +1267,7 @@ mod tests {
             message: message.to_string(),
             needs_input_prompt: None,
             timestamp: "2024-01-01T00:00:00Z".to_string(),
+            turn_end: None,
         }
     }
 
@@ -1316,6 +1405,241 @@ mod tests {
         assert_eq!(emitted[0].project_path, "/path/project");
         assert_eq!(emitted[0].status, "AwaitingInput");
         assert_eq!(emitted[0].needs_input_prompt, None);
+        // No lists (an older Claude Code): the frontend keeps its own count.
+        assert_eq!(emitted[0].turn_end, Some(TurnEnd::default()));
+    }
+
+    // ── Stop payload: pending work and the closing question (issue #501) ──
+
+    /// Pending work of the kinds given, zero of every other kind.
+    fn work(f: impl FnOnce(&mut PendingWorkCounts)) -> Option<PendingWorkCounts> {
+        let mut counts = PendingWorkCounts::default();
+        f(&mut counts);
+        Some(counts)
+    }
+
+    /// A Stop body with these lists (synthetic entries only, no real text).
+    fn stop_body(tasks: serde_json::Value, crons: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": "claude-uuid",
+            "hook_event_name": "Stop",
+            "background_tasks": tasks,
+            "session_crons": crons,
+        })
+    }
+
+    #[test]
+    fn stop_lists_count_per_pending_work_kind() {
+        use serde_json::json;
+        let task = |t: serde_json::Value| json!({ "id": "t1", "type": t, "status": "running" });
+        let cron =
+            |r: serde_json::Value| json!({ "id": "c1", "schedule": "* * * * *", "recurring": r });
+        let rows: Vec<(&str, serde_json::Value, Option<PendingWorkCounts>)> = vec![
+            (
+                "empty lists: nothing pending",
+                stop_body(json!([]), json!([])),
+                work(|_| {}),
+            ),
+            (
+                "every documented task type",
+                stop_body(
+                    json!([
+                        task(json!("shell")),
+                        task(json!("subagent")),
+                        task(json!("monitor")),
+                        task(json!("workflow")),
+                        task(json!("teammate")),
+                        task(json!("cloud session")),
+                        task(json!("MCP task")),
+                    ]),
+                    json!([]),
+                ),
+                work(|w| {
+                    w.commands = 2;
+                    w.subagents = 3;
+                    w.monitors = 1;
+                    w.workflows = 1;
+                }),
+            ),
+            (
+                "an unknown, missing or non-string type counts as a command",
+                stop_body(
+                    json!([
+                        task(json!("brand-new")),
+                        json!({ "id": "t2" }),
+                        task(json!(7))
+                    ]),
+                    json!([]),
+                ),
+                work(|w| w.commands = 3),
+            ),
+            (
+                "a one-shot cron is a wakeup; anything else is a loop",
+                stop_body(
+                    json!([]),
+                    json!([
+                        cron(json!(false)),
+                        cron(json!(true)),
+                        cron(json!("false")),
+                        json!({ "id": "c2" }),
+                    ]),
+                ),
+                work(|w| {
+                    w.wakeups = 1;
+                    w.loops = 3;
+                }),
+            ),
+            (
+                "no lists at all (older Claude Code)",
+                json!({ "session_id": "s", "hook_event_name": "Stop" }),
+                None,
+            ),
+            ("null lists", stop_body(json!(null), json!(null)), None),
+            ("one list missing", json!({ "background_tasks": [] }), None),
+            (
+                "a list that is a string",
+                stop_body(json!("shell"), json!([])),
+                None,
+            ),
+            (
+                "a list that is an object",
+                stop_body(json!([]), json!({ "id": "c1" })),
+                None,
+            ),
+            (
+                "a list that is a number",
+                stop_body(json!(3), json!([])),
+                None,
+            ),
+            ("a null task", stop_body(json!([null]), json!([])), None),
+            (
+                "a task that is a string",
+                stop_body(json!(["shell"]), json!([])),
+                None,
+            ),
+            (
+                "a cron that is a number",
+                stop_body(json!([]), json!([1])),
+                None,
+            ),
+        ];
+        for (name, body, expected) in rows {
+            assert_eq!(read_turn_end(&body).pending_work, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn stop_closing_question_is_a_trimmed_trailing_question_mark() {
+        use serde_json::json;
+        let rows: Vec<(&str, serde_json::Value, bool)> = vec![
+            ("a question", json!("Shall I go on?"), true),
+            ("trailing spaces", json!("Shall I go on?   "), true),
+            ("trailing newline", json!("Shall I go on?\n"), true),
+            (
+                "trailing tabs and newlines",
+                json!("Shall I go on?\t\r\n"),
+                true,
+            ),
+            ("a question mark alone", json!("?"), true),
+            ("empty string", json!(""), false),
+            ("only whitespace", json!("  \n "), false),
+            ("a statement", json!("All done."), false),
+            (
+                "a question mid-text",
+                json!("Ready? Then it is done."),
+                false,
+            ),
+            ("null", json!(null), false),
+            ("a number", json!(42), false),
+            ("an array", json!(["Shall I go on?"]), false),
+            ("an object", json!({ "text": "Shall I go on?" }), false),
+        ];
+        for (name, message, expected) in rows {
+            let body = json!({ "last_assistant_message": message });
+            assert_eq!(read_turn_end(&body).ends_with_question, expected, "{name}");
+        }
+        assert!(
+            !read_turn_end(&json!({})).ends_with_question,
+            "missing message"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_hook_forwards_listed_work_and_question_but_no_text() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let mut body = stop_body(
+            serde_json::json!([{
+                "id": "t1",
+                "type": "shell",
+                "status": "running",
+                "description": "synthetic-description",
+                "command": "synthetic-command",
+            }]),
+            serde_json::json!([]),
+        );
+        body["last_assistant_message"] = serde_json::json!("synthetic-question?\n");
+        assert_eq!(
+            post_hook(addr, "/hook/stop", Some("inst-secret"), body).await,
+            200
+        );
+
+        let emitted = events.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].status, "AwaitingInput");
+        assert_eq!(
+            emitted[0].turn_end,
+            Some(TurnEnd {
+                pending_work: work(|w| w.commands = 1),
+                ends_with_question: true,
+            })
+        );
+        // Only counts and a flag reach the frontend, never the payload's text.
+        let wire = serde_json::to_string(&emitted[0]).unwrap();
+        assert!(
+            !wire.contains("synthetic-"),
+            "text leaked onto the wire: {wire}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_hook_with_malformed_lists_still_reports_the_turn_end() {
+        let (emit_fn, events) = test_emit_fn();
+        let (addr, projects, _pend) = start_test_http_server("inst-secret", emit_fn).await;
+        projects
+            .write()
+            .await
+            .insert(1, "/path/project".to_string());
+
+        let mut body = stop_body(serde_json::json!([null, 5]), serde_json::json!("nope"));
+        body["last_assistant_message"] = serde_json::json!({ "not": "a string" });
+        assert_eq!(
+            post_hook(addr, "/hook/stop", Some("inst-secret"), body).await,
+            200
+        );
+
+        let emitted = events.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].status, "AwaitingInput");
+        assert_eq!(emitted[0].turn_end, Some(TurnEnd::default()));
+    }
+
+    #[test]
+    fn statuses_other_than_a_turn_end_carry_no_turn_end_on_the_wire() {
+        let (emit_fn, events) = test_emit_fn();
+        emit_status(
+            &emit_fn,
+            1,
+            "/path/project",
+            &make_status(1, "inst", "working", "busy"),
+        );
+        let wire = serde_json::to_value(&events.lock().unwrap()[0]).unwrap();
+        assert!(wire.get("turn_end").is_none(), "{wire}");
     }
 
     // ── Hook → status mapping tests (issue #105) ────────────────────
@@ -2043,10 +2367,11 @@ mod tests {
         let (addr, projects, pending) =
             start_test_http_server("inst-secret", emit_fn.clone()).await;
 
-        let body = serde_json::json!({
-            "session_id": "claude-uuid",
-            "hook_event_name": "Stop",
-        });
+        let mut body = stop_body(
+            serde_json::json!([{ "id": "t1", "type": "subagent", "status": "running" }]),
+            serde_json::json!([]),
+        );
+        body["last_assistant_message"] = serde_json::json!("synthetic?");
         assert_eq!(
             post_hook(addr, "/hook/stop", Some("inst-secret"), body).await,
             200
@@ -2075,6 +2400,14 @@ mod tests {
             assert_eq!(emitted[0].session_id, 1);
             assert_eq!(emitted[0].project_path, "/path/project");
             assert_eq!(emitted[0].status, "AwaitingInput");
+            // The buffered turn end keeps what its Stop listed (issue #501).
+            assert_eq!(
+                emitted[0].turn_end,
+                Some(TurnEnd {
+                    pending_work: work(|w| w.subagents = 1),
+                    ends_with_question: true,
+                })
+            );
         }
         assert!(pending.read().await.is_empty());
     }
