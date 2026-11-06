@@ -113,8 +113,6 @@ describe("useSessionStore auto-unpark attention", () => {
     { name: "the question dialog", send: () => emitQuestionDialog(1) },
     { name: "a permission prompt", send: () => emitStatus(1, "NeedsInput") },
     { name: "a Stop resolved to NeedsInput", send: () => emitStatus(1, "AwaitingInput") },
-    { name: "a finished report", send: () => emitStatus(1, "Done") },
-    { name: "an error report", send: () => emitStatus(1, "Error") },
   ])("a terminal re-parked while waiting comes back on $name", ({ send }) => {
     useSessionStore.setState({ sessions: [session(1, "Working")] });
     useSessionStore.getState().parkSession(1);
@@ -122,6 +120,22 @@ describe("useSessionStore auto-unpark attention", () => {
     useSessionStore.getState().parkSession(1); // the user re-parks it, still NeedsInput
 
     send();
+
+    const state = useSessionStore.getState();
+    expect(state.parkedSessionIds).toEqual([]);
+    expect(state.attentionSessionIds).toEqual([1]);
+  });
+
+  it.each([
+    "Done",
+    "Error",
+  ] as const)("a terminal re-parked after a %s report comes back on the next one, with attention", (reported) => {
+    useSessionStore.setState({ sessions: [session(1, "Working")] });
+    useSessionStore.getState().parkSession(1);
+    emitStatus(1, reported); // auto-unparked
+    useSessionStore.getState().parkSession(1); // the user re-parks it, dot unchanged
+
+    emitStatus(1, reported);
 
     const state = useSessionStore.getState();
     expect(state.parkedSessionIds).toEqual([]);
