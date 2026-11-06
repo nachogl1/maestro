@@ -1,0 +1,46 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "issue": 499,
+  "title": "Work Journal header: a Today button, and the other page actions in a menu right of the date",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T19:52:09Z",
+  "finished_at": "2026-11-05T21:07:00Z",
+  "outcome": "merged",
+  "pr": 524,
+  "summary": "The journal header now shows Previous day, the title, a page-actions menu, Next day and Today; Jump to date, New page, Delete, Report and Pop out moved into a keyboard-friendly menu.",
+  "agents": [
+    {
+      "name": "dev-499",
+      "model": "opus",
+      "tokens_total": 169596
+    },
+    {
+      "name": "review-499",
+      "model": "opus",
+      "tokens_total": 111417
+    },
+    {
+      "name": "review-499-r2",
+      "model": "opus",
+      "tokens_total": 103263
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2530,
+    "review_seconds": 580,
+    "ci_seconds": 300
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [
+    "the machine (7.8 GB) ran out of memory when two dev agents ran their full suites at once; both runs were killed mid-gate and cost about 30 minutes; fixed in-run with a gate lock (mkdir C:/git/maestro-wt/gate-lock) so heavy commands run one at a time",
+    "the menu opened past the pane edge; happy-dom does no layout so unit tests could not catch it and a review round was spent; the reviewer caught it by rendering the built CSS in headless Edge"
+  ],
+  "lessons_learned": [
+    "A front-end story that adds a popover should render it with the built styles in a headless browser before the PR opens; unit tests in happy-dom do not check layout"
+  ],
+  "deferred": []
+}

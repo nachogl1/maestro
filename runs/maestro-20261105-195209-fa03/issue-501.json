@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "issue": 501,
+  "title": "Parking: a turn end counts running work from Claude Code's own list, and a question mark brings the terminal back",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T20:48:57Z",
+  "finished_at": "2026-11-06T01:03:04Z",
+  "outcome": "merged",
+  "pr": 526,
+  "summary": "A turn end now counts running work from the Stop payload's background_tasks and session_crons lists, so a parked terminal stays parked while that work runs, and a closing question unparks it; malformed payloads fall back to the transcript count.",
+  "agents": [
+    {
+      "name": "dev-501",
+      "model": "opus",
+      "tokens_total": 172507
+    },
+    {
+      "name": "review-501",
+      "model": "opus",
+      "tokens_total": 124606
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1660,
+    "review_seconds": 400,
+    "ci_seconds": 330
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/status_server.rs",
+      "what": "A closing question wrapped in or followed by markdown (for example **Shall I merge it?** or a question followed by a numbered list) does not end with ?, so with a listed task still running the terminal stays parked and green while the agent waits for the person",
+      "why": "The literal ends-with-? rule was decided with the maintainer on issue #478 (unpark audit); widening it is a product call",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

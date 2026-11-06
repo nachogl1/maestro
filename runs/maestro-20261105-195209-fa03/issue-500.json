@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "issue": 500,
+  "title": "Parking: notifications that need nobody no longer bring a parked terminal back",
+  "login": "nachogl1",
+  "started_at": "2026-11-05T19:52:09Z",
+  "finished_at": "2026-11-05T20:48:19Z",
+  "outcome": "merged",
+  "pr": 525,
+  "summary": "Plugin notices and agent-view notices no longer pull a parked terminal back; usage-limit pauses and unknown notice types still do. Classification table tests over every listed type and malformed values.",
+  "agents": [
+    {
+      "name": "dev-500",
+      "model": "opus",
+      "tokens_total": 109074
+    },
+    {
+      "name": "review-500",
+      "model": "opus",
+      "tokens_total": 88826
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2860,
+    "review_seconds": 415,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [
+    "the machine (7.8 GB) ran out of memory when two dev agents ran their full suites at once; both runs were killed mid-gate and cost about 30 minutes; fixed in-run with a gate lock (mkdir C:/git/maestro-wt/gate-lock) so heavy commands run one at a time"
+  ],
+  "lessons_learned": [
+    "On this machine, every dev and review brief must tell agents to take the gate lock before npm test, vitest, build or any cargo command; parallel suites do not fit in memory"
+  ],
+  "deferred": []
+}

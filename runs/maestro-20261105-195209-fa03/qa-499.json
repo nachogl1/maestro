@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "login": "nachogl1",
+  "no_qa_reason": null,
+  "issue": 499,
+  "title": "Work Journal header: a Today button, and the other page actions in a menu right of the date",
+  "pr": 524,
+  "merged_at": "2026-11-05T21:07:00Z",
+  "merge_commit": "20a506e297cb0f96d83e98ef2f463b6b6537e656",
+  "seam": "src/components/workjournal/WorkJournalPanel.tsx",
+  "story": "The journal header now shows just the day arrows, the title and a Today button that brings you back to today. The rarer page actions (Jump to date, New page for a date, Delete page, Report, Pop out) moved into a small three-dot menu next to the title, which opens inside the journal and works fully from the keyboard. The pop-out window has the same header without Pop out.",
+  "checks": [
+    {
+      "key": "workjournal-header/today",
+      "criterion": "Today jumps to today's page from any other date",
+      "steps": "Open the Work Journal, press Previous day twice, then Today. Then press Next day three times, then Today.",
+      "expected": "Both times the title shows today's date."
+    },
+    {
+      "key": "workjournal-header/menu-mouse",
+      "criterion": "Every action that left the header works from the menu",
+      "steps": "Open the Work Journal in the side pane, made as narrow as it goes, and click the three-dot button right of the title. Click each action in turn. Repeat in the pop-out window.",
+      "expected": "The menu opens inside the pane with Jump to date, New page for a date, Delete page, Report and Pop out shown in full; each opens its date row, the delete question, the report dialog or the separate window. In the pop-out window the menu fits and has no Pop out."
+    },
+    {
+      "key": "workjournal-header/menu-keyboard",
+      "criterion": "The same actions work by keyboard",
+      "steps": "Tab to the three-dot button and press Down. Press Down to reach Report and press Enter. Open the menu again, choose Jump to date with Enter and type 2026-10-01. Open it again and press Esc.",
+      "expected": "The first action is highlighted on open; Report opens the report dialog; the cursor is already in the date field for Jump to date; Esc closes the menu and returns focus to the button."
+    }
+  ]
+}

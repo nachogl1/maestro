@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "login": "nachogl1",
+  "no_qa_reason": "Telling these notifications apart needs a real Claude Code session that sends a plugin or agent-view notice, which cannot be triggered on demand; covered by Rust tests through the real HTTP hook.",
+  "issue": 500,
+  "title": "Parking: notifications that need nobody no longer bring a parked terminal back",
+  "pr": 525,
+  "merged_at": "2026-11-05T20:48:19Z",
+  "merge_commit": "ba3a86fa786a9b773126cf42f4781ab56632af59",
+  "seam": "classify_notification and its tests in src-tauri/src/core/status_server.rs",
+  "story": "Before this change, a plugin message or a background agent notice could pull a parked terminal back into the grid with nothing for you to do. Now those notices leave the terminal parked and its status unchanged. A usage-limit pause you must resume by hand still brings it back, and so does any notice type Maestro does not know yet.",
+  "checks": []
+}

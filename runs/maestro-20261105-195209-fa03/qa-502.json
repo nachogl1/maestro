@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "login": "nachogl1",
+  "no_qa_reason": null,
+  "issue": 502,
+  "title": "Parking: every new question brings a parked terminal back, even when it already showed waiting",
+  "pr": 527,
+  "merged_at": "2026-11-06T01:50:58Z",
+  "merge_commit": "d7af0b4554af34bf2ecddf1ad8c7fd3cb836b9dc",
+  "seam": "The auto-unpark rule and resolveStatusEvent in src/stores/useSessionStore.ts",
+  "story": "Before, a parked terminal only came back when its status changed, so parking one that already showed waiting hid every later question. Now each new question, permission prompt, turn end, finish or error brings it back, while the 60-second idle reminder still does not. A question asked right after the agent reports finished also brings it back now.",
+  "checks": [
+    {
+      "key": "parking/question-dialog-while-waiting",
+      "criterion": "A parked terminal already showing waiting comes back when the question dialog opens",
+      "steps": "Start a Claude terminal and send \"Say hi, then wait.\" When its dot turns red, park it. Send \"Use AskUserQuestion to ask me: Pick a colour, red or blue.\"",
+      "expected": "The terminal returns to the grid with yellow attention chrome and its status says it waits on your answer."
+    },
+    {
+      "key": "parking/new-prompt-after-repark",
+      "criterion": "A re-parked waiting terminal comes back on a new permission prompt or a new turn end",
+      "steps": "Park a red (waiting) terminal. Send \"Run the shell command echo synthetic-502\" without auto-approving shell commands. Answer the prompt, wait for the dot to turn red, park it again, then send \"Reply with ok.\"",
+      "expected": "The terminal comes back at the permission prompt, and again at the next turn end."
+    },
+    {
+      "key": "parking/idle-reminder-respected",
+      "criterion": "A terminal re-parked after a turn end stays parked on the idle reminder",
+      "steps": "Send \"Reply with ok.\" When it comes back by itself, park it again and wait 90 seconds without typing.",
+      "expected": "It stays in the parking tray and does not return to the grid."
+    },
+    {
+      "key": "parking/question-after-finished",
+      "criterion": "The question dialog after an MCP finished report paints waiting and unparks",
+      "steps": "Send \"Report finished with the maestro status tool, then use AskUserQuestion to ask: Ship now, yes or no?\" Park the terminal straight away.",
+      "expected": "The dot turns from done to waiting and the terminal returns to the grid with attention chrome."
+    }
+  ]
+}

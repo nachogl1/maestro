@@ -1,0 +1,45 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "issue": 502,
+  "title": "Parking: every new question brings a parked terminal back, even when it already showed waiting",
+  "login": "nachogl1",
+  "started_at": "2026-11-06T01:03:33Z",
+  "finished_at": "2026-11-06T01:50:58Z",
+  "outcome": "merged",
+  "pr": 527,
+  "summary": "Every new needs-you event (question dialog, permission prompt, turn end, Done, Error) now brings a parked terminal back even if its status did not change; the idle reminder still respects a re-park, and a question after an MCP finished report now paints waiting.",
+  "agents": [
+    {
+      "name": "dev-502",
+      "model": "opus",
+      "tokens_total": 164083
+    },
+    {
+      "name": "review-502",
+      "model": "opus",
+      "tokens_total": 129046
+    },
+    {
+      "name": "review-502-r2",
+      "model": "opus",
+      "tokens_total": 102444
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1940,
+    "review_seconds": 550,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 1
+  },
+  "friction": [
+    "the dev deleted an existing test whose behaviour the issue reverses instead of flipping its assertion in the same scenario; the gap let a regression pass and cost a review round"
+  ],
+  "lessons_learned": [
+    "When an issue reverses an existing behaviour, keep the old test scenario and flip its assertion; never replace it with rows that test a different scenario"
+  ],
+  "deferred": []
+}

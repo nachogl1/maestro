@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261105-195209-fa03",
+  "login": "nachogl1",
+  "no_qa_reason": null,
+  "issue": 501,
+  "title": "Parking: a turn end counts running work from Claude Code's own list, and a question mark brings the terminal back",
+  "pr": 526,
+  "merged_at": "2026-11-06T01:03:04Z",
+  "merge_commit": "06b214f49f324740cb66f938650561faaf6153f5",
+  "seam": "handle_hook_stop in src-tauri/src/core/status_server.rs; resolveStatusEvent, countPendingWork and the subagent watchdog in src/stores/useSessionStore.ts",
+  "story": "A parked terminal used to come back too early, sometimes as its agent started background work, and always after 30 minutes. It now trusts the list of running work Claude Code sends at the end of a turn, so it stays parked as long as that work really runs. When the agent ends its turn with a question, the terminal comes back straight away even if work is still running.",
+  "checks": [
+    {
+      "key": "parking/stop-listed-work",
+      "criterion": "A turn end that lists running work keeps a parked terminal parked, even past 30 minutes",
+      "steps": "Open a Claude terminal and ask it to run `sleep 2400` in the background, then end its turn. Park the terminal and wait 35 minutes.",
+      "expected": "The terminal stays parked with a green status reading \"Waiting on 1 background command\", and no stopped-reporting message."
+    },
+    {
+      "key": "parking/stop-empty-lists",
+      "criterion": "A turn end with nothing running brings a parked terminal back",
+      "steps": "Ask the agent to say hello and stop, and park the terminal before it ends.",
+      "expected": "The terminal comes back into the grid with yellow attention and a red waiting status."
+    },
+    {
+      "key": "parking/stop-question",
+      "criterion": "A turn end whose last message ends with ? brings a parked terminal back even while work runs",
+      "steps": "Ask the agent to run `sleep 600` in the background, then end its turn by asking \"Shall I also update the README?\". Park the terminal before it ends.",
+      "expected": "The terminal comes back with attention and a waiting status while the sleep still runs."
+    }
+  ]
+}
