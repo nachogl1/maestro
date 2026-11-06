@@ -1,0 +1,1 @@
+Parking: a parked terminal comes back every time the agent asks you something new, even when it already showed waiting, and a question asked right after the agent said it finished is no longer missed.

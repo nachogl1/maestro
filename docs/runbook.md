@@ -186,6 +186,16 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
 - **The agent reported "finished" itself during that turn:** the terminal shows done and comes back, even when
   its last message ends with a question mark.
 
+## Parking: every new question brings a parked terminal back
+
+- **Each new question brings it back**, even when its status already showed waiting for you: the agent's question
+  dialog, a new permission prompt, a turn end that waits for you, a "finished" report and an error. Parking the
+  terminal again keeps it parked only until the next such question.
+- **The 60-second reminder does not count**: a terminal you park again after a turn end stays parked when the
+  reminder arrives.
+- **A question right after "finished"**: when the agent reports it finished and then opens its question dialog,
+  the status turns to waiting for you and the terminal comes back.
+
 ## Work Journal header: Today and the page actions menu
 
 - The header shows **Previous day**, the page title, the **page actions** button (three dots, right of the title),
