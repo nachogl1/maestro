@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Left panels prototype</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --blue: #3b82f6;
+    --green: #3fb950; --yellow: #eab308; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: #060608; color: var(--text); font: 12px/1.4 system-ui, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+  svg.lucide { width: 15px; height: 15px; stroke-width: 1.75; }
+
+  /* ---------- the app window ---------- */
+  .win { flex: 1; min-height: 560px; display: flex; flex-direction: column; background: var(--bg); border-bottom: 1px solid var(--border); overflow: hidden; }
+  .ptabs { height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .logo { align-self: center; width: 18px; height: 18px; border-radius: 4px; background: var(--accent); margin-right: 8px; }
+  .ptab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px 6px 0 0; color: var(--muted); font-size: 12px; }
+  .ptab.on { background: var(--bg); color: var(--text); }
+  .wctl { margin-left: auto; align-self: center; display: flex; gap: 14px; color: var(--muted); padding-right: 4px; }
+
+  .main { flex: 1; display: flex; min-height: 0; }
+
+  /* icon strip */
+  .strip { width: 44px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 6px 0; gap: 2px; }
+  .strip .sep { width: 22px; height: 1px; background: var(--border); margin: 5px 0; }
+  .ico { position: relative; width: 34px; height: 32px; display: flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--muted); border-radius: 6px; cursor: pointer; }
+  .ico:hover { background: var(--card); color: var(--text); }
+  .ico.on { color: var(--accent); }
+  .ico.on::before { content: ""; position: absolute; left: -5px; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--accent); }
+  .ico.shake { animation: shake .35s; }
+  @keyframes shake { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+  .ico .tip { display: none; position: absolute; left: 40px; top: 50%; transform: translateY(-50%); white-space: nowrap; z-index: 20;
+              background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 3px 8px; border-radius: 4px; font-size: 11px; pointer-events: none; }
+  .ico:hover .tip { display: block; }
+  .tip .k { color: var(--muted); margin-left: 6px; }
+
+  /* open panels */
+  .panel { position: relative; flex-shrink: 0; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); min-width: 0; }
+  .phead { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; border-bottom: 1px solid var(--border); }
+  .phead .t { font-size: 13px; font-weight: 500; flex: 1; }
+  .phead .x { border: 0; background: none; color: var(--muted); border-radius: 4px; padding: 3px; cursor: pointer; display: flex; }
+  .phead .x:hover { background: var(--card); color: var(--text); }
+  .phead svg.lucide { color: var(--muted); }
+  .pbody { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .grip { position: absolute; top: 0; bottom: 0; right: -3px; width: 6px; cursor: col-resize; z-index: 5; }
+  .grip:hover, .grip.drag { background: rgba(255,26,58,.35); }
+
+  /* terminals column */
+  .right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .topbar { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 10px; border-bottom: 1px solid var(--border); }
+  .tb { display: flex; align-items: center; gap: 5px; border: 0; background: none; color: var(--muted); border-radius: 5px; padding: 4px 7px; font-size: 11px; }
+  .tb.slot { font-variant-numeric: tabular-nums; }
+  .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 6px; padding: 6px; }
+  .term { min-width: 0; background: #0a0a0c; border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; overflow: hidden; }
+  .term.ask { border-color: var(--accent); }
+  .term.work { border-color: rgba(59,130,246,.6); }
+  .thead { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; }
+  .thead .st { margin-left: auto; font-weight: 500; font-size: 10px; }
+  .tout { flex: 1; padding: 6px 8px; font: 11px/1.5 ui-monospace, Consolas, monospace; color: rgba(232,232,236,.82); overflow: hidden; white-space: pre; }
+  .tout .m { color: var(--muted); } .tout .g { color: var(--green); } .tout .a { color: var(--accent); } .tout .b { color: var(--blue); }
+
+  /* shared panel content bits */
+  .card { background: var(--card); border: 1px solid rgba(38,38,44,.6); border-radius: 8px; padding: 8px 10px; }
+  .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+  .row { display: flex; align-items: center; gap: 6px; padding: 3px 0; white-space: nowrap; overflow: hidden; }
+  .row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .muted { color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .chip { font-size: 9px; font-weight: 700; text-transform: uppercase; border-radius: 3px; padding: 0 4px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+  .sw { width: 26px; height: 14px; border-radius: 7px; background: var(--border); position: relative; flex-shrink: 0; }
+  .sw.on { background: var(--accent); }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+  .sw.on::after { left: 14px; }
+
+  /* ---------- explanation strip under the window ---------- */
+  .notes { flex-shrink: 0; display: flex; gap: 28px; padding: 12px 16px 16px; color: var(--muted); flex-wrap: wrap; background: #060608; }
+  .notes h1 { color: var(--text); font-size: 14px; margin: 0 0 6px; }
+  .notes ul { margin: 0; padding-left: 18px; max-width: 640px; }
+  .notes li { margin-bottom: 3px; }
+  .notes b { color: var(--text); }
+  .ctl { display: flex; flex-direction: column; gap: 8px; min-width: 280px; }
+  .ctl .q { color: var(--text); font-weight: 600; }
+  .ctl label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .btn2 { align-self: flex-start; background: none; border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+  .meter { font-variant-numeric: tabular-nums; }
+  .toast { position: fixed; top: 48px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--accent); color: var(--text); border-radius: 6px; padding: 7px 14px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50; }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="win">
+  <div class="ptabs">
+    <span class="logo"></span>
+    <span class="ptab on"><span class="dot" style="background:#5aa9ff"></span>shop</span>
+    <span class="ptab"><span class="dot" style="background:#c084fc"></span>site</span>
+    <span class="ptab"><i data-lucide="plus"></i></span>
+    <span class="wctl"><i data-lucide="minus"></i><i data-lucide="square"></i><i data-lucide="x"></i></span>
+  </div>
+  <div class="main" id="main">
+    <nav class="strip" id="strip"></nav>
+    <div id="panels" style="display:flex;min-width:0"></div>
+    <div class="right">
+      <div class="topbar">
+        <span class="tb"><i data-lucide="layout-grid"></i>Tidy</span>
+        <span class="tb slot"><i data-lucide="terminal"></i>4 / 6</span>
+        <span class="tb"><i data-lucide="plus"></i>Add session</span>
+        <span class="tb"><i data-lucide="eye"></i>Eagle view</span>
+        <span style="flex:1"></span>
+        <span class="tb muted">no panel buttons up here any more</span>
+      </div>
+      <div class="grid">
+        <div class="term ask"><div class="thead"><span class="dot" style="background:var(--accent)"></span>checkout-api <span class="muted" style="font-weight:400">· shop</span><span class="chip" style="background:rgba(63,185,80,.15);color:var(--green)">worktree</span><span class="st" style="color:var(--accent)">Needs your input</span></div>
+<div class="tout"><span class="m">● Read src/routes/checkout.ts</span>
+<span class="m">● Edit src/routes/checkout.ts (+12 −3)</span>
+
+The empty-cart check now returns 400. Should I also
+add a test for a cart with a zero-price item?
+
+<span class="a">❯ 1. Yes, add the test</span>
+  2. No, leave it
+  3. Type something else</div></div>
+        <div class="term work"><div class="thead"><span class="dot" style="background:var(--blue)"></span>ui <span class="muted" style="font-weight:400">· shop</span><span class="chip" style="background:rgba(130,130,142,.2);color:var(--muted)">project</span><span class="st" style="color:var(--blue)">Working</span></div>
+<div class="tout"><span class="m">● Bash(npm test)</span>
+  <span class="g">✓</span> renders the cart total (12 ms)
+  <span class="g">✓</span> disables pay with an empty cart (8 ms)
+  <span class="g">✓</span> shows the discount line (5 ms)
+
+<span class="b">✻ Running the rest of the suite…</span></div></div>
+        <div class="term"><div class="thead"><span class="dot" style="background:var(--green)"></span>docs <span class="muted" style="font-weight:400">· shop</span><span class="st muted">Idle</span></div>
+<div class="tout"><span class="m">● Write docs/runbook.md</span>
+
+Done. The run-book now explains the new
+checkout errors.
+
+<span class="m">&gt; </span></div></div>
+        <div class="term"><div class="thead"><span class="dot" style="background:var(--muted)"></span>review <span class="muted" style="font-weight:400">· shop</span><span class="st muted">Parked</span></div>
+<div class="tout"><span class="m">Parked until something needs you.</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <div>
+    <h1>Throwaway prototype: every panel on the left, several open at once</h1>
+    <ul>
+      <li><b>Click icons</b> in the thin strip on the far left. Each one opens its panel to the right of the strip; click again (or ✕) to close it.</li>
+      <li><b>Open several</b>: they sit side by side, always in the strip's order, so a panel never jumps around.</li>
+      <li><b>Drag a panel's right edge</b> to make it wider or narrower. Each panel remembers its own width.</li>
+      <li>The terminals always keep at least <b>520 pixels</b>. <b>Make your browser window narrower</b> to feel how many panels fit on a small screen.</li>
+      <li>The old left sidebar tabs (History, Infra, Settings, Files) are now four separate icons; the top bar loses its panel buttons. <b>Git</b> moved into the strip too.</li>
+      <li>Panel contents are made-up samples, only there so the widths feel real.</li>
+    </ul>
+  </div>
+  <div class="ctl">
+    <span class="q">When there is no room for one more panel:</span>
+    <label><input type="radio" name="full" value="block" checked> Don't open it, and say there is no room</label>
+    <label><input type="radio" name="full" value="oldest"> Close the panel opened first, then open the new one</label>
+    <span class="meter muted" id="meter"></span>
+    <button class="btn2" id="reset">Reset</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div style="position:fixed;bottom:8px;right:12px;color:var(--muted);font-size:10px">prototype for the sidebar placement ticket (#509), approved 2026-11-08 with "Don't open it" when there is no room</div>
+
+<script>
+const MIN_TERMINALS = 520, STRIP = 44, MIN_W = 240, MAX_W = 640;
+
+const PANELS = [
+  { id: "history",     title: "History",      icon: "history",         w: 300 },
+  { id: "files",       title: "Files",        icon: "folder",          w: 300 },
+  { id: "git",         title: "Git",          icon: "git-fork",        w: 340 },
+  { id: "sep" },
+  { id: "notes",       title: "Notes",        icon: "sticky-note",     w: 340 },
+  { id: "workjournal", title: "Work Journal", icon: "book-open-check", w: 360 },
+  { id: "inject",      title: "Injector",     icon: "syringe",         w: 340 },
+  { id: "launch",      title: "Launch",       icon: "rocket",          w: 320 },
+  { id: "secondbrain", title: "Second Brain", icon: "brain-circuit",   w: 320 },
+  { id: "workshop",    title: "Workshop",     icon: "hammer",          w: 320 },
+  { id: "sep" },
+  { id: "infra",       title: "Infra",        icon: "package",         w: 300 },
+  { id: "settings",    title: "Settings",     icon: "settings",        w: 320 },
+];
+const REAL = PANELS.filter((p) => p.id !== "sep");
+const byId = (id) => REAL.find((p) => p.id === id);
+let openOrder = [];           // panels in the order they were opened (for "close the first one")
+const widths = {};
+const $ = (id) => document.getElementById(id);
+
+const CONTENT = {
+  history: () => `<div class="lbl">Today</div>
+    ${[["checkout-api", "shop", "Fix empty-cart check", "14:20"], ["ui", "shop", "Cart total tests", "13:05"], ["faq-page", "site", "Draft the FAQ page", "11:40"]]
+      .map(([n, p, s, t]) => `<div class="card"><div class="row"><b class="grow">${s}</b><span class="muted">${t}</span></div><div class="row muted"><span class="grow">${n} · ${p}</span><i data-lucide="play"></i></div></div>`).join("")}
+    <div class="lbl">Yesterday</div>
+    <div class="card"><div class="row"><b class="grow">Release notes for 0.4.2</b><span class="muted">17:55</span></div><div class="row muted">docs · shop</div></div>`,
+  files: () => `<div class="card"><div class="lbl">Showing files of</div><div class="row"><span class="dot" style="background:#5aa9ff"></span><b>checkout-api</b><span class="muted">· shop</span><span class="chip" style="background:rgba(63,185,80,.15);color:var(--green)">worktree</span></div></div>
+    <div class="card mono" style="line-height:1.7">▸ 🗀 .claude<br><span class="muted">▸ 🗀 dist<br>▸ 🗀 node_modules</span><br>▾ 🗁 src<br>&nbsp;&nbsp;▸ 🗀 lib<br>&nbsp;&nbsp;▾ 🗁 routes<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;🗎 checkout.ts<br>&nbsp;&nbsp;&nbsp;🗎 main.ts<br>&nbsp;🗎 package.json<br>&nbsp;🗎 README.md</div>`,
+  git: () => `<div class="row"><span class="chip" style="background:rgba(255,26,58,.15);color:var(--accent)">42-checkout-api</span><span class="muted grow">2 ahead of main</span></div>
+    ${[["fix(checkout): return 400 on an empty cart", "2 min"], ["test(cart): cover zero-price items", "1 h"], ["feat(cart): discount line", "yesterday"], ["chore: bump vite", "2 days"]]
+      .map(([m, t], i) => `<div class="row"><span class="dot" style="background:${i < 2 ? "var(--accent)" : "var(--muted)"}"></span><span class="grow">${m}</span><span class="muted">${t}</span></div>`).join("")}`,
+  notes: () => `<div class="row"><span class="chip" style="background:var(--card);color:var(--text);padding:2px 6px">Ideas</span><span class="muted">Release</span><span class="muted">Bugs</span></div>
+    <div class="card" style="min-height:220px;line-height:1.6"><b>Checkout ideas</b><br>• Show the cart total before the pay button<br>• Remember the last delivery address<br>• Ask about gift wrap?<br><br><b>To check</b><br>• Zero-price items in the total</div>`,
+  workjournal: () => `<div class="row"><b class="grow" style="font-size:13px">Sun 8 Nov</b><span class="chip" style="background:var(--card);color:var(--muted);padding:2px 6px">Today</span></div>
+    <div class="card"><div class="row"><b>14:20</b><span class="chip" style="background:rgba(90,169,255,.15);color:#5aa9ff">shop</span><span class="muted">agent</span></div><div><b>Checkout:</b> empty carts are now refused with a clear message.</div></div>
+    <div class="card"><div class="row"><b>11:40</b><span class="chip" style="background:rgba(192,132,252,.15);color:#c084fc">site</span><span class="muted">me</span></div><div><b>FAQ page:</b> first draft written.</div></div>
+    <div class="muted">+ Add entry</div>`,
+  inject: () => `<div class="lbl">Triggers</div>
+    <div class="card"><div class="row"><b class="grow">Compact at 80%</b><span class="sw on"></span></div><div class="muted">At 80% context, send <span class="mono">/compact</span> to only that terminal</div><div class="row"><span class="chip" style="background:var(--card);color:var(--text);border:1px solid var(--border)">All terminals</span></div></div>
+    <div class="card"><div class="row"><b class="grow">Summarise at 60%</b><span class="sw"></span></div><div class="muted">Watches 2 terminals</div></div>`,
+  launch: () => `<div class="lbl">Samurai runs</div>
+    <div class="card"><div class="row"><span class="dot" style="background:var(--blue)"></span><b class="grow">dev-next · checkout-api</b></div><div class="muted">Started 14:02 · reviewing</div></div>
+    <div class="card"><div class="row"><span class="dot" style="background:var(--green)"></span><b class="grow">dev-next · faq-page</b></div><div class="muted">Merged 11:58</div></div>`,
+  secondbrain: () => `<div class="lbl">Managed files</div>
+    ${["CLAUDE.md", "skills/review.md", "skills/release.md", "agents/tester.md"].map((f) => `<div class="row"><i data-lucide="file-text"></i><span class="grow mono">${f}</span><span class="muted">synced</span></div>`).join("")}`,
+  workshop: () => `<div class="lbl">Workshop</div><div class="card">Draft a skill or agent here, then try it on a terminal before you save it.</div>`,
+  infra: () => `<div class="lbl">MCP servers</div>
+    ${[["github", true], ["sentry", true], ["maestro-status", true], ["notion", false]].map(([n, on]) => `<div class="row"><span class="dot" style="background:${on ? "var(--green)" : "var(--muted)"}"></span><span class="grow">${n}</span><span class="sw ${on ? "on" : ""}"></span></div>`).join("")}
+    <div class="lbl" style="margin-top:6px">Plugins</div><div class="row"><span class="grow">stripe</span><span class="sw on"></span></div>`,
+  settings: () => `${[["Theme", "Dark"], ["Parking", "On"], ["Work Journal", "On"], ["Second Brain", "On"], ["Updates", "Automatic"]]
+      .map(([k, v]) => `<div class="card row"><span class="grow">${k}</span><span class="muted">${v}</span></div>`).join("")}`,
+};
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 2200); }
+function roomLeft() { return $("main").clientWidth - STRIP - MIN_TERMINALS - openOrder.reduce((s, id) => s + widths[id], 0); }
+function mode() { return document.querySelector("input[name=full]:checked").value; }
+
+function toggle(id) {
+  if (openOrder.includes(id)) { openOrder = openOrder.filter((x) => x !== id); render(); return; }
+  const need = widths[id];
+  if (roomLeft() < need) {
+    if (mode() === "block") {
+      const btn = document.querySelector(`.ico[data-id="${id}"]`);
+      btn.classList.remove("shake"); void btn.offsetWidth; btn.classList.add("shake");
+      toast(`No room for ${byId(id).title}. Close a panel or make one narrower.`);
+      return;
+    }
+    const closed = [];
+    while (openOrder.length && roomLeft() < need) closed.push(byId(openOrder.shift()).title);
+    if (roomLeft() < need) { toast("This screen is too narrow for that panel."); render(); return; }
+    toast(`Closed ${closed.join(", ")} to make room for ${byId(id).title}.`);
+  }
+  openOrder.push(id);
+  render();
+}
+
+function renderStrip() {
+  $("strip").innerHTML = PANELS.map((p) => p.id === "sep" ? '<div class="sep"></div>'
+    : `<button class="ico ${openOrder.includes(p.id) ? "on" : ""}" data-id="${p.id}"><i data-lucide="${p.icon}"></i><span class="tip">${p.title}${p.key ? `<span class="k">${p.key}</span>` : ""}</span></button>`).join("");
+  for (const b of document.querySelectorAll(".ico")) b.onclick = () => toggle(b.dataset.id);
+}
+
+function renderPanels() {
+  const shown = REAL.filter((p) => openOrder.includes(p.id));   // always in strip order
+  $("panels").innerHTML = shown.map((p) => `<section class="panel" style="width:${widths[p.id]}px" data-id="${p.id}">
+      <div class="phead"><i data-lucide="${p.icon}"></i><span class="t">${p.title}</span><button class="x" title="Close ${p.title}"><i data-lucide="x"></i></button></div>
+      <div class="pbody">${CONTENT[p.id]()}</div><div class="grip" title="Drag to resize"></div></section>`).join("");
+  for (const s of document.querySelectorAll(".panel")) {
+    const id = s.dataset.id;
+    s.querySelector(".x").onclick = () => toggle(id);
+    const grip = s.querySelector(".grip");
+    grip.onpointerdown = (e) => {
+      grip.setPointerCapture(e.pointerId); grip.classList.add("drag");
+      const x0 = e.clientX, w0 = widths[id];
+      grip.onpointermove = (ev) => {
+        const others = roomLeft() + widths[id];
+        widths[id] = Math.max(MIN_W, Math.min(MAX_W, others, w0 + ev.clientX - x0));
+        s.style.width = `${widths[id]}px`; meter();
+      };
+      grip.onpointerup = () => { grip.classList.remove("drag"); grip.onpointermove = null; };
+    };
+  }
+}
+
+function meter() { $("meter").textContent = `Terminals now get ${Math.round(MIN_TERMINALS + roomLeft())} px (never less than ${MIN_TERMINALS}).`; }
+
+function render() { renderStrip(); renderPanels(); meter(); if (window.lucide) lucide.createIcons(); }
+
+function reset() { for (const p of REAL) widths[p.id] = p.w; openOrder = ["history", "notes"]; render(); }
+
+window.addEventListener("resize", () => {
+  const closed = [];
+  while (openOrder.length && roomLeft() < 0) closed.push(byId(openOrder.pop()).title);
+  if (closed.length) toast(`Window got narrower: closed ${closed.join(", ")}.`);
+  render();
+});
+$("reset").onclick = reset;
+reset();
+</script>
+</body>
+</html>
