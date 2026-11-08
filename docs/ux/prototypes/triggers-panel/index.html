@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triggers panel prototype</title>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --green: #3fb950; --red: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.4 system-ui, sans-serif; }
+  .wrap { display: flex; gap: 24px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .note { max-width: 360px; color: var(--muted); font-size: 12px; }
+  .note h1 { color: var(--text); font-size: 15px; margin: 0 0 6px; }
+  .note li { margin-bottom: 4px; }
+  .panel { width: 340px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+  .card { background: var(--card); border: 1px solid rgba(38,38,44,.6); border-radius: 8px; padding: 10px; margin-top: 10px; }
+  .hdr { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
+  .hdr .z { color: var(--accent); }
+  .badge { background: rgba(255,26,58,.2); color: var(--accent); border-radius: 999px; padding: 0 6px; font-size: 10px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 10px; }
+  .term { display: flex; align-items: center; gap: 6px; padding: 2px 4px; font-size: 11px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .row { border: 1px solid rgba(38,38,44,.9); border-radius: 4px; padding: 5px 6px; margin-bottom: 6px; font-size: 11px; position: relative; }
+  .row .top { display: flex; align-items: flex-start; gap: 6px; }
+  .row .name { font-weight: 600; flex: 1; min-width: 0; }
+  .ibtn { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 1px 3px; border-radius: 3px; font-size: 11px; }
+  .ibtn:hover { background: rgba(38,38,44,.6); color: var(--text); }
+  .ibtn.del:hover { color: var(--red); }
+  .pill { display: inline-block; border: 1px solid rgba(255,26,58,.5); color: var(--accent); border-radius: 999px; padding: 0 7px; font-size: 10px; cursor: pointer; background: none; }
+  .pill.warn { border-color: #b8860b; color: #e3b341; cursor: default; }
+  .pop { position: absolute; left: 60px; top: 38px; z-index: 5; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; box-shadow: 0 4px 14px rgba(0,0,0,.5); min-width: 150px; }
+  .pop div { padding: 1px 0; }
+  .msg { color: rgba(232,232,236,.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fired { font-size: 10px; cursor: pointer; text-decoration: underline dotted; }
+  .ok { color: var(--green); } .bad { color: var(--red); }
+  input[type=text], input[type=number], select, textarea {
+    background: var(--surface); color: var(--text); border: 1px solid rgba(38,38,44,.9); border-radius: 4px; padding: 3px 6px; font: inherit; font-size: 11px;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  .form { font-size: 11px; }
+  .form .line { display: flex; align-items: center; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+  .form label.l { width: 52px; color: var(--muted); }
+  .radios { display: flex; flex-direction: column; gap: 2px; }
+  textarea { width: 100%; resize: vertical; }
+  .btn { width: 100%; margin-top: 6px; background: none; border: 1px solid rgba(255,26,58,.6); color: var(--accent); border-radius: 4px; padding: 5px; font-weight: 600; cursor: pointer; font-size: 12px; }
+  .btn:hover { background: rgba(255,26,58,.1); }
+  .btn2 { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+  .histhdr { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+  .histhdr select { flex: 1; }
+  .day { font-weight: 700; margin-top: 8px; font-size: 11px; }
+  .tgroup { margin: 3px 0 0 8px; font-weight: 600; font-size: 11px; }
+  .tgroup .proj { color: var(--muted); font-weight: 400; }
+  .entry { margin-left: 18px; font-size: 10.5px; }
+  .entry.follow { color: var(--green); }
+  .divider { height: 1px; background: rgba(38,38,44,.6); margin: 10px 0 6px; }
+  .tag { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <div class="card">
+      <div class="hdr">Injector</div>
+      <div class="term"><input type="checkbox" checked> api <span class="muted small">· shop</span></div>
+      <div class="term"><input type="checkbox" checked> ui <span class="muted small">· shop</span></div>
+      <div class="term"><input type="checkbox" checked> docs <span class="muted small">· site</span></div>
+      <div class="term"><input type="checkbox"> worker <span class="muted small">· shop</span></div>
+    </div>
+
+    <div class="card" id="triggers">
+      <div class="hdr"><span class="z">⚡</span> Triggers <span class="badge">3</span></div>
+      <p class="muted small" style="margin:0 0 6px">When a watched terminal's context reaches the level, the message is sent once. It is sent again only after that terminal's context drops below the level (for example after /clear).</p>
+
+      <ul id="rows"></ul>
+
+      <div class="divider"></div>
+      <div class="form" id="addform"></div>
+
+      <div class="divider"></div>
+      <div class="hdr" style="margin-bottom:2px">History <span class="muted small" style="text-transform:none;letter-spacing:0;font-weight:400">· kept 1 week</span></div>
+      <div class="histhdr">
+        <select id="filter"></select>
+        <button class="btn2" id="clear" title="Empty the history now">Clear history</button>
+      </div>
+      <div id="history"></div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h1>Throwaway prototype — Triggers panel</h1>
+    <p>Not real code. It only shows how the decided pieces look together.</p>
+    <ul>
+      <li>Click a <b>pill</b> ("3 terminals", "all terminals") to list what it watches.</li>
+      <li>Click <b>✎</b> on a row to edit it in place; Save or Cancel.</li>
+      <li>Click a <b>"Last fired"</b> line to filter History to that trigger.</li>
+      <li>The third row is how a "ticked" trigger looks after a restart.</li>
+      <li>The add form and edit form are the same form.</li>
+    </ul>
+  </div>
+</div>
+<div class="tag">prototype for the Triggers panel ticket (#506), approved 2026-11-08</div>
+
+<script>
+const open = ["api · shop", "ui · shop", "docs · site", "worker · shop"];
+const triggers = [
+  { id: 1, name: "Compact reminder", watch: "ticked", terms: ["api · shop", "ui · shop", "docs · site"], pct: 80, target: "only",
+    msg: "Run /compact before you continue", last: { t: "14:32", by: "api", sent: 1, failed: 0 } },
+  { id: 2, name: "", watch: "all", terms: [], pct: 90, target: "every",
+    msg: "Stop and write a handoff note before your context runs out", last: { t: "11:02", by: "ui", sent: 4, failed: 1 } },
+  { id: 3, name: "Clear after release", watch: "ticked", terms: [], pct: 70, target: "only",
+    msg: "/clear", last: null, stale: true },
+];
+const history = [
+  { day: "Sunday 8 Nov", groups: [
+    { term: "api", proj: "shop", entries: [
+      { tid: 1, text: "14:32 Compact reminder: 81%, sent to api, delivered", cls: "" },
+      { tid: 1, text: "14:35 context dropped to 22% (worked)", cls: "follow" } ] },
+    { term: "ui", proj: "shop", entries: [
+      { tid: 2, text: "11:02 Stop and write a handoff…: 90%, sent to 4 terminals, 3 delivered, 1 failed (docs: terminal closed)", cls: "bad" },
+      { tid: 2, text: "11:20 context dropped to 15% (worked)", cls: "follow" } ] },
+    { term: "worker", proj: "shop", entries: [
+      { tid: 2, text: "11:24 context dropped to 31% (worked, from the 11:02 firing by ui)", cls: "follow" } ] } ] },
+  { day: "Saturday 7 Nov", groups: [
+    { term: "api", proj: "shop", entries: [
+      { tid: 1, text: "17:48 Compact reminder: 80%, sent to api, delivered", cls: "" } ] },
+    { term: "docs", proj: "site", entries: [
+      { tid: 3, text: "09:10 Clear after release: 72%, sent to docs, delivered", cls: "" } ] } ] },
+];
+let editing = null, popFor = null, filter = "all";
+
+const label = t => t.name || `${t.msg.split(" ").slice(0, 4).join(" ")}…`;
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+function formHtml(t, isEdit) {
+  const v = t || { name: "", watch: "ticked", pct: 80, target: "only", msg: "" };
+  const k = isEdit ? "e" : "a";
+  return `
+    <div class="line"><label class="l">Name</label><input type="text" placeholder="optional" value="${esc(v.name)}" style="flex:1"></div>
+    <div class="line" style="align-items:flex-start"><label class="l">Watch</label>
+      <div class="radios">
+        <label><input type="radio" name="w${k}" ${v.watch === "all" ? "checked" : ""}> All terminals, also new ones</label>
+        <label><input type="radio" name="w${k}" ${v.watch === "ticked" ? "checked" : ""}> Only the ones ticked above (3)</label>
+      </div></div>
+    <div class="line">When a terminal reaches <input type="number" value="${v.pct}" style="width:50px">% context,</div>
+    <div class="line">send the message to
+      <select><option ${v.target === "only" ? "selected" : ""}>only that terminal</option><option ${v.target === "every" ? "selected" : ""}>every terminal it watches</option></select></div>
+    <div class="line"><label class="l">Message</label></div>
+    <textarea rows="2" placeholder="Message to send when the trigger fires…">${esc(v.msg)}</textarea>
+    ${isEdit
+      ? `<div class="line" style="justify-content:flex-end"><button class="btn2" data-cancel>Cancel</button><button class="btn2" style="border-color:var(--accent);color:var(--accent)" data-save>Save</button></div>`
+      : `<button class="btn">+ Add trigger</button>`}`;
+}
+
+function rowHtml(t) {
+  if (editing === t.id) return `<li class="row form">${formHtml(t, true)}</li>`;
+  const pill = t.stale
+    ? `<span class="pill warn">watches nothing, edit to pick terminals</span>`
+    : `<button class="pill" data-pop="${t.id}">${t.watch === "all" ? "all terminals" : `${t.terms.length} terminals`}</button>`;
+  const pop = popFor === t.id
+    ? `<div class="pop"><div class="muted small">${t.watch === "all" ? "All terminals open now:" : "Watches:"}</div>${(t.watch === "all" ? open : t.terms).map(n => `<div>${n}</div>`).join("")}</div>`
+    : "";
+  const last = t.last
+    ? `<div class="fired ${t.last.failed ? "bad" : "ok"}" data-filter="${t.id}" title="Show this trigger's history">Last fired ${t.last.t} by ${t.last.by}: sent to ${t.last.sent}${t.last.failed ? `, ${t.last.failed} failed` : ""}</div>`
+    : `<div class="small muted">Not fired yet</div>`;
+  return `<li class="row">
+    <div class="top"><div class="name">${esc(label(t))}</div>
+      <button class="ibtn" data-edit="${t.id}" title="Edit trigger">✎</button>
+      <button class="ibtn del" title="Delete trigger">✕</button></div>
+    <div class="muted">At ${t.pct}% → ${t.target === "only" ? "only that terminal" : "every terminal it watches"}</div>
+    <div style="margin:2px 0">Watches ${pill}</div>${pop}
+    <div class="msg" title="${esc(t.msg)}">“${esc(t.msg)}”</div>
+    ${last}</li>`;
+}
+
+function historyHtml() {
+  let out = "";
+  for (const d of history) {
+    let dayOut = "";
+    for (const g of d.groups) {
+      const es = g.entries.filter(e => filter === "all" || e.tid === filter);
+      if (!es.length) continue;
+      dayOut += `<div class="tgroup">${g.term} <span class="proj">· ${g.proj}</span></div>` +
+        es.map(e => `<div class="entry ${e.cls}">${esc(e.text)}</div>`).join("");
+    }
+    if (dayOut) out += `<div class="day">${d.day}</div>${dayOut}`;
+  }
+  return out || `<div class="muted small" style="margin-top:6px">No firings in the last week.</div>`;
+}
+
+function render() {
+  document.getElementById("rows").innerHTML = triggers.map(rowHtml).join("");
+  document.getElementById("addform").innerHTML = formHtml(null, false);
+  document.getElementById("filter").innerHTML =
+    `<option value="all">All triggers</option>` +
+    triggers.map(t => `<option value="${t.id}" ${filter === t.id ? "selected" : ""}>${esc(label(t))}</option>`).join("");
+  document.getElementById("history").innerHTML = historyHtml();
+}
+
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-pop],[data-edit],[data-cancel],[data-save],[data-filter],#clear");
+  if (!el) { if (popFor !== null) { popFor = null; render(); } return; }
+  if (el.dataset.pop) popFor = popFor === +el.dataset.pop ? null : +el.dataset.pop;
+  else if (el.dataset.edit) { editing = +el.dataset.edit; popFor = null; }
+  else if ("cancel" in el.dataset || "save" in el.dataset) editing = null;
+  else if (el.dataset.filter) filter = +el.dataset.filter;
+  else if (el.id === "clear") { history.length = 0; }
+  render();
+});
+document.addEventListener("change", e => {
+  if (e.target.id === "filter") { filter = e.target.value === "all" ? "all" : +e.target.value; render(); }
+});
+render();
+</script>
+</body>
+</html>
