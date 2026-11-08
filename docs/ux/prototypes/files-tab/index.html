@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files tab prototype</title>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --green: #3fb950; --red: #f87171; --amber: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.4 system-ui, sans-serif; }
+  .wrap { display: flex; gap: 24px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .note { max-width: 380px; color: var(--muted); font-size: 12px; }
+  .note h1 { color: var(--text); font-size: 15px; margin: 0 0 6px; }
+  .note li { margin-bottom: 4px; }
+  .note b { color: var(--text); }
+  .app { display: flex; height: 640px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  aside { width: 320px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .tabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; border-bottom: 1px solid rgba(38,38,44,.6); padding: 0 4px; }
+  .tab { display: flex; flex-direction: column; align-items: center; gap: 2px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted);
+         padding: 6px 2px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; }
+  .tab .i { font-size: 13px; }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+  .body { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 10px; gap: 8px; }
+  .where { background: var(--card); border: 1px solid rgba(38,38,44,.6); border-radius: 8px; padding: 7px 9px; }
+  .where .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+  .where .who { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-weight: 600; font-size: 12px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .chip { font-size: 9px; font-weight: 700; text-transform: uppercase; border-radius: 3px; padding: 0 4px; }
+  .chip.wt { background: rgba(63,185,80,.15); color: var(--green); }
+  .chip.pr { background: rgba(130,130,142,.2); color: var(--muted); }
+  .where .path { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+  .tree { flex: 1; min-height: 120px; overflow: auto; background: var(--card); border: 1px solid rgba(38,38,44,.6); border-radius: 8px; padding: 4px 2px; }
+  .node { display: flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 3px; cursor: pointer; white-space: nowrap; font-size: 12px; position: relative; }
+  .node:hover { background: rgba(38,38,44,.6); }
+  .node.sel { background: rgba(255,26,58,.12); }
+  .node .car { width: 10px; color: var(--muted); font-size: 9px; text-align: center; }
+  .node .ic { width: 14px; text-align: center; font-size: 11px; }
+  .node .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .node.ign .nm { color: var(--muted); }
+  .node .acts { display: none; gap: 2px; }
+  .node:hover .acts { display: flex; }
+  .ibtn { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 3px; border-radius: 3px; font-size: 11px; }
+  .ibtn:hover { background: rgba(130,130,142,.25); color: var(--text); }
+  .loading { color: var(--muted); font-style: italic; font-size: 11px; padding: 1px 6px; }
+  .preview { height: 230px; display: flex; flex-direction: column; background: var(--card); border: 1px solid rgba(38,38,44,.6); border-radius: 8px; overflow: hidden; }
+  .preview.hide { display: none; }
+  .phdr { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid rgba(38,38,44,.6); font-size: 11px; }
+  .phdr .pn { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ro { font-size: 9px; text-transform: uppercase; font-weight: 700; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+  pre { margin: 0; padding: 6px 8px; overflow: auto; flex: 1; font: 10.5px/1.45 ui-monospace, Consolas, monospace; color: rgba(232,232,236,.85); }
+  .cant { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 10px; }
+  .cant b { color: var(--text); }
+  .btn { background: none; border: 1px solid rgba(255,26,58,.6); color: var(--accent); border-radius: 4px; padding: 4px 10px; font-weight: 600; cursor: pointer; font-size: 11px; }
+  .btn:hover { background: rgba(255,26,58,.1); }
+  .menu { position: fixed; z-index: 10; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px; box-shadow: 0 4px 14px rgba(0,0,0,.5); min-width: 170px; }
+  .menu div { padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+  .menu div:hover { background: rgba(38,38,44,.8); }
+  .menu .k { float: right; color: var(--muted); }
+  .grid { flex: 1; background: var(--bg); display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 6px; min-width: 360px; }
+  .term { background: #0a0a0c; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+  .term.focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .term .t { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 11px; }
+  .term .line { font: 10px ui-monospace, Consolas, monospace; color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 24px 10px; }
+  .toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 11px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.on { opacity: 1; }
+  .tag { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 10px; }
+  .ctl { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .btn2 { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="app">
+    <aside>
+      <div class="tabs">
+        <button class="tab"><span class="i">⟲</span>History</button>
+        <button class="tab"><span class="i">▣</span>Infra</button>
+        <button class="tab"><span class="i">⚙</span>Settings</button>
+        <button class="tab on"><span class="i">🗀</span>Files</button>
+      </div>
+      <div class="body" id="body"></div>
+    </aside>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="note">
+    <h1>Throwaway prototype — Files tab</h1>
+    <p>Not real code. It only shows how the decided pieces look together. Names and paths are made up.</p>
+    <ul>
+      <li><b>Click a terminal</b> on the right: the box above the tree switches to that terminal's folder. Green <b>WORKTREE</b> or grey <b>PROJECT</b> says which kind it is.</li>
+      <li><b>Click a folder</b> to open it one level. <code>node_modules</code> shows a short "Loading…" (each folder loads only when opened).</li>
+      <li><b>Click a file</b> to preview it below the tree (read-only). <b>Double-click</b> opens it in the computer's default app.</li>
+      <li><b>Hover</b> a file for two quick buttons: copy its full path, open in default app. <b>Right-click</b> gives the same as a menu.</li>
+      <li>Click <code>logo.png</code> or <code>dist/app.js</code> (2.4 MB) to see the <b>"Can't preview"</b> state.</li>
+      <li>Hidden files (<code>.env</code>, <code>.claude</code>) show like any file. Git-ignored ones (<code>node_modules</code>, <code>dist</code>) are only dimmed, never hidden.</li>
+      <li>Files is the <b>fourth tab</b>, after Settings, so the Alt+1 to Alt+3 shortcuts keep their tabs and Files gets Alt+4.</li>
+    </ul>
+    <div class="ctl"><button class="btn2" id="noterm">Show "no terminal open"</button><button class="btn2" id="reset">Reset</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="tag">prototype for the Files tab ticket (#508), approved 2026-11-08</div>
+
+<script>
+const TERMS = [
+  { id: 1, name: "api", proj: "shop", color: "#5aa9ff", kind: "worktree", path: "C:\\git\\shop-wt\\42-checkout-api", line: "> Editing src/routes/checkout.ts" },
+  { id: 2, name: "ui", proj: "shop", color: "#5aa9ff", kind: "project", path: "C:\\code\\shop", line: "> Waiting for your answer" },
+  { id: 3, name: "docs", proj: "site", color: "#c084fc", kind: "worktree", path: "C:\\git\\site-wt\\17-faq-page", line: "> Running npm run build" },
+];
+const f = (name, extra = {}) => ({ name, ...extra });
+const d = (name, kids, extra = {}) => ({ name, dir: true, kids, ...extra });
+const TEXT = {
+  "README.md": "# shop\n\nA small demo online shop.\n\n## Run it\n\n    npm install\n    npm run dev\n\nThen open http://localhost:5173.\n",
+  ".env": "# Local settings (never committed)\nAPI_URL=http://localhost:8080\nPAYMENTS_KEY=replace-me\n",
+  "package.json": "{\n  \"name\": \"shop\",\n  \"version\": \"0.4.2\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"build\": \"tsc && vite build\",\n    \"test\": \"vitest run\"\n  }\n}\n",
+  "checkout.ts": "import { Router } from \"express\";\nimport { totalFor } from \"../lib/cart\";\n\nexport const checkout = Router();\n\ncheckout.post(\"/\", async (req, res) => {\n  const total = totalFor(req.body.items);\n  if (total <= 0) {\n    return res.status(400).json({ error: \"Empty cart\" });\n  }\n  res.json({ total });\n});\n",
+  "cart.ts": "export function totalFor(items: { price: number; qty: number }[]): number {\n  return items.reduce((sum, i) => sum + i.price * i.qty, 0);\n}\n",
+  "settings.json": "{\n  \"permissions\": { \"allow\": [\"Bash(npm test)\"] }\n}\n",
+  ".gitignore": "node_modules\ndist\n.env\n",
+};
+const tree = () => [
+  d(".claude", [f("settings.json")]),
+  d("dist", [f("app.js", { big: "2.4 MB" }), f("index.html")], { ign: true }),
+  d("node_modules", [d("express", [f("package.json")], { ign: true }), d("vite", [f("package.json")], { ign: true }), f(".package-lock.json", { ign: true })], { ign: true, slow: true }),
+  d("public", [f("logo.png", { bin: "48 KB, image" })]),
+  d("src", [d("lib", [f("cart.ts")]), d("routes", [f("checkout.ts")]), f("main.ts")]),
+  f(".env", { ign: true }), f(".gitignore"), f("package.json"), f("README.md"),
+];
+
+let focus = 1, roots = tree(), open = new Set(["src", "src/routes"]), loading = new Set(), sel = null, noTerms = false;
+const $ = (id) => document.getElementById(id);
+const term = () => TERMS.find((t) => t.id === focus);
+const sep = "\\";
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 1400); }
+function full(p) { return term().path + sep + p.replaceAll("/", sep); }
+function closeMenu() { for (const m of document.querySelectorAll(".menu")) m.remove(); }
+function openApp(p) { toast(`Opened ${p.split("/").pop()} in its default app`); }
+function copy(p) { toast(`Copied ${full(p)}`); }
+
+function renderGrid() {
+  $("grid").innerHTML = "";
+  if (noTerms) { $("grid").innerHTML = '<div class="empty" style="grid-column:span 2">No terminals open</div>'; return; }
+  for (const t of TERMS) {
+    const el = document.createElement("div");
+    el.className = "term" + (t.id === focus ? " focus" : "");
+    el.innerHTML = `<div class="t"><span class="dot" style="background:${t.color}"></span>${t.name} <span style="color:var(--muted);font-weight:400">· ${t.proj}</span></div><div class="line">${t.line}</div>`;
+    el.onclick = () => { focus = t.id; roots = tree(); open = new Set(t.id === 1 ? ["src", "src/routes"] : []); sel = null; render(); };
+    $("grid").appendChild(el);
+  }
+}
+
+function nodeRow(n, path, depth, box) {
+  const row = document.createElement("div");
+  row.className = "node" + (n.ign ? " ign" : "") + (sel === path ? " sel" : "");
+  row.style.paddingLeft = 6 + depth * 12 + "px";
+  const isOpen = open.has(path);
+  row.innerHTML = `<span class="car">${n.dir ? (isOpen ? "▾" : "▸") : ""}</span><span class="ic">${n.dir ? (isOpen ? "🗁" : "🗀") : "🗎"}</span><span class="nm">${n.name}</span>`
+    + (n.dir ? "" : `<span class="acts"><button class="ibtn" title="Copy full path">⧉</button><button class="ibtn" title="Open in default app">↗</button></span>`);
+  row.title = full(path);
+  if (n.dir) {
+    row.onclick = () => {
+      if (open.has(path)) { open.delete(path); render(); return; }
+      if (n.slow) { loading.add(path); open.add(path); render(); setTimeout(() => { loading.delete(path); render(); }, 700); return; }
+      open.add(path); render();
+    };
+  } else {
+    let clickTimer;
+    row.onclick = (e) => { if (e.target.closest(".acts")) return; clearTimeout(clickTimer); clickTimer = setTimeout(() => { sel = path; render(); }, 180); };
+    row.ondblclick = () => { clearTimeout(clickTimer); openApp(path); };
+    const [cp, op] = row.querySelectorAll(".ibtn");
+    cp.onclick = () => copy(path); op.onclick = () => openApp(path);
+  }
+  row.oncontextmenu = (e) => {
+    e.preventDefault(); closeMenu();
+    const m = document.createElement("div"); m.className = "menu"; m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
+    const items = n.dir ? [["Copy full path", () => copy(path)], ["Open in default app", () => openApp(path)]]
+      : [["Preview", () => { sel = path; render(); }, "click"], ["Open in default app", () => openApp(path), "double-click"], ["Copy full path", () => copy(path)]];
+    for (const [label, fn, k] of items) { const it = document.createElement("div"); it.innerHTML = label + (k ? `<span class="k">${k}</span>` : ""); it.onclick = () => { closeMenu(); fn(); }; m.appendChild(it); }
+    document.body.appendChild(m);
+  };
+  box.appendChild(row);
+  if (n.dir && isOpen) {
+    if (loading.has(path)) { const l = document.createElement("div"); l.className = "loading"; l.style.paddingLeft = 6 + (depth + 1) * 12 + 14 + "px"; l.textContent = "Loading…"; box.appendChild(l); }
+    else for (const k of n.kids) nodeRow(k, path + "/" + k.name, depth + 1, box);
+  }
+}
+
+function find(path) { let list = roots, n; for (const part of path.split("/")) { n = list.find((x) => x.name === part); list = n?.kids || []; } return n; }
+
+function render() {
+  renderGrid();
+  const body = $("body"); body.innerHTML = "";
+  if (noTerms) { body.innerHTML = '<div class="where"><div class="lbl">Showing files of</div><div class="who" style="color:var(--muted);font-weight:400">No terminal open. Start or click a terminal to see its folder.</div></div>'; return; }
+  const t = term();
+  body.innerHTML = `<div class="where"><div class="lbl">Showing files of</div>
+    <div class="who"><span class="dot" style="background:${t.color}"></span>${t.name}<span style="color:var(--muted);font-weight:400">· ${t.proj}</span>
+    <span class="chip ${t.kind === "worktree" ? "wt" : "pr"}">${t.kind}</span><span style="flex:1"></span><button class="ibtn" title="Copy folder path" id="cpRoot">⧉</button></div>
+    <div class="path" title="${t.path}">&lrm;${t.path}</div></div>`;
+  $("cpRoot").onclick = () => toast(`Copied ${t.path}`);
+  const box = document.createElement("div"); box.className = "tree";
+  for (const n of roots) nodeRow(n, n.name, 0, box);
+  body.appendChild(box);
+  const pv = document.createElement("div"); pv.className = "preview" + (sel ? "" : " hide");
+  if (sel) {
+    const n = find(sel), name = sel.split("/").pop();
+    pv.innerHTML = `<div class="phdr"><span>🗎</span><span class="pn" title="${full(sel)}">${sel}</span><span class="ro">read-only</span>
+      <button class="ibtn" title="Copy full path" id="pcp">⧉</button><button class="ibtn" title="Open in default app" id="pop">↗</button><button class="ibtn" title="Close preview" id="px">✕</button></div>`;
+    if (n.big || n.bin) {
+      pv.innerHTML += `<div class="cant"><b>Can't preview</b><span>${n.big ? `This file is ${n.big}. Preview shows text files up to about 1 MB.` : `This is not a text file (${n.bin}).`}</span><button class="btn" id="cantOpen">Open in default app</button></div>`;
+    } else {
+      const pre = document.createElement("pre"); pre.textContent = TEXT[name] ?? `// ${name}\n// (sample text)\n`; pv.appendChild(pre);
+    }
+  }
+  body.appendChild(pv);
+  if (sel) {
+    $("pcp").onclick = () => copy(sel); $("pop").onclick = () => openApp(sel); $("px").onclick = () => { sel = null; render(); };
+    const co = $("cantOpen"); if (co) co.onclick = () => openApp(sel);
+  }
+}
+
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu")) closeMenu(); });
+$("noterm").onclick = () => { noTerms = true; render(); };
+$("reset").onclick = () => { noTerms = false; focus = 1; roots = tree(); open = new Set(["src", "src/routes"]); sel = "src/routes/checkout.ts"; render(); };
+sel = "src/routes/checkout.ts";
+render();
+</script>
+</body>
+</html>
