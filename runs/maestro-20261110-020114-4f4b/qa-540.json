@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261110-020114-4f4b",
+  "issue": 540,
+  "title": "Work Journal suggestions: the text gets its own full-width line, with pills and buttons underneath",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 541,
+  "merged_at": "2026-11-10T02:13:40Z",
+  "merge_commit": "376c19f",
+  "seam": "src/components/workjournal/",
+  "story": "Work Journal suggestions used to squeeze their text into a narrow strip beside their tags and buttons, so a long line wrapped to about a dozen short lines. Now the text reads across the whole suggestions box like a normal sentence, and the project and source tags and the Accept and Reject buttons sit on a line underneath. Nothing else about suggestions changed.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/suggestion-row-layout",
+      "criterion": "Each suggestion's text sits alone on a full-width line; beneath it the project pill and source tag are on the left and Accept and Reject on the right, still clearly apart.",
+      "steps": "Start Maestro fresh and open a throwaway project called demo-shop. Open the Work Journal side panel at its narrow default width. Create today's page. Press 'run now', or wait for a suggestion with a long line such as '01:00 - Opened nine issues for the demo shop checkout and cart pages'.",
+      "expected": "The text wraps across the full width of the suggestions box, not in a thin column. Under it, the demo-shop pill and the source tag are on the left; the green tick and red cross are on the right, about a button's width apart. Accept adds the line to the page; Reject hides the suggestion. The 'next run · run now' footer and the box height are unchanged."
+    }
+  ],
+  "no_qa_reason": null
+}
