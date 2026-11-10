@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROJECTS pill prototype</title>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --green: #3fb950; --red: #f87171; --amber: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.4 system-ui, sans-serif; }
+  .topbar { height: 40px; display: flex; align-items: center; border-bottom: 1px solid var(--border); padding: 0 8px; }
+  .topbar .grow { flex: 1; }
+  .icons { display: flex; align-items: center; gap: 2px; position: relative; }
+  .ico { width: 26px; height: 26px; display: grid; place-items: center; color: var(--muted); border-radius: 4px; font-size: 13px; }
+  .ico:hover { background: var(--card); color: var(--text); }
+  .badge { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 500; color: var(--accent); cursor: pointer; margin-right: 4px; }
+  .pill { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 2px 9px; font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--text); cursor: pointer; margin-right: 4px; }
+  .pill:hover, .pill.open { border-color: rgba(255,26,58,.6); color: var(--accent); }
+  .menu { position: absolute; top: 34px; right: 120px; width: 330px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.55); z-index: 10; display: none; }
+  .menu.show { display: block; }
+  .mhdr { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .crumb { flex: 1; min-width: 0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .crumb a { color: var(--muted); cursor: pointer; text-decoration: none; }
+  .crumb a:hover { color: var(--text); }
+  .back { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 3px; }
+  .back:hover { background: var(--card); color: var(--text); }
+  .lock { position: relative; background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 4px; cursor: pointer; padding: 1px 6px; font-size: 11px; display: flex; gap: 4px; align-items: center; }
+  .lock.on { border-color: rgba(255,26,58,.5); color: var(--accent); }
+  .tip { display: none; position: absolute; right: 0; top: 24px; width: 230px; background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; color: var(--text); font-size: 11px; text-align: left; z-index: 20; box-shadow: 0 4px 14px rgba(0,0,0,.5); font-weight: 400; }
+  .lock:hover .tip { display: block; }
+  .body { max-height: 320px; overflow-y: auto; padding: 4px 0; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+  .item:hover { background: var(--card); }
+  .item .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .chev { color: var(--muted); }
+  .item.disabled { cursor: default; color: var(--muted); }
+  .item.disabled:hover { background: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .lbl { border-radius: 999px; padding: 0 7px; font-size: 10.5px; font-weight: 600; border: 1px solid; }
+  .count { min-width: 22px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .count.zero { color: var(--muted); font-weight: 400; }
+  .num { color: var(--muted); font-variant-numeric: tabular-nums; width: 38px; flex-shrink: 0; }
+  .ext { color: var(--muted); font-size: 10px; }
+  .blk { color: var(--amber); font-size: 10px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 10px; }
+  .spin { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted); }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: s .7s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .err { padding: 10px; color: var(--red); font-size: 11px; }
+  .foot { border-top: 1px solid var(--border); padding: 5px 10px; color: var(--muted); font-size: 10px; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; display: none; }
+  .notes { max-width: 560px; padding: 16px; color: var(--muted); }
+  .notes h1 { color: var(--text); font-size: 15px; margin: 0 0 6px; }
+  .notes li { margin-bottom: 4px; }
+  .notes b { color: var(--text); }
+  .tag { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="ico">▤</div>
+  <div class="grow"></div>
+  <div class="icons">
+    <div class="ico" title="Tidy up">▦</div>
+    <div class="badge" title="Review requested">⇄ 2 PRs</div>
+    <div class="pill" id="pill" onclick="toggleMenu()">▣ PROJECTS</div>
+    <div class="ico">＋</div>
+    <div class="ico">✎</div>
+    <div class="ico">⚡</div>
+    <div class="ico">☰</div>
+    <div class="ico">⚙</div>
+    <div class="menu" id="menu">
+      <div class="mhdr">
+        <button class="back" id="back" onclick="goBack()" title="Back" style="visibility:hidden">‹</button>
+        <div class="crumb" id="crumb">Projects</div>
+        <button class="lock on" id="lock" onclick="toggleLock(event)"><span id="lockIco">🔒</span><span id="lockTxt">Blocked counted</span>
+          <span class="tip" id="tip"></span>
+        </button>
+      </div>
+      <div class="body" id="body"></div>
+      <div class="foot" id="foot">Loaded just now. Counts refresh each time you open this list.</div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <h1>PROJECTS pill (throwaway prototype)</h1>
+  <p>Built only to react to; it is thrown away once you have. All data is made up. Click <b>PROJECTS</b> in the bar above.</p>
+  <ul>
+    <li><b>Level 1:</b> your open project tabs. A project with no GitHub repository is greyed out.</li>
+    <li><b>Level 2:</b> every label of that repository with its open-issue count; a label with no open issue shows <b>0</b>.</li>
+    <li><b>Level 3:</b> that label's open issues by number and title; clicking one opens it on GitHub.</li>
+    <li><b>Lock button:</b> on (default) counts blocked issues too, and marks them with a small lock; off counts and lists only ready issues. Hover it for the message. It is remembered across restarts.</li>
+    <li><b>Loading:</b> a spinner each time the list is opened; nothing polls in the background. Try project <b>docs-site</b> to see a failed load.</li>
+  </ul>
+  <p>Approved by the maintainer on 2026-11-08: step in one level at a time, with a back arrow and a clickable path at the top.</p>
+</div>
+<div class="toast" id="toast"></div>
+<div class="tag">prototype · throwaway</div>
+
+<script>
+const PROJECTS = [
+  { name: "maestro", color: "#ff1a3a", repo: true },
+  { name: "shop-api", color: "#3fb950", repo: true },
+  { name: "docs-site", color: "#58a6ff", repo: true, fails: true },
+  { name: "scratch", color: "#a371f7", repo: false },
+];
+const LABELS = {
+  "maestro": [
+    { n: "bug", c: "#f87171", issues: [[512, "Parked terminal stays parked after a question", false], [519, "Notes panel loses scroll position", false], [521, "Trigger fires twice after restart", true]] },
+    { n: "story", c: "#58a6ff", issues: [[530, "Save triggers across restarts", false], [531, "Trigger history list", true], [532, "Files tab: folder tree", true], [533, "PROJECTS pill: label counts", false]] },
+    { n: "agent-ready", c: "#3fb950", issues: [[530, "Save triggers across restarts", false], [533, "PROJECTS pill: label counts", false]] },
+    { n: "needs-human", c: "#e3b341", issues: [[534, "Choose where the sidebar lives", false]] },
+    { n: "epic", c: "#a371f7", issues: [[475, "November 2026 corrections", false]] },
+    { n: "in-progress", c: "#ff1a3a", issues: [] },
+    { n: "documentation", c: "#82828e", issues: [[535, "Public page: Troubleshooting section", true]] },
+    { n: "wontfix", c: "#82828e", issues: [] },
+  ],
+  "shop-api": [
+    { n: "bug", c: "#f87171", issues: [[41, "Checkout total ignores discount", false]] },
+    { n: "enhancement", c: "#58a6ff", issues: [[44, "Export orders as CSV", false], [47, "Rate limit the search endpoint", true]] },
+    { n: "good first issue", c: "#3fb950", issues: [] },
+  ],
+};
+let lockOn = true, path = [], token = 0;
+
+function toggleMenu() {
+  const m = document.getElementById("menu"), p = document.getElementById("pill");
+  if (m.classList.contains("show")) { m.classList.remove("show"); p.classList.remove("open"); return; }
+  m.classList.add("show"); p.classList.add("open");
+  path = []; load(render);
+}
+function load(then) {
+  const t = ++token;
+  document.getElementById("body").innerHTML = '<div class="spin"><div class="spinner"></div>Loading labels and counts…</div>';
+  document.getElementById("foot").textContent = "Loading…";
+  setTimeout(() => { if (t === token) { document.getElementById("foot").textContent = "Loaded just now. Counts refresh each time you open this list."; then(); } }, 900);
+}
+function visible(issues) { return lockOn ? issues : issues.filter(i => !i[2]); }
+function esc(s) { return s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function totalFor(p) {
+  const s = new Set();
+  for (const l of LABELS[p.name] || []) for (const i of visible(l.issues)) s.add(i[0]);
+  return s.size;
+}
+
+function projectRow(p) {
+  if (!p.repo) return `<div class="item disabled"><span class="dot" style="background:${p.color}"></span><span class="name">${p.name}</span><span class="small">no GitHub repository</span></div>`;
+  const cnt = p.fails ? "" : `<span class="muted small">${totalFor(p)} open</span>`;
+  return `<div class="item" onclick="openProject('${p.name}')"><span class="dot" style="background:${p.color}"></span><span class="name">${p.name}</span>${cnt}<span class="chev">›</span></div>`;
+}
+function labelRow(proj, l) {
+  const n = visible(l.issues).length;
+  const chev = n === 0 ? "" : '<span class="chev">›</span>';
+  return `<div class="item" ${n ? `onclick="openLabel('${proj}','${l.n}')"` : 'style="cursor:default"'}><span class="lbl" style="color:${l.c};border-color:${l.c}66;background:${l.c}1a">${esc(l.n)}</span><span class="name"></span><span class="count ${n ? "" : "zero"}">${n}</span>${chev}</div>`;
+}
+function issueRow(i) {
+  return `<div class="item" onclick="openIssue(${i[0]})"><span class="num">#${i[0]}</span><span class="name">${esc(i[1])}</span>${i[2] ? '<span class="blk" title="Blocked: has an open blocker">🔒</span>' : ""}<span class="ext">↗</span></div>`;
+}
+function failRow() { return `<div class="err">Could not load this repository's labels: GitHub did not answer. <a style="color:var(--text);cursor:pointer;text-decoration:underline" onclick="retry()">Try again</a></div>`; }
+
+function render() {
+  const body = document.getElementById("body"), crumb = document.getElementById("crumb"), back = document.getElementById("back");
+  setLockTip();
+  back.style.visibility = path.length ? "visible" : "hidden";
+  if (path.length === 0) {
+    crumb.textContent = "Projects";
+    body.innerHTML = PROJECTS.map(p => projectRow(p)).join("");
+  } else if (path.length === 1) {
+    crumb.innerHTML = `<a onclick="goTo(0)">Projects</a> › ${path[0]}`;
+    const p = PROJECTS.find(x => x.name === path[0]);
+    body.innerHTML = p.fails ? failRow() : LABELS[path[0]].map(l => labelRow(path[0], l)).join("");
+  } else {
+    crumb.innerHTML = `<a onclick="goTo(0)">Projects</a> › <a onclick="goTo(1)">${path[0]}</a> › ${esc(path[1])}`;
+    const l = LABELS[path[0]].find(x => x.n === path[1]);
+    const v = visible(l.issues);
+    body.innerHTML = v.length ? v.map(i => issueRow(i)).join("") : '<div class="spin">No ready issues with this label.</div>';
+  }
+}
+function openProject(n) { path = [n]; render(); }
+function openLabel(p, l) { path = [p, l]; render(); }
+function goBack() { path.pop(); render(); }
+function goTo(n) { path = path.slice(0, n); render(); }
+function retry() { load(render); }
+function openIssue(n) { toast(`Would open issue #${n} on GitHub in your browser.`); }
+function toggleLock(e) {
+  if (e.target.closest(".tip")) return;
+  lockOn = !lockOn;
+  const b = document.getElementById("lock");
+  b.classList.toggle("on", lockOn);
+  document.getElementById("lockIco").textContent = lockOn ? "🔒" : "🔓";
+  document.getElementById("lockTxt").textContent = lockOn ? "Blocked counted" : "Ready only";
+  if (path.length === 2 && !visible(LABELS[path[0]].find(x => x.n === path[1]).issues).length) path = [path[0]];
+  render();
+}
+function setLockTip() {
+  document.getElementById("tip").textContent = lockOn
+    ? "Counting every open issue, blocked ones included (marked 🔒). Click to count only ready issues: those with no open blocker, by the same rule as the issue map."
+    : "Counting only ready issues: those with no open blocker, by the same rule as the issue map. Click to count blocked issues too.";
+}
+function toast(t) { const el = document.getElementById("toast"); el.textContent = t; el.style.display = "block"; clearTimeout(el._t); el._t = setTimeout(() => { el.style.display = "none"; }, 2000); }
+document.addEventListener("click", e => {
+  // composedPath keeps the menu even when the click redrew (detached) its target.
+  const inside = e.composedPath().some(el => el.id === "menu" || el.id === "pill");
+  if (!inside) {
+    document.getElementById("menu").classList.remove("show"); document.getElementById("pill").classList.remove("open");
+  }
+});
+setLockTip();
+</script>
+</body>
+</html>
