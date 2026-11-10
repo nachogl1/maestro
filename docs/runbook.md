@@ -107,6 +107,8 @@ another one or onto an edge of the screen.
 - A suggestion that comes from work in a project shows that project's name in a small pill, in the project's own
   colour (the same colour its terminals have). The name is the project folder's name.
 - A suggestion with no project shows no pill: a Granola meeting, and any suggestion made before this change.
+- Each suggestion takes two lines: its text on top, across the full width of the box; underneath, the project pill
+  and the source tag on the left and the Accept and Reject buttons on the right.
 - The green tick accepts a suggestion (adds its line to the page); the red cross rejects it (hides it for today).
   The two sit apart, with more than a button's width between them, so one is not hit for the other.
 - A project the suggestion run names that does not appear in that day's activity is left out, so a pill only ever
