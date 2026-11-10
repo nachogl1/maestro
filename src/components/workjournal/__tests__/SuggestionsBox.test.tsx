@@ -318,6 +318,36 @@ describe("SuggestionsBox", () => {
     expect(accept).toHaveClass("p-0.5");
   });
 
+  it("puts a suggestion's text on its own line, above its pills (left) and buttons (right)", async () => {
+    candidates = [
+      candidate("r1", "Opened nine issues for the demo shop", { project: "demo-shop" }),
+    ];
+    render(<WorkJournalPanel />);
+    const text = await screen.findByText("14:05 - Opened nine issues for the demo shop");
+
+    const item = within(box()).getByRole("listitem");
+    const pill = within(item).getByTestId("suggestion-project");
+    const tag = within(item).getByText("Git · commit");
+    const accept = within(item).getByRole("button", { name: /^Accept suggestion: / });
+    const reject = within(item).getByRole("button", { name: /^Reject suggestion: / });
+    // The row stacks: the text alone on top, then one row with everything else.
+    expect(item).toHaveClass("flex-col");
+    expect(text.parentElement).toBe(item);
+    const row = text.nextElementSibling as HTMLElement;
+    expect(row.parentElement).toBe(item);
+    for (const el of [pill, tag, accept, reject]) {
+      expect(row).toContainElement(el);
+    }
+    expect(row).not.toContainElement(text);
+    // Pills on the left, the button group pushed to the right.
+    expect(row).toHaveClass("justify-between");
+    const pills = pill.parentElement as HTMLElement;
+    expect(tag.parentElement).toBe(pills);
+    expect(pills.parentElement).toBe(row);
+    expect(pills.nextElementSibling).toBe(accept.parentElement);
+    expect(accept.parentElement?.parentElement).toBe(row);
+  });
+
   it("accept appends `time - action` at the end of the page and removes the candidate", async () => {
     render(<WorkJournalPanel />);
     await screen.findByText("13:42 - Merged the PR for the login fix");

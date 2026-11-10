@@ -251,50 +251,53 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
             return (
               <li
                 key={candidate.id}
-                className="flex items-center gap-2 rounded-md border border-maestro-border bg-maestro-card px-1.5 py-1"
+                className="flex flex-col gap-1 rounded-md border border-maestro-border bg-maestro-card px-1.5 py-1"
               >
-                <span className="min-w-0 flex-1 break-words text-maestro-text">
-                  {candidateLine(candidate)}
-                </span>
-                {project && projectColor && (
-                  <span
-                    data-testid="suggestion-project"
-                    className="max-w-[10rem] shrink-0 truncate rounded-full border px-1.5 text-[10px]"
-                    style={{ color: projectColor, borderColor: projectColor }}
-                    title={`Project: ${project}`}
-                  >
-                    {project}
-                  </span>
-                )}
-                <span
-                  className={`shrink-0 rounded border px-1 text-[10px] ${
-                    SOURCE_TAG_COLORS[candidate.source] ?? DEFAULT_TAG_COLOR
-                  }`}
-                >
-                  {WORK_JOURNAL_SOURCE_LABELS[candidate.source] ?? candidate.source}
-                </span>
-                {/* gap-6 (24px) is wider than one button (17px), so one is not hit for the other. */}
-                <div className="flex shrink-0 items-center gap-6">
-                  <button
-                    type="button"
-                    onClick={() => void accept(candidate)}
-                    disabled={busy || acceptHint !== null}
-                    className={`${ICON_BUTTON} text-maestro-green`}
-                    aria-label={`Accept suggestion: ${label}`}
-                    title={acceptHint ?? "Accept: add this line to the page"}
-                  >
-                    <Check size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void reject(candidate)}
-                    disabled={busy || replacing}
-                    className={`${ICON_BUTTON} text-maestro-red`}
-                    aria-label={`Reject suggestion: ${label}`}
-                    title="Reject: hide it for today"
-                  >
-                    <X size={13} />
-                  </button>
+                {/* The text gets the full width; pills and buttons share the row beneath it. */}
+                <span className="break-words text-maestro-text">{candidateLine(candidate)}</span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {project && projectColor && (
+                      <span
+                        data-testid="suggestion-project"
+                        className="max-w-[10rem] shrink-0 truncate rounded-full border px-1.5 text-[10px]"
+                        style={{ color: projectColor, borderColor: projectColor }}
+                        title={`Project: ${project}`}
+                      >
+                        {project}
+                      </span>
+                    )}
+                    <span
+                      className={`shrink-0 rounded border px-1 text-[10px] ${
+                        SOURCE_TAG_COLORS[candidate.source] ?? DEFAULT_TAG_COLOR
+                      }`}
+                    >
+                      {WORK_JOURNAL_SOURCE_LABELS[candidate.source] ?? candidate.source}
+                    </span>
+                  </div>
+                  {/* gap-6 (24px) is wider than one button (17px), so one is not hit for the other. */}
+                  <div className="flex shrink-0 items-center gap-6">
+                    <button
+                      type="button"
+                      onClick={() => void accept(candidate)}
+                      disabled={busy || acceptHint !== null}
+                      className={`${ICON_BUTTON} text-maestro-green`}
+                      aria-label={`Accept suggestion: ${label}`}
+                      title={acceptHint ?? "Accept: add this line to the page"}
+                    >
+                      <Check size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void reject(candidate)}
+                      disabled={busy || replacing}
+                      className={`${ICON_BUTTON} text-maestro-red`}
+                      aria-label={`Reject suggestion: ${label}`}
+                      title="Reject: hide it for today"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
                 </div>
               </li>
             );
