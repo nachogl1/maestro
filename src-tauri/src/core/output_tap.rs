@@ -87,7 +87,10 @@ fn trim_start(buf: &str, keep: usize) -> usize {
     }
     const LINE_SEARCH: usize = 4096;
     let window_end = (start + LINE_SEARCH).min(buf.len());
-    if let Some(pos) = buf.as_bytes()[start..window_end].iter().position(|&b| b == b'\n') {
+    if let Some(pos) = buf.as_bytes()[start..window_end]
+        .iter()
+        .position(|&b| b == b'\n')
+    {
         start += pos + 1;
     }
     start

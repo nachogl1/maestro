@@ -133,7 +133,11 @@ pub fn attach_session_output(
 
 /// Ends an `attach_session_output` subscription.
 #[tauri::command]
-pub fn detach_session_output(state: State<'_, ProcessManager>, session_id: u32, subscriber_id: u64) {
+pub fn detach_session_output(
+    state: State<'_, ProcessManager>,
+    session_id: u32,
+    subscriber_id: u64,
+) {
     state.detach_output(session_id, subscriber_id);
 }
 
