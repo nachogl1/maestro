@@ -12,6 +12,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-start-dragging",
     "core:window:allow-set-focus",
+    "core:window:allow-set-title",
     "store:allow-load",
     "store:allow-get-store",
     "store:allow-get",

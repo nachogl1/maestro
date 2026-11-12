@@ -129,11 +129,14 @@ export function ProjectWindowApp({ tabId }: ProjectWindowAppProps) {
           });
       },
       onTabDroppedOutside: async (id, point) => {
-        if (id !== tabId || !(await isOverMainWindow(point))) return;
-        // Closing the pop-out docks the project back in the main window.
-        await getCurrentWindow()
-          .close()
-          .catch((err) => console.error("Failed to dock project window:", err));
+        if (id !== tabId) return;
+        try {
+          if (!(await isOverMainWindow(point))) return;
+          // Closing the pop-out docks the project back in the main window.
+          await getCurrentWindow().close();
+        } catch (err) {
+          console.error("Failed to dock project window:", err);
+        }
       },
     }),
     [tabId, sendUpdate],

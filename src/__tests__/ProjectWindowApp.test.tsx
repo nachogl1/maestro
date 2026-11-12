@@ -22,13 +22,15 @@ const mainWindow = {
   scaleFactor: () => Promise.resolve(2),
 };
 
+const getByLabel = vi.fn((label: string) => Promise.resolve(label === "main" ? mainWindow : null));
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setTitle: () => Promise.resolve(),
     close: closeWindow,
   }),
   Window: {
-    getByLabel: (label: string) => Promise.resolve(label === "main" ? mainWindow : null),
+    getByLabel: (label: string) => getByLabel(label),
   },
 }));
 
@@ -141,5 +143,18 @@ describe("ProjectWindowApp — full Maestro layout in a pop-out", () => {
     }
 
     expect(closeWindow).not.toHaveBeenCalled();
+  });
+
+  it("keeps the pop-out open, without throwing, when the main window can't be read", async () => {
+    render(<ProjectWindowApp tabId="t1" />);
+    await flush();
+    act(() => listeners.get("project-window-handoff")?.({ payload: HANDOFF }));
+    getByLabel.mockRejectedValueOnce(new Error("not allowed"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(lastHost?.onTabDroppedOutside("t1", { x: 500, y: 300 })).resolves.toBeUndefined();
+
+    expect(closeWindow).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });
