@@ -202,13 +202,19 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            // A destroyed project pop-out docks its tab back in the main
+            // window (its terminals keep running).
+            if let tauri::WindowEvent::Destroyed = event {
+                commands::window::handle_window_destroyed(window.app_handle(), window.label());
+            }
             // Confirm before quitting while terminals are still running.
             // CloseRequested fires for the custom titlebar close button,
             // Alt+F4, and taskbar close; with zero terminals the window
             // closes silently. (The macOS app-menu Quit item bypasses
             // CloseRequested entirely — known gap.)
             // Only the main window quits the app; secondary windows (the
-            // issue map) close silently and go away with the main one.
+            // issue map, work journal, project pop-outs) close silently and
+            // go away with the main one.
             if window.label() != "main" {
                 return;
             }
@@ -313,6 +319,9 @@ pub fn run() {
             commands::terminal::resize_pty,
             commands::terminal::kill_session,
             commands::terminal::kill_all_sessions,
+            commands::terminal::attach_session_output,
+            commands::terminal::detach_session_output,
+            commands::window::open_project_window,
             commands::terminal::check_cli_available,
             commands::terminal::get_backend_info,
             commands::terminal::save_pasted_image,

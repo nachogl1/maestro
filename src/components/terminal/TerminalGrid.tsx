@@ -67,6 +67,7 @@ import {
   saveBranchConfig,
 } from "@/lib/plugins";
 import { projectColorFor } from "@/lib/projectColor";
+import type { GridSnapshot } from "@/lib/projectWindow";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { successorLaunchImminent } from "@/lib/spawnSession";
@@ -217,6 +218,8 @@ export interface TerminalGridHandle {
   isZoomed: () => boolean;
   /** Tidy up: every pane in one row of equal, full-height columns, keeping their order. */
   tidyLayout: () => void;
+  /** This grid's panes and layout, for rebuilding it in another window. */
+  exportGridState: () => GridSnapshot;
 }
 
 /**
@@ -328,6 +331,17 @@ interface TerminalGridProps {
     delta: number,
     others: readonly TileRect[],
   ) => void;
+  /**
+   * Rebuild the grid from a snapshot taken in another window (a project moved
+   * to or from a pop-out) instead of starting with one empty slot. Read on
+   * mount only. Its sessions are already running and are re-attached, not
+   * respawned.
+   */
+  initialGridState?: GridSnapshot;
+  /** Terminals replay their session's scrollback on mount (see TerminalView). */
+  replayOutput?: boolean;
+  /** Called with the grid's state whenever its panes or layout change. */
+  onGridStateChange?: (snapshot: GridSnapshot) => void;
 }
 
 /** A placed eagle tile: a launched session, or a pre-launch card (null id). */
@@ -390,6 +404,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onEagleMoveTile,
     onEagleCycleFocus,
     onEagleResizeTile,
+    initialGridState,
+    replayOutput = false,
+    onGridStateChange,
   },
   ref,
 ) {
@@ -424,6 +441,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 
   // Track session slots (pre-launch and launched)
   const [slots, setSlots] = useState<SessionSlot[]>(() => {
+    if (initialGridState && initialGridState.slots.length > 0) return initialGridState.slots;
     const slot = createEmptySlot();
     return [initialSlotId ? { ...slot, id: initialSlotId } : slot];
   });
@@ -486,7 +504,17 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const flatLayout = eagleMode || pinnedSpotlight;
 
   // Binary split tree layout (drives pane arrangement)
-  const [layoutTree, setLayoutTree] = useState<TreeNode>(() => createLeaf(slots[0].id));
+  const [layoutTree, setLayoutTree] = useState<TreeNode>(() =>
+    initialGridState && initialGridState.slots.length > 0
+      ? initialGridState.layoutTree
+      : createLeaf(slots[0].id),
+  );
+
+  // Report panes/layout changes (a pop-out window streams them to the main
+  // window so the project can dock back intact).
+  useEffect(() => {
+    onGridStateChange?.({ slots, layoutTree });
+  }, [slots, layoutTree, onGridStateChange]);
 
   // Track whether a divider is being dragged (disables xterm pointer events)
   const [isDragging, setIsDragging] = useState(false);
@@ -1702,6 +1730,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       killSessionById,
       isZoomed: () => zoomedSlotId !== null,
       tidyLayout: handleTidyLayout,
+      exportGridState: () => ({ slots, layoutTree }),
     }),
     [
       addSession,
@@ -1712,6 +1741,8 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       killSessionById,
       zoomedSlotId,
       handleTidyLayout,
+      slots,
+      layoutTree,
     ],
   );
 
@@ -1921,6 +1952,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
               projectColor={eagleColor}
               hasMoveHandle={showReorderHandle}
               showShortcutHints={!pinnedSpotlight}
+              replayOutput={replayOutput}
             />
             {dropOverlay}
           </DraggablePane>
@@ -2053,6 +2085,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       pinnedTileStyles,
       pinnedSet,
       flatLayout,
+      replayOutput,
     ],
   );
 

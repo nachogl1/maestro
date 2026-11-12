@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
 use crate::core::samurai_context::SamuraiContextStore;
@@ -110,6 +111,30 @@ pub async fn spawn_shell(
     };
     let pm = state.inner().clone();
     pm.spawn_shell(app_handle, canonical_cwd, env).await
+}
+
+/// Attaches a terminal view to a running session's output.
+///
+/// The session's retained scrollback is sent on `on_output` first, then every
+/// later output batch, in order. Used by views that mount after the session
+/// started (a project tab moved to another window), which would otherwise
+/// start blank. Returns a subscription id for `detach_session_output`.
+#[tauri::command]
+pub fn attach_session_output(
+    state: State<'_, ProcessManager>,
+    session_id: u32,
+    on_output: Channel<String>,
+) -> Result<u64, PtyError> {
+    state.attach_output(
+        session_id,
+        Box::new(move |data| on_output.send(data.to_string()).is_ok()),
+    )
+}
+
+/// Ends an `attach_session_output` subscription.
+#[tauri::command]
+pub fn detach_session_output(state: State<'_, ProcessManager>, session_id: u32, subscriber_id: u64) {
+    state.detach_output(session_id, subscriber_id);
 }
 
 /// Exposes `ProcessManager::write_stdin` to the frontend.

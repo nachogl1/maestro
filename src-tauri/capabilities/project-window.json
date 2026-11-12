@@ -1,0 +1,28 @@
+{
+  "identifier": "project-window",
+  "description": "Project pop-out windows (a project tab moved to its own window). The main window owns persisted state, so store access here is read-only: a pop-out writing store.json would overwrite the main window's workspace.",
+  "windows": ["project-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-emit-to",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-focus",
+    "store:allow-load",
+    "store:allow-get-store",
+    "store:allow-get",
+    "store:allow-has",
+    "store:allow-keys",
+    "store:allow-values",
+    "store:allow-entries",
+    "store:allow-length",
+    "dialog:default",
+    "opener:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text"
+  ]
+}

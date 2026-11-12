@@ -38,8 +38,10 @@ import {
 import { type MoveDirection, neighbourInDirection, type PaneEdge } from "@/lib/paneMoves";
 import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
 import { projectColorFor } from "@/lib/projectColor";
+import { type GridSnapshot, openProjectWindow } from "@/lib/projectWindow";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
+import { useProjectWindowStore } from "@/stores/useProjectWindowStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { ParkedShelf, type ParkedShelfUnparkOptions } from "../terminal/ParkedShelf";
@@ -95,6 +97,8 @@ interface MultiProjectViewProps {
    * (tiles color-coded by project) instead of only the active project.
    */
   eagleView?: boolean;
+  /** Called with a project's grid whenever its panes or layout change (pop-out windows report it to the main window). */
+  onGridStateChange?: (tabId: string, snapshot: GridSnapshot) => void;
 }
 
 export interface MultiProjectViewHandle {
@@ -121,6 +125,8 @@ export interface MultiProjectViewHandle {
    * the cursor lands in that terminal. False if no grid owns the session.
    */
   navigateToSession: (tabId: string, sessionId: number) => boolean;
+  /** The given project's grid, for moving it to a pop-out. Null if its grid isn't mounted. */
+  exportGridState: (tabId: string) => GridSnapshot | null;
 }
 
 /**
@@ -132,8 +138,13 @@ export interface MultiProjectViewHandle {
  * uses a ZStack to preserve terminal NSView state across project switches.
  */
 export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectViewProps>(
-  function MultiProjectView({ onSessionCountChange, eagleView = false }, ref) {
-    const tabs = useWorkspaceStore((s) => s.tabs);
+  function MultiProjectView({ onSessionCountChange, eagleView = false, onGridStateChange }, ref) {
+    const allTabs = useWorkspaceStore((s) => s.tabs);
+    // Tabs moved to a pop-out window are not rendered here: unmounting their
+    // grid (preserveOnHide) keeps the sessions running for the pop-out.
+    const poppedOut = useProjectWindowStore((s) => s.poppedOut);
+    const dockSeeds = useProjectWindowStore((s) => s.dockSeeds);
+    const tabs = useMemo(() => allTabs.filter((t) => !poppedOut[t.id]), [allTabs, poppedOut]);
     const setSessionsLaunched = useWorkspaceStore((s) => s.setSessionsLaunched);
     const setSelectedRepo = useWorkspaceStore((s) => s.setSelectedRepo);
     const gridRefs = useRef<Map<string, TerminalGridHandle>>(new Map());
@@ -179,9 +190,24 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // eagleView so session launches/kills don't re-render every project's grid
     // while the eagle grid isn't even showing. Parked tiles are display:none,
     // so they must not reserve grid columns.
+    const dockedSessionIds = useMemo(() => new Set(tabs.flatMap((t) => t.sessionIds)), [tabs]);
     const liveSessionCount = useSessionStore((s) =>
-      eagleView ? s.sessions.filter((x) => !s.parkedSessionIds.includes(x.id)).length : 0,
+      eagleView
+        ? s.sessions.filter((x) => dockedSessionIds.has(x.id) && !s.parkedSessionIds.includes(x.id))
+            .length
+        : 0,
     );
+
+    // A docked-back tab's grid is built from its seed on mount (useState
+    // initializers); drop the seed afterwards so a later relaunch of the
+    // project starts fresh instead of from that stale snapshot.
+    useEffect(() => {
+      for (const tabId of Object.keys(dockSeeds)) {
+        if (gridRefs.current.has(tabId)) {
+          useProjectWindowStore.getState().consumeDockSeed(tabId);
+        }
+      }
+    }, [dockSeeds]);
 
     // Pinned terminals — the ones that follow the user across projects.
     const pinnedSessionIds = useSessionStore((s) => s.pinnedSessionIds);
@@ -616,6 +642,14 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           return gridRefs.current.get(tabId)?.killSessionById(sessionId) ?? false;
         },
         navigateToSession: (tabId: string, sessionId: number) => {
+          // A popped-out project lives in its own window: bring that forward.
+          if (useProjectWindowStore.getState().poppedOut[tabId]) {
+            const name = allTabs.find((t) => t.id === tabId)?.name ?? "Project";
+            openProjectWindow(tabId, name).catch((err) => {
+              console.error("Failed to focus project window:", err);
+            });
+            return true;
+          }
           // Restore a parked session first so its pane exists to focus/zoom.
           const sessionStore = useSessionStore.getState();
           if (sessionStore.parkedSessionIds.includes(sessionId)) {
@@ -651,8 +685,18 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
           if (!grid) return false;
           return wasZoomed ? grid.zoomSession(sessionId) : grid.focusSession(sessionId);
         },
+        exportGridState: (tabId: string) => gridRefs.current.get(tabId)?.exportGridState() ?? null,
       }),
-      [tabs, setSessionsLaunched, eagleView, eagleZoom, eagleZoomCard, eagleZoomed, tidyEagleTiles],
+      [
+        tabs,
+        allTabs,
+        setSessionsLaunched,
+        eagleView,
+        eagleZoom,
+        eagleZoomCard,
+        eagleZoomed,
+        tidyEagleTiles,
+      ],
     );
 
     // Create stable callbacks per tab to avoid infinite re-render loops
@@ -702,6 +746,16 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       }
       return callbacks;
     }, [tabs, setSessionsLaunched]);
+
+    // Grid-change callbacks per tab (only when someone listens)
+    const gridStateCallbacks = useMemo(() => {
+      const callbacks = new Map<string, (snapshot: GridSnapshot) => void>();
+      if (!onGridStateChange) return callbacks;
+      for (const tab of tabs) {
+        callbacks.set(tab.id, (snapshot: GridSnapshot) => onGridStateChange(tab.id, snapshot));
+      }
+      return callbacks;
+    }, [tabs, onGridStateChange]);
 
     // Stable repo change callbacks per tab
     const repoChangeCallbacks = useMemo(() => {
@@ -968,6 +1022,9 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                   onEagleMoveTile={handleEagleMoveTile}
                   onEagleCycleFocus={handleEagleCycleFocus}
                   onEagleResizeTile={handleEagleResizeTile}
+                  initialGridState={dockSeeds[tab.id]}
+                  replayOutput={dockSeeds[tab.id] !== undefined}
+                  onGridStateChange={gridStateCallbacks.get(tab.id)}
                 />
               ) : (
                 <IdleLandingView onAdd={mustCallback(launchCallbacks, tab.id)} />

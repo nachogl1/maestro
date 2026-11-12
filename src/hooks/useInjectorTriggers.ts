@@ -10,8 +10,12 @@ import { useSessionStore } from "@/stores/useSessionStore";
  * list changes, every watched terminal that just reached its trigger's
  * threshold sends that trigger's message. Mounted once by `App`.
  */
-export function useInjectorTriggers(): void {
+export function useInjectorTriggers(
+  /** False in a project pop-out window: only one window may fire triggers, or each message would be sent twice. */
+  enabled = true,
+): void {
   useEffect(() => {
+    if (!enabled) return;
     const check = () => {
       const { triggers } = useInjectorTriggerStore.getState();
       if (triggers.length === 0) return;
@@ -48,5 +52,5 @@ export function useInjectorTriggers(): void {
       unsubscribeSessions();
       unsubscribeTriggers();
     };
-  }, []);
+  }, [enabled]);
 }

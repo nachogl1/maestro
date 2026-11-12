@@ -6,6 +6,7 @@ import { createJSONStorage, persist, type StateStorage } from "zustand/middlewar
 
 import type { TileRect } from "@/lib/eagleLayout";
 import { samePath } from "@/lib/path";
+import { isProjectWindow } from "@/lib/projectWindow";
 import { killSession } from "@/lib/terminal";
 import { useSessionStore } from "@/stores/useSessionStore";
 
@@ -128,6 +129,9 @@ const tauriStorage: StateStorage = {
     }
   },
   setItem: async (name: string, value: string): Promise<void> => {
+    // A project pop-out holds only its own tab; the main window owns
+    // store.json, and a write from here would drop every other tab.
+    if (isProjectWindow()) return;
     try {
       await lazyStore.set(name, value);
       await lazyStore.save();
@@ -438,6 +442,9 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
     {
       name: "maestro-workspace",
       storage: createJSONStorage(() => tauriStorage),
+      // A pop-out is seeded with its one tab by the main window; hydrating
+      // from disk could land after that and replace it.
+      skipHydration: isProjectWindow(),
       partialize: (state) => ({ tabs: state.tabs }),
       version: 6,
       onRehydrateStorage: () => {
