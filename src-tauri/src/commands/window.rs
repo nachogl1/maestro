@@ -56,8 +56,19 @@ pub async fn open_project_window(
 ) -> Result<String, String> {
     let label = project_window_label(&tab_id);
     if let Some(existing) = app.get_webview_window(&label) {
-        existing.set_focus().map_err(|e| e.to_string())?;
-        return Ok(label);
+        // A live pop-out is focused. One left behind hidden (closed but still
+        // registered) would swallow every later move silently: replace it.
+        if existing.is_visible().unwrap_or(false) {
+            existing.set_focus().map_err(|e| {
+                log::error!("Failed to focus project window {label}: {e}");
+                e.to_string()
+            })?;
+            return Ok(label);
+        }
+        log::warn!("Replacing hidden project window {label}");
+        if let Err(e) = existing.destroy() {
+            log::error!("Failed to remove hidden project window {label}: {e}");
+        }
     }
 
     let url = format!("index.html?projectWindow={}", urlencode(&tab_id));
@@ -84,7 +95,11 @@ pub async fn open_project_window(
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(true);
 
-    builder.build().map_err(|e| e.to_string())?;
+    builder.build().map_err(|e| {
+        log::error!("Failed to open project window {label}: {e}");
+        e.to_string()
+    })?;
+    log::info!("Opened project window {label}");
     Ok(label)
 }
 
