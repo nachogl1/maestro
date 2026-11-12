@@ -623,21 +623,29 @@ export function useSlotLaunch({
       const slot = slotsRef.current.find((s) => s.id === slotId);
       if (!slot || slot.sessionId !== null) return;
 
+      // Serialize launches within the same project to prevent .mcp.json race conditions
+      const lockPath = projectPath ?? "no-project";
+      const launchUnderLock = () =>
+        withProjectLock(lockPath, async () => {
+          await launchSlotInner(slotId);
+        });
+
       // Gate on FDA: if the project is in a TCC-protected directory, check
-      // Full Disk Access before any Rust-side filesystem operations.
+      // Full Disk Access before any Rust-side filesystem operations. Once the
+      // dialog settles it (granted, or dismissed for good) the launch goes
+      // ahead without asking again: re-entering this gate would loop forever
+      // while access is still missing.
       if (projectPath && pathRequiresFDA(projectPath)) {
         const hasAccess = await checkFullDiskAccess();
         if (!hasAccess) {
-          useFDAStore.getState().requireAccess(projectPath, () => launchSlot(slotId));
+          useFDAStore.getState().requireAccess(projectPath, () => {
+            void launchUnderLock();
+          });
           return;
         }
       }
 
-      // Serialize launches within the same project to prevent .mcp.json race conditions
-      const lockPath = projectPath ?? "no-project";
-      await withProjectLock(lockPath, async () => {
-        await launchSlotInner(slotId);
-      });
+      await launchUnderLock();
     },
     [projectPath, launchSlotInner],
   );

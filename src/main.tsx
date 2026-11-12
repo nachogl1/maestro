@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { IssueMapWindow } from "./components/git/issues/IssueMapWindow";
 import { WorkJournalWindow } from "./components/workjournal/WorkJournalWindow";
+import { forwardErrorsToLog } from "./lib/frontendLog";
 import { readIssueMapTarget } from "./lib/issueMapWindow";
 import { getProjectWindowId, getProjectWindowTabId } from "./lib/projectWindow";
 import { isWorkJournalWindowView } from "./lib/workJournalWindow";
@@ -14,6 +15,9 @@ import "./styles/globals.css";
 if (navigator.userAgent.includes("Linux")) {
   document.documentElement.classList.add("platform-linux");
 }
+
+// Release builds have no web console: keep front-end errors in the log file.
+forwardErrorsToLog();
 
 // The issue map opens in its own window, which loads this same page.
 const issueMapTarget = readIssueMapTarget(window.location.search);

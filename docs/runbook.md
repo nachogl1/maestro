@@ -223,3 +223,11 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
 - **Back:** drop a project's tab anywhere on the main window to return just that project, or close its window to
   return every project in it. Terminals keep running either way. A tab dropped anywhere else (the desktop, its own
   window) stays where it is.
+
+## Launch Session: projects on the Desktop without Full Disk Access
+
+- Launching in a project under a protected folder (Desktop, Documents, Downloads) checks Full Disk Access first.
+- Without it, Maestro asks once. If you dismiss that question for good, sessions launch anyway; they no longer get
+  stuck doing nothing.
+- Front-end errors are written to the app's log file (`~/Library/Logs/com.maestro.app/Maestro.log` on macOS) with a
+  `[frontend]` tag, since an installed build has no web console.

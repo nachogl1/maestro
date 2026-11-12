@@ -323,6 +323,7 @@ pub fn run() {
             commands::terminal::detach_session_output,
             commands::window::open_project_window,
             commands::terminal::check_cli_available,
+            commands::frontend_log::log_frontend_message,
             commands::terminal::get_backend_info,
             commands::terminal::save_pasted_image,
             // Git commands
