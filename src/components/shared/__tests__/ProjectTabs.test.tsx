@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-import { type ProjectTab, ProjectTabs, tearOffPosition } from "../ProjectTabs";
+import { outsideDropPoint, type ProjectTab, ProjectTabs, tearOffPosition } from "../ProjectTabs";
 
 const TABS: ProjectTab[] = [
   { id: "t1", name: "alpha", active: true },
@@ -120,5 +120,18 @@ describe("tearOffPosition — dragging a tab out of the window", () => {
     expect(
       tearOffPosition({ clientX: 100, clientY: -5, screenX: 200, screenY: 95 }, viewport),
     ).not.toBeNull();
+  });
+});
+
+describe("outsideDropPoint — where a tab dragged out of the window was dropped", () => {
+  const viewport = { width: 1200, height: 800 };
+
+  it("gives the exact screen point of a drop outside the window, and null inside it", () => {
+    expect(
+      outsideDropPoint({ clientX: 2000, clientY: 300, screenX: 2100, screenY: 400 }, viewport),
+    ).toEqual({ x: 2100, y: 400 });
+    expect(
+      outsideDropPoint({ clientX: 300, clientY: 20, screenX: 400, screenY: 120 }, viewport),
+    ).toBeNull();
   });
 });

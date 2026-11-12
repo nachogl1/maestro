@@ -731,6 +731,7 @@ function App({ projectWindow }: AppProps = {}) {
         onReorderTab={reorderTabs}
         onMoveTab={moveTab}
         onPopOutTab={isMainWindow ? handlePopOutTab : undefined}
+        onDropTabOutside={projectWindow?.onTabDroppedOutside}
       />
 
       {/* Main area: sidebar + content */}

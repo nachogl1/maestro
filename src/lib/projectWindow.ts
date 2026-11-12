@@ -17,6 +17,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { Window } from "@tauri-apps/api/window";
 import type { SessionSlot } from "@/components/terminal/PreLaunchCard";
 import type { TreeNode } from "@/components/terminal/splitTree";
 import type { WorkspaceTab } from "@/stores/useWorkspaceStore";
@@ -42,6 +43,11 @@ export interface ProjectWindowHost {
   onGridStateChange: (tabId: string, snapshot: GridSnapshot) => void;
   /** The user closed the project here: tell the main window, then close this window. */
   onProjectClosed: (tabId: string) => void;
+  /**
+   * The project's tab was dragged out of this window and dropped at `point`:
+   * over the main window it docks back there; anywhere else nothing happens.
+   */
+  onTabDroppedOutside: (tabId: string, point: ScreenPoint) => Promise<void>;
 }
 
 /** A TerminalGrid's panes and split layout — enough to rebuild it elsewhere. */
@@ -128,4 +134,24 @@ export function projectWindowTabFields(tab: WorkspaceTab): ProjectWindowTabField
     workspaceType: tab.workspaceType,
     worktreeBasePath: tab.worktreeBasePath,
   };
+}
+
+/** Whether a screen point lies on the main window (title bar included). */
+export async function isOverMainWindow(point: ScreenPoint): Promise<boolean> {
+  const main = await Window.getByLabel(MAIN_WINDOW_LABEL);
+  if (!main) return false;
+  const [position, size, scale] = await Promise.all([
+    main.outerPosition(),
+    main.outerSize(),
+    main.scaleFactor(),
+  ]);
+  // Window geometry comes in physical pixels; drop points are logical.
+  const left = position.x / scale;
+  const top = position.y / scale;
+  return (
+    point.x >= left &&
+    point.y >= top &&
+    point.x <= left + size.width / scale &&
+    point.y <= top + size.height / scale
+  );
 }

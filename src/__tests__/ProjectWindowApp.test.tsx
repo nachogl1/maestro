@@ -14,11 +14,22 @@ vi.mock("@tauri-apps/api/event", () => ({
   emitTo: (...args: unknown[]) => emitTo(...args),
 }));
 
+// The main window on a 2x display: physical 2400x1600 at (200, 100), so
+// logical 1200x800 at (100, 50).
+const mainWindow = {
+  outerPosition: () => Promise.resolve({ x: 200, y: 100 }),
+  outerSize: () => Promise.resolve({ width: 2400, height: 1600 }),
+  scaleFactor: () => Promise.resolve(2),
+};
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setTitle: () => Promise.resolve(),
     close: closeWindow,
   }),
+  Window: {
+    getByLabel: (label: string) => Promise.resolve(label === "main" ? mainWindow : null),
+  },
 }));
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -104,5 +115,31 @@ describe("ProjectWindowApp — full Maestro layout in a pop-out", () => {
 
     expect(emitTo).toHaveBeenCalledWith("main", "project-window-close-tab", "t1");
     expect(closeWindow).toHaveBeenCalled();
+  });
+
+  it("docks the project back when its tab is dropped on the main window", async () => {
+    render(<ProjectWindowApp tabId="t1" />);
+    await flush();
+    act(() => listeners.get("project-window-handoff")?.({ payload: HANDOFF }));
+
+    await lastHost?.onTabDroppedOutside("t1", { x: 500, y: 300 });
+
+    expect(closeWindow).toHaveBeenCalled();
+  });
+
+  it("keeps the pop-out open when its tab is dropped anywhere but the main window", async () => {
+    render(<ProjectWindowApp tabId="t1" />);
+    await flush();
+    act(() => listeners.get("project-window-handoff")?.({ payload: HANDOFF }));
+
+    for (const point of [
+      { x: 3000, y: 300 },
+      { x: 500, y: 900 },
+      { x: 50, y: 300 },
+    ]) {
+      await lastHost?.onTabDroppedOutside("t1", point);
+    }
+
+    expect(closeWindow).not.toHaveBeenCalled();
   });
 });

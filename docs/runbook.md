@@ -212,3 +212,12 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
   on. A click anywhere else also closes it.
 - Jump to date and New page for a date open their date row under the header with the cursor already in the date
   field, so a date can be typed straight away.
+
+## Project windows: moving a project to another screen and back
+
+- **Out:** drag a project tab outside the main window (for example onto another monitor), use the tab's window
+  button, its right-click menu, or Cmd/Ctrl+Shift+N. The project opens in its own full Maestro window; running
+  terminals move with it and replay their output.
+- **Back:** drag the project's tab out of its own window and drop it anywhere on the main window, or close its
+  window. The project returns to the main window's tab bar with its terminals still running. A tab dropped anywhere
+  else (the desktop, another screen) leaves the window where it is.

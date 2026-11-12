@@ -42,6 +42,11 @@ interface ProjectTabsProps {
    * dragged out of this window. Omitted: the action isn't offered.
    */
   onPopOutTab?: (id: string, position?: ScreenPoint) => void;
+  /**
+   * A tab was dragged out of this window and dropped at `point` (a pop-out
+   * window uses it to dock the project back). Omitted: nothing happens.
+   */
+  onDropTabOutside?: (id: string, point: ScreenPoint) => void;
 }
 
 /** Where the pointer was last seen during a tab drag. */
@@ -51,10 +56,10 @@ type DragPointer = { clientX: number; clientY: number; screenX: number; screenY:
 const DROP_WINDOW_OFFSET = { x: 80, y: 12 };
 
 /**
- * Screen position for a pop-out when a tab drag ended outside this window
- * (e.g. on another monitor), or null when it ended inside it (a reorder).
+ * Screen point where a tab drag ended outside this window (e.g. on another
+ * monitor or another Maestro window), or null when it ended inside it.
  */
-export function tearOffPosition(
+export function outsideDropPoint(
   pointer: DragPointer,
   viewport: { width: number; height: number },
 ): ScreenPoint | null {
@@ -63,11 +68,20 @@ export function tearOffPosition(
     pointer.clientY >= 0 &&
     pointer.clientX <= viewport.width &&
     pointer.clientY <= viewport.height;
-  if (inside) return null;
-  return {
-    x: pointer.screenX - DROP_WINDOW_OFFSET.x,
-    y: pointer.screenY - DROP_WINDOW_OFFSET.y,
-  };
+  return inside ? null : { x: pointer.screenX, y: pointer.screenY };
+}
+
+/**
+ * Screen position for a pop-out when a tab drag ended outside this window
+ * (e.g. on another monitor), or null when it ended inside it (a reorder).
+ */
+export function tearOffPosition(
+  pointer: DragPointer,
+  viewport: { width: number; height: number },
+): ScreenPoint | null {
+  const point = outsideDropPoint(pointer, viewport);
+  if (!point) return null;
+  return { x: point.x - DROP_WINDOW_OFFSET.x, y: point.y - DROP_WINDOW_OFFSET.y };
 }
 
 /** Right-click menu position and the tab it was opened on. */
@@ -223,6 +237,7 @@ export function ProjectTabs({
   onReorderTab,
   onMoveTab,
   onPopOutTab,
+  onDropTabOutside,
 }: ProjectTabsProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
   const [tabMenu, setTabMenu] = useState<TabMenuState | null>(null);
@@ -300,23 +315,26 @@ export function ProjectTabs({
     (event: DragEndEvent) => {
       const { active, over } = event;
       const pointer = endPointerTracking();
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
       // Dropped outside this window (another monitor, the desktop): the
       // project moves to its own window where it was dropped.
       if (pointer && onPopOutTab) {
-        const position = tearOffPosition(pointer, {
-          width: window.innerWidth,
-          height: window.innerHeight,
-        });
+        const position = tearOffPosition(pointer, viewport);
         if (position) {
           onPopOutTab(active.id as string, position);
           return;
         }
       }
+      const outsidePoint = pointer && outsideDropPoint(pointer, viewport);
+      if (outsidePoint && onDropTabOutside) {
+        onDropTabOutside(active.id as string, outsidePoint);
+        return;
+      }
       if (over && active.id !== over.id) {
         onReorderTab(active.id as string, over.id as string);
       }
     },
-    [onReorderTab, onPopOutTab, endPointerTracking],
+    [onReorderTab, onPopOutTab, onDropTabOutside, endPointerTracking],
   );
 
   // Keep the selected tab visible when the strip is wider than the window.

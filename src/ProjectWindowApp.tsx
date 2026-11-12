@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type GridSnapshot,
+  isOverMainWindow,
   MAIN_WINDOW_LABEL,
   PROJECT_WINDOW_EVENTS,
   type ProjectHandoff,
@@ -30,8 +31,9 @@ interface ProjectWindowAppProps {
  *
  * It fetches the project from the main window, then renders `<App />` in
  * pop-out mode, which leaves app-wide jobs to the main window. Every change
- * streams back (see `lib/projectWindow`), so closing this window docks the
- * project in the main window again with its terminals still running.
+ * streams back (see `lib/projectWindow`), so closing this window — or
+ * dragging its tab onto the main window — docks the project in the main
+ * window again with its terminals still running.
  */
 export function ProjectWindowApp({ tabId }: ProjectWindowAppProps) {
   const [handedOff, setHandedOff] = useState(false);
@@ -125,6 +127,13 @@ export function ProjectWindowApp({ tabId }: ProjectWindowAppProps) {
               .close()
               .catch((err) => console.error("Failed to close project window:", err));
           });
+      },
+      onTabDroppedOutside: async (id, point) => {
+        if (id !== tabId || !(await isOverMainWindow(point))) return;
+        // Closing the pop-out docks the project back in the main window.
+        await getCurrentWindow()
+          .close()
+          .catch((err) => console.error("Failed to dock project window:", err));
       },
     }),
     [tabId, sendUpdate],
