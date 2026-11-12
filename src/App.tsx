@@ -1,18 +1,35 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { GitFork, RefreshCw, X } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
 import { openIssueMapFor, syncIssueMapProjects } from "@/lib/issueMapWindow";
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
+import {
+  canMoveTab,
+  newProjectWindowId,
+  openProjectWindow,
+  PROJECT_WINDOW_EVENTS,
+  type ProjectHandoff,
+  type ProjectWindowHost,
+  type ProjectWindowUpdate,
+  projectWindowLabel,
+  type ScreenPoint,
+  type TabInWindow,
+  type TabMove,
+  tabsInWindow,
+  windowHoldsTab,
+} from "@/lib/projectWindow";
 import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
+import { useProjectWindowStore } from "@/stores/useProjectWindowStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { GitGraphPanel } from "./components/git/GitGraphPanel";
@@ -87,11 +104,43 @@ function isValidTheme(value: string | null): value is Theme {
   return value === "dark" || value === "light";
 }
 
-function App() {
-  const tabs = useWorkspaceStore((s) => s.tabs);
+interface AppProps {
+  /**
+   * Set when this is a project pop-out window: the full Maestro layout for
+   * that one project. App-wide jobs that must run once (orphan cleanup,
+   * updater, schedulers, watchdog sync, CLI opens, samurai respawns) are left
+   * to the main window.
+   */
+  projectWindow?: ProjectWindowHost;
+}
+
+function App({ projectWindow }: AppProps = {}) {
+  const isMainWindow = projectWindow === undefined;
+  // Every open project, including ones moved to a pop-out window. `tabs` is
+  // the subset shown in this window; app-wide concerns (watchdog sync) use
+  // `allTabs`.
+  const allTabs = useWorkspaceStore((s) => s.tabs);
+  const poppedOut = useProjectWindowStore((s) => s.poppedOut);
+  const tabs = useMemo(() => allTabs.filter((t) => !poppedOut[t.id]), [allTabs, poppedOut]);
   const projectColors = useProjectColors();
-  const selectTab = useWorkspaceStore((s) => s.selectTab);
+  const selectWorkspaceTab = useWorkspaceStore((s) => s.selectTab);
+  // A popped-out project can't be selected here: bring its window forward.
+  const selectTab = useCallback(
+    (id: string) => {
+      const windowId = useProjectWindowStore.getState().poppedOut[id];
+      if (windowId) {
+        const name = useWorkspaceStore.getState().tabs.find((t) => t.id === id)?.name ?? "Project";
+        openProjectWindow(windowId, id, name).catch((err) => {
+          console.error("Failed to focus project window:", err);
+        });
+        return;
+      }
+      selectWorkspaceTab(id);
+    },
+    [selectWorkspaceTab],
+  );
   const closeTab = useWorkspaceStore((s) => s.closeTab);
+  const fetchSessions = useSessionStore((s) => s.fetchSessions);
   const reorderTabs = useWorkspaceStore((s) => s.reorderTabs);
   const moveTab = useWorkspaceStore((s) => s.moveTab);
   const setSessionsLaunched = useWorkspaceStore((s) => s.setSessionsLaunched);
@@ -149,9 +198,9 @@ function App() {
     localStorage.setItem("maestro-theme", theme);
   }, [theme]);
 
-  useAppListeners();
-  useBackgroundPollers(tabs);
-  useInjectorTriggers();
+  useAppListeners(isMainWindow);
+  useBackgroundPollers(allTabs, isMainWindow);
+  useInjectorTriggers(isMainWindow);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
   const macTitleBarPadding = useMacTitleBarPadding();
@@ -461,6 +510,134 @@ function App() {
     [sidebarOpen, sidebarTab, handleSelectSidebarTab],
   );
 
+  // ── Project pop-out windows ──
+  // The active tab must be one shown here; when it moves to a pop-out (or a
+  // store action activates a popped-out tab), fall back to the first docked one.
+  useEffect(() => {
+    if (tabs.length === 0 || tabs.some((t) => t.active)) return;
+    selectWorkspaceTab(tabs[0].id);
+  }, [tabs, selectWorkspaceTab]);
+
+  // Move a project into its own window. Its grid unmounts here without
+  // killing anything (preserveOnHide); the pop-out rebuilds it from the
+  // snapshot and re-attaches to the running sessions.
+  const handlePopOutTab = useCallback((id: string, position?: ScreenPoint) => {
+    const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === id);
+    if (!tab || useProjectWindowStore.getState().poppedOut[id]) return;
+    const grid = multiProjectRef.current?.exportGridState(id) ?? null;
+    const windowId = newProjectWindowId();
+    useProjectWindowStore.getState().markPoppedOut(id, grid, windowId);
+    openProjectWindow(windowId, id, tab.name, position).catch((err) => {
+      console.error("Failed to open project window:", err);
+      useProjectWindowStore.getState().dock(id);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isMainWindow) return;
+    const dockTab = (tabId: string) => {
+      if (!useProjectWindowStore.getState().poppedOut[tabId]) return;
+      useProjectWindowStore.getState().dock(tabId);
+      useWorkspaceStore.getState().selectTab(tabId);
+    };
+    // Send a popped-out project to the window that now holds it.
+    const handOff = (tabId: string) => {
+      const windowId = useProjectWindowStore.getState().poppedOut[tabId];
+      const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
+      if (!tab || !windowId) return;
+      const handoff: ProjectHandoff = {
+        windowId,
+        tab,
+        grid: useProjectWindowStore.getState().latestGrids[tabId] ?? null,
+        parkedSessionIds: useSessionStore
+          .getState()
+          .parkedSessionIds.filter((sid) => tab.sessionIds.includes(sid)),
+      };
+      emitTo(projectWindowLabel(windowId), PROJECT_WINDOW_EVENTS.handoff, handoff).catch((err) => {
+        console.error("Failed to hand off project to its window:", err);
+      });
+    };
+    // Tell a pop-out a tab has left it (docked here or moved to another pop-out).
+    const release = (tabId: string, windowId: string) => {
+      const payload: TabInWindow = { tabId, windowId };
+      emitTo(projectWindowLabel(windowId), PROJECT_WINDOW_EVENTS.release, payload).catch((err) => {
+        console.error("Failed to release project from its window:", err);
+      });
+    };
+    const unlisteners = [
+      // A pop-out finished loading: hand it the project.
+      listen<{ tabId: string }>(PROJECT_WINDOW_EVENTS.ready, (event) =>
+        handOff(event.payload.tabId),
+      ),
+      // A pop-out changed its project: mirror it so it can dock back intact.
+      listen<ProjectWindowUpdate>(PROJECT_WINDOW_EVENTS.update, (event) => {
+        const { tabId, windowId, tab: fields, grid, parkedSessionIds } = event.payload;
+        // Only the window holding the tab speaks for it (one it just left may lag behind).
+        if (!windowHoldsTab(useProjectWindowStore.getState().poppedOut, { tabId, windowId }))
+          return;
+        const before = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
+        useWorkspaceStore.setState((state) => ({
+          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ...fields } : t)),
+        }));
+        useProjectWindowStore.getState().setLatestGrid(tabId, grid);
+        useSessionStore.setState((state) => ({
+          parkedSessionIds: [
+            ...state.parkedSessionIds.filter((sid) => !fields.sessionIds.includes(sid)),
+            ...parkedSessionIds,
+          ],
+        }));
+        // Sessions launched or closed over there: refresh this window's list.
+        const sessionsChanged =
+          before?.sessionIds.length !== fields.sessionIds.length ||
+          fields.sessionIds.some((sid) => !before?.sessionIds.includes(sid));
+        if (sessionsChanged) void fetchSessions();
+      }),
+      // A pop-out closed: every project it held returns here with its terminals.
+      listen<string>(PROJECT_WINDOW_EVENTS.closed, (event) => {
+        for (const tabId of tabsInWindow(
+          useProjectWindowStore.getState().poppedOut,
+          event.payload,
+        )) {
+          dockTab(tabId);
+        }
+      }),
+      // A tab was dragged from its pop-out onto this window: dock just that tab.
+      listen<TabInWindow>(PROJECT_WINDOW_EVENTS.dockTab, (event) => {
+        const { tabId, windowId } = event.payload;
+        if (!windowHoldsTab(useProjectWindowStore.getState().poppedOut, event.payload)) return;
+        release(tabId, windowId);
+        dockTab(tabId);
+      }),
+      // A tab was dragged from one pop-out onto another: it joins that window.
+      listen<TabMove>(PROJECT_WINDOW_EVENTS.moveTab, (event) => {
+        const { tabId, fromWindowId, toWindowId } = event.payload;
+        const { poppedOut, moveToWindow } = useProjectWindowStore.getState();
+        if (!canMoveTab(poppedOut, event.payload)) return;
+        release(tabId, fromWindowId);
+        moveToWindow(tabId, toWindowId);
+        handOff(tabId);
+      }),
+      // The project was closed in its pop-out, which already stopped its
+      // terminals: drop the tab here without stopping them a second time.
+      listen<string>(PROJECT_WINDOW_EVENTS.closeTab, (event) => {
+        const tabId = event.payload;
+        if (!useProjectWindowStore.getState().poppedOut[tabId]) return;
+        useProjectWindowStore.getState().dock(tabId);
+        useProjectWindowStore.getState().consumeDockSeed(tabId);
+        useWorkspaceStore.setState((state) => ({
+          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, sessionIds: [] } : t)),
+        }));
+        useWorkspaceStore.getState().closeTab(tabId);
+        void fetchSessions();
+      }),
+    ];
+    return () => {
+      for (const unlisten of unlisteners) {
+        unlisten.then((fn) => fn()).catch(() => {});
+      }
+    };
+  }, [fetchSessions, isMainWindow]);
+
   // Closing a project tab terminates every terminal running in it, so when the
   // tab has live sessions we confirm first. `getState()` (not the reactive
   // `tabs` closure) keeps this callback stable and always reads fresh counts.
@@ -478,8 +655,9 @@ function App() {
         if (!confirmed) return;
       }
       closeTab(id);
+      projectWindow?.onProjectClosed(id);
     },
-    [closeTab],
+    [closeTab, projectWindow],
   );
 
   // Ctrl/Cmd+2 always lands the panel on the Status tab when toggling open.
@@ -538,8 +716,9 @@ function App() {
     if (gitRepoPath) openIssueMapFor(gitRepoPath, useGitHubStore.getState().issueSearch);
   }, [gitRepoPath]);
 
-  // An open map window lists every open project; keep it in step with the tabs.
-  useEffect(() => syncIssueMapProjects(), []);
+  // An open map window lists every open project; keep it in step with the
+  // tabs. Main window only: a pop-out knows just its own project.
+  useEffect(() => (isMainWindow ? syncIssueMapProjects() : undefined), [isMainWindow]);
 
   useAppKeyboard({
     onAddSession: handleAddSessionShortcut,
@@ -590,11 +769,13 @@ function App() {
         }))}
         onSelectTab={selectTab}
         onCloseTab={handleCloseTab}
-        onNewTab={handleOpenProject}
+        onNewTab={isMainWindow ? handleOpenProject : undefined}
         onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
         sidebarOpen={sidebarOpen}
         onReorderTab={reorderTabs}
         onMoveTab={moveTab}
+        onPopOutTab={isMainWindow ? handlePopOutTab : undefined}
+        onDropTabOutside={projectWindow?.onTabDroppedOutside}
       />
 
       {/* Main area: sidebar + content */}
@@ -716,6 +897,7 @@ function App() {
                 ref={multiProjectRef}
                 onSessionCountChange={handleSessionCountChange}
                 eagleView={eagleView}
+                onGridStateChange={projectWindow?.onGridStateChange}
               />
 
               {/* Workflow editor — an overlay, never a replacement: unmounting
@@ -818,7 +1000,7 @@ function App() {
       <NotificationToasts />
       <ParticleEffectsLayer />
       <WorkJournalSettingsHost theme={theme} onToggleTheme={toggleTheme} />
-      <WorkJournalBackgroundWork tabs={tabs} />
+      {isMainWindow && <WorkJournalBackgroundWork tabs={allTabs} />}
       <WorkJournalOptInDialog />
     </div>
   );

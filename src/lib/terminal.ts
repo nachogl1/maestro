@@ -5,7 +5,7 @@
  * propagated as rejected promises; callers are responsible for catch/logging.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isValidAgentName } from "@/lib/agentName";
 import { quotePathsForShell, quoteShellArgument, type ShellFamily } from "@/lib/shellEscape";
@@ -352,6 +352,31 @@ export function onPtyOutput(
   return listen<string>(`pty-output-${sessionId}`, (event) => {
     callback(event.payload);
   });
+}
+
+/**
+ * Attaches to a running session's output with replay: the backend first sends
+ * the session's retained scrollback, then every later batch, in order, over a
+ * dedicated channel. Use instead of {@link onPtyOutput} for a view that mounts
+ * after the session started (a project moved to another window), which would
+ * otherwise start blank. Resolves to a detach function.
+ */
+export async function attachPtyOutput(
+  sessionId: number,
+  callback: (data: string) => void,
+): Promise<UnlistenFn> {
+  const channel = new Channel<string>();
+  channel.onmessage = callback;
+  const subscriberId = await invoke<number>("attach_session_output", {
+    sessionId,
+    onOutput: channel,
+  });
+  return () => {
+    channel.onmessage = () => {};
+    invoke("detach_session_output", { sessionId, subscriberId }).catch((err) => {
+      console.error("Failed to detach session output:", err);
+    });
+  };
 }
 
 /** Backend info as returned by the Rust backend. */

@@ -64,6 +64,12 @@ interface TerminalViewProps {
   hasMoveHandle?: boolean;
   /** Whether header tooltips advertise keyboard shortcuts (off in eagle view). */
   showShortcutHints?: boolean;
+  /**
+   * Replay the session's retained scrollback before streaming live output.
+   * Set when the view mounts after the session started (its project moved
+   * to or from a pop-out window), so the terminal doesn't start blank.
+   */
+  replayOutput?: boolean;
 }
 
 /** Map backend AiMode to frontend AIProvider */
@@ -149,7 +155,11 @@ export const TerminalView = memo(function TerminalView({
   projectColor,
   hasMoveHandle = false,
   showShortcutHints = true,
+  replayOutput = false,
 }: TerminalViewProps) {
+  // Read once when the terminal is created: switching subscription mode on a
+  // live xterm would replay history into it a second time.
+  const replayOutputRef = useRef(replayOutput);
   const sessionData = useSessionStore(
     useShallow((s) => {
       const sess = s.sessions.find((x) => x.id === sessionId);
@@ -379,7 +389,7 @@ export const TerminalView = memo(function TerminalView({
     [sessionId],
   );
 
-  useXtermSession({ sessionId, containerRef, termRef, fitAddonRef, isFocusedRef });
+  useXtermSession({ sessionId, containerRef, termRef, fitAddonRef, isFocusedRef, replayOutputRef });
 
   // Focus the terminal when isFocused becomes true
   useEffect(() => {

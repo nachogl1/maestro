@@ -18,6 +18,8 @@ import { useUpdateStore } from "@/stores/useUpdateStore";
  */
 export function useBackgroundPollers(
   tabs: Parameters<typeof useWorkJournalCandidateTimer>[0],
+  /** False in a project pop-out window: these jobs run once, in the main window. */
+  isMainWindow = true,
 ): void {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
   const autoCheckEnabled = useUpdateStore((s) => s.autoCheckEnabled);
@@ -25,15 +27,16 @@ export function useBackgroundPollers(
 
   // Check once when Maestro opens; this check may install on its own.
   useEffect(() => {
+    if (!isMainWindow) return;
     void useUpdateStore.getState().checkOnLaunch();
-  }, []);
+  }, [isMainWindow]);
 
   // Then periodically; these checks only offer the update.
   useEffect(() => {
-    if (!autoCheckEnabled) return;
+    if (!isMainWindow || !autoCheckEnabled) return;
     const interval = setInterval(checkForUpdates, checkIntervalMinutes * 60 * 1000);
     return () => clearInterval(interval);
-  }, [autoCheckEnabled, checkIntervalMinutes, checkForUpdates]);
+  }, [isMainWindow, autoCheckEnabled, checkIntervalMinutes, checkForUpdates]);
 
   // GitHub watchdog: receive poll snapshots from the Rust background task.
   const initWatchdogListeners = useGitHubWatchdogStore((s) => s.initListeners);
@@ -53,8 +56,10 @@ export function useBackgroundPollers(
   // re-invoke the command; the backend additionally ignores identical sets.
   const watchedProjectsJson = useMemo(() => JSON.stringify(watchedProjectsFromTabs(tabs)), [tabs]);
   useEffect(() => {
+    // A pop-out only knows its own project; syncing would drop the others.
+    if (!isMainWindow) return;
     void useGitHubWatchdogStore.getState().syncProjects(JSON.parse(watchedProjectsJson));
-  }, [watchedProjectsJson]);
+  }, [watchedProjectsJson, isMainWindow]);
 
   // Health checker: rule-based Samurai-file checks on a quiet interval.
   // Independent of the open tabs, so nothing here restarts the interval.
@@ -63,6 +68,7 @@ export function useBackgroundPollers(
   // long before the first interval tick, and first-run suppression via
   // `baselineKeys` keeps the toast behaviour identical whenever it lands.
   useEffect(() => {
+    if (!isMainWindow) return;
     const runCheck = () => void useHealthStore.getState().runCheck();
     const firstRun = setTimeout(runCheck, 30_000);
     const interval = setInterval(runCheck, HEALTH_CHECK_INTERVAL_MS);
@@ -70,8 +76,8 @@ export function useBackgroundPollers(
       clearTimeout(firstRun);
       clearInterval(interval);
     };
-  }, []);
+  }, [isMainWindow]);
 
-  useWorkshopTimer();
-  useAgentNameSync();
+  useWorkshopTimer(isMainWindow);
+  useAgentNameSync(isMainWindow);
 }

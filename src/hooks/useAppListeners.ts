@@ -26,7 +26,10 @@ import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
  * and the update / activity / context-usage / Samurai / agent / CLI-open
  * listeners. Each effect tears down its own subscription on unmount.
  */
-export function useAppListeners(): void {
+export function useAppListeners(
+  /** False in a project pop-out window: it shares the main window's terminals and run-once jobs. */
+  isMainWindow = true,
+): void {
   const fetchSessions = useSessionStore((s) => s.fetchSessions);
   const initListeners = useSessionStore((s) => s.initListeners);
 
@@ -44,7 +47,9 @@ export function useAppListeners(): void {
   // (metadata), so fetchSessions must run AFTER cleanup completes to avoid
   // loading stale "idle" sessions from a previous frontend lifecycle.
   useEffect(() => {
-    invoke<number>("kill_all_sessions")
+    // A pop-out shares the main window's running terminals: never clean up.
+    const cleanup = isMainWindow ? invoke<number>("kill_all_sessions") : Promise.resolve(0);
+    cleanup
       .then((count) => {
         if (count > 0) {
           console.log(`Cleaned up ${count} orphaned PTY session(s) from previous page load`);
@@ -67,7 +72,7 @@ export function useAppListeners(): void {
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [fetchSessions, initListeners]);
+  }, [fetchSessions, initListeners, isMainWindow]);
 
   // Initialize terminal settings store (detects available fonts)
   const initializeTerminalSettings = useTerminalSettingsStore((s) => s.initialize);
@@ -81,6 +86,7 @@ export function useAppListeners(): void {
   // useBackgroundPollers)
   const initUpdateListeners = useUpdateStore((s) => s.initListeners);
   useEffect(() => {
+    if (!isMainWindow) return;
     const unlistenPromise = initUpdateListeners().catch((err) => {
       console.error("Failed to initialize update listeners:", err);
       return () => {};
@@ -88,7 +94,7 @@ export function useAppListeners(): void {
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [initUpdateListeners]);
+  }, [initUpdateListeners, isMainWindow]);
 
   // Initialize activity event listener (batched claude-events from the transcript watcher)
   useEffect(() => {
@@ -129,13 +135,15 @@ export function useAppListeners(): void {
   // through the existing pending-launch flow (same path as History-tab
   // recoveries) and the grid registers it under supervision.
   useEffect(() => {
+    // One window queues successor launches, or each would launch its own.
+    if (!isMainWindow) return;
     initSamuraiSpawnListener().catch((err) => {
       console.error("Failed to initialize samurai spawn listener:", err);
     });
     return () => {
       stopSamuraiSpawnListener();
     };
-  }, []);
+  }, [isMainWindow]);
 
   // Initialize agent listener (tracks subagents for the sidebar Agents section)
   useEffect(() => {
@@ -167,6 +175,7 @@ export function useAppListeners(): void {
   //      here on mount via `take_pending_cli_path`. That replaces the older
   //      500ms sleep + emit dance, which raced against slow frontend mounts.
   useEffect(() => {
+    if (!isMainWindow) return;
     const openFromCli = async (path: string) => {
       if (!path) return;
       try {
@@ -193,5 +202,5 @@ export function useAppListeners(): void {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [isMainWindow]);
 }

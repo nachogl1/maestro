@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { createActivityStatusTracker } from "@/lib/activityStatusTracker";
 import { buildFontFamily, waitForFont } from "@/lib/fonts";
 import { createPtyOutputBatcher } from "@/lib/ptyOutputBatcher";
-import { onPtyOutput, signalTerminalReady } from "@/lib/terminal";
+import { attachPtyOutput, onPtyOutput, signalTerminalReady } from "@/lib/terminal";
 import { DEFAULT_THEME, LIGHT_THEME, toXtermTheme } from "@/lib/terminalTheme";
 import { attachXtermInput, registerOsc52Clipboard } from "@/lib/xtermInput";
 import { loadTerminalRenderer } from "@/lib/xtermRenderer";
@@ -26,6 +26,13 @@ interface UseXtermSessionOptions {
   fitAddonRef: MutableRefObject<FitAddon | null>;
   /** Current isFocused prop (read after the async font wait, so must be a ref). */
   isFocusedRef: MutableRefObject<boolean>;
+  /**
+   * Replay the session's retained scrollback before live output (the view
+   * mounted after the session started, e.g. its project moved to or from a
+   * pop-out window). Read once at init: switching mode on a live terminal
+   * would replay history into it a second time.
+   */
+  replayOutputRef?: MutableRefObject<boolean>;
 }
 
 /**
@@ -94,6 +101,7 @@ export function useXtermSession({
   termRef,
   fitAddonRef,
   isFocusedRef,
+  replayOutputRef,
 }: UseXtermSessionOptions): void {
   useEffect(() => {
     const container = containerRef.current;
@@ -146,9 +154,18 @@ export function useXtermSession({
 
       detachInput = attachXtermInput(term, container, sessionId, activity.markWorking);
 
-      const listenerReady = onPtyOutput(sessionId, (data) => {
+      // A replayed view's first message is the retained scrollback: history,
+      // not fresh activity, so it must not drive the status heuristic.
+      const replay = replayOutputRef?.current ?? false;
+      let awaitingReplay = replay;
+      const subscribe = replay ? attachPtyOutput : onPtyOutput;
+      const listenerReady = subscribe(sessionId, (data) => {
         if (disposed || !term) return;
         output.push(data);
+        if (awaitingReplay) {
+          awaitingReplay = false;
+          return;
+        }
         // --- Activity-based status detection ---
         activity.onOutput();
       });
@@ -201,5 +218,5 @@ export function useXtermSession({
     };
     // Font settings are read once at init; dynamic updates live in a separate effect.
     // The refs are stable objects, listed only to satisfy the exhaustive-deps lint.
-  }, [sessionId, containerRef, termRef, fitAddonRef, isFocusedRef]);
+  }, [sessionId, containerRef, termRef, fitAddonRef, isFocusedRef, replayOutputRef]);
 }

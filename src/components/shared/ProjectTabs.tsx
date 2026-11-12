@@ -2,6 +2,7 @@ import {
   closestCenter,
   DndContext,
   type DragEndEvent,
+  type DragStartEvent,
   PointerSensor,
   useSensor,
   useSensors,
@@ -10,11 +11,12 @@ import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { AppWindow, Minus, PanelLeft, Plus, Square, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
 import { isMac } from "@/lib/platform";
+import type { ScreenPoint } from "@/lib/projectWindow";
 import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 
 export type ProjectTab = {
@@ -29,12 +31,61 @@ interface ProjectTabsProps {
   tabs: ProjectTab[];
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
-  onNewTab: () => void;
+  /** Open another project. Omitted: no "+" button (pop-out windows hold one project). */
+  onNewTab?: () => void;
   onToggleSidebar: () => void;
   sidebarOpen: boolean;
   onReorderTab: (activeId: string, overId: string) => void;
   onMoveTab: (tabId: string, direction: "left" | "right") => void;
+  /**
+   * Move a project into its own window, at `position` when the tab was
+   * dragged out of this window. Omitted: the action isn't offered.
+   */
+  onPopOutTab?: (id: string, position?: ScreenPoint) => void;
+  /**
+   * A tab was dragged out of this window and dropped at `point` (a pop-out
+   * window uses it to dock the project back). Omitted: nothing happens.
+   */
+  onDropTabOutside?: (id: string, point: ScreenPoint) => void;
 }
+
+/** Where the pointer was last seen during a tab drag. */
+type DragPointer = { clientX: number; clientY: number; screenX: number; screenY: number };
+
+/** How far the new window's corner sits up and left of the drop point, so the cursor lands on its title bar. */
+const DROP_WINDOW_OFFSET = { x: 80, y: 12 };
+
+/**
+ * Screen point where a tab drag ended outside this window (e.g. on another
+ * monitor or another Maestro window), or null when it ended inside it.
+ */
+export function outsideDropPoint(
+  pointer: DragPointer,
+  viewport: { width: number; height: number },
+): ScreenPoint | null {
+  const inside =
+    pointer.clientX >= 0 &&
+    pointer.clientY >= 0 &&
+    pointer.clientX <= viewport.width &&
+    pointer.clientY <= viewport.height;
+  return inside ? null : { x: pointer.screenX, y: pointer.screenY };
+}
+
+/**
+ * Screen position for a pop-out when a tab drag ended outside this window
+ * (e.g. on another monitor), or null when it ended inside it (a reorder).
+ */
+export function tearOffPosition(
+  pointer: DragPointer,
+  viewport: { width: number; height: number },
+): ScreenPoint | null {
+  const point = outsideDropPoint(pointer, viewport);
+  if (!point) return null;
+  return { x: point.x - DROP_WINDOW_OFFSET.x, y: point.y - DROP_WINDOW_OFFSET.y };
+}
+
+/** Right-click menu position and the tab it was opened on. */
+type TabMenuState = { tabId: string; x: number; y: number };
 
 /**
  * Individual tab component that uses the useProjectStatus hook.
@@ -43,12 +94,16 @@ function TabItem({
   tab,
   onSelect,
   onClose,
+  onPopOut,
+  onContextMenu,
   onKeyDown,
   tabRefCallback,
 }: {
   tab: ProjectTab;
   onSelect: () => void;
   onClose: () => void;
+  onPopOut?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   tabRefCallback: (node: HTMLElement | null) => void;
 }) {
@@ -98,6 +153,7 @@ function TabItem({
       aria-selected={tab.active}
       tabIndex={tab.active ? 0 : -1}
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       onKeyDown={onKeyDown}
       data-context-alert={contextAlert ? "true" : undefined}
       data-attention={attentionBlinking ? "true" : undefined}
@@ -108,7 +164,7 @@ function TabItem({
             ? "A terminal in this project needs you"
             : undefined
       }
-      className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
+      className={`group flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t px-2 py-1.5 text-xs font-medium cursor-pointer ${
         tab.active
           ? "bg-maestro-bg text-maestro-text"
           : "text-maestro-muted hover:text-maestro-text"
@@ -135,6 +191,23 @@ function TabItem({
           </span>
         )}
       </span>
+      {onPopOut && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPopOut();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className={`ml-1 rounded p-0.5 hover:bg-maestro-border focus-visible:opacity-100 group-hover:opacity-100 ${
+            tab.active ? "opacity-100" : "opacity-0"
+          }`}
+          aria-label={`Move ${tab.name} to a new window`}
+          title="Move to new window"
+        >
+          <AppWindow size={10} />
+        </button>
+      )}
       {/* Stops pointerdown so dnd-kit's PointerSensor never claims the
           press — a click on the close button must not start a tab drag. */}
       <button
@@ -163,8 +236,28 @@ export function ProjectTabs({
   sidebarOpen,
   onReorderTab,
   onMoveTab,
+  onPopOutTab,
+  onDropTabOutside,
 }: ProjectTabsProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
+  const [tabMenu, setTabMenu] = useState<TabMenuState | null>(null);
+
+  // Dismiss the tab menu on any outside click, Escape, or window blur.
+  useEffect(() => {
+    if (!tabMenu) return;
+    const close = () => setTabMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", close);
+    };
+  }, [tabMenu]);
 
   // Ref map for focus management (WAI-ARIA tablist keyboard navigation)
   const tabRefs = useRef(new Map<string, HTMLElement>());
@@ -185,14 +278,63 @@ export function ProjectTabs({
     }),
   );
 
+  // Last pointer position of the current tab drag. Tracked by hand because
+  // dnd-kit's own delta is clamped to the tab strip (horizontal-axis modifier).
+  const dragPointer = useRef<DragPointer | null>(null);
+  const stopTrackingPointer = useRef<(() => void) | null>(null);
+
+  const trackPointer = useCallback((e: PointerEvent) => {
+    dragPointer.current = {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      screenX: e.screenX,
+      screenY: e.screenY,
+    };
+  }, []);
+
+  const handleDragStart = useCallback(
+    (_event: DragStartEvent) => {
+      dragPointer.current = null;
+      window.addEventListener("pointermove", trackPointer);
+      stopTrackingPointer.current = () => window.removeEventListener("pointermove", trackPointer);
+    },
+    [trackPointer],
+  );
+
+  const endPointerTracking = useCallback(() => {
+    stopTrackingPointer.current?.();
+    stopTrackingPointer.current = null;
+    const pointer = dragPointer.current;
+    dragPointer.current = null;
+    return pointer;
+  }, []);
+
+  useEffect(() => () => stopTrackingPointer.current?.(), []);
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
+      const pointer = endPointerTracking();
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      // Dropped outside this window (another monitor, the desktop): the
+      // project moves to its own window where it was dropped.
+      if (pointer && onPopOutTab) {
+        const position = tearOffPosition(pointer, viewport);
+        if (position) {
+          onPopOutTab(active.id as string, position);
+          return;
+        }
+      }
+      const outsidePoint = pointer && outsideDropPoint(pointer, viewport);
+      if (outsidePoint && onDropTabOutside) {
+        onDropTabOutside(active.id as string, outsidePoint);
+        return;
+      }
       if (over && active.id !== over.id) {
         onReorderTab(active.id as string, over.id as string);
       }
     },
-    [onReorderTab],
+    [onReorderTab, onPopOutTab, onDropTabOutside, endPointerTracking],
   );
 
   // Keep the selected tab visible when the strip is wider than the window.
@@ -211,6 +353,13 @@ export function ProjectTabs({
   const handleTabKeyDown = useCallback(
     (e: React.KeyboardEvent, tab: ProjectTab) => {
       const isMeta = e.metaKey || e.ctrlKey;
+
+      // Cmd/Ctrl+Shift+N: move the project to a new window
+      if (isMeta && e.shiftKey && e.key.toLowerCase() === "n" && onPopOutTab) {
+        e.preventDefault();
+        onPopOutTab(tab.id);
+        return;
+      }
 
       // Cmd/Ctrl+Shift+Arrow: move tab position
       if (isMeta && e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
@@ -239,7 +388,7 @@ export function ProjectTabs({
         onSelectTab(tab.id);
       }
     },
-    [tabs, onSelectTab, onMoveTab],
+    [tabs, onSelectTab, onMoveTab, onPopOutTab],
   );
 
   return (
@@ -272,7 +421,9 @@ export function ProjectTabs({
           sensors={sensors}
           collisionDetection={closestCenter}
           modifiers={[restrictToHorizontalAxis]}
+          onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
+          onDragCancel={endPointerTracking}
         >
           <SortableContext items={tabs.map((t) => t.id)} strategy={horizontalListSortingStrategy}>
             <div
@@ -290,6 +441,11 @@ export function ProjectTabs({
                     tab={tab}
                     onSelect={() => onSelectTab(tab.id)}
                     onClose={() => onCloseTab(tab.id)}
+                    onPopOut={onPopOutTab ? () => onPopOutTab(tab.id) : undefined}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setTabMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
+                    }}
                     onKeyDown={(e) => handleTabKeyDown(e, tab)}
                     tabRefCallback={setTabRef(tab.id)}
                   />
@@ -299,16 +455,55 @@ export function ProjectTabs({
           </SortableContext>
         </DndContext>
 
-        <button
-          type="button"
-          onClick={onNewTab}
-          className="shrink-0 rounded p-1 text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
-          aria-label="Open new project"
-          title="Open a project"
-        >
-          <Plus size={14} />
-        </button>
+        {onNewTab && (
+          <button
+            type="button"
+            onClick={onNewTab}
+            className="shrink-0 rounded p-1 text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
+            aria-label="Open new project"
+            title="Open a project"
+          >
+            <Plus size={14} />
+          </button>
+        )}
       </div>
+
+      {tabMenu && (
+        <div
+          role="menu"
+          aria-label="Project tab actions"
+          className="fixed z-50 min-w-44 rounded-md border border-maestro-border bg-maestro-card py-1 text-xs text-maestro-text shadow-lg"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {onPopOutTab && (
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-maestro-border"
+              onClick={() => {
+                setTabMenu(null);
+                onPopOutTab(tabMenu.tabId);
+              }}
+            >
+              <AppWindow size={12} />
+              Move to new window
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-maestro-border"
+            onClick={() => {
+              setTabMenu(null);
+              onCloseTab(tabMenu.tabId);
+            }}
+          >
+            <X size={12} />
+            Close project
+          </button>
+        </div>
+      )}
 
       {/* Center: drag region fills remaining space */}
       <div data-tauri-drag-region className="flex-1" />

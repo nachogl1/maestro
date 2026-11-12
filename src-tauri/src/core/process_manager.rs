@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use libc;
 
 use super::error::PtyError;
+use super::output_tap::{OutputSink, OutputTap};
 
 /// Stateful UTF-8 decoder that handles split multi-byte sequences.
 ///
@@ -127,6 +128,8 @@ struct PtySession {
     shutdown: Arc<Notify>,
     /// Handle to the dedicated reader OS thread.
     reader_handle: Mutex<Option<JoinHandle<()>>>,
+    /// Retained scrollback and replay subscribers (see `output_tap`).
+    output_tap: Arc<OutputTap>,
 }
 
 struct Inner {
@@ -438,7 +441,8 @@ impl ProcessManager {
 
         let reader_handle = spawn_pty_reader(id, reader, tx)?;
 
-        self.spawn_output_emitter(app_handle, id, rx, shutdown.clone());
+        let output_tap = Arc::new(OutputTap::new());
+        self.spawn_output_emitter(app_handle, id, rx, shutdown.clone(), output_tap.clone());
 
         // Drop the slave — the master keeps the PTY alive
         drop(pair.slave);
@@ -452,6 +456,7 @@ impl ProcessManager {
             pgid,
             shutdown,
             reader_handle: Mutex::new(Some(reader_handle)),
+            output_tap,
         };
 
         self.inner.sessions.insert(id, session);
@@ -493,8 +498,14 @@ impl ProcessManager {
         id: u32,
         mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
         shutdown_clone: Arc<Notify>,
+        output_tap: Arc<OutputTap>,
     ) {
         let event_name = format!("pty-output-{id}");
+        // Every flush goes through here: record for replay, then broadcast.
+        let flush = move |data: String| {
+            output_tap.record(&data);
+            let _ = app.emit(&event_name, data);
+        };
         #[cfg(windows)]
         let inner_ref = self.inner.clone();
         tokio::spawn(async move {
@@ -524,7 +535,7 @@ impl ProcessManager {
                                     decoder.decode_into(&bytes, &mut batch_buf);
                                     // Flush immediately if buffer exceeds safety valve
                                     if batch_buf.len() >= MAX_BATCH_BYTES {
-                                        let _ = app.emit(&event_name, std::mem::take(&mut batch_buf));
+                                        flush(std::mem::take(&mut batch_buf));
                                     }
                                 }
                                 None => break, // Channel closed
@@ -547,13 +558,13 @@ impl ProcessManager {
                                     decoder.decode_into(&bytes, &mut batch_buf);
                                     // Flush immediately if buffer exceeds safety valve
                                     if batch_buf.len() >= MAX_BATCH_BYTES {
-                                        let _ = app.emit(&event_name, std::mem::take(&mut batch_buf));
+                                        flush(std::mem::take(&mut batch_buf));
                                     }
                                 }
                                 None => {
                                     // Channel closed — flush remaining data and exit
                                     if !batch_buf.is_empty() {
-                                        let _ = app.emit(&event_name, std::mem::take(&mut batch_buf));
+                                        flush(std::mem::take(&mut batch_buf));
                                     }
                                     break;
                                 }
@@ -562,13 +573,13 @@ impl ProcessManager {
                         _ = tokio::time::sleep(FLUSH_INTERVAL) => {
                             // Timer fired — flush accumulated data
                             if !batch_buf.is_empty() {
-                                let _ = app.emit(&event_name, std::mem::take(&mut batch_buf));
+                                flush(std::mem::take(&mut batch_buf));
                             }
                         }
                         _ = shutdown_clone.notified() => {
                             // Flush remaining data before shutdown
                             if !batch_buf.is_empty() {
-                                let _ = app.emit(&event_name, std::mem::take(&mut batch_buf));
+                                flush(std::mem::take(&mut batch_buf));
                             }
                             break;
                         }
@@ -578,7 +589,7 @@ impl ProcessManager {
 
             // Final flush for any remaining buffered data
             if !batch_buf.is_empty() {
-                let _ = app.emit(&event_name, batch_buf);
+                flush(batch_buf);
             }
             log::debug!("PTY event emitter {id} exited");
         });
@@ -814,6 +825,29 @@ impl ProcessManager {
     /// Number of live PTY sessions currently tracked, across all projects.
     pub fn session_count(&self) -> usize {
         self.inner.sessions.len()
+    }
+
+    /// Replays a session's retained scrollback into `sink`, then streams every
+    /// later output batch to it. Returns the subscription id for
+    /// [`Self::detach_output`].
+    pub fn attach_output(&self, session_id: u32, sink: OutputSink) -> Result<u64, PtyError> {
+        let session = self
+            .inner
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| PtyError::session_not_found(session_id))?;
+        session
+            .output_tap
+            .attach(sink)
+            .ok_or_else(|| PtyError::write_failed("Output subscriber closed during replay"))
+    }
+
+    /// Ends an [`Self::attach_output`] subscription. A no-op if the session
+    /// or subscription is already gone.
+    pub fn detach_output(&self, session_id: u32, subscriber_id: u64) {
+        if let Some(session) = self.inner.sessions.get(&session_id) {
+            session.output_tap.detach(subscriber_id);
+        }
     }
 
     /// Kills all active PTY sessions.

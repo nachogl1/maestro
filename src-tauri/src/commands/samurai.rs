@@ -3748,22 +3748,26 @@ mod tests {
         let repo = tempdir().unwrap();
         init_repo(repo.path());
         let base = tempdir().unwrap();
+        // macOS temp dirs sit behind a symlink (/var -> /private/var) and git
+        // reports the resolved path on reuse; resolve it up front so both
+        // launches are compared in the same spelling.
+        let base_path = base.path().canonicalize().unwrap();
         let worktrees = WorktreeManager::new();
         let project = repo.path().to_string_lossy().into_owned();
 
         // First launch: the branch is created from HEAD and the worktree
         // lands at the stable deterministic path under the base.
-        let first = ensure_epic_worktree(&worktrees, &project, "samurai-38", Some(base.path()))
+        let first = ensure_epic_worktree(&worktrees, &project, "samurai-38", Some(&base_path))
             .await
             .unwrap();
         assert!(first.path.exists());
-        assert!(first.path.starts_with(base.path()));
+        assert!(first.path.starts_with(&base_path));
         assert!(first.worktree_created, "the first launch creates both");
         assert!(first.branch_created);
 
         // Relaunch: REUSE — same path, no error (reconciliation depends on
         // path stability, PRD §5.9).
-        let second = ensure_epic_worktree(&worktrees, &project, "samurai-38", Some(base.path()))
+        let second = ensure_epic_worktree(&worktrees, &project, "samurai-38", Some(&base_path))
             .await
             .unwrap();
         assert_eq!(first.path, second.path);

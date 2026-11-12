@@ -17,13 +17,14 @@ function runIfDue(): void {
  * for a due `/insights` run shortly after start and then every hour. In-app
  * only; no OS scheduler.
  */
-export function useWorkshopTimer(): void {
+export function useWorkshopTimer(enabled = true): void {
   useEffect(() => {
+    if (!enabled) return;
     const catchUp = setTimeout(runIfDue, WORKSHOP_CATCH_UP_DELAY_MS);
     const interval = setInterval(runIfDue, WORKSHOP_CHECK_EVERY_MS);
     return () => {
       clearTimeout(catchUp);
       clearInterval(interval);
     };
-  }, []);
+  }, [enabled]);
 }

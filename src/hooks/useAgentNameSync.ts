@@ -28,8 +28,9 @@ function claudeTerminals(): AgentTerminal[] {
  * `/rename`s typed straight into the terminal. Mounted once by
  * `useBackgroundPollers`.
  */
-export function useAgentNameSync(): void {
+export function useAgentNameSync(enabled = true): void {
   useEffect(() => {
+    if (!enabled) return;
     const lastSeen = new Map<number, string>();
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -59,5 +60,5 @@ export function useAgentNameSync(): void {
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [enabled]);
 }
