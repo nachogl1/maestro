@@ -4,7 +4,7 @@ import App from "./App";
 import { IssueMapWindow } from "./components/git/issues/IssueMapWindow";
 import { WorkJournalWindow } from "./components/workjournal/WorkJournalWindow";
 import { readIssueMapTarget } from "./lib/issueMapWindow";
-import { getProjectWindowTabId } from "./lib/projectWindow";
+import { getProjectWindowId, getProjectWindowTabId } from "./lib/projectWindow";
 import { isWorkJournalWindowView } from "./lib/workJournalWindow";
 import { ProjectWindowApp } from "./ProjectWindowApp";
 import "./styles/fonts.css";
@@ -19,13 +19,16 @@ if (navigator.userAgent.includes("Linux")) {
 const issueMapTarget = readIssueMapTarget(window.location.search);
 // So does the popped-out Work Journal.
 const workJournalWindow = isWorkJournalWindowView(window.location.search);
-// And a project tab moved to its own window (`?projectWindow=<tabId>`).
+// And a project tab moved to its own window (`?projectWindow=<tabId>&windowId=<id>`).
 const projectWindowTabId = getProjectWindowTabId();
+const projectWindowId = getProjectWindowId();
 
 function Root() {
   if (issueMapTarget) return <IssueMapWindow initial={issueMapTarget} />;
   if (workJournalWindow) return <WorkJournalWindow />;
-  if (projectWindowTabId) return <ProjectWindowApp tabId={projectWindowTabId} />;
+  if (projectWindowTabId && projectWindowId) {
+    return <ProjectWindowApp tabId={projectWindowTabId} windowId={projectWindowId} />;
+  }
   return <App />;
 }
 

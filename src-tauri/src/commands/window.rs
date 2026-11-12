@@ -15,14 +15,15 @@ pub const MAIN_WINDOW_LABEL: &str = "main";
 /// `project-*`, so the prefix must stay in sync with `capabilities/project-window.json`.
 pub const PROJECT_WINDOW_PREFIX: &str = "project-";
 
-/// Sent to the main window when a pop-out is destroyed, carrying its tab id,
-/// so the main window docks the tab back.
+/// Sent to the main window when a pop-out is destroyed, carrying its window
+/// id, so the main window docks every tab that window held.
 pub const PROJECT_WINDOW_CLOSED_EVENT: &str = "project-window-closed";
 
-/// Window label for a tab id. Tab ids are UUIDs; anything outside the label
-/// alphabet is replaced so a malformed id can never produce an invalid label.
-pub fn project_window_label(tab_id: &str) -> String {
-    let safe: String = tab_id
+/// Window label for a pop-out window id. Window ids are UUIDs; anything
+/// outside the label alphabet is replaced so a malformed id can never produce
+/// an invalid label.
+pub fn project_window_label(window_id: &str) -> String {
+    let safe: String = window_id
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -35,26 +36,28 @@ pub fn project_window_label(tab_id: &str) -> String {
     format!("{PROJECT_WINDOW_PREFIX}{safe}")
 }
 
-/// Tab id encoded in a pop-out window label, or `None` for any other window.
-pub fn tab_id_from_label(label: &str) -> Option<&str> {
+/// Window id encoded in a pop-out window label, or `None` for any other window.
+pub fn window_id_from_label(label: &str) -> Option<&str> {
     label
         .strip_prefix(PROJECT_WINDOW_PREFIX)
         .filter(|id| !id.is_empty())
 }
 
-/// Opens (or focuses, if already open) the pop-out window for a project tab.
-/// `x`/`y` place a new window's top-left corner, in logical screen
-/// coordinates (a tab dropped on another monitor opens there); without them
-/// the OS picks the position. Returns the window label.
+/// Opens (or focuses, if already open) pop-out window `window_id`, showing
+/// project tab `tab_id` first; more tabs can join it later. `x`/`y` place a
+/// new window's top-left corner, in logical screen coordinates (a tab dropped
+/// on another monitor opens there); without them the OS picks the position.
+/// Returns the window label.
 #[tauri::command]
 pub async fn open_project_window(
     app: AppHandle,
+    window_id: String,
     tab_id: String,
     title: String,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<String, String> {
-    let label = project_window_label(&tab_id);
+    let label = project_window_label(&window_id);
     if let Some(existing) = app.get_webview_window(&label) {
         // A live pop-out is focused. One left behind hidden (closed but still
         // registered) would swallow every later move silently: replace it.
@@ -71,7 +74,11 @@ pub async fn open_project_window(
         }
     }
 
-    let url = format!("index.html?projectWindow={}", urlencode(&tab_id));
+    let url = format!(
+        "index.html?projectWindow={}&windowId={}",
+        urlencode(&tab_id),
+        urlencode(&window_id)
+    );
     let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
         .title(format!("{title} — Maestro"))
         .inner_size(1100.0, 750.0)
@@ -104,11 +111,11 @@ pub async fn open_project_window(
 }
 
 /// Window-destroyed hook, called from the app-wide `on_window_event`: a
-/// destroyed pop-out hands its tab back to the main window. (When the main
+/// destroyed pop-out hands its tabs back to the main window. (When the main
 /// window goes, `on_window_event` closes every other window itself.)
 pub fn handle_window_destroyed(app: &AppHandle, label: &str) {
-    if let Some(tab_id) = tab_id_from_label(label) {
-        let _ = app.emit_to(MAIN_WINDOW_LABEL, PROJECT_WINDOW_CLOSED_EVENT, tab_id);
+    if let Some(window_id) = window_id_from_label(label) {
+        let _ = app.emit_to(MAIN_WINDOW_LABEL, PROJECT_WINDOW_CLOSED_EVENT, window_id);
     }
 }
 
@@ -131,11 +138,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn label_round_trips_a_uuid_tab_id() {
+    fn label_round_trips_a_uuid_window_id() {
         let id = "3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b";
         let label = project_window_label(id);
         assert_eq!(label, format!("project-{id}"));
-        assert_eq!(tab_id_from_label(&label), Some(id));
+        assert_eq!(window_id_from_label(&label), Some(id));
     }
 
     #[test]
@@ -144,9 +151,9 @@ mod tests {
     }
 
     #[test]
-    fn non_project_labels_have_no_tab_id() {
-        assert_eq!(tab_id_from_label("main"), None);
-        assert_eq!(tab_id_from_label("project-"), None);
+    fn non_project_labels_have_no_window_id() {
+        assert_eq!(window_id_from_label("main"), None);
+        assert_eq!(window_id_from_label("project-"), None);
     }
 
     #[test]

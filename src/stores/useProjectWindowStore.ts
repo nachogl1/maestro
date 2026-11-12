@@ -8,14 +8,16 @@ import type { GridSnapshot } from "@/lib/projectWindow";
  * tab starts docked in the main window again.
  */
 interface ProjectWindowState {
-  /** Tab ids currently shown in a pop-out window. */
-  poppedOut: Record<string, true>;
+  /** Tab ids currently shown in a pop-out window, each with the id of the window holding it. */
+  poppedOut: Record<string, string>;
   /** Latest grid reported by each pop-out; seeds the grid when the tab docks. */
   latestGrids: Record<string, GridSnapshot | null>;
   /** Grids to seed docked tabs with, consumed once the grid has mounted. */
   dockSeeds: Record<string, GridSnapshot>;
-  /** Record a tab as moved to a pop-out, with the grid it left with. */
-  markPoppedOut: (tabId: string, grid: GridSnapshot | null) => void;
+  /** Record a tab as moved to pop-out `windowId`, with the grid it left with. */
+  markPoppedOut: (tabId: string, grid: GridSnapshot | null, windowId: string) => void;
+  /** Record a popped-out tab as moved into another pop-out window. */
+  moveToWindow: (tabId: string, windowId: string) => void;
   /** Store the latest grid reported by a pop-out. Ignored once docked. */
   setLatestGrid: (tabId: string, grid: GridSnapshot | null) => void;
   /** Bring a tab back to the main window, seeding its grid from the pop-out. */
@@ -36,12 +38,17 @@ export const useProjectWindowStore = create<ProjectWindowState>((set) => ({
   latestGrids: {},
   dockSeeds: {},
 
-  markPoppedOut: (tabId, grid) =>
+  markPoppedOut: (tabId, grid, windowId) =>
     set((state) => ({
-      poppedOut: { ...state.poppedOut, [tabId]: true },
+      poppedOut: { ...state.poppedOut, [tabId]: windowId },
       latestGrids: { ...state.latestGrids, [tabId]: grid },
       dockSeeds: without(state.dockSeeds, tabId),
     })),
+
+  moveToWindow: (tabId, windowId) =>
+    set((state) =>
+      state.poppedOut[tabId] ? { poppedOut: { ...state.poppedOut, [tabId]: windowId } } : state,
+    ),
 
   setLatestGrid: (tabId, grid) =>
     set((state) =>

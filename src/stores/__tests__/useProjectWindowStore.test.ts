@@ -11,16 +11,16 @@ describe("useProjectWindowStore", () => {
     useProjectWindowStore.setState({ poppedOut: {}, latestGrids: {}, dockSeeds: {} });
   });
 
-  it("marks a tab popped out with the grid it left with", () => {
-    useProjectWindowStore.getState().markPoppedOut("t1", grid("a"));
+  it("marks a tab popped out with the window holding it and the grid it left with", () => {
+    useProjectWindowStore.getState().markPoppedOut("t1", grid("a"), "w1");
     const state = useProjectWindowStore.getState();
-    expect(state.poppedOut).toEqual({ t1: true });
+    expect(state.poppedOut).toEqual({ t1: "w1" });
     expect(state.latestGrids.t1).toEqual(grid("a"));
   });
 
   it("keeps the latest grid reported by the pop-out and seeds the dock with it", () => {
     const store = useProjectWindowStore.getState();
-    store.markPoppedOut("t1", grid("a"));
+    store.markPoppedOut("t1", grid("a"), "w1");
     store.setLatestGrid("t1", grid("b"));
     store.dock("t1");
     const state = useProjectWindowStore.getState();
@@ -36,7 +36,7 @@ describe("useProjectWindowStore", () => {
 
   it("docks without a seed when the pop-out never launched terminals", () => {
     const store = useProjectWindowStore.getState();
-    store.markPoppedOut("t1", null);
+    store.markPoppedOut("t1", null, "w1");
     store.dock("t1");
     expect(useProjectWindowStore.getState().dockSeeds).toEqual({});
   });
@@ -49,7 +49,7 @@ describe("useProjectWindowStore", () => {
 
   it("consumes a dock seed once", () => {
     const store = useProjectWindowStore.getState();
-    store.markPoppedOut("t1", grid("a"));
+    store.markPoppedOut("t1", grid("a"), "w1");
     store.dock("t1");
     store.consumeDockSeed("t1");
     expect(useProjectWindowStore.getState().dockSeeds).toEqual({});
@@ -57,9 +57,9 @@ describe("useProjectWindowStore", () => {
 
   it("drops a stale dock seed when the tab pops out again", () => {
     const store = useProjectWindowStore.getState();
-    store.markPoppedOut("t1", grid("a"));
+    store.markPoppedOut("t1", grid("a"), "w1");
     store.dock("t1");
-    store.markPoppedOut("t1", grid("c"));
+    store.markPoppedOut("t1", grid("c"), "w1");
     expect(useProjectWindowStore.getState().dockSeeds).toEqual({});
   });
 
@@ -69,5 +69,15 @@ describe("useProjectWindowStore", () => {
     expect(useProjectWindowStore.getState().dockSeeds.t1).toEqual(grid("a"));
     store.consumeDockSeed("t1");
     expect(useProjectWindowStore.getState().dockSeeds).toEqual({});
+  });
+
+  it("moves a popped-out tab into another window, and never moves a docked one", () => {
+    const store = useProjectWindowStore.getState();
+    store.markPoppedOut("t1", grid("a"), "w1");
+    store.moveToWindow("t1", "w2");
+    store.moveToWindow("docked", "w2");
+    const state = useProjectWindowStore.getState();
+    expect(state.poppedOut).toEqual({ t1: "w2" });
+    expect(state.latestGrids.t1).toEqual(grid("a"));
   });
 });

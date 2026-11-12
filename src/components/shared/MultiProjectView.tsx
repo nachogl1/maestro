@@ -643,9 +643,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         },
         navigateToSession: (tabId: string, sessionId: number) => {
           // A popped-out project lives in its own window: bring that forward.
-          if (useProjectWindowStore.getState().poppedOut[tabId]) {
+          const windowId = useProjectWindowStore.getState().poppedOut[tabId];
+          if (windowId) {
             const name = allTabs.find((t) => t.id === tabId)?.name ?? "Project";
-            openProjectWindow(tabId, name).catch((err) => {
+            openProjectWindow(windowId, tabId, name).catch((err) => {
               console.error("Failed to focus project window:", err);
             });
             return true;

@@ -218,6 +218,8 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
 - **Out:** drag a project tab outside the main window (for example onto another monitor), use the tab's window
   button, its right-click menu, or Cmd/Ctrl+Shift+N. The project opens in its own full Maestro window; running
   terminals move with it and replay their output.
-- **Back:** drag the project's tab out of its own window and drop it anywhere on the main window, or close its
-  window. The project returns to the main window's tab bar with its terminals still running. A tab dropped anywhere
-  else (the desktop, another screen) leaves the window where it is.
+- **Join:** drag a project's tab out of its window and drop it on another project window. The two projects then
+  share that window as tabs; a window left with no projects closes.
+- **Back:** drop a project's tab anywhere on the main window to return just that project, or close its window to
+  return every project in it. Terminals keep running either way. A tab dropped anywhere else (the desktop, its own
+  window) stays where it is.

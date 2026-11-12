@@ -10,6 +10,8 @@ import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
 import {
+  canMoveTab,
+  newProjectWindowId,
   openProjectWindow,
   PROJECT_WINDOW_EVENTS,
   type ProjectHandoff,
@@ -17,6 +19,10 @@ import {
   type ProjectWindowUpdate,
   projectWindowLabel,
   type ScreenPoint,
+  type TabInWindow,
+  type TabMove,
+  tabsInWindow,
+  windowHoldsTab,
 } from "@/lib/projectWindow";
 import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { killSession } from "@/lib/terminal";
@@ -121,9 +127,10 @@ function App({ projectWindow }: AppProps = {}) {
   // A popped-out project can't be selected here: bring its window forward.
   const selectTab = useCallback(
     (id: string) => {
-      if (useProjectWindowStore.getState().poppedOut[id]) {
+      const windowId = useProjectWindowStore.getState().poppedOut[id];
+      if (windowId) {
         const name = useWorkspaceStore.getState().tabs.find((t) => t.id === id)?.name ?? "Project";
-        openProjectWindow(id, name).catch((err) => {
+        openProjectWindow(windowId, id, name).catch((err) => {
           console.error("Failed to focus project window:", err);
         });
         return;
@@ -518,8 +525,9 @@ function App({ projectWindow }: AppProps = {}) {
     const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === id);
     if (!tab || useProjectWindowStore.getState().poppedOut[id]) return;
     const grid = multiProjectRef.current?.exportGridState(id) ?? null;
-    useProjectWindowStore.getState().markPoppedOut(id, grid);
-    openProjectWindow(id, tab.name, position).catch((err) => {
+    const windowId = newProjectWindowId();
+    useProjectWindowStore.getState().markPoppedOut(id, grid, windowId);
+    openProjectWindow(windowId, id, tab.name, position).catch((err) => {
       console.error("Failed to open project window:", err);
       useProjectWindowStore.getState().dock(id);
     });
@@ -532,27 +540,41 @@ function App({ projectWindow }: AppProps = {}) {
       useProjectWindowStore.getState().dock(tabId);
       useWorkspaceStore.getState().selectTab(tabId);
     };
+    // Send a popped-out project to the window that now holds it.
+    const handOff = (tabId: string) => {
+      const windowId = useProjectWindowStore.getState().poppedOut[tabId];
+      const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
+      if (!tab || !windowId) return;
+      const handoff: ProjectHandoff = {
+        windowId,
+        tab,
+        grid: useProjectWindowStore.getState().latestGrids[tabId] ?? null,
+        parkedSessionIds: useSessionStore
+          .getState()
+          .parkedSessionIds.filter((sid) => tab.sessionIds.includes(sid)),
+      };
+      emitTo(projectWindowLabel(windowId), PROJECT_WINDOW_EVENTS.handoff, handoff).catch((err) => {
+        console.error("Failed to hand off project to its window:", err);
+      });
+    };
+    // Tell a pop-out a tab has left it (docked here or moved to another pop-out).
+    const release = (tabId: string, windowId: string) => {
+      const payload: TabInWindow = { tabId, windowId };
+      emitTo(projectWindowLabel(windowId), PROJECT_WINDOW_EVENTS.release, payload).catch((err) => {
+        console.error("Failed to release project from its window:", err);
+      });
+    };
     const unlisteners = [
       // A pop-out finished loading: hand it the project.
-      listen<{ tabId: string }>(PROJECT_WINDOW_EVENTS.ready, (event) => {
-        const { tabId } = event.payload;
-        const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
-        if (!tab || !useProjectWindowStore.getState().poppedOut[tabId]) return;
-        const handoff: ProjectHandoff = {
-          tab,
-          grid: useProjectWindowStore.getState().latestGrids[tabId] ?? null,
-          parkedSessionIds: useSessionStore
-            .getState()
-            .parkedSessionIds.filter((sid) => tab.sessionIds.includes(sid)),
-        };
-        emitTo(projectWindowLabel(tabId), PROJECT_WINDOW_EVENTS.handoff, handoff).catch((err) => {
-          console.error("Failed to hand off project to its window:", err);
-        });
-      }),
+      listen<{ tabId: string }>(PROJECT_WINDOW_EVENTS.ready, (event) =>
+        handOff(event.payload.tabId),
+      ),
       // A pop-out changed its project: mirror it so it can dock back intact.
       listen<ProjectWindowUpdate>(PROJECT_WINDOW_EVENTS.update, (event) => {
-        const { tabId, tab: fields, grid, parkedSessionIds } = event.payload;
-        if (!useProjectWindowStore.getState().poppedOut[tabId]) return;
+        const { tabId, windowId, tab: fields, grid, parkedSessionIds } = event.payload;
+        // Only the window holding the tab speaks for it (one it just left may lag behind).
+        if (!windowHoldsTab(useProjectWindowStore.getState().poppedOut, { tabId, windowId }))
+          return;
         const before = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
         useWorkspaceStore.setState((state) => ({
           tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ...fields } : t)),
@@ -570,9 +592,31 @@ function App({ projectWindow }: AppProps = {}) {
           fields.sessionIds.some((sid) => !before?.sessionIds.includes(sid));
         if (sessionsChanged) void fetchSessions();
       }),
-      // The pop-out closed (its "move back" button, or the window's close
-      // button): the project returns here with its terminals.
-      listen<string>(PROJECT_WINDOW_EVENTS.closed, (event) => dockTab(event.payload)),
+      // A pop-out closed: every project it held returns here with its terminals.
+      listen<string>(PROJECT_WINDOW_EVENTS.closed, (event) => {
+        for (const tabId of tabsInWindow(
+          useProjectWindowStore.getState().poppedOut,
+          event.payload,
+        )) {
+          dockTab(tabId);
+        }
+      }),
+      // A tab was dragged from its pop-out onto this window: dock just that tab.
+      listen<TabInWindow>(PROJECT_WINDOW_EVENTS.dockTab, (event) => {
+        const { tabId, windowId } = event.payload;
+        if (!windowHoldsTab(useProjectWindowStore.getState().poppedOut, event.payload)) return;
+        release(tabId, windowId);
+        dockTab(tabId);
+      }),
+      // A tab was dragged from one pop-out onto another: it joins that window.
+      listen<TabMove>(PROJECT_WINDOW_EVENTS.moveTab, (event) => {
+        const { tabId, fromWindowId, toWindowId } = event.payload;
+        const { poppedOut, moveToWindow } = useProjectWindowStore.getState();
+        if (!canMoveTab(poppedOut, event.payload)) return;
+        release(tabId, fromWindowId);
+        moveToWindow(tabId, toWindowId);
+        handOff(tabId);
+      }),
       // The project was closed in its pop-out, which already stopped its
       // terminals: drop the tab here without stopping them a second time.
       listen<string>(PROJECT_WINDOW_EVENTS.closeTab, (event) => {

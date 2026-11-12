@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  canMoveTab,
+  getProjectWindowId,
   getProjectWindowTabId,
   projectWindowLabel,
   projectWindowTabFields,
+  tabsInWindow,
+  windowHoldsTab,
 } from "@/lib/projectWindow";
 import type { WorkspaceTab } from "@/stores/useWorkspaceStore";
 
@@ -14,6 +18,11 @@ describe("projectWindow helpers", () => {
   it("returns null in the main window", () => {
     expect(getProjectWindowTabId("")).toBeNull();
     expect(getProjectWindowTabId("?projectWindow=")).toBeNull();
+  });
+
+  it("reads the pop-out's own window id from the query string", () => {
+    expect(getProjectWindowId("?projectWindow=t1&windowId=w-9")).toBe("w-9");
+    expect(getProjectWindowId("?projectWindow=t1")).toBeNull();
   });
 
   it("builds the same window label as the Rust side", () => {
@@ -43,6 +52,36 @@ describe("projectWindow helpers", () => {
       repositories: [],
       workspaceType: "single-repo",
       worktreeBasePath: null,
+    });
+  });
+
+  describe("which pop-out holds which tab", () => {
+    // t1 and t2 share pop-out w1; t3 is alone in w2.
+    const poppedOut = { t1: "w1", t2: "w1", t3: "w2" };
+
+    it("lists every tab a closing window holds, so they all dock", () => {
+      expect(tabsInWindow(poppedOut, "w1")).toEqual(["t1", "t2"]);
+      expect(tabsInWindow(poppedOut, "gone")).toEqual([]);
+    });
+
+    it("only lets the window holding a tab dock it or speak for it", () => {
+      expect(windowHoldsTab(poppedOut, { tabId: "t1", windowId: "w1" })).toBe(true);
+      expect(windowHoldsTab(poppedOut, { tabId: "t1", windowId: "w2" })).toBe(false);
+      expect(windowHoldsTab(poppedOut, { tabId: "docked", windowId: "w1" })).toBe(false);
+    });
+
+    it("moves a tab only from the window holding it into another open pop-out", () => {
+      expect(canMoveTab(poppedOut, { tabId: "t1", fromWindowId: "w1", toWindowId: "w2" })).toBe(
+        true,
+      );
+      for (const move of [
+        { tabId: "t1", fromWindowId: "w2", toWindowId: "w1" },
+        { tabId: "t1", fromWindowId: "w1", toWindowId: "w1" },
+        { tabId: "t1", fromWindowId: "w1", toWindowId: "closed" },
+        { tabId: "docked", fromWindowId: "w1", toWindowId: "w2" },
+      ]) {
+        expect(canMoveTab(poppedOut, move)).toBe(false);
+      }
     });
   });
 });
