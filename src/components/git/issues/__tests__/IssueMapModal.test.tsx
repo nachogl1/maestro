@@ -567,6 +567,28 @@ describe("IssueMapModal", () => {
     expect(screen.getByTestId("issue-map-tip-progress")).toHaveTextContent("✕ Closed");
   });
 
+  it("names who opened the issue on the card's grey line, or unknown without a login", async () => {
+    mockBackend({
+      issues: [
+        buildIssue({ number: 5, author: { login: "octo-dev" }, assignees: [{ login: "bob" }] }),
+        buildIssue({ number: 6, author: { login: "" } }),
+      ],
+    });
+    renderModal();
+    fireEvent.click(await screen.findByTestId("issue-node-5"), { clientX: 100, clientY: 100 });
+    expect(
+      within(screen.getByTestId("issue-map-tip")).getByText(
+        "Level 0 · GitHub state: OPEN · opened by octo-dev · assigned to bob",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("issue-node-6"), { clientX: 100, clientY: 100 });
+    expect(
+      within(screen.getByTestId("issue-map-tip")).getByText(
+        "Level 0 · GitHub state: OPEN · opened by unknown · nobody assigned",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("click focuses the chain and shows the tooltip; hover does nothing", async () => {
     renderModal();
     const n2 = await screen.findByTestId("issue-node-2");
@@ -577,7 +599,7 @@ describe("IssueMapModal", () => {
     const tip = screen.getByTestId("issue-map-tip");
     expect(within(tip).getByText("#2 Build the canvas")).toBeInTheDocument();
     expect(
-      within(tip).getByText(/Level 1 · GitHub state: OPEN · nobody assigned/),
+      within(tip).getByText(/Level 1 · GitHub state: OPEN · opened by alice · nobody assigned/),
     ).toBeInTheDocument();
     expect(within(tip).getByText("#1 Scaffold (closed)")).toBeInTheDocument();
     expect(within(tip).getByText("#3")).toBeInTheDocument();

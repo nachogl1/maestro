@@ -365,6 +365,25 @@ describe("buildIssueMap", () => {
         "\u{1F512} blocked). A cross means closed.",
     );
   });
+
+  it("names who opened each issue, or unknown when GitHub gives no usable login", () => {
+    // Untrusted shapes from GitHub: a deleted account comes back as "ghost".
+    const cases: Array<[unknown, string]> = [
+      [{ login: "octo-dev" }, "octo-dev"],
+      [{ login: "" }, "unknown"],
+      [{ login: "ghost" }, "unknown"],
+      [{}, "unknown"],
+      [null, "unknown"],
+      [undefined, "unknown"],
+    ];
+    const opened = buildIssueMap(
+      cases.map(([author], i) => issue({ number: i + 1, author: author as IssueInfo["author"] })),
+      {},
+    );
+    expect(opened.nodes.map((n) => [n.number, n.openedBy])).toEqual(
+      cases.map(([, want], i) => [i + 1, want]),
+    );
+  });
 });
 
 describe("labelChips", () => {

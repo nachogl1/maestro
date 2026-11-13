@@ -317,4 +317,25 @@ describe("buildIssueMapHtml", () => {
     node(3).dispatchEvent(new MouseEvent("dblclick"));
     expect(open).toHaveBeenCalledWith("https://github.com/o/r/issues/3", "_blank");
   });
+  it("names who opened the issue on the card's grey line, or unknown without a login", () => {
+    const opened = buildIssueMap(
+      [
+        issue({ number: 1, author: { login: "octo-dev" }, assignees: [{ login: "bob" }] }),
+        issue({ number: 2, author: null as unknown as IssueInfo["author"] }),
+      ],
+      {},
+    );
+    boot(buildIssueMapHtml(opened, OPTIONS));
+    const tip = document.getElementById("tip") as HTMLElement;
+    const greyLine = (n: number) => {
+      const box = document.querySelector(`.node[data-id="${n}"]`) as Element;
+      box.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10 }));
+      const grey = Array.from(tip.querySelectorAll(".m"), (m) => m.textContent ?? "");
+      const text = grey.find((t) => t.includes("GitHub state"));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      return text;
+    };
+    expect(greyLine(1)).toBe("Level 0 · GitHub state: OPEN · opened by octo-dev · assigned to bob");
+    expect(greyLine(2)).toBe("Level 0 · GitHub state: OPEN · opened by unknown · nobody assigned");
+  });
 });
