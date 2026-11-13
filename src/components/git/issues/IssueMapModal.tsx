@@ -278,6 +278,8 @@ export function IssueMapModal({
   // Where the user dragged the card; once set, later cards open there too.
   const tipSpotRef = useRef<{ left: number; top: number } | null>(null);
   const tipDragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  // Set when the current press began inside the card, so a drag out of it does not close it.
+  const pressInTipRef = useRef(false);
 
   useEffect(() => {
     if (!isLoading && !error) setFetchedAt(new Date());
@@ -503,6 +505,23 @@ export function IssueMapModal({
     tipDragRef.current = { x: ev.clientX, y: ev.clientY, left: r.left, top: r.top };
   };
 
+  const onPressStart = (ev: React.PointerEvent) => {
+    pressInTipRef.current = tipRef.current?.contains(ev.target as Node) ?? false;
+    movedRef.current = false;
+  };
+  // Any click outside the card unpins, as Esc does; the clicked control still does its own job.
+  // Boxes toggle the card themselves, and a pan (even one ending outside the map) is no click.
+  const onClickOutside = (ev: React.MouseEvent) => {
+    const target = ev.target as Element;
+    const inTip = pressInTipRef.current || (tipRef.current?.contains(target) ?? false);
+    pressInTipRef.current = false;
+    if (movedRef.current) {
+      movedRef.current = false;
+      return;
+    }
+    if (!inTip && !target.closest("[data-issue-box]")) setPinned(null);
+  };
+
   // Esc backs out one level: close a filter menu, else unpin, else clear the search, else close.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -679,6 +698,7 @@ export function IssueMapModal({
               // biome-ignore lint/a11y/noStaticElementInteractions: SVG issue box; keyboard users get the sidebar list
               <g
                 key={node.number}
+                data-issue-box
                 data-testid={`issue-node-${node.number}`}
                 data-status={node.status}
                 data-kind={node.kind}
@@ -869,7 +889,12 @@ export function IssueMapModal({
   }
 
   return (
-    <div className="fixed inset-0 flex bg-maestro-bg">
+    // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: an outside click closes the card; keyboard users have Esc
+    <div
+      className="fixed inset-0 flex bg-maestro-bg"
+      onPointerDownCapture={onPressStart}
+      onClick={onClickOutside}
+    >
       <main aria-label="Issue map" className="flex h-full w-full flex-col overflow-hidden">
         {/* Header */}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-maestro-border px-3">
@@ -1266,8 +1291,8 @@ export function IssueMapModal({
               Show in sidebar
             </button>
             <span className="text-[12px] text-maestro-muted">
-              Click the box again to clear · double-click opens it on GitHub · drag the title to
-              move this card
+              Click outside to close · double-click opens it on GitHub · drag the title to move this
+              card
             </span>
           </div>
         </div>

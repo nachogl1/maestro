@@ -267,8 +267,8 @@ describe("buildIssueMapHtml", () => {
     expect(tip.textContent).toContain("Level 1 · GitHub state: OPEN");
     expect(tip.textContent).toContain("#1 Scaffold <b>& co</b> (closed)");
     expect(tip.textContent).toContain("Waiting on it: #3");
-    expect(tip.textContent).toContain(
-      "Click the box again to clear · double-click opens it on GitHub",
+    expect(tip.querySelector(".pin")?.textContent).toBe(
+      "Click outside to close · double-click opens it on GitHub",
     );
     const labels = Array.from(tip.querySelectorAll(".lbl"));
     expect(labels.map((l) => [l.textContent, l.classList.contains("k")])).toEqual([
@@ -317,6 +317,69 @@ describe("buildIssueMapHtml", () => {
     node(3).dispatchEvent(new MouseEvent("dblclick"));
     expect(open).toHaveBeenCalledWith("https://github.com/o/r/issues/3", "_blank");
   });
+  it("a click outside the card closes it, clears the chain and still does the control's job", () => {
+    boot(buildIssueMapHtml(map, OPTIONS));
+    const node = (n: number) => document.querySelector(`.node[data-id="${n}"]`) as Element;
+    const svg = document.getElementById("map") as Element;
+    const tip = document.getElementById("tip") as HTMLElement;
+    const click = (el: Element) =>
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+    const press = (el: Element) =>
+      el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    const isOpen = () => tip.style.display === "block";
+    const isLit = () => svg.classList.contains("focus") && node(3).classList.contains("hl");
+    const closedBy = (act: () => void) => {
+      click(node(2));
+      expect(isOpen()).toBe(true);
+      act();
+      expect(isOpen()).toBe(false);
+      expect(svg.classList.contains("focus")).toBe(false);
+      expect(node(3).classList.contains("hl")).toBe(false);
+      expect(document.getElementById("hint")?.textContent).toMatch(/^Drag to move around/);
+    };
+
+    // An empty spot, the header, a zoom button (which still zooms), a legend filter (which still filters).
+    closedBy(() => click(svg));
+    closedBy(() => click(document.querySelector("header") as Element));
+    closedBy(() => click(document.getElementById("zin") as Element));
+    expect(document.getElementById("zpct")?.textContent).toBe("125%");
+    const bob = document.querySelector('input[data-ax="who"][value="bob"]') as HTMLInputElement;
+    closedBy(() => bob.click());
+    expect(document.getElementById("count")?.textContent).toBe("Showing 1 of 4 issues");
+    bob.click();
+
+    // Another box switches the card; the same box again closes it.
+    click(node(2));
+    click(node(3));
+    expect(tip.textContent).toContain("#3 Ship it");
+    expect(node(3).classList.contains("sel")).toBe(true);
+    click(node(3));
+    expect(isOpen()).toBe(false);
+
+    // A click inside the card, or a press that starts in it and ends outside, keeps it open.
+    click(node(2));
+    click(tip.querySelector(".desc") as Element);
+    press(tip.querySelector("h3") as Element);
+    click(svg);
+    expect(isOpen()).toBe(true);
+    expect(isLit()).toBe(true);
+
+    // A pan keeps the issue selected and its chain lit, even when it ends outside the map.
+    const wrap = document.getElementById("wrap") as HTMLElement;
+    for (const endOn of [svg, document.querySelector("header") as Element]) {
+      wrap.dispatchEvent(new PointerEvent("pointerdown", { button: 0, clientX: 0, clientY: 0 }));
+      window.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 30 }));
+      window.dispatchEvent(new PointerEvent("pointerup"));
+      click(endOn);
+      expect(isLit()).toBe(true);
+      expect(node(2).classList.contains("sel")).toBe(true);
+    }
+    // The next plain click outside closes it.
+    press(svg);
+    click(svg);
+    expect(svg.classList.contains("focus")).toBe(false);
+  });
+
   it("names who opened the issue on the card's grey line, or unknown without a login", () => {
     const opened = buildIssueMap(
       [
