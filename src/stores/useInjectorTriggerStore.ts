@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
@@ -6,7 +7,10 @@ import {
   type InjectorTriggerFire,
   type InjectorTriggerTarget,
   type InjectorTriggerWatch,
+  type PendingFollowUp,
   parseSavedTriggers,
+  parseTriggerHistory,
+  type TriggerHistoryEntry,
   toSavedTrigger,
 } from "@/lib/injectorTriggers";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -155,6 +159,77 @@ export const useInjectorTriggerStore = create<InjectorTriggerState>()(
     },
   ),
 );
+
+// --- History: every firing and its follow-up lines, kept one week ---
+
+interface TriggerHistoryState {
+  /** Oldest first, as the backend keeps them. */
+  entries: TriggerHistoryEntry[];
+  /** Delivered recipients still waiting for their follow-up line (memory only). */
+  pending: PendingFollowUp[];
+  /** Reads the saved week back; entries recorded meanwhile are kept. */
+  loadHistory: () => Promise<void>;
+  /** Adds lines to the list and saves each to the app-wide history file. */
+  recordHistory: (entries: TriggerHistoryEntry[]) => void;
+  /** Adds waiting recipients; a newer firing of the same trigger replaces one. */
+  addPendingFollowUps: (pending: PendingFollowUp[]) => void;
+  setPendingFollowUps: (pending: PendingFollowUp[]) => void;
+  /** Empties the list, the waiting recipients and the saved file. */
+  clearHistory: () => Promise<void>;
+}
+
+const samePending = (a: PendingFollowUp, b: PendingFollowUp) =>
+  a.triggerId === b.triggerId && a.sessionId === b.sessionId;
+
+async function saveHistoryEntry(entry: TriggerHistoryEntry): Promise<void> {
+  try {
+    await invoke("append_trigger_history", { entry });
+  } catch (err) {
+    console.error("Failed to save a trigger history entry:", err);
+  }
+}
+
+/**
+ * The Triggers panel's History. The lasting copy is one app-wide file in
+ * Maestro's app data (`commands/trigger_history.rs`), which drops entries
+ * older than a week.
+ */
+export const useTriggerHistoryStore = create<TriggerHistoryState>()((set, get) => ({
+  entries: [],
+  pending: [],
+  loadHistory: async () => {
+    try {
+      const loaded = parseTriggerHistory(await invoke("load_trigger_history"));
+      set((s) => ({
+        entries: [...loaded, ...s.entries.filter((e) => !loaded.some((l) => l.id === e.id))].sort(
+          (a, b) => a.at - b.at,
+        ),
+      }));
+    } catch (err) {
+      console.error("Failed to load the trigger history:", err);
+    }
+  },
+  recordHistory: (entries) => {
+    const added = entries.filter((e) => !get().entries.some((x) => x.id === e.id));
+    if (added.length === 0) return;
+    set((s) => ({ entries: [...s.entries, ...added] }));
+    for (const entry of added) void saveHistoryEntry(entry);
+  },
+  addPendingFollowUps: (pending) => {
+    set((s) => ({
+      pending: [...s.pending.filter((p) => !pending.some((n) => samePending(p, n))), ...pending],
+    }));
+  },
+  setPendingFollowUps: (pending) => set({ pending }),
+  clearHistory: async () => {
+    set({ entries: [], pending: [] });
+    try {
+      await invoke("clear_trigger_history");
+    } catch (err) {
+      console.error("Failed to clear the trigger history:", err);
+    }
+  },
+}));
 
 // A closed terminal leaves every trigger that watched it, so a later terminal
 // given the same number is never watched by accident (the rule the session

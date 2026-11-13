@@ -21,6 +21,7 @@ pub mod session;
 pub mod session_summary;
 pub mod system;
 pub mod terminal;
+pub mod trigger_history;
 pub mod update;
 pub mod usage;
 pub mod work_journal;

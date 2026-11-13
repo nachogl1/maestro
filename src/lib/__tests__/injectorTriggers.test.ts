@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { InjectorRunResult } from "@/lib/injector";
 import {
+  evaluateFollowUps,
   evaluateTriggers,
+  firingHistory,
+  groupTriggerHistory,
+  HISTORY_EXCERPT_CHARS,
   type InjectorTrigger,
+  messageExcerpt,
   parseSavedTriggers,
+  parseTriggerHistory,
+  TRIGGER_HISTORY_KEEP_MS,
   toSavedTrigger,
   triggerLabel,
   triggerRecipients,
@@ -178,5 +186,213 @@ describe("saved triggers", () => {
       firedIds: [],
       lastFire: null,
     });
+  });
+});
+
+describe("trigger history", () => {
+  const AT = new Date(2026, 10, 8, 14, 32).getTime();
+  const ids = () => {
+    let n = 0;
+    return () => `h${++n}`;
+  };
+  const api = { id: 1, name: "api", project: "shop", contextPercent: 81.4 };
+  const ui = { id: 2, name: "ui", project: "shop", contextPercent: 40 };
+  const docs = { id: 3, name: "docs", project: "site" };
+
+  function fire(result: InjectorRunResult = { sent: 3, failures: [] }) {
+    return firingHistory({
+      trigger: buildTrigger({ id: "t1", name: "Compact reminder", threshold: 80 }),
+      reached: [api],
+      recipients: [api, ui, docs],
+      result,
+      at: AT,
+      newId: ids(),
+    });
+  }
+
+  const docsFailed: InjectorRunResult = {
+    sent: 2,
+    failures: [{ sessionId: 3, name: "docs", error: "terminal closed" }],
+  };
+
+  it("records a firing with every field, and which recipients failed and why", () => {
+    expect(fire(docsFailed).entries).toEqual([
+      {
+        kind: "firing",
+        id: "h1",
+        at: AT,
+        triggerId: "t1",
+        triggerName: "Compact reminder",
+        terminal: "api",
+        project: "shop",
+        percent: 81,
+        excerpt: "write a handoff",
+        recipients: [
+          { name: "api", delivered: true },
+          { name: "ui", delivered: true },
+          { name: "docs", delivered: false, error: "terminal closed" },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps only a short one-line excerpt of the message", () => {
+    expect(messageExcerpt("  run\n  /compact  ")).toBe("run /compact");
+    const long = messageExcerpt("word ".repeat(40));
+    expect(long).toHaveLength(HISTORY_EXCERPT_CHARS);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("writes one follow-up line per delivered recipient once its context drops", () => {
+    const { pending } = fire(docsFailed);
+    // The failed recipient waits for nothing.
+    expect(pending.map((p) => p.sessionId)).toEqual([1, 2]);
+
+    // api is still over the threshold and ui has not dropped: nothing yet.
+    let step = evaluateFollowUps(
+      pending,
+      [
+        { id: 1, contextPercent: 85 },
+        { id: 2, contextPercent: 45 },
+      ],
+      AT + 1,
+      ids(),
+    );
+    expect(step.entries).toEqual([]);
+    expect(step.changed).toBe(false);
+
+    // api drops below the threshold (the re-arm); ui drops after a /compact.
+    step = evaluateFollowUps(
+      pending,
+      [
+        { id: 1, contextPercent: 22 },
+        { id: 2, contextPercent: 15 },
+      ],
+      AT + 60_000,
+      ids(),
+    );
+    expect(step.entries).toEqual([
+      expect.objectContaining({
+        kind: "follow_up",
+        terminal: "api",
+        project: "shop",
+        percent: 22,
+        firingId: "h1",
+        firedBy: "api",
+      }),
+      expect.objectContaining({ terminal: "ui", percent: 15, firingId: "h1", firedBy: "api" }),
+    ]);
+    // One line each: nothing is left to follow up.
+    expect(step.pending).toEqual([]);
+  });
+
+  it("waits for a recipient's first usage, and forgets a closed one", () => {
+    const docsPending = fire().pending.filter((p) => p.sessionId === 3);
+    expect(docsPending[0].baseline).toBeNull();
+
+    const noUsage = evaluateFollowUps(docsPending, [{ id: 3 }], AT, ids());
+    expect(noUsage).toEqual({ entries: [], pending: docsPending, changed: false });
+
+    const firstUsage = evaluateFollowUps(docsPending, [{ id: 3, contextPercent: 30 }], AT, ids());
+    expect(firstUsage.entries).toEqual([]);
+    expect(firstUsage.pending[0].baseline).toBe(30);
+
+    expect(evaluateFollowUps(docsPending, [], AT, ids())).toEqual({
+      entries: [],
+      pending: [],
+      changed: true,
+    });
+  });
+
+  function firingAt(id: string, at: number, terminal: string, triggerId = "t1") {
+    return {
+      kind: "firing" as const,
+      id,
+      at,
+      triggerId,
+      triggerName: "Compact reminder",
+      terminal,
+      project: "shop",
+      percent: 80,
+      excerpt: "run /compact",
+      recipients: [{ name: terminal, delivered: true }],
+    };
+  }
+
+  it("groups by day newest first, then by terminal, a follow-up under its firing", () => {
+    const sunday = new Date(2026, 10, 8, 14, 32).getTime();
+    const saturday = new Date(2026, 10, 7, 9, 10).getTime();
+    const followUp = {
+      ...firingAt("u1", sunday + 3 * 60_000, "api"),
+      kind: "follow_up" as const,
+      firingId: "f2",
+      firingAt: sunday,
+      firedBy: "api",
+    };
+    const days = groupTriggerHistory(
+      [
+        firingAt("f1", saturday, "docs"),
+        firingAt("f3", sunday - 3 * 3_600_000, "ui", "t2"),
+        firingAt("f2", sunday, "api"),
+        followUp,
+      ],
+      { now: sunday + 3_600_000, triggerId: null },
+    );
+    expect(days.map((d) => d.groups.map((g) => [g.terminal, g.entries.map((e) => e.id)]))).toEqual([
+      [
+        ["api", ["f2", "u1"]],
+        ["ui", ["f3"]],
+      ],
+      [["docs", ["f1"]]],
+    ]);
+
+    const onlyT2 = groupTriggerHistory(
+      [firingAt("f2", sunday, "api"), firingAt("f3", sunday, "ui", "t2")],
+      { now: sunday, triggerId: "t2" },
+    );
+    expect(onlyT2.flatMap((d) => d.groups.map((g) => g.terminal))).toEqual(["ui"]);
+  });
+
+  it("keeps one terminal name in two projects as two groups", () => {
+    const at = new Date(2026, 10, 8, 10, 0).getTime();
+    const days = groupTriggerHistory(
+      [firingAt("a", at, "claude"), { ...firingAt("b", at + 1, "claude"), project: "site" }],
+      { now: at, triggerId: null },
+    );
+    expect(days[0].groups.map((g) => `${g.terminal} · ${g.project}`)).toEqual([
+      "claude · site",
+      "claude · shop",
+    ]);
+  });
+
+  it("leaves out lines older than seven days", () => {
+    const now = new Date(2026, 10, 13, 12, 0).getTime();
+    const days = groupTriggerHistory(
+      [
+        firingAt("old", now - TRIGGER_HISTORY_KEEP_MS - 1, "api"),
+        firingAt("kept", now - TRIGGER_HISTORY_KEEP_MS, "api"),
+      ],
+      { now, triggerId: null },
+    );
+    expect(days.flatMap((d) => d.groups.flatMap((g) => g.entries.map((e) => e.id)))).toEqual([
+      "kept",
+    ]);
+  });
+
+  it("reads only well-shaped entries from the backend", () => {
+    const good = firingAt("f1", AT, "api");
+    expect(
+      parseTriggerHistory([
+        good,
+        null,
+        7,
+        { ...good, id: 3 },
+        { ...good, kind: "other" },
+        { ...good, recipients: [null] },
+        { ...good, recipients: undefined },
+      ]),
+    ).toEqual([good]);
+    expect(parseTriggerHistory(undefined)).toEqual([]);
+    expect(parseTriggerHistory({ entries: [good] })).toEqual([]);
   });
 });

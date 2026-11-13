@@ -18,6 +18,7 @@ import {
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
+import { TriggerHistoryList } from "./TriggerHistoryList";
 
 /** Percent a new trigger starts with. */
 const DEFAULT_TRIGGER_THRESHOLD = "80";
@@ -85,6 +86,7 @@ export function InjectorTriggersSection() {
   const updateTrigger = useInjectorTriggerStore((s) => s.updateTrigger);
   const removeTrigger = useInjectorTriggerStore((s) => s.removeTrigger);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [historyTriggerId, setHistoryTriggerId] = useState<string | null>(null);
 
   const liveTerminals = useMemo<LiveTerminal[]>(
     () =>
@@ -147,6 +149,7 @@ export function InjectorTriggersSection() {
                 liveTerminals={liveTerminals}
                 onEdit={() => setEditingId(trigger.id)}
                 onRemove={() => removeTrigger(trigger.id)}
+                onShowHistory={() => setHistoryTriggerId(trigger.id)}
               />
             ),
           )}
@@ -155,6 +158,13 @@ export function InjectorTriggersSection() {
 
       <div className="my-2 h-px bg-maestro-border/30" />
       <TriggerForm mode="add" initial={EMPTY_FORM} tickedIds={tickedIds} onSubmit={addTrigger} />
+
+      <div className="my-2 h-px bg-maestro-border/30" />
+      <TriggerHistoryList
+        triggers={triggers}
+        triggerId={historyTriggerId}
+        onTriggerIdChange={setHistoryTriggerId}
+      />
     </div>
   );
 }
@@ -311,11 +321,14 @@ function TriggerRow({
   liveTerminals,
   onEdit,
   onRemove,
+  onShowHistory,
 }: {
   trigger: InjectorTrigger;
   liveTerminals: LiveTerminal[];
   onEdit: () => void;
   onRemove: () => void;
+  /** Filters the History list to this trigger. */
+  onShowHistory: () => void;
 }) {
   const label = triggerLabel(trigger);
   const watched = watchedIds(
@@ -371,15 +384,20 @@ function TriggerRow({
         “{trigger.message}”
       </div>
       {fire ? (
-        <div
-          className={`text-[10px] ${fire.result.failures.length === 0 ? "text-maestro-green" : "text-red-400"}`}
-          title={fire.result.failures.map((f) => `${f.name}: ${f.error}`).join("\n") || undefined}
+        <button
+          type="button"
+          onClick={onShowHistory}
+          className={`block text-left text-[10px] underline decoration-dotted ${fire.result.failures.length === 0 ? "text-maestro-green" : "text-red-400"}`}
+          title={
+            fire.result.failures.map((f) => `${f.name}: ${f.error}`).join("\n") ||
+            "Show this trigger's history"
+          }
         >
           Last fired{" "}
           {new Date(fire.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} by{" "}
           {fire.reachedNames.join(", ")}: sent to {fire.result.sent}
           {fire.result.failures.length > 0 ? `, ${fire.result.failures.length} failed` : ""}
-        </div>
+        </button>
       ) : (
         <div className="text-[10px] text-maestro-muted">Not fired yet</div>
       )}
