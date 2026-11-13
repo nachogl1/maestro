@@ -1,0 +1,19 @@
+{
+  "run_id": "maestro-20261113-122258-0256",
+  "issue": 553,
+  "title": "Issue map: the details card shows who opened each issue",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T12:22:58Z",
+  "finished_at": "2026-11-13T12:30:57Z",
+  "outcome": "merged",
+  "pr": 572,
+  "summary": "Merge-only run for a story built and approved in run maestro-20261113-061438-786d: the issue map's details card (app and exported HTML) shows who opened each issue. Merged on the local gate because CI minutes are unavailable.",
+  "agents": [],
+  "phases": { "qa_seconds": 0, "dev_seconds": 0, "review_seconds": 0, "ci_seconds": 0 },
+  "rounds": { "review": 0, "ci": 0 },
+  "friction": [],
+  "lessons_learned": [
+    "CI minutes are unavailable on this fork (Actions off): per the maintainer, /dev-next merges on the full local gate run on the merged result; merges to main build no release while Actions is off"
+  ],
+  "deferred": []
+}

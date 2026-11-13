@@ -1,0 +1,19 @@
+{
+  "run_id": "maestro-20261113-122258-0256",
+  "issue": 555,
+  "title": "Drag to reorder: dropping a tab on another swaps just those two, in all four drag rows",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 573,
+  "merged_at": "2026-11-13T12:40:00Z",
+  "merge_commit": "6a3174b8e004071dcfb02ba9b396f6769637a3d0",
+  "seam": "src/components/shared/ProjectTabs.tsx, src/components/shared/MultiProjectView.tsx, src/components/terminal/TerminalGrid.tsx, src/components/terminal/ParkedShelf.tsx, src/stores/useWorkspaceStore.ts, src/stores/useParkedOrderStore.ts",
+  "story": "I had five tabs and wanted B where D was. Before, dropping B on D also pushed C and D one place left, which scrambled my layout. Now B and D just trade places and everything else stays put, in the top bar, the zoom strip, eagle view and the parked shelf. Tabs of different widths may look stretched during the drag preview.",
+  "checks": [
+    { "key": "drag-reorder/project-tabs", "criterion": "Dropping one project tab on another swaps only those two", "steps": "Open five throwaway projects named A, B, C, D, E in that order, then drag tab B onto tab D and let go.", "expected": "The top bar reads A D C B E; while dragging, only D slides into B's old spot." },
+    { "key": "drag-reorder/project-tabs-keyboard", "criterion": "One-step keyboard moves of project tabs behave as before", "steps": "With A B C D E open, select C and move it one place right with the keyboard.", "expected": "A B D C E." },
+    { "key": "drag-reorder/zoom-tabs", "criterion": "In zoom view a swap moves only the two tabs and parked slots keep their places", "steps": "In one project launch five terminals named A to E and park C. Zoom into A, drag tab B onto tab E, then unpark C.", "expected": "The strip reads A E D B after the drop; after unparking, A E C D B." },
+    { "key": "drag-reorder/eagle-strip", "criterion": "The eagle zoom strip previews a swap while dragging and swaps on drop", "steps": "In eagle view with tiles A to E in one row, zoom any tile, then drag strip tab B onto D.", "expected": "During the drag only D slides; after the drop the strip and tiles read A D C B E." },
+    { "key": "drag-reorder/parked-pills", "criterion": "Parked pills swap and other shelves' pills stay put", "steps": "Park A, B, C, D, E in project alpha and X, Y in project beta. On alpha's shelf drag B onto D.", "expected": "Alpha's shelf reads A D C B E; in the eagle shelf X and Y sit where they were." }
+  ],
+  "no_qa_reason": null
+}

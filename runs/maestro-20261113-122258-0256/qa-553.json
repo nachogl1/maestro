@@ -1,0 +1,17 @@
+{
+  "run_id": "maestro-20261113-122258-0256",
+  "issue": 553,
+  "title": "Issue map: the details card shows who opened each issue",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 572,
+  "merged_at": "2026-11-13T12:24:00Z",
+  "merge_commit": "436462aab1c7e8cbf20d16d12e052a37980347ee",
+  "seam": "src/lib/issueMap.ts, src/lib/issueMapHtml.ts, src/components/git/issues/",
+  "story": "I click an issue on the map and the details card now tells me who opened it, right after its GitHub state. The map I save as HTML shows the same thing. If the person's account is gone, it says 'opened by unknown' instead of breaking.",
+  "checks": [
+    { "key": "issue-map/opened-by-card", "criterion": "The app's details card shows 'opened by <login>' right after the GitHub state", "steps": "Open Maestro on a repository with an open issue opened by octo-dev. Press Alt+M and click that issue's box.", "expected": "The grey line reads 'Level N · GitHub state: OPEN · opened by octo-dev · assigned to …' or '· nobody assigned'." },
+    { "key": "issue-map/opened-by-export", "criterion": "The exported HTML map's card shows the same text in the same place", "steps": "In the issue map choose Save HTML, open the file in a browser and click the same box.", "expected": "The same grey line, with 'opened by octo-dev' right after the GitHub state." },
+    { "key": "issue-map/opened-by-unknown", "criterion": "An issue with no author login shows 'opened by unknown' in both cards", "steps": "Click an issue whose author account was deleted (GitHub shows it as ghost), in the app and then in the exported map.", "expected": "'opened by unknown' in both places." }
+  ],
+  "no_qa_reason": null
+}

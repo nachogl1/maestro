@@ -1,0 +1,17 @@
+{
+  "run_id": "maestro-20261113-122258-0256",
+  "issue": 555,
+  "title": "Drag to reorder: dropping a tab on another swaps just those two, in all four drag rows",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T12:22:58Z",
+  "finished_at": "2026-11-13T12:30:57Z",
+  "outcome": "merged",
+  "pr": 573,
+  "summary": "Merge-only run for a story built and approved in run maestro-20261113-061438-786d: dropping a tab on another swaps only those two in all four drag rows. Merged after the full local gate passed on the merged result (vitest 2105/2105, cargo 1634 passed).",
+  "agents": [],
+  "phases": { "qa_seconds": 0, "dev_seconds": 0, "review_seconds": 0, "ci_seconds": 0 },
+  "rounds": { "review": 0, "ci": 0 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
