@@ -1,0 +1,53 @@
+{
+  "run_id": "maestro-20261113-225230-111e",
+  "issue": 600,
+  "title": "Scratch projects: make, list, open and delete throwaway project folders from eagle view's new-terminal list",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T22:52:30Z",
+  "finished_at": "2026-11-13T23:50:00Z",
+  "outcome": "merged",
+  "pr": 601,
+  "summary": "Eagle view's new-terminal list can now create throwaway scratch project folders, list them in a pill, reopen or delete them, and asks Delete or Keep when the last terminal or the tab closes; merged on the local gate because Actions is off.",
+  "agents": [
+    {
+      "name": "dev-600",
+      "model": "opus",
+      "tokens_total": 305633
+    },
+    {
+      "name": "review-600",
+      "model": "opus",
+      "tokens_total": 162544
+    },
+    {
+      "name": "review-600-r2",
+      "model": "opus",
+      "tokens_total": 186655
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2298,
+    "review_seconds": 872,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [
+    "CLAUDE.md's 'Pending until PRD v1' table still says no PRD exists, but docs/PRDs/PRD.md is on main; the stale row will mislead the next preflight"
+  ],
+  "lessons_learned": [
+    "Adding a terminal in the same render as a brand-new project tab crashes the terminal grid (Maximum update depth exceeded); defer the add one frame, as the scratch code does"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/scratch/ and src-tauri/src/commands/scratch.rs",
+      "what": "Choosing a scratch folder that already holds real data (the home folder, C:\\git) makes every subfolder a scratch project: the pill lists .ssh, .claude or real repositories with a bin, closing a real project's tab offers Delete, and one Yes removes it for good (remove_dir_all, no recycle bin); the backend guard trusts the folder the front end sends.",
+      "why": "The decision on the scratch-projects ticket says every direct subfolder counts; a guard (warn on a non-empty folder, or a marker file, with the backend reading the setting itself) needs the maintainer's call",
+      "owner": "unowned \u2014 next harvest"
+    }
+  ]
+}

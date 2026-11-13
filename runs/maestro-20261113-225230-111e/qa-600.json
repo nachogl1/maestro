@@ -1,0 +1,50 @@
+{
+  "run_id": "maestro-20261113-225230-111e",
+  "issue": 600,
+  "title": "Scratch projects: make, list, open and delete throwaway project folders from eagle view's new-terminal list",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 601,
+  "merged_at": "2026-11-13T23:48:00Z",
+  "merge_commit": "c5ee5fb",
+  "seam": "src/components/scratch/",
+  "story": "In eagle view, the new-terminal list (Ctrl+T or the top bar +) can now make a throwaway scratch project folder, so quick work no longer borrows a real project. Scratch tabs carry a small flask mark. Closing one, its last terminal, or Stop All asks whether to delete its files or keep them. A Scratch projects pill lists them all with their age to reopen or delete, and Settings gains a Scratch projects folder setting; the + that opens a project is unchanged.",
+  "checks": [
+    {
+      "key": "src/components/scratch/entry-points",
+      "criterion": "In eagle view, the Ctrl+T picker and the top bar + drop-down show the Scratch projects pill and the + New scratch project row; outside eagle view nothing changes",
+      "steps": "Open a project demo-app. Press Ctrl+G, then Ctrl+T. Press Escape, click the top bar +. Leave eagle view and click + again.",
+      "expected": "Both eagle lists show New scratch project and a Scratch projects N pill; outside eagle view + only adds a terminal, no scratch row."
+    },
+    {
+      "key": "src/components/scratch/create-default",
+      "criterion": "Default name creates a plain folder, opens a tab with the scratch mark and adds a terminal",
+      "steps": "In eagle view press Ctrl+T, click New scratch project, press Enter.",
+      "expected": "Box shows a name like scratch-13-nov-1822; a new tab with that name and a flask icon opens with a Configure Session card; the folder exists under ~/Maestro Scratch with no .git."
+    },
+    {
+      "key": "src/components/scratch/refused-names",
+      "criterion": "Duplicate or invalid names are refused and nothing is created",
+      "steps": "Open the name box. Type the earlier name (or it in capitals), Enter. Then bad/name, con, .. each with Enter.",
+      "expected": "A red message each time; no new tab or folder."
+    },
+    {
+      "key": "src/components/scratch/settings-folder",
+      "criterion": "Scratch folder defaults to Maestro Scratch in the home folder and can be changed; the pill lists the new folder's subfolders",
+      "steps": "Open Settings, Scratch projects. Choose folder C:\temp\\demo-scratch holding subfolder alpha. Open the pill in eagle view.",
+      "expected": "Default path shown first; after choosing, the new path and Use default; the pill lists only alpha."
+    },
+    {
+      "key": "src/components/scratch/close-ask",
+      "criterion": "Closing a scratch project's last terminal, its tab or Stop All asks Delete or Keep; normal projects, non-last terminals and quitting never ask",
+      "steps": "In a scratch tab with one launched terminal close it, answer Keep. Close the tab, answer Keep. Repeat with a new scratch project and answer Delete. Use Stop All on a scratch project. Close one of two terminals in a scratch tab. Close a terminal in demo-app. Quit Maestro.",
+      "expected": "The question appears for the last terminal, the tab and Stop All; Keep leaves the folder, Delete closes the tab and removes it; no question for the other cases."
+    },
+    {
+      "key": "src/components/scratch/pill-list",
+      "criterion": "The pill lists every scratch folder with name and age; a row click adds a terminal; the bin deletes after Yes / No",
+      "steps": "Open the pill. Click a kept project's row. Open the pill, click the bin on an open project, click No, then the bin again and Yes.",
+      "expected": "Rows show name and age (now, 3 h, 2 d); the row reopens the tab with a terminal card; No keeps everything; Yes closes the tab and the count drops by one."
+    }
+  ],
+  "no_qa_reason": null
+}
