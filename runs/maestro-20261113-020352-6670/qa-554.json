@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 554,
+  "title": "Terminal header: a message icon shows when the Injector or a trigger sends a message, until the person clears it",
+  "login": "nachogl1",
+  "pr": 578,
+  "merged_at": "2026-11-13T15:39:00Z",
+  "merge_commit": "d0ba8ca3cdb6aabb36e6544ff30be0b1cf2ffebf",
+  "seam": "src/stores/useInjectedMessageStore.ts",
+  "story": "When you send a message from the Injector panel, or a trigger sends one, each terminal that received it now shows a small amber envelope on its header, with a count from two messages on. Hovering lists who sent each message, when, and its first line; clicking the envelope clears it, and nothing else does. The messages are kept in memory only and go when the terminal closes or Maestro restarts. Before, a delivered message left no mark on the terminal.",
+  "checks": [
+    {
+      "key": "terminal-header/injected-message-icon-shows",
+      "criterion": "A successful Injector send adds an amber icon after the terminal name, with a count from two on; a failed send adds nothing",
+      "steps": "Start Maestro and launch two terminals in a demo project. Open the Injector from the left icon strip. Tick both terminals, type 'hello demo' and click 'Inject into 2 terminals'. Send 'second note' the same way to one terminal only.",
+      "expected": "Both headers show an amber envelope right after the name (after the red context icon when shown); the terminal that got both shows 2 beside it."
+    },
+    {
+      "key": "terminal-header/injected-message-hover",
+      "criterion": "Hover lists every message newest first, then 'Click to dismiss'",
+      "steps": "After the first check, hover the envelope on the terminal that got both messages.",
+      "expected": "Three lines: 'Injector · HH:MM · second note', 'Injector · HH:MM · hello demo', 'Click to dismiss'."
+    },
+    {
+      "key": "terminal-header/injected-message-dismiss",
+      "criterion": "Clicking the icon clears every message; clicking or typing in the terminal does not",
+      "steps": "Click inside the terminal, type ls, click the header, check the icon, then click the envelope.",
+      "expected": "The icon stays until the envelope is clicked, then disappears."
+    },
+    {
+      "key": "terminal-header/injected-message-trigger",
+      "criterion": "A trigger firing adds a message from 'Trigger at N%'",
+      "steps": "In the Injector add a trigger on one terminal at 1% with message 'trigger demo'; send that terminal a prompt so its context passes 1%.",
+      "expected": "The envelope appears; hover shows 'Trigger at 1% · HH:MM · trigger demo'."
+    },
+    {
+      "key": "terminal-header/injected-message-lifetime",
+      "criterion": "A closed terminal's messages are dropped and nothing survives a restart",
+      "steps": "Inject into a terminal, park it, unpark it, check the icon; close it and launch a new one; restart Maestro.",
+      "expected": "The icon survives park and unpark; the new terminal has none; no icons after restart."
+    }
+  ],
+  "no_qa_reason": null
+}

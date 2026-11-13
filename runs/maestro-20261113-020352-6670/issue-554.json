@@ -1,0 +1,41 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 554,
+  "title": "Terminal header: a message icon shows when the Injector or a trigger sends a message, until the person clears it",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T14:52:00Z",
+  "finished_at": "2026-11-13T15:40:00Z",
+  "outcome": "merged",
+  "pr": 578,
+  "summary": "A terminal that receives an Injector or trigger message now shows an amber envelope on its header, with a count from two on, a hover list of sender, time and first line, and a click to clear; notices live in memory only.",
+  "agents": [
+    {
+      "name": "dev-554",
+      "model": "opus",
+      "tokens_total": 148212
+    },
+    {
+      "name": "review-554",
+      "model": "opus",
+      "tokens_total": 110940
+    },
+    {
+      "name": "review-554-r2",
+      "model": "opus",
+      "tokens_total": 108882
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 770,
+    "review_seconds": 450,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
