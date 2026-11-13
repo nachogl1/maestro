@@ -7,12 +7,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import {
-  arrayMove,
-  horizontalListSortingStrategy,
-  SortableContext,
-  useSortable,
-} from "@dnd-kit/sortable";
+import { rectSwappingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, open } from "@tauri-apps/plugin-dialog";
@@ -35,6 +30,7 @@ import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import { useSlotLaunch } from "@/hooks/useSlotLaunch";
 import { useTerminalDragDrop } from "@/hooks/useTerminalDragDrop";
 import { useTerminalKeyboard } from "@/hooks/useTerminalKeyboard";
+import { swapIds } from "@/lib/dragSwap";
 import {
   dropBesideTile,
   EAGLE_UNITS,
@@ -577,11 +573,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   const handleZoomTabDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
-      if (!tabId || !over || active.id === over.id) return;
-      const from = displaySlotIds.indexOf(active.id as string);
-      const to = displaySlotIds.indexOf(over.id as string);
-      if (from === -1 || to === -1) return;
-      setZoomTabOrder(tabId, arrayMove(displaySlotIds, from, to));
+      if (!tabId || !over) return;
+      // The two tabs swap; every other slot, hidden parked ones too, stays put.
+      const next = swapIds(displaySlotIds, active.id as string, over.id as string);
+      if (next) setZoomTabOrder(tabId, next);
     },
     [tabId, displaySlotIds, setZoomTabOrder],
   );
@@ -2176,7 +2171,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
                 >
                   <SortableContext
                     items={orderedSlots.map((s) => s.id)}
-                    strategy={horizontalListSortingStrategy}
+                    strategy={rectSwappingStrategy}
                   >
                     {orderedSlots.map((slot, index) => {
                       const isTabActive = slot.id === zoomedSlotId;

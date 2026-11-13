@@ -7,7 +7,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
+import { rectSwappingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
   type CSSProperties,
@@ -377,7 +377,7 @@ export function ParkedShelf({
       >
         <SortableContext
           items={parkedSessions.map((sess) => String(sess.id))}
-          strategy={horizontalListSortingStrategy}
+          strategy={rectSwappingStrategy}
         >
           {parkedSessions.map((sess) => {
             const project = basenameOf(sess.project_path);

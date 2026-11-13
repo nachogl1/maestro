@@ -41,7 +41,7 @@ describe("useWorkspaceStore reorder actions", () => {
   });
 
   describe("reorderTabs", () => {
-    it("moves tab from position 0 to position 2", () => {
+    it("swaps the tab at position 0 with the one at position 2", () => {
       setTabs([
         { id: "a", name: "A", active: true },
         { id: "b", name: "B", active: false },
@@ -51,7 +51,7 @@ describe("useWorkspaceStore reorder actions", () => {
       useWorkspaceStore.getState().reorderTabs("a", "c");
 
       const ids = useWorkspaceStore.getState().tabs.map((t) => t.id);
-      expect(ids).toEqual(["b", "c", "a"]);
+      expect(ids).toEqual(["c", "b", "a"]);
     });
 
     it("is a no-op when activeId equals overId", () => {

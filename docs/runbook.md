@@ -101,6 +101,14 @@ full-height columns**:
 After tidying, terminals still move and resize as usual: drag a divider or a tile edge, or drag a terminal onto
 another one or onto an edge of the screen.
 
+## Tabs: dragging one onto another swaps the two
+
+In all four rows you can reorder by dragging (project tabs in the top bar, terminal tabs while a terminal is
+zoomed, the eagle view's zoom strip and the parked strip), dropping a tab onto another swaps just those two; every
+other tab stays where it was. With `A B C D E`, dropping B on D gives `A D C B E`. While you drag, the tab under
+the pointer slides into the dragged tab's old spot, so what you see is what you get on drop. Moving a project tab
+one place left or right from the keyboard works as before.
+
 ## History tab: order and last message time
 
 - Inside each project, the directory groups (the checkout, each worktree, and any other directory a conversation
@@ -152,9 +160,10 @@ When a terminal needs you, Maestro tells you in three ways:
 
 ## Parked strip: reordering and picking from the keyboard (Alt+U)
 
-- **Drag a pill** along the parked strip to change its place. The order holds while other terminals park and
-  unpark: a terminal you park later joins the end, and one you unpark leaves the others where they were. The
-  order lasts until the app closes. A plain click on a pill still restores its terminal; a drag never does.
+- **Drag a pill onto another** and the two swap places; every other pill stays where it was, on this shelf and
+  on every other one. The order holds while other terminals park and unpark: a terminal you park later joins
+  the end, and one you unpark leaves the others where they were. The order lasts until the app closes. A
+  plain click on a pill still restores its terminal; a drag never does.
 - **Alt+U** moves the cursor to the first pill. **← →** pick a pill, and **Enter** restores its terminal while
   the cursor stays in the strip on the next pill (or the one before it, at the end of the row), so several
   terminals can be restored in a row.

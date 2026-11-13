@@ -1,5 +1,5 @@
-import { arrayMove } from "@dnd-kit/sortable";
 import { create } from "zustand";
+import { swapIds } from "@/lib/dragSwap";
 
 /**
  * The order the user dragged the parked-shelf pills into (issue #495).
@@ -13,7 +13,7 @@ interface ParkedOrderState {
   /** Session ids in the user's chosen order. Empty until the first drag. */
   order: number[];
   /**
-   * Drop `activeId` onto `overId`'s place among `shownIds` (the ids one shelf
+   * Swap `activeId` with `overId` among `shownIds` (the ids one shelf
    * shows, in the order it shows them). Pills the shelf does not show keep
    * their places in the list. `parkedIds` is every parked id in its natural
    * order, so the first drag in one project's shelf also places the others.
@@ -31,10 +31,9 @@ export const useParkedOrderStore = create<ParkedOrderState>((set) => ({
 
   move: (shownIds, activeId, overId, parkedIds) =>
     set((state) => {
-      const from = shownIds.indexOf(activeId);
-      const to = shownIds.indexOf(overId);
-      if (from === -1 || to === -1 || from === to) return state;
-      const arranged = arrayMove(shownIds, from, to);
+      // The dragged pill and the one it lands on swap; the rest stay put.
+      const arranged = swapIds(shownIds, activeId, overId);
+      if (!arranged) return state;
       const shown = new Set(shownIds);
       // Every pill in the order the eagle shelf shows it (see sortByParkedOrder),
       // so the shown ids sit in it in the order this shelf shows them; refill

@@ -375,14 +375,14 @@ describe("ParkedShelf", () => {
       });
     }
 
-    it("moves a pill to where it is dropped, without restoring it", async () => {
+    it("swaps a pill with the one it is dropped on, without restoring it", async () => {
       parkThree();
       const onUnpark = vi.fn();
       render(<ParkedShelf onUnpark={onUnpark} />);
 
       await drag("Charlie", -2 * CHIP_STRIDE);
 
-      expect(chipNames()).toEqual(["Charlie", "Alpha", "Bravo"]);
+      expect(chipNames()).toEqual(["Charlie", "Bravo", "Alpha"]);
       expect(onUnpark).not.toHaveBeenCalled();
     });
 
@@ -396,7 +396,7 @@ describe("ParkedShelf", () => {
       await drag("Charlie", -2 * CHIP_STRIDE);
 
       act(() => useSessionStore.getState().parkSession(4));
-      expect(chipNames()).toEqual(["Charlie", "Alpha", "Bravo", "Delta"]);
+      expect(chipNames()).toEqual(["Charlie", "Bravo", "Alpha", "Delta"]);
 
       act(() => useSessionStore.getState().unparkSession(1));
       expect(chipNames()).toEqual(["Charlie", "Bravo", "Delta"]);
