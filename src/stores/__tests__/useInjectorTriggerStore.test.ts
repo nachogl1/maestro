@@ -154,3 +154,33 @@ describe("useInjectorTriggerStore", () => {
     expect(store.getState().triggers[0].watchIds).toEqual([1]);
   });
 });
+
+describe("useTriggerHistoryStore", () => {
+  it("keeps one waiting follow-up per trigger and terminal, the newest firing's", async () => {
+    vi.resetModules();
+    const { useTriggerHistoryStore } = await import("../useInjectorTriggerStore");
+    const waiting = (firingId: string, sessionId: number, triggerId = "t1") => ({
+      triggerId,
+      triggerName: "Compact",
+      sessionId,
+      terminal: `term-${sessionId}`,
+      project: "demo",
+      threshold: 80,
+      baseline: 85,
+      firingId,
+      firingAt: 1,
+      firedBy: "term-1",
+    });
+    const history = useTriggerHistoryStore.getState();
+    history.addPendingFollowUps([waiting("f1", 1), waiting("f1", 2), waiting("f1", 1, "t2")]);
+    history.addPendingFollowUps([waiting("f2", 1)]);
+
+    expect(
+      useTriggerHistoryStore.getState().pending.map((p) => [p.triggerId, p.sessionId, p.firingId]),
+    ).toEqual([
+      ["t1", 2, "f1"],
+      ["t2", 1, "f1"],
+      ["t1", 1, "f2"],
+    ]);
+  });
+});

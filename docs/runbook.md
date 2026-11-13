@@ -161,6 +161,24 @@ Under the Injector, **Triggers** send a message on their own when a terminal's c
   restart; edit it to pick terminals. The same mark shows when every ticked terminal has closed. A damaged or
   unreadable file loads as no triggers and the panel keeps working; the last-fired line is not saved.
 
+### Trigger history
+
+- **History** (`· kept 1 week`), under the add form, lists every firing of the last week: newest day first, then
+  one group per terminal that reached the percent, headed `name · project`. A line reads
+  `14:32 Compact reminder: 81%, sent to api, delivered`, or `sent to 4 terminals, 3 delivered, 1 failed (docs:
+  terminal closed)` in red when a send failed. Hover a firing to see the first words of its message. "Delivered"
+  means the text reached the terminal.
+- When a delivered recipient's context drops below the percent (for a terminal that was already under it: below
+  where it was when the message arrived), one green line follows under that recipient's own group:
+  `14:35 context dropped to 22% (worked)`, or `(worked, from the 11:02 firing by ui)` for another terminal. No line
+  means it has not dropped yet; follow-ups are only watched while Maestro runs.
+- Click a row's `Last fired …` line, or pick a trigger in the filter, to show only that trigger's lines; `All
+  triggers` shows everything. A deleted trigger keeps its lines (listed as `name (deleted)` in the filter) until
+  they are a week old. **Clear history** empties the list now.
+- The history is one app-wide file in Maestro's app data (`trigger-history/trigger-history.json`), never inside a
+  project. It keeps names as they were at firing time and only a short excerpt of the message, never terminal
+  output. Lines older than seven days are dropped; a damaged file loads as an empty history.
+
 ## Tabs: dragging one onto another swaps the two
 
 In all four rows you can reorder by dragging (project tabs in the top bar, terminal tabs while a terminal is

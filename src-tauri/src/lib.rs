@@ -540,6 +540,10 @@ pub fn run() {
             commands::initial_prompt::terminal_arm_initial_prompt,
             // Injector sidebar tab: one message into many terminals
             commands::injector::inject_message,
+            // Triggers panel History: one app-wide file of firings (issue #563)
+            commands::trigger_history::load_trigger_history,
+            commands::trigger_history::append_trigger_history,
+            commands::trigger_history::clear_trigger_history,
             commands::terminal::terminal_shell_family,
             // CLI commands
             commands::cli::install_cli,

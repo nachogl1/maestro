@@ -190,3 +190,290 @@ function parseSavedTrigger(entry: unknown): InjectorTrigger | null {
     lastFire: null,
   };
 }
+
+// --- History: every firing and the follow-up line when context drops again ---
+
+/** How long the History keeps an entry: one week (the backend prunes the same). */
+export const TRIGGER_HISTORY_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Longest message excerpt a history entry keeps, in characters. */
+export const HISTORY_EXCERPT_CHARS = 80;
+
+/** One recipient of a firing; "delivered" means the text reached its terminal. */
+export interface TriggerHistoryRecipient {
+  name: string;
+  delivered: boolean;
+  /** Why the send failed; only set when not delivered. */
+  error?: string;
+}
+
+/** One firing, with every name as it was at firing time. */
+export interface TriggerFiringEntry {
+  kind: "firing";
+  id: string;
+  /** Epoch ms. */
+  at: number;
+  triggerId: string;
+  triggerName: string;
+  /** The terminal that reached the threshold, and its project. */
+  terminal: string;
+  project: string;
+  /** That terminal's whole context percent when it fired. */
+  percent: number;
+  excerpt: string;
+  recipients: TriggerHistoryRecipient[];
+}
+
+/** A recipient's context dropped below the threshold after a firing. */
+export interface TriggerFollowUpEntry {
+  kind: "follow_up";
+  id: string;
+  /** Epoch ms. */
+  at: number;
+  triggerId: string;
+  triggerName: string;
+  /** The recipient whose context dropped, and its project. */
+  terminal: string;
+  project: string;
+  /** Its whole context percent after the drop. */
+  percent: number;
+  firingId: string;
+  firingAt: number;
+  /** The terminal that reached the threshold in that firing. */
+  firedBy: string;
+}
+
+export type TriggerHistoryEntry = TriggerFiringEntry | TriggerFollowUpEntry;
+
+/** A terminal as a firing saw it. */
+export interface HistoryTerminal {
+  id: number;
+  name: string;
+  project: string;
+  contextPercent?: number;
+}
+
+/**
+ * A delivered recipient waiting for its follow-up line. Kept in memory only:
+ * terminals never survive a restart.
+ */
+export interface PendingFollowUp {
+  triggerId: string;
+  triggerName: string;
+  sessionId: number;
+  terminal: string;
+  project: string;
+  threshold: number;
+  /**
+   * Its context percent when the message arrived (`null` until known). The
+   * line is written once its context is below both this and the threshold:
+   * for the terminal that reached the threshold that is the re-arm; for
+   * another recipient it is a drop from where it was.
+   */
+  baseline: number | null;
+  firingId: string;
+  firingAt: number;
+  firedBy: string;
+}
+
+/** The message's first characters, on one line. */
+export function messageExcerpt(message: string): string {
+  const flat = message.trim().replace(/\s+/g, " ");
+  if (flat.length <= HISTORY_EXCERPT_CHARS) return flat;
+  return `${flat.slice(0, HISTORY_EXCERPT_CHARS - 1)}…`;
+}
+
+function wholePercent(percent: number | undefined): number {
+  return Math.round(percent ?? 0);
+}
+
+/**
+ * The history entries of one firing (one per terminal that reached the
+ * threshold) and the recipients now waiting for a follow-up line (the
+ * delivered ones). A recipient's follow-up belongs to its own firing when it
+ * reached the threshold itself, else to the first one.
+ */
+export function firingHistory(input: {
+  trigger: Pick<InjectorTrigger, "id" | "name" | "message" | "threshold">;
+  reached: HistoryTerminal[];
+  recipients: HistoryTerminal[];
+  result: InjectorRunResult;
+  at: number;
+  newId: () => string;
+}): { entries: TriggerFiringEntry[]; pending: PendingFollowUp[] } {
+  const { trigger, reached, recipients, result, at, newId } = input;
+  const triggerName = triggerLabel(trigger);
+  const failureOf = (id: number) => result.failures.find((f) => f.sessionId === id);
+  const historyRecipients = recipients.map((r): TriggerHistoryRecipient => {
+    const failure = failureOf(r.id);
+    return failure
+      ? { name: r.name, delivered: false, error: failure.error }
+      : { name: r.name, delivered: true };
+  });
+  const entries = reached.map(
+    (terminal): TriggerFiringEntry => ({
+      kind: "firing",
+      id: newId(),
+      at,
+      triggerId: trigger.id,
+      triggerName,
+      terminal: terminal.name,
+      project: terminal.project,
+      percent: wholePercent(terminal.contextPercent),
+      excerpt: messageExcerpt(trigger.message),
+      recipients: historyRecipients,
+    }),
+  );
+  if (entries.length === 0) return { entries, pending: [] };
+  const pending = recipients
+    .filter((r) => !failureOf(r.id))
+    .map((r): PendingFollowUp => {
+      const ownIndex = reached.findIndex((t) => t.id === r.id);
+      const firing = entries[Math.max(0, ownIndex)];
+      return {
+        triggerId: trigger.id,
+        triggerName,
+        sessionId: r.id,
+        terminal: r.name,
+        project: r.project,
+        threshold: trigger.threshold,
+        baseline: r.contextPercent === undefined ? null : wholePercent(r.contextPercent),
+        firingId: firing.id,
+        firingAt: at,
+        firedBy: firing.terminal,
+      };
+    });
+  return { entries, pending };
+}
+
+/**
+ * Writes a follow-up line for every waiting recipient whose context dropped
+ * below the threshold (and below where it was when the message arrived).
+ * A closed terminal stops waiting; one with no usage yet keeps waiting.
+ */
+export function evaluateFollowUps(
+  pending: PendingFollowUp[],
+  sessions: TriggerSessionView[],
+  at: number,
+  newId: () => string,
+): { entries: TriggerFollowUpEntry[]; pending: PendingFollowUp[]; changed: boolean } {
+  const entries: TriggerFollowUpEntry[] = [];
+  const remaining: PendingFollowUp[] = [];
+  let changed = false;
+  for (const p of pending) {
+    const session = sessions.find((s) => s.id === p.sessionId);
+    if (!session) {
+      changed = true;
+      continue;
+    }
+    if (session.contextPercent === undefined) {
+      remaining.push(p);
+      continue;
+    }
+    const percent = wholePercent(session.contextPercent);
+    if (p.baseline === null) {
+      remaining.push({ ...p, baseline: percent });
+      changed = true;
+      continue;
+    }
+    if (percent >= Math.min(p.threshold, p.baseline)) {
+      remaining.push(p);
+      continue;
+    }
+    changed = true;
+    entries.push({
+      kind: "follow_up",
+      id: newId(),
+      at,
+      triggerId: p.triggerId,
+      triggerName: p.triggerName,
+      terminal: p.terminal,
+      project: p.project,
+      percent,
+      firingId: p.firingId,
+      firingAt: p.firingAt,
+      firedBy: p.firedBy,
+    });
+  }
+  return { entries, pending: remaining, changed };
+}
+
+/** One terminal's lines on one day of the History list. */
+export interface TriggerHistoryGroup {
+  terminal: string;
+  project: string;
+  /** Oldest first, so a follow-up line reads under its firing. */
+  entries: TriggerHistoryEntry[];
+}
+
+/** One day of the History list. */
+export interface TriggerHistoryDay {
+  /** Local calendar day, `YYYY-MM-DD`. */
+  key: string;
+  /** Epoch ms of the day's newest entry, for its heading. */
+  at: number;
+  /** The terminal with the newest line first. */
+  groups: TriggerHistoryGroup[];
+}
+
+function localDayKey(at: number): string {
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * The History list: the last week's entries (of one trigger, or of all when
+ * `triggerId` is null), grouped by day, newest first, then by the terminal
+ * the line is about (with its project), the terminal with the newest line
+ * first.
+ */
+export function groupTriggerHistory(
+  entries: TriggerHistoryEntry[],
+  options: { now: number; triggerId: string | null },
+): TriggerHistoryDay[] {
+  const kept = entries
+    .filter((e) => e.at >= options.now - TRIGGER_HISTORY_KEEP_MS)
+    .filter((e) => options.triggerId === null || e.triggerId === options.triggerId)
+    .sort((a, b) => b.at - a.at);
+  const days: TriggerHistoryDay[] = [];
+  for (const entry of kept) {
+    const key = localDayKey(entry.at);
+    let day = days.find((d) => d.key === key);
+    if (!day) {
+      day = { key, at: entry.at, groups: [] };
+      days.push(day);
+    }
+    let group = day.groups.find(
+      (g) => g.terminal === entry.terminal && g.project === entry.project,
+    );
+    if (!group) {
+      group = { terminal: entry.terminal, project: entry.project, entries: [] };
+      day.groups.push(group);
+    }
+    group.entries.unshift(entry);
+  }
+  return days;
+}
+
+/** Reads the history the backend returned; anything not shaped like an entry is left out. */
+export function parseTriggerHistory(raw: unknown): TriggerHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is TriggerHistoryEntry => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const e = entry as Record<string, unknown>;
+    const shaped =
+      typeof e.id === "string" &&
+      typeof e.at === "number" &&
+      typeof e.triggerId === "string" &&
+      typeof e.terminal === "string" &&
+      typeof e.project === "string";
+    if (e.kind === "follow_up") return shaped;
+    return (
+      shaped &&
+      e.kind === "firing" &&
+      Array.isArray(e.recipients) &&
+      e.recipients.every((r) => typeof r === "object" && r !== null && typeof r.name === "string")
+    );
+  });
+}
