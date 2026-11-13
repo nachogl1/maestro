@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261113-222838-e212",
+  "issue": 592,
+  "title": "Stuck 'Paste ⋯' box appears unasked at the top-left of the Maestro window and cannot be closed",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 599,
+  "merged_at": "2026-11-13T23:00:40Z",
+  "merge_commit": "7ef6248",
+  "seam": "web-engine start-up options: src-tauri/tauri.conf.json, src/lib/issueMapWindow.ts, src/lib/workJournalWindow.ts",
+  "story": "Sometimes a small white 'Paste ⋯' box sat on top of the tabs at the top-left of Maestro and could not be clicked or closed. After this change Maestro tells its web engine not to show that touch-text menu, on the main window and on the issue map and Work Journal pop-out windows. Right-click menus and Ctrl+V paste work as before.",
+  "checks": [
+    {
+      "key": "webview/no-paste-box",
+      "criterion": "The touch-text 'Paste ⋯' box no longer appears stuck at the top-left of the window",
+      "steps": "Install the update. Use Maestro on Windows as usual for a day: terminals, text boxes, touchpad taps and long presses.",
+      "expected": "No white 'Paste ⋯' box over the tab bar."
+    },
+    {
+      "key": "webview/windows-open",
+      "criterion": "The issue map window and the Work Journal pop-out still open",
+      "steps": "Start Maestro fresh, open a git project and press Alt+M. Then open the Work Journal panel and choose Pop out in its page actions menu.",
+      "expected": "Both windows open and show their content, with no error."
+    },
+    {
+      "key": "webview/right-click-kept",
+      "criterion": "Right-click menus and Ctrl+V still work",
+      "steps": "Right-click in a text box, then press Ctrl+V in a text box after copying some made-up text.",
+      "expected": "The normal right-click menu appears, and the text is pasted."
+    }
+  ],
+  "no_qa_reason": null
+}

@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261113-222838-e212",
+  "issue": 592,
+  "title": "Stuck 'Paste ⋯' box appears unasked at the top-left of the Maestro window and cannot be closed",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T22:28:38Z",
+  "finished_at": "2026-11-13T23:01:13Z",
+  "outcome": "merged",
+  "pr": 599,
+  "summary": "A Chromium touch-text 'Paste' quick menu could appear stuck at the window's top-left; Maestro now starts WebView2 with TouchTextEditingRedesign enabled (keeping Tauri's defaults) on every window from one shared definition, and cancels touch/pen context menus in the page. Closing a menu that still appears is impossible from Maestro and is recorded as such.",
+  "agents": [
+    {
+      "name": "dev-592",
+      "model": "opus",
+      "tokens_total": 200726
+    },
+    {
+      "name": "review-592",
+      "model": "opus",
+      "tokens_total": 132987
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1321,
+    "review_seconds": 488,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [
+    "CLAUDE.md states a skip-count baseline of 0, but cargo test --workspace already reports 1 ignored test on main; every dev and reviewer has to re-check whether a story changed it"
+  ],
+  "lessons_learned": [
+    "The trigger for the touch-text menu on a mouse-and-touchpad machine is unproven: CDP touch input produced no context menu, so only the maintainer's hand check after the next update confirms the fix"
+  ],
+  "deferred": []
+}
