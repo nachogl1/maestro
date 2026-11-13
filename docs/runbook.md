@@ -308,6 +308,20 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
 - Cards you typed yourself never get an update suggestion. On a page with no card for the project yet (old plain
   lines), the summary comes as a normal suggestion.
 
+## Work Journal suggestions: accept or reject several at once
+
+- Each suggestion has a tick box, and the `Suggestions (N)` header line has a select-all box. From two pending
+  suggestions the header also shows **Accept all** and **Reject all**; while some are ticked they read
+  **Accept N** and **Reject N** and act only on the ticked ones.
+- They act on the day shown only. Accept adds the cards in list order, one after the other, each with the same
+  checks as its own Accept (an update whose card changed since is left alone).
+- Accept all is greyed out for the same reasons as a single Accept: no page yet, a read-only page, a restore or a
+  suggestion run in progress; hovering it says why.
+- Reject asks **Reject N? Yes / No** in place first; No keeps everything. A reject is final for the day.
+- If one fails, the others still go through; the failed ones stay ticked and the error line says how many and why.
+- Ticks stay across new runs and new suggestions arrive unticked. A suggestion a run rewrote loses its tick, so
+  text you have not read is never accepted. Going to another day clears the ticks.
+
 ## Work Journal suggestions: Granola meetings
 
 - With Granola turned on (the Yes answer to the Granola question), each suggestion run looks up that day's meetings

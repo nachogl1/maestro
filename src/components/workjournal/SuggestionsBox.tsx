@@ -20,6 +20,13 @@ const NO_CANDIDATES: WorkJournalCandidate[] = [];
 const ICON_BUTTON =
   "rounded p-0.5 transition-colors hover:bg-maestro-card disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
 
+/** The header's small text buttons (bulk Accept and Reject, and the reject question's Yes / No). */
+const HEADER_BUTTON =
+  "rounded border px-1.5 font-normal transition-colors disabled:cursor-not-allowed disabled:opacity-40";
+
+/** From how many pending suggestions the bulk buttons show (the tick boxes show from one). */
+const BULK_MIN_PENDING = 2;
+
 export interface SuggestionsBoxProps {
   /** The viewed day (`YYYY-MM-DD`). */
   date: string;
@@ -83,6 +90,33 @@ function updateLabel(candidate: WorkJournalCandidate): string {
   return ["Updates your", time, project, "entry"].filter(Boolean).join(" ");
 }
 
+/**
+ * What a tick remembers of its suggestion: the text it showed when ticked. A
+ * suggestion a run rewrote in place no longer matches, so it loses its tick
+ * and text the person never read is never accepted.
+ */
+function tickKey(candidate: WorkJournalCandidate): string {
+  return JSON.stringify([
+    candidate.time ?? null,
+    candidate.text,
+    candidate.updates?.time ?? null,
+    candidate.updates?.text ?? null,
+  ]);
+}
+
+/** Ticked suggestions: id to {@link tickKey} at the time of the tick. */
+type Ticks = Record<string, string>;
+
+/** The ticks for `list`, each as it reads now. */
+function ticksFor(list: WorkJournalCandidate[]): Ticks {
+  return Object.fromEntries(list.map((c) => [c.id, tickKey(c)]));
+}
+
+/** The suggestions of `list` that `ticks` holds as they read now, in list order. */
+function tickedIn(list: WorkJournalCandidate[], ticks: Ticks): WorkJournalCandidate[] {
+  return list.filter((c) => ticks[c.id] === tickKey(c));
+}
+
 /** "next run" text: "soon" before the start-up catch-up run, HH:MM, or "—" when unknown. */
 function nextRunLabel(catchUpPending: boolean, nextRunAt: number | null): string {
   if (catchUpPending) return "soon";
@@ -107,6 +141,8 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
   const refresh = useWorkJournalCandidatesStore((s) => s.refresh);
   const accept = useWorkJournalCandidatesStore((s) => s.accept);
   const reject = useWorkJournalCandidatesStore((s) => s.reject);
+  const acceptMany = useWorkJournalCandidatesStore((s) => s.acceptMany);
+  const rejectMany = useWorkJournalCandidatesStore((s) => s.rejectMany);
   const clearError = useWorkJournalCandidatesStore((s) => s.clearError);
   const replacing = useWorkJournalStore((s) => s.replacing);
   const projectColors = useProjectColors();
@@ -121,6 +157,20 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
   const askGranola = useGranolaQuestion();
   const [granolaSaving, setGranolaSaving] = useState(false);
   const [granolaSaveFailed, setGranolaSaveFailed] = useState(false);
+  const [ticks, setTicks] = useState<Ticks>({});
+  /** The suggestions the in-place "Reject N?" question is about; null when not asking. */
+  const [rejectAsk, setRejectAsk] = useState<Ticks | null>(null);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  // Another day clears the ticks and the question (set during render, so the
+  // new day never shows the old day's ticks).
+  const [ticksDate, setTicksDate] = useState(date);
+  if (ticksDate !== date) {
+    setTicksDate(date);
+    setTicks({});
+    setRejectAsk(null);
+  }
+  const dateRef = useRef(date);
+  dateRef.current = date;
 
   useEffect(() => {
     void refresh(date);
@@ -136,6 +186,39 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
         : running
           ? "Wait for the run to finish"
           : null;
+  const ticked = tickedIn(pending, ticks);
+  const bulkTargets = ticked.length > 0 ? ticked : pending;
+  const showBulk = pending.length >= BULK_MIN_PENDING;
+  const allTicked = pending.length > 0 && ticked.length === pending.length;
+  const ticksLocked = bulkRunning || rejectAsk !== null;
+  const bulkCount = ticked.length > 0 ? String(ticked.length) : "all";
+
+  const toggleTick = (candidate: WorkJournalCandidate): void =>
+    setTicks((current) => {
+      const next = { ...current };
+      if (next[candidate.id] === tickKey(candidate)) delete next[candidate.id];
+      else next[candidate.id] = tickKey(candidate);
+      return next;
+    });
+
+  /** Runs a bulk action; the suggestions it could not do stay (or become) ticked. */
+  const runBulk = async (
+    action: (list: WorkJournalCandidate[]) => Promise<string[]>,
+    targets: WorkJournalCandidate[],
+  ): Promise<void> => {
+    const startedOn = date;
+    setBulkRunning(true);
+    const failed = await action(targets);
+    setBulkRunning(false);
+    if (dateRef.current !== startedOn) return;
+    setTicks(ticksFor(targets.filter((c) => failed.includes(c.id))));
+  };
+
+  const confirmReject = (): void => {
+    const targets = rejectAsk ? tickedIn(pending, rejectAsk) : [];
+    setRejectAsk(null);
+    if (targets.length > 0) void runBulk(rejectMany, targets);
+  };
 
   const runNow = (): void => {
     const store = useWorkJournalCandidateRunStore.getState();
@@ -154,10 +237,80 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
       aria-label="Suggestions"
       className="max-h-[38%] shrink-0 overflow-y-auto border-t border-maestro-border px-2.5 py-1.5 text-xs"
     >
-      <div className="flex items-center justify-between gap-2 text-[11px] text-maestro-muted">
-        <span className="font-semibold">
-          {pending.length > 0 ? `Suggestions (${pending.length})` : "Suggestions"}
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-maestro-muted">
+        <div className="flex items-center gap-1.5">
+          {pending.length > 0 && (
+            <input
+              type="checkbox"
+              className="m-0 shrink-0"
+              aria-label="Select all suggestions"
+              checked={allTicked}
+              ref={(el) => {
+                if (el) el.indeterminate = ticked.length > 0 && !allTicked;
+              }}
+              onChange={() => setTicks(allTicked ? {} : ticksFor(pending))}
+              disabled={ticksLocked}
+            />
+          )}
+          <span className="font-semibold">
+            {pending.length > 0 ? `Suggestions (${pending.length})` : "Suggestions"}
+          </span>
+          {rejectAsk !== null ? (
+            <fieldset
+              aria-label="Confirm reject"
+              className="m-0 flex items-center gap-1.5 border-0 p-0"
+            >
+              <span className="text-maestro-text">{`Reject ${Object.keys(rejectAsk).length}?`}</span>
+              <button
+                type="button"
+                onClick={confirmReject}
+                disabled={replacing}
+                className={`${HEADER_BUTTON} border-maestro-red/50 text-maestro-red hover:bg-maestro-red/20`}
+              >
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={() => setRejectAsk(null)}
+                className={`${HEADER_BUTTON} border-maestro-border hover:bg-maestro-card`}
+              >
+                No
+              </button>
+            </fieldset>
+          ) : (
+            showBulk && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void runBulk(acceptMany, bulkTargets)}
+                  disabled={bulkRunning || acceptHint !== null}
+                  className={`${HEADER_BUTTON} border-maestro-green/50 text-maestro-green hover:bg-maestro-green/20`}
+                  title={
+                    acceptHint ??
+                    (ticked.length > 0
+                      ? "Accept the ticked suggestions, in list order"
+                      : "Accept every suggestion of this day, in list order")
+                  }
+                >
+                  {`Accept ${bulkCount}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRejectAsk(ticksFor(bulkTargets))}
+                  disabled={bulkRunning || replacing}
+                  className={`${HEADER_BUTTON} border-maestro-red/50 text-maestro-red hover:bg-maestro-red/20`}
+                  title={
+                    ticked.length > 0
+                      ? "Reject the ticked suggestions: hide them for today"
+                      : "Reject every suggestion of this day: hide them for today"
+                  }
+                >
+                  {`Reject ${bulkCount}`}
+                </button>
+              </>
+            )
+          )}
+        </div>
         <span>
           next run {nextRunLabel(catchUpPending, nextRunAt)} ·{" "}
           <button
@@ -264,6 +417,14 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                 )}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="m-0 shrink-0"
+                      aria-label={`Select suggestion: ${label}`}
+                      checked={ticks[candidate.id] === tickKey(candidate)}
+                      onChange={() => toggleTick(candidate)}
+                      disabled={ticksLocked}
+                    />
                     {project && projectColor && (
                       <span
                         data-testid="suggestion-project"
@@ -281,7 +442,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                     <button
                       type="button"
                       onClick={() => void accept(candidate)}
-                      disabled={busy || acceptHint !== null}
+                      disabled={busy || bulkRunning || acceptHint !== null}
                       className={`${ICON_BUTTON} text-maestro-green`}
                       aria-label={`Accept suggestion: ${label}`}
                       title={
@@ -296,7 +457,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                     <button
                       type="button"
                       onClick={() => void reject(candidate)}
-                      disabled={busy || replacing}
+                      disabled={busy || bulkRunning || replacing}
                       className={`${ICON_BUTTON} text-maestro-red`}
                       aria-label={`Reject suggestion: ${label}`}
                       title={

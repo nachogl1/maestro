@@ -104,6 +104,17 @@ const ACCEPT_ERRORS: Record<Exclude<WorkJournalUpdateResult, "saved">, string> =
 };
 
 /**
+ * The start of the error line after a bulk Accept or Reject left suggestions
+ * behind: how many, and that they stay ticked. The first failure's own error
+ * follows it.
+ */
+export function bulkFailureSummary(count: number, done: "accepted" | "rejected"): string {
+  return count === 1
+    ? `1 suggestion was not ${done} and stays ticked.`
+    : `${count} suggestions were not ${done} and stay ticked.`;
+}
+
+/**
  * Slack after local midnight before the badge moves to the new day, so a
  * timer that fires a moment early still sees the new date.
  */
@@ -196,11 +207,23 @@ interface WorkJournalCandidatesState {
    * Adds the candidate as an entry card at the end of its page through the
    * open editor (an update suggestion rewrites its card's text instead), then
    * removes it from the activity file. Nothing is removed when the card could
-   * not be added or rewritten.
+   * not be added or rewritten. Resolves whether the candidate is done.
    */
-  accept: (candidate: WorkJournalCandidate) => Promise<void>;
-  /** Marks the candidate rejected: it leaves the box and is not proposed again that day. */
-  reject: (candidate: WorkJournalCandidate) => Promise<void>;
+  accept: (candidate: WorkJournalCandidate) => Promise<boolean>;
+  /**
+   * Marks the candidate rejected: it leaves the box and is not proposed again
+   * that day. Resolves whether it is done.
+   */
+  reject: (candidate: WorkJournalCandidate) => Promise<boolean>;
+  /**
+   * Accepts the candidates one at a time, in the order given, each through
+   * `accept` with its own checks. A failure does not stop the rest; the error
+   * line then counts the failures and shows the first one's error. Resolves
+   * the ids that were not accepted.
+   */
+  acceptMany: (candidates: WorkJournalCandidate[]) => Promise<string[]>;
+  /** Rejects the candidates one at a time, like `acceptMany`. Resolves the ids not rejected. */
+  rejectMany: (candidates: WorkJournalCandidate[]) => Promise<string[]>;
   clearError: () => void;
   /**
    * Starts the app-lifetime refreshers, once (from `useBackgroundPollers`,
@@ -267,6 +290,32 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
     set((s) => ({
       busyIds: busy ? [...s.busyIds, id] : s.busyIds.filter((other) => other !== id),
     }));
+  /**
+   * Runs `act` on each candidate in turn; a failure does not stop the rest.
+   * Each one starts with no error, so a later success cannot hide an earlier
+   * failure: the error line is set once at the end.
+   */
+  const each = async (
+    candidates: WorkJournalCandidate[],
+    act: (candidate: WorkJournalCandidate) => Promise<boolean>,
+    done: "accepted" | "rejected",
+  ): Promise<string[]> => {
+    const failed: string[] = [];
+    let firstError: string | null = null;
+    for (const candidate of candidates) {
+      set({ error: null });
+      if (await act(candidate)) continue;
+      failed.push(candidate.id);
+      firstError ??= get().error;
+    }
+    set({
+      error:
+        failed.length === 0
+          ? null
+          : [bulkFailureSummary(failed.length, done), firstError].filter(Boolean).join(" "),
+    });
+    return failed;
+  };
 
   return {
     byDate: {},
@@ -309,10 +358,10 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
     },
 
     accept: async (candidate: WorkJournalCandidate) => {
-      if (get().busyIds.includes(candidate.id)) return;
+      if (get().busyIds.includes(candidate.id)) return false;
       // A running candidate run read the page before this line; it could
       // propose the same thing again.
-      if (useWorkJournalCandidateRunStore.getState().running) return;
+      if (useWorkJournalCandidateRunStore.getState().running) return false;
       setBusy(candidate.id, true);
       let added = get().landedIds.includes(candidate.id);
       try {
@@ -326,7 +375,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
             : await appendWorkJournalEntry(candidate.date, candidateEntry(candidate));
           if (result !== "saved") {
             set({ error: ACCEPT_ERRORS[result] });
-            return;
+            return false;
           }
           added = true;
           set((s) => ({ landedIds: [...s.landedIds, candidate.id] }));
@@ -335,6 +384,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
         await invoke("accept_work_journal_candidate", { id: candidate.id });
         set((s) => ({ landedIds: s.landedIds.filter((id) => id !== candidate.id), error: null }));
         drop(candidate);
+        return true;
       } catch (error) {
         console.error("Failed to accept the Work Journal suggestion:", error);
         set({
@@ -342,6 +392,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
             ? `The line is on the page, but the suggestion stayed (Accept again to clear it): ${errorMessage(error)}`
             : `Could not add the line: ${errorMessage(error)}`,
         });
+        return false;
       } finally {
         setBusy(candidate.id, false);
         void get().refresh(candidate.date);
@@ -349,20 +400,28 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
     },
 
     reject: async (candidate: WorkJournalCandidate) => {
-      if (get().busyIds.includes(candidate.id)) return;
+      if (get().busyIds.includes(candidate.id)) return false;
       setBusy(candidate.id, true);
       try {
         await invoke("reject_work_journal_candidate", { id: candidate.id });
         drop(candidate);
         set({ error: null });
+        return true;
       } catch (error) {
         console.error("Failed to reject the Work Journal suggestion:", error);
         set({ error: `Could not reject the suggestion: ${errorMessage(error)}` });
+        return false;
       } finally {
         setBusy(candidate.id, false);
         void get().refresh(candidate.date);
       }
     },
+
+    acceptMany: (candidates: WorkJournalCandidate[]) =>
+      each(candidates, (candidate) => get().accept(candidate), "accepted"),
+
+    rejectMany: (candidates: WorkJournalCandidate[]) =>
+      each(candidates, (candidate) => get().reject(candidate), "rejected"),
 
     clearError: () => set({ error: null }),
 

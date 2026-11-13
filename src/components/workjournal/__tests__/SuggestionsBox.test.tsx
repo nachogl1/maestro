@@ -13,6 +13,7 @@ import {
   ACCEPT_CARD_CHANGED_ERROR,
   ACCEPT_NO_EDITOR_ERROR,
   ACCEPT_SAVE_FAILED_ERROR,
+  bulkFailureSummary,
   useWorkJournalCandidatesStore,
   type WorkJournalCandidate,
 } from "@/stores/useWorkJournalCandidatesStore";
@@ -54,6 +55,8 @@ let saveHook: (() => Promise<void>) | null;
 let acceptHook: (() => Promise<void>) | null;
 /** When true, the accept command answers null (the candidate was already gone). */
 let acceptGone: boolean;
+/** When set, the reject command goes through it first with the id (it may throw). */
+let rejectHook: ((id: unknown) => Promise<void>) | null;
 /** What the Granola preflight answers. */
 let granolaConnected: boolean;
 /** What a candidate run answers. */
@@ -113,6 +116,7 @@ function mockBackend(): void {
         return found;
       }
       case "reject_work_journal_candidate": {
+        if (rejectHook) await rejectHook(a.id);
         const found = candidates.find((c) => c.id === a.id);
         if (!found) throw new Error(`No work journal candidate with id ${a.id}`);
         found.state = "rejected";
@@ -194,6 +198,7 @@ describe("SuggestionsBox", () => {
     saveHook = null;
     acceptHook = null;
     acceptGone = false;
+    rejectHook = null;
     runOutcome = {
       status: "ran",
       added: 0,
@@ -928,6 +933,290 @@ describe("SuggestionsBox", () => {
       fireEvent.click(within(row).getByRole("button", { name: /^Accept suggestion: / }));
       await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "u1" }]));
       expect(file.pages[TODAY].body).toEqual(pageWithCard(NEW));
+    });
+  });
+
+  describe("bulk accept and reject", () => {
+    const LINES = [
+      "13:42 - Merged the PR for the login fix",
+      "14:05 - Worked on agent-name terminal titles",
+      "Design sync on Work Journal",
+    ];
+
+    function bulkButton(name: RegExp): HTMLElement {
+      return within(box()).getByRole("button", { name });
+    }
+
+    /** The tick box of the row showing `text`. */
+    function tickBox(text: string): HTMLInputElement {
+      const item = within(box()).getByText(text).closest("li") as HTMLElement;
+      return within(item).getByRole("checkbox", {
+        name: /^Select suggestion: /,
+      }) as HTMLInputElement;
+    }
+
+    function selectAll(): HTMLInputElement {
+      return within(box()).getByRole("checkbox", {
+        name: "Select all suggestions",
+      }) as HTMLInputElement;
+    }
+
+    /** The in-place reject question. */
+    function rejectQuestion(): HTMLElement {
+      return within(box()).getByRole("group", { name: "Confirm reject" });
+    }
+
+    it("shows Accept all and Reject all from two pending suggestions; the labels follow the ticks", async () => {
+      const later = candidates.slice(1, 3);
+      candidates = [candidates[0]];
+      await renderWithSuggestions();
+      expect(
+        within(box()).queryByRole("button", { name: /^(Accept|Reject) (all|\d+)$/ }),
+      ).toBeNull();
+      // A lone suggestion has its tick box, but no bulk buttons yet.
+      expect(tickBox(LINES[0])).toBeInTheDocument();
+
+      candidates.push(...later);
+      await act(async () => useWorkJournalCandidatesStore.getState().refresh(TODAY));
+      await within(box()).findByText(LINES[2]);
+      expect(bulkButton(/^Accept all$/)).toBeEnabled();
+      expect(bulkButton(/^Reject all$/)).toBeEnabled();
+      expect(selectAll().checked).toBe(false);
+
+      fireEvent.click(tickBox(LINES[1]));
+      expect(bulkButton(/^Accept 1$/)).toBeEnabled();
+      expect(bulkButton(/^Reject 1$/)).toBeEnabled();
+      expect(selectAll().indeterminate).toBe(true);
+
+      fireEvent.click(tickBox(LINES[2]));
+      expect(bulkButton(/^Accept 2$/)).toBeInTheDocument();
+      expect(bulkButton(/^Reject 2$/)).toBeInTheDocument();
+
+      fireEvent.click(selectAll());
+      expect(bulkButton(/^Accept 3$/)).toBeInTheDocument();
+      expect(selectAll().checked).toBe(true);
+      expect(selectAll().indeterminate).toBe(false);
+      for (const line of LINES) expect(tickBox(line).checked).toBe(true);
+
+      fireEvent.click(selectAll());
+      expect(bulkButton(/^Accept all$/)).toBeInTheDocument();
+      for (const line of LINES) expect(tickBox(line).checked).toBe(false);
+    });
+
+    it("Accept N adds only the ticked suggestions as cards, in list order", async () => {
+      await renderWithSuggestions();
+      fireEvent.click(tickBox(LINES[2]));
+      fireEvent.click(tickBox(LINES[0]));
+      fireEvent.click(bulkButton(/^Accept 2$/));
+
+      await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toHaveLength(2));
+      expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c1" }, { id: "c3" }]);
+      expect(savedParagraphs()).toEqual(["Standup", LINES[0], LINES[2]]);
+      await waitFor(() => expect(within(box()).getAllByRole("listitem")).toHaveLength(1));
+      expect(within(box()).getByText(LINES[1])).toBeInTheDocument();
+      expect(useWorkJournalCandidatesStore.getState().error).toBeNull();
+    });
+
+    it("Accept all adds every pending suggestion of the day shown, and no other day's", async () => {
+      let release: () => void = () => {};
+      acceptHook = () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      await renderWithSuggestions();
+      fireEvent.click(bulkButton(/^Accept all$/));
+
+      // While it runs, the ticks and every row's own buttons wait for it.
+      await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toHaveLength(1));
+      const last = within(box()).getByText(LINES[2]).closest("li") as HTMLElement;
+      expect(within(last).getByRole("button", { name: /^Accept suggestion: / })).toBeDisabled();
+      expect(within(last).getByRole("button", { name: /^Reject suggestion: / })).toBeDisabled();
+      expect(tickBox(LINES[2])).toBeDisabled();
+      expect(bulkButton(/^Accept all$/)).toBeDisabled();
+      acceptHook = null;
+      // Released outside act(), as in the app: act() would hold back the card views' render.
+      release();
+
+      await waitFor(() => expect(within(box()).queryAllByRole("listitem")).toHaveLength(0));
+      expect(callsTo("accept_work_journal_candidate")).toEqual([
+        { id: "c1" },
+        { id: "c2" },
+        { id: "c3" },
+      ]);
+      expect(savedParagraphs()).toEqual(["Standup", ...LINES]);
+      expect(file.pages["2026-10-13"].body).toEqual(EMPTY_PAGE_BODY);
+      expect(candidates.find((c) => c.id === "y1")?.state).toBe("pending");
+    });
+
+    it("Reject N asks once in place; No keeps them, Yes rejects them and leaves the page alone", async () => {
+      await renderWithSuggestions();
+      fireEvent.click(tickBox(LINES[0]));
+      fireEvent.click(tickBox(LINES[1]));
+      fireEvent.click(bulkButton(/^Reject 2$/));
+
+      expect(within(rejectQuestion()).getByText("Reject 2?")).toBeInTheDocument();
+      expect(within(box()).queryByRole("button", { name: /^Accept 2$/ })).toBeNull();
+      expect(callsTo("reject_work_journal_candidate")).toEqual([]);
+      fireEvent.click(within(rejectQuestion()).getByRole("button", { name: "No" }));
+      expect(within(box()).queryByRole("group", { name: "Confirm reject" })).toBeNull();
+      expect(tickBox(LINES[0]).checked).toBe(true);
+      expect(callsTo("reject_work_journal_candidate")).toEqual([]);
+
+      fireEvent.click(bulkButton(/^Reject 2$/));
+      fireEvent.click(within(rejectQuestion()).getByRole("button", { name: "Yes" }));
+
+      await waitFor(() => expect(within(box()).getAllByRole("listitem")).toHaveLength(1));
+      expect(callsTo("reject_work_journal_candidate")).toEqual([{ id: "c1" }, { id: "c2" }]);
+      expect(
+        candidates
+          .filter((c) => c.state === "rejected")
+          .map((c) => c.id)
+          .sort(),
+      ).toEqual(["c1", "c2", "old"]);
+      expect(within(box()).getByText(LINES[2])).toBeInTheDocument();
+      expect(callsTo("update_work_journal_page")).toEqual([]);
+      expect(savedParagraphs()).toEqual(["Standup"]);
+    });
+
+    it("Reject all asks about every suggestion of the day shown, and rejects no other day's", async () => {
+      await renderWithSuggestions();
+      fireEvent.click(bulkButton(/^Reject all$/));
+      expect(within(rejectQuestion()).getByText("Reject 3?")).toBeInTheDocument();
+      fireEvent.click(within(rejectQuestion()).getByRole("button", { name: "Yes" }));
+
+      await waitFor(() => expect(within(box()).queryAllByRole("listitem")).toHaveLength(0));
+      expect(callsTo("reject_work_journal_candidate")).toEqual([
+        { id: "c1" },
+        { id: "c2" },
+        { id: "c3" },
+      ]);
+      expect(candidates.find((c) => c.id === "y1")?.state).toBe("pending");
+    });
+
+    it("keeps ticks across a new run, and the new suggestions arrive unticked", async () => {
+      await renderWithSuggestions();
+      fireEvent.click(tickBox(LINES[0]));
+      candidates.push(candidate("c4", "Reviewed the release checklist", { time: "15:10" }));
+      await act(async () => useWorkJournalCandidatesStore.getState().refresh(TODAY));
+
+      await within(box()).findByText("15:10 - Reviewed the release checklist");
+      expect(tickBox(LINES[0]).checked).toBe(true);
+      expect(tickBox("15:10 - Reviewed the release checklist").checked).toBe(false);
+      expect(bulkButton(/^Accept 1$/)).toBeInTheDocument();
+    });
+
+    it("a suggestion whose text a run rewrote loses its tick; the others keep theirs", async () => {
+      await renderWithSuggestions();
+      fireEvent.click(selectAll());
+      candidates[1].text = "Worked on agent-name terminal titles and their colours";
+      await act(async () => useWorkJournalCandidatesStore.getState().refresh(TODAY));
+
+      const rewritten = "14:05 - Worked on agent-name terminal titles and their colours";
+      await within(box()).findByText(rewritten);
+      expect(tickBox(rewritten).checked).toBe(false);
+      expect(tickBox(LINES[0]).checked).toBe(true);
+      expect(tickBox(LINES[2]).checked).toBe(true);
+      expect(bulkButton(/^Accept 2$/)).toBeInTheDocument();
+    });
+
+    it("switching to another day clears the ticks and the reject question", async () => {
+      candidates.push(candidate("y2", "Yesterday's review", { date: "2026-10-13" }));
+      await renderWithSuggestions();
+      fireEvent.click(tickBox(LINES[0]));
+      fireEvent.click(bulkButton(/^Reject 1$/));
+      expect(rejectQuestion()).toBeInTheDocument();
+
+      act(() => useWorkJournalStore.getState().selectDate("2026-10-13"));
+      await within(box()).findByText("14:05 - Yesterday's review");
+      expect(within(box()).queryByRole("group", { name: "Confirm reject" })).toBeNull();
+      expect(bulkButton(/^Accept all$/)).toBeInTheDocument();
+
+      act(() => useWorkJournalStore.getState().selectDate(TODAY));
+      await within(box()).findByText(LINES[0]);
+      for (const line of LINES) expect(tickBox(line).checked).toBe(false);
+      expect(bulkButton(/^Accept all$/)).toBeInTheDocument();
+    });
+
+    const UNREADABLE_BODY: JSONContent = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "From a newer build", marks: [{ type: "highlight" }] }],
+        },
+      ],
+    };
+
+    it.each<[string, () => void]>([
+      ["Create the page first", () => delete file.pages[TODAY]],
+      [
+        "This page is read-only here",
+        () => {
+          file.pages[TODAY] = page(TODAY, UNREADABLE_BODY);
+        },
+      ],
+      ["Wait for the restore to finish", () => useWorkJournalStore.setState({ replacing: true })],
+      [
+        "Wait for the run to finish",
+        () => useWorkJournalCandidateRunStore.setState({ running: true }),
+      ],
+    ])("disables bulk Accept with the single Accept's hint: %s", async (hint, setUp) => {
+      const onPage = hint === "Create the page first" || hint === "This page is read-only here";
+      if (onPage) setUp();
+      render(<WorkJournalPanel />);
+      await within(box()).findByText(LINES[0]);
+      if (!onPage) act(() => setUp());
+
+      const accept = bulkButton(/^Accept all$/);
+      expect(accept).toBeDisabled();
+      expect(accept).toHaveAttribute("title", hint);
+      fireEvent.click(accept);
+      expect(callsTo("accept_work_journal_candidate")).toEqual([]);
+      expect(callsTo("update_work_journal_page")).toEqual([]);
+    });
+
+    it("one failed accept leaves the rest added and the failed one ticked with its error", async () => {
+      candidates = [
+        candidates[0],
+        candidate("u1", "Cart: totals fixed and coupons added", {
+          time: "11:00",
+          project: "demo-shop",
+          updates: { time: "11:00", text: "Cart: totals fixed" },
+        }),
+        candidates[2],
+      ];
+      await renderWithSuggestions();
+      fireEvent.click(bulkButton(/^Accept all$/));
+
+      await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toHaveLength(2));
+      expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c1" }, { id: "c3" }]);
+      expect(savedParagraphs()).toEqual(["Standup", LINES[0], LINES[2]]);
+      const message = `${bulkFailureSummary(1, "accepted")} ${ACCEPT_CARD_CHANGED_ERROR}`;
+      expect(await within(box()).findByText(message)).toBeInTheDocument();
+      await waitFor(() => expect(within(box()).getAllByRole("listitem")).toHaveLength(1));
+      const left = within(box()).getByRole("listitem");
+      expect(within(left).getByText("Cart: totals fixed and coupons added")).toBeInTheDocument();
+      expect((within(left).getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("one failed reject leaves the rest rejected and the failed one ticked with its error", async () => {
+      rejectHook = async (id) => {
+        if (id === "c2") throw new Error("activity file locked");
+      };
+      await renderWithSuggestions();
+      fireEvent.click(selectAll());
+      fireEvent.click(bulkButton(/^Reject 3$/));
+      fireEvent.click(within(rejectQuestion()).getByRole("button", { name: "Yes" }));
+
+      const message = `${bulkFailureSummary(1, "rejected")} Could not reject the suggestion: activity file locked`;
+      expect(await within(box()).findByText(message)).toBeInTheDocument();
+      expect(callsTo("reject_work_journal_candidate")).toEqual([
+        { id: "c1" },
+        { id: "c2" },
+        { id: "c3" },
+      ]);
+      await waitFor(() => expect(within(box()).getAllByRole("listitem")).toHaveLength(1));
+      expect(tickBox(LINES[1]).checked).toBe(true);
     });
   });
 });
