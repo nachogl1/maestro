@@ -449,3 +449,18 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
   date, at the end of its project.
 - The wording rules (the page's own words, no added praise words, first person, past tense), the page's look and
   the date range dialog are unchanged.
+
+## Work Journal backup: on close, and a readable copy
+
+- The backup still runs once a day (checked every hour while Maestro is open) and from **Back up now** in Settings.
+  It now also runs once when Maestro closes, right after the journal windows save their last text, so the day's last
+  writing reaches the backup.
+- The close backup waits at most 2 seconds. If it fails or takes longer, the reason goes to Maestro's log and
+  Maestro still closes. A crash, a forced shutdown or the macOS app-menu Quit skips it.
+- It follows the automatic backup's rules: it never replaces a backup another computer wrote, or one this Maestro
+  has never written. With no backup folder set, nothing is written.
+- Every backup now writes two files in the backup folder: `work-journal.json` (the backup restore reads) and
+  `work-journal.md`, a copy you can open in any text editor and search by eye. It holds every page, newest day
+  first; an entry card reads `**09:15** project (source) text`, and free notes keep their text and formatting.
+- `work-journal.md` is written only together with the JSON, and is never read back: **Restore from backup** reads
+  only `work-journal.json`. Editing the Markdown file changes nothing in Maestro.

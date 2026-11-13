@@ -239,6 +239,8 @@ pub fn run() {
                             crate::core::work_journal_run::kill_running_runs(),
                             crate::core::work_journal_quit::flush_before_quit(win.app_handle())
                         );
+                        // ...then back it up once more (bounded; a failure only logs).
+                        crate::core::work_journal_quit::backup_before_quit().await;
                         if let Err(e) = win.destroy() {
                             log::error!("Failed to destroy window during quit: {e}");
                             // Let the user try again rather than ignore every later close.
@@ -281,6 +283,8 @@ pub fn run() {
                                 crate::core::work_journal_run::kill_running_runs(),
                                 crate::core::work_journal_quit::flush_before_quit(win.app_handle())
                             );
+                            // ...then back it up once more (bounded; a failure only logs).
+                            crate::core::work_journal_quit::backup_before_quit().await;
                             if let Err(e) = win.destroy() {
                                 log::error!("Failed to destroy window during quit: {e}");
                                 // Let the user try again rather than ignore every later close.
