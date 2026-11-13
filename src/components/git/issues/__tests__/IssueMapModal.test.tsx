@@ -616,7 +616,9 @@ describe("IssueMapModal", () => {
     expect(screen.getByTestId("issue-map-tip-description")).toHaveClass("max-h-40");
     expect(screen.getByTestId("issue-node-3")).toHaveAttribute("data-hl", "true");
     expect(
-      within(tip).getByText(/Click the box again to clear · double-click opens it on GitHub/),
+      within(tip).getByText(
+        "Click outside to close · double-click opens it on GitHub · drag the title to move this card",
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(n2);
@@ -649,6 +651,94 @@ describe("IssueMapModal", () => {
     expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a click outside the card closes it, clears the chain and still does the control's job", async () => {
+    renderModal();
+    const n2 = await screen.findByTestId("issue-node-2");
+    const listCalls = () =>
+      mockedInvoke.mock.calls.filter(([cmd]) => cmd === "github_list_issues").length;
+    const closedByClick = (target: () => Element) => {
+      fireEvent.click(n2, { clientX: 100, clientY: 100 });
+      expect(screen.getByTestId("issue-node-3")).toHaveAttribute("data-hl", "true");
+      fireEvent.click(target());
+      expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
+      expect(screen.getByTestId("issue-node-3")).not.toHaveAttribute("data-hl");
+      expect(screen.getByTestId("issue-node-2")).not.toHaveAttribute("data-hl");
+    };
+
+    closedByClick(() => screen.getByTestId("issue-map-canvas"));
+    closedByClick(() => screen.getByRole("searchbox", { name: "Search the map" }));
+    closedByClick(() => screen.getByRole("heading", { name: /^Issue map: what is blocked/ }));
+
+    closedByClick(() => screen.getByRole("button", { name: "Zoom in" }));
+    expect(screen.getByTestId("issue-map-zoom")).toHaveTextContent("125%");
+
+    const before = listCalls();
+    closedByClick(() => screen.getByRole("button", { name: /Reload/ }));
+    await waitFor(() => expect(listCalls()).toBe(before + 1));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Reload/ })).toBeEnabled());
+
+    closedByClick(() => screen.getByRole("button", { name: /^Assignee/ }));
+    expect(screen.getByRole("dialog", { name: "Assignee filter" })).toBeInTheDocument();
+  });
+
+  it("a click on another box switches the card and a second click on the same box closes it", async () => {
+    renderModal();
+    const n2 = await screen.findByTestId("issue-node-2");
+    const n3 = screen.getByTestId("issue-node-3");
+    fireEvent.click(n2, { clientX: 100, clientY: 100 });
+    // A click on the box's own text still counts as a click on the box.
+    fireEvent.click(within(n3).getByText("Ship it"), { clientX: 100, clientY: 100 });
+    expect(within(screen.getByTestId("issue-map-tip")).getByText("#3 Ship it")).toBeInTheDocument();
+    fireEvent.click(n3);
+    expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
+  });
+
+  it("clicks and drags inside the card keep it open", async () => {
+    const { onSelectIssue } = renderModal();
+    const n2 = await screen.findByTestId("issue-node-2");
+    fireEvent.click(n2, { clientX: 100, clientY: 100 });
+    const tip = screen.getByTestId("issue-map-tip");
+
+    fireEvent.click(screen.getByTestId("issue-map-tip-description"));
+    fireEvent.click(screen.getByRole("button", { name: "Show in sidebar" }));
+    expect(onSelectIssue).toHaveBeenCalledWith(2);
+    expect(tip).toBeInTheDocument();
+
+    // A title drag that ends over the map is not an outside click.
+    fireEvent.pointerDown(screen.getByTestId("issue-map-tip-handle"), { button: 0 });
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 300 });
+    fireEvent.pointerUp(window);
+    fireEvent.click(screen.getByTestId("issue-map-canvas"));
+    expect(screen.getByTestId("issue-map-tip")).toBeInTheDocument();
+
+    // The next press that starts outside the card closes it again.
+    fireEvent.pointerDown(screen.getByTestId("issue-map-canvas"), { button: 0 });
+    fireEvent.pointerUp(window);
+    fireEvent.click(screen.getByTestId("issue-map-canvas"));
+    expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
+  });
+
+  it("a pan keeps the issue selected and its chain lit, wherever the drag ends", async () => {
+    renderModal();
+    const n2 = await screen.findByTestId("issue-node-2");
+    const canvas = screen.getByTestId("issue-map-canvas");
+    const pan = (endOn: Element) => {
+      fireEvent.pointerDown(canvas, { button: 0, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(window, { clientX: 50, clientY: 30 });
+      fireEvent.pointerUp(window);
+      fireEvent.click(endOn);
+    };
+    fireEvent.click(n2, { clientX: 100, clientY: 100 });
+
+    pan(canvas);
+    pan(screen.getByRole("heading", { name: /^Issue map: what is blocked/ }));
+    expect(screen.getByTestId("issue-node-3")).toHaveAttribute("data-hl", "true");
+    // The card hides during the pan, as before; the box stays selected.
+    expect(screen.queryByTestId("issue-map-tip")).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByTestId("issue-node-3")).not.toHaveAttribute("data-hl");
   });
 
   it("Esc in the search box clears the search first and closes the map only after", async () => {
@@ -685,8 +775,9 @@ describe("IssueMapModal", () => {
   it("Esc and a press outside close an open filter menu before anything else", async () => {
     const { onClose } = renderModal();
     const n2 = await screen.findByTestId("issue-node-2");
-    fireEvent.click(n2, { clientX: 100, clientY: 100 });
+    // The menu opens first: a click on its button would itself close the card.
     openFilter("Assignee");
+    fireEvent.click(n2, { clientX: 100, clientY: 100 });
     expect(screen.getByRole("dialog", { name: "Assignee filter" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
