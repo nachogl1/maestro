@@ -434,3 +434,18 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
   on. A click anywhere else also closes it.
 - Jump to date and New page for a date open their date row under the header with the cursor already in the date
   field, so a date can be typed straight away.
+
+## Work Journal report: one heading per project, dated bullets
+
+- Page actions → Report makes the supervisor report for a date range. It has no overview paragraph and no theme
+  sections: one heading per project, the project with the most bullets first, and work with no project (a
+  meeting, helping someone) under a last heading **Other**.
+- The projects come from the entry cards' project chips. A heading that names no card's project goes under Other,
+  so pages written before cards (no chips) give a report under Other only.
+- Inside each project the bullets run oldest day first. Each starts with its day, like `Mon 3 Nov — …`, plus the
+  time (`Mon 3 Nov, 14:20 — …`) only when it rests on exactly one timed entry. Work from several days lists each
+  day with no time (`Mon 3 Nov, Wed 5 Nov — …`) and sorts by its first day.
+- A date Claude gives outside the chosen range is left out; a bullet with no date left still shows, without a
+  date, at the end of its project.
+- The wording rules (the page's own words, no added praise words, first person, past tense), the page's look and
+  the date range dialog are unchanged.
