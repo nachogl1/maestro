@@ -17,14 +17,17 @@ interface FileTreeProps {
   actions: FileActions;
 }
 
-/** The folder tree: each folder lists its entries only when it is opened. */
+/** The folder tree: each folder lists its entries only when, and each time, it is opened. */
 export function FileTree({ root, selectedPath, actions }: FileTreeProps) {
   const [listings, setListings] = useState<Record<string, FolderListing>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
   const load = useCallback(
     (dir: string) => {
-      setListings((prev) => ({ ...prev, [dir]: { state: "loading" } }));
+      // A folder read before keeps its entries on screen while it is read again.
+      setListings((prev) =>
+        prev[dir]?.state === "loaded" ? prev : { ...prev, [dir]: { state: "loading" } },
+      );
       listDir(root, dir)
         .then((entries) =>
           setListings((prev) => ({ ...prev, [dir]: { state: "loaded", entries } })),
@@ -50,9 +53,10 @@ export function FileTree({ root, selectedPath, actions }: FileTreeProps) {
         else next.delete(entry.path);
         return next;
       });
-      if (opening && listings[entry.path]?.state !== "loaded") load(entry.path);
+      // Read on every opening: an agent may have changed the folder since.
+      if (opening) load(entry.path);
     },
-    [expanded, listings, load],
+    [expanded, load],
   );
 
   const renderLevel = (dir: string, depth: number) => {

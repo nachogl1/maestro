@@ -105,6 +105,12 @@ fn format_size(bytes: u64) -> String {
 
 /// The names in `dir` that git ignores. Not a repository, or git missing,
 /// means nothing is ignored: the listing never fails because of git.
+///
+/// Browsing a folder must never make git run a command a repository's config
+/// names. `--no-index` keeps git out of the index, so neither its fsmonitor
+/// nor a lazy fetch of a missing `.gitignore` in a partial clone can run;
+/// fsmonitor and lazy fetch are also switched off outright as second guards.
+/// The cost: a tracked file that matches an ignore pattern is dimmed too.
 fn ignored_names(dir: &Path, names: &[String]) -> HashSet<String> {
     if names.is_empty() {
         return HashSet::new();
@@ -112,15 +118,15 @@ fn ignored_names(dir: &Path, names: &[String]) -> HashSet<String> {
     let child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        // A repository in the tree may name any command as its fsmonitor;
-        // browsing a folder must never run it.
         .args([
             "-c",
             "core.fsmonitor=false",
             "check-ignore",
+            "--no-index",
             "--stdin",
             "-z",
         ])
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .stdin(Stdio::piped())
@@ -419,6 +425,25 @@ mod tests {
         ));
     }
 
+    /// A shell script in `dir` that writes a marker file when run: returns the
+    /// value a git config setting names it by, and the marker's path.
+    fn marker_script(dir: &Path, name: &str) -> (String, PathBuf) {
+        let marker = dir.join(format!("{name}-ran"));
+        let script = dir.join(format!("{name}.sh"));
+        let marker_sh = s(&marker).replace('\\', "/");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran > '{marker_sh}'\nexit 1\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (s(&script).replace('\\', "/"), marker)
+    }
+
     #[test]
     fn listing_a_repository_never_runs_its_fsmonitor_command() {
         let repo = sample_repo();
@@ -426,21 +451,71 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         git(&nested, &["init", "-q"]);
         std::fs::write(nested.join("a.txt"), "a").unwrap();
-        let marker = repo.path().join("fsmonitor-ran");
-        let script = repo.path().join("fsmonitor.sh");
-        let marker_sh = s(&marker).replace('\\', "/");
-        std::fs::write(&script, format!("#!/bin/sh\necho ran > '{marker_sh}'\n")).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let script_value = s(&script).replace('\\', "/");
-        git(&nested, &["config", "core.fsmonitor", &script_value]);
+        let (script, marker) = marker_script(repo.path(), "fsmonitor");
+        git(&nested, &["config", "core.fsmonitor", &script]);
 
         let root = s(repo.path());
         list_dir_blocking(&root, &s(&nested)).unwrap();
         assert!(!marker.exists(), "git ran the folder's fsmonitor command");
+    }
+
+    #[test]
+    fn listing_a_partial_clone_never_fetches_a_missing_ignore_file() {
+        // A source repository whose `sub/.gitignore` the clone leaves out.
+        let source = tempfile::tempdir().unwrap();
+        let src = source.path();
+        git(src, &["init", "-q"]);
+        std::fs::write(src.join("README.md"), "# demo\n").unwrap();
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/.gitignore"), "*.log\n").unwrap();
+        git(src, &["add", "."]);
+        git(
+            src,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        git(src, &["config", "uploadpack.allowFilter", "true"]);
+
+        // A blob-less partial clone with a sparse checkout: `sub/.gitignore`
+        // is skip-worktree and its blob is missing.
+        let work = tempfile::tempdir().unwrap();
+        let clone = work.path().join("clone");
+        let url = format!(
+            "file:///{}",
+            s(src).replace('\\', "/").trim_start_matches('/')
+        );
+        let ok = Command::new("git")
+            .args(["clone", "-q", "--filter=blob:none", "--no-checkout", &url])
+            .arg(&clone)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "partial clone failed");
+        git(
+            &clone,
+            &["sparse-checkout", "set", "--no-cone", "/README.md"],
+        );
+        git(&clone, &["checkout", "-q"]);
+        std::fs::create_dir_all(clone.join("sub")).unwrap();
+        std::fs::write(clone.join("sub/run.log"), "x").unwrap();
+        // A lazy fetch of the missing blob would run this ssh command.
+        let (script, marker) = marker_script(work.path(), "ssh");
+        git(
+            &clone,
+            &["remote", "set-url", "origin", "ssh://example.invalid/x"],
+        );
+        git(&clone, &["config", "core.sshCommand", &script]);
+
+        let root = s(&clone);
+        list_dir_blocking(&root, &s(&clone.join("sub"))).unwrap();
+        assert!(!marker.exists(), "git fetched from the repository's remote");
     }
 
     #[test]

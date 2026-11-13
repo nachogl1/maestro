@@ -159,7 +159,7 @@ describe("FilesPanel: the focused terminal's folder", () => {
     expect(screen.getByText(/No terminal open/)).toBeInTheDocument();
   });
 
-  it("lists a folder only when it is opened, with Loading… meanwhile", async () => {
+  it("lists a folder each time it is opened, with Loading… the first time", async () => {
     hold.add(`${PROJECT}\\src`);
     render(<FilesPanel />);
     focus(2);
@@ -177,6 +177,16 @@ describe("FilesPanel: the focused terminal's folder", () => {
 
     fireEvent.click(row("src"));
     expect(screen.queryByText("main.ts")).not.toBeInTheDocument();
+
+    // Reopened after an agent wrote a file: read again, the old entries
+    // staying in place (no Loading…) until the new listing arrives.
+    fireEvent.click(row("src"));
+    expect(calls("files_list_dir")).toHaveLength(3);
+    expect(screen.getByText("main.ts")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    const src = `${PROJECT}\\src`;
+    await act(async () => held.get(src)?.([...listingsFor(PROJECT)[src], entry(src, "new.ts")]));
+    expect(screen.getByText("new.ts")).toBeInTheDocument();
   });
 
   it("shows hidden and git-ignored entries, the ignored ones dimmed", async () => {

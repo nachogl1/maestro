@@ -184,8 +184,10 @@ in, so you see exactly what that agent sees. It has no keyboard shortcut (Alt+4 
   The path below is cut from the left when long; the copy button at the right of the box copies it.
 - Click another terminal and the panel switches to its folder. With no terminal open (or the focused one closed) the
   box says so and asks you to start or click one.
-- Click a folder to open it one level; a big one shows **Loading…** for a moment. Every file shows, hidden ones such
-  as `.env` included; files and folders git ignores are only dimmed, never hidden.
+- Click a folder to open it one level; a big one shows **Loading…** for a moment. A folder is read again each time
+  you open it, so close and reopen it to see files an agent added since. Every file shows, hidden ones such as
+  `.env` included; files and folders matching the `.gitignore` rules are only dimmed, never hidden (a tracked file
+  that matches them is dimmed too).
 - Click a file to preview it below the tree, read-only, with its path, a **READ-ONLY** mark and copy, open and close
   buttons. A file over about 1 MB, or one that is not text, shows **Can't preview** with the reason and an **Open in
   default app** button.
