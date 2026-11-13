@@ -465,6 +465,17 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
 - `work-journal.md` is written only together with the JSON, and is never read back: **Restore from backup** reads
   only `work-journal.json`. Editing the Markdown file changes nothing in Maestro.
 
+## Windows: the touch-text "Paste" box is off
+
+- The small white box with **Paste** and **⋯** that the Windows web engine (WebView2) can show after a touch or pen
+  long press in a text box is turned off in every Maestro window: the main window, the issue map and the
+  Work Journal pop-out.
+- When no text cursor is on screen, the web engine also refuses to show it, so it can no longer appear stuck at the
+  window's top-left corner.
+- Right-click menus, the keyboard menu key and Ctrl+V paste work as before.
+- If the box still appears, Maestro cannot close it: the web engine draws it outside the page. Note what you were
+  doing and report it.
+
 ## Scratch projects: throwaway folders from eagle view
 
 A scratch project is a plain folder (not a git repository) for work that belongs to no real project.

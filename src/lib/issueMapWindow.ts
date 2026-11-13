@@ -1,6 +1,7 @@
 import { emitTo } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { samePath } from "@/lib/path";
+import { WEBVIEW_WINDOW_OPTIONS } from "@/lib/touchTextMenu";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 
 /**
@@ -132,6 +133,7 @@ export async function openIssueMapWindow(target: IssueMapTarget): Promise<void> 
   });
   if (target.projects) params.set("projects", JSON.stringify(target.projects));
   const created = new WebviewWindow(ISSUE_MAP_WINDOW_LABEL, {
+    ...WEBVIEW_WINDOW_OPTIONS,
     url: `index.html?${params.toString()}`,
     title: issueMapWindowTitle(target.repoPath),
     width: 1400,
