@@ -1,0 +1,50 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 560,
+  "title": "Files panel: browse the focused terminal's folder, preview text files, and open or copy any file",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T15:42:00Z",
+  "finished_at": "2026-11-13T18:05:00Z",
+  "outcome": "merged",
+  "pr": 579,
+  "summary": "A Files panel in the left icon strip browses the focused terminal's worktree or project folder one level at a time, dims git-ignored entries, previews text files read-only and opens or copies any file; its backend refuses paths and links leading out of the folder and never lets git run a repository's configured commands.",
+  "agents": [
+    {
+      "name": "dev-560",
+      "model": "opus",
+      "tokens_total": 250441
+    },
+    {
+      "name": "review-560",
+      "model": "opus",
+      "tokens_total": 143065
+    },
+    {
+      "name": "review-560-r2",
+      "model": "opus",
+      "tokens_total": 163050
+    },
+    {
+      "name": "review-560-r3",
+      "model": "opus",
+      "tokens_total": 134842
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2550,
+    "review_seconds": 1250,
+    "ci_seconds": 900
+  },
+  "rounds": {
+    "review": 3,
+    "ci": 0
+  },
+  "friction": [
+    "Three review rounds, each finding a new way the file-browsing commands escaped their folder or ran a command (a junction leading out, git core.fsmonitor, a partial clone's lazy fetch through core.sshCommand); the last fix merged on a green local gate under the confirming-review exception"
+  ],
+  "lessons_learned": [
+    "A Tauri command that reads the user's files or runs git inside a folder the person browses needs adversarial probes before the first review: links leading out (canonical path against canonical root), and git calls with --no-index, -c core.fsmonitor=false and GIT_NO_LAZY_FETCH=1 so a repository's config can never run a command"
+  ],
+  "deferred": []
+}

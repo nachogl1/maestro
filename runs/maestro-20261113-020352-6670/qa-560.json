@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 560,
+  "title": "Files panel: browse the focused terminal's folder, preview text files, and open or copy any file",
+  "login": "nachogl1",
+  "pr": 579,
+  "merged_at": "2026-11-13T18:00:00Z",
+  "merge_commit": "3f4c4f597ce0374f330bd2a42fcbbc464a0f86b5",
+  "seam": "src/components/files/",
+  "story": "The icon strip gains a Files icon right after History, with no keyboard shortcut. It opens a panel showing the folder of the terminal you last clicked: its worktree if it has one, otherwise its project. You can browse folders one level at a time, preview text files read-only, and open or copy any file or folder; reopening a folder reads it again. Before this, Maestro had no file browser; nothing was removed.",
+  "checks": [
+    {
+      "key": "src/components/files/no-terminal-state",
+      "criterion": "With no terminal open, the panel says so",
+      "steps": "Open a project with no terminals, then click the Files icon (second in the strip, after History).",
+      "expected": "'Showing files of' and 'No terminal open. Start or click a terminal to see its folder.', with no tree."
+    },
+    {
+      "key": "src/components/files/follows-focused-terminal",
+      "criterion": "The panel shows the focused terminal's worktree, else its project folder",
+      "steps": "Open a made-up project demo-shop, start one terminal in a worktree and one without, open Files, then click each terminal in turn.",
+      "expected": "The worktree terminal shows a green WORKTREE chip and the worktree path; the other a grey PROJECT chip and the project path; the tree changes with each click and the copy button copies the shown path."
+    },
+    {
+      "key": "src/components/files/lazy-tree-ignored-dimmed",
+      "criterion": "Folders load when opened, reload when reopened, and git-ignored entries show dimmed",
+      "steps": "In a project with node_modules/ and .env in .gitignore, open Files, click node_modules, then src. Create a new file in src outside Maestro, then close and reopen src.",
+      "expected": ".env and node_modules are listed but dimmed; a folder opens one level, a second click closes it; after reopening src the new file appears and the old entries stay on screen until it does."
+    },
+    {
+      "key": "src/components/files/preview-and-cant-preview",
+      "criterion": "Text files up to about 1 MB preview read-only; bigger or binary files show Can't preview with the reason",
+      "steps": "Click README.md, then a .png file, then a text file over 1 MB.",
+      "expected": "README's text below the tree with its path, a READ-ONLY mark and copy, open and close buttons; the PNG shows 'Can't preview' and 'This is not a text file.'; the big file shows 'This file is N MB. Preview shows text files up to about 1 MB.'; both offer 'Open in default app'."
+    },
+    {
+      "key": "src/components/files/open-and-copy",
+      "criterion": "Double-click, hover buttons and right-click menu open or copy the full path",
+      "steps": "Double-click a file. Hover a file and click each of its two buttons, then double-click the copy button. Right-click a file, then a folder.",
+      "expected": "The file opens in its default app and a folder in the file manager; 'Copied <full path>' shows under the tree; double-clicking the copy button does not open the file; the file menu offers Preview, Open in default app and Copy full path; the folder menu Copy full path and Open in default app."
+    }
+  ],
+  "no_qa_reason": null
+}
