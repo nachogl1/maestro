@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 552,
+  "title": "Terminal header: in narrow columns the buttons fold into one menu, names give way in order, and the context warning becomes an icon",
+  "login": "nachogl1",
+  "pr": 575,
+  "merged_at": "2026-11-13T13:33:30Z",
+  "merge_commit": "b693a0c74bf847d73d29f4c969e614131fa61663",
+  "seam": "src/components/terminal/TerminalHeader.tsx",
+  "story": "At narrow column widths the terminal header now folds its park, pin, zoom and font-size buttons into one ⋯ menu, then hides the git branch and the project name, in that order, before it cuts the terminal name. The context warning used to be a pill in the middle of the header; it is now a small red icon after the name, with its text on hover. Before, the header sized itself only from how many terminals were open, so narrow columns overlapped. Clicking inside the open menu never flags or moves the terminal.",
+  "checks": [
+    {
+      "key": "src/components/terminal/TerminalHeader.tsx/header-narrow-fold",
+      "criterion": "A narrow header folds park, pin, zoom and font size into the ⋯ menu, and close stays visible",
+      "steps": "Open a test project and start three or more terminals side by side. Drag a divider until one column is under about 480 px wide. Open that header's ⋯ menu and use Park, Pin, Zoom and a font size. Then open the menu again and click its Font zoom label and its empty edges.",
+      "expected": "Each item does what its button used to do and shows its shortcut; close is still on the header; Alt+Shift+P still pins; clicking the label or edges does not turn the header yellow, does not start a drag, and leaves the menu open."
+    },
+    {
+      "key": "src/components/terminal/TerminalHeader.tsx/header-narrow-give-way",
+      "criterion": "The branch hides first, then the project name; the terminal name stays longest",
+      "steps": "In eagle view, make one column narrower and narrower.",
+      "expected": "The branch goes below about 360 px and the project name below about 260 px; the terminal name stays and is cut with … only at the end; hovering the name shows full name, project and branch."
+    },
+    {
+      "key": "src/components/terminal/TerminalHeader.tsx/header-context-icon",
+      "criterion": "The context warning is a red icon after the name",
+      "steps": "In Settings, set a context alert threshold below a terminal's current usage.",
+      "expected": "A small blinking red warning icon right after the terminal name, covering nothing; its hover reads 'Context threshold reached — Context N% ≥ T% alert'."
+    },
+    {
+      "key": "src/components/terminal/TerminalHeader.tsx/header-width-not-count",
+      "criterion": "The layout follows the column width, not the number of terminals",
+      "steps": "Start two terminals and split so one column is narrow; repeat with six terminals at the same width.",
+      "expected": "At the same width both headers fold the same way; the AI icon and Samurai badge show at every width."
+    }
+  ],
+  "no_qa_reason": null
+}

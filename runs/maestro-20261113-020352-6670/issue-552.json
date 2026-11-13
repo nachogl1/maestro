@@ -1,0 +1,61 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 552,
+  "title": "Terminal header: in narrow columns the buttons fold into one menu, names give way in order, and the context warning becomes an icon",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T02:05:21Z",
+  "finished_at": "2026-11-13T13:34:00Z",
+  "outcome": "merged",
+  "pr": 575,
+  "summary": "Narrow terminal headers now fold park, pin, zoom and font size into one menu, hide branch then project name before cutting the terminal name, and show the context warning as a red icon; 1 review fix (clicks inside the menu flagged the terminal).",
+  "agents": [
+    {
+      "name": "dev-552",
+      "model": "opus",
+      "tokens_total": 182360
+    },
+    {
+      "name": "review-552",
+      "model": "opus",
+      "tokens_total": 130389
+    },
+    {
+      "name": "review-552-r2",
+      "model": "opus",
+      "tokens_total": 128561
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": null,
+    "review_seconds": 954,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [
+    "GitHub Actions registered no checks on the pull request, so the reviewer ran the full gate locally (about 10 min per round); the maintainer confirmed there is no CI for now",
+    "The first session ended with three dev agents mid-work and nothing committed; resuming cost one restart of every gate, and the user then asked to run stories one at a time because three in parallel was too heavy for the machine"
+  ],
+  "lessons_learned": [
+    "On this machine run /dev-next stories one at a time: three parallel gates (vitest plus cargo builds) overload it"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/terminal/",
+      "what": "The new ⋯ menu in the terminal header opens inside the pane, and eagle tiles and split-pane leaves clip their content, so in a short or narrow pane the lower font-zoom presets and the left edge of items cannot be clicked",
+      "why": "Needs a positioning decision (portal, or opening upward or leftward), not a few lines",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src/components/terminal/",
+      "what": "The header give-way order uses fixed widths while branch and Samurai pills never shrink, so between 360 and 479 px a long terminal name is cut while the whole branch shows, and below about 200 px a Samurai terminal's pills spill over the ⋯ and close buttons",
+      "why": "Needs a design decision (compact Samurai badge, or hiding by measured overflow)",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
