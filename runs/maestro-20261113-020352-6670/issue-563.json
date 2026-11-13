@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 563,
+  "title": "Triggers: a History list of every firing and whether context dropped afterwards, kept for one week",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T19:42:00Z",
+  "finished_at": "2026-11-13T20:30:00Z",
+  "outcome": "merged",
+  "pr": 582,
+  "summary": "The Triggers panel now ends with a one-week History of every firing (trigger, terminal, percent, recipients, delivery) with a follow-up line when a recipient's context drops, a trigger filter and Clear history, kept in one app-wide file in Maestro's app data.",
+  "agents": [
+    {
+      "name": "dev-563",
+      "model": "opus",
+      "tokens_total": 207488
+    },
+    {
+      "name": "review-563",
+      "model": "opus",
+      "tokens_total": 132716
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1111,
+    "review_seconds": 257,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/commands/",
+      "what": "trigger_history.rs load_from treats any read failure other than 'file not found' (a permission or sharing error while another process holds the file) as an empty history, and append_to then saves only the new entry, so one transient read error during a firing silently wipes the whole week's history",
+      "why": "Needs a decision on which errors refuse the write and a way to simulate a read failure in tests",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

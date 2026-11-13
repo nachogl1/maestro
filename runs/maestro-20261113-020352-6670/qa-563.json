@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 563,
+  "title": "Triggers: a History list of every firing and whether context dropped afterwards, kept for one week",
+  "login": "nachogl1",
+  "pr": 582,
+  "merged_at": "2026-11-13T20:29:00Z",
+  "merge_commit": "5a2a0b736dcbcbd0b47018768c9da22b9083ed0f",
+  "seam": "src/components/sidebar/",
+  "story": "The Triggers panel now ends with a History section kept for one week. Each firing shows the trigger, the terminal that hit the level, the percent, who got the message and whether it arrived, and a green follow-up line appears when a recipient's context drops again. Clicking a trigger's 'Last fired' line filters the History, and Clear history empties it. Before, only the last firing was shown, in memory, and it was lost on restart.",
+  "checks": [
+    {
+      "key": "src/components/sidebar/trigger-history-firing",
+      "criterion": "A firing writes one line, and a failed send shows its error",
+      "steps": "Open two terminals in a made-up project 'shop' and tick both in the Injector. Add a trigger 'Compact reminder' at 5% that sends to every terminal it watches. Close one terminal, then use the other until it passes 5%.",
+      "expected": "Under History: today's date, a group headed with '· shop', then 'HH:MM Compact reminder: N%, sent to …'; a failed send is red and names the error; hovering shows the start of the message."
+    },
+    {
+      "key": "src/components/sidebar/trigger-history-follow-up",
+      "criterion": "One follow-up line after context drops",
+      "steps": "After a firing, run /clear in the terminal that got the message, then let context drop again.",
+      "expected": "One green line under that terminal's group, 'HH:MM context dropped to N% (worked)'; a second drop adds no further line."
+    },
+    {
+      "key": "src/components/sidebar/trigger-history-filter-clear",
+      "criterion": "Grouping by day then terminal, newest first, trigger filter and Clear history",
+      "steps": "With two triggers that have fired, click one row's 'Last fired …' line, pick 'All triggers', then click Clear history.",
+      "expected": "First only that trigger's lines, then all, then 'No firings in the last week.'; a deleted trigger shows in the filter as 'name (deleted)'."
+    },
+    {
+      "key": "src/components/sidebar/trigger-history-restart",
+      "criterion": "Lines survive a restart and are dropped after seven days",
+      "steps": "Fire a trigger, quit Maestro, start it again.",
+      "expected": "The History still lists that firing; lines older than seven days are gone."
+    }
+  ],
+  "no_qa_reason": null
+}
