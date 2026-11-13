@@ -1,5 +1,6 @@
 import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { WEBVIEW_WINDOW_OPTIONS } from "@/lib/touchTextMenu";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import {
   useWorkJournalCandidateRunStore,
@@ -135,6 +136,7 @@ export async function openWorkJournalWindow(): Promise<void> {
   }
   const params = new URLSearchParams({ view: WORK_JOURNAL_VIEW });
   const created = new WebviewWindow(WORK_JOURNAL_WINDOW_LABEL, {
+    ...WEBVIEW_WINDOW_OPTIONS,
     url: `index.html?${params.toString()}`,
     title: "Maestro: Work Journal",
     width: 1000,

@@ -2,6 +2,7 @@ import { emitTo } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
+import tauriConfig from "../../../src-tauri/tauri.conf.json";
 import {
   ISSUE_MAP_OPEN_EVENT,
   ISSUE_MAP_PROJECTS_EVENT,
@@ -91,6 +92,16 @@ describe("openIssueMapWindow", () => {
     const query = (options?.url ?? "").split("?")[1];
     expect(readIssueMapTarget(`?${query}`)).toEqual({ repoPath: "/repos/a b", search: "is:open" });
     expect(options?.title).toBe("Maestro: Issue map - a b");
+  });
+
+  it("opens with the main window's WebView2 options, or WebView2 refuses the window", async () => {
+    getByLabel.mockResolvedValue(null);
+    await openIssueMapWindow({ repoPath: "/repos/a", search: "" });
+
+    const options = vi.mocked(WebviewWindow).mock.calls[0][1];
+    const mainArgs = tauriConfig.app.windows[0].additionalBrowserArgs;
+    expect(mainArgs).toContain("--disable-features=");
+    expect(options).toHaveProperty("additionalBrowserArgs", mainArgs);
   });
 
   it("carries the open projects in the window URL", async () => {
