@@ -33,8 +33,6 @@ function renderTabs(tabs: ProjectTab[]) {
       onSelectTab={vi.fn()}
       onCloseTab={vi.fn()}
       onNewTab={vi.fn()}
-      onToggleSidebar={vi.fn()}
-      sidebarOpen={false}
       onReorderTab={vi.fn()}
       onMoveTab={vi.fn()}
     />,
@@ -90,8 +88,6 @@ describe("ProjectTabs layout: window controls and tab strip overflow", () => {
         onSelectTab={vi.fn()}
         onCloseTab={vi.fn()}
         onNewTab={vi.fn()}
-        onToggleSidebar={vi.fn()}
-        sidebarOpen={false}
         onReorderTab={vi.fn()}
         onMoveTab={vi.fn()}
       />,

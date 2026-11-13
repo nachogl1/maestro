@@ -10,12 +10,12 @@ import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import { rectSwappingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
+import { Minus, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
 import { isMac } from "@/lib/platform";
-import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { titleWithShortcut } from "@/lib/shortcuts";
 
 export type ProjectTab = {
   id: string;
@@ -30,8 +30,6 @@ interface ProjectTabsProps {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onNewTab: () => void;
-  onToggleSidebar: () => void;
-  sidebarOpen: boolean;
   onReorderTab: (activeId: string, overId: string) => void;
   onMoveTab: (tabId: string, direction: "left" | "right") => void;
 }
@@ -159,8 +157,6 @@ export function ProjectTabs({
   onSelectTab,
   onCloseTab,
   onNewTab,
-  onToggleSidebar,
-  sidebarOpen,
   onReorderTab,
   onMoveTab,
 }: ProjectTabsProps) {
@@ -247,27 +243,11 @@ export function ProjectTabs({
       data-tauri-drag-region
       className="theme-transition no-select flex h-9 items-center border-b border-maestro-border bg-maestro-surface"
     >
-      {/* Left: sidebar toggle + tabs (inset from CSS var for macOS traffic lights) */}
+      {/* Left: tabs (inset from CSS var for macOS traffic lights) */}
       <div
         className="flex min-w-0 items-center gap-0.5 pr-1.5"
         style={{ paddingLeft: "max(var(--mac-title-bar-inset, 0px), 6px)" }}
       >
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          className={`shrink-0 rounded p-1.5 transition-colors ${
-            sidebarOpen
-              ? "text-maestro-accent hover:bg-maestro-accent/10"
-              : "text-maestro-muted hover:bg-maestro-border hover:text-maestro-text"
-          }`}
-          aria-label="Toggle sidebar"
-          title={titleWithShortcut("Toggle sidebar", altLabel(), "1–3")}
-        >
-          <PanelLeft size={14} />
-        </button>
-
-        <div className="mx-1 h-4 w-px shrink-0 bg-maestro-border" />
-
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}

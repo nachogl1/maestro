@@ -1,32 +1,11 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  Bird,
-  BookOpenCheck,
-  BrainCircuit,
-  GitMerge,
-  Hammer,
-  LayoutGrid,
-  Minus,
-  PanelLeft,
-  Plus,
-  Rocket,
-  Square,
-  StickyNote,
-  Syringe,
-  X,
-} from "lucide-react";
+import { Bird, LayoutGrid, Minus, Plus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
-import { HealthAttentionBadge } from "./HealthAttentionBadge";
 import { ParkedRunsBadge } from "./ParkedRunsBadge";
-import {
-  useWorkJournalButtonLabel,
-  WorkJournalSuggestionsBadge,
-  WorkJournalUnsavedDot,
-} from "./WorkJournalSuggestionsBadge";
 
 /** One entry of the eagle-view "add terminal" project dropdown. */
 export interface EagleProjectOption {
@@ -38,10 +17,6 @@ export interface EagleProjectOption {
 }
 
 interface TopBarProps {
-  sidebarOpen: boolean;
-  onToggleSidebar: () => void;
-  onToggleGitPanel?: () => void;
-  gitPanelOpen?: boolean;
   /** When true, hides window controls (minimize/maximize/close) - use when ProjectTabs provides them */
   hideWindowControls?: boolean;
   /** Whether a project is open and active — the plus button shows whenever
@@ -62,24 +37,6 @@ interface TopBarProps {
   eagleProjects?: EagleProjectOption[];
   /** Eagle view: add a terminal to the given project (opens its pre-launch card). */
   onAddSessionToProject?: (tabId: string) => void;
-  /** Right-side Notes panel */
-  notesPanelOpen?: boolean;
-  onToggleNotesPanel?: () => void;
-  /** Right-side Samurai Second Brain panel — audit stream + files (issue #66) */
-  secondBrainPanelOpen?: boolean;
-  onToggleSecondBrainPanel?: () => void;
-  /** Right-side Samurai run launcher panel (issue #63) */
-  launchPanelOpen?: boolean;
-  onToggleLaunchPanel?: () => void;
-  /** Right-side Work Journal panel: one page per day (issue #309) */
-  workJournalPanelOpen?: boolean;
-  onToggleWorkJournalPanel?: () => void;
-  /** Right-side Workshop panel: the weekly /insights report (issue #415) */
-  workshopPanelOpen?: boolean;
-  onToggleWorkshopPanel?: () => void;
-  /** Right-side Injector panel: one message into many terminals */
-  injectPanelOpen?: boolean;
-  onToggleInjectPanel?: () => void;
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
@@ -88,10 +45,6 @@ interface TopBarProps {
 }
 
 export function TopBar({
-  sidebarOpen,
-  onToggleSidebar,
-  onToggleGitPanel,
-  gitPanelOpen,
   hideWindowControls = false,
   hasActiveProject = false,
   slotCount = 0,
@@ -102,23 +55,10 @@ export function TopBar({
   onToggleEagleView,
   eagleProjects = [],
   onAddSessionToProject,
-  notesPanelOpen = false,
-  onToggleNotesPanel,
-  secondBrainPanelOpen = false,
-  onToggleSecondBrainPanel,
-  launchPanelOpen = false,
-  onToggleLaunchPanel,
-  workJournalPanelOpen = false,
-  onToggleWorkJournalPanel,
-  workshopPanelOpen = false,
-  onToggleWorkshopPanel,
-  injectPanelOpen = false,
-  onToggleInjectPanel,
   onWatchdogNavigate,
   onParkNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
-  const workJournalLabel = useWorkJournalButtonLabel();
 
   // Eagle view add-terminal dropdown (pick which project gets the new terminal)
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -143,28 +83,11 @@ export function TopBar({
 
   return (
     <div data-tauri-drag-region className="no-select flex h-10 flex-1 items-center bg-maestro-bg">
-      {/* Left: collapse toggle + branch area (inset from CSS var for macOS traffic lights) */}
+      {/* Left: inset from CSS var for macOS traffic lights. Panels open from the left icon strip. */}
       <div
         className="flex items-center gap-2 pr-2"
         style={{ paddingLeft: "max(var(--mac-title-bar-inset, 0px), 8px)" }}
-      >
-        {/* Sidebar toggle - only shown when ProjectTabs isn't providing it */}
-        {!hideWindowControls && (
-          <button
-            type="button"
-            onClick={onToggleSidebar}
-            className={`rounded-md border px-1.5 py-1 shadow-sm transition-all active:translate-y-px active:shadow-none ${
-              sidebarOpen
-                ? "border-maestro-accent/30 bg-maestro-accent/10 text-maestro-accent hover:bg-maestro-accent/15"
-                : "border-maestro-border bg-maestro-card text-maestro-muted hover:bg-maestro-surface hover:text-maestro-text hover:shadow"
-            }`}
-            aria-label="Toggle sidebar"
-            title={titleWithShortcut("Toggle sidebar", altLabel(), "1–3")}
-          >
-            <PanelLeft size={15} />
-          </button>
-        )}
-      </div>
+      />
 
       {/* Center: drag region */}
       <div data-tauri-drag-region className="flex-1" />
@@ -271,118 +194,6 @@ export function TopBar({
             <Bird size={14} />
           </button>
         )}
-        {onToggleNotesPanel && (
-          <button
-            type="button"
-            onClick={onToggleNotesPanel}
-            className={`rounded p-1.5 transition-colors ${
-              notesPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Notes"
-            title={titleWithShortcut("Notes", modLabel(), "5")}
-          >
-            <StickyNote size={14} />
-          </button>
-        )}
-        {onToggleSecondBrainPanel && (
-          <button
-            type="button"
-            onClick={onToggleSecondBrainPanel}
-            className={`relative rounded p-1.5 transition-colors ${
-              secondBrainPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Second Brain"
-            title="Samurai Second Brain — audit stream and managed files"
-          >
-            <BrainCircuit size={14} />
-            <HealthAttentionBadge area="secondbrain" />
-          </button>
-        )}
-        {onToggleLaunchPanel && (
-          <button
-            type="button"
-            onClick={onToggleLaunchPanel}
-            className={`rounded p-1.5 transition-colors ${
-              launchPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Launch"
-            title="Samurai launch — start and clean up autonomous epic runs"
-          >
-            <Rocket size={14} />
-          </button>
-        )}
-        {onToggleWorkJournalPanel && (
-          <button
-            type="button"
-            onClick={onToggleWorkJournalPanel}
-            className={`relative rounded p-1.5 transition-colors ${
-              workJournalPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label={workJournalLabel}
-            title="Work Journal — one page per day"
-          >
-            <BookOpenCheck size={14} />
-            <WorkJournalSuggestionsBadge />
-            <WorkJournalUnsavedDot />
-          </button>
-        )}
-        {onToggleWorkshopPanel && (
-          <button
-            type="button"
-            onClick={onToggleWorkshopPanel}
-            className={`rounded p-1.5 transition-colors ${
-              workshopPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Workshop"
-            title="Workshop — your weekly Claude Code insights"
-          >
-            <Hammer size={14} />
-          </button>
-        )}
-        {onToggleInjectPanel && (
-          <button
-            type="button"
-            onClick={onToggleInjectPanel}
-            className={`rounded p-1.5 transition-colors ${
-              injectPanelOpen
-                ? "text-maestro-accent hover:bg-maestro-accent/10"
-                : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-            }`}
-            aria-label="Injector"
-            title={titleWithShortcut(
-              "Injector — type one message into many terminals",
-              altLabel(),
-              "4",
-            )}
-          >
-            <Syringe size={14} />
-          </button>
-        )}
-        {/* Git panel — in eagle view it becomes a per-project carousel
-            (swipe between one git card per open project). */}
-        <button
-          type="button"
-          onClick={onToggleGitPanel}
-          className={`rounded p-1.5 transition-colors ${
-            gitPanelOpen
-              ? "text-maestro-accent hover:bg-maestro-accent/10"
-              : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-          }`}
-          aria-label="Git"
-          title={titleWithShortcut("Git", modLabel(), "2")}
-        >
-          <GitMerge size={14} />
-        </button>
       </div>
 
       {/* Window controls - hidden on macOS (custom traffic lights in row) or when hideWindowControls */}

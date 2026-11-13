@@ -12,9 +12,7 @@ function dispatch(init: KeyboardEventInit): KeyboardEvent {
 function renderAppKeyboard(overrides: Partial<Parameters<typeof useAppKeyboard>[0]> = {}) {
   const handlers = {
     onAddSession: vi.fn(),
-    onSidebarTab: vi.fn(),
-    onToggleGitPanel: vi.fn(),
-    onToggleUtilityPanel: vi.fn(),
+    onTogglePanel: vi.fn(),
     onToggleEagleView: vi.fn(),
     onNextProject: vi.fn(),
     onPrevProject: vi.fn(),
@@ -34,70 +32,68 @@ function renderAppKeyboard(overrides: Partial<Parameters<typeof useAppKeyboard>[
 // regardless of what isMac() reports for the test environment.
 const MOD = { ctrlKey: true, metaKey: true };
 
-describe("useAppKeyboard sidebar tabs (Alt+1-3) and the Injector panel (Alt+4)", () => {
-  it("fires onSidebarTab with the pressed tab index", () => {
-    const { onSidebarTab } = renderAppKeyboard();
+describe("useAppKeyboard panel shortcuts (Alt+1-4) open the same panels as before the icon strip", () => {
+  it("maps Alt+1 to History, Alt+2 to Infra, Alt+3 to Settings and Alt+4 to the Injector", () => {
+    const { onTogglePanel } = renderAppKeyboard();
 
     for (const digit of [1, 2, 3, 4]) {
       const ev = dispatch({ key: String(digit), code: `Digit${digit}`, altKey: true });
       expect(ev.defaultPrevented).toBe(true);
     }
 
-    expect(onSidebarTab.mock.calls.map((c) => c[0])).toEqual([1, 2, 3]);
-  });
-
-  it("maps Alt+4 to the right-side Injector panel, not a sidebar tab", () => {
-    const { onSidebarTab, onToggleUtilityPanel } = renderAppKeyboard();
-    const ev = dispatch({ key: "4", code: "Digit4", altKey: true });
-    expect(ev.defaultPrevented).toBe(true);
-    expect(onToggleUtilityPanel.mock.calls.map((c) => c[0])).toEqual(["inject"]);
-    expect(onSidebarTab).not.toHaveBeenCalled();
+    expect(onTogglePanel.mock.calls.map((c) => c[0])).toEqual([
+      "history",
+      "infra",
+      "settings",
+      "inject",
+    ]);
   });
 
   it("ignores numpad digits so Windows Alt-code entry keeps working", () => {
-    const { onSidebarTab } = renderAppKeyboard();
-    dispatch({ key: "2", code: "Numpad2", altKey: true });
-    expect(onSidebarTab).not.toHaveBeenCalled();
+    const { onTogglePanel } = renderAppKeyboard();
+    const ev = dispatch({ key: "2", code: "Numpad2", altKey: true });
+    expect(onTogglePanel).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
   });
 
   it("ignores Alt+5 and Alt+digit with extra modifiers", () => {
-    const { onSidebarTab } = renderAppKeyboard();
+    const { onTogglePanel } = renderAppKeyboard();
 
     dispatch({ key: "5", code: "Digit5", altKey: true });
     dispatch({ key: "1", code: "Digit1", altKey: true, ctrlKey: true });
     dispatch({ key: "1", code: "Digit1", altKey: true, shiftKey: true });
 
-    expect(onSidebarTab).not.toHaveBeenCalled();
+    expect(onTogglePanel).not.toHaveBeenCalled();
   });
 });
 
-describe("useAppKeyboard right panels (Cmd/Ctrl+2 and +5)", () => {
-  it("fires onToggleGitPanel on Cmd/Ctrl+2", () => {
-    const { onToggleGitPanel, onToggleUtilityPanel } = renderAppKeyboard();
+describe("useAppKeyboard panel shortcuts (Cmd/Ctrl+2 and +5)", () => {
+  it("maps Cmd/Ctrl+2 to the Git panel, top row or numpad", () => {
+    const { onTogglePanel } = renderAppKeyboard();
 
     dispatch({ key: "2", code: "Digit2", ...MOD });
+    dispatch({ key: "2", code: "Numpad2", ...MOD });
 
-    expect(onToggleGitPanel).toHaveBeenCalledTimes(1);
-    expect(onToggleUtilityPanel).not.toHaveBeenCalled();
+    expect(onTogglePanel.mock.calls.map((c) => c[0])).toEqual(["git", "git"]);
   });
 
-  it("maps Cmd/Ctrl+5 to the Notes panel and nothing to the removed digits", () => {
-    const { onToggleUtilityPanel } = renderAppKeyboard();
+  it("maps Cmd/Ctrl+5 to the Notes panel and nothing to the other digits", () => {
+    const { onTogglePanel } = renderAppKeyboard();
 
     for (const digit of [3, 4, 5, 6]) {
       dispatch({ key: String(digit), code: `Digit${digit}`, ...MOD });
     }
 
-    expect(onToggleUtilityPanel.mock.calls.map((c) => c[0])).toEqual(["notes"]);
+    expect(onTogglePanel.mock.calls.map((c) => c[0])).toEqual(["notes"]);
   });
 
   it("ignores digits with Alt or Shift held", () => {
-    const { onToggleUtilityPanel } = renderAppKeyboard();
+    const { onTogglePanel } = renderAppKeyboard();
 
     dispatch({ key: "5", code: "Digit5", ...MOD, altKey: true });
     dispatch({ key: "5", code: "Digit5", ...MOD, shiftKey: true });
 
-    expect(onToggleUtilityPanel).not.toHaveBeenCalled();
+    expect(onTogglePanel).not.toHaveBeenCalled();
   });
 });
 

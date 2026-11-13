@@ -1,18 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Shared width bounds for the right-docked panels (Memory/Processes, Git). */
-export const RIGHT_PANEL_MIN_WIDTH = 340;
-export const RIGHT_PANEL_MAX_WIDTH = 800;
-export const RIGHT_PANEL_DEFAULT_WIDTH = 560;
-export const RIGHT_PANEL_WIDTH_STORAGE_KEY = "maestro-right-panel-width";
-
-export function loadRightPanelWidth(): number {
-  const saved = Number(localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY));
-  return Number.isFinite(saved) && saved >= RIGHT_PANEL_MIN_WIDTH && saved <= RIGHT_PANEL_MAX_WIDTH
-    ? saved
-    : RIGHT_PANEL_DEFAULT_WIDTH;
-}
-
 interface PanelResizeHandleProps {
   /** Current panel width in pixels. */
   width: number;
@@ -31,8 +18,8 @@ interface PanelResizeHandleProps {
 
 /**
  * Vertical drag handle for resizing a docked panel, with keyboard support
- * (arrows / PageUp / PageDown / Home / End). Mirrors the left sidebar's
- * resizer, minus its collapse-on-shrink behavior.
+ * (arrows / PageUp / PageDown / Home / End). The left icon strip's panels
+ * use it on their right edge.
  */
 export function PanelResizeHandle({
   width,

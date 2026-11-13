@@ -112,7 +112,7 @@ describe("SettingsDialog", () => {
     openSection("Samurai");
     expect(screen.getByText("Samurai Thresholds")).toBeInTheDocument();
     openSection("Keyboard shortcuts");
-    expect(screen.getByText("Left Sidebar")).toBeInTheDocument();
+    expect(screen.getByText("Panels")).toBeInTheDocument();
     openSection("Changelog");
     expect(screen.getAllByText(/^\d{4}-\d{2}-\d{2}$/).length).toBeGreaterThan(0);
     openSection("Work Journal");

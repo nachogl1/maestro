@@ -1,24 +1,14 @@
 import { useEffect } from "react";
-
-/** Right-side utility panels reachable by shortcut (Cmd/Ctrl+5, Alt+4). */
-export type UtilityPanelShortcut = "notes" | "inject";
-
-/** Cmd/Ctrl+digit → right-side utility panel (2 is the git panel, handled separately). */
-const UTILITY_PANEL_BY_DIGIT: Record<string, UtilityPanelShortcut> = {
-  "5": "notes",
-};
+import { panelForShortcut } from "@/components/panels/panels";
+import type { PanelId } from "@/stores/usePanelStripStore";
 
 interface UseAppKeyboardOptions {
   /** Callback to add a new terminal (Cmd/Ctrl+T) — context-aware (grid/zoom/eagle) */
   onAddSession: () => void;
   /** Whether adding a session is currently allowed */
   canAddSession: boolean;
-  /** Alt+1-3: toggle the left sidebar on tab N (1-based tab index) */
-  onSidebarTab?: (index: number) => void;
-  /** Callback to toggle the git panel (Cmd/Ctrl+2) */
-  onToggleGitPanel?: () => void;
-  /** Cmd/Ctrl+5 (Notes) and Alt+4 (Injector): toggle a right-side utility panel */
-  onToggleUtilityPanel?: (panel: UtilityPanelShortcut) => void;
+  /** Alt+1-4 and Cmd/Ctrl+2 / +5: toggle the left-strip panel the shortcut names */
+  onTogglePanel?: (panel: PanelId) => void;
   /** Callback to toggle the eagle all-projects terminals view (Cmd/Ctrl+G) */
   onToggleEagleView?: () => void;
   /** Ctrl+Tab (all platforms): switch to the next project tab */
@@ -40,10 +30,9 @@ function isMac(): boolean {
  * App-level keyboard shortcut handler.
  *
  * Shortcuts:
- * - Alt+1-3: Toggle the left sidebar on tab N (History/Infra/Settings)
- * - Alt+4: Toggle the Injector panel
+ * - Alt+1-4: Toggle the History / Infra / Settings / Injector panel
  * - Alt+M: Open the issue map for the focused project
- * - Cmd/Ctrl+2: Toggle the git panel
+ * - Cmd/Ctrl+2: Toggle the Git panel
  * - Cmd/Ctrl+5: Toggle the Notes panel
  * - Cmd/Ctrl+T: Add a new terminal (project picker in eagle view)
  * - Cmd/Ctrl+G: Toggle the eagle all-projects terminals view
@@ -52,9 +41,7 @@ function isMac(): boolean {
 export function useAppKeyboard({
   onAddSession,
   canAddSession,
-  onSidebarTab,
-  onToggleGitPanel,
-  onToggleUtilityPanel,
+  onTogglePanel,
   onToggleEagleView,
   onNextProject,
   onPrevProject,
@@ -65,21 +52,15 @@ export function useAppKeyboard({
       // Alt-based shortcuts (no Cmd/Ctrl, no Shift)
       // Use event.code so the bindings are layout-independent (AZERTY etc.).
       if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        // Alt+1-3: toggle the left sidebar on the given tab. Top-row digits
-        // only — Alt+numpad digits must stay free for Windows Alt-code entry
-        // (e.g. Alt+164 → ñ typed into a terminal).
-        const sidebarDigit = /^Digit([1-3])$/.exec(event.code);
-        if (sidebarDigit && onSidebarTab) {
+        // Alt+digit: the panel it names. Top-row digits only — Alt+numpad
+        // digits must stay free for Windows Alt-code entry (e.g. Alt+164 → ñ
+        // typed into a terminal).
+        const altDigit = /^Digit(\d)$/.exec(event.code);
+        const altPanel = altDigit ? panelForShortcut("alt", altDigit[1]) : undefined;
+        if (altPanel && onTogglePanel) {
           event.preventDefault();
           event.stopImmediatePropagation();
-          onSidebarTab(Number(sidebarDigit[1]));
-          return;
-        }
-        // Alt+4: the Injector panel on the right (it used to be sidebar tab 4).
-        if (event.code === "Digit4" && onToggleUtilityPanel) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          onToggleUtilityPanel("inject");
+          onTogglePanel(altPanel);
           return;
         }
         // Alt+M: the issue map window for the focused project.
@@ -111,21 +92,14 @@ export function useAppKeyboard({
       // Don't interfere with other modifier combinations
       if (event.altKey || event.shiftKey) return;
 
-      // Cmd/Ctrl+2: toggle the git panel.
+      // Cmd/Ctrl+digit (top row or numpad): Git (2) and Notes (5).
       // Use event.code so this still triggers on layouts where Ctrl+2 produces a non-"2" event.key.
-      if ((event.code === "Digit2" || event.code === "Numpad2") && onToggleGitPanel) {
+      const modDigit = /^(?:Digit|Numpad)(\d)$/.exec(event.code);
+      const modPanel = modDigit ? panelForShortcut("mod", modDigit[1]) : undefined;
+      if (modPanel && onTogglePanel) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        onToggleGitPanel();
-        return;
-      }
-
-      // Cmd/Ctrl+5: toggle the right-side Notes panel.
-      const utilityDigit = /^(?:Digit|Numpad)(5)$/.exec(event.code);
-      if (utilityDigit && onToggleUtilityPanel) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        onToggleUtilityPanel(UTILITY_PANEL_BY_DIGIT[utilityDigit[1]]);
+        onTogglePanel(modPanel);
         return;
       }
 
@@ -154,9 +128,7 @@ export function useAppKeyboard({
   }, [
     onAddSession,
     canAddSession,
-    onSidebarTab,
-    onToggleGitPanel,
-    onToggleUtilityPanel,
+    onTogglePanel,
     onToggleEagleView,
     onNextProject,
     onPrevProject,
