@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 556,
+  "title": "Work Journal: an (i) hover explanation of what it does and the sources it reads, on the first-run question and in Settings",
+  "login": "nachogl1",
+  "pr": 576,
+  "merged_at": "2026-11-13T14:19:00Z",
+  "merge_commit": "3e417a5cb12a309bc64ec84b94a5603f0d0a3c81",
+  "seam": "src/components/workjournal/",
+  "story": "The Work Journal's first-run question 'Enable the Work Journal?' and the Work Journal heading in Settings now each have an (i) icon. Hovering it or tabbing to it opens a small box that says what the journal does, which sources it reads and what each needs set up. Before, only a plain one-line hover hint existed on the Settings heading, and that hint stays. The question's text and buttons are unchanged.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/info-hover-first-run",
+      "criterion": "Hovering or tabbing to the (i) on the first-run question shows the explanation, and Escape closes only the box",
+      "steps": "Start from fresh app data so the Work Journal question was never answered. Launch the app and answer the automatic-updates question. When 'Enable the Work Journal?' appears, hover the (i) after the title, move the pointer away, then Tab until the (i) has focus and press Escape.",
+      "expected": "On hover a box shows 'What the Work Journal does' with its sentence, then 'Sources it reads' with five bullets (Claude conversations, Terminal sessions, Git commits, Pull requests and issues, Granola meetings) and ends with 'Suggestions are written by the Claude CLI.'; moving away hides it; focus shows it again; Escape hides it and the question stays open with Not now and Enable working."
+    },
+    {
+      "key": "src/components/workjournal/settings-info-hover",
+      "criterion": "Settings → Work Journal shows the same (i) and text after its heading",
+      "steps": "Open Settings, scroll to the Work Journal section, hover the (i) after the heading, then Tab to it and press Escape.",
+      "expected": "The same box and text as on the first-run question; it hides when the pointer leaves and on Escape, and the Settings dialog stays open."
+    }
+  ],
+  "no_qa_reason": null
+}

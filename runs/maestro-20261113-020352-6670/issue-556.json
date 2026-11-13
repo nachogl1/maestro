@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 556,
+  "title": "Work Journal: an (i) hover explanation of what it does and the sources it reads, on the first-run question and in Settings",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T02:05:21Z",
+  "finished_at": "2026-11-13T14:20:00Z",
+  "outcome": "merged",
+  "pr": 576,
+  "summary": "The Work Journal first-run question and its Settings heading now each show an (i) icon whose hover or focus box explains what the journal does and which sources it reads; the shared dialog frame and section card gained an optional slot after the title.",
+  "agents": [
+    {
+      "name": "dev-556",
+      "model": "opus",
+      "tokens_total": 116941
+    },
+    {
+      "name": "review-556",
+      "model": "opus",
+      "tokens_total": 98912
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": null,
+    "review_seconds": 171,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "CLAUDE.md",
+      "what": "CLAUDE.md states a skip-count baseline of 0, but main already has one ignored Rust test (smoke_get_status_real_files), so a strict count check would fail every run and every reviewer must re-judge it",
+      "why": "A rules-file fact, outside this story",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
