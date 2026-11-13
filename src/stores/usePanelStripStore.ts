@@ -7,6 +7,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
  */
 export const PANEL_IDS = [
   "history",
+  "files",
   "git",
   "notes",
   "workjournal",

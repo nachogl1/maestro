@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { FilesPanel } from "@/components/files/FilesPanel";
 import { HistorySection } from "@/components/sidebar/HistorySection";
 import { InfraTab } from "@/components/sidebar/InfraTab";
 import { InjectorSection } from "@/components/sidebar/InjectorSection";
@@ -61,8 +62,10 @@ export function PanelBody({
   switch (id) {
     case "git":
       return <GitPanelBody {...content.git} open={open} />;
-    // Notes, Work Journal and Workshop lay themselves out edge to edge and
-    // scroll internally, so they skip the padded scroll wrapper.
+    // Files, Notes, Work Journal and Workshop lay themselves out edge to edge
+    // and scroll internally, so they skip the padded scroll wrapper.
+    case "files":
+      return <FilesPanel />;
     case "notes":
       return (
         <Suspense fallback={<div className="flex-1" />}>

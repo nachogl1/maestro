@@ -75,6 +75,7 @@ import {
 import { useProjectColors } from "@/lib/useProjectColors";
 import { cleanupSessionWorktree } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
+import { useFocusedTerminalStore } from "@/stores/useFocusedTerminalStore";
 import { useMcpStore } from "@/stores/useMcpStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { usePluginStore } from "@/stores/usePluginStore";
@@ -540,6 +541,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
           // Clicking the pane is the user selecting it — attention is served.
           clearSlotAttention(slotId);
           setFocusedSlotId(slotId);
+          // Also when this grid's focus did not change: another project's
+          // terminal may have been the last one focused.
+          const sessionId = slotsRef.current.find((s) => s.id === slotId)?.sessionId;
+          if (sessionId != null) useFocusedTerminalStore.getState().setFocusedSessionId(sessionId);
         };
         focusCallbacksRef.current.set(slotId, cb);
       }
@@ -547,6 +552,14 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     },
     [clearSlotAttention],
   );
+
+  // The Files panel follows the last focused terminal, whichever grid it is in.
+  const focusedSessionId = slots.find((s) => s.id === focusedSlotId)?.sessionId ?? null;
+  useEffect(() => {
+    if (focusedSessionId !== null) {
+      useFocusedTerminalStore.getState().setFocusedSessionId(focusedSessionId);
+    }
+  }, [focusedSessionId]);
 
   // Ordered slot IDs from the split tree (defines Cmd+1-9 ordering)
   const orderedSlotIds = useMemo(() => collectSlotIds(layoutTree), [layoutTree]);
@@ -1257,6 +1270,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // Leave zoom if a different pane is zoomed, so the target is visible.
       setZoomedSlotId((prev) => (prev === slot.id ? prev : null));
       setFocusedSlotId(slot.id);
+      useFocusedTerminalStore.getState().setFocusedSessionId(sessionId);
       focusSlotTextarea(slot.id);
       return true;
     },
@@ -1275,6 +1289,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // other pane's zoom is replaced.
       setZoomedSlotId(slot.id);
       setFocusedSlotId(slot.id);
+      useFocusedTerminalStore.getState().setFocusedSessionId(sessionId);
       focusSlotTextarea(slot.id);
       return true;
     },

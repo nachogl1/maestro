@@ -3,6 +3,7 @@ pub mod ai_runner;
 pub mod claude_sessions;
 pub mod claudemd;
 pub mod cli;
+pub mod files;
 pub mod fonts;
 pub mod git;
 pub mod github;

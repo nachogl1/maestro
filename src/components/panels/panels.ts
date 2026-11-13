@@ -1,6 +1,7 @@
 import {
   BookOpenCheck,
   BrainCircuit,
+  FolderTree,
   GitFork,
   Hammer,
   History,
@@ -50,6 +51,8 @@ export const PANELS: readonly PanelDefinition[] = [
     group: 0,
     shortcut: { modifier: "alt", digit: "1" },
   },
+  // No shortcut: Alt+4, which the Files prototype assumed, belongs to the Injector.
+  { id: "files", title: "Files", icon: FolderTree, group: 0 },
   {
     id: "git",
     title: "Git",

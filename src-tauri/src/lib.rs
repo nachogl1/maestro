@@ -316,6 +316,10 @@ pub fn run() {
             commands::terminal::check_cli_available,
             commands::terminal::get_backend_info,
             commands::terminal::save_pasted_image,
+            // Files panel commands (read-only)
+            commands::files::files_list_dir,
+            commands::files::files_read_preview,
+            commands::files::files_open_default,
             // Git commands
             commands::git::git_branches,
             commands::git::git_current_branch,

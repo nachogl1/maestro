@@ -155,7 +155,7 @@ one place left or right from the keyboard works as before.
 Every panel opens from the thin column of icons on the far left, below the project tabs. There is no left sidebar,
 no right-hand panel and no panel button in the top bar any more.
 
-- The icons, top to bottom, in three groups: **History** and **Git**; **Notes**, **Work Journal**, **Injector**,
+- The icons, top to bottom, in three groups: **History**, **Files** and **Git**; **Notes**, **Work Journal**, **Injector**,
   **Launch**, **Second Brain** and **Workshop**; **Infra** and **Settings**. Hover an icon for its name and shortcut.
 - Click an icon to open its panel to the right of the strip; click it again, or the panel's **✕**, to close it. An
   open panel's icon is red with a small red bar beside it.
@@ -173,6 +173,26 @@ no right-hand panel and no panel button in the top bar any more.
   carousel in eagle view.
 - **Settings → Features → Panel icons** chooses whether the Launch, Second Brain and Work Journal icons show;
   switching one off also closes its panel.
+
+## Files panel: the focused terminal's folder
+
+The **Files** icon (second in the strip, after History) opens a panel showing the folder the focused terminal works
+in, so you see exactly what that agent sees. It has no keyboard shortcut (Alt+4 stays the Injector's).
+
+- The **Showing files of** box names the terminal and its project. A green **WORKTREE** chip means the terminal runs
+  in its own worktree and the tree shows that worktree; a grey **PROJECT** chip means it shows the project folder.
+  The path below is cut from the left when long; the copy button at the right of the box copies it.
+- Click another terminal and the panel switches to its folder. With no terminal open (or the focused one closed) the
+  box says so and asks you to start or click one.
+- Click a folder to open it one level; a big one shows **Loading…** for a moment. Every file shows, hidden ones such
+  as `.env` included; files and folders git ignores are only dimmed, never hidden.
+- Click a file to preview it below the tree, read-only, with its path, a **READ-ONLY** mark and copy, open and close
+  buttons. A file over about 1 MB, or one that is not text, shows **Can't preview** with the reason and an **Open in
+  default app** button.
+- Double-click a file to open it in the computer's default app. Hover a file for two buttons: copy its full path and
+  open it. Right-click a file for **Preview**, **Open in default app** and **Copy full path**; a folder for **Copy
+  full path** and **Open in default app** (it opens in the file manager). A line under the tree confirms a copy.
+- The panel never changes a file: it cannot edit, rename or delete anything.
 
 ## History tab: order and last message time
 

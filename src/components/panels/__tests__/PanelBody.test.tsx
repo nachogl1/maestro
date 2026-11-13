@@ -249,6 +249,13 @@ describe("panel contents in the left icon strip (formerly the right-hand panel s
     expect(screen.getByRole("tab", { name: "Real Transcript" })).toBeInTheDocument();
   });
 
+  it("renders the Files panel asking for a terminal when none is focused", () => {
+    renderPanel("files");
+    const panel = screen.getByRole("region", { name: "Files panel" });
+    expect(within(panel).getByText("Showing files of")).toBeInTheDocument();
+    expect(within(panel).getByText(/No terminal open/)).toBeInTheDocument();
+  });
+
   it("renders the Injector panel with its syringe title and the empty-terminals hint", () => {
     renderPanel("inject");
     // "Injector" is both the panel title and the section's own heading.
