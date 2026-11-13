@@ -72,7 +72,7 @@ const senders: { name: string; sender: string; send: () => void }[] = [
     sender: "Trigger at 50%",
     send: () => {
       useInjectorTriggerStore.getState().addTrigger({
-        watchIds: [1],
+        watchIds: [1, 2],
         threshold: 50,
         message: "commit your work",
         target: "all",
@@ -117,6 +117,11 @@ describe("injected-message notices from the two senders", () => {
       sender,
       text: "commit your work",
     });
+    // The failing terminal was really sent to, so the failure case ran.
+    expect(invokeMock).toHaveBeenCalledWith(
+      "inject_message",
+      expect.objectContaining({ sessionId: FAILING_SESSION }),
+    );
     expect(useInjectedMessageStore.getState().bySession[FAILING_SESSION]).toBeUndefined();
   });
 });
