@@ -16,7 +16,8 @@
         "width": 1400,
         "height": 900,
         "decorations": false,
-        "resizable": true
+        "resizable": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-features=TouchTextEditingRedesign"
       }
     ],
     "security": {

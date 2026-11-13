@@ -4,6 +4,7 @@ import App from "./App";
 import { IssueMapWindow } from "./components/git/issues/IssueMapWindow";
 import { WorkJournalWindow } from "./components/workjournal/WorkJournalWindow";
 import { readIssueMapTarget } from "./lib/issueMapWindow";
+import { blockTouchTextMenu } from "./lib/touchTextMenu";
 import { isWorkJournalWindowView } from "./lib/workJournalWindow";
 import "./styles/fonts.css";
 import "./styles/globals.css";
@@ -12,6 +13,9 @@ import "./styles/globals.css";
 if (navigator.userAgent.includes("Linux")) {
   document.documentElement.classList.add("platform-linux");
 }
+
+// Every window loads this page: keep Chromium's touch-text "Paste" menu shut.
+blockTouchTextMenu(window);
 
 // The issue map opens in its own window, which loads this same page.
 const issueMapTarget = readIssueMapTarget(window.location.search);
