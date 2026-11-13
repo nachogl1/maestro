@@ -475,3 +475,28 @@ workflows, scheduled wakeups and loops. Maestro counts that list to decide wheth
 - Right-click menus, the keyboard menu key and Ctrl+V paste work as before.
 - If the box still appears, Maestro cannot close it: the web engine draws it outside the page. Note what you were
   doing and report it.
+
+## Scratch projects: throwaway folders from eagle view
+
+A scratch project is a plain folder (not a git repository) for work that belongs to no real project.
+
+- **Make one:** in eagle view, open the new-terminal list (**Cmd/Ctrl+T**, or the top bar's **+**) and pick
+  **+ New scratch project**. The box offers a name such as `scratch-13-nov-1822`; press **Enter** to accept it
+  or type another, **Esc** to cancel. A name already taken (in any letter case), or one that is not a valid
+  folder name (empty, `.` or `..`, ending with a dot, a reserved name such as `con`, or holding
+  `< > : " / \ | ? *`), is refused with a short message in the box and nothing is made.
+- Maestro makes the folder inside the scratch folder, opens it as a project tab with a small flask mark, and adds
+  a terminal card to it.
+- **See them all:** the **Scratch projects** pill in the same list shows how many there are; click it for every
+  scratch folder, open or kept, with its age. Click a row to add a terminal to it (its tab opens first if it was
+  closed). The bin icon asks **Delete? Yes / No**; Yes closes its tab and terminals first, then deletes the folder.
+- **Delete or keep:** closing a scratch project's last terminal (Stop All included), or its tab, asks "Delete the scratch project's
+  files, or keep them?". **Keep** leaves the folder (closing the tab when that is what you asked); **Delete**
+  removes the folder and its files and closes the tab. Esc or the close button answers neither. Closing one of
+  several terminals, or any terminal of a normal project, never asks; quitting Maestro never asks either.
+- **Where they live:** Settings → **Scratch projects** → **Scratch folder**. The default is `Maestro Scratch` in
+  your home folder, made on first use. **Choose folder** picks another one and the pill then lists that folder's
+  subfolders; **Use default** goes back. Every folder directly inside the scratch folder counts as a scratch
+  project.
+- Delete removes only the folder. Claude Code's own conversation records and Maestro's History rows stay, but
+  those rows can no longer be resumed.

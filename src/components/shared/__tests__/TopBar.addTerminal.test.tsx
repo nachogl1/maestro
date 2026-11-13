@@ -53,6 +53,35 @@ describe("TopBar add-terminal button", () => {
     expect(screen.getByRole("button", { name: "Add terminal to project" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Add session" })).toBeNull();
   });
+
+  it("adds the scratch-project row and pill to the eagle view drop-down only", () => {
+    const onOpenScratch = vi.fn();
+    const { unmount } = render(
+      <TopBar
+        {...baseProps}
+        hasActiveProject
+        onAddSession={vi.fn()}
+        onOpenScratch={onOpenScratch}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "New scratch project" })).toBeNull();
+    unmount();
+
+    render(
+      <TopBar
+        {...baseProps}
+        hasActiveProject
+        eagleView
+        eagleProjects={[{ tabId: "a", name: "alpha", color: "#f00", atMax: false }]}
+        onAddSessionToProject={vi.fn()}
+        onOpenScratch={onOpenScratch}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add terminal to project" }));
+
+    expect(screen.getByRole("button", { name: "New scratch project" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Scratch projects \(\d+\)$/ })).toBeTruthy();
+  });
 });
 
 describe("TopBar tidy-up button", () => {

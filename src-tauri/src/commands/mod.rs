@@ -17,6 +17,7 @@ pub mod permissions;
 pub mod plugin;
 pub mod processes;
 pub mod samurai;
+pub mod scratch;
 pub mod session;
 pub mod session_summary;
 pub mod system;

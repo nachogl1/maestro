@@ -8,3 +8,14 @@ export async function pickProjectFolder(): Promise<string | null> {
   });
   return selected;
 }
+
+/** Opens the folder chooser with its own title, starting in `defaultPath` when given. */
+export async function pickFolder(title: string, defaultPath?: string): Promise<string | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    defaultPath,
+    title,
+  });
+  return selected;
+}
