@@ -107,9 +107,7 @@ describe("TerminalView context alert frame", () => {
     // Issue #552: a red icon after the name; the words and numbers are on hover.
     const icon = queryByRole("status");
     expect(icon).not.toBeNull();
-    expect(icon?.getAttribute("title")).toBe(
-      "Context threshold reached — Context 87% ≥ 80% alert",
-    );
+    expect(icon?.getAttribute("title")).toBe("Context threshold reached — Context 87% ≥ 80% alert");
     act(() => {
       useContextAlertStore.getState().setThreshold(90);
     });
