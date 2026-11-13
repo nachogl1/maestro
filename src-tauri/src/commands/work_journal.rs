@@ -392,6 +392,17 @@ fn backup_if_due_outcome(
     }
 }
 
+/// The backup when Maestro closes (see [`work_journal::backup_on_close`]),
+/// under the journal lock so it never interleaves with a command. `false`:
+/// no backup folder is set, nothing written. Not a Tauri command: only the
+/// close path calls it.
+pub(crate) async fn backup_on_close() -> Result<bool, String> {
+    with_journal(|path| {
+        work_journal::backup_on_close(&path, Utc::now()).map(|written| written.is_some())
+    })
+    .await
+}
+
 /// Backs up when a folder is set and the last backup is a day old (or
 /// missing). Never replaces a backup file this Maestro has not written (see
 /// [`work_journal::backup_if_due`]); that comes back as `Skipped`. Called on

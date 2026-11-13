@@ -56,6 +56,7 @@ pub mod windows_process;
 pub mod work_journal;
 pub mod work_journal_activity;
 pub mod work_journal_collect;
+pub mod work_journal_markdown;
 pub mod work_journal_quit;
 pub mod work_journal_report;
 pub mod work_journal_run;
