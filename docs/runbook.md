@@ -61,6 +61,17 @@ blocker sources (the body's `### Blocked by` section and GitHub's own blocked-by
 - `opened by unknown` means GitHub gave no author login: the login is missing or empty, or the account was
   deleted (GitHub reports a deleted account as `ghost`).
 
+## Issue map: closing an issue's details card
+
+- A click anywhere outside the details card closes it and clears the highlighted chain, the same as Esc: an empty
+  spot on the map, the header (search, project picker, Save HTML, Reload), the filter menus and the zoom buttons.
+  The clicked control still does its own job in that same click, so a filter still filters and Zoom in still zooms.
+- A click on another box switches the card to that issue; a second click on the same box closes it.
+- Clicks inside the card, and a press that starts in it (dragging its title, selecting its text), keep it open.
+- Dragging the map to pan it is not a click: the issue stays selected and its chain stays lit. The card hides
+  during the pan unless you had moved it, in which case it stays up.
+- The card's hint reads "Click outside to close". The saved HTML map behaves the same way.
+
 ## Terminals: moving focus between terminals
 
 **Ctrl+Alt+Right** and **Ctrl+Alt+Left** (Cmd+Alt on a Mac) move the focus to the next and previous terminal,
@@ -100,6 +111,22 @@ full-height columns**:
 
 After tidying, terminals still move and resize as usual: drag a divider or a tile edge, or drag a terminal onto
 another one or onto an edge of the screen.
+
+## Terminals: the header in narrow columns
+
+Each terminal header follows the width of its own column, not the number of terminals open, so two terminals in
+narrow columns look the same as six. As the column gets narrower, the header gives way in this order:
+
+- **Below 480 px**: park, pin, zoom and font size fold into one **⋯** menu (More terminal actions). Each item does
+  what its button did and shows the same shortcut; Alt+Shift+P still pins while the menu is closed. Close and
+  Launch stay visible, and the AI icon shrinks to a small icon.
+- **Below 360 px**: the git branch hides.
+- **Below 260 px**: the project name hides (eagle view).
+- The terminal name stays longest and is cut with **…** only when nothing else is left to give. Hover over the
+  name to read in full whatever is hidden or cut: the name, the project and the branch.
+
+The AI icon and the Samurai badge show at every width. When the context threshold is reached, a small red warning
+icon blinks right after the terminal name; hover over it for "Context threshold reached" and the percentage.
 
 ## Tabs: dragging one onto another swaps the two
 

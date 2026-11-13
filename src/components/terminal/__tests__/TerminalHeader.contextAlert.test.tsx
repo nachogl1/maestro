@@ -11,47 +11,38 @@ function renderHeader(props: Partial<React.ComponentProps<typeof TerminalHeader>
   return render(<TerminalHeader sessionId={3} onKill={() => {}} {...props} />);
 }
 
-describe("TerminalHeader context-alert banner", () => {
+describe("TerminalHeader context-alert warning", () => {
   it("renders nothing extra while the alert is not active", () => {
     renderHeader({ contextAlert: false, contextAlertTitle: "Context 42% ≥ 80% alert" });
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByText(/Context threshold reached/)).toBeNull();
   });
 
-  it("shows a centred red warning pill with the percent and threshold while alerting", () => {
+  it("shows a red warning icon with the full text and the percent on hover", () => {
     renderHeader({ contextAlert: true, contextAlertTitle: "Context 87% ≥ 80% alert" });
-    const pill = screen.getByRole("status");
-    expect(pill.textContent).toContain("Context threshold reached");
-    expect(pill.getAttribute("title")).toBe("Context 87% ≥ 80% alert");
-    expect(pill.className).toContain("text-maestro-red");
+    const icon = screen.getByRole("status");
+    expect(icon.getAttribute("title")).toBe("Context threshold reached — Context 87% ≥ 80% alert");
+    expect(icon.className).toContain("text-maestro-red");
     // Blinks in step with the frame; the CSS class carries the animation.
-    expect(pill.className).toContain("context-alert-pill");
-    // Must not steal header clicks (flag toggle / drag handle).
-    expect(pill.className).toContain("pointer-events-none");
-    expect(pill.querySelector("svg")).not.toBeNull();
+    expect(icon.className).toContain("context-alert-pill");
+    expect(icon.querySelector("svg")).not.toBeNull();
+    // Only the icon shows; the words are on hover.
+    expect(icon.textContent).toBe("");
   });
 
-  it("keeps the name on the left and the controls on the right around the pill", () => {
+  it("sits in the row right after the terminal name, never floating over the header", () => {
     renderHeader({ contextAlert: true, contextAlertTitle: "Context 90% ≥ 80% alert" });
-    const pill = screen.getByRole("status");
-    const header = pill.parentElement;
-    expect(header).not.toBeNull();
-    // Header is the positioning context; the pill is absolutely centred.
-    expect(header?.className).toContain("relative");
-    expect(pill.className).toContain("absolute");
-    expect(pill.className).toContain("left-1/2");
-    // The two existing clusters are still direct children of the header.
-    expect(screen.getByText("Terminal 3").closest("div")?.parentElement).toBe(header);
-    expect(screen.getByLabelText("Kill session 3").closest("div")?.parentElement).toBe(header);
-    // Never wider than the middle of the header, so the controls stay visible.
-    expect(pill.className).toContain("max-w-[40%]");
+    const icon = screen.getByRole("status");
+    expect(screen.getByText("Terminal 3").nextElementSibling).toBe(icon);
+    expect(icon.className).not.toContain("absolute");
+    // Hover must reach it, so it may not ignore the pointer.
+    expect(icon.className).not.toContain("pointer-events-none");
   });
 
-  it("keeps only the icon in a dense grid", () => {
+  it("falls back to the plain warning text when no detail is given", () => {
     renderHeader({ contextAlert: true, terminalCount: 6 });
-    const pill = screen.getByRole("status");
-    expect(pill.querySelector("svg")).not.toBeNull();
-    expect(pill.textContent).toBe("");
-    expect(pill.getAttribute("title")).toBe("Context threshold reached");
+    const icon = screen.getByRole("status");
+    expect(icon.querySelector("svg")).not.toBeNull();
+    expect(icon.getAttribute("title")).toBe("Context threshold reached");
   });
 });
