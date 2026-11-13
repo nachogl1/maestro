@@ -142,6 +142,25 @@ two messages on, it carries a count, such as `3`.
   Journal harvest prompt and the first prompt at launch never add one.
 - The icons are kept in memory only: they clear when Maestro restarts, and a closed terminal's messages go with it.
 
+## Injector: triggers
+
+Under the Injector, **Triggers** send a message on their own when a terminal's context reaches a percent.
+
+- The form: an optional **Name** (left empty, the trigger is called by the message's first four words); **Watch**
+  either `All terminals, also new ones` or `Only the ones ticked above (N)` (the Injector's ticks); then "When a
+  terminal reaches [80]% context, send the message to [only that terminal | every terminal it watches]" (the
+  default is `only that terminal`); the **Message**; **+ Add trigger**. A ticked trigger needs at least one tick.
+- Each row shows the name with an edit (pencil) and a delete button, `At 80% → only that terminal`, a `Watches`
+  pill (`3 terminals` or `all terminals`; click it to list them as `name · project`), the message, and
+  `Last fired 14:32 by api: sent to 1` (red with a failure count when some sends failed) or `Not fired yet`.
+- The pencil turns the row into the same form, filled in, with **Cancel** and **Save**. Saving a ticked trigger
+  watches the terminals ticked in the Injector at that moment.
+- A trigger fires once per terminal and fires again only after that terminal's context drops below the percent.
+- Triggers are saved in Maestro's app data (`injector-triggers.json`) and come back after a restart, re-armed. A
+  ticked trigger comes back marked `watches nothing, edit to pick terminals`, because terminals never survive a
+  restart; edit it to pick terminals. The same mark shows when every ticked terminal has closed. A damaged or
+  unreadable file loads as no triggers and the panel keeps working; the last-fired line is not saved.
+
 ## Tabs: dragging one onto another swaps the two
 
 In all four rows you can reorder by dragging (project tabs in the top bar, terminal tabs while a terminal is
