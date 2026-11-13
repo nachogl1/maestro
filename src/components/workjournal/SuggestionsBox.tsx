@@ -6,40 +6,18 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import {
   candidateLine,
+  candidateProject,
   useWorkJournalCandidatesStore,
-  WORK_JOURNAL_SOURCE_LABELS,
   type WorkJournalCandidate,
-  type WorkJournalCandidateSource,
 } from "@/stores/useWorkJournalCandidatesStore";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import { WorkJournalSourceTag } from "./WorkJournalSourceTag";
 
 /** Stable empty list, so the selector does not return a new array each render. */
 const NO_CANDIDATES: WorkJournalCandidate[] = [];
 
-const GIT_TAG_COLOR = "border-maestro-orange/50 text-maestro-orange";
-
-/** Source tag colours: one per source, one shared by the whole git family. */
-const SOURCE_TAG_COLORS: Record<WorkJournalCandidateSource, string> = {
-  github: GIT_TAG_COLOR,
-  git: GIT_TAG_COLOR,
-  pr: GIT_TAG_COLOR,
-  issue: GIT_TAG_COLOR,
-  claude: "border-maestro-blue/50 text-maestro-blue",
-  terminal: "border-maestro-green/50 text-maestro-green",
-  granola: "border-maestro-purple/50 text-maestro-purple",
-};
-
-/** For a source tag this build does not know. */
-const DEFAULT_TAG_COLOR = "border-maestro-border text-maestro-muted";
-
 const ICON_BUTTON =
   "rounded p-0.5 transition-colors hover:bg-maestro-card disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
-
-/** The candidate's project name, or null when it has none (a meeting, an older suggestion). */
-function candidateProject(candidate: WorkJournalCandidate): string | null {
-  const project = candidate.project;
-  return typeof project === "string" && project.trim() !== "" ? project.trim() : null;
-}
 
 export interface SuggestionsBoxProps {
   /** The viewed day (`YYYY-MM-DD`). */
@@ -267,13 +245,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                         {project}
                       </span>
                     )}
-                    <span
-                      className={`shrink-0 rounded border px-1 text-[10px] ${
-                        SOURCE_TAG_COLORS[candidate.source] ?? DEFAULT_TAG_COLOR
-                      }`}
-                    >
-                      {WORK_JOURNAL_SOURCE_LABELS[candidate.source] ?? candidate.source}
-                    </span>
+                    <WorkJournalSourceTag source={candidate.source} />
                   </div>
                   {/* gap-6 (24px) is wider than one button (17px), so one is not hit for the other. */}
                   <div className="flex shrink-0 items-center gap-6">
@@ -283,7 +255,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                       disabled={busy || acceptHint !== null}
                       className={`${ICON_BUTTON} text-maestro-green`}
                       aria-label={`Accept suggestion: ${label}`}
-                      title={acceptHint ?? "Accept: add this line to the page"}
+                      title={acceptHint ?? "Accept: add a card at the end of the page"}
                     >
                       <Check size={13} />
                     </button>

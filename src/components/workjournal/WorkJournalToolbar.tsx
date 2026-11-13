@@ -15,6 +15,7 @@ import {
   Underline,
 } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useState } from "react";
+import { entryTimeOf, TYPED_ENTRY_SOURCE } from "@/lib/workJournalEntry";
 
 /** One swatch in the text colour or highlight palette. */
 interface WorkJournalSwatch {
@@ -81,6 +82,7 @@ interface WorkJournalToolbarProps {
  * strike, headings, bullet, numbered and tick-box lists, links, and text
  * colour and highlight on the selection. No font family or size controls.
  * Colour, highlight and link options open in a row under the buttons.
+ * "+ Add entry" at the right end adds an empty hand-made entry card.
  */
 export function WorkJournalToolbar({ editor, disabled = false }: WorkJournalToolbarProps) {
   const state = useEditorState({
@@ -164,6 +166,18 @@ export function WorkJournalToolbar({ editor, disabled = false }: WorkJournalTool
     if (value) chain.setColor(value).run();
     else chain.unsetColor().run();
     setRow(null);
+  };
+
+  // An empty Typed card at the end of the page, stamped now, with the cursor in it.
+  const addEntry = (): void => {
+    editor
+      .chain()
+      .focus()
+      .appendWorkJournalEntry(
+        { time: entryTimeOf(new Date()), project: null, source: TYPED_ENTRY_SOURCE, text: "" },
+        { focus: true },
+      )
+      .run();
   };
 
   const setHighlight = (value: string | null): void => {
@@ -292,6 +306,16 @@ export function WorkJournalToolbar({ editor, disabled = false }: WorkJournalTool
             style={state.backgroundColor ? { backgroundColor: state.backgroundColor } : undefined}
           />
         </ToolButton>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={addEntry}
+          disabled={disabled}
+          title="Add an empty entry at the end of the page"
+          className="ml-auto rounded border border-maestro-accent/50 px-2 py-0.5 text-[11px] font-semibold text-maestro-accent transition-colors hover:bg-maestro-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          + Add entry
+        </button>
       </div>
 
       {row === "color" && (

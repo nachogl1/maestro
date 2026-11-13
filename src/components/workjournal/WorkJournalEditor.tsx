@@ -16,6 +16,12 @@ import {
   useWorkJournalStore,
   workJournalBodyBaseRev,
 } from "@/stores/useWorkJournalStore";
+import {
+  createWorkJournalEntryNode,
+  entryAppendStart,
+  WORK_JOURNAL_ENTRY_NODE,
+  WorkJournalEntry,
+} from "./WorkJournalEntryNode";
 
 /** How long typing must pause before the page body is saved. */
 export const WORK_JOURNAL_SAVE_DEBOUNCE_MS = 400;
@@ -25,6 +31,8 @@ const WORK_JOURNAL_EXTENSIONS = [
   StarterKit.configure({
     // A click must never navigate the app window; links are edited here.
     link: { openOnClick: false },
+    // The red line where a dragged card lands (styled in globals.css).
+    dropcursor: { color: false, width: 2, class: "work-journal-dropcursor" },
   }),
   // Text colour and highlight live on the textStyle mark; no font controls.
   TextStyle,
@@ -32,6 +40,8 @@ const WORK_JOURNAL_EXTENSIONS = [
   BackgroundColor,
   TaskList,
   TaskItem.configure({ nested: true }),
+  // Entry cards among the free notes.
+  WorkJournalEntry,
 ];
 
 const WORK_JOURNAL_SCHEMA = getSchema(WORK_JOURNAL_EXTENSIONS);
@@ -125,9 +135,10 @@ interface WorkJournalEditorProps {
  * the Notes markdown pipeline). Bold, italic, underline, headings, bullet,
  * numbered and tick-box lists, links, and text colour and highlight, through
  * the toolbar above the page, keyboard shortcuts and markdown-style input
- * rules. The body is saved as TipTap JSON (`editor.getJSON()`) after a
- * short pause in typing, and any unsaved change is flushed when the date
- * changes, the editor closes or the window is closed.
+ * rules, with entry cards among the free notes (see `WorkJournalEntry`) and
+ * "+ Add entry" at the end of the toolbar. The body is saved as TipTap JSON
+ * (`editor.getJSON()`) after a short pause in typing, and any unsaved change
+ * is flushed when the date changes, the editor closes or the window is closed.
  *
  * A body this build cannot read is shown read-only and never saved, so the
  * stored page is not overwritten.
@@ -201,30 +212,22 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   // A restore sends unsaved text through this before it replaces the journal.
   useEffect(() => registerWorkJournalEditorFlush(() => flushRef.current()), []);
 
-  // An accepted suggestion lands here: a new paragraph at the end of the
+  // An accepted suggestion lands here: an entry card at the end of the
   // body, saved right away. A trailing empty paragraph (a fresh page's only
   // line, or an empty last line) is filled instead of leaving a blank line.
-  // When the save fails, the line is taken back out, so a retry cannot add
+  // When the save fails, the card is taken back out, so a retry cannot add
   // a second copy.
   useEffect(() => {
     if (!editor) return;
-    return registerWorkJournalEditorAppend(date, async (line) => {
+    return registerWorkJournalEditorAppend(date, async (entry) => {
       const { replacing, revision } = useWorkJournalStore.getState();
       if (editor.isDestroyed || !editor.isEditable || replacing) return "refused";
       if (revision !== revisionRef.current) return "refused";
-      const doc = editor.state.doc;
-      const last = doc.lastChild;
-      const fill = last?.type.name === "paragraph" && last.content.size === 0;
-      const end = doc.content.size;
-      // Where the line's paragraph starts, kept current while the save runs.
-      let start = fill && last ? end - last.nodeSize : end;
-      const paragraph = { type: "paragraph", content: [{ type: "text", text: line }] };
-      const at = fill ? { from: start, to: end } : end;
-      const inserted = editor
-        .chain()
-        .insertContentAt(at, paragraph, { updateSelection: false })
-        .run();
-      if (!inserted) return "refused";
+      // Where the card starts, kept current while the save runs.
+      const { fill, start: appendStart } = entryAppendStart(editor.state.doc);
+      let start = appendStart;
+      const card = createWorkJournalEntryNode(editor.schema, entry);
+      if (!editor.commands.appendWorkJournalEntry(entry)) return "refused";
       const track = ({ transaction }: { transaction: Transaction }): void => {
         start = transaction.mapping.map(start, 1);
       };
@@ -238,14 +241,12 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
       if (saved) return "saved";
       if (!editor.isDestroyed) {
         const node = editor.state.doc.nodeAt(start);
-        // Left alone if the user already edited the line meanwhile.
-        if (node?.type.name === "paragraph" && node.textContent === line) {
-          const range = { from: start, to: start + node.nodeSize };
-          const tr = editor.state.tr;
-          if (fill) tr.replaceWith(range.from, range.to, editor.schema.nodes.paragraph.create());
-          else tr.delete(range.from, range.to);
-          editor.view.dispatch(tr);
-          // Puts the page without the line in the store (and on disk) now.
+        // Left alone if the user already edited the card meanwhile.
+        if (node?.type.name === WORK_JOURNAL_ENTRY_NODE && node.eq(card)) {
+          editor.view.dispatch(
+            editor.state.tr.delete(start, appendedEnd(editor.state.doc, start, node, fill)),
+          );
+          // Puts the page without the card in the store (and on disk) now.
           void saveNowRef.current();
         }
       }
@@ -308,6 +309,21 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
       />
     </>
   );
+}
+
+/**
+ * Where taking an appended card back out ends: after the card, plus the empty
+ * last line the editor adds after a final block (TipTap's trailing node) when
+ * the card did not fill one that was already there.
+ */
+function appendedEnd(doc: PmNode, start: number, card: PmNode, filled: boolean): number {
+  const end = start + card.nodeSize;
+  const next = doc.nodeAt(end);
+  const trailing =
+    next?.type.name === "paragraph" &&
+    next.content.size === 0 &&
+    end + next.nodeSize === doc.content.size;
+  return !filled && trailing && next ? end + next.nodeSize : end;
 }
 
 /** Read-only view of a body the editor cannot load; nothing here saves. */

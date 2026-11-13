@@ -267,10 +267,29 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
 - A suggestion with no project shows no pill: a Granola meeting, and any suggestion made before this change.
 - Each suggestion takes two lines: its text on top, across the full width of the box; underneath, the project pill
   and the source tag on the left and the Accept and Reject buttons on the right.
-- The green tick accepts a suggestion (adds its line to the page); the red cross rejects it (hides it for today).
+- The green tick accepts a suggestion (adds it to the page as an entry card); the red cross rejects it (hides it for
+  today).
   The two sit apart, with more than a button's width between them, so one is not hit for the other.
 - A project the suggestion run names that does not appear in that day's activity is left out, so a pill only ever
   names a real project.
+
+## Work Journal: entry cards
+
+- Each entry on a day's page is a card among your free notes. Left to right: a drag handle, the time in bold, then
+  the project chip and the source tag above the card's text, and a delete cross on the right.
+- In the card's text, everything up to and including the first colon shows bold as you type; with no colon all of it
+  is bold. The text keeps the page's formatting buttons. Enter in a card starts a free note right below it.
+- Click the time to change it: type `9:05` or `09:05` and press Enter or click away. A blank time means no time; a
+  value that is not a time goes back to the old one.
+- Click the project chip to pick another open project, or **No project** (a dashed grey "no project" chip).
+- The source tag cannot be changed. A card you add yourself says **Typed**; an accepted suggestion keeps its own tag
+  (Git · commit, Claude, Granola and so on) in the same colours as the Suggestions box.
+- **+ Add entry**, at the right end of the formatting toolbar, adds an empty Typed card at the end of the page with
+  the current time, no project, and the cursor in its text.
+- Accept in the Suggestions box adds a card at the end of the page with the suggestion's time, project and source.
+- Drag a card by its handle: a red line shows where it lands, between cards or between free notes.
+- The cross deletes a card at once, with no question; Ctrl+Z brings it back.
+- Pages written before cards keep their plain `HH:MM - ...` lines exactly as they were.
 
 ## Work Journal suggestions: Granola meetings
 

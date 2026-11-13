@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { JSONContent } from "@tiptap/react";
+import type { Editor, JSONContent } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectColorFor, resolveProjectColors } from "@/lib/projectColor";
 import {
@@ -134,11 +134,39 @@ function box(): HTMLElement {
   return screen.getByRole("region", { name: "Suggestions" });
 }
 
-/** The page body as text, one paragraph per entry. */
+/** An entry card as the page JSON stores an accepted suggestion. */
+function entryCard(
+  text: string,
+  attrs: { time: string | null; project: string | null; source: string },
+): JSONContent {
+  return { type: "journalEntry", attrs, content: [paragraph(text)] };
+}
+
+/** The empty last line the editor keeps after a final card (TipTap's trailing node). */
+const TRAILING: JSONContent = { type: "paragraph" };
+
+/**
+ * A body as text, one line per block: a card reads `HH:MM - text` (its text
+ * alone without a time). The empty last line after a final card is left out.
+ */
+function bodyLines(body: JSONContent): string[] {
+  const nodes = body.content ?? [];
+  const textOf = (node: JSONContent): string =>
+    node.text ?? (node.content ?? []).map(textOf).join("");
+  const lines = nodes.map((node) => {
+    const time = node.type === "journalEntry" ? node.attrs?.time : null;
+    return time ? `${time} - ${textOf(node)}` : textOf(node);
+  });
+  if (nodes.length > 1 && nodes[nodes.length - 2].type === "journalEntry") {
+    expect(nodes[nodes.length - 1]).toEqual(TRAILING);
+    lines.pop();
+  }
+  return lines;
+}
+
+/** The saved page body as text (see `bodyLines`). */
 function savedParagraphs(date = TODAY): string[] {
-  return (file.pages[date].body.content ?? []).map((node) =>
-    (node.content ?? []).map((t) => t.text ?? "").join(""),
-  );
+  return bodyLines(file.pages[date].body);
 }
 
 describe("SuggestionsBox", () => {
@@ -348,7 +376,8 @@ describe("SuggestionsBox", () => {
     expect(accept.parentElement?.parentElement).toBe(row);
   });
 
-  it("accept appends `time - action` at the end of the page and removes the candidate", async () => {
+  it("accept adds a card with the suggestion's time, project and source at the end of the page", async () => {
+    candidates[0].project = "demo-shop";
     render(<WorkJournalPanel />);
     await screen.findByText("13:42 - Merged the PR for the login fix");
 
@@ -363,26 +392,40 @@ describe("SuggestionsBox", () => {
       ).not.toBeInTheDocument(),
     );
     // Saved through the editor's save path, then removed from the activity file.
-    expect(savedParagraphs()).toEqual(["Standup", "13:42 - Merged the PR for the login fix"]);
+    expect(file.pages[TODAY].body.content).toEqual([
+      paragraph("Standup"),
+      entryCard("Merged the PR for the login fix", {
+        time: "13:42",
+        project: "demo-shop",
+        source: "github",
+      }),
+      TRAILING,
+    ]);
     expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c1" }]);
     const order = invokeMock.mock.calls.map(([c]) => c);
     expect(order.lastIndexOf("update_work_journal_page")).toBeLessThan(
       order.indexOf("accept_work_journal_candidate"),
     );
-    // The open editor shows the line too.
-    expect(
-      within(screen.getByLabelText("Work Journal page")).getByText(/13:42 - Merged/),
-    ).toBeVisible();
+    // The open editor shows the card too.
+    const card = screen
+      .getByLabelText("Work Journal page")
+      .querySelector<HTMLElement>('[data-type="journal-entry"]') as HTMLElement;
+    expect(within(card).getByLabelText("Entry time")).toHaveValue("13:42");
+    expect(within(card).getByRole("button", { name: /^Project demo-shop/ })).toBeVisible();
+    expect(within(card).getByText("Git · GitHub")).toBeVisible();
+    expect(card).toHaveTextContent("Merged the PR for the login fix");
     expect(within(box()).getAllByRole("listitem")).toHaveLength(2);
   });
 
-  it("accept of an untimed candidate appends its text as given", async () => {
+  it("accept of an untimed candidate adds a card with no time", async () => {
     render(<WorkJournalPanel />);
     await screen.findByText("Design sync on Work Journal");
     const item = screen.getByText("Design sync on Work Journal").closest("li") as HTMLElement;
     fireEvent.click(within(item).getByRole("button", { name: /^Accept suggestion: / }));
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c3" }]));
-    expect(savedParagraphs()).toEqual(["Standup", "Design sync on Work Journal"]);
+    expect(file.pages[TODAY].body.content?.[1]).toEqual(
+      entryCard("Design sync on Work Journal", { time: null, project: null, source: "granola" }),
+    );
   });
 
   it("accept replaces a fresh page's lone empty paragraph instead of leaving a blank line", async () => {
@@ -398,7 +441,14 @@ describe("SuggestionsBox", () => {
 
     expect(file.pages[TODAY].body).toEqual({
       type: "doc",
-      content: [paragraph("13:42 - Merged the PR for the login fix")],
+      content: [
+        entryCard("Merged the PR for the login fix", {
+          time: "13:42",
+          project: null,
+          source: "github",
+        }),
+        TRAILING,
+      ],
     });
   });
 
@@ -556,10 +606,10 @@ describe("SuggestionsBox", () => {
     fireEvent.click(within(item).getByRole("button", { name: new RegExp(`^${button}: `) }));
   }
 
-  /** The editor's paragraphs as text. */
+  /** The open editor's body as text (see `bodyLines`). */
   function editorParagraphs(): string[] {
-    const dom = screen.getByLabelText("Work Journal page");
-    return Array.from(dom.querySelectorAll("p")).map((p) => p.textContent ?? "");
+    const dom = screen.getByLabelText("Work Journal page") as HTMLElement & { editor: Editor };
+    return bodyLines(dom.editor.getJSON());
   }
 
   const LINE = "13:42 - Merged the PR for the login fix";
@@ -580,7 +630,15 @@ describe("SuggestionsBox", () => {
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toHaveLength(1));
     expect(file.pages[TODAY].body).toEqual({
       type: "doc",
-      content: [paragraph("Standup"), paragraph(LINE)],
+      content: [
+        paragraph("Standup"),
+        entryCard("Merged the PR for the login fix", {
+          time: "13:42",
+          project: null,
+          source: "github",
+        }),
+        TRAILING,
+      ],
     });
   });
 
@@ -605,6 +663,19 @@ describe("SuggestionsBox", () => {
     await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "c1" }]));
     expect(savedParagraphs()).toEqual(["Standup", LINE]);
     expect(editorParagraphs()).toEqual(["Standup", LINE]);
+  });
+
+  it("a failed save on a fresh page puts back its lone empty line", async () => {
+    file.pages[TODAY] = page(TODAY);
+    saveHook = async () => {
+      throw new Error("disk full");
+    };
+    await renderWithSuggestions();
+
+    clickRow(LINE, "Accept suggestion");
+    await within(box()).findByText(ACCEPT_SAVE_FAILED_ERROR);
+    expect(useWorkJournalStore.getState().pages[TODAY].body).toEqual(EMPTY_PAGE_BODY);
+    expect(callsTo("accept_work_journal_candidate")).toEqual([]);
   });
 
   it("when only the removal failed, Accept again retries the removal without a second line", async () => {

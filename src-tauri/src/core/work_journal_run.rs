@@ -475,7 +475,8 @@ pub fn catch_up_truncated_from(
 }
 
 /// A page's plain text: every text node of its TipTap JSON, each paragraph,
-/// heading or list item on its own line (blank lines dropped).
+/// heading or list item on its own line (blank lines dropped). An entry card
+/// is one line, `HH:MM - <text> | <source> | <project>` (see [`entry_line`]).
 pub fn page_text(body: &Value) -> String {
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -487,9 +488,54 @@ pub fn page_text(body: &Value) -> String {
 /// Node types whose content ends a line.
 const LINE_NODES: [&str; 3] = ["paragraph", "heading", "codeBlock"];
 
+/// The node type of a Work Journal entry card (the front end's
+/// `WORK_JOURNAL_ENTRY_NODE`).
+const ENTRY_NODE: &str = "journalEntry";
+
+/// The source of a card made by hand, and of one whose source is missing.
+const TYPED_SOURCE: &str = "typed";
+
+/// An entry card's line: `HH:MM - <text> | <source> | <project>`, the shape
+/// the prompt gives pending candidates. No time leaves out `HH:MM - `; no
+/// project leaves out ` | <project>`. Text, source and project are folded to
+/// one line. `None` for a card with no text.
+fn entry_line(node: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for child in node.get("content")?.as_array()? {
+        collect_text(child, &mut parts, &mut current);
+    }
+    flush_line(&mut parts, &mut current);
+    let text = one_line(&parts.join(" "));
+    if text.is_empty() {
+        return None;
+    }
+    let attr = |name: &str| {
+        node.get("attrs")
+            .and_then(|attrs| attrs.get(name))
+            .and_then(Value::as_str)
+            .map(one_line)
+            .filter(|value| !value.is_empty())
+    };
+    let source = attr("source").unwrap_or_else(|| TYPED_SOURCE.to_string());
+    let mut line = match attr("time") {
+        Some(time) => format!("{time} - {text} | {source}"),
+        None => format!("{text} | {source}"),
+    };
+    if let Some(project) = attr("project") {
+        line.push_str(" | ");
+        line.push_str(&project);
+    }
+    Some(line)
+}
+
 fn collect_text(node: &Value, lines: &mut Vec<String>, current: &mut String) {
     let kind = node.get("type").and_then(Value::as_str).unwrap_or("");
     match kind {
+        ENTRY_NODE => {
+            flush_line(lines, current);
+            lines.extend(entry_line(node));
+        }
         "text" => {
             if let Some(text) = node.get("text").and_then(Value::as_str) {
                 current.push_str(text);
@@ -2035,6 +2081,47 @@ mod tests {
         assert_eq!(
             page_text(&body),
             "Morning\nFixed the login bug\none\ntwo\na\nb"
+        );
+    }
+
+    #[test]
+    fn test_page_text_writes_a_card_as_time_text_source_and_project() {
+        let card = |attrs: Value, content: Value| json!({"type": "journalEntry", "attrs": attrs, "content": content});
+        let text =
+            |t: &str| json!([{"type": "paragraph", "content": [{"type": "text", "text": t}]}]);
+        let body = json!({
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "08:55 - Standup"}]},
+                card(
+                    json!({"time": "13:10", "project": "demo-shop", "source": "pr"}),
+                    json!([{"type": "paragraph", "content": [
+                        {"type": "text", "marks": [{"type": "bold"}], "text": "Login fix:"},
+                        {"type": "text", "text": " new rules"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "and   the PR merged"}
+                    ]}]),
+                ),
+                card(json!({"time": null, "project": null, "source": "granola"}), text("Planning call")),
+                card(json!({"time": "16:07", "project": " ", "source": "typed"}), text("Typed it")),
+                // A card with no attrs reads as a hand-made one.
+                card(json!(null), text("Bare card")),
+                // An empty card is no line.
+                card(json!({"time": "17:00", "project": "demo-shop", "source": "typed"}), json!([{"type": "paragraph"}])),
+                {"type": "paragraph", "content": [{"type": "text", "text": "A free note"}]}
+            ]
+        });
+        assert_eq!(
+            page_text(&body),
+            [
+                "08:55 - Standup",
+                "13:10 - Login fix: new rules and the PR merged | pr | demo-shop",
+                "Planning call | granola",
+                "16:07 - Typed it | typed",
+                "Bare card | typed",
+                "A free note",
+            ]
+            .join("\n")
         );
     }
 
