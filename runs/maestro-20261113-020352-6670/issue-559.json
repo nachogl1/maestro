@@ -1,0 +1,46 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 559,
+  "title": "Panels: one icon strip on the far left opens every panel, several side by side",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T02:05:21Z",
+  "finished_at": "2026-11-13T14:50:00Z",
+  "outcome": "merged",
+  "pr": 577,
+  "summary": "The left sidebar, the right-hand panel slot, the Git panel slot and their top-bar buttons are replaced by one icon strip on the far left; panels open beside it side by side in strip order, resize, refuse to open without room, and come back after a restart.",
+  "agents": [
+    {
+      "name": "dev-559",
+      "model": "opus",
+      "tokens_total": 300480
+    },
+    {
+      "name": "review-559",
+      "model": "opus",
+      "tokens_total": 176605
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": null,
+    "review_seconds": 366,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [
+    "The panel list lives in src/components/panels/panels.ts plus PANEL_IDS in the panel strip store; the Files, PROJECTS pill and Triggers stories each add one entry there"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/git/",
+      "what": "The Git panel's inner content keeps a 320 px minimum width, so when the strip panel is resized to 240-320 px the right side of the Git panel is cut off",
+      "why": "The issue said each panel's content stays unchanged",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

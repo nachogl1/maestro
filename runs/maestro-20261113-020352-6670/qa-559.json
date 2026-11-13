@@ -1,0 +1,62 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 559,
+  "title": "Panels: one icon strip on the far left opens every panel, several side by side",
+  "login": "nachogl1",
+  "pr": 577,
+  "merged_at": "2026-11-13T14:49:00Z",
+  "merge_commit": "87fa56781435d0ef90635d750a94229f0acba383",
+  "seam": "src/components/panels/",
+  "story": "Panels used to live in three places: a left sidebar with History, Infra and Settings tabs, a right-hand slot holding one of Notes, Second Brain, Launch, Work Journal, Workshop or Injector, and a separate right-hand Git panel, each with its own top-bar button plus a sidebar toggle in the project-tab bar. All of that is replaced by one thin icon strip on the far left; panels open beside it, several at once, in the strip's order, and each can be resized. Settings → Features now hides strip icons instead of top-bar buttons, and Keyboard shortcuts lists one Panels group.",
+  "checks": [
+    {
+      "key": "src/components/panels/open-close-icon",
+      "criterion": "Each icon opens and closes its panel, and open icons are marked",
+      "steps": "Start Maestro on a window at least 1400 px wide. Click the Notes icon in the left strip, then click it again. Repeat using the panel's ✕.",
+      "expected": "Notes opens right of the strip with its icon red and a small red bar beside it; a second click or ✕ closes it and clears the mark."
+    },
+    {
+      "key": "src/components/panels/side-by-side-order",
+      "criterion": "Several panels sit side by side in strip order",
+      "steps": "Close every panel. Click Settings, then Notes, then History.",
+      "expected": "Left to right: History, Notes, Settings."
+    },
+    {
+      "key": "src/components/panels/resize-edge",
+      "criterion": "Dragging a panel's right edge resizes only it, between 240 and 640 px",
+      "steps": "Open History and Notes. Drag Notes' right edge far right, then far left.",
+      "expected": "Only Notes changes width; it stops at about 640 px (or earlier if terminals would drop under 520 px) and at 240 px; History keeps its width."
+    },
+    {
+      "key": "src/components/panels/no-room-refusal",
+      "criterion": "A panel that would leave terminals under 520 px does not open; narrowing the window closes the newest panels first",
+      "steps": "On a window about 1200 px wide open History and Git, then click Notes. Then open Settings, Notes and History and narrow the window to about 900 px.",
+      "expected": "Notes does not open, its icon shakes and 'No room for Notes. Close a panel or make one narrower.' shows; on narrowing History then Notes close and 'Window got narrower: closed …' names them."
+    },
+    {
+      "key": "src/components/panels/restore-after-restart",
+      "criterion": "Open panels and widths come back after a restart",
+      "steps": "Open Git and Notes, widen Notes, quit Maestro, start it again.",
+      "expected": "Git and Notes open again with Notes at its new width."
+    },
+    {
+      "key": "src/components/panels/shortcuts",
+      "criterion": "Every existing panel shortcut opens the same panel",
+      "steps": "Press Alt+1, Alt+2, Alt+3, Alt+4, Ctrl+2 and Ctrl+5, each twice.",
+      "expected": "History, Infra, Settings, Injector, Git (on its Status tab) and Notes each open, then close."
+    },
+    {
+      "key": "src/components/panels/old-chrome-gone",
+      "criterion": "The old sidebar, right panel slot, top-bar panel buttons and sidebar toggle are gone",
+      "steps": "Look at the project-tab bar, the top bar and the window's right side.",
+      "expected": "No sidebar toggle; no Notes, Second Brain, Launch, Work Journal, Workshop, Injector or Git buttons up top; no panel on the right."
+    },
+    {
+      "key": "src/components/panels/features-toggle",
+      "criterion": "Settings → Features chooses which strip icons show",
+      "steps": "Open Settings, Features → Panel icons, switch off Samurai launch.",
+      "expected": "The Launch icon leaves the strip and an open Launch panel closes."
+    }
+  ],
+  "no_qa_reason": null
+}
