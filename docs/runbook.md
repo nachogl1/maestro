@@ -196,6 +196,24 @@ in, so you see exactly what that agent sees. It has no keyboard shortcut (Alt+4 
   full path** and **Open in default app** (it opens in the file manager). A line under the tree confirms a copy.
 - The panel never changes a file: it cannot edit, rename or delete anything.
 
+## PROJECTS pill: open issues per label
+
+The **PROJECTS** pill in the top bar, beside the GitHub badge, opens a list you step into one level at a time. The
+back arrow and the path at the top (click **Projects** or the project's name) take you back up.
+
+- **Projects:** every open project tab with its number of open issues. A project whose folder has no GitHub
+  repository is greyed out with **no GitHub repository** and cannot be opened.
+- **Labels:** every label of that repository with its open-issue count. A label with no open issue shows **0** and
+  cannot be opened.
+- **Issues:** that label's open issues by number and title; click one to open it on GitHub in your browser.
+- **Lock button** (top right of the list): **Blocked counted** (the default) counts and lists blocked issues too, each
+  with a small lock mark; **Ready only** leaves them out. Hover it for the explanation. The choice is remembered
+  after a restart. "Blocked" is the issue map's rule: an open blocker by GitHub's own "blocked by" link or the
+  issue's `### Blocked by` section, so the pill and the map always agree.
+- The list asks GitHub each time you open it, with a spinner while it loads; nothing refreshes in the background.
+  When a repository fails to load, its labels level shows the error and **Try again**. A repository with more than
+  1000 issues says its counts may be low, because only the newest 1000 are read (the issue map's limit).
+
 ## History tab: order and last message time
 
 - Inside each project, the directory groups (the checkout, each worktree, and any other directory a conversation
