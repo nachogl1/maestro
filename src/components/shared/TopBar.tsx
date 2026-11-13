@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bird, LayoutGrid, Minus, Plus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ProjectsPill } from "@/components/projects-pill/ProjectsPill";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
@@ -116,6 +117,7 @@ export function TopBar({
         <ParkedRunsBadge onNavigate={onParkNavigate} />
         {/* GitHub watchdog totals (review requests / assigned issues) */}
         {onWatchdogNavigate && <GitHubWatchdogBadge onNavigate={onWatchdogNavigate} />}
+        <ProjectsPill />
         {/* Active project: adds a pre-launch slot to its grid (mounting the
             grid first when the project is still on its idle landing). */}
         {hasActiveProject && !eagleView && (

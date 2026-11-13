@@ -86,3 +86,13 @@ describe("TopBar tidy-up button", () => {
     expect(screen.queryByRole("button", { name: "Tidy up terminals" })).toBeNull();
   });
 });
+
+describe("TopBar PROJECTS pill", () => {
+  afterEach(cleanup);
+
+  it("shows the PROJECTS pill in the bar", () => {
+    render(<TopBar {...baseProps} />);
+
+    expect(screen.getByRole("button", { name: /PROJECTS/ })).toBeTruthy();
+  });
+});
