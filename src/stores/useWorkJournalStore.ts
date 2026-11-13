@@ -8,7 +8,7 @@ import {
   localDateString,
   shiftJournalDate,
 } from "@/lib/workJournalDates";
-import type { WorkJournalEntryDraft } from "@/lib/workJournalEntry";
+import type { WorkJournalEntryDraft, WorkJournalEntryTarget } from "@/lib/workJournalEntry";
 
 /** How a page came to exist (backend `PageOrigin`). */
 export type WorkJournalPageOrigin = "auto" | "manual";
@@ -579,6 +579,55 @@ export function appendWorkJournalEntry(
 ): Promise<WorkJournalAppendResult> {
   const append = editorAppenders.get(date);
   return append ? append(entry) : Promise.resolve("refused");
+}
+
+/**
+ * What rewriting an entry card's text did: as for adding one, plus
+ * `card_changed` (no card reads as the target any more, nothing changed).
+ */
+export type WorkJournalUpdateResult = WorkJournalAppendResult | "card_changed";
+
+/**
+ * Rewrites the text of the card `target` names and saves it. Provided by the
+ * open editor for that date.
+ */
+export type WorkJournalEntryUpdater = (
+  target: WorkJournalEntryTarget,
+  text: string,
+) => Promise<WorkJournalUpdateResult>;
+
+/** The open editor's updater per date. */
+const editorUpdaters = new Map<string, WorkJournalEntryUpdater>();
+
+/**
+ * Registers the open editor's updater for `date`, so an accepted update
+ * suggestion rewrites its card through the editor. Returns the unregister
+ * function.
+ */
+export function registerWorkJournalEditorUpdate(
+  date: string,
+  update: WorkJournalEntryUpdater,
+): () => void {
+  editorUpdaters.set(date, update);
+  return () => {
+    if (editorUpdaters.get(date) === update) editorUpdaters.delete(date);
+  };
+}
+
+/**
+ * Rewrites the text of the card `target` names on the page for `date`
+ * through its open editor and saves it: `refused` with no editor, and
+ * `card_changed` for no target (an unreadable suggestion) or no card that
+ * still reads as it. Anything but `saved` leaves the card as it was.
+ */
+export function updateWorkJournalEntry(
+  date: string,
+  target: WorkJournalEntryTarget | null,
+  text: string,
+): Promise<WorkJournalUpdateResult> {
+  const update = editorUpdaters.get(date);
+  if (!update) return Promise.resolve("refused");
+  return target ? update(target, text) : Promise.resolve("card_changed");
 }
 
 function errorMessage(error: unknown): string {

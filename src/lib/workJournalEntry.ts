@@ -38,3 +38,18 @@ export function normalizeEntryTime(raw: string): string | null | undefined {
 export function entryTimeOf(now: Date): string {
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 }
+
+/**
+ * The entry card an update suggestion rewrites, as it read when the
+ * suggestion was made: its time (`HH:MM`, or null), project and text.
+ */
+export interface WorkJournalEntryTarget {
+  time: string | null;
+  project: string;
+  text: string;
+}
+
+/** Text folded to one line, the way the backend reads a card. */
+export function oneLine(text: string): string {
+  return text.split(/\s+/).filter(Boolean).join(" ");
+}

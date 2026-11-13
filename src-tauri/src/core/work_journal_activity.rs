@@ -188,6 +188,45 @@ pub struct Candidate {
     pub state: CandidateState,
     /// When the candidate was added (RFC 3339) — the pruning clock.
     pub created_at: String,
+    /// For an update suggestion (issue #565), the entry card it rewrites, as
+    /// the card read when the suggestion was made; none for a new entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updates: Option<UpdatedCard>,
+}
+
+/// The entry card an update suggestion rewrites: the earliest card on the
+/// page with the candidate's project and a source other than typed, as it
+/// read when the suggestion was made. Accept rewrites the card's text only
+/// when the card still reads so; the time is the card's, kept as is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatedCard {
+    /// The card's time, `HH:MM`; none for an untimed card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+    /// The card's text, on one line.
+    pub text: String,
+}
+
+/// One candidate a run writes: a new one, an update suggestion for an entry
+/// card (`updates`), or the rewrite in place of a pending candidate
+/// (`replaces`, its id), so a project's waiting summary is never doubled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateWrite {
+    pub candidate: NewCandidate,
+    pub updates: Option<UpdatedCard>,
+    pub replaces: Option<String>,
+}
+
+impl CandidateWrite {
+    /// A new candidate: no card to update, nothing to rewrite.
+    pub fn new(candidate: NewCandidate) -> Self {
+        Self {
+            candidate,
+            updates: None,
+            replaces: None,
+        }
+    }
 }
 
 /// The caller-supplied part of a new candidate; it always starts pending.
@@ -746,30 +785,97 @@ pub fn validate_candidate(candidate: &NewCandidate) -> ActivityResult<NewCandida
 }
 
 /// Adds candidates (all pending) and returns them with their new ids.
-/// Nothing is written if any candidate is invalid.
+/// Nothing is written if any candidate is invalid. A run writes through
+/// [`write_candidates`]; this is the tests' short form of it.
+#[cfg(test)]
 pub async fn add_candidates(dir: &Path, new: Vec<NewCandidate>) -> ActivityResult<Vec<Candidate>> {
+    write_candidates(dir, new.into_iter().map(CandidateWrite::new).collect()).await
+}
+
+/// Checks an update suggestion's card: its time as `HH:MM` and its text
+/// folded to one non-empty line.
+fn validate_updated_card(card: &UpdatedCard) -> ActivityResult<UpdatedCard> {
+    let time = match &card.time {
+        Some(time) => Some(
+            NaiveTime::parse_from_str(time, "%H:%M")
+                .map_err(|_| ActivityError::InvalidTime(time.clone()))?
+                .format("%H:%M")
+                .to_string(),
+        ),
+        None => None,
+    };
+    let text = card.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return Err(ActivityError::EmptyText);
+    }
+    Ok(UpdatedCard { time, text })
+}
+
+/// Checks one write and returns it normalised: its candidate (see
+/// [`validate_candidate`]) and the card it updates, if any.
+pub fn validate_write(write: &CandidateWrite) -> ActivityResult<CandidateWrite> {
+    Ok(CandidateWrite {
+        candidate: validate_candidate(&write.candidate)?,
+        updates: write
+            .updates
+            .as_ref()
+            .map(validate_updated_card)
+            .transpose()?,
+        replaces: write.replaces.clone(),
+    })
+}
+
+/// Writes candidates (all pending) and returns them as stored. A write with
+/// `replaces` rewrites that candidate in place (same id, new text, time,
+/// source, project, card and clock) while it is still pending on the same
+/// date; when it is gone or was rejected meanwhile, the write is added as a
+/// new candidate instead. Nothing is written if any write is invalid.
+pub async fn write_candidates(
+    dir: &Path,
+    writes: Vec<CandidateWrite>,
+) -> ActivityResult<Vec<Candidate>> {
     let now = Local::now();
-    let mut added = Vec::with_capacity(new.len());
-    for candidate in &new {
-        let valid = validate_candidate(candidate)?;
-        added.push(Candidate {
-            id: uuid::Uuid::new_v4().to_string(),
-            date: valid.date,
-            time: valid.time,
-            text: valid.text,
-            source: valid.source,
-            project: valid.project,
+    let valid = writes
+        .iter()
+        .map(validate_write)
+        .collect::<ActivityResult<Vec<_>>>()?;
+    let launch = current_launch_id();
+    let utc_now = now.with_timezone(&Utc);
+    let _guard = lock(dir).await?;
+    let mut file = load(dir, utc_now, launch).await?;
+    let mut written = Vec::with_capacity(valid.len());
+    for CandidateWrite {
+        candidate,
+        updates,
+        replaces,
+    } in valid
+    {
+        let target = replaces.as_deref().and_then(|id| {
+            file.candidates.iter_mut().find(|c| {
+                c.id == id && c.state == CandidateState::Pending && c.date == candidate.date
+            })
+        });
+        let stored = Candidate {
+            id: target
+                .as_ref()
+                .map_or_else(|| uuid::Uuid::new_v4().to_string(), |c| c.id.clone()),
+            date: candidate.date,
+            time: candidate.time,
+            text: candidate.text,
+            source: candidate.source,
+            project: candidate.project,
             state: CandidateState::Pending,
             created_at: stamp(now),
-        });
+            updates,
+        };
+        match target {
+            Some(existing) => *existing = stored.clone(),
+            None => file.candidates.push(stored.clone()),
+        }
+        written.push(stored);
     }
-    let launch = current_launch_id();
-    let now = now.with_timezone(&Utc);
-    let _guard = lock(dir).await?;
-    let mut file = load(dir, now, launch).await?;
-    file.candidates.extend(added.iter().cloned());
-    save(dir, &mut file, now, launch).await?;
-    Ok(added)
+    save(dir, &mut file, utc_now, launch).await?;
+    Ok(written)
 }
 
 /// Sets one candidate's state; errors if no candidate has that id.
@@ -1197,6 +1303,7 @@ mod tests {
             project: None,
             state: CandidateState::Pending,
             created_at: created_at.into(),
+            updates: None,
         }
     }
 
@@ -1909,6 +2016,137 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(older.project, None);
+    }
+
+    fn summary_write(text: &str, replaces: Option<&str>) -> CandidateWrite {
+        CandidateWrite {
+            candidate: NewCandidate {
+                project: Some("demo-shop".to_string()),
+                ..new_candidate("2026-10-15", Some("11:00"), text)
+            },
+            updates: Some(UpdatedCard {
+                time: Some("11:00".to_string()),
+                text: "Cart: totals fixed".to_string(),
+            }),
+            replaces: replaces.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_write_candidates_rewrites_a_pending_summary_in_place_and_keeps_its_card() {
+        let dir = tempdir().unwrap();
+        let first = write_candidates(dir.path(), vec![summary_write("Cart: coupons", None)])
+            .await
+            .unwrap();
+        let id = first[0].id.clone();
+        assert_eq!(
+            first[0].updates,
+            Some(UpdatedCard {
+                time: Some("11:00".to_string()),
+                text: "Cart: totals fixed".to_string(),
+            })
+        );
+
+        let second = write_candidates(
+            dir.path(),
+            vec![summary_write("Cart: coupons and   totals", Some(&id))],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second[0].id, id, "rewritten in place, same id");
+        let listed = list_candidates(dir.path(), "2026-10-15").await.unwrap();
+        assert_eq!(listed.len(), 1, "never doubled");
+        assert_eq!(listed[0].text, "Cart: coupons and totals");
+        assert_eq!(listed[0].state, CandidateState::Pending);
+        // Shown to the front end as `updates`, left out for a new entry.
+        let json = serde_json::to_value(&listed[0]).unwrap();
+        assert_eq!(
+            json["updates"],
+            serde_json::json!({"time": "11:00", "text": "Cart: totals fixed"})
+        );
+        let plain = add_candidates(dir.path(), vec![new_candidate("2026-10-15", None, "x")])
+            .await
+            .unwrap();
+        assert!(serde_json::to_value(&plain[0])
+            .unwrap()
+            .get("updates")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_write_candidates_adds_anew_when_the_summary_to_rewrite_is_gone_or_rejected() {
+        let dir = tempdir().unwrap();
+        let first = add_candidates(
+            dir.path(),
+            vec![new_candidate("2026-10-15", Some("09:00"), "Rejected one")],
+        )
+        .await
+        .unwrap();
+        set_candidate_state(dir.path(), &first[0].id, CandidateState::Rejected)
+            .await
+            .unwrap();
+
+        for replaces in [first[0].id.as_str(), "no-such-id"] {
+            write_candidates(
+                dir.path(),
+                vec![summary_write(
+                    &format!("New for {replaces}"),
+                    Some(replaces),
+                )],
+            )
+            .await
+            .unwrap();
+        }
+
+        let listed = list_candidates(dir.path(), "2026-10-15").await.unwrap();
+        let rows: Vec<(&str, CandidateState)> =
+            listed.iter().map(|c| (c.text.as_str(), c.state)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Rejected one", CandidateState::Rejected),
+                (
+                    format!("New for {}", first[0].id).as_str(),
+                    CandidateState::Pending
+                ),
+                ("New for no-such-id", CandidateState::Pending),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_candidates_refuses_an_unreadable_card_and_writes_nothing() {
+        let dir = tempdir().unwrap();
+        for card in [
+            UpdatedCard {
+                time: Some("soon".to_string()),
+                text: "Cart".to_string(),
+            },
+            UpdatedCard {
+                time: None,
+                text: " \n ".to_string(),
+            },
+        ] {
+            let bad = CandidateWrite {
+                updates: Some(card),
+                ..summary_write("Cart: coupons", None)
+            };
+            let ok = summary_write("Cart: fine", None);
+            assert!(write_candidates(dir.path(), vec![ok, bad]).await.is_err());
+        }
+        assert!(list_candidates(dir.path(), "2026-10-15")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // A candidate stored before updates were still reads, as a new entry.
+        let older: Candidate = serde_json::from_value(serde_json::json!({
+            "id": "c-old", "date": "2026-10-15", "time": "09:00", "text": "Older line",
+            "source": "git", "state": "pending", "createdAt": "2026-10-15T09:00:00+01:00"
+        }))
+        .unwrap();
+        assert_eq!(older.updates, None);
     }
 
     #[tokio::test]

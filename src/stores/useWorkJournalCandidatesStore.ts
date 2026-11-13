@@ -2,10 +2,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { localDateString, msUntilNextLocalMidnight } from "@/lib/workJournalDates";
-import type { WorkJournalEntryDraft } from "@/lib/workJournalEntry";
+import {
+  normalizeEntryTime,
+  oneLine,
+  type WorkJournalEntryDraft,
+  type WorkJournalEntryTarget,
+} from "@/lib/workJournalEntry";
 import { listenWorkJournalChanged } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
-import { appendWorkJournalEntry, useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import {
+  appendWorkJournalEntry,
+  updateWorkJournalEntry,
+  useWorkJournalStore,
+  type WorkJournalUpdateResult,
+} from "@/stores/useWorkJournalStore";
 
 /**
  * Where a candidate's activity came from (backend `CandidateSource`). `git`
@@ -40,6 +50,18 @@ export interface WorkJournalCandidate {
   project?: string | null;
   state: WorkJournalCandidateState;
   createdAt: string;
+  /**
+   * For an update suggestion, the entry card it rewrites as the card read
+   * when the suggestion was made (its project is the candidate's); absent
+   * for a new entry.
+   */
+  updates?: WorkJournalCandidateUpdates | null;
+}
+
+/** The card an update suggestion rewrites (backend `UpdatedCard`). */
+export interface WorkJournalCandidateUpdates {
+  time?: string | null;
+  text: string;
 }
 
 /** Emitted by the backend when a candidate run added candidates. */
@@ -68,6 +90,18 @@ export const ACCEPT_NO_EDITOR_ERROR =
 
 /** Shown when the page save failed during Accept (the line was taken back out). */
 export const ACCEPT_SAVE_FAILED_ERROR = "The line could not be saved; the suggestion stays.";
+
+/** Shown when an update suggestion no longer fits its card (the card was left as it is). */
+export const ACCEPT_CARD_CHANGED_ERROR =
+  "Your entry changed or is gone since this update was suggested, so it was left as it is. " +
+  "Reject the update to clear it.";
+
+/** The error Accept shows for each way adding or rewriting the card can fail. */
+const ACCEPT_ERRORS: Record<Exclude<WorkJournalUpdateResult, "saved">, string> = {
+  refused: ACCEPT_NO_EDITOR_ERROR,
+  save_failed: ACCEPT_SAVE_FAILED_ERROR,
+  card_changed: ACCEPT_CARD_CHANGED_ERROR,
+};
 
 /**
  * Slack after local midnight before the badge moves to the new day, so a
@@ -106,6 +140,35 @@ export function candidateEntry(candidate: WorkJournalCandidate): WorkJournalEntr
   };
 }
 
+/** Whether the candidate is an update suggestion: it rewrites a card instead of adding one. */
+export function isUpdateCandidate(candidate: WorkJournalCandidate): boolean {
+  return candidate.updates != null;
+}
+
+/**
+ * The card an update suggestion rewrites: its time, the candidate's project
+ * and the card's text. Null when the candidate is not an update, or its card
+ * or new text cannot be read (no project, a blank text, a time that is not
+ * one), so Accept never guesses which card to rewrite.
+ */
+export function candidateUpdateTarget(
+  candidate: WorkJournalCandidate,
+): WorkJournalEntryTarget | null {
+  const updates = candidate.updates;
+  const project = candidateProject(candidate);
+  if (!updates || typeof updates !== "object" || !project) return null;
+  if (typeof updates.text !== "string" || oneLine(updates.text) === "") return null;
+  if (typeof candidate.text !== "string" || oneLine(candidate.text) === "") return null;
+  const time =
+    updates.time == null
+      ? null
+      : typeof updates.time === "string"
+        ? normalizeEntryTime(updates.time)
+        : undefined;
+  if (time === undefined) return null;
+  return { time, project, text: updates.text };
+}
+
 interface WorkJournalCandidatesState {
   /** Candidates (pending and rejected) per loaded date. */
   byDate: Record<string, WorkJournalCandidate[]>;
@@ -131,8 +194,9 @@ interface WorkJournalCandidatesState {
   refreshToday: () => Promise<void>;
   /**
    * Adds the candidate as an entry card at the end of its page through the
-   * open editor, then removes it from the activity file. Nothing is removed
-   * when the card could not be added.
+   * open editor (an update suggestion rewrites its card's text instead), then
+   * removes it from the activity file. Nothing is removed when the card could
+   * not be added or rewritten.
    */
   accept: (candidate: WorkJournalCandidate) => Promise<void>;
   /** Marks the candidate rejected: it leaves the box and is not proposed again that day. */
@@ -253,11 +317,15 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
       let added = get().landedIds.includes(candidate.id);
       try {
         if (!added) {
-          const result = await appendWorkJournalEntry(candidate.date, candidateEntry(candidate));
+          const result = isUpdateCandidate(candidate)
+            ? await updateWorkJournalEntry(
+                candidate.date,
+                candidateUpdateTarget(candidate),
+                candidate.text,
+              )
+            : await appendWorkJournalEntry(candidate.date, candidateEntry(candidate));
           if (result !== "saved") {
-            set({
-              error: result === "save_failed" ? ACCEPT_SAVE_FAILED_ERROR : ACCEPT_NO_EDITOR_ERROR,
-            });
+            set({ error: ACCEPT_ERRORS[result] });
             return;
           }
           added = true;

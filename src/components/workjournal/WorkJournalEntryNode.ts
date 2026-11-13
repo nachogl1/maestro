@@ -2,7 +2,13 @@ import type { Node as PmNode, Schema } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type Selection, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { mergeAttributes, Node, ReactNodeViewRenderer } from "@tiptap/react";
-import { TYPED_ENTRY_SOURCE, type WorkJournalEntryDraft } from "@/lib/workJournalEntry";
+import {
+  normalizeEntryTime,
+  oneLine,
+  TYPED_ENTRY_SOURCE,
+  type WorkJournalEntryDraft,
+  type WorkJournalEntryTarget,
+} from "@/lib/workJournalEntry";
 import { WorkJournalEntryCard } from "./WorkJournalEntryCard";
 
 /**
@@ -38,6 +44,38 @@ export function createWorkJournalEntryNode(schema: Schema, entry: WorkJournalEnt
     { time: entry.time, project: entry.project, source: entry.source },
     schema.nodes.paragraph.create(null, text),
   );
+}
+
+/**
+ * The card `target` names, and where it starts: the first card on the page
+ * not typed by hand whose project, time and text (each on one line, the way
+ * the backend read them) are the target's. Null when no card reads so any
+ * more: it was edited, retimed, moved to another project or deleted.
+ */
+export function findEntryCard(
+  doc: PmNode,
+  target: WorkJournalEntryTarget,
+): { node: PmNode; pos: number } | null {
+  let found: { node: PmNode; pos: number } | null = null;
+  doc.descendants((node, pos) => {
+    if (found) return false;
+    if (node.type.name !== WORK_JOURNAL_ENTRY_NODE) return true;
+    const { time, project, source } = node.attrs;
+    const matches =
+      source !== TYPED_ENTRY_SOURCE &&
+      oneLine(String(project ?? "")) === oneLine(target.project) &&
+      (normalizeEntryTime(String(time ?? "")) ?? null) === target.time &&
+      oneLine(node.textBetween(0, node.content.size, " ", " ")) === oneLine(target.text);
+    if (matches) found = { node, pos };
+    return false;
+  });
+  return found;
+}
+
+/** `card` with its text replaced by `text`, its time, project and source kept. */
+export function entryWithText(card: PmNode, text: string): PmNode {
+  const { schema } = card.type;
+  return card.type.create(card.attrs, schema.nodes.paragraph.create(null, schema.text(text)));
 }
 
 /**
