@@ -53,6 +53,14 @@ blocker sources (the body's `### Blocked by` section and GitHub's own blocked-by
 - Opening or closing a project tab updates the list in an open map window; there is no need to reopen the map.
   Projects whose tab is closed are not listed.
 
+## Issue map: who opened an issue
+
+- Clicking a box opens its details card. The card's grey line reads
+  `<Level N or Epics> · GitHub state: <STATE> · opened by <login> · assigned to <logins>`, or ends in
+  `· nobody assigned`. The exported HTML map shows the same line in the same place.
+- `opened by unknown` means GitHub gave no author login: the login is missing or empty, or the account was
+  deleted (GitHub reports a deleted account as `ghost`).
+
 ## Terminals: moving focus between terminals
 
 **Ctrl+Alt+Right** and **Ctrl+Alt+Left** (Cmd+Alt on a Mac) move the focus to the next and previous terminal,

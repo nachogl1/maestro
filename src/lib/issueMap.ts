@@ -123,6 +123,17 @@ export const START_HIDDEN_STATUSES: IssueMapStatus[] = ["closed"];
 /** Name of the far-left column that holds the epics. */
 export const EPICS_COLUMN = "Epics";
 
+/** Shown as "opened by unknown" when GitHub names no usable author. */
+const UNKNOWN_AUTHOR = "unknown";
+/** The login GitHub reports for an issue whose author's account was deleted. */
+const DELETED_ACCOUNT_LOGIN = "ghost";
+
+/** Who opened the issue; the author field is untrusted, so any odd shape is "unknown". */
+function openedByLogin(author: { login?: unknown } | null | undefined): string {
+  const login = typeof author?.login === "string" ? author.login.trim() : "";
+  return login === "" || login === DELETED_ACCOUNT_LOGIN ? UNKNOWN_AUTHOR : login;
+}
+
 /** Label name → kind. First match wins, so order is precedence. */
 const KIND_LABELS: Array<[IssueMapKind, RegExp]> = [
   ["outside", /^outside-change$/i],
@@ -172,6 +183,8 @@ export interface IssueMapNode {
   /** Raw issue body ("" when the links did not load). */
   body: string;
   assignees: string[];
+  /** Login of whoever opened the issue, else "unknown". */
+  openedBy: string;
   /** Native parent issue, when GitHub names one (informational). */
   epic: number | null;
   /** The drawn epic this story belongs to (its sub-issue link), else null. */
@@ -439,6 +452,7 @@ export function buildIssueMap(
         labels: issue.labels.map((l) => l.name),
         body: graphNode ? graphNode.body : (links[n]?.body ?? ""),
         assignees: (issue.assignees ?? []).map((a) => a.login),
+        openedBy: openedByLogin(issue.author),
         epic: graphNode ? graphNode.epic : null,
         parent: parent.get(n) ?? null,
         stories: (kids.get(n) ?? []).map(blockerOf),

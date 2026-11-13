@@ -1172,7 +1172,7 @@ export function IssueMapModal({
           </div>
           <span className="text-maestro-muted">
             {focusNode.kind === "epic" ? EPICS_COLUMN : `Level ${focusNode.level}`} · GitHub state:{" "}
-            {focusNode.state}
+            {focusNode.state} · opened by {focusNode.openedBy}
             {focusNode.assignees.length > 0
               ? ` · assigned to ${focusNode.assignees.join(", ")}`
               : " · nobody assigned"}

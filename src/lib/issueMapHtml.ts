@@ -68,6 +68,7 @@ interface ExportMeta {
   /** Plain-text description, already cut for the tooltip. */
   body: string;
   assignees: string[];
+  openedBy: string;
   url: string;
   blockers: Array<{ n: number; title: string; state: string }>;
   waiting: number[];
@@ -178,7 +179,7 @@ function tipHtml(id){const m=META[id];const [ic,name,mean]=STATUS[m.status];cons
 let h='<h3>#'+id+' '+esc(m.title)+'</h3>';
 h+='<div class="row"><b>Progress</b> <span class="st">'+ic+' '+name+'</span> <span class="m">'+esc(mean)+'</span></div>';
 h+='<div class="row"><b>Who takes it</b> <span class="st i k-'+m.kind+'">'+kname+'</span> <span class="m">'+esc(kmean)+'</span></div>';
-h+='<span class="m">'+(m.kind==='epic'?EPICS:'Level '+m.level)+' · GitHub state: '+esc(m.state)+(m.assignees.length?' · assigned to '+esc(m.assignees.join(', ')):' · nobody assigned')+'</span>';
+h+='<span class="m">'+(m.kind==='epic'?EPICS:'Level '+m.level)+' · GitHub state: '+esc(m.state)+' · opened by '+esc(m.openedBy)+(m.assignees.length?' · assigned to '+esc(m.assignees.join(', ')):' · nobody assigned')+'</span>';
 h+='<div class="row"><b>Labels:</b> '+(m.labels.length?m.labels.map(l=>'<span class="lbl'+(l===m.kindLabel?' k':'')+'">'+esc(l)+'</span>').join(''):'none')+'</div>';
 h+='<div class="row"><b>Description</b><div class="desc">'+(m.body?esc(m.body):'<i>empty</i>')+'</div></div>';
 if(m.kind==='epic'){h+='<div style="margin-top:6px"><b>Stories:</b> '+(m.stories.length?'':'none linked as sub-issues')+'</div>';
@@ -352,6 +353,7 @@ export function buildIssueMapHtml(map: IssueMap, options: IssueMapHtmlOptions): 
       labels: n.labels,
       body: descriptionText(n.body),
       assignees: n.assignees,
+      openedBy: n.openedBy,
       url: n.url,
       blockers: n.blockers.map((b) => ({ n: b.number, title: b.title, state: b.state })),
       waiting: n.waiting,
