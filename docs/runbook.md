@@ -101,6 +101,22 @@ full-height columns**:
 After tidying, terminals still move and resize as usual: drag a divider or a tile edge, or drag a terminal onto
 another one or onto an edge of the screen.
 
+## Terminals: the header in narrow columns
+
+Each terminal header follows the width of its own column, not the number of terminals open, so two terminals in
+narrow columns look the same as six. As the column gets narrower, the header gives way in this order:
+
+- **Below 480 px**: park, pin, zoom and font size fold into one **⋯** menu (More terminal actions). Each item does
+  what its button did and shows the same shortcut; Alt+Shift+P still pins while the menu is closed. Close and
+  Launch stay visible, and the AI icon shrinks to a small icon.
+- **Below 360 px**: the git branch hides.
+- **Below 260 px**: the project name hides (eagle view).
+- The terminal name stays longest and is cut with **…** only when nothing else is left to give. Hover over the
+  name to read in full whatever is hidden or cut: the name, the project and the branch.
+
+The AI icon and the Samurai badge show at every width. When the context threshold is reached, a small red warning
+icon blinks right after the terminal name; hover over it for "Context threshold reached" and the percentage.
+
 ## Tabs: dragging one onto another swaps the two
 
 In all four rows you can reorder by dragging (project tabs in the top bar, terminal tabs while a terminal is

@@ -99,15 +99,17 @@ describe("TerminalView context alert frame", () => {
     expect(frame(container).classList.contains("terminal-cell-context-alert")).toBe(false);
   });
 
-  it("shows the header banner with percent and threshold only while alerting", () => {
+  it("shows the header warning with percent and threshold only while alerting", () => {
     seedSession(87.3);
     const { container, queryByRole } = render(
       <TerminalView sessionId={SESSION_ID} onKill={() => {}} />,
     );
-    const pill = queryByRole("status");
-    expect(pill).not.toBeNull();
-    expect(pill?.textContent).toContain("Context threshold reached");
-    expect(pill?.getAttribute("title")).toBe("Context 87% ≥ 80% alert");
+    // Issue #552: a red icon after the name; the words and numbers are on hover.
+    const icon = queryByRole("status");
+    expect(icon).not.toBeNull();
+    expect(icon?.getAttribute("title")).toBe(
+      "Context threshold reached — Context 87% ≥ 80% alert",
+    );
     act(() => {
       useContextAlertStore.getState().setThreshold(90);
     });
