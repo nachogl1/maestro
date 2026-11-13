@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { EagleProjectPickerModal } from "../EagleProjectPickerModal";
@@ -192,5 +193,60 @@ describe("EagleProjectPickerModal", () => {
 
     expect(screen.getByText("No projects match")).toBeInTheDocument();
     expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it("offers scratch projects only when the caller handles them", () => {
+    const { unmount } = render(
+      <EagleProjectPickerModal projects={buildProjects()} onPick={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button", { name: "New scratch project" })).toBeNull();
+    unmount();
+
+    render(
+      <EagleProjectPickerModal
+        projects={buildProjects()}
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+        onOpenScratch={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "New scratch project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Scratch projects \(\d+\)$/ })).toBeInTheDocument();
+  });
+
+  it("Enter and Escape in the scratch name box never pick or close the list", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd) =>
+      cmd === "scratch_create" ? "/home/someone/Maestro Scratch/demo" : undefined,
+    );
+    const onPick = vi.fn();
+    const onClose = vi.fn();
+    const onOpenScratch = vi.fn();
+    render(
+      <EagleProjectPickerModal
+        projects={buildProjects()}
+        onPick={onPick}
+        onClose={onClose}
+        onOpenScratch={onOpenScratch}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New scratch project" }));
+    const box = screen.getByRole("textbox", { name: "Scratch project name" });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "New scratch project" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Scratch project name" }), {
+      target: { value: "demo" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Scratch project name" }), {
+      key: "Enter",
+    });
+
+    await waitFor(() =>
+      expect(onOpenScratch).toHaveBeenCalledWith("/home/someone/Maestro Scratch/demo"),
+    );
+    expect(onPick).not.toHaveBeenCalled();
+    vi.mocked(invoke).mockReset();
   });
 });

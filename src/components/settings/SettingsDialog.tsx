@@ -2,6 +2,7 @@ import {
   ArrowDownCircle,
   Bell,
   BookOpen,
+  FlaskConical,
   Keyboard,
   LayoutGrid,
   Monitor,
@@ -12,6 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { type ElementType, type ReactNode, useEffect, useRef, useState } from "react";
+import { ScratchFolderSettings } from "@/components/scratch/ScratchFolderSettings";
 import { DialogShell } from "@/components/shared/DialogShell";
 import { ContextAlertSection } from "@/components/sidebar/ContextAlertSection";
 import { NotificationsSettingsSection } from "@/components/sidebar/NotificationsSettingsSection";
@@ -33,6 +35,7 @@ export type SettingsSectionId =
   | "terminal"
   | "ai-cli"
   | "samurai"
+  | "scratch"
   | "work-journal"
   | "shortcuts"
   | "changelog";
@@ -109,6 +112,12 @@ const SECTION_GROUPS: SettingsSectionGroup[] = [
         icon: Swords,
         description: "When the Samurai supervisor hands off, pauses or flags your agents.",
       },
+      {
+        id: "scratch",
+        label: "Scratch projects",
+        icon: FlaskConical,
+        description: "Where Maestro makes throwaway scratch project folders.",
+      },
     ],
   },
   {
@@ -184,6 +193,8 @@ export function SettingsDialog({
         return <CliSettingsPanel />;
       case "samurai":
         return <SamuraiSettingsPanel />;
+      case "scratch":
+        return <ScratchFolderSettings />;
       case "work-journal":
         return <WorkJournalSettingsGate />;
       case "shortcuts":

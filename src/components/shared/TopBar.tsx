@@ -2,6 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bird, LayoutGrid, Minus, Plus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ProjectsPill } from "@/components/projects-pill/ProjectsPill";
+import { ScratchSection } from "@/components/scratch/ScratchSection";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
@@ -38,6 +39,8 @@ interface TopBarProps {
   eagleProjects?: EagleProjectOption[];
   /** Eagle view: add a terminal to the given project (opens its pre-launch card). */
   onAddSessionToProject?: (tabId: string) => void;
+  /** Eagle view: add a terminal to the scratch project at this path, opening its tab first. */
+  onOpenScratch?: (path: string) => void;
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
@@ -56,6 +59,7 @@ export function TopBar({
   onToggleEagleView,
   eagleProjects = [],
   onAddSessionToProject,
+  onOpenScratch,
   onWatchdogNavigate,
   onParkNavigate,
 }: TopBarProps) {
@@ -177,6 +181,14 @@ export function TopBar({
                     <span className="truncate">{project.name}</span>
                   </button>
                 ))}
+                {onOpenScratch && (
+                  <ScratchSection
+                    onOpen={(path) => {
+                      setAddMenuOpen(false);
+                      onOpenScratch(path);
+                    }}
+                  />
+                )}
               </div>
             )}
           </div>

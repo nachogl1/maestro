@@ -21,8 +21,10 @@ import {
   isContextAlert,
   useContextAlertStore,
 } from "@/stores/useContextAlertStore";
+import { useScratchStore } from "@/stores/useScratchStore";
 import { type AiMode, type BackendSessionStatus, useSessionStore } from "@/stores/useSessionStore";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
+import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import type { ClaudeEvent } from "@/types/claude-events";
 import { QuickActionPills } from "./QuickActionPills";
 import { SamuraiHandoffBanner } from "./SamuraiHandoffBanner";
@@ -327,8 +329,13 @@ export const TerminalView = memo(function TerminalView({
       })
         .then((confirmed) => {
           if (!confirmed) return;
+          const tabId = useWorkspaceStore
+            .getState()
+            .tabs.find((t) => t.sessionIds.includes(id))?.id;
           // Update UI immediately (optimistic)
           onKill(id);
+          // A scratch project's last terminal asks: delete its files or keep them.
+          if (tabId) useScratchStore.getState().askAfterTerminalClosed(tabId);
           // Kill session in background - don't await
           killSession(id).catch((err) => {
             console.error("Failed to kill session:", err);

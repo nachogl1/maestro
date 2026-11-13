@@ -1,5 +1,6 @@
 import { Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ScratchSection } from "@/components/scratch/ScratchSection";
 import { useDismissable } from "@/hooks/useDismissable";
 import type { EagleProjectOption } from "./TopBar";
 
@@ -15,6 +16,8 @@ interface EagleProjectPickerModalProps {
   /** Add a terminal to the picked project (stays in eagle view; the pre-launch card tiles into the grid). */
   onPick: (tabId: string) => void;
   onClose: () => void;
+  /** Scratch projects: add a terminal to the one at this path, opening its tab first. */
+  onOpenScratch?: (path: string) => void;
 }
 
 /**
@@ -28,6 +31,7 @@ export function EagleProjectPickerModal({
   projects,
   onPick,
   onClose,
+  onOpenScratch,
 }: EagleProjectPickerModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -76,6 +80,8 @@ export function EagleProjectPickerModal({
   // xterm's textarea would swallow the arrow keys before the modal sees them.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // Keys typed in the scratch section (its name box, its rows) are its own.
+      if (e.target instanceof Element && e.target.closest("[data-scratch-keys]")) return;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -161,6 +167,8 @@ export function EagleProjectPickerModal({
             </li>
           ))}
         </ul>
+
+        {onOpenScratch && <ScratchSection onOpen={onOpenScratch} />}
 
         <div className="border-t border-maestro-border px-4 py-2 text-[10px] text-maestro-muted">
           Type to search · ↑↓ select · Enter confirm · Esc cancel

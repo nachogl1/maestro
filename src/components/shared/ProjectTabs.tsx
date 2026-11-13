@@ -10,7 +10,7 @@ import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import { rectSwappingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Plus, Square, X } from "lucide-react";
+import { FlaskConical, Minus, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { STATUS_COLORS, useProjectStatus } from "@/hooks/useProjectStatus";
@@ -23,6 +23,8 @@ export type ProjectTab = {
   active: boolean;
   /** Project accent color (name-derived, matches the eagle view's tile borders). */
   color?: string;
+  /** A scratch project (a throwaway folder): the tab shows a small scratch mark. */
+  scratch?: boolean;
 };
 
 interface ProjectTabsProps {
@@ -119,6 +121,16 @@ function TabItem({
           }`}
         />
         <span>{tab.name}</span>
+        {tab.scratch && (
+          <span
+            role="img"
+            aria-label="Scratch project"
+            title="Scratch project: a throwaway folder"
+            className="flex text-maestro-muted"
+          >
+            <FlaskConical size={10} />
+          </span>
+        )}
         {sessionCount > 0 && (
           <span
             className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${

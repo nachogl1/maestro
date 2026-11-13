@@ -324,6 +324,10 @@ pub fn run() {
             commands::files::files_list_dir,
             commands::files::files_read_preview,
             commands::files::files_open_default,
+            // Scratch projects (PRD §4.10)
+            commands::scratch::scratch_list,
+            commands::scratch::scratch_create,
+            commands::scratch::scratch_delete,
             // Git commands
             commands::git::git_branches,
             commands::git::git_current_branch,

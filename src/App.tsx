@@ -7,15 +7,18 @@ import { openIssueMapFor, syncIssueMapProjects } from "@/lib/issueMapWindow";
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
+import { isScratchPath } from "@/lib/scratch";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
+import { useScratchStore } from "@/stores/useScratchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
 import { LeftPanels } from "./components/panels/LeftPanels";
 import { openPanelInWindow, togglePanelInWindow } from "./components/panels/panelLayout";
+import { ScratchDeleteOrKeepDialog } from "./components/scratch/ScratchDeleteOrKeepDialog";
 import { BottomBar } from "./components/shared/BottomBar";
 import { EagleProjectPickerModal } from "./components/shared/EagleProjectPickerModal";
 import { FDADialog } from "./components/shared/FDADialog";
@@ -93,6 +96,7 @@ function App() {
   const [eagleView, setEagleView] = useState(false);
   // Eagle view Cmd/Ctrl+T: arrow-navigable project picker for the new terminal.
   const [eagleAddPickerOpen, setEagleAddPickerOpen] = useState(false);
+  const scratchFolder = useScratchStore((s) => s.folder);
   // Eagle view git carousel: index of the project whose git panel card shows.
   const [eagleGitIndex, setEagleGitIndex] = useState(0);
   // Full-screen workflow editor (Launch tab → "Open workflow editor"):
@@ -314,6 +318,24 @@ function App() {
     [selectTab],
   );
 
+  // Scratch project picked or just made in eagle view's new-terminal list:
+  // open it through the normal open-project path, then add the terminal once
+  // the tab has rendered (a frame later), so its project view can take it.
+  const handleOpenScratch = useCallback(
+    (path: string) => {
+      setEagleAddPickerOpen(false);
+      useWorkspaceStore
+        .getState()
+        .openProject(path)
+        .then(() => {
+          const tab = useWorkspaceStore.getState().tabs.find((t) => samePath(t.projectPath, path));
+          if (tab) requestAnimationFrame(() => handleAddSessionToProject(tab.id));
+        })
+        .catch((err) => console.error("Failed to open scratch project:", err));
+    },
+    [handleAddSessionToProject],
+  );
+
   // Sidebar History tab queued a recovery launch: leave eagle view and select
   // the project so its grid mounts and consumes the pending launch.
   const handleHistoryLaunch = useCallback(
@@ -348,6 +370,8 @@ function App() {
       useSessionStore.getState().removeSession(sessionId);
       useWorkspaceStore.getState().removeSessionFromProject(tabId, sessionId);
     }
+    // A scratch project's last terminal asks: delete its files or keep them.
+    useScratchStore.getState().askAfterTerminalClosed(tabId);
   }, []);
 
   // Top-bar parked-runs badge: land on the project whose Samurai run is
@@ -370,6 +394,8 @@ function App() {
   // `tabs` closure) keeps this callback stable and always reads fresh counts.
   const handleCloseTab = useCallback(
     async (id: string) => {
+      // A scratch project's tab asks Delete / Keep instead (Keep closes it as below).
+      if (useScratchStore.getState().askBeforeClosingTab(id)) return;
       const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === id);
       const count = tab?.sessionIds.length ?? 0;
       if (count > 0) {
@@ -486,6 +512,7 @@ function App() {
           name: t.name,
           active: t.active,
           color: projectColors.get(t.name) ?? projectColorFor(t.name),
+          scratch: isScratchPath(t.projectPath, scratchFolder),
         }))}
         onSelectTab={selectTab}
         onCloseTab={handleCloseTab}
@@ -539,6 +566,7 @@ function App() {
               onToggleEagleView={() => setEagleView((v) => !v)}
               eagleProjects={eagleProjects}
               onAddSessionToProject={handleAddSessionToProject}
+              onOpenScratch={handleOpenScratch}
               onWatchdogNavigate={handleWatchdogNavigate}
               onParkNavigate={handleParkNavigate}
             />
@@ -601,8 +629,12 @@ function App() {
             handleAddSessionToProject(tabId);
           }}
           onClose={() => setEagleAddPickerOpen(false)}
+          onOpenScratch={handleOpenScratch}
         />
       )}
+
+      {/* Scratch project: delete its files or keep them */}
+      <ScratchDeleteOrKeepDialog />
 
       {/* FDA Dialog for macOS TCC-protected paths */}
       {showFDADialog && (

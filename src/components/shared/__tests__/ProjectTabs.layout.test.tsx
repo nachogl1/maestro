@@ -122,4 +122,14 @@ describe("ProjectTabs layout: window controls and tab strip overflow", () => {
     expect(quiet.style.animationDelay).toBe("");
     vi.restoreAllMocks();
   });
+
+  it("marks a scratch project's tab and no other", () => {
+    const tabs = makeTabs(2);
+    tabs[1] = { ...tabs[1], scratch: true };
+    renderTabs(tabs);
+
+    const [normal, scratch] = screen.getAllByRole("tab");
+    expect(scratch.querySelector('[aria-label="Scratch project"]')).not.toBeNull();
+    expect(normal.querySelector('[aria-label="Scratch project"]')).toBeNull();
+  });
 });
