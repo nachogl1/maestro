@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::core::samurai_files::canonical_stripped;
 use crate::core::windows_process::StdCommandExt;
 
 /// Text files up to this size preview; bigger ones show "Can't preview".
@@ -63,10 +64,14 @@ pub struct FileEntry {
     pub ignored: bool,
 }
 
-/// `path` when it lies inside `root` (or is `root`), else `OutsideRoot`.
+/// `path` when it lies inside `root` (or is `root`), else `OutsideRoot`; a
+/// path that does not exist is `Missing`.
 ///
-/// The check is on the path's own components, so `..` is refused outright and
-/// a symlink inside the folder still lists like any other entry.
+/// Two checks: the path's own components (`..` is refused outright), then the
+/// real location on disk, so a symlink or junction inside the folder that
+/// leads out of it is refused while a link that stays inside still works. The
+/// link entry itself still lists in its parent. The path comes back as given,
+/// so the entries listed under it keep the spelling the front end sent.
 fn resolve_inside(root: &str, path: &str) -> Result<PathBuf, FilesError> {
     let root = Path::new(root);
     let path = Path::new(path);
@@ -75,6 +80,11 @@ fn resolve_inside(root: &str, path: &str) -> Result<PathBuf, FilesError> {
         return Err(FilesError::OutsideRoot);
     }
     if !path.starts_with(root) {
+        return Err(FilesError::OutsideRoot);
+    }
+    let real_root = canonical_stripped(root).ok_or(FilesError::Missing)?;
+    let real_path = canonical_stripped(path).ok_or(FilesError::Missing)?;
+    if !real_path.starts_with(&real_root) {
         return Err(FilesError::OutsideRoot);
     }
     Ok(path.to_path_buf())
@@ -209,6 +219,11 @@ pub async fn files_read_preview(root: String, path: String) -> Result<String, Fi
     blocking(move || read_preview_blocking(&root, &path)).await
 }
 
+/// The path `files_open_default` opens: inside `root`, and still there.
+fn open_target(root: &str, path: &str) -> Result<PathBuf, FilesError> {
+    resolve_inside(root, path)
+}
+
 /// Opens `path` (inside `root`) in the computer's default app; a folder opens
 /// in the file manager.
 #[tauri::command]
@@ -217,10 +232,7 @@ pub async fn files_open_default<R: tauri::Runtime>(
     root: String,
     path: String,
 ) -> Result<(), FilesError> {
-    let path = resolve_inside(&root, &path)?;
-    if !path.exists() {
-        return Err(FilesError::Missing);
-    }
+    let path = open_target(&root, &path)?;
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| FilesError::OpenFailed(e.to_string()))
@@ -337,6 +349,66 @@ mod tests {
                 "read {path}"
             );
         }
+    }
+
+    /// A directory link at `link` to `target`: a symlink on unix, a junction
+    /// on Windows (no admin rights needed).
+    fn link_dir(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            let ok = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "mklink /J failed");
+        }
+    }
+
+    #[test]
+    fn a_link_leading_out_of_the_folder_is_refused_but_still_listed() {
+        let repo = sample_repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "not yours").unwrap();
+        let link = repo.path().join("jlink");
+        link_dir(outside.path(), &link);
+        let inner = repo.path().join("srclink");
+        link_dir(&repo.path().join("src"), &inner);
+        let root = s(repo.path());
+
+        let listed = list_dir_blocking(&root, &root).unwrap();
+        assert!(
+            listed.iter().any(|e| e.name == "jlink"),
+            "the link itself shows"
+        );
+        let secret = s(&link.join("secret.txt"));
+        assert!(matches!(
+            list_dir_blocking(&root, &s(&link)),
+            Err(FilesError::OutsideRoot)
+        ));
+        assert!(matches!(
+            read_preview_blocking(&root, &secret),
+            Err(FilesError::OutsideRoot)
+        ));
+        assert!(matches!(
+            open_target(&root, &secret),
+            Err(FilesError::OutsideRoot)
+        ));
+        // A link that stays inside the folder opens like any folder.
+        let names: Vec<String> = list_dir_blocking(&root, &s(&inner))
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["lib", "main.ts"]);
+        assert!(matches!(
+            open_target(&root, &s(&repo.path().join("gone.txt"))),
+            Err(FilesError::Missing)
+        ));
     }
 
     #[test]
