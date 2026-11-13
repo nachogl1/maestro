@@ -22,7 +22,7 @@ describe("useParkedOrderStore", () => {
     useParkedOrderStore.getState().move([1, 2, 3], 3, 1, [1, 2, 3]);
     expect(shown(1, 2, 3)).toEqual([3, 2, 1]);
 
-    useParkedOrderStore.getState().move([3, 2, 1], 1, 3, [1, 2, 3]);
+    useParkedOrderStore.getState().move([3, 2, 1], 3, 1, [1, 2, 3]);
     expect(shown(1, 2, 3)).toEqual([1, 2, 3]);
   });
 
