@@ -236,7 +236,7 @@ describe("WorkJournalToolbar", () => {
 
     const labels = within(screen.getByRole("toolbar", { name: "Formatting" }))
       .getAllByRole("button")
-      .map((b) => b.getAttribute("aria-label") ?? "");
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
     expect(labels).toEqual([
       "Bold",
       "Italic",
@@ -251,6 +251,7 @@ describe("WorkJournalToolbar", () => {
       "Link",
       "Text colour",
       "Highlight",
+      "+ Add entry",
     ]);
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByText(/font/i)).toBeNull();

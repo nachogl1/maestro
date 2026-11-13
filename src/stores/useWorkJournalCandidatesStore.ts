@@ -2,9 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { localDateString, msUntilNextLocalMidnight } from "@/lib/workJournalDates";
+import type { WorkJournalEntryDraft } from "@/lib/workJournalEntry";
 import { listenWorkJournalChanged } from "@/lib/workJournalWindow";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
-import { appendWorkJournalLine, useWorkJournalStore } from "@/stores/useWorkJournalStore";
+import { appendWorkJournalEntry, useWorkJournalStore } from "@/stores/useWorkJournalStore";
 
 /**
  * Where a candidate's activity came from (backend `CandidateSource`). `git`
@@ -89,6 +90,22 @@ export function candidateLine(candidate: WorkJournalCandidate): string {
   return candidate.time ? `${candidate.time} - ${candidate.text}` : candidate.text;
 }
 
+/** The candidate's project name, or null when it has none (a meeting, an older suggestion). */
+export function candidateProject(candidate: WorkJournalCandidate): string | null {
+  const project = candidate.project;
+  return typeof project === "string" && project.trim() !== "" ? project.trim() : null;
+}
+
+/** The entry card an accepted candidate becomes: its time, project, source and text. */
+export function candidateEntry(candidate: WorkJournalCandidate): WorkJournalEntryDraft {
+  return {
+    time: candidate.time ?? null,
+    project: candidateProject(candidate),
+    source: candidate.source,
+    text: candidate.text,
+  };
+}
+
 interface WorkJournalCandidatesState {
   /** Candidates (pending and rejected) per loaded date. */
   byDate: Record<string, WorkJournalCandidate[]>;
@@ -113,9 +130,9 @@ interface WorkJournalCandidatesState {
   /** Re-reads today's candidates (local date now), for the badge. */
   refreshToday: () => Promise<void>;
   /**
-   * Adds the candidate's line to its page through the open editor, then
-   * removes it from the activity file. Nothing is removed when the line
-   * could not be added.
+   * Adds the candidate as an entry card at the end of its page through the
+   * open editor, then removes it from the activity file. Nothing is removed
+   * when the card could not be added.
    */
   accept: (candidate: WorkJournalCandidate) => Promise<void>;
   /** Marks the candidate rejected: it leaves the box and is not proposed again that day. */
@@ -236,7 +253,7 @@ export const useWorkJournalCandidatesStore = create<WorkJournalCandidatesState>(
       let added = get().landedIds.includes(candidate.id);
       try {
         if (!added) {
-          const result = await appendWorkJournalLine(candidate.date, candidateLine(candidate));
+          const result = await appendWorkJournalEntry(candidate.date, candidateEntry(candidate));
           if (result !== "saved") {
             set({
               error: result === "save_failed" ? ACCEPT_SAVE_FAILED_ERROR : ACCEPT_NO_EDITOR_ERROR,

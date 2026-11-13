@@ -257,6 +257,26 @@
   min-width: 0;
 }
 
+/* ── Work Journal entry cards ──
+   The card's one text box sits flush in the card; the empty one shows a hint. */
+.work-journal-editor .work-journal-entry-text p {
+  margin: 0;
+  min-height: 1.45em;
+}
+
+.work-journal-editor .work-journal-entry-text p.is-empty::before {
+  content: "What did you do? (bold up to the first colon)";
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: rgb(var(--maestro-muted));
+}
+
+/* Where a dragged card lands. */
+.work-journal-dropcursor {
+  background: rgb(var(--maestro-accent));
+}
+
 /* ── Split Pane Dividers ── */
 
 .split-divider {

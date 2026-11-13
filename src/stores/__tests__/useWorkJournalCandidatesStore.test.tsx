@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkJournalSuggestionsBadge } from "@/components/shared/WorkJournalSuggestionsBadge";
 import { WORK_JOURNAL_CHANGED_EVENT } from "@/lib/workJournalWindow";
 import {
+  candidateEntry,
   candidateLine,
   pendingCountsByDate,
   pendingTodayCount,
@@ -128,6 +129,19 @@ describe("useWorkJournalCandidatesStore and the badge", () => {
     expect(candidateLine({ ...candidate("m", TODAY), time: null, text: "Meeting - Sync" })).toBe(
       "Meeting - Sync",
     );
+  });
+
+  it("turns a candidate into the card Accept adds: its time, trimmed project and source", () => {
+    expect(candidateEntry({ ...candidate("a", TODAY), project: " demo-shop " })).toEqual({
+      time: "09:00",
+      project: "demo-shop",
+      source: "git",
+      text: "line a",
+    });
+    for (const project of [null, undefined, "", "  "]) {
+      const entry = candidateEntry({ ...candidate("m", TODAY), time: null, project });
+      expect(entry).toMatchObject({ time: null, project: null });
+    }
   });
 
   it("badge shows today's 3 pending, ignoring rejected ones and other days", async () => {

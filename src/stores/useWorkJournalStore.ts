@@ -8,6 +8,7 @@ import {
   localDateString,
   shiftJournalDate,
 } from "@/lib/workJournalDates";
+import type { WorkJournalEntryDraft } from "@/lib/workJournalEntry";
 
 /** How a page came to exist (backend `PageOrigin`). */
 export type WorkJournalPageOrigin = "auto" | "manual";
@@ -536,20 +537,22 @@ export function discardWorkJournalConflicts(): void {
 }
 
 /**
- * What adding a line did: `saved`; `refused` (no editable editor, nothing
- * changed); or `save_failed` (the save failed and the line was taken back
- * out of the editor).
+ * What adding an entry card did: `saved`; `refused` (no editable editor,
+ * nothing changed); or `save_failed` (the save failed and the card was taken
+ * back out of the editor).
  */
 export type WorkJournalAppendResult = "saved" | "refused" | "save_failed";
 
 /**
- * Adds one line as a new paragraph at the end of a page and saves it.
- * Provided by the open editor for that date.
+ * Adds one entry card at the end of a page and saves it. Provided by the
+ * open editor for that date.
  */
-export type WorkJournalLineAppender = (line: string) => Promise<WorkJournalAppendResult>;
+export type WorkJournalEntryAppender = (
+  entry: WorkJournalEntryDraft,
+) => Promise<WorkJournalAppendResult>;
 
 /** The open editor's appender per date. */
-const editorAppenders = new Map<string, WorkJournalLineAppender>();
+const editorAppenders = new Map<string, WorkJournalEntryAppender>();
 
 /**
  * Registers the open editor's appender for `date`, so an accepted
@@ -558,7 +561,7 @@ const editorAppenders = new Map<string, WorkJournalLineAppender>();
  */
 export function registerWorkJournalEditorAppend(
   date: string,
-  append: WorkJournalLineAppender,
+  append: WorkJournalEntryAppender,
 ): () => void {
   editorAppenders.set(date, append);
   return () => {
@@ -567,15 +570,15 @@ export function registerWorkJournalEditorAppend(
 }
 
 /**
- * Adds `line` to the end of the page for `date` through its open editor and
- * saves it. Anything but `saved` leaves the page without the line.
+ * Adds `entry` as a card at the end of the page for `date` through its open
+ * editor and saves it. Anything but `saved` leaves the page without it.
  */
-export function appendWorkJournalLine(
+export function appendWorkJournalEntry(
   date: string,
-  line: string,
+  entry: WorkJournalEntryDraft,
 ): Promise<WorkJournalAppendResult> {
   const append = editorAppenders.get(date);
-  return append ? append(line) : Promise.resolve("refused");
+  return append ? append(entry) : Promise.resolve("refused");
 }
 
 function errorMessage(error: unknown): string {
