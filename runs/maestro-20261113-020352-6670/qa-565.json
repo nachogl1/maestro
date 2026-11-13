@@ -1,0 +1,50 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 565,
+  "title": "Work Journal suggestions: one summary per project per day, and update suggestions that rewrite its card",
+  "login": "nachogl1",
+  "pr": 584,
+  "merged_at": "2026-11-13T22:44:00Z",
+  "merge_commit": "0eed9188defcfe99061432e38d30708b48fb2d1b",
+  "seam": "src/components/workjournal/SuggestionsBox.tsx",
+  "story": "Work Journal suggestions now give each project one short summary a day instead of several lines. Once that summary is a card on the page, later work comes as an update showing the old text struck through above the new; Accept rewrites the card's text and Reject leaves it alone. A summary still waiting in the box is rewritten in place rather than doubled. This replaces the old 'a second line for separate work' rule and the 200-character limit.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/update-suggestion-view",
+      "criterion": "A later run for a project with a card gives an update, not a new card",
+      "steps": "On today's page accept a suggestion for project demo-shop, commit again in demo-shop, then click run now.",
+      "expected": "The box shows 'Updates your HH:MM demo-shop entry', the card's current text grey and struck through, and the new text below."
+    },
+    {
+      "key": "src/components/workjournal/update-accept",
+      "criterion": "Accept rewrites the card and keeps its time",
+      "steps": "From the update above, click the green tick.",
+      "expected": "The same card holds the new text with the same time, project chip and source tag; no card is added."
+    },
+    {
+      "key": "src/components/workjournal/update-reject",
+      "criterion": "Reject leaves the card",
+      "steps": "Click the red cross on an update, then run now with no new work.",
+      "expected": "The card is unchanged and the update does not come back that day."
+    },
+    {
+      "key": "src/components/workjournal/update-card-edited",
+      "criterion": "The person's own words are never overwritten",
+      "steps": "While an update waits, edit that card's text, then click Accept.",
+      "expected": "The card keeps the edit, and a red line says the entry changed since the update was suggested."
+    },
+    {
+      "key": "src/components/workjournal/pending-summary-in-place",
+      "criterion": "A waiting summary is rewritten, never doubled",
+      "steps": "Leave a project's suggestion unaccepted, commit again in that project, then run now.",
+      "expected": "Still one suggestion for that project, with merged text."
+    },
+    {
+      "key": "src/components/workjournal/typed-card-no-update",
+      "criterion": "Typed cards never get updates",
+      "steps": "Add a card with + Add entry, set its project to demo-shop, then run now after new demo-shop work.",
+      "expected": "A normal new suggestion, not an update."
+    }
+  ],
+  "no_qa_reason": null
+}

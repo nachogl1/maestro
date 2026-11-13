@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 565,
+  "title": "Work Journal suggestions: one summary per project per day, and update suggestions that rewrite its card",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T21:22:00Z",
+  "finished_at": "2026-11-13T22:45:00Z",
+  "outcome": "merged",
+  "pr": 584,
+  "summary": "Work Journal suggestions now give each project one short summary a day; once it is a card, later work arrives as an update showing old text struck through above the new, Accept rewrites the card and Reject leaves it, and a waiting summary is rewritten in place.",
+  "agents": [
+    {
+      "name": "dev-565",
+      "model": "opus",
+      "tokens_total": 297785
+    },
+    {
+      "name": "review-565",
+      "model": "opus",
+      "tokens_total": 163117
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2620,
+    "review_seconds": 518,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [
+    "The dev agent's full gate was killed by Claude Code for critically low memory (7.8 GB machine, parallel cargo test and vitest); a resumed run with one command at a time, vitest --maxWorkers=2 and cargo -j 2 passed, costing about 20 minutes"
+  ],
+  "lessons_learned": [
+    "On this machine tell dev and review agents to run gate commands one at a time with npm test -- --maxWorkers=2 and cargo test --workspace -j 2"
+  ],
+  "deferred": []
+}
