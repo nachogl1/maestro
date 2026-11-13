@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 567,
+  "title": "Work Journal report: one heading per project, oldest day first, each bullet starting with its day and time",
+  "login": "nachogl1",
+  "pr": 590,
+  "merged_at": "2026-11-14T01:34:00Z",
+  "merge_commit": "5829555032b196e72dbf5cdc8c0fe4f487a1d2b8",
+  "seam": "src-tauri/src/core/work_journal_report.rs",
+  "story": "The Work Journal report used to open with an overview paragraph and group items by theme. It now shows one heading per project from the cards' project chips, busiest project first and 'Other' last; inside each project bullets run oldest day first and start with their day (Mon 3 Nov), plus the time when they come from one timed card. The report dialog, the page's look and the facts-only wording rules are unchanged.",
+  "checks": [
+    {
+      "key": "src-tauri/src/core/work_journal_report/project-headings",
+      "criterion": "A report over several days has one heading per project, most bullets first, Other last",
+      "steps": "On made-up pages for Mon 5 Oct to Thu 8 Oct add cards for project Alpha (three, different days), Beta (one) and one with no project. Open Page actions, choose Report, pick 5 Oct to 8 Oct and generate. Open the saved HTML file.",
+      "expected": "Headings in the order Alpha, Beta, Other; no overview paragraph and no theme heading."
+    },
+    {
+      "key": "src-tauri/src/core/work_journal_report/dated-bullets",
+      "criterion": "Bullets run oldest day first and start with the day, plus a time only for one timed entry",
+      "steps": "In the same report have one Alpha card timed 09:15 on Mon 5 Oct and one untimed Alpha card on Wed 7 Oct.",
+      "expected": "Alpha's bullets go oldest to newest; the timed one starts 'Mon 5 Oct, 09:15 — '; the untimed one 'Wed 7 Oct — '; a bullet over several days lists each day."
+    },
+    {
+      "key": "src-tauri/src/core/work_journal_report/no-date-bullet",
+      "criterion": "A bullet without a readable date still shows",
+      "steps": "Generate a report over pages whose cards have no project.",
+      "expected": "Every item still appears under Other; nothing is lost and no date falls outside the chosen range."
+    }
+  ],
+  "no_qa_reason": null
+}

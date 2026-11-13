@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 567,
+  "title": "Work Journal report: one heading per project, oldest day first, each bullet starting with its day and time",
+  "login": "nachogl1",
+  "started_at": "2026-11-14T00:32:00Z",
+  "finished_at": "2026-11-14T01:35:00Z",
+  "outcome": "merged",
+  "pr": 590,
+  "summary": "The Work Journal report drops the overview paragraph and theme grouping: it now shows one heading per project from the cards' project chips, busiest first and Other last, with bullets oldest day first, each starting with its day and, for one timed card, its time.",
+  "agents": [
+    {
+      "name": "dev-567",
+      "model": "opus",
+      "tokens_total": 169936
+    },
+    {
+      "name": "review-567",
+      "model": "opus",
+      "tokens_total": 158699
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1850,
+    "review_seconds": 704,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
