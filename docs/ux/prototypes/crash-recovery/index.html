@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crash recovery prototype</title>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --green: #3fb950; --red: #dc2626;
+    --orange: #f59e0b; --blue: #3b82f6; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
+  .wrap { display: flex; gap: 24px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .note { max-width: 360px; color: var(--muted); font-size: 12px; }
+  .note h1 { color: var(--text); font-size: 15px; margin: 0 0 6px; }
+  .note li { margin-bottom: 4px; }
+  .scenes { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+  .scenes button { background: var(--card); border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  .scenes button.on { color: var(--text); border-color: var(--accent); }
+  .app { width: 760px; height: 560px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+  .topbar { height: 30px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 10px; color: var(--muted); font-size: 12px; gap: 10px; }
+  .tab { padding: 2px 8px; border-radius: 4px; border-bottom: 2px solid transparent; }
+  .stage { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; min-height: 0; }
+  .stage.empty { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  .term { background: #08080a; border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .term .th { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .term .th .dots { margin-left: auto; color: var(--muted); }
+  .term pre { margin: 0; padding: 8px; font: 11px/1.5 ui-monospace, Consolas, monospace; color: #b9b9c4; white-space: pre-wrap; }
+  .warn { display: flex; align-items: flex-start; gap: 6px; background: rgba(245,158,11,.1); border-bottom: 1px solid rgba(245,158,11,.4); color: var(--orange); padding: 4px 8px; font-size: 11px; }
+  .warn span { flex: 1; }
+  .x { background: none; border: 0; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+  .shelf { height: 34px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 6px; padding: 0 8px; }
+  .pill { border: 2px solid var(--border); border-radius: 999px; padding: 1px 10px; font-size: 11px; display: flex; align-items: center; gap: 5px; }
+  .pill.needs { border-color: var(--red); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; }
+  .veil { position: absolute; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
+  .dialog { width: 520px; max-height: 500px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
+  .dialog header { padding: 12px 14px 8px; display: flex; align-items: flex-start; gap: 8px; }
+  .dialog h2 { margin: 0; font-size: 15px; }
+  .dialog .when { color: var(--muted); font-size: 12px; }
+  .dialog header .x { margin-left: auto; color: var(--muted); }
+  .dialog .body { padding: 0 14px; overflow-y: auto; }
+  .all { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .proj { margin: 10px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .row .name { font-weight: 500; }
+  .row .what { margin-left: auto; color: var(--muted); font-size: 11px; text-align: right; }
+  .row.gone { opacity: .45; }
+  .row.gone .what { color: var(--orange); }
+  .tag { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-size: 10px; color: var(--muted); }
+  .tag.parked { color: var(--purple); border-color: rgba(188,140,255,.5); }
+  .samurai { margin: 10px 0 0; padding: 6px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; }
+  .btn { border-radius: 5px; padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: none; color: var(--text); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .dialog ul { margin: 6px 0 0; padding-left: 18px; color: var(--text); font-size: 12px; }
+  .dialog ul li { margin-bottom: 4px; }
+  .dialog p { margin: 0; font-size: 12px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="note">
+    <h1>Crash recovery</h1>
+    <p>A throwaway mock for the wayfinder ticket #593. Every name, project and text is made up.</p>
+    <div class="scenes">
+      <button type="button" data-scene="offer" class="on">1 · Offer after an unexpected stop</button>
+      <button type="button" data-scene="restored">2 · Terminals brought back</button>
+      <button type="button" data-scene="update">3 · Update prompt</button>
+      <button type="button" data-scene="normal">4 · Ordinary start</button>
+    </div>
+    <ul>
+      <li><b>Offer:</b> shown once, on the first start after an unexpected stop. Title carries the day and time of the stop. Every terminal is ticked; one tick box at the top ticks or unticks all.</li>
+      <li>Rows are grouped by project, in the order the terminals had. Each row: name, kind (Claude or Shell), "was parked" when it was on the shelf, and at the right what comes back.</li>
+      <li>A terminal whose folder is gone is greyed, with the reason, and cannot be ticked.</li>
+      <li>Samurai terminals are not listed; one line under the list points to the Launch panel.</li>
+      <li><b>Bring back N</b> counts the ticks and is disabled at zero. <b>Don't bring back</b>, the × and Esc all end the offer for good.</li>
+      <li><b>Brought back:</b> Claude terminals continue their conversation and show no warning. A plain shell, or a Claude terminal whose conversation is gone, shows an amber line under its header until its × is clicked.</li>
+      <li>Terminals that were parked return to the shelf with the red "needs you" border and dot.</li>
+      <li><b>Update prompt:</b> shown only when terminals are open. After the update restart the terminals come back with no question (scene 2, without a dialog).</li>
+      <li><b>Ordinary start:</b> after a normal close or a first start, nothing is offered.</li>
+    </ul>
+  </div>
+
+  <div class="app">
+    <div class="topbar"><span>Maestro</span><span class="tab" style="border-color:#3b82f6">shop-api</span><span class="tab" style="border-color:#3fb950">docs-site</span></div>
+    <div class="stage empty" id="stage">No terminals open</div>
+    <div class="shelf" id="shelf"></div>
+
+    <div class="veil" id="offer">
+      <div class="dialog" role="dialog" aria-labelledby="offer-title">
+        <header>
+          <div>
+            <h2 id="offer-title">Maestro stopped unexpectedly</h2>
+            <div class="when">Fri 13 Nov, 18:42 · these terminals were open</div>
+          </div>
+          <button type="button" class="x" id="offer-x" title="Don't bring back" aria-label="Don't bring back">×</button>
+        </header>
+        <div class="body">
+          <label class="all"><input type="checkbox" id="all" checked> <span id="all-label"></span></label>
+          <div id="rows"></div>
+          <div class="samurai">1 Samurai run is not listed here. Recover it from the Launch panel.</div>
+        </div>
+        <footer>
+          <button type="button" class="btn" id="decline">Don't bring back</button>
+          <button type="button" class="btn primary" id="accept"></button>
+        </footer>
+      </div>
+    </div>
+
+    <div class="veil hidden" id="update">
+      <div class="dialog" role="dialog" aria-labelledby="update-title" style="width:460px">
+        <header><h2 id="update-title">Update Maestro to 0.3.412?</h2></header>
+        <div class="body">
+          <p>Your 6 open terminals will close and come back after the update.</p>
+          <ul>
+            <li>Whatever they are doing right now is <b>cut off</b>. Make sure none is doing critical work.</li>
+            <li>Claude conversations come back; the step that was running does not.</li>
+            <li>Plain shells come back empty, in the same folder.</li>
+          </ul>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-scene="normal">Not now</button>
+          <button type="button" class="btn primary" data-scene="restored">Update and restart</button>
+        </footer>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const PROJECTS = [
+    { name: "shop-api", color: "#3b82f6" },
+    { name: "docs-site", color: "#3fb950" },
+  ];
+  const TERMINALS = [
+    { id: 1, project: "shop-api", name: "checkout-fix", kind: "Claude", parked: false, what: "conversation continues" },
+    { id: 2, project: "shop-api", name: "payments-review", kind: "Claude", parked: true, what: "conversation continues" },
+    { id: 3, project: "shop-api", name: "dev server", kind: "Shell", parked: false, what: "reopens empty" },
+    { id: 4, project: "shop-api", name: "old-experiment", kind: "Claude", parked: false, gone: "folder no longer exists" },
+    { id: 5, project: "docs-site", name: "rewrite-intro", kind: "Claude", parked: true, what: "conversation continues" },
+    { id: 6, project: "docs-site", name: "search-index", kind: "Claude", parked: false, lost: true, what: "conversation not found, opens new" },
+  ];
+  const ticked = new Set(TERMINALS.filter((t) => !t.gone).map((t) => t.id));
+  let offerOpen = true;
+  const $ = (id) => document.getElementById(id);
+
+  function renderRows() {
+    const html = PROJECTS.map((p) => {
+      const rows = TERMINALS.filter((t) => t.project === p.name).map((t) => {
+        const box = t.gone
+          ? `<input type="checkbox" disabled>`
+          : `<input type="checkbox" data-id="${t.id}" ${ticked.has(t.id) ? "checked" : ""}>`;
+        const parked = t.parked ? `<span class="tag parked">was parked</span>` : "";
+        return `<label class="row ${t.gone ? "gone" : ""}">${box}<span class="name">${t.name}</span>
+          <span class="tag">${t.kind}</span>${parked}<span class="what">${t.gone || t.what}</span></label>`;
+      });
+      return `<div class="proj" style="color:${p.color}">${p.name}</div>${rows.join("")}`;
+    });
+    $("rows").innerHTML = html.join("");
+    const possible = TERMINALS.filter((t) => !t.gone).length;
+    $("all").checked = ticked.size === possible;
+    $("all").indeterminate = ticked.size > 0 && ticked.size < possible;
+    $("all-label").textContent = `${ticked.size} of ${possible} selected`;
+    $("accept").textContent = `Bring back ${ticked.size}`;
+    $("accept").disabled = ticked.size === 0;
+  }
+
+  function renderStage(restored) {
+    const back = restored ? TERMINALS.filter((t) => ticked.has(t.id)) : [];
+    const open = back.filter((t) => !t.parked);
+    $("stage").className = open.length ? "stage" : "stage empty";
+    $("stage").innerHTML = open.length
+      ? open.map((t) => {
+          const warn = t.kind === "Shell" || t.lost
+            ? `<div class="warn"><span>Brought back after Maestro stopped. Its earlier content could not be retrieved.</span>
+               <button type="button" class="x" data-dismiss aria-label="Close this warning">×</button></div>`
+            : "";
+          const text = t.kind === "Shell"
+            ? "PS C:\\work\\shop-api> _"
+            : t.lost ? "> _" : "● Resumed the conversation.\n  Last step was interrupted.\n\n> _";
+          return `<div class="term"><div class="th"><b>${t.name}</b><span class="tag">${t.kind}</span>
+            <span class="dots">● ● ●</span></div>${warn}<pre>${text}</pre></div>`;
+        }).join("")
+      : "No terminals open";
+    $("shelf").innerHTML = back.filter((t) => t.parked)
+      .map((t) => `<span class="pill needs" title="Needs you: it was cut off"><span class="dot"></span>${t.name}</span>`)
+      .join("");
+  }
+
+  function show(scene) {
+    for (const b of document.querySelectorAll(".scenes button")) {
+      b.classList.toggle("on", b.dataset.scene === scene);
+    }
+    $("offer").classList.toggle("hidden", !(scene === "offer" && offerOpen));
+    $("update").classList.toggle("hidden", scene !== "update");
+    renderStage(scene === "restored");
+  }
+
+  document.addEventListener("click", (e) => {
+    const sceneButton = e.target.closest("[data-scene]");
+    if (sceneButton) {
+      if (sceneButton.dataset.scene === "offer") offerOpen = true;
+      show(sceneButton.dataset.scene);
+    } else if (e.target.closest("[data-dismiss]")) {
+      e.target.closest(".warn").remove();
+    }
+  });
+  $("rows").addEventListener("change", (e) => {
+    const id = Number(e.target.dataset.id);
+    if (e.target.checked) ticked.add(id);
+    else ticked.delete(id);
+    renderRows();
+  });
+  $("all").addEventListener("change", (e) => {
+    for (const t of TERMINALS) {
+      if (t.gone) continue;
+      if (e.target.checked) ticked.add(t.id);
+      else ticked.delete(t.id);
+    }
+    renderRows();
+  });
+  function decline() {
+    offerOpen = false;
+    show("normal");
+  }
+  $("accept").addEventListener("click", () => show("restored"));
+  $("decline").addEventListener("click", decline);
+  $("offer-x").addEventListener("click", decline);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("offer").classList.contains("hidden")) decline();
+  });
+
+  renderRows();
+  show("offer");
+</script>
+</body>
+</html>
