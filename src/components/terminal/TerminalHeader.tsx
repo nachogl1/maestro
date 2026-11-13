@@ -420,10 +420,11 @@ export const TerminalHeader = memo(function TerminalHeader({
         : "border-maestro-border";
 
   // Toggle the warning flag on plain header clicks; clicks on buttons/inputs
-  // (park, zoom, kill, rename field, …) keep their own actions.
+  // (park, zoom, kill, rename field, …) and anywhere in the open ⋯ menu
+  // (its labels and padding) keep their own actions.
   const handleHeaderClick = (e: React.MouseEvent) => {
     if (!onToggleFlag) return;
-    if ((e.target as HTMLElement).closest("button, input")) return;
+    if ((e.target as HTMLElement).closest("button, input, [role='menu']")) return;
     onToggleFlag();
   };
 
@@ -593,6 +594,9 @@ export const TerminalHeader = memo(function TerminalHeader({
             <div
               role="menu"
               hidden={!showActionsMenu}
+              // The header is the pane's drag handle; a press on the menu's
+              // labels or padding must not pick the terminal up.
+              onPointerDown={(e) => e.stopPropagation()}
               className="absolute right-0 top-full z-50 mt-1 min-w-[180px] rounded-lg border border-maestro-border bg-maestro-surface py-1 shadow-lg"
             >
               {onPark &&

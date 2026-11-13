@@ -134,6 +134,31 @@ describe("TerminalHeader in narrow columns (issue #552)", () => {
     expect(fns.onKill).not.toHaveBeenCalled();
   });
 
+  it("never flags the terminal or starts a drag from a click inside the open menu", () => {
+    const onToggleFlag = vi.fn();
+    const onWrapperPointerDown = vi.fn();
+    render(
+      // Stands in for TerminalGrid's pane wrapper, whose pointer-down starts a drag.
+      <div onPointerDown={onWrapperPointerDown}>
+        <TerminalHeader sessionId={7} zoomLevel={125} {...handlers()} onToggleFlag={onToggleFlag} />
+      </div>,
+    );
+    resizeHeaderTo(300);
+    fireEvent.click(screen.getByRole("button", { name: MENU }));
+    onWrapperPointerDown.mockClear();
+
+    const menu = screen.getByRole("menu");
+    const fontZoomLabel = screen.getByText("Font zoom: 125%");
+    for (const spot of [menu, fontZoomLabel]) {
+      fireEvent.pointerDown(spot);
+      fireEvent.click(spot);
+    }
+
+    expect(onToggleFlag).not.toHaveBeenCalled();
+    expect(onWrapperPointerDown).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBeVisible();
+  });
+
   it("keeps the pin shortcut working while the pin sits in the closed menu", () => {
     const fns = renderHeader();
     resizeHeaderTo(300);
