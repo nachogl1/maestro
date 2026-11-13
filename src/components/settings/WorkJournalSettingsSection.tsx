@@ -2,6 +2,7 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 import { BookOpen, FolderOpen, Loader2, Undo2 } from "lucide-react";
 import { useEffect } from "react";
 import { DialogSection, dialogButtonClass } from "@/components/shared/DialogShell";
+import { WorkJournalInfoHover } from "@/components/workjournal/WorkJournalInfoHover";
 import { useWorkJournalBackupStore } from "@/stores/useWorkJournalBackupStore";
 import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidateRunStore";
 import { useWorkJournalReportStore } from "@/stores/useWorkJournalReportStore";
@@ -136,6 +137,7 @@ export function WorkJournalSettingsSection(): JSX.Element {
       title="Work Journal"
       icon={<BookOpen size={13} />}
       hint={HINTS.section}
+      titleAdornment={<WorkJournalInfoHover />}
       right={<WorkJournalEnabledToggle />}
     >
       <WorkJournalCandidateRunRows />

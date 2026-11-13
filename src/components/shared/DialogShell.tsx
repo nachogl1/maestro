@@ -26,6 +26,8 @@ export interface DialogShellProps {
   title: string;
   /** Small icon shown before the title. */
   icon?: ReactNode;
+  /** Something shown right after the title, outside the heading (an info icon, say). */
+  titleAdornment?: ReactNode;
   /** One muted line under the title. */
   subtitle?: ReactNode;
   onClose: () => void;
@@ -46,6 +48,7 @@ export interface DialogShellProps {
 export function DialogShell({
   title,
   icon,
+  titleAdornment,
   subtitle,
   onClose,
   size = "md",
@@ -58,6 +61,11 @@ export function DialogShell({
 }: DialogShellProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const heading = (
+    <h2 id={titleId} className="truncate text-sm font-semibold text-maestro-text">
+      {title}
+    </h2>
+  );
 
   useDismissable(onClose, {
     ref: closeOnOutsideClick ? panelRef : undefined,
@@ -76,9 +84,14 @@ export function DialogShell({
         <div className="flex items-center gap-2.5 border-b border-maestro-border px-4 py-3">
           {icon && <span className="flex shrink-0 text-maestro-accent">{icon}</span>}
           <div className="min-w-0 flex-1">
-            <h2 id={titleId} className="truncate text-sm font-semibold text-maestro-text">
-              {title}
-            </h2>
+            {titleAdornment ? (
+              <div className="flex min-w-0 items-center gap-1.5">
+                {heading}
+                {titleAdornment}
+              </div>
+            ) : (
+              heading
+            )}
             {subtitle && <p className="mt-0.5 text-[11px] text-maestro-muted">{subtitle}</p>}
           </div>
           <button
@@ -125,6 +138,8 @@ export interface DialogSectionProps {
   icon?: ReactNode;
   /** Hover help on the heading. */
   hint?: string;
+  /** Something shown right after the heading text (an info icon, say). */
+  titleAdornment?: ReactNode;
   /** One muted sentence under the heading. */
   description?: ReactNode;
   /** Controls at the right end of the heading row. */
@@ -137,17 +152,28 @@ export function DialogSection({
   title,
   icon,
   hint,
+  titleAdornment,
   description,
   right,
   children,
 }: DialogSectionProps) {
+  const heading = (
+    <span className={`${titleAdornment ? "" : "flex-1 "}${hint ? "cursor-help" : ""}`} title={hint}>
+      {title}
+    </span>
+  );
   return (
     <section className={dialogCardClass}>
       <div className={`mb-2 ${dialogSectionHeadingClass}`}>
         {icon && <span className="flex shrink-0 text-maestro-accent">{icon}</span>}
-        <span className={`flex-1 ${hint ? "cursor-help" : ""}`} title={hint}>
-          {title}
-        </span>
+        {titleAdornment ? (
+          <span className="flex flex-1 items-center gap-1.5">
+            {heading}
+            {titleAdornment}
+          </span>
+        ) : (
+          heading
+        )}
         {right}
       </div>
       {description && <p className="mb-2 text-[11px] text-maestro-muted">{description}</p>}
