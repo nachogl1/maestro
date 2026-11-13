@@ -38,6 +38,7 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
 | Suggestion | A proposed journal entry not yet accepted ("candidate" in the code). |
 | Entry card | (decided, §4.7) A journal entry shown as a card: bold time, project chip, source tag, one text box. |
 | Icon strip / panel | (decided, §4.4) The column of icons on the far left; each icon opens one panel. |
+| Scratch project | (decided, §4.10) A throwaway project folder Maestro creates for work that belongs to no real project. |
 
 ## 3. Shipped today
 
@@ -263,6 +264,17 @@ are in `docs/ux/prototypes/` and are the layout to build.
   Troubleshooting and brought up to date; it holds the only install steps and the README links to it; every link
   points to `nachogl1/maestro`; the footer carries the author credit the maintainer chose
   ([Maestro's public GitHub page](https://github.com/nachogl1/maestro/issues/484)).
+
+### 4.10 Scratch projects
+
+- Eagle view's new-terminal list (Mod+T or the top bar's `+`) gains a **Scratch projects** pill and a
+  **+ New scratch project** row; nothing changes outside eagle view.
+- New asks for a name with a ready default, makes a plain folder (no git) under a scratch folder set in Settings
+  (default `Maestro Scratch` in the home folder), and opens it as a normal project tab with a small scratch mark.
+- Closing its last terminal, or its project tab, asks whether to delete the folder or keep it; quitting never asks.
+- The pill lists every scratch folder with its age; a click opens it, a bin deletes it after a Yes / No.
+- Delete removes the folder only; Claude Code's records and History rows stay, no longer resumable
+  ([Scratch projects](https://github.com/nachogl1/maestro/issues/586)).
 
 ## 5. Out of scope
 
