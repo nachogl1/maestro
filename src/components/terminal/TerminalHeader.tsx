@@ -5,6 +5,7 @@ import {
   Code2,
   Expand,
   GitBranch,
+  Mail,
   Minimize,
   MoreHorizontal,
   ParkingSquare,
@@ -21,6 +22,7 @@ import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { useDismissable } from "@/hooks/useDismissable";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, comboLabel, modLabel, shiftLabel, titleWithShortcut } from "@/lib/shortcuts";
+import { type InjectedMessage, useInjectedMessageStore } from "@/stores/useInjectedMessageStore";
 
 export type SessionStatus =
   | "idle"
@@ -144,6 +146,23 @@ function narrowStep(width: number): number {
 const FOLDED_PROVIDER_ICON_SIZE = 14;
 const FONT_ZOOM_PRESETS = [50, 75, 100, 125, 150, 200];
 const CONTEXT_ALERT_TEXT = "Context threshold reached";
+const NO_INJECTED_MESSAGES: InjectedMessage[] = [];
+
+/** Local 24-hour clock time of a notice, e.g. "14:20". */
+function clockTime(at: number): string {
+  const date = new Date(at);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+/** Hover text of the injected-message icon: one line per notice, newest first. */
+function injectedMessagesHover(messages: InjectedMessage[]): string {
+  const lines = messages.map(
+    (m) => `${m.sender} · ${clockTime(m.at)} · ${m.text.trim().split(/\r?\n/)[0]}`,
+  );
+  return [...lines, "Click to dismiss"].join("\n");
+}
 
 export const TerminalHeader = memo(function TerminalHeader({
   sessionId,
@@ -186,6 +205,9 @@ export const TerminalHeader = memo(function TerminalHeader({
   const nameRef = useRef<HTMLButtonElement>(null);
   const [step, setStep] = useState(0);
   const [isNameCut, setIsNameCut] = useState(false);
+  const injectedMessages = useInjectedMessageStore(
+    (s) => s.bySession[sessionId] ?? NO_INJECTED_MESSAGES,
+  );
 
   // The header follows its own column width, not the terminal count: a
   // narrow column in a split layout folds the same way a dense grid does.
@@ -544,6 +566,27 @@ export const TerminalHeader = memo(function TerminalHeader({
           >
             <AlertTriangle size={terminalCount <= 4 ? 12 : 10} aria-hidden="true" />
           </output>
+        )}
+
+        {/* Injected messages (issue #554): an amber icon after the name (and
+            after the context icon) while the Injector or a trigger has sent
+            this terminal anything; a count from two on. Only its own click
+            clears it. */}
+        {injectedMessages.length > 0 && (
+          <button
+            type="button"
+            onClick={() => useInjectedMessageStore.getState().clear(sessionId)}
+            className="flex shrink-0 items-center gap-0.5 text-amber-500 hover:text-amber-400"
+            title={injectedMessagesHover(injectedMessages)}
+            aria-label={`Injected messages: ${injectedMessages.length}, click to dismiss`}
+          >
+            <Mail size={terminalCount <= 4 ? 12 : 10} aria-hidden="true" />
+            {injectedMessages.length >= 2 && (
+              <span className={`${adaptive.badgeSize} font-semibold`}>
+                {injectedMessages.length}
+              </span>
+            )}
+          </button>
         )}
 
         {/* Samurai supervision (issue #46): gen-N · state · context %.
