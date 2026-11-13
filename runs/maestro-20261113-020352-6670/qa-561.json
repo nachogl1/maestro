@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 561,
+  "title": "PROJECTS pill: step from the open projects to their labels' open-issue counts and each label's issues",
+  "login": "nachogl1",
+  "pr": 580,
+  "merged_at": "2026-11-13T18:49:00Z",
+  "merge_commit": "d3740491b5051c3c26e389e08777a161782da043",
+  "seam": "src/components/projects-pill/",
+  "story": "A new PROJECTS pill sits beside the GitHub badge in the top bar. Clicking it shows your open projects, then each project's labels with how many open issues each has, then that label's issues, which open on GitHub. A remembered lock button switches between counting blocked issues (marked with a lock) and ready issues only, using the issue map's blocked rule. Nothing was replaced or removed.",
+  "checks": [
+    {
+      "key": "src/components/projects-pill/step-levels",
+      "criterion": "Each level opens from the one above, and the back arrow and path return to it",
+      "steps": "Open a project with a GitHub repository holding labelled open issues. Click PROJECTS in the top bar and wait for the spinner. Click the project, then a label with a count above 0. Click the back arrow, open the label again, click the project's name in the path, then Projects in the path.",
+      "expected": "Projects with 'N open', then labels with counts (a 0 label cannot be clicked), then that label's issues by number and title; back and path return one level and to the top."
+    },
+    {
+      "key": "src/components/projects-pill/open-issue",
+      "criterion": "Clicking an issue opens it on GitHub",
+      "steps": "In a label's issue list, click an issue.",
+      "expected": "That issue's GitHub page opens in the browser."
+    },
+    {
+      "key": "src/components/projects-pill/lock",
+      "criterion": "Ready only leaves out blocked issues by the issue map's rule; the setting survives a restart; blocked issues show a lock while counted",
+      "steps": "Open a label holding an issue blocked by an open issue. Hover the lock button, then click it. Quit Maestro, reopen it and open the list again.",
+      "expected": "By default 'Blocked counted' with a lock mark on the blocked issue; after the click 'Ready only', the blocked issue is gone and counts drop (that issue is also blocked on the issue map); after restart it still reads 'Ready only'."
+    },
+    {
+      "key": "src/components/projects-pill/loading-states",
+      "criterion": "Spinner on every open, a greyed project without a repository, an error with Try again",
+      "steps": "Open a plain folder with no git as a project, plus a GitHub project. Click PROJECTS, close it, click it again. Go offline, reopen the list and click the GitHub project.",
+      "expected": "'Loading labels and counts…' each time; the plain folder greyed with 'no GitHub repository'; offline, an error with Try again that reloads once back online."
+    }
+  ],
+  "no_qa_reason": null
+}

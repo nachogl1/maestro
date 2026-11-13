@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 561,
+  "title": "PROJECTS pill: step from the open projects to their labels' open-issue counts and each label's issues",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T18:08:00Z",
+  "finished_at": "2026-11-13T18:50:00Z",
+  "outcome": "merged",
+  "pr": 580,
+  "summary": "A PROJECTS pill in the top bar steps from the open projects to each project's labels with open-issue counts and then to that label's issues, which open on GitHub; a remembered lock switches between counting blocked issues and ready only, using the issue map's blocked rule.",
+  "agents": [
+    {
+      "name": "dev-561",
+      "model": "opus",
+      "tokens_total": 187247
+    },
+    {
+      "name": "review-561",
+      "model": "opus",
+      "tokens_total": 134895
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 995,
+    "review_seconds": 212,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/github/",
+      "what": "A project whose only remote is not on GitHub (a gitlab.com origin) is mapped to NotAuthenticated, so the PROJECTS pill tells a logged-in user 'Not authenticated with GitHub. Run gh auth login' with Try again instead of greying the project out with 'no GitHub repository'",
+      "why": "The fix changes the shared gh error mapping in src-tauri/src/github/runner.rs, outside this story's seam",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
