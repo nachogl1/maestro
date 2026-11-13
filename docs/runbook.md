@@ -142,6 +142,19 @@ one place left or right from the keyboard works as before.
 - When Granola did not connect during a run (a slow or failed connection), that day is tried again on the next runs,
   like any other failed day; the "needs an update" line does not show.
 
+## Work Journal: the (i) explanation
+
+- An (i) icon sits right after the title of the first-run question "Enable the Work Journal?", and right after the
+  Work Journal heading in Settings → Work Journal. Both show the same text.
+- Hovering the icon, or reaching it with Tab, opens a small box; moving away or tabbing on closes it. Escape closes
+  the box and leaves the first-run question open and unanswered.
+- The box says what the Work Journal does (one page per day; Claude suggests short lines from your activity and
+  nothing is added until you accept it), then lists the sources it reads with the setup each needs: Claude
+  conversations and terminal sessions in Maestro, git commits (needs your git name/email set), pull requests and
+  issues (needs gh signed in), and Granola meetings (off until turned on in Settings, and Granola connected to
+  Claude). It ends with "Suggestions are written by the Claude CLI."
+- The text is fixed: it does not check whether each source is set up on this computer.
+
 ## Attention cues: sound, glow and blinking tabs
 
 When a terminal needs you, Maestro tells you in three ways:

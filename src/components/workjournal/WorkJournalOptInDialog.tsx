@@ -1,5 +1,6 @@
 import { BookOpen } from "lucide-react";
 import { DialogShell, dialogButtonClass } from "@/components/shared/DialogShell";
+import { WorkJournalInfoHover } from "@/components/workjournal/WorkJournalInfoHover";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 import {
   useWorkJournalSettingsLoaded,
@@ -26,6 +27,7 @@ export function WorkJournalOptInDialog() {
     <DialogShell
       title="Enable the Work Journal?"
       icon={<BookOpen size={14} />}
+      titleAdornment={<WorkJournalInfoHover />}
       onClose={decline}
       size="sm"
       closeOnOutsideClick={false}

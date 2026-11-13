@@ -67,6 +67,20 @@ describe("WorkJournalOptInDialog", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("Escape on the (i) explanation closes only the explanation, not the question", () => {
+    render(<WorkJournalOptInDialog />);
+    fireEvent.focus(screen.getByRole("button", { name: "About the Work Journal" }));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "About the Work Journal" }), {
+      key: "Escape",
+    });
+
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Enable the Work Journal?" })).toBeTruthy();
+    expect(useWorkJournalSettingsStore.getState().enabled).toBeNull();
+  });
+
   it("closing the dialog counts as Not now", () => {
     render(<WorkJournalOptInDialog />);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
