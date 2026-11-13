@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { injectIntoAll } from "@/lib/injector";
 import { evaluateTriggers, triggerRecipients } from "@/lib/injectorTriggers";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
+import { recordInjectorRun, triggerSender } from "@/stores/useInjectedMessageStore";
 import { useInjectorTriggerStore } from "@/stores/useInjectorTriggerStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 
@@ -34,11 +35,12 @@ export function useInjectorTriggers(): void {
           name: nameOf(id),
         }));
         const reachedNames = firing.reachedIds.map(nameOf);
-        void injectIntoAll(targets, trigger.message).then((result) =>
+        void injectIntoAll(targets, trigger.message).then((result) => {
           useInjectorTriggerStore
             .getState()
-            .setLastFire(trigger.id, { at: Date.now(), reachedNames, result }),
-        );
+            .setLastFire(trigger.id, { at: Date.now(), reachedNames, result });
+          recordInjectorRun(targets, result, triggerSender(trigger.threshold), trigger.message);
+        });
       }
     };
     const unsubscribeSessions = useSessionStore.subscribe(check);

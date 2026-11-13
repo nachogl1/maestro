@@ -128,6 +128,20 @@ narrow columns look the same as six. As the column gets narrower, the header giv
 The AI icon and the Samurai badge show at every width. When the context threshold is reached, a small red warning
 icon blinks right after the terminal name; hover over it for "Context threshold reached" and the percentage.
 
+## Terminals: the message icon on the header
+
+When you send a message from the **Injector** panel, or a trigger sends one, every terminal that received it shows
+a small amber envelope icon on its header, right after the name (after the red context icon when that shows). From
+two messages on, it carries a count, such as `3`.
+
+- Hover over the icon to see every message, newest first: who sent it (`Injector`, or `Trigger at 50%`), the time
+  (`14:20`) and the message's first line. The last line reads `Click to dismiss`.
+- Click the icon to clear all of that terminal's messages. Nothing else clears it: clicking, focusing or typing in
+  the terminal leaves it in place, and it stays through tab switches, zoom and parking.
+- A failed send adds nothing (the Injector panel and the trigger row show failures). Samurai instructions, the Work
+  Journal harvest prompt and the first prompt at launch never add one.
+- The icons are kept in memory only: they clear when Maestro restarts, and a closed terminal's messages go with it.
+
 ## Tabs: dragging one onto another swaps the two
 
 In all four rows you can reorder by dragging (project tabs in the top bar, terminal tabs while a terminal is

@@ -5,6 +5,7 @@ import { injectIntoAll } from "@/lib/injector";
 import { projectColorFor } from "@/lib/projectColor";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
+import { INJECTOR_SENDER, recordInjectorRun } from "@/stores/useInjectedMessageStore";
 import { useInjectorStore } from "@/stores/useInjectorStore";
 import { type SessionConfig, useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
@@ -56,6 +57,7 @@ export function InjectorSection() {
     try {
       const result = await injectIntoAll(targets, text);
       useInjectorStore.getState().setLastRun(result);
+      recordInjectorRun(targets, result, INJECTOR_SENDER, text);
       // A clean run clears the box like a sent chat message; any failure
       // keeps the text so it can be re-sent to the terminals that missed it.
       if (result.failures.length === 0) useInjectorStore.getState().setMessage("");
