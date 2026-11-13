@@ -112,7 +112,15 @@ fn ignored_names(dir: &Path, names: &[String]) -> HashSet<String> {
     let child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["check-ignore", "--stdin", "-z"])
+        // A repository in the tree may name any command as its fsmonitor;
+        // browsing a folder must never run it.
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "check-ignore",
+            "--stdin",
+            "-z",
+        ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .stdin(Stdio::piped())
@@ -409,6 +417,30 @@ mod tests {
             open_target(&root, &s(&repo.path().join("gone.txt"))),
             Err(FilesError::Missing)
         ));
+    }
+
+    #[test]
+    fn listing_a_repository_never_runs_its_fsmonitor_command() {
+        let repo = sample_repo();
+        let nested = repo.path().join("vendor").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "-q"]);
+        std::fs::write(nested.join("a.txt"), "a").unwrap();
+        let marker = repo.path().join("fsmonitor-ran");
+        let script = repo.path().join("fsmonitor.sh");
+        let marker_sh = s(&marker).replace('\\', "/");
+        std::fs::write(&script, format!("#!/bin/sh\necho ran > '{marker_sh}'\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script_value = s(&script).replace('\\', "/");
+        git(&nested, &["config", "core.fsmonitor", &script_value]);
+
+        let root = s(repo.path());
+        list_dir_blocking(&root, &s(&nested)).unwrap();
+        assert!(!marker.exists(), "git ran the folder's fsmonitor command");
     }
 
     #[test]

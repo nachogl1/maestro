@@ -237,6 +237,14 @@ describe("FilesPanel: the focused terminal's folder", () => {
     });
     expect(writeTextMock).toHaveBeenCalledWith(readme);
     expect(screen.getByText(`Copied ${readme}`)).toBeInTheDocument();
+
+    // A double-click on a hover button is that button's, never the row's open.
+    for (const name of ["Copy full path of README.md", "Open README.md in default app"]) {
+      await act(async () => {
+        fireEvent.doubleClick(screen.getByRole("button", { name }));
+      });
+    }
+    expect(calls("files_open_default")).toHaveLength(2);
   });
 
   it("offers Preview, Open and Copy on a file's right-click menu, and Copy and Open on a folder's", async () => {

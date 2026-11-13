@@ -97,6 +97,7 @@ export function FileTreeRow({
               e.stopPropagation();
               actions.copy(entry.path);
             }}
+            onDoubleClick={(e) => e.stopPropagation()}
             className="rounded p-0.5 text-maestro-muted hover:bg-maestro-muted/25 hover:text-maestro-text"
             aria-label={`Copy full path of ${entry.name}`}
             title="Copy full path"
