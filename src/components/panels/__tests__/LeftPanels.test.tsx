@@ -47,6 +47,7 @@ const GIT: GitPanelProps = {
 /** Every strip icon, top to bottom, with the panel it opens. */
 const STRIP: [string, string][] = [
   ["History", "History panel"],
+  ["Files", "Files panel"],
   ["Git", "Git panel"],
   ["Notes", "Notes panel"],
   ["Work Journal", "Work Journal panel"],
