@@ -401,6 +401,24 @@ export function placeTileAt(
 }
 
 /**
+ * Drop a tile onto another: the two trade rects and every other tile stays.
+ * Null when the ids are unknown or the same.
+ */
+export function swapTiles(
+  tiles: ReadonlyMap<number, TileRect>,
+  movingId: number,
+  targetId: number,
+): Map<number, TileRect> | null {
+  const own = tiles.get(movingId);
+  const other = tiles.get(targetId);
+  if (!own || !other || movingId === targetId) return null;
+  const next = new Map(tiles);
+  next.set(movingId, other);
+  next.set(targetId, own);
+  return next;
+}
+
+/**
  * Drop a tile beside another one: the target gives up half its width (left/
  * right) or height (top/bottom) on that side and the dragged tile takes it;
  * the dragged tile's old cells become free. Null when either half would be

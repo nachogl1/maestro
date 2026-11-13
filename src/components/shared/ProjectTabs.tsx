@@ -7,7 +7,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
+import { rectSwappingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, PanelLeft, Plus, Square, X } from "lucide-react";
@@ -274,7 +274,7 @@ export function ProjectTabs({
           modifiers={[restrictToHorizontalAxis]}
           onDragEnd={handleDragEnd}
         >
-          <SortableContext items={tabs.map((t) => t.id)} strategy={horizontalListSortingStrategy}>
+          <SortableContext items={tabs.map((t) => t.id)} strategy={rectSwappingStrategy}>
             <div
               role="tablist"
               aria-label="Open projects"

@@ -18,11 +18,11 @@ describe("useParkedOrderStore", () => {
     expect(shown(1, 2, 3)).toEqual([1, 2, 3]);
   });
 
-  it("moves a pill onto another one's place, in both directions", () => {
+  it("swaps a pill with the one it is dropped on, in both directions", () => {
     useParkedOrderStore.getState().move([1, 2, 3], 3, 1, [1, 2, 3]);
-    expect(shown(1, 2, 3)).toEqual([3, 1, 2]);
+    expect(shown(1, 2, 3)).toEqual([3, 2, 1]);
 
-    useParkedOrderStore.getState().move([3, 1, 2], 3, 2, [1, 2, 3]);
+    useParkedOrderStore.getState().move([3, 2, 1], 1, 3, [1, 2, 3]);
     expect(shown(1, 2, 3)).toEqual([1, 2, 3]);
   });
 
@@ -31,7 +31,7 @@ describe("useParkedOrderStore", () => {
 
     // Terminal 4 parks: it joins the end, the dragged order stays.
     useParkedOrderStore.getState().syncParked([1, 2, 3, 4]);
-    expect(shown(1, 2, 3, 4)).toEqual([3, 1, 2, 4]);
+    expect(shown(1, 2, 3, 4)).toEqual([3, 2, 1, 4]);
 
     // Terminal 1 unparks: the others keep their places.
     useParkedOrderStore.getState().syncParked([2, 3, 4]);
@@ -53,9 +53,9 @@ describe("useParkedOrderStore", () => {
 
     // A later drag in the eagle shelf, then another in alpha's.
     useParkedOrderStore.getState().move([2, 5, 1, 6], 6, 5, allParked);
-    expect(shown(...allParked)).toEqual([2, 6, 5, 1]);
+    expect(shown(...allParked)).toEqual([2, 6, 1, 5]);
     useParkedOrderStore.getState().move([2, 1], 1, 2, allParked);
-    expect(shown(...allParked)).toEqual([1, 6, 5, 2]);
+    expect(shown(...allParked)).toEqual([1, 6, 2, 5]);
   });
 
   it("ignores a drop on itself or on an id the shelf does not show", () => {

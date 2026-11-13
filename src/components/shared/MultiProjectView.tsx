@@ -7,7 +7,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
+import { rectSwappingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Pin } from "lucide-react";
 import {
@@ -33,6 +33,7 @@ import {
   rectsEqual,
   resizeTile,
   rowOfColumns,
+  swapTiles,
   type TileRect,
 } from "@/lib/eagleLayout";
 import { type MoveDirection, neighbourInDirection, type PaneEdge } from "@/lib/paneMoves";
@@ -317,10 +318,10 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
         const own = tiles.get(sessionId);
         if (!own) return;
         if (target.kind === "swap") {
-          const other = tiles.get(target.sessionId);
-          if (!other || target.sessionId === sessionId) return;
-          tiles.set(sessionId, other);
-          tiles.set(target.sessionId, own);
+          const next = swapTiles(tiles, sessionId, target.sessionId);
+          if (!next) return;
+          commitEagleRects(next);
+          return;
         } else if (target.kind === "beside") {
           const next = dropBesideTile(tiles, sessionId, target.sessionId, target.side);
           if (!next) return;
@@ -807,7 +808,7 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
                     >
                       <SortableContext
                         items={orderedEagleSessions.map((s) => s.sessionId)}
-                        strategy={horizontalListSortingStrategy}
+                        strategy={rectSwappingStrategy}
                       >
                         {orderedEagleSessions.map((session, index) => (
                           <EagleZoomTab

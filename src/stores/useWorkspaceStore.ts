@@ -1,4 +1,4 @@
-import { arrayMove } from "@dnd-kit/sortable";
+import { arrayMove, arraySwap } from "@dnd-kit/sortable";
 import { invoke } from "@tauri-apps/api/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
@@ -396,7 +396,8 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>()(
         const oldIndex = tabs.findIndex((t) => t.id === activeId);
         const newIndex = tabs.findIndex((t) => t.id === overId);
         if (oldIndex === -1 || newIndex === -1) return;
-        set({ tabs: arrayMove(tabs, oldIndex, newIndex) });
+        // Dropping a tab onto another swaps the two; the rest stay put (issue #555).
+        set({ tabs: arraySwap(tabs, oldIndex, newIndex) });
       },
 
       moveTab: (tabId: string, direction: "left" | "right") => {
