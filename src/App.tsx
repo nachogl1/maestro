@@ -8,6 +8,7 @@ import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
 import { isScratchPath } from "@/lib/scratch";
+import { stopProjectSessions } from "@/lib/stopProjectSessions";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
@@ -253,21 +254,7 @@ function App() {
     if (!activeTab || isStoppingAll) return;
     setIsStoppingAll(true);
     try {
-      const sessionStore = useSessionStore.getState();
-      const projectSessions = sessionStore.getSessionsByProject(activeTab.projectPath);
-      const results = await Promise.allSettled(projectSessions.map((s) => killSession(s.id)));
-      for (const result of results) {
-        if (result.status === "rejected") {
-          console.error("Failed to stop session:", result.reason);
-        }
-      }
-      await sessionStore.removeSessionsForProject(activeTab.projectPath);
-      // Drop the dead ids from the tab too, or the close-tab confirm and the
-      // eagle zoom strip keep counting terminals that no longer run.
-      const { removeSessionFromProject } = useWorkspaceStore.getState();
-      for (const s of projectSessions) {
-        removeSessionFromProject(activeTab.id, s.id);
-      }
+      await stopProjectSessions(activeTab.id, activeTab.projectPath);
       setSessionsLaunched(activeTab.id, false);
       setSessionCounts((prev) => {
         const next = new Map(prev);

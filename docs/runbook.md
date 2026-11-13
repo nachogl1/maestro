@@ -490,7 +490,7 @@ A scratch project is a plain folder (not a git repository) for work that belongs
 - **See them all:** the **Scratch projects** pill in the same list shows how many there are; click it for every
   scratch folder, open or kept, with its age. Click a row to add a terminal to it (its tab opens first if it was
   closed). The bin icon asks **Delete? Yes / No**; Yes closes its tab and terminals first, then deletes the folder.
-- **Delete or keep:** closing a scratch project's last terminal, or its tab, asks "Delete the scratch project's
+- **Delete or keep:** closing a scratch project's last terminal (Stop All included), or its tab, asks "Delete the scratch project's
   files, or keep them?". **Keep** leaves the folder (closing the tab when that is what you asked); **Delete**
   removes the folder and its files and closes the tab. Esc or the close button answers neither. Closing one of
   several terminals, or any terminal of a normal project, never asks; quitting Maestro never asks either.
