@@ -1,11 +1,6 @@
 import { AlertCircle, GitFork, Loader2, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-  PanelResizeHandle,
-  RIGHT_PANEL_MAX_WIDTH,
-  RIGHT_PANEL_MIN_WIDTH,
-} from "@/components/shared/PanelResizeHandle";
 import type { GraphNode } from "../../lib/graphLayout";
 import { useGitHubStore } from "../../stores/useGitHubStore";
 import { useGitStore } from "../../stores/useGitStore";
@@ -31,9 +26,6 @@ interface GitGraphPanelProps {
    *  force a specific tab whenever it toggles the panel open. */
   activeTab: GitPanelTab;
   onActiveTabChange: (tab: GitPanelTab) => void;
-  /** Width shared with the other right-docked panels (see App). */
-  width: number;
-  onResize: (width: number) => void;
   /** Eagle-view carousel: when set, a switcher strip renders above the panel
    *  content to swipe between per-project git cards. All four props must be
    *  provided together; undefined = normal single-project mode. */
@@ -53,14 +45,11 @@ export function GitGraphPanel({
   onRepoChange,
   activeTab,
   onActiveTabChange,
-  width,
-  onResize,
   eagleProjects,
   eagleIndex,
   onEaglePrev,
   onEagleNext,
 }: GitGraphPanelProps) {
-  const [isResizing, setIsResizing] = useState(false);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [selectedPRNumber, setSelectedPRNumber] = useState<number | null>(null);
   const [selectedIssueNumber, setSelectedIssueNumber] = useState<number | null>(null);
@@ -253,22 +242,9 @@ export function GitGraphPanel({
       aria-hidden={!open}
       tabIndex={open ? undefined : -1}
       {...(!open ? ({ inert: "" } as { inert: "" }) : {})}
-      style={{ width: open ? width : 0 }}
-      className={`relative z-30 flex min-w-0 shrink-0 flex-col border-l border-maestro-border bg-maestro-surface overflow-hidden ${
-        isResizing ? "" : "transition-all duration-200"
-      } ${open ? "" : "border-l-0"}`}
+      // Fills its panel in the left icon strip, which owns the width and resizing.
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-maestro-surface"
     >
-      {open && (
-        <PanelResizeHandle
-          edge="left"
-          width={width}
-          min={RIGHT_PANEL_MIN_WIDTH}
-          max={RIGHT_PANEL_MAX_WIDTH}
-          onResize={onResize}
-          label="Resize git panel"
-          onDraggingChange={setIsResizing}
-        />
-      )}
       {/* Eagle-view carousel strip — full width above the panel row, so it
           stays reachable even when a detail panel fills the row below. */}
       {open &&

@@ -389,6 +389,20 @@
 
 /* ── Animations ── */
 
+/* A panel icon in the left strip whose panel has no room shakes once. */
+@keyframes panel-icon-shake {
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+
+.animate-panel-icon-shake {
+  animation: panel-icon-shake 0.35s;
+}
+
 @keyframes subtle-breathe {
   0%,
   100% {

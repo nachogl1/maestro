@@ -19,39 +19,43 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-import { type ComponentProps, useState } from "react";
+import type { GitPanelProps } from "@/components/panels/GitPanel";
+import { LeftPanels } from "@/components/panels/LeftPanels";
+import type { PanelContentProps } from "@/components/panels/PanelBody";
+import { type PanelId, usePanelStripStore } from "@/stores/usePanelStripStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useSessionSummaryStore } from "@/stores/useSessionSummaryStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
-import {
-  loadSavedSidebarTab,
-  Sidebar,
-  type SidebarTabId,
-  saveSidebarTab,
-  sidebarTabShortcutTransition,
-} from "../Sidebar";
 
 const invokeMock = vi.mocked(invoke);
 
+const GIT: GitPanelProps = {
+  repoPath: null,
+  currentBranch: null,
+  repositories: [],
+  workspaceType: "single-repo",
+  onRepoChange: vi.fn(),
+  activeTab: "status",
+  onActiveTabChange: vi.fn(),
+};
+
 /**
- * The active tab is lifted to App (so Alt+1-4 shortcuts can drive it); this
- * harness recreates App's side of the contract: state + persistence.
+ * The former sidebar tabs (History, Infra, Settings) are panels of the left
+ * icon strip now (issue #559); this harness renders the strip as App does.
  */
-function ControlledSidebar(
-  props: Omit<ComponentProps<typeof Sidebar>, "activeTab" | "onSelectTab">,
-) {
-  const [tab, setTab] = useState<SidebarTabId>(loadSavedSidebarTab);
-  return (
-    <Sidebar
-      {...props}
-      activeTab={tab}
-      onSelectTab={(t) => {
-        setTab(t);
-        saveSidebarTab(t);
-      }}
-    />
-  );
+function ControlledSidebar(props: Omit<PanelContentProps, "git">) {
+  return <LeftPanels content={{ ...props, git: GIT }} />;
+}
+
+/** Starts with only this panel open, as if it was the one left open last time. */
+function openOnly(id: PanelId) {
+  usePanelStripStore.setState({ openPanels: [id], widths: {}, refusal: null });
+}
+
+/** The strip icon that opens a panel. */
+function stripIcon(name: string): HTMLElement {
+  return within(screen.getByRole("navigation", { name: "Panels" })).getByRole("button", { name });
 }
 
 function buildTab(overrides: Partial<WorkspaceTab> = {}): WorkspaceTab {
@@ -170,25 +174,32 @@ function mockInvoke() {
   });
 }
 
-describe("Sidebar tab bar", () => {
+describe("History, Infra and Settings panels (the former sidebar tabs)", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     mockInvoke();
     localStorage.clear();
+    // Wide enough for several panels side by side, and History open as on a first start.
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 1920,
+    });
+    openOnly("history");
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     useSessionStore.setState({ sessions: [], samuraiSchedule: [] });
     useSessionSummaryStore.setState({ entries: {} });
   });
 
-  it("renders the three tabs with History active by default", () => {
+  it("shows History, Infra and Settings icons with History open by default", () => {
     render(<ControlledSidebar />);
     for (const label of ["History", "Infra", "Settings"]) {
-      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+      expect(stripIcon(label)).toBeInTheDocument();
     }
     // The General tab is gone: its Agents card lives under Settings.
     expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "History" })).toHaveClass("border-maestro-accent");
-    // Content from other tabs is not mounted
+    expect(stripIcon("History")).toHaveAttribute("aria-pressed", "true");
+    // Content from closed panels is not mounted
     expect(screen.queryByText("Agents")).not.toBeInTheDocument();
     expect(screen.queryByText("MCP Servers")).not.toBeInTheDocument();
   });
@@ -209,7 +220,7 @@ describe("Sidebar tab bar", () => {
         },
       ],
     });
-    localStorage.setItem("maestro-sidebar-tab", "settings");
+    openOnly("settings");
     render(<ControlledSidebar />);
 
     expect(screen.getByText("No running agents")).toBeInTheDocument();
@@ -228,16 +239,16 @@ describe("Sidebar tab bar", () => {
         },
       ],
     });
-    localStorage.setItem("maestro-sidebar-tab", "settings");
+    openOnly("settings");
     render(<ControlledSidebar />);
 
     expect(screen.queryByText("No running agents")).not.toBeInTheDocument();
     expect(screen.getByText(/^parked/)).toBeInTheDocument();
   });
 
-  it("switches to Infra (MCP + skills + project context)", () => {
+  it("opens Infra (MCP + skills + project context)", () => {
     render(<ControlledSidebar />);
-    fireEvent.click(screen.getByRole("button", { name: "Infra" }));
+    fireEvent.click(stripIcon("Infra"));
     expect(screen.getByText("MCP Servers")).toBeInTheDocument();
     expect(screen.getByText("Plugins & Skills")).toBeInTheDocument();
     expect(screen.getByText("Project Context")).toBeInTheDocument();
@@ -254,7 +265,7 @@ describe("Sidebar tab bar", () => {
         buildTab({ id: "tab-2", name: "other-app", projectPath: OTHER_PATH, active: false }),
       ],
     });
-    localStorage.setItem("maestro-sidebar-tab", "infra");
+    openOnly("infra");
     render(<ControlledSidebar />);
 
     expect(screen.getByRole("button", { name: "maestro" })).toBeInTheDocument();
@@ -291,16 +302,16 @@ describe("Sidebar tab bar", () => {
         buildTab({ id: "tab-2", name: "maestro", projectPath: "c:/git/maestro/", active: false }),
       ],
     });
-    localStorage.setItem("maestro-sidebar-tab", "infra");
+    openOnly("infra");
     render(<ControlledSidebar />);
 
     expect(screen.getAllByRole("button", { name: "maestro" })).toHaveLength(1);
     expect(screen.getAllByText("MCP Servers")).toHaveLength(1);
   });
 
-  it("switches to Settings (settings launcher, agents) and persists the chosen tab", async () => {
+  it("opens Settings (settings launcher, agents) and remembers it is open", async () => {
     render(<ControlledSidebar />);
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(stripIcon("Settings"));
     expect(screen.getByRole("button", { name: "Open Settings" })).toBeInTheDocument();
     // Every setting lives in the one Settings dialog, not in separate buttons or cards.
     expect(screen.queryByText("Terminal Settings")).not.toBeInTheDocument();
@@ -310,12 +321,13 @@ describe("Sidebar tab bar", () => {
     // The Git Repository card is gone from the sidebar (the Git panel covers it).
     expect(screen.queryByText("Git Repository")).not.toBeInTheDocument();
     await waitFor(() => {
-      expect(localStorage.getItem("maestro-sidebar-tab")).toBe("settings");
+      const saved = JSON.parse(localStorage.getItem("maestro-panel-strip") ?? "{}");
+      expect(saved.state.openPanels).toContain("settings");
     });
   });
 
-  it("puts Stop All at the bottom of the Settings tab, after the Agents list", () => {
-    localStorage.setItem("maestro-sidebar-tab", "settings");
+  it("puts Stop All at the bottom of the Settings panel, after the Agents list", () => {
+    openOnly("settings");
     const onStopAll = vi.fn();
     render(<ControlledSidebar launchedCount={2} onStopAll={onStopAll} />);
     const stopAll = screen.getByRole("button", { name: "Stop All (2)" });
@@ -326,13 +338,13 @@ describe("Sidebar tab bar", () => {
   });
 
   it("hides Stop All when nothing is running", () => {
-    localStorage.setItem("maestro-sidebar-tab", "settings");
+    openOnly("settings");
     render(<ControlledSidebar launchedCount={0} onStopAll={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /Stop All/ })).not.toBeInTheDocument();
   });
 
-  it("opens the one Settings dialog from the Settings tab", () => {
-    localStorage.setItem("maestro-sidebar-tab", "settings");
+  it("opens the one Settings dialog from the Settings panel", () => {
+    openOnly("settings");
     render(<ControlledSidebar />);
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
     const dialog = screen.getByRole("dialog", { name: "Settings" });
@@ -340,10 +352,15 @@ describe("Sidebar tab bar", () => {
     expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
   });
 
-  it("falls back to History when a removed tab id was persisted", () => {
-    localStorage.setItem("maestro-sidebar-tab", "general");
+  it("drops a removed panel id that was saved, keeping the rest", async () => {
+    localStorage.setItem(
+      "maestro-panel-strip",
+      JSON.stringify({ state: { openPanels: ["general", "infra"], widths: {} }, version: 0 }),
+    );
+    await usePanelStripStore.persist.rehydrate();
     render(<ControlledSidebar />);
-    expect(screen.getByRole("button", { name: "History" })).toHaveClass("border-maestro-accent");
+    expect(stripIcon("Infra")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("MCP Servers")).toBeInTheDocument();
     expect(screen.queryByText("Agents")).not.toBeInTheDocument();
   });
 
@@ -352,7 +369,6 @@ describe("Sidebar tab bar", () => {
     const onHistoryLaunch = vi.fn();
     render(<ControlledSidebar onHistoryLaunch={onHistoryLaunch} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
     // Expand the project's collapsible
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
@@ -375,7 +391,6 @@ describe("Sidebar tab bar", () => {
 
   it("History tab scans the repo and every worktree for conversations", async () => {
     render(<ControlledSidebar />);
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
     await screen.findByText("Login flow rework");
@@ -432,7 +447,6 @@ describe("Sidebar tab bar", () => {
     });
 
     render(<ControlledSidebar />);
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
     const row = (await screen.findByText("Work in a deleted worktree")).closest("button");
@@ -483,7 +497,6 @@ describe("Sidebar tab bar", () => {
     });
 
     render(<ControlledSidebar />);
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
     // Identity: the AI name and two-sentence summary replace the prompt text.
@@ -506,7 +519,6 @@ describe("Sidebar tab bar", () => {
     usePendingLaunchStore.setState({ pending: [] });
     render(<ControlledSidebar />);
 
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
     fireEvent.click(screen.getByRole("button", { name: /maestro/ }));
 
     // Main worktree is filtered out; only the feature worktree is listed
@@ -540,41 +552,9 @@ describe("Sidebar tab bar", () => {
       ],
     });
     const onNavigate = vi.fn();
-    localStorage.setItem("maestro-sidebar-tab", "settings");
+    openOnly("settings");
     render(<ControlledSidebar onAgentNavigate={onNavigate} />);
     fireEvent.click(screen.getByText("My agent"));
     expect(onNavigate).toHaveBeenCalledWith("tab-1", 1);
-  });
-});
-
-describe("sidebarTabShortcutTransition (Alt+1-4 toggle semantics)", () => {
-  it("opens the sidebar on the requested tab when closed", () => {
-    expect(sidebarTabShortcutTransition(false, "settings", 1)).toEqual({
-      open: true,
-      tab: "history",
-    });
-  });
-
-  it("closes the sidebar when the active tab's shortcut repeats", () => {
-    expect(sidebarTabShortcutTransition(true, "infra", 2)).toEqual({
-      open: false,
-      tab: "infra",
-    });
-  });
-
-  it("switches tabs when the sidebar is open on another tab", () => {
-    expect(sidebarTabShortcutTransition(true, "history", 3)).toEqual({
-      open: true,
-      tab: "settings",
-    });
-  });
-
-  it("names no tab on index 4 (the Injector moved to the right-side panels)", () => {
-    expect(sidebarTabShortcutTransition(true, "history", 4)).toBeNull();
-  });
-
-  it("returns null for an index that names no tab", () => {
-    expect(sidebarTabShortcutTransition(true, "history", 5)).toBeNull();
-    expect(sidebarTabShortcutTransition(false, "history", 0)).toBeNull();
   });
 });

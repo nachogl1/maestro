@@ -1,15 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import {
-  Bot,
-  ChevronDown,
-  ChevronRight,
-  History,
-  Package,
-  Settings,
-  SlidersHorizontal,
-  Square,
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, ChevronDown, ChevronRight, Settings, SlidersHorizontal, Square } from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { SettingsDialog } from "@/components/settings";
 import { SamuraiScheduleChip } from "@/components/terminal/SamuraiScheduleChip";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
@@ -17,13 +8,10 @@ import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
 import { isParkEntry } from "@/lib/samurai";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
-import { altLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { type SubagentInfo, useAgentStore } from "@/stores/useAgentStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { HistorySection } from "./HistorySection";
-import { InfraTab } from "./InfraTab";
 import {
   badgeBaseClass,
   cardClass,
@@ -32,13 +20,11 @@ import {
   SectionHeader,
 } from "./sectionChrome";
 
-interface SidebarProps {
-  collapsed?: boolean;
-  onCollapse?: () => void;
-  /** Active sidebar tab — lifted to App so Alt+1-4 shortcuts can drive it. */
-  activeTab: SidebarTabId;
-  /** Select a sidebar tab (App persists the choice). */
-  onSelectTab: (tab: SidebarTabId) => void;
+/* ================================================================ */
+/*  SETTINGS PANEL                                                   */
+/* ================================================================ */
+
+interface SettingsPanelContentProps {
   theme?: "dark" | "light";
   onToggleTheme?: () => void;
   /** Number of running sessions in the active project (drives Stop All visibility). */
@@ -51,255 +37,14 @@ interface SidebarProps {
   onAgentNavigate?: (tabId: string, sessionId: number) => void;
   /** Agents section: kill one terminal (PTY + pane cleanup). */
   onAgentKill?: (tabId: string, sessionId: number) => void;
-  /** History section: a recovery launch was queued — reveal the project's grid. */
-  onHistoryLaunch?: (tabId: string) => void;
-}
-
-const SIDEBAR_MIN_WIDTH = 180;
-const SIDEBAR_MAX_WIDTH = 480;
-const SIDEBAR_DEFAULT_WIDTH = 320;
-const SIDEBAR_COLLAPSE_THRESHOLD = 60;
-const SIDEBAR_WIDTH_STEP = 4;
-const SIDEBAR_WIDTH_STORAGE_KEY = "maestro-sidebar-width";
-
-function loadSavedWidth(): number {
-  const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
-  return Number.isFinite(saved) && saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH
-    ? saved
-    : SIDEBAR_DEFAULT_WIDTH;
-}
-
-/* ================================================================ */
-/*  SIDEBAR ROOT                                                     */
-/* ================================================================ */
-
-export function Sidebar({
-  collapsed,
-  onCollapse,
-  activeTab,
-  onSelectTab,
-  theme,
-  onToggleTheme,
-  launchedCount = 0,
-  isStoppingAll = false,
-  onStopAll,
-  onAgentNavigate,
-  onAgentKill,
-  onHistoryLaunch,
-}: SidebarProps) {
-  const [width, setWidth] = useState(loadSavedWidth);
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartRef = useRef<{ x: number; w: number } | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
-  }, [width]);
-
-  const handleDragStart = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      setIsDragging(true);
-      dragStartRef.current = { x: e.clientX, w: width };
-    },
-    [width],
-  );
-
-  const clampWidth = useCallback((value: number) => {
-    const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, value));
-    const snapped = Math.round(clamped / SIDEBAR_WIDTH_STEP) * SIDEBAR_WIDTH_STEP;
-    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, snapped));
-  }, []);
-
-  const handleResizeKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      let next = width;
-      const smallStep = 8;
-      const largeStep = 24;
-
-      switch (e.key) {
-        case "ArrowLeft":
-          next = width - smallStep;
-          break;
-        case "ArrowRight":
-          next = width + smallStep;
-          break;
-        case "PageDown":
-          next = width - largeStep;
-          break;
-        case "PageUp":
-          next = width + largeStep;
-          break;
-        case "Home":
-          next = SIDEBAR_MIN_WIDTH;
-          break;
-        case "End":
-          next = SIDEBAR_MAX_WIDTH;
-          break;
-        default:
-          return;
-      }
-
-      e.preventDefault();
-      if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
-        onCollapse?.();
-        return;
-      }
-      setWidth(clampWidth(next));
-    },
-    [width, onCollapse, clampWidth],
-  );
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const onMove = (e: MouseEvent) => {
-      if (!dragStartRef.current) return;
-      const raw = dragStartRef.current.w + (e.clientX - dragStartRef.current.x);
-      if (raw < SIDEBAR_COLLAPSE_THRESHOLD) {
-        setIsDragging(false);
-        onCollapse?.();
-        return;
-      }
-      setWidth(clampWidth(raw));
-    };
-
-    const onUp = () => setIsDragging(false);
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-  }, [isDragging, onCollapse, clampWidth]);
-
-  return (
-    // min-w-0 + shrink-0 pin the pane to the chosen width: without them a
-    // flex item's min-width:auto lets wide tab content push the pane wider,
-    // so switching tabs used to change the sidebar width.
-    <aside
-      style={{ width: collapsed ? 0 : width }}
-      className={`theme-transition no-select relative flex h-full min-w-0 shrink-0 flex-col border-r border-maestro-border bg-maestro-surface ${
-        isDragging ? "" : "transition-all duration-200 ease-out"
-      } ${collapsed ? "overflow-hidden border-r-0 opacity-0" : "opacity-100"}`}
-    >
-      {/* Tab bar */}
-      <SidebarTabBar active={activeTab} onSelect={onSelectTab} />
-
-      {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3">
-        <ConfigTab
-          activeSidebarTab={activeTab}
-          theme={theme}
-          onToggleTheme={onToggleTheme}
-          launchedCount={launchedCount}
-          isStoppingAll={isStoppingAll}
-          onStopAll={onStopAll}
-          onAgentNavigate={onAgentNavigate}
-          onAgentKill={onAgentKill}
-          onHistoryLaunch={onHistoryLaunch}
-        />
-      </div>
-
-      {/* Drag handle */}
-      {!collapsed && (
-        // biome-ignore lint/a11y/useSemanticElements: Vertical resizer requires interactive div for pointer/keyboard handling.
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-valuemin={SIDEBAR_MIN_WIDTH}
-          aria-valuemax={SIDEBAR_MAX_WIDTH}
-          aria-valuenow={Math.round(width)}
-          aria-valuetext={`${Math.round(width)} pixels`}
-          tabIndex={0}
-          aria-label="Resize sidebar"
-          className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-maestro-accent/30 active:bg-maestro-accent/40"
-          onMouseDown={handleDragStart}
-          onKeyDown={handleResizeKeyDown}
-        />
-      )}
-    </aside>
-  );
-}
-
-/* ================================================================ */
-/*  TAB BAR                                                          */
-/* ================================================================ */
-
-export type SidebarTabId = "history" | "infra" | "settings";
-
-export const SIDEBAR_TABS: { id: SidebarTabId; label: string; icon: React.ElementType }[] = [
-  { id: "history", label: "History", icon: History },
-  { id: "infra", label: "Infra", icon: Package },
-  { id: "settings", label: "Settings", icon: Settings },
-];
-
-const SIDEBAR_TAB_STORAGE_KEY = "maestro-sidebar-tab";
-
-export function loadSavedSidebarTab(): SidebarTabId {
-  const saved = localStorage.getItem(SIDEBAR_TAB_STORAGE_KEY);
-  return SIDEBAR_TABS.some((t) => t.id === saved) ? (saved as SidebarTabId) : "history";
-}
-
-export function saveSidebarTab(tab: SidebarTabId): void {
-  localStorage.setItem(SIDEBAR_TAB_STORAGE_KEY, tab);
 }
 
 /**
- * State transition for the Alt+1-3 sidebar shortcuts: closed → open on that
- * tab; open on that tab already → close; open on another tab → switch.
- * Returns null when the index doesn't name a tab.
+ * What the Settings panel of the left icon strip holds: the button to the
+ * Settings dialog, the Agents list and Stop All (formerly the sidebar's
+ * Settings tab).
  */
-export function sidebarTabShortcutTransition(
-  open: boolean,
-  activeTab: SidebarTabId,
-  index: number,
-): { open: boolean; tab: SidebarTabId } | null {
-  const tab = SIDEBAR_TABS[index - 1]?.id;
-  if (!tab) return null;
-  if (!open) return { open: true, tab };
-  if (activeTab === tab) return { open: false, tab: activeTab };
-  return { open: true, tab };
-}
-
-function SidebarTabBar({
-  active,
-  onSelect,
-}: {
-  active: SidebarTabId;
-  onSelect: (tab: SidebarTabId) => void;
-}) {
-  return (
-    // Equal-width columns (auto-cols-fr): every tab gets the same width
-    // regardless of its label, sized by the available space, with a small
-    // gap between tab names.
-    <div className="grid shrink-0 auto-cols-fr grid-flow-col gap-1 border-b border-maestro-border/60 px-1">
-      {SIDEBAR_TABS.map(({ id, label, icon: Icon }, index) => (
-        <button
-          key={id}
-          type="button"
-          onClick={() => onSelect(id)}
-          title={titleWithShortcut(label, altLabel(), String(index + 1))}
-          className={`flex min-w-0 flex-col items-center gap-0.5 border-b-2 px-0.5 py-1.5 text-[9px] font-semibold uppercase tracking-wide transition-colors ${
-            active === id
-              ? "border-maestro-accent text-maestro-accent"
-              : "border-transparent text-maestro-muted hover:text-maestro-text"
-          }`}
-        >
-          <Icon size={14} />
-          <span className="truncate">{label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/* ================================================================ */
-/*  CONFIG TAB                                                       */
-/* ================================================================ */
-
-function ConfigTab({
-  activeSidebarTab,
+export function SettingsPanelContent({
   theme,
   onToggleTheme,
   launchedCount = 0,
@@ -307,41 +52,20 @@ function ConfigTab({
   onStopAll,
   onAgentNavigate,
   onAgentKill,
-  onHistoryLaunch,
-}: {
-  activeSidebarTab: SidebarTabId;
-  theme?: "dark" | "light";
-  onToggleTheme?: () => void;
-  launchedCount?: number;
-  isStoppingAll?: boolean;
-  onStopAll?: () => void;
-  onAgentNavigate?: (tabId: string, sessionId: number) => void;
-  onAgentKill?: (tabId: string, sessionId: number) => void;
-  onHistoryLaunch?: (tabId: string) => void;
-}) {
-  switch (activeSidebarTab) {
-    case "history":
-      // onAgentNavigate is the same sidebar→terminal route the Agents section
-      // takes: History reuses it to reach a conversation that is already
-      // running, instead of dropping it from the list.
-      return <HistorySection onLaunch={onHistoryLaunch} onNavigate={onAgentNavigate} />;
-    case "infra":
-      return <InfraTab />;
-    case "settings":
-      return (
-        <>
-          <SettingsLauncherSection theme={theme} onToggleTheme={onToggleTheme} />
-          {divider}
-          <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
-          {/* Last in the tab, away from Open Settings, so it is never hit by mistake. */}
-          <StopAllSection
-            launchedCount={launchedCount}
-            isStoppingAll={isStoppingAll}
-            onStopAll={onStopAll}
-          />
-        </>
-      );
-  }
+}: SettingsPanelContentProps) {
+  return (
+    <>
+      <SettingsLauncherSection theme={theme} onToggleTheme={onToggleTheme} />
+      {divider}
+      <AgentsSection onNavigate={onAgentNavigate} onKill={onAgentKill} />
+      {/* Last in the panel, away from Open Settings, so it is never hit by mistake. */}
+      <StopAllSection
+        launchedCount={launchedCount}
+        isStoppingAll={isStoppingAll}
+        onStopAll={onStopAll}
+      />
+    </>
+  );
 }
 
 /* ── 0. Agents ── */

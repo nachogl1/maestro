@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The persisted zustand stores hydrate through the Tauri store plugin at
@@ -24,8 +24,27 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { useNotesStore } from "@/stores/useNotesStore";
+import { type PanelId, usePanelStripStore } from "@/stores/usePanelStripStore";
+import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
-import { UtilityPanel } from "../UtilityPanel";
+import type { GitPanelProps } from "../GitPanel";
+import { LeftPanels } from "../LeftPanels";
+
+const GIT: GitPanelProps = {
+  repoPath: null,
+  currentBranch: null,
+  repositories: [],
+  workspaceType: "single-repo",
+  onRepoChange: vi.fn(),
+  activeTab: "status",
+  onActiveTabChange: vi.fn(),
+};
+
+/** The icon strip with just this panel open, as App renders it. */
+function renderPanel(id: PanelId) {
+  usePanelStripStore.setState({ openPanels: [id], widths: {}, refusal: null });
+  return render(<LeftPanels content={{ git: GIT }} />);
+}
 
 const invokeMock = vi.mocked(invoke);
 
@@ -134,7 +153,7 @@ function mockInvoke() {
   });
 }
 
-describe("UtilityPanel", () => {
+describe("panel contents in the left icon strip (formerly the right-hand panel slot)", () => {
   // NotepadPanel is lazy(() => import(...)) so React can only resolve it once
   // the dynamic import settles. Under full-suite load, transforming that
   // module (it drags in TipTap/ProseMirror) is slower than findByText's 1s
@@ -154,10 +173,12 @@ describe("UtilityPanel", () => {
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     // Notes live in a module-level zustand store — reset so tests don't leak.
     useNotesStore.setState({ notes: [], activeNoteId: null });
+    // The Work Journal is opt-in; its panel only opens once it is switched on.
+    useWorkJournalSettingsStore.setState({ enabled: true });
   });
 
   it("renders the Notes panel with its empty state", async () => {
-    render(<UtilityPanel panel="notes" width={320} onResize={() => {}} onClose={() => {}} />);
+    renderPanel("notes");
     expect(screen.getByText("Notes")).toBeInTheDocument();
     // NotepadPanel is lazy-loaded (TipTap is heavy), so its body arrives a
     // microtask after the header; the panel itself still renders synchronously.
@@ -169,7 +190,7 @@ describe("UtilityPanel", () => {
       notes: [{ id: "n1", title: "Note", content: "# Hello", createdAt: 0, updatedAt: 0 }],
       activeNoteId: "n1",
     });
-    render(<UtilityPanel panel="notes" width={320} onResize={() => {}} onClose={() => {}} />);
+    renderPanel("notes");
 
     // The markdown renders as a real heading INSIDE the contenteditable —
     // formatting happens where you type, not in a separate preview pane.
@@ -182,7 +203,7 @@ describe("UtilityPanel", () => {
   });
 
   it("renders the Second Brain panel with the audit stream and the files section", async () => {
-    render(<UtilityPanel panel="secondbrain" width={320} onResize={() => {}} onClose={() => {}} />);
+    renderPanel("secondbrain");
     expect(screen.getByText("Second Brain")).toBeInTheDocument();
     // Audit on top: the absorbed AuditSection, behavior unchanged.
     expect(screen.getByText("Samurai Audit")).toBeInTheDocument();
@@ -196,13 +217,15 @@ describe("UtilityPanel", () => {
   });
 
   it("renders the Launch panel with the run form and active runs", async () => {
-    render(<UtilityPanel panel="launch" width={320} onResize={() => {}} onClose={() => {}} />);
+    renderPanel("launch");
     expect(screen.getByText("Launch Run")).toBeInTheDocument();
     // Issue #128: one free-text box replaced the epics + issues fields.
     expect(screen.getByLabelText("What do you want to work on today")).toBeInTheDocument();
     // One button: it runs preflight itself, so there is no separate step.
     expect(screen.queryByRole("button", { name: "Run preflight" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+    // Scoped to the panel: the strip icon that opens it is also named "Launch".
+    const panel = screen.getByRole("region", { name: "Launch panel" });
+    expect(within(panel).getByRole("button", { name: "Launch" })).toBeDisabled();
     expect(await screen.findByText("No active runs. Launch one above.")).toBeInTheDocument();
   });
 
@@ -210,9 +233,7 @@ describe("UtilityPanel", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
     try {
-      render(
-        <UtilityPanel panel="workjournal" width={560} onResize={() => {}} onClose={() => {}} />,
-      );
+      renderPanel("workjournal");
       expect(screen.getByText("Work Journal")).toBeInTheDocument();
       // Lazy-loaded like Notes (TipTap), so the page arrives after the header.
       expect(await screen.findByDisplayValue("Wed 14 Oct 2026")).toBeInTheDocument();
@@ -222,14 +243,14 @@ describe("UtilityPanel", () => {
   });
 
   it("renders the Workshop panel with its Summary and Real Transcript tabs", async () => {
-    render(<UtilityPanel panel="workshop" width={560} onResize={() => {}} onClose={() => {}} />);
+    renderPanel("workshop");
     expect(screen.getByText("Workshop")).toBeInTheDocument();
     expect(await screen.findByRole("tab", { name: "Summary" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Real Transcript" })).toBeInTheDocument();
   });
 
   it("renders the Injector panel with its syringe title and the empty-terminals hint", () => {
-    render(<UtilityPanel panel="inject" width={320} onResize={() => {}} onClose={() => {}} />);
+    renderPanel("inject");
     // "Injector" is both the panel title and the section's own heading.
     expect(screen.getAllByText("Injector").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Close Injector panel" })).toBeInTheDocument();
@@ -237,11 +258,36 @@ describe("UtilityPanel", () => {
     expect(screen.getByText("No running terminals")).toBeInTheDocument();
   });
 
-  it("calls onClose from the header close button", () => {
-    const onClose = vi.fn();
-    render(<UtilityPanel panel="launch" width={320} onResize={() => {}} onClose={onClose} />);
+  it("renders the Git panel with its tab title and, in eagle view, the project carousel", () => {
+    usePanelStripStore.setState({ openPanels: ["git"], widths: {}, refusal: null });
+    render(
+      <LeftPanels
+        content={{
+          git: {
+            ...GIT,
+            eagleProjects: [
+              { tabId: "a", name: "alpha", color: "#f00" },
+              { tabId: "b", name: "beta", color: "#0f0" },
+            ],
+            eagleIndex: 0,
+            onEaglePrev: vi.fn(),
+            onEagleNext: vi.fn(),
+          },
+        }}
+      />,
+    );
+    const panel = screen.getByRole("region", { name: "Git panel" });
+    // The header names the open tab, beside the tab strip's own Status tab.
+    expect(within(panel).getAllByText("Status")).toHaveLength(2);
+    expect(within(panel).getByRole("button", { name: "Previous project" })).toBeEnabled();
+    expect(within(panel).getByText("Open a git repository to view commits")).toBeInTheDocument();
+  });
+
+  it("closes the panel from the header close button", () => {
+    renderPanel("launch");
     fireEvent.click(screen.getByRole("button", { name: "Close Launch panel" }));
 
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(usePanelStripStore.getState().openPanels).toEqual([]);
+    expect(screen.queryByRole("region", { name: "Launch panel" })).not.toBeInTheDocument();
   });
 });

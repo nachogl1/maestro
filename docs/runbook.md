@@ -136,6 +136,30 @@ other tab stays where it was. With `A B C D E`, dropping B on D gives `A D C B E
 the pointer slides into the dragged tab's old spot, so what you see is what you get on drop. Moving a project tab
 one place left or right from the keyboard works as before.
 
+## Panels: the icon strip on the far left
+
+Every panel opens from the thin column of icons on the far left, below the project tabs. There is no left sidebar,
+no right-hand panel and no panel button in the top bar any more.
+
+- The icons, top to bottom, in three groups: **History** and **Git**; **Notes**, **Work Journal**, **Injector**,
+  **Launch**, **Second Brain** and **Workshop**; **Infra** and **Settings**. Hover an icon for its name and shortcut.
+- Click an icon to open its panel to the right of the strip; click it again, or the panel's **✕**, to close it. An
+  open panel's icon is red with a small red bar beside it.
+- Several panels can be open at once. They always sit side by side in the strip's order, whatever order you opened
+  them in.
+- Drag a panel's right edge to resize it, from 240 to 640 pixels. Each panel keeps its own width.
+- The terminals always keep at least 520 pixels. A panel that would leave them less does not open: its icon shakes
+  and a message says to close a panel or make one narrower. When the window gets narrower, the most recently opened
+  panels close first, and a message names them.
+- The open panels and their widths come back after a restart. On a first start only History is open.
+- The shortcuts are unchanged and each toggles its panel: **Alt+1** History, **Alt+2** Infra, **Alt+3** Settings,
+  **Alt+4** Injector, **Ctrl+2** (Cmd+2 on a Mac) Git, which opens on its Status tab, and **Ctrl+5** (Cmd+5) Notes.
+- The Settings panel holds what the sidebar's Settings tab held: **Open Settings**, the Agents list and **Stop All**.
+  The Git panel shows its tab name, commit count and refresh button in its header, and keeps its per-project
+  carousel in eagle view.
+- **Settings → Features → Panel icons** chooses whether the Launch, Second Brain and Work Journal icons show;
+  switching one off also closes its panel.
+
 ## History tab: order and last message time
 
 - Inside each project, the directory groups (the checkout, each worktree, and any other directory a conversation

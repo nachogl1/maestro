@@ -18,8 +18,6 @@ vi.mock("../WorkJournalSuggestionsBadge", () => ({
 import { TopBar } from "../TopBar";
 
 const baseProps = {
-  sidebarOpen: true,
-  onToggleSidebar: vi.fn(),
   hideWindowControls: true,
 };
 

@@ -14,19 +14,14 @@ interface ShortcutGroup {
 function buildGroups(mod: string, alt: string): ShortcutGroup[] {
   return [
     {
-      title: "Left Sidebar",
+      title: "Panels",
       shortcuts: [
-        { keys: [alt, "1"], description: "History tab (press again to close)" },
-        { keys: [alt, "2"], description: "Infra tab (press again to close)" },
-        { keys: [alt, "3"], description: "Settings tab (press again to close)" },
-      ],
-    },
-    {
-      title: "Right Panels",
-      shortcuts: [
+        { keys: [alt, "1"], description: "Toggle the History panel" },
+        { keys: [alt, "2"], description: "Toggle the Infra panel" },
+        { keys: [alt, "3"], description: "Toggle the Settings panel" },
+        { keys: [alt, "4"], description: "Toggle the Injector panel" },
         { keys: [mod, "2"], description: "Toggle the Git panel" },
         { keys: [mod, "5"], description: "Toggle the Notes panel" },
-        { keys: [alt, "4"], description: "Toggle the Injector panel" },
       ],
     },
     {

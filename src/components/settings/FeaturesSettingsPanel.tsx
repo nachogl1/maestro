@@ -7,14 +7,14 @@ import { WorkJournalEnabledToggle } from "./WorkJournalEnabledToggle";
 /** Hover help for each feature row, in plain language. */
 const HINTS = {
   samuraiLaunch:
-    "The rocket button in the top bar opens the Samurai launcher, where you start and clean " +
-    "up autonomous runs. Turning it off hides the button; the Samurai supervisor keeps working.",
+    "The rocket icon in the strip on the left opens the Samurai launcher, where you start and " +
+    "clean up autonomous runs. Turning it off hides the icon; the Samurai supervisor keeps working.",
   secondBrain:
-    "The brain button in the top bar opens the Second Brain: the Samurai audit stream and the " +
-    "files Maestro keeps for you. Turning it off hides the button.",
+    "The brain icon in the strip on the left opens the Second Brain: the Samurai audit stream " +
+    "and the files Maestro keeps for you. Turning it off hides the icon.",
   workJournal:
-    "The book button in the top bar opens your day-by-day Work Journal. Turning it off hides " +
-    "the button and stops the journal's background work.",
+    "The book icon in the strip on the left opens your day-by-day Work Journal. Turning it off " +
+    "hides the icon and stops the journal's background work.",
 };
 
 interface FeatureRowProps {
@@ -24,7 +24,7 @@ interface FeatureRowProps {
   children: ReactNode;
 }
 
-/** One feature: its top-bar icon, name, a short hint and its switch. */
+/** One feature: its strip icon, name, a short hint and its switch. */
 function FeatureRow({ icon: Icon, label, hint, children }: FeatureRowProps) {
   return (
     <div className="flex items-center gap-3 rounded-md px-1 py-1.5 text-xs" title={hint}>
@@ -37,7 +37,7 @@ function FeatureRow({ icon: Icon, label, hint, children }: FeatureRowProps) {
   );
 }
 
-/** Settings section that switches the optional top-bar tools on and off. */
+/** Settings section that chooses which optional icons the left strip shows. */
 export function FeaturesSettingsPanel() {
   const samuraiLaunchEnabled = useFeatureSettingsStore((s) => s.samuraiLaunchEnabled);
   const secondBrainEnabled = useFeatureSettingsStore((s) => s.secondBrainEnabled);
@@ -46,9 +46,9 @@ export function FeaturesSettingsPanel() {
 
   return (
     <DialogSection
-      title="Top bar tools"
+      title="Panel icons"
       icon={<LayoutGrid size={13} />}
-      description="Switch a tool off to hide its button from the top bar."
+      description="Switch a tool off to hide its icon from the strip on the left."
     >
       <FeatureRow icon={Rocket} label="Samurai launch" hint={HINTS.samuraiLaunch}>
         <DialogToggle

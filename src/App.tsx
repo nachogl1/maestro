@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { GitFork, RefreshCw, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
@@ -8,15 +7,15 @@ import { openIssueMapFor, syncIssueMapProjects } from "@/lib/issueMapWindow";
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
-import { modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useFDAStore } from "@/stores/useFDAStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { GitGraphPanel } from "./components/git/GitGraphPanel";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
+import { LeftPanels } from "./components/panels/LeftPanels";
+import { openPanelInWindow, togglePanelInWindow } from "./components/panels/panelLayout";
 import { BottomBar } from "./components/shared/BottomBar";
 import { EagleProjectPickerModal } from "./components/shared/EagleProjectPickerModal";
 import { FDADialog } from "./components/shared/FDADialog";
@@ -25,21 +24,9 @@ import {
   type MultiProjectViewHandle,
 } from "./components/shared/MultiProjectView";
 import { NotificationToasts } from "./components/shared/NotificationToasts";
-import {
-  loadRightPanelWidth,
-  RIGHT_PANEL_WIDTH_STORAGE_KEY,
-} from "./components/shared/PanelResizeHandle";
 import { ParticleEffectsLayer } from "./components/shared/ParticleEffectsLayer";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
 import { type EagleProjectOption, TopBar } from "./components/shared/TopBar";
-import { UtilityPanel, type UtilityPanelKind } from "./components/shared/UtilityPanel";
-import {
-  loadSavedSidebarTab,
-  Sidebar,
-  type SidebarTabId,
-  saveSidebarTab,
-  sidebarTabShortcutTransition,
-} from "./components/sidebar/Sidebar";
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
 import { AutoUpdateQuestion } from "./components/update/AutoUpdateQuestion";
 import { UpdateNotification } from "./components/update/UpdateNotification";
@@ -51,16 +38,14 @@ import { useAppListeners } from "./hooks/useAppListeners";
 import { useBackgroundPollers } from "./hooks/useBackgroundPollers";
 import { useInjectorTriggers } from "./hooks/useInjectorTriggers";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
-import { useFeatureSettingsStore } from "./stores/useFeatureSettingsStore";
 import { useGitHubStore } from "./stores/useGitHubStore";
 import {
   useGitHubWatchdogStore,
   WATCHDOG_ISSUE_SEARCH,
   WATCHDOG_PR_SEARCH,
 } from "./stores/useGitHubWatchdogStore";
-import { useGitStore } from "./stores/useGitStore";
+import type { PanelId } from "./stores/usePanelStripStore";
 import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
-import { useWorkJournalEnabled } from "./stores/useWorkJournalSettingsStore";
 
 /**
  * Full-screen workflow editor, loaded on demand: it pulls in React Flow,
@@ -70,16 +55,6 @@ import { useWorkJournalEnabled } from "./stores/useWorkJournalSettingsStore";
 const WorkflowsView = lazy(() =>
   import("./components/workflows/WorkflowsView").then((m) => ({ default: m.WorkflowsView })),
 );
-
-/** Header title for each git-panel tab. */
-const GIT_PANEL_TITLES: Record<GitPanelTab, string> = {
-  commits: "Commits",
-  branches: "Branches",
-  status: "Status",
-  prs: "Pull Requests",
-  issues: "Issues",
-  discussions: "Discussions",
-};
 
 type Theme = "dark" | "light";
 
@@ -104,10 +79,6 @@ function App() {
   const dismissFDADialogPermanently = useFDAStore((s) => s.dismissPermanently);
   const retryAfterFDAGrant = useFDAStore((s) => s.retryAfterGrant);
   const multiProjectRef = useRef<MultiProjectViewHandle>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  // Active left-sidebar tab — lifted out of Sidebar so Alt+1-3 can drive it.
-  const [sidebarTab, setSidebarTab] = useState<SidebarTabId>(loadSavedSidebarTab);
-  const [gitPanelOpen, setGitPanelOpen] = useState(false);
   // Git-panel tab (commits/branches/…) is deliberately a single app-level
   // state shared across eagle carousel cards: swiping keeps you on the same
   // tab for every project. Per-repo selections are cleared by GitGraphPanel
@@ -129,16 +100,6 @@ function App() {
   // inside the sidebar rather than a prop App can pass down.
   const workflowsViewOpen = useWorkflowsViewStore((s) => s.isOpen);
   const closeWorkflowsView = useWorkflowsViewStore((s) => s.close);
-  // Right-side utility panel (Notes / Second Brain / Launch), opened from the
-  // top bar. One at a time: opening one replaces the other.
-  const [utilityPanel, setUtilityPanel] = useState<UtilityPanelKind | null>(null);
-  // One shared width for every right-docked panel (utility panels, Git),
-  // so switching between them never changes the pane size. Persisted.
-  const [rightPanelWidth, setRightPanelWidth] = useState<number>(loadRightPanelWidth);
-  const handleRightPanelResize = useCallback((width: number) => {
-    setRightPanelWidth(width);
-    localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(width));
-  }, []);
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem("maestro-theme");
     return isValidTheme(stored) ? stored : "dark";
@@ -210,23 +171,6 @@ function App() {
     onSwipeRight: switchToPrevTab,
     enabled: tabs.length >= 2,
   });
-
-  // Git store for commit count and refresh. Granular selectors, not the whole
-  // store: a selector-less subscription re-renders App on every git `set()`,
-  // and App has no memo barrier in front of the terminals.
-  const commitCount = useGitStore((s) => s.commits.length);
-  const fetchCommits = useGitStore((s) => s.fetchCommits);
-  const [isRefreshingGit, setIsRefreshingGit] = useState(false);
-
-  const handleRefreshGit = useCallback(async () => {
-    if (!gitRepoPath) return;
-    setIsRefreshingGit(true);
-    try {
-      await fetchCommits(gitRepoPath);
-    } finally {
-      setIsRefreshingGit(false);
-    }
-  }, [gitRepoPath, fetchCommits]);
 
   useEffect(() => {
     let cancelled = false;
@@ -348,27 +292,6 @@ function App() {
     if (!eagleView) setEagleAddPickerOpen(false);
   }, [eagleView]);
 
-  const handleToggleUtilityPanel = useCallback((panel: UtilityPanelKind) => {
-    setUtilityPanel((prev) => (prev === panel ? null : panel));
-  }, []);
-
-  // Work Journal is opt-in: turning it off hides its button and closes its pane.
-  const workJournalEnabled = useWorkJournalEnabled();
-  useEffect(() => {
-    if (!workJournalEnabled) setUtilityPanel((prev) => (prev === "workjournal" ? null : prev));
-  }, [workJournalEnabled]);
-
-  // Samurai launch and Second Brain can be switched off in Settings → Features:
-  // their buttons leave the top bar and an open pane closes.
-  const samuraiLaunchEnabled = useFeatureSettingsStore((s) => s.samuraiLaunchEnabled);
-  const secondBrainEnabled = useFeatureSettingsStore((s) => s.secondBrainEnabled);
-  useEffect(() => {
-    if (!samuraiLaunchEnabled) setUtilityPanel((prev) => (prev === "launch" ? null : prev));
-  }, [samuraiLaunchEnabled]);
-  useEffect(() => {
-    if (!secondBrainEnabled) setUtilityPanel((prev) => (prev === "secondbrain" ? null : prev));
-  }, [secondBrainEnabled]);
-
   // Eagle view add-terminal dropdown: every open project tab is offered.
   // Picking one stays in eagle view: a pre-launch card tiles into the eagle
   // grid for that project, so the terminal is configured (name/branch/worktree/…)
@@ -442,25 +365,6 @@ function App() {
     [selectTab],
   );
 
-  const handleSelectSidebarTab = useCallback((tab: SidebarTabId) => {
-    setSidebarTab(tab);
-    saveSidebarTab(tab);
-  }, []);
-
-  // Alt+1-3: open the sidebar on tab N; pressing the active tab's shortcut
-  // again closes the sidebar (per-tab toggle, no separate pane toggle).
-  const handleSidebarTabShortcut = useCallback(
-    (index: number) => {
-      const next = sidebarTabShortcutTransition(sidebarOpen, sidebarTab, index);
-      if (!next) return;
-      setSidebarOpen(next.open);
-      if (next.open && next.tab !== sidebarTab) {
-        handleSelectSidebarTab(next.tab);
-      }
-    },
-    [sidebarOpen, sidebarTab, handleSelectSidebarTab],
-  );
-
   // Closing a project tab terminates every terminal running in it, so when the
   // tab has live sessions we confirm first. `getState()` (not the reactive
   // `tabs` closure) keeps this callback stable and always reads fresh counts.
@@ -482,14 +386,11 @@ function App() {
     [closeTab],
   );
 
-  // Ctrl/Cmd+2 always lands the panel on the Status tab when toggling open.
-  // Manual tab switches while the panel is open are preserved until the next open.
-  // Works in eagle view too, where the panel is a per-project carousel.
-  const handleToggleGitPanel = useCallback(() => {
-    setGitPanelOpen((prev) => {
-      if (!prev) setGitPanelTab("status");
-      return !prev;
-    });
+  // Panel shortcuts toggle the same panels the icon strip does. Ctrl/Cmd+2
+  // always lands the Git panel on the Status tab when it opens; manual tab
+  // switches while it is open are kept until the next open.
+  const handlePanelShortcut = useCallback((panel: PanelId) => {
+    if (togglePanelInWindow(panel) === "opened" && panel === "git") setGitPanelTab("status");
   }, []);
 
   // GitHub watchdog badge click: land on the git panel's PRs/Issues tab with
@@ -527,7 +428,7 @@ function App() {
         }
       }
       setGitPanelTab(kind);
-      setGitPanelOpen(true);
+      openPanelInWindow("git");
     },
     [selectTab],
   );
@@ -546,9 +447,7 @@ function App() {
     // Eagle view: Cmd/Ctrl+T opens the project picker instead of adding
     // directly, so it only needs at least one open project.
     canAddSession: eagleView ? tabs.length > 0 : activeTab != null,
-    onSidebarTab: handleSidebarTabShortcut,
-    onToggleGitPanel: handleToggleGitPanel,
-    onToggleUtilityPanel: handleToggleUtilityPanel,
+    onTogglePanel: handlePanelShortcut,
     onToggleEagleView: useCallback(() => setEagleView((v) => !v), []),
     onNextProject: switchToNextTab,
     onPrevProject: switchToPrevTab,
@@ -591,40 +490,45 @@ function App() {
         onSelectTab={selectTab}
         onCloseTab={handleCloseTab}
         onNewTab={handleOpenProject}
-        onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-        sidebarOpen={sidebarOpen}
         onReorderTab={reorderTabs}
         onMoveTab={moveTab}
       />
 
-      {/* Main area: sidebar + content */}
+      {/* Main area: icon strip + panels + content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar — below project tabs */}
-        <Sidebar
-          collapsed={!sidebarOpen}
-          onCollapse={() => setSidebarOpen(false)}
-          activeTab={sidebarTab}
-          onSelectTab={handleSelectSidebarTab}
-          theme={theme}
-          onToggleTheme={toggleTheme}
-          launchedCount={activeTabLaunchedCount}
-          isStoppingAll={isStoppingAll}
-          onStopAll={handleStopAll}
-          onAgentNavigate={handleAgentNavigate}
-          onAgentKill={handleAgentKill}
-          onHistoryLaunch={handleHistoryLaunch}
+        {/* The icon strip and the panels it opens, left of the terminals */}
+        <LeftPanels
+          content={{
+            theme,
+            onToggleTheme: toggleTheme,
+            launchedCount: activeTabLaunchedCount,
+            isStoppingAll,
+            onStopAll: handleStopAll,
+            onAgentNavigate: handleAgentNavigate,
+            onAgentKill: handleAgentKill,
+            onHistoryLaunch: handleHistoryLaunch,
+            git: {
+              repoPath: gitRepoPath ?? null,
+              currentBranch: currentBranch ?? null,
+              repositories: gitTargetTab?.repositories ?? [],
+              workspaceType: gitTargetTab?.workspaceType ?? "single-repo",
+              onRepoChange: (path) => gitTargetTab && setSelectedRepo(gitTargetTab.id, path),
+              activeTab: gitPanelTab,
+              onActiveTabChange: setGitPanelTab,
+              eagleProjects: eagleView ? eagleProjects : undefined,
+              eagleIndex: clampedEagleGitIndex,
+              onEaglePrev: handleEagleGitPrev,
+              onEagleNext: handleEagleGitNext,
+            },
+          }}
         />
 
         {/* Right column: top bar + content + bottom bar */}
         <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Top bar row - includes git panel header when open */}
+          {/* Top bar row */}
           <div className="flex h-10 shrink-0 bg-maestro-bg">
             {/* TopBar takes flex-1 to fill available space */}
             <TopBar
-              sidebarOpen={sidebarOpen}
-              onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-              onToggleGitPanel={() => setGitPanelOpen((prev) => !prev)}
-              gitPanelOpen={gitPanelOpen}
               hideWindowControls
               hasActiveProject={activeTab != null}
               slotCount={activeTabOccupiedCount}
@@ -635,80 +539,12 @@ function App() {
               onToggleEagleView={() => setEagleView((v) => !v)}
               eagleProjects={eagleProjects}
               onAddSessionToProject={handleAddSessionToProject}
-              notesPanelOpen={utilityPanel === "notes"}
-              onToggleNotesPanel={() => handleToggleUtilityPanel("notes")}
-              secondBrainPanelOpen={utilityPanel === "secondbrain"}
-              onToggleSecondBrainPanel={
-                secondBrainEnabled ? () => handleToggleUtilityPanel("secondbrain") : undefined
-              }
-              launchPanelOpen={utilityPanel === "launch"}
-              onToggleLaunchPanel={
-                samuraiLaunchEnabled ? () => handleToggleUtilityPanel("launch") : undefined
-              }
-              workJournalPanelOpen={utilityPanel === "workjournal"}
-              onToggleWorkJournalPanel={
-                workJournalEnabled ? () => handleToggleUtilityPanel("workjournal") : undefined
-              }
-              workshopPanelOpen={utilityPanel === "workshop"}
-              onToggleWorkshopPanel={() => handleToggleUtilityPanel("workshop")}
-              injectPanelOpen={utilityPanel === "inject"}
-              onToggleInjectPanel={() => handleToggleUtilityPanel("inject")}
               onWatchdogNavigate={handleWatchdogNavigate}
               onParkNavigate={handleParkNavigate}
             />
-
-            {/* Git panel header - inline at same level as TopBar.
-                In eagle view it describes the carousel-selected project. */}
-            {gitPanelOpen && (
-              <div
-                className="flex h-10 shrink-0 items-center border-l border-maestro-border px-3 gap-2 bg-maestro-bg"
-                style={{ width: rightPanelWidth }}
-              >
-                <GitFork size={14} className="text-maestro-muted" />
-                {gitTargetTab?.workspaceType === "multi-repo" && gitTargetTab.selectedRepoPath && (
-                  <span className="text-xs font-medium text-maestro-accent">
-                    {
-                      gitTargetTab.repositories.find(
-                        (r) => r.path === gitTargetTab.selectedRepoPath,
-                      )?.name
-                    }
-                  </span>
-                )}
-                <span className="text-sm font-medium text-maestro-text">
-                  {GIT_PANEL_TITLES[gitPanelTab]}
-                </span>
-                {gitPanelTab === "commits" && commitCount > 0 && (
-                  <span className="rounded-full bg-maestro-accent/15 px-1.5 py-px text-[10px] font-medium text-maestro-accent">
-                    {commitCount}
-                  </span>
-                )}
-                <div className="flex-1" />
-                {gitRepoPath && (
-                  <button
-                    type="button"
-                    onClick={handleRefreshGit}
-                    disabled={isRefreshingGit}
-                    className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text disabled:opacity-50"
-                    aria-label="Refresh commits"
-                    title="Refresh commits"
-                  >
-                    <RefreshCw size={14} className={isRefreshingGit ? "animate-spin" : ""} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setGitPanelOpen(false)}
-                  className="rounded p-1 text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
-                  aria-label="Close git panel"
-                  title={titleWithShortcut("Close git panel", modLabel(), "2")}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            )}
           </div>
 
-          {/* Content area (main + optional git panel) */}
+          {/* Content area: the terminals */}
           <div className="flex flex-1 overflow-hidden">
             {/* Main content - MultiProjectView keeps all projects alive */}
             <main className="relative flex-1 overflow-hidden bg-maestro-bg">
@@ -734,41 +570,6 @@ function App() {
                 </Suspense>
               )}
             </main>
-
-            {/* Notes / Second Brain / Launch utility panel (optional right side) */}
-
-            {utilityPanel && (
-              <UtilityPanel
-                panel={utilityPanel}
-                width={rightPanelWidth}
-                onResize={handleRightPanelResize}
-                onClose={() => setUtilityPanel(null)}
-                onNavigateToSession={handleAgentNavigate}
-              />
-            )}
-
-            {/* Git graph panel (optional right side). Stays mounted when
-                closed (width 0 + inert) so its state survives toggling. In
-                eagle view it becomes a carousel: one project card at a time,
-                switched via the EagleProjectSwitcher strip — the git stores
-                are singletons, so exactly one panel is ever mounted. */}
-            <GitGraphPanel
-              open={gitPanelOpen}
-              onClose={() => setGitPanelOpen(false)}
-              repoPath={gitRepoPath ?? null}
-              currentBranch={currentBranch ?? null}
-              repositories={gitTargetTab?.repositories ?? []}
-              workspaceType={gitTargetTab?.workspaceType ?? "single-repo"}
-              onRepoChange={(path) => gitTargetTab && setSelectedRepo(gitTargetTab.id, path)}
-              activeTab={gitPanelTab}
-              onActiveTabChange={setGitPanelTab}
-              width={rightPanelWidth}
-              onResize={handleRightPanelResize}
-              eagleProjects={eagleView ? eagleProjects : undefined}
-              eagleIndex={clampedEagleGitIndex}
-              onEaglePrev={handleEagleGitPrev}
-              onEagleNext={handleEagleGitNext}
-            />
           </div>
 
           {/* Bottom action bar */}
