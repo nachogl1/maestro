@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 568,
+  "title": "Work Journal backup: also back up when Maestro closes, and write a readable work-journal.md beside the JSON",
+  "login": "nachogl1",
+  "started_at": "2026-11-14T01:37:00Z",
+  "finished_at": "2026-11-14T03:15:00Z",
+  "outcome": "merged",
+  "pr": 591,
+  "summary": "Maestro now also writes the Work Journal backup when the main window closes (waiting at most 2 seconds, never blocking the close), and every backup writes a readable work-journal.md beside work-journal.json; restore still reads only the JSON.",
+  "agents": [
+    {
+      "name": "dev-568",
+      "model": "opus",
+      "tokens_total": 181381
+    },
+    {
+      "name": "review-568",
+      "model": "opus",
+      "tokens_total": 142576
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2400,
+    "review_seconds": 588,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

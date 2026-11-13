@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 568,
+  "title": "Work Journal backup: also back up when Maestro closes, and write a readable work-journal.md beside the JSON",
+  "login": "nachogl1",
+  "pr": 591,
+  "merged_at": "2026-11-14T03:14:00Z",
+  "merge_commit": "98c7610a1b8df66b455f029c3fbe1a40343cf91b",
+  "seam": "src-tauri/src/core/work_journal.rs",
+  "story": "Maestro now also writes the Work Journal backup when the main window closes, after the journal windows save; it waits at most 2 seconds and still closes if the backup fails. Each backup (daily, Back up now, or on close) now puts a readable work-journal.md next to work-journal.json in the backup folder. Before, the only backup was the JSON file, written daily or by hand, and nothing was backed up on close.",
+  "checks": [
+    {
+      "key": "src-tauri/src/core/work_journal/backup-close-backup",
+      "criterion": "Closing Maestro writes a backup when a backup folder is set; a failure is logged and does not block closing",
+      "steps": "Start Maestro with no terminals open. In Settings → Work Journal pick an empty made-up folder such as C:\\qa-backup. Type 'QA close test' on today's page and close the main window. Repeat with the folder deleted before closing.",
+      "expected": "Maestro closes within about 2 seconds and both work-journal.json and work-journal.md hold 'QA close test'; with the folder deleted Maestro still closes and its log has a warning starting 'Work Journal backup on close not written'."
+    },
+    {
+      "key": "src-tauri/src/core/work_journal/backup-readable-copy",
+      "criterion": "Each backup writes both files; the Markdown lists pages newest first and shows cards readably",
+      "steps": "On two day pages add a typed card at 09:15 with text 'Made-up task' and a free note with one bold word. Press Back up now in Settings and open work-journal.md in Notepad.",
+      "expected": "The newer page's '## <date>' heading comes first; the card reads '**09:15** (typed) Made-up task' (with the project after the time if set); the bold word shows as '**word**'."
+    },
+    {
+      "key": "src-tauri/src/core/work_journal/backup-markdown-never-restored",
+      "criterion": "Restore never reads the Markdown",
+      "steps": "After a backup edit work-journal.md to say 'garbage', then run Restore from backup.",
+      "expected": "Restore uses the JSON: the pages come back unchanged and the edited Markdown has no effect."
+    }
+  ],
+  "no_qa_reason": null
+}
