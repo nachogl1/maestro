@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 564,
+  "title": "Work Journal: entries become editable cards with a bold time, project chip, source tag and text bold up to the colon",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T20:32:00Z",
+  "finished_at": "2026-11-13T21:20:00Z",
+  "outcome": "merged",
+  "pr": 583,
+  "summary": "Work Journal entries are now cards among free notes, with a drag handle, an editable bold time, a changeable project chip, a source tag, a delete cross and text bold up to the first colon; Accept and '+ Add entry' create cards, and old pages keep their plain lines.",
+  "agents": [
+    {
+      "name": "dev-564",
+      "model": "opus",
+      "tokens_total": 259219
+    },
+    {
+      "name": "review-564",
+      "model": "opus",
+      "tokens_total": 166057
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1360,
+    "review_seconds": 516,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

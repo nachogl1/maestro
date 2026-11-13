@@ -1,0 +1,50 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 564,
+  "title": "Work Journal: entries become editable cards with a bold time, project chip, source tag and text bold up to the colon",
+  "login": "nachogl1",
+  "pr": 583,
+  "merged_at": "2026-11-13T21:19:00Z",
+  "merge_commit": "4de38a3bc5c617a36ce43a06ab2f14a1d31c91f7",
+  "seam": "src/components/workjournal/",
+  "story": "Work Journal entries are now cards among free notes, each with a drag handle, a bold editable time, a changeable project chip, a fixed source tag and a delete cross, with text bold up to the first colon. Accept in the Suggestions box now adds a card instead of a plain 'HH:MM - text' line, and '+ Add entry' in the formatting toolbar adds a hand-made card. Pages written before this change keep their plain lines.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/accept-as-card",
+      "criterion": "Accept adds a card with the suggestion's time, project and source at the end of the page",
+      "steps": "Open the Work Journal on today's page with a pending made-up suggestion from a project and click its green tick.",
+      "expected": "A new card at the end with that time in bold, the project chip in the project's colour, the source tag and the text; the suggestion leaves the box."
+    },
+    {
+      "key": "src/components/workjournal/add-entry",
+      "criterion": "+ Add entry adds an empty Typed card with the current time and the cursor in it",
+      "steps": "Click '+ Add entry' at the right end of the formatting toolbar and type 'Demo task: made-up detail'.",
+      "expected": "A card at the end with the current time, a dashed grey 'no project' chip and a 'Typed' tag; 'Demo task:' bold and the rest plain."
+    },
+    {
+      "key": "src/components/workjournal/card-bold-colon",
+      "criterion": "Bold ends right after the first colon, or covers all text with no colon",
+      "steps": "In a card type 'Alpha: beta: gamma', then delete both colons.",
+      "expected": "First 'Alpha:' is bold, then the whole text is bold."
+    },
+    {
+      "key": "src/components/workjournal/card-edit-time-project",
+      "criterion": "Time and project can be changed",
+      "steps": "Click a card's time, type 9:05 and press Enter. Click its chip, pick an open project, then pick 'No project'.",
+      "expected": "The time shows 09:05; the chip takes the project's colour, then becomes the dashed 'no project' chip."
+    },
+    {
+      "key": "src/components/workjournal/card-drag-delete",
+      "criterion": "Drag reorders; delete removes and Ctrl+Z restores",
+      "steps": "Drag a card by its handle between two free notes, click its cross, then press Ctrl+Z.",
+      "expected": "A red line shows where it lands and the card moves there; the cross removes it with no question; Ctrl+Z brings it back."
+    },
+    {
+      "key": "src/components/workjournal/old-page-unchanged",
+      "criterion": "A saved page with cards reloads the same, and an old page stays plain lines",
+      "steps": "Switch to another day and back, then open a day written before this change.",
+      "expected": "The cards are unchanged, and the old day's 'HH:MM - ...' lines are unchanged plain text."
+    }
+  ],
+  "no_qa_reason": null
+}
