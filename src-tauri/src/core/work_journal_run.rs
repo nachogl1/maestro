@@ -30,8 +30,9 @@ use tokio::sync::{Mutex, MutexGuard};
 
 use crate::core::work_journal::{CandidateRetry, WorkJournal};
 use crate::core::work_journal_activity::{
-    activity_dir, add_candidates, cap_candidate_text, list_candidates, list_sent, record_sent,
-    validate_candidate, Candidate, CandidateSource, NewCandidate, SentItem,
+    activity_dir, cap_candidate_text, list_candidates, list_sent, record_sent, validate_candidate,
+    validate_write, write_candidates, Candidate, CandidateSource, CandidateState, CandidateWrite,
+    NewCandidate, SentItem, UpdatedCard,
 };
 use crate::core::work_journal_collect::{collect_activity, ActivityItem};
 
@@ -112,26 +113,33 @@ const USER_PROMPT: &str = "Write Work Journal lines for the activity given on st
 /// (see [`claude_args`]), or it breaks the reply format (issue #97).
 pub const SYSTEM_PROMPT: &str = "You write a developer's Work Journal. You are given what \
 they did on one day (one activity per line: time, source tag, project, text), what is \
-already on that day's journal page, and the lines already suggested or rejected for that \
-day. Turn the activity into a few short journal lines that sum up the day's work.\n\
+already on that day's journal page, each project's summary for that day (on the page or \
+still waiting as a suggestion), and the lines already suggested or rejected for that day. \
+Each project gets one summary entry per day, built from all of its work that day.\n\
 Output contract, follow it exactly:\n\
 - Plain text lines only: no markdown, no bullets, no numbering, no preamble, no closing \
 remarks.\n\
 - One line per journal entry, in the form: HH:MM - action | source | project\n\
-- Write one line per project, summing up the features or outcomes worked on in that \
-project that day, not one line per commit, pull request, file, session or terminal. Give a \
-project a second line only for a clearly separate piece of work.\n\
+- Write one line per project, summing up the features and outcomes of all the project's \
+work that day (commits, pull requests, issues, Claude sessions and terminal work), not one \
+line per commit, pull request, file, session or terminal. Never write a second line for a \
+project.\n\
 - HH:MM is when the activity happened (24-hour, from the activity lines), not the time \
 now; for a line that sums up several activities, the time of the earliest one.\n\
-- action is one short action in English, in the past tense, for example: Worked on the \
-login fix: new password rules and the PR merged\n\
-- Keep each line under 200 characters.\n\
+- action is one sentence in English, in the past tense, of about 120 characters, on the \
+outcomes only, for example: Login fix: new password rules done and ready for review\n\
+- Never name a commit, a file or a pull request in action: no commit hashes or messages, \
+no file names, no pull request or issue numbers.\n\
 - source is the source tag of the activity lines it came from: git (a commit), pr, issue, \
 claude or terminal; for a line that sums up several sources, the one with most of the work.\n\
 - project is the project name of the activity lines it came from, copied exactly.\n\
+- When a project with new work has a summary on the page or a waiting summary, its line is \
+that summary rewritten to take in the new work: keep what it says in substance (the \
+developer may have edited it by hand) and add the new outcomes, still one sentence of about \
+120 characters.\n\
 - Do not repeat anything already on the page or in the suggested or rejected lines, even \
-in other words. When a suggested or rejected line already covers a project's work that day, \
-add a line for that project only for a different piece of work.\n\
+in other words, except in a project's rewritten summary. When a rejected line already \
+covers a project's new work, write no line for that project.\n\
 - Skip activity not worth a journal line.\n\
 - If nothing is worth a line, reply with exactly: NONE";
 
@@ -495,11 +503,44 @@ const ENTRY_NODE: &str = "journalEntry";
 /// The source of a card made by hand, and of one whose source is missing.
 const TYPED_SOURCE: &str = "typed";
 
-/// An entry card's line: `HH:MM - <text> | <source> | <project>`, the shape
-/// the prompt gives pending candidates. No time leaves out `HH:MM - `; no
-/// project leaves out ` | <project>`. Text, source and project are folded to
-/// one line. `None` for a card with no text.
-fn entry_line(node: &Value) -> Option<String> {
+/// An entry card on a page: its time, text, source and project, each folded
+/// to one line (a missing source reads as typed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageCard {
+    pub time: Option<String>,
+    pub text: String,
+    pub source: String,
+    pub project: Option<String>,
+}
+
+impl PageCard {
+    /// `HH:MM - <text> | <source> | <project>`, the shape the prompt gives
+    /// pending candidates. No time leaves out `HH:MM - `; no project leaves
+    /// out ` | <project>`.
+    fn line(&self) -> String {
+        let mut line = match &self.time {
+            Some(time) => format!("{time} - {} | {}", self.text, self.source),
+            None => format!("{} | {}", self.text, self.source),
+        };
+        if let Some(project) = &self.project {
+            line.push_str(" | ");
+            line.push_str(project);
+        }
+        line
+    }
+
+    /// Whether the card can be a project's summary: made from suggestions
+    /// (not typed by hand) and not a meeting, which keeps its own entry.
+    fn is_summary(&self) -> bool {
+        !self.source.eq_ignore_ascii_case(TYPED_SOURCE)
+            && !self
+                .source
+                .eq_ignore_ascii_case(source_tag(CandidateSource::Granola))
+    }
+}
+
+/// The card an entry node holds; `None` for a card with no text.
+fn entry_card(node: &Value) -> Option<PageCard> {
     let mut parts = Vec::new();
     let mut current = String::new();
     for child in node.get("content")?.as_array()? {
@@ -517,16 +558,58 @@ fn entry_line(node: &Value) -> Option<String> {
             .map(one_line)
             .filter(|value| !value.is_empty())
     };
-    let source = attr("source").unwrap_or_else(|| TYPED_SOURCE.to_string());
-    let mut line = match attr("time") {
-        Some(time) => format!("{time} - {text} | {source}"),
-        None => format!("{text} | {source}"),
-    };
-    if let Some(project) = attr("project") {
-        line.push_str(" | ");
-        line.push_str(&project);
+    Some(PageCard {
+        time: attr("time"),
+        text,
+        source: attr("source").unwrap_or_else(|| TYPED_SOURCE.to_string()),
+        project: attr("project"),
+    })
+}
+
+/// An entry card's line (see [`PageCard::line`]); `None` for a card with no
+/// text.
+fn entry_line(node: &Value) -> Option<String> {
+    entry_card(node).map(|card| card.line())
+}
+
+/// Every entry card with text on a page, in page order.
+pub fn page_cards(body: &Value) -> Vec<PageCard> {
+    let mut cards = Vec::new();
+    collect_cards(body, &mut cards);
+    cards
+}
+
+fn collect_cards(node: &Value, cards: &mut Vec<PageCard>) {
+    if node.get("type").and_then(Value::as_str) == Some(ENTRY_NODE) {
+        cards.extend(entry_card(node));
+        return;
     }
-    Some(line)
+    if let Some(children) = node.get("content").and_then(Value::as_array) {
+        for child in children {
+            collect_cards(child, cards);
+        }
+    }
+}
+
+/// Comparison key for a project name: one line, lower case.
+fn project_key(project: &str) -> String {
+    one_line(project).to_lowercase()
+}
+
+/// A project's summary card on a page: among its cards made from
+/// suggestions (see [`PageCard::is_summary`]), the earliest by time (an
+/// untimed one after every timed one), the first on the page on a tie.
+/// Typed cards never count, so they never get an update suggestion.
+fn summary_card<'a>(cards: &'a [PageCard], project: &str) -> Option<&'a PageCard> {
+    let key = project_key(project);
+    cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| {
+            card.is_summary() && card.project.as_deref().map(project_key).as_ref() == Some(&key)
+        })
+        .min_by_key(|(at, card)| (card.time.is_none(), card.time.clone(), *at))
+        .map(|(_, card)| card)
 }
 
 fn collect_text(node: &Value, lines: &mut Vec<String>, current: &mut String) {
@@ -760,13 +843,16 @@ fn one_line(text: &str) -> String {
 }
 
 /// The stdin input for one date: its activity (`HH:MM [source] project:
-/// text`, one per line), its page text, and its pending and rejected
-/// candidates, with the rule not to repeat any of them. Items and candidates
-/// of other dates are left out.
+/// text`, one per line), its page text, the summaries to rewrite for the
+/// projects with new work (each one's summary card from `cards`, see
+/// [`summary_card`], and its waiting suggestion), and its pending and
+/// rejected candidates, with the rule not to repeat any of them. Items and
+/// candidates of other dates are left out.
 pub fn build_prompt(
     date: &str,
     items: &[ActivityItem],
     page_text: &str,
+    cards: &[PageCard],
     existing: &[Candidate],
 ) -> String {
     let activity: Vec<String> = items
@@ -782,30 +868,57 @@ pub fn build_prompt(
             )
         })
         .collect();
+    let candidate_line = |c: &Candidate| {
+        let line = match &c.time {
+            Some(time) => format!("{time} - {} | {}", one_line(&c.text), source_tag(c.source)),
+            None => format!("{} | {}", one_line(&c.text), source_tag(c.source)),
+        };
+        match &c.project {
+            Some(project) => format!("{line} | {}", one_line(project)),
+            None => line,
+        }
+    };
     let suggested: Vec<String> = existing
         .iter()
         .filter(|c| c.date == date)
-        .map(|c| {
-            let line = match &c.time {
-                Some(time) => format!("{time} - {} | {}", one_line(&c.text), source_tag(c.source)),
-                None => format!("{} | {}", one_line(&c.text), source_tag(c.source)),
-            };
-            match &c.project {
-                Some(project) => format!("{line} | {}", one_line(project)),
-                None => line,
-            }
-        })
+        .map(candidate_line)
         .collect();
+    let with_work: BTreeSet<String> = items
+        .iter()
+        .filter(|item| item.date == date)
+        .map(|item| project_key(&item.project))
+        .filter(|key| !key.is_empty())
+        .collect();
+    let on_page: Vec<String> = with_work
+        .iter()
+        .filter_map(|project| summary_card(cards, project))
+        .map(PageCard::line)
+        .collect();
+    let waiting: Vec<String> = existing
+        .iter()
+        .filter(|c| is_waiting_summary(c, date))
+        .filter(|c| {
+            c.project
+                .as_deref()
+                .is_some_and(|p| with_work.contains(&project_key(p)))
+        })
+        .map(candidate_line)
+        .collect();
+    let or_none = |lines: Vec<String>| {
+        if lines.is_empty() {
+            "(none)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    };
     let page = if page_text.trim().is_empty() {
         "(empty)".to_string()
     } else {
         page_text.trim().to_string()
     };
-    let suggested = if suggested.is_empty() {
-        "(none)".to_string()
-    } else {
-        suggested.join("\n")
-    };
+    let on_page = or_none(on_page);
+    let waiting = or_none(waiting);
+    let suggested = or_none(suggested);
     // Only a Granola run asks about a date without activity (its meetings).
     let activity = if activity.is_empty() {
         "(none)".to_string()
@@ -816,10 +929,108 @@ pub fn build_prompt(
         "Date: {date}\n\n\
          Activity (HH:MM [source] project: text):\n{activity}\n\n\
          Already on the journal page for this date (do not repeat):\n{page}\n\n\
+         Summaries on the page of projects with new work (rewrite each with the new \
+         work):\n{on_page}\n\n\
+         Summaries still waiting as suggestions for projects with new work (rewrite each \
+         with the new work):\n{waiting}\n\n\
          Already suggested or rejected for this date (do not repeat):\n{suggested}\n\n\
          Reply with one line per project with new work, \
          HH:MM - action | source | project, or NONE."
     )
+}
+
+/// Whether `c` is a project's summary still waiting for the user on `date`:
+/// pending, with a project, and not a meeting.
+fn is_waiting_summary(c: &Candidate, date: &str) -> bool {
+    c.date == date
+        && c.state == CandidateState::Pending
+        && c.source != CandidateSource::Granola
+        && c.project.is_some()
+}
+
+/// The earlier of two `HH:MM` times; none only when both are none.
+fn earliest_time(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Turns a reply's candidates for one date into what is written, so each
+/// project keeps one summary per day (issue #565):
+/// - A candidate with no project, or a meeting, is added as it is.
+/// - A second candidate for a project already handled in this reply is
+///   dropped: one summary per project per day.
+/// - When the project has a summary card on the page (see
+///   [`summary_card`]), the candidate becomes an update suggestion for it,
+///   with the card's time and project spelling and the card as it reads now;
+///   one whose text is the card's own is dropped (nothing would change).
+/// - Otherwise it is a new summary at the earlier of its time and its
+///   waiting summary's (the card keeps the time of its first activity).
+///
+/// Either way, the project's summary still waiting in the box (pending) is
+/// rewritten in place rather than doubled.
+fn plan_writes(
+    candidates: Vec<NewCandidate>,
+    cards: &[PageCard],
+    existing: &[Candidate],
+) -> Vec<CandidateWrite> {
+    let mut handled: HashSet<String> = HashSet::new();
+    let mut writes = Vec::new();
+    for candidate in candidates {
+        let project = match &candidate.project {
+            Some(project) if candidate.source != CandidateSource::Granola => project_key(project),
+            _ => {
+                writes.push(CandidateWrite::new(candidate));
+                continue;
+            }
+        };
+        if !handled.insert(project.clone()) {
+            log::debug!(
+                "Work journal: dropped a second summary for one project on {}",
+                candidate.date
+            );
+            continue;
+        }
+        let waiting = existing.iter().find(|c| {
+            is_waiting_summary(c, &candidate.date)
+                && c.project.as_deref().map(project_key).as_ref() == Some(&project)
+        });
+        let replaces = waiting.map(|c| c.id.clone());
+        match summary_card(cards, &project) {
+            Some(card) => {
+                if dedupe_key(&candidate.text) == dedupe_key(&card.text) {
+                    log::debug!(
+                        "Work journal: dropped an update that leaves a card as it is on {}",
+                        candidate.date
+                    );
+                    continue;
+                }
+                writes.push(CandidateWrite {
+                    candidate: NewCandidate {
+                        time: card.time.clone(),
+                        project: card.project.clone(),
+                        ..candidate
+                    },
+                    updates: Some(UpdatedCard {
+                        time: card.time.clone(),
+                        text: card.text.clone(),
+                    }),
+                    replaces,
+                });
+            }
+            None => {
+                let time =
+                    earliest_time(candidate.time.clone(), waiting.and_then(|c| c.time.clone()));
+                writes.push(CandidateWrite {
+                    candidate: NewCandidate { time, ..candidate },
+                    updates: None,
+                    replaces,
+                });
+            }
+        }
+    }
+    writes
 }
 
 /// How `item` is remembered once sent for its date: its identity plus a
@@ -1181,7 +1392,9 @@ trait RunSources {
         input: &str,
         granola: bool,
     ) -> Result<String, String>;
-    async fn add(&self, new: Vec<NewCandidate>) -> Result<usize, String>;
+    /// Writes the date's candidates (see [`write_candidates`]); returns how
+    /// many were written.
+    async fn add(&self, writes: Vec<CandidateWrite>) -> Result<usize, String>;
     /// The activity items earlier runs already sent (see [`sent_item`]).
     async fn sent(&self) -> Result<HashSet<SentItem>, String>;
     /// Remembers `items` as sent.
@@ -1221,10 +1434,10 @@ impl RunSources for LiveSources {
         run_claude(args, input, granola).await
     }
 
-    async fn add(&self, new: Vec<NewCandidate>) -> Result<usize, String> {
-        add_candidates(&activity_dir(), new)
+    async fn add(&self, writes: Vec<CandidateWrite>) -> Result<usize, String> {
+        write_candidates(&activity_dir(), writes)
             .await
-            .map(|added| added.len())
+            .map(|written| written.len())
             .map_err(|e| e.to_string())
     }
 
@@ -1856,12 +2069,10 @@ async fn run_date<S: RunSources>(
         .candidates(date)
         .await
         .map_err(DateFailure::run_wide)?;
-    let page = journal
-        .pages
-        .get(date)
-        .map(|page| page_text(&page.body))
-        .unwrap_or_default();
-    let mut input = build_prompt(date, items, &page, &existing);
+    let body = journal.pages.get(date).map(|page| &page.body);
+    let page = body.map(page_text).unwrap_or_default();
+    let cards = body.map(page_cards).unwrap_or_default();
+    let mut input = build_prompt(date, items, &page, &cards, &existing);
     let granola = granola_window.is_some();
     if let Some((start, end)) = granola_window {
         input.push_str(&granola_input(date, start, end));
@@ -1897,10 +2108,20 @@ async fn run_date<S: RunSources>(
             }
         })
         .collect();
-    if valid.is_empty() {
+    let writes: Vec<CandidateWrite> = plan_writes(valid, &cards, &existing)
+        .iter()
+        .filter_map(|write| match validate_write(write) {
+            Ok(valid) => Some(valid),
+            Err(e) => {
+                log::debug!("Work journal: dropped an invalid summary: {e}");
+                None
+            }
+        })
+        .collect();
+    if writes.is_empty() {
         return Ok(0);
     }
-    sources.add(valid).await.map_err(DateFailure::run_wide)
+    sources.add(writes).await.map_err(DateFailure::run_wide)
 }
 
 #[cfg(test)]
@@ -1940,6 +2161,7 @@ mod tests {
             project: None,
             state,
             created_at: "2026-10-15T09:00:00Z".to_string(),
+            updates: None,
         }
     }
 
@@ -2203,7 +2425,7 @@ mod tests {
             "one line per project",
             "features",
             "not one line per commit",
-            "different piece of work",
+            "Never write a second line for a project",
         ] {
             assert!(SYSTEM_PROMPT.contains(needle), "missing {needle}");
         }
@@ -2212,7 +2434,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_closes_with_the_one_line_per_project_rule() {
-        let prompt = build_prompt("2026-10-15", &[], "", &[]);
+        let prompt = build_prompt("2026-10-15", &[], "", &[], &[]);
         assert!(prompt.ends_with(
             "Reply with one line per project with new work, \
              HH:MM - action | source | project, or NONE."
@@ -2238,7 +2460,7 @@ mod tests {
             },
             candidate("2026-10-15", "Older line", CandidateState::Rejected),
         ];
-        let prompt = build_prompt("2026-10-15", &[], "", &existing);
+        let prompt = build_prompt("2026-10-15", &[], "", &[], &existing);
         assert!(prompt.contains("09:00 - Worked on the cart | git | demo-shop\n"));
         assert!(prompt.contains("09:00 - Older line | git\n"));
     }
@@ -2796,7 +3018,7 @@ mod tests {
             candidate("2026-10-15", "Read email", CandidateState::Rejected),
             candidate("2026-10-14", "Yesterday's line", CandidateState::Pending),
         ];
-        let prompt = build_prompt("2026-10-15", &items, "08:00 - Standup", &existing);
+        let prompt = build_prompt("2026-10-15", &items, "08:00 - Standup", &[], &existing);
 
         assert!(prompt.contains("Date: 2026-10-15"));
         assert!(prompt.contains("09:05 [git] maestro: Commit abc: fix login"));
@@ -2816,7 +3038,7 @@ mod tests {
             CandidateSource::Terminal,
             "Terminal",
         )];
-        let prompt = build_prompt("2026-10-15", &items, "  ", &[]);
+        let prompt = build_prompt("2026-10-15", &items, "  ", &[], &[]);
         assert!(prompt.contains("this date (do not repeat):\n(empty)"));
         assert!(prompt.contains("for this date (do not repeat):\n(none)"));
     }
@@ -2835,7 +3057,7 @@ mod tests {
             CandidateSource::Issue,
             "Closed issue #4: x",
         );
-        let prompt = build_prompt("2026-10-15", &[pr.clone(), issue.clone()], "", &[]);
+        let prompt = build_prompt("2026-10-15", &[pr.clone(), issue.clone()], "", &[], &[]);
         assert!(prompt.contains("09:05 [pr] maestro: Merged PR #3: login"));
         assert!(prompt.contains("09:10 [issue] maestro: Closed issue #4: x"));
         // Sent records written before the split keep matching.
@@ -3201,7 +3423,7 @@ mod tests {
         assert!(parse_reply(reply, "2026-10-15", &existing, true)
             .unwrap()
             .is_empty());
-        let prompt = build_prompt("2026-10-15", &[], "", &existing);
+        let prompt = build_prompt("2026-10-15", &[], "", &[], &existing);
         assert!(prompt.contains("Meeting - Planning: picked the next issue | granola"));
         assert!(prompt.contains("Activity (HH:MM [source] project: text):\n(none)"));
     }
@@ -3272,6 +3494,8 @@ mod tests {
         windows: StdMutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
         asked: StdMutex<Vec<(Vec<String>, String)>>,
         added: StdMutex<Vec<NewCandidate>>,
+        /// Every write, with the card it updates and the candidate it rewrites.
+        writes: StdMutex<Vec<CandidateWrite>>,
         /// What the Granola preflight answers.
         granola: bool,
         /// How often the preflight ran.
@@ -3352,9 +3576,11 @@ mod tests {
                 .ok_or_else(|| format!("{TIMEOUT_ERROR} 180s"))
         }
 
-        async fn add(&self, new: Vec<NewCandidate>) -> Result<usize, String> {
-            let count = new.len();
-            self.added.lock().unwrap().extend(new);
+        async fn add(&self, writes: Vec<CandidateWrite>) -> Result<usize, String> {
+            let count = writes.len();
+            let mut added = self.added.lock().unwrap();
+            added.extend(writes.iter().map(|write| write.candidate.clone()));
+            self.writes.lock().unwrap().extend(writes);
             Ok(count)
         }
 
@@ -4787,6 +5013,456 @@ mod tests {
         assert!(!err.contains("secret"), "{err}");
         assert!(!err.contains("--setting-sources"), "{err}");
         assert!(old_cli_error(err).contains("Update Claude Code"));
+    }
+
+    // --- one summary per project per day (issue #565) ---
+
+    /// A card as the page JSON stores it.
+    fn card_node(time: Option<&str>, source: &str, project: Option<&str>, text: &str) -> Value {
+        json!({
+            "type": "journalEntry",
+            "attrs": { "time": time, "source": source, "project": project },
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": text }] }],
+        })
+    }
+
+    fn page_card(time: Option<&str>, source: &str, project: Option<&str>, text: &str) -> PageCard {
+        PageCard {
+            time: time.map(str::to_string),
+            text: text.to_string(),
+            source: source.to_string(),
+            project: project.map(str::to_string),
+        }
+    }
+
+    fn in_project(project: &str, time: &str, text: &str) -> NewCandidate {
+        NewCandidate {
+            date: "2026-10-15".to_string(),
+            time: Some(time.to_string()),
+            text: text.to_string(),
+            source: CandidateSource::Git,
+            project: Some(project.to_string()),
+        }
+    }
+
+    fn pending_in(project: &str, id: &str, time: &str, text: &str) -> Candidate {
+        Candidate {
+            id: id.to_string(),
+            time: Some(time.to_string()),
+            project: Some(project.to_string()),
+            ..candidate("2026-10-15", text, CandidateState::Pending)
+        }
+    }
+
+    #[test]
+    fn test_system_prompt_asks_for_one_short_outcome_sentence_per_project_without_names() {
+        for needle in [
+            "one summary entry per day",
+            "one sentence in English",
+            "about 120 characters",
+            "on the outcomes only",
+            "Never name a commit, a file or a pull request",
+            "no commit hashes or messages",
+            "no file names",
+            "no pull request or issue numbers",
+            "keep what it says in substance",
+            "edited it by hand",
+        ] {
+            assert!(SYSTEM_PROMPT.contains(needle), "missing {needle}");
+        }
+        assert!(!SYSTEM_PROMPT.contains("200 characters"));
+        assert!(!SYSTEM_PROMPT.contains("second line only"));
+    }
+
+    #[test]
+    fn test_page_cards_reads_every_card_and_the_summary_card_is_the_earliest_suggested_one() {
+        let body = json!({"type": "doc", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "09:00 - a plain line"}]},
+            card_node(Some("08:00"), "typed", Some("demo-shop"), "Typed by hand"),
+            card_node(Some("11:00"), "git", Some("demo-shop"), "Cart: totals fixed"),
+            {"type": "bulletList", "content": [{"type": "listItem", "content": [
+                card_node(Some("10:30"), "claude", Some("Demo-Shop"), "Cart: plan agreed"),
+            ]}]},
+            card_node(Some("07:00"), "granola", Some("demo-shop"), "Meeting: cart review"),
+            card_node(None, "pr", Some("demo-blog"), "Blog: theme ready"),
+            card_node(Some("12:00"), "pr", Some("demo-blog"), "Blog: posts moved"),
+            card_node(Some("13:00"), "git", Some("demo-notes"), ""),
+            card_node(Some("14:00"), "typed", Some("demo-wiki"), "Wiki notes"),
+        ]});
+        let cards = page_cards(&body);
+        assert_eq!(cards.len(), 7, "the empty card is left out: {cards:?}");
+        assert_eq!(
+            cards[0],
+            page_card(Some("08:00"), "typed", Some("demo-shop"), "Typed by hand")
+        );
+
+        let summary = |project: &str| summary_card(&cards, project).map(|c| c.text.as_str());
+        // Earliest by time among suggested cards, ignoring case and spacing;
+        // a typed card and a meeting never count.
+        assert_eq!(summary("demo-shop"), Some("Cart: plan agreed"));
+        assert_eq!(summary(" DEMO-shop "), Some("Cart: plan agreed"));
+        // A timed card comes before an untimed one.
+        assert_eq!(summary("demo-blog"), Some("Blog: posts moved"));
+        // Only a typed card, or no card: no summary.
+        assert_eq!(summary("demo-wiki"), None);
+        assert_eq!(summary("demo-other"), None);
+    }
+
+    #[test]
+    fn test_build_prompt_lists_the_summaries_to_rewrite_for_projects_with_new_work() {
+        let items = vec![ActivityItem {
+            project: "demo-shop".to_string(),
+            ..item(
+                "2026-10-15",
+                "14:00",
+                CandidateSource::Git,
+                "Commit: totals",
+            )
+        }];
+        let cards = vec![
+            page_card(Some("08:00"), "typed", Some("demo-shop"), "Typed by hand"),
+            page_card(
+                Some("11:00"),
+                "git",
+                Some("demo-shop"),
+                "Cart: totals fixed",
+            ),
+            page_card(Some("12:00"), "git", Some("demo-blog"), "Blog: posts moved"),
+        ];
+        let existing = vec![
+            pending_in("demo-shop", "w1", "13:00", "Cart: coupons started"),
+            pending_in("demo-blog", "w2", "13:30", "Blog: tags added"),
+        ];
+        let prompt = build_prompt("2026-10-15", &items, "", &cards, &existing);
+        let section = |title: &str| {
+            let start = prompt.find(title).unwrap() + title.len();
+            prompt[start..].split("\n\n").next().unwrap().to_string()
+        };
+        assert_eq!(
+            section("Summaries on the page of projects with new work (rewrite each with the new work):\n"),
+            "11:00 - Cart: totals fixed | git | demo-shop"
+        );
+        assert_eq!(
+            section(
+                "Summaries still waiting as suggestions for projects with new work (rewrite each with the new work):\n"
+            ),
+            "13:00 - Cart: coupons started | git | demo-shop"
+        );
+        // Without new work for a project, nothing of it is listed to rewrite.
+        let quiet = build_prompt("2026-10-15", &[], "", &cards, &existing);
+        assert!(quiet.contains("(rewrite each with the new work):\n(none)\n\n"));
+    }
+
+    #[test]
+    fn test_plan_writes_turns_a_projects_line_into_an_update_of_its_card() {
+        let cards = vec![page_card(
+            Some("11:00"),
+            "git",
+            Some("Demo-Shop"),
+            "Cart: totals fixed",
+        )];
+        let line = in_project("demo-shop", "14:00", "Cart: totals fixed and coupons added");
+        let writes = plan_writes(vec![line.clone()], &cards, &[]);
+        assert_eq!(
+            writes,
+            vec![CandidateWrite {
+                // The card's time (its first activity) and spelling.
+                candidate: NewCandidate {
+                    time: Some("11:00".to_string()),
+                    project: Some("Demo-Shop".to_string()),
+                    ..line
+                },
+                updates: Some(UpdatedCard {
+                    time: Some("11:00".to_string()),
+                    text: "Cart: totals fixed".to_string(),
+                }),
+                replaces: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_plan_writes_rewrites_a_waiting_summary_in_place_never_doubling_it() {
+        let card = page_card(
+            Some("11:00"),
+            "git",
+            Some("demo-shop"),
+            "Cart: totals fixed",
+        );
+        let waiting_update = Candidate {
+            updates: Some(UpdatedCard {
+                time: Some("11:00".to_string()),
+                text: "Cart: totals".to_string(),
+            }),
+            ..pending_in(
+                "demo-shop",
+                "u1",
+                "11:00",
+                "Cart: totals fixed, coupons started",
+            )
+        };
+        // With a card: the waiting update is rewritten, against the card as it reads now.
+        let writes = plan_writes(
+            vec![in_project(
+                "demo-shop",
+                "15:00",
+                "Cart: totals fixed, coupons done",
+            )],
+            std::slice::from_ref(&card),
+            std::slice::from_ref(&waiting_update),
+        );
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].replaces.as_deref(), Some("u1"));
+        assert_eq!(
+            writes[0].updates.as_ref().map(|c| c.text.as_str()),
+            Some("Cart: totals fixed")
+        );
+
+        // Without a card: the waiting summary is rewritten and keeps the earlier time.
+        let waiting = pending_in("demo-shop", "w1", "09:10", "Cart: totals started");
+        let line = in_project("demo-shop", "15:00", "Cart: totals and coupons done");
+        let writes = plan_writes(vec![line.clone()], &[], std::slice::from_ref(&waiting));
+        assert_eq!(
+            writes,
+            vec![CandidateWrite {
+                candidate: NewCandidate {
+                    time: Some("09:10".to_string()),
+                    ..line
+                },
+                updates: None,
+                replaces: Some("w1".to_string()),
+            }]
+        );
+
+        // A rejected summary, another day's or a meeting is never rewritten.
+        let others = vec![
+            Candidate {
+                state: CandidateState::Rejected,
+                ..pending_in("demo-shop", "r1", "09:00", "Cart: rejected")
+            },
+            Candidate {
+                date: "2026-10-14".to_string(),
+                ..pending_in("demo-shop", "y1", "09:00", "Cart: yesterday")
+            },
+            Candidate {
+                source: CandidateSource::Granola,
+                ..pending_in("demo-shop", "m1", "09:00", "Meeting: cart")
+            },
+        ];
+        let writes = plan_writes(
+            vec![in_project("demo-shop", "15:00", "Cart: coupons done")],
+            &[],
+            &others,
+        );
+        assert_eq!(writes[0].replaces, None);
+        assert_eq!(writes[0].candidate.time.as_deref(), Some("15:00"));
+    }
+
+    #[test]
+    fn test_plan_writes_refuses_what_would_double_or_change_nothing() {
+        let cards = vec![
+            page_card(
+                Some("11:00"),
+                "git",
+                Some("demo-shop"),
+                "Cart: totals fixed",
+            ),
+            page_card(Some("08:00"), "typed", Some("demo-wiki"), "Wiki: notes"),
+        ];
+        let meeting = NewCandidate {
+            source: CandidateSource::Granola,
+            project: None,
+            time: None,
+            ..in_project("x", "00:00", "Meeting - Planning: picked the next issue")
+        };
+        let no_project = NewCandidate {
+            project: None,
+            ..in_project("x", "10:00", "Something without a project")
+        };
+        let writes = plan_writes(
+            vec![
+                in_project("demo-blog", "10:00", "Blog: posts moved"),
+                // A second summary for one project in the same reply.
+                in_project("Demo-Blog", "12:00", "Blog: a second line"),
+                // The card's own text again (case and spacing aside): no update.
+                in_project("demo-shop", "14:00", "cart:  totals FIXED"),
+                // Only a typed card: a new summary, never an update.
+                in_project("demo-wiki", "15:00", "Wiki: pages moved"),
+                meeting.clone(),
+                no_project.clone(),
+            ],
+            &cards,
+            &[],
+        );
+        let texts: Vec<(&str, bool)> = writes
+            .iter()
+            .map(|w| (w.candidate.text.as_str(), w.updates.is_some()))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                ("Blog: posts moved", false),
+                ("Wiki: pages moved", false),
+                (meeting.text.as_str(), false),
+                (no_project.text.as_str(), false),
+            ]
+        );
+    }
+
+    fn journal_with_body(body: Value) -> WorkJournal {
+        let mut journal = journal_with(Some((now() - TimeDelta::hours(2)).to_rfc3339()), None);
+        journal.pages.insert(
+            "2026-10-15".into(),
+            WorkJournalPage {
+                date: "2026-10-15".into(),
+                title: "Thursday".into(),
+                body,
+                origin: PageOrigin::Auto,
+                rev: 0,
+            },
+        );
+        journal
+    }
+
+    #[tokio::test]
+    async fn test_a_later_run_for_a_project_with_a_card_suggests_an_update_not_a_new_card() {
+        let card_text = "Login fix: new password rules, my own words";
+        let mut fake = Fake {
+            items: vec![item(
+                "2026-10-15",
+                "11:20",
+                CandidateSource::Git,
+                "Commit: rules",
+            )],
+            ..Fake::default()
+        };
+        fake.replies.insert(
+            "2026-10-15".into(),
+            "11:20 - Login fix: new password rules and the sign-in page done | git | maestro"
+                .into(),
+        );
+        let journal = journal_with_body(json!({"type": "doc", "content": [
+            card_node(Some("09:05"), "typed", Some("maestro"), "Standup notes"),
+            card_node(Some("10:00"), "claude", Some("maestro"), card_text),
+        ]}));
+
+        let report = run_with(&fake, &journal, &[], now()).await;
+
+        assert_eq!(report.added, 1);
+        assert!(report.error.is_none());
+        let writes = fake.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].updates,
+            Some(UpdatedCard {
+                time: Some("10:00".to_string()),
+                text: card_text.to_string(),
+            })
+        );
+        assert_eq!(writes[0].candidate.time.as_deref(), Some("10:00"));
+        assert_eq!(writes[0].candidate.project.as_deref(), Some("maestro"));
+        // The card's current text, hand edits included, went to the model.
+        let asked = fake.asked.lock().unwrap();
+        assert!(asked[0].1.contains(&format!(
+            "work):\n10:00 - {card_text} | claude | maestro\n\n"
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_a_rejected_update_is_fed_back_and_not_proposed_again() {
+        let rejected = Candidate {
+            updates: Some(UpdatedCard {
+                time: Some("10:00".to_string()),
+                text: "Login fix: rules".to_string(),
+            }),
+            state: CandidateState::Rejected,
+            ..pending_in(
+                "maestro",
+                "r1",
+                "10:00",
+                "Login fix: rules and the page done",
+            )
+        };
+        let mut fake = Fake {
+            items: vec![item(
+                "2026-10-15",
+                "11:20",
+                CandidateSource::Git,
+                "Commit: page",
+            )],
+            existing: vec![rejected],
+            ..Fake::default()
+        };
+        fake.replies.insert(
+            "2026-10-15".into(),
+            "11:20 - Login fix: rules and the page done | git | maestro".into(),
+        );
+        let journal = journal_with_body(json!({"type": "doc", "content": [
+            card_node(Some("10:00"), "git", Some("maestro"), "Login fix: rules"),
+        ]}));
+
+        let report = run_with(&fake, &journal, &[], now()).await;
+
+        assert_eq!(report.added, 0);
+        assert!(report.error.is_none());
+        assert!(fake.writes.lock().unwrap().is_empty());
+        let asked = fake.asked.lock().unwrap();
+        assert!(asked[0].1.contains(
+            "(do not repeat):\n10:00 - Login fix: rules and the page done | git | maestro"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_an_unusable_card_or_reply_line_is_dropped_never_failing_the_date() {
+        let mut fake = Fake {
+            items: vec![
+                item("2026-10-15", "11:20", CandidateSource::Git, "Commit: a"),
+                ActivityItem {
+                    project: "demo-shop".to_string(),
+                    ..item("2026-10-15", "11:30", CandidateSource::Git, "Commit: b")
+                },
+            ],
+            ..Fake::default()
+        };
+        fake.replies.insert(
+            "2026-10-15".into(),
+            [
+                // Its card's time cannot be read: no update, and no new card either.
+                "11:20 - Login fix: done | git | maestro",
+                // A second summary for one project.
+                "11:30 - Cart: totals | git | demo-shop",
+                "11:31 - Cart: again | git | demo-shop",
+                // Blank fields and an unknown project.
+                " -  | git | maestro",
+                "11:40 - Something | git | made-up-project",
+                "11:41 - | | ",
+            ]
+            .join("\n"),
+        );
+        let journal = journal_with_body(json!({"type": "doc", "content": [
+            card_node(Some("soon"), "git", Some("maestro"), "Login fix: started"),
+            {"type": "journalEntry", "attrs": null, "content": null},
+            {"type": "journalEntry"},
+        ]}));
+
+        let report = run_with(&fake, &journal, &[], now()).await;
+
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(report.retry_dates.is_empty());
+        let added: Vec<(String, Option<String>)> = fake
+            .added
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| (c.text.clone(), c.project.clone()))
+            .collect();
+        assert_eq!(
+            added,
+            vec![
+                ("Cart: totals".to_string(), Some("demo-shop".to_string())),
+                ("Something".to_string(), None),
+            ]
+        );
     }
 
     #[test]

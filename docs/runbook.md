@@ -291,6 +291,23 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
 - The cross deletes a card at once, with no question; Ctrl+Z brings it back.
 - Pages written before cards keep their plain `HH:MM - ...` lines exactly as they were.
 
+## Work Journal suggestions: one summary per project per day
+
+- Each project gets one entry per day, built from all its work (commits, pull requests, issues, Claude sessions and
+  terminal work): one sentence of about 120 characters on the outcomes, with no commit, file or pull request names.
+  Granola meetings keep their own entries.
+- A summary still waiting in the Suggestions box is rewritten in place by the next run, never shown twice.
+- Once the project has a card on the page (one not typed by hand; the earliest if there are several), later work
+  that day comes as an update suggestion headed "Updates your HH:MM <project> entry". It shows the card's current
+  text grey and struck through, with the new text below it.
+- Accept rewrites that card's text; its time, project chip and source tag stay. Reject leaves the card exactly as it
+  is, and the same update is not suggested again that day.
+- The card's current text, your own edits included, is what the next summary builds on.
+- If you change, retime, move or delete the card before you accept, Accept leaves every card as it is and says so;
+  reject the update to clear it.
+- Cards you typed yourself never get an update suggestion. On a page with no card for the project yet (old plain
+  lines), the summary comes as a normal suggestion.
+
 ## Work Journal suggestions: Granola meetings
 
 - With Granola turned on (the Yes answer to the Granola question), each suggestion run looks up that day's meetings

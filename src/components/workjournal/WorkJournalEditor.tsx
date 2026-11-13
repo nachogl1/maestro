@@ -13,12 +13,15 @@ import {
 import {
   registerWorkJournalEditorAppend,
   registerWorkJournalEditorFlush,
+  registerWorkJournalEditorUpdate,
   useWorkJournalStore,
   workJournalBodyBaseRev,
 } from "@/stores/useWorkJournalStore";
 import {
   createWorkJournalEntryNode,
   entryAppendStart,
+  entryWithText,
+  findEntryCard,
   WORK_JOURNAL_ENTRY_NODE,
   WorkJournalEntry,
 } from "./WorkJournalEntryNode";
@@ -247,6 +250,46 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
             editor.state.tr.delete(start, appendedEnd(editor.state.doc, start, node, fill)),
           );
           // Puts the page without the card in the store (and on disk) now.
+          void saveNowRef.current();
+        }
+      }
+      return "save_failed";
+    });
+  }, [editor, date]);
+
+  // An accepted update suggestion lands here: the card it names gets the new
+  // text (its time, project and source kept), saved right away. A card that
+  // no longer reads as the suggestion saw it is never touched. When the save
+  // fails, the card's old text is put back.
+  useEffect(() => {
+    if (!editor) return;
+    return registerWorkJournalEditorUpdate(date, async (target, text) => {
+      const { replacing, revision } = useWorkJournalStore.getState();
+      if (editor.isDestroyed || !editor.isEditable || replacing) return "refused";
+      if (revision !== revisionRef.current) return "refused";
+      const found = findEntryCard(editor.state.doc, target);
+      if (!found) return "card_changed";
+      const before = found.node;
+      const after = entryWithText(before, text);
+      // Where the card starts, kept current while the save runs.
+      let start = found.pos;
+      editor.view.dispatch(editor.state.tr.replaceWith(start, start + before.nodeSize, after));
+      const track = ({ transaction }: { transaction: Transaction }): void => {
+        start = transaction.mapping.map(start, 1);
+      };
+      editor.on("transaction", track);
+      let saved: boolean;
+      try {
+        saved = await saveNowRef.current();
+      } finally {
+        editor.off("transaction", track);
+      }
+      if (saved) return "saved";
+      if (!editor.isDestroyed) {
+        const node = editor.state.doc.nodeAt(start);
+        // Left alone if the user already edited the card meanwhile.
+        if (node?.type.name === WORK_JOURNAL_ENTRY_NODE && node.eq(after)) {
+          editor.view.dispatch(editor.state.tr.replaceWith(start, start + node.nodeSize, before));
           void saveNowRef.current();
         }
       }

@@ -10,6 +10,7 @@ import {
   useWorkJournalCandidateRunStore,
 } from "@/stores/useWorkJournalCandidateRunStore";
 import {
+  ACCEPT_CARD_CHANGED_ERROR,
   ACCEPT_NO_EDITOR_ERROR,
   ACCEPT_SAVE_FAILED_ERROR,
   useWorkJournalCandidatesStore,
@@ -788,6 +789,146 @@ describe("SuggestionsBox", () => {
     await act(async () => useWorkJournalCandidatesStore.getState().accept(candidates[0]));
     expect(callsTo("update_work_journal_page")).toEqual([]);
     expect(callsTo("accept_work_journal_candidate")).toEqual([]);
+  });
+
+  describe("update suggestions", () => {
+    const OLD = "Cart: totals fixed";
+    const NEW = "Cart: totals fixed and coupons added";
+    const CARD = { time: "11:00", project: "demo-shop", source: "git" };
+
+    /** Today's page: a free note, the project's card, and a note after it. */
+    function pageWithCard(text = OLD, attrs: typeof CARD = CARD): JSONContent {
+      return {
+        type: "doc",
+        content: [paragraph("Standup"), entryCard(text, attrs), paragraph("Later")],
+      };
+    }
+
+    function update(overrides: Partial<WorkJournalCandidate> = {}): WorkJournalCandidate {
+      return candidate("u1", NEW, {
+        time: "11:00",
+        project: "demo-shop",
+        updates: { time: "11:00", text: OLD },
+        ...overrides,
+      });
+    }
+
+    /** The open editor's body. */
+    function editorBody(): JSONContent {
+      const dom = screen.getByLabelText("Work Journal page") as HTMLElement & { editor: Editor };
+      return dom.editor.getJSON();
+    }
+
+    async function renderUpdate(body: JSONContent, suggestion = update()): Promise<HTMLElement> {
+      file.pages[TODAY] = page(TODAY, body);
+      candidates = [suggestion];
+      render(<WorkJournalPanel />);
+      return (await within(box()).findByText(suggestion.text)).closest("li") as HTMLElement;
+    }
+
+    it("names the entry it updates and shows the entry's text struck through above the new text", async () => {
+      const row = await renderUpdate(pageWithCard());
+
+      expect(within(row).getByText("Updates your 11:00 demo-shop entry")).toBeInTheDocument();
+      const old = within(row).getByTestId("suggestion-old-text");
+      expect(old).toHaveTextContent(OLD);
+      expect(old).toHaveClass("line-through", "text-maestro-muted");
+      const fresh = within(row).getByText(NEW);
+      // The old text comes first, the new text below it.
+      expect(old.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(within(row).getByRole("button", { name: /^Accept suggestion: / })).toHaveAttribute(
+        "title",
+        "Accept: rewrite your entry with this text",
+      );
+      expect(within(box()).getByText("Suggestions (1)")).toBeInTheDocument();
+    });
+
+    it("Accept rewrites the card's text and keeps its time, project and source; no card is added", async () => {
+      const row = await renderUpdate(pageWithCard());
+      fireEvent.click(within(row).getByRole("button", { name: /^Accept suggestion: / }));
+
+      await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "u1" }]));
+      expect(file.pages[TODAY].body).toEqual(pageWithCard(NEW));
+      const order = invokeMock.mock.calls.map(([c]) => c);
+      expect(order.lastIndexOf("update_work_journal_page")).toBeLessThan(
+        order.indexOf("accept_work_journal_candidate"),
+      );
+      expect(editorBody()).toEqual(pageWithCard(NEW));
+      expect(useWorkJournalCandidatesStore.getState().error).toBeNull();
+      await waitFor(() => expect(within(box()).queryByText(NEW)).not.toBeInTheDocument());
+    });
+
+    it("Reject leaves the card exactly as it was", async () => {
+      const row = await renderUpdate(pageWithCard());
+      fireEvent.click(within(row).getByRole("button", { name: /^Reject suggestion: / }));
+
+      await waitFor(() => expect(callsTo("reject_work_journal_candidate")).toEqual([{ id: "u1" }]));
+      expect(candidates[0].state).toBe("rejected");
+      expect(callsTo("update_work_journal_page")).toEqual([]);
+      expect(file.pages[TODAY].body).toEqual(pageWithCard());
+      expect(editorBody()).toEqual(pageWithCard());
+    });
+
+    it.each([
+      [
+        "the person edited the card since",
+        pageWithCard("Cart: totals fixed, my own words"),
+        update(),
+      ],
+      ["the card was retimed", pageWithCard(OLD, { ...CARD, time: "11:30" }), update()],
+      [
+        "the card moved to another project",
+        pageWithCard(OLD, { ...CARD, project: "demo-blog" }),
+        update(),
+      ],
+      ["the card was deleted", { type: "doc", content: [paragraph("Standup")] }, update()],
+      ["only a typed card reads so", pageWithCard(OLD, { ...CARD, source: "typed" }), update()],
+      [
+        "the card's text is unreadable",
+        pageWithCard(),
+        update({ updates: { text: null } as unknown as WorkJournalCandidate["updates"] }),
+      ],
+      [
+        "the card's time is not one",
+        pageWithCard(),
+        update({ updates: { time: "soon", text: OLD } }),
+      ],
+      ["the update has no project", pageWithCard(), update({ project: null })],
+      ["the new text is blank", pageWithCard(), update({ text: "   " })],
+    ])("Accept changes nothing when %s", async (_case, body, suggestion) => {
+      file.pages[TODAY] = page(TODAY, body as JSONContent);
+      candidates = [suggestion];
+      render(<WorkJournalPanel />);
+      await within(box()).findByText(/^Updates your /);
+      const before = structuredClone(file.pages[TODAY].body);
+
+      await act(async () => useWorkJournalCandidatesStore.getState().accept(suggestion));
+
+      expect(useWorkJournalCandidatesStore.getState().error).toBe(ACCEPT_CARD_CHANGED_ERROR);
+      expect(callsTo("update_work_journal_page")).toEqual([]);
+      expect(callsTo("accept_work_journal_candidate")).toEqual([]);
+      expect(file.pages[TODAY].body).toEqual(before);
+      expect(within(box()).getAllByRole("listitem")).toHaveLength(1);
+    });
+
+    it("a failed save puts the card's old text back and keeps the update", async () => {
+      saveHook = async () => {
+        throw new Error("disk full");
+      };
+      const row = await renderUpdate(pageWithCard());
+      fireEvent.click(within(row).getByRole("button", { name: /^Accept suggestion: / }));
+
+      await within(box()).findByText(ACCEPT_SAVE_FAILED_ERROR);
+      expect(callsTo("accept_work_journal_candidate")).toEqual([]);
+      expect(editorBody()).toEqual(pageWithCard());
+      expect(useWorkJournalStore.getState().pages[TODAY].body).toEqual(pageWithCard());
+      expect(within(box()).getByText(NEW)).toBeInTheDocument();
+
+      saveHook = null;
+      fireEvent.click(within(row).getByRole("button", { name: /^Accept suggestion: / }));
+      await waitFor(() => expect(callsTo("accept_work_journal_candidate")).toEqual([{ id: "u1" }]));
+      expect(file.pages[TODAY].body).toEqual(pageWithCard(NEW));
+    });
   });
 });
 

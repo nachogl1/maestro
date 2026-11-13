@@ -7,6 +7,7 @@ import { useWorkJournalCandidateRunStore } from "@/stores/useWorkJournalCandidat
 import {
   candidateLine,
   candidateProject,
+  isUpdateCandidate,
   useWorkJournalCandidatesStore,
   type WorkJournalCandidate,
 } from "@/stores/useWorkJournalCandidatesStore";
@@ -72,6 +73,16 @@ function labelText(candidate: WorkJournalCandidate): string {
     : chars.join("");
 }
 
+/**
+ * An update suggestion's heading, "Updates your HH:MM <project> entry", with no
+ * time for an untimed card.
+ */
+function updateLabel(candidate: WorkJournalCandidate): string {
+  const time = candidate.updates?.time ?? candidate.time;
+  const project = candidateProject(candidate);
+  return ["Updates your", time, project, "entry"].filter(Boolean).join(" ");
+}
+
 /** "next run" text: "soon" before the start-up catch-up run, HH:MM, or "—" when unknown. */
 function nextRunLabel(catchUpPending: boolean, nextRunAt: number | null): string {
   if (catchUpPending) return "soon";
@@ -84,8 +95,10 @@ function nextRunLabel(catchUpPending: boolean, nextRunAt: number | null): string
  * The suggestions box under a Work Journal page: the day's pending
  * candidates, each with its text, its project (in that project's colour, when
  * it has one), its source tag, and green Accept and red Reject icons kept apart,
- * and a footer "next run · run now". With nothing pending only the footer
- * shows, so "run now" is always reachable.
+ * and a footer "next run · run now". An update suggestion says which entry it
+ * updates and shows that entry's current text grey and struck through above
+ * the new text. With nothing pending only the footer shows, so "run now" is
+ * always reachable.
  */
 export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsBoxProps) {
   const candidates = useWorkJournalCandidatesStore((s) => s.byDate[date] ?? NO_CANDIDATES);
@@ -221,6 +234,7 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
         <ul className="mt-1.5 flex flex-col gap-1">
           {pending.map((candidate) => {
             const busy = busyIds.includes(candidate.id);
+            const update = isUpdateCandidate(candidate);
             const label = labelText(candidate);
             const project = candidateProject(candidate);
             const projectColor = project
@@ -232,7 +246,22 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                 className="flex flex-col gap-1 rounded-md border border-maestro-border bg-maestro-card px-1.5 py-1"
               >
                 {/* The text gets the full width; pills and buttons share the row beneath it. */}
-                <span className="break-words text-maestro-text">{candidateLine(candidate)}</span>
+                {update ? (
+                  <>
+                    <span className="text-[10px] font-semibold text-maestro-muted">
+                      {updateLabel(candidate)}
+                    </span>
+                    <span
+                      data-testid="suggestion-old-text"
+                      className="break-words text-maestro-muted line-through"
+                    >
+                      {candidate.updates?.text}
+                    </span>
+                    <span className="break-words text-maestro-text">{candidate.text}</span>
+                  </>
+                ) : (
+                  <span className="break-words text-maestro-text">{candidateLine(candidate)}</span>
+                )}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
                     {project && projectColor && (
@@ -255,7 +284,12 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                       disabled={busy || acceptHint !== null}
                       className={`${ICON_BUTTON} text-maestro-green`}
                       aria-label={`Accept suggestion: ${label}`}
-                      title={acceptHint ?? "Accept: add a card at the end of the page"}
+                      title={
+                        acceptHint ??
+                        (update
+                          ? "Accept: rewrite your entry with this text"
+                          : "Accept: add a card at the end of the page")
+                      }
                     >
                       <Check size={13} />
                     </button>
@@ -265,7 +299,11 @@ export function SuggestionsBox({ date, hasPage, readOnly = false }: SuggestionsB
                       disabled={busy || replacing}
                       className={`${ICON_BUTTON} text-maestro-red`}
                       aria-label={`Reject suggestion: ${label}`}
-                      title="Reject: hide it for today"
+                      title={
+                        update
+                          ? "Reject: keep your entry as it is and hide this for today"
+                          : "Reject: hide it for today"
+                      }
                     >
                       <X size={13} />
                     </button>
