@@ -1,0 +1,19 @@
+{
+  "run_id": "maestro-20261113-122258-0256",
+  "issue": 557,
+  "title": "Issue map: a click outside an issue's details card closes it, in the app and the saved HTML map",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 574,
+  "merged_at": "2026-11-13T12:58:10Z",
+  "merge_commit": "8bf1b545f4edb65e0bf3759e07dd01476af1c122",
+  "seam": "src/lib/issueMapHtml.ts, src/components/git/issues/",
+  "story": "I used to hunt for the same box again, or press Esc, to get rid of an issue's card. Now I click anywhere else and it goes away, and whatever I clicked still does its job. Dragging the map around still keeps my issue's chain lit. The saved HTML map works the same way, and the hint now says 'Click outside to close'.",
+  "checks": [
+    { "key": "issue-map/click-outside-closes", "criterion": "A click outside the card closes it and the clicked control still does its job", "steps": "Open the issue map on a test repository and click the box for issue #2. Click an empty spot on the map. Select #2 again and click Zoom in. Select #2 again and click the Assignee filter.", "expected": "Each click closes the card and clears the highlight; the zoom shows 125%; the filter menu opens." },
+    { "key": "issue-map/box-switch-and-toggle", "criterion": "A click on another box switches the card; a click on the same box closes it", "steps": "Select #2, then click #3, then click #3 again.", "expected": "The card switches to #3, then closes." },
+    { "key": "issue-map/inside-card-keeps-open", "criterion": "Clicks and drags inside the card leave it open", "steps": "Select #2, click 'Show in sidebar', click its description, then drag its title onto the map and let go.", "expected": "The card stays open each time." },
+    { "key": "issue-map/pan-keeps-chain", "criterion": "A pan leaves the issue selected and its chain highlighted; hint text is new", "steps": "Select #2, drag the map and let go over the header.", "expected": "The chain stays lit; the card is hidden unless it was moved; the hint reads 'Click outside to close'." },
+    { "key": "issue-map/html-click-outside", "criterion": "The saved HTML map behaves the same", "steps": "Save HTML, open it in a browser, select a box, then click Zoom in and an assignee legend checkbox.", "expected": "Each click closes the card and still zooms or filters; the hint reads 'Click outside to close · double-click opens it on GitHub'." }
+  ],
+  "no_qa_reason": null
+}

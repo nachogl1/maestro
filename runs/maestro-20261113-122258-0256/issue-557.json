@@ -1,0 +1,22 @@
+{
+  "run_id": "maestro-20261113-122258-0256",
+  "issue": 557,
+  "title": "Issue map: a click outside an issue's details card closes it, in the app and the saved HTML map",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T12:45:00Z",
+  "finished_at": "2026-11-13T12:58:10Z",
+  "outcome": "merged",
+  "pr": 574,
+  "summary": "A click anywhere outside the issue map's details card now closes it and clears the highlighted chain while the clicked control still does its job, in the app and the saved HTML map; pans and presses inside the card keep it open. Merged on the local gate (vitest 2110, cargo 1634) because CI minutes are unavailable.",
+  "agents": [
+    { "name": "dev-557", "model": "opus", "tokens_total": 169872 },
+    { "name": "review-557", "model": "opus", "tokens_total": 154112 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1011, "review_seconds": 568, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 0 },
+  "friction": [],
+  "lessons_learned": [
+    "The Playwright MCP writes its log/snapshot folder into the main checkout (C:\git\maestro) even when an agent works in a worktree; both dev-557 and review-557 had to delete it by hand — tell agents to set the Playwright output dir to a mktemp folder"
+  ],
+  "deferred": []
+}
