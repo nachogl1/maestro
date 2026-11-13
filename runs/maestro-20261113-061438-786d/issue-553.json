@@ -1,0 +1,24 @@
+{
+  "run_id": "maestro-20261113-061438-786d",
+  "issue": 553,
+  "title": "Issue map: the details card shows who opened each issue",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T06:14:38Z",
+  "finished_at": "2026-11-13T07:01:03Z",
+  "outcome": "needs-human",
+  "pr": 572,
+  "summary": "The issue map's details card, in the app and the exported HTML map, now says who opened each issue ('opened by unknown' for a missing or ghost author); built and approved, but not merged because GitHub Actions is disabled on the repository.",
+  "agents": [
+    { "name": "dev-553", "model": "opus", "tokens_total": 125381 },
+    { "name": "review-553", "model": "opus", "tokens_total": 102981 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 699, "review_seconds": 259, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 0 },
+  "friction": [
+    "GitHub Actions is disabled on nachogl1/maestro (dispatch returns HTTP 422; no PR Checks or Release run since 2026-11-10, PRD PR #558 merged with 0 checks) — every story stops at 'no checks reported' and the self-update pipeline is dead until the owner re-enables Actions"
+  ],
+  "lessons_learned": [
+    "CLAUDE.md says skip-count baseline 0, but cargo test reports 1 ignored test on main (core::mcp_settings::tests::smoke_get_status_real_files); the baseline line should say 1 for Rust or every dev agent flags it"
+  ],
+  "deferred": []
+}

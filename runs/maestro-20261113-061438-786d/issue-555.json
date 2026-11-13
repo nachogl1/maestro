@@ -1,0 +1,21 @@
+{
+  "run_id": "maestro-20261113-061438-786d",
+  "issue": 555,
+  "title": "Drag to reorder: dropping a tab on another swaps just those two, in all four drag rows",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-13T06:30:00Z",
+  "finished_at": "2026-11-13T07:01:03Z",
+  "outcome": "needs-human",
+  "pr": 573,
+  "summary": "Dropping a tab on another now swaps only those two in the project tabs, zoom strip, eagle strip and parked shelf, with a swap preview while dragging; built and approved after one small test fix, but not merged because GitHub Actions is disabled on the repository.",
+  "agents": [
+    { "name": "dev-555", "model": "opus", "tokens_total": 148608 },
+    { "name": "review-555", "model": "opus", "tokens_total": 126966 },
+    { "name": "review-555-r2", "model": "opus", "tokens_total": 131478 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1058, "review_seconds": 769, "ci_seconds": 0 },
+  "rounds": { "review": 2, "ci": 0 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
