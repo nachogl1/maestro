@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 566,
+  "title": "Work Journal suggestions: tick boxes, select all, and Accept or Reject all or only the ticked ones",
+  "login": "nachogl1",
+  "pr": 587,
+  "merged_at": "2026-11-14T00:29:00Z",
+  "merge_commit": "6797a3016b4a384e674ff5efec7dd561645c0283",
+  "seam": "src/components/workjournal/SuggestionsBox.tsx",
+  "story": "The Suggestions box now has a tick box on every suggestion and a select-all box in its header. From two pending suggestions the header shows Accept all / Reject all, which become Accept N / Reject N while N are ticked; they act on the day shown only, and reject asks 'Reject N? Yes / No' in place first. Each suggestion's own Accept and Reject still work, locked only while a bulk action runs.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/suggestions-bulk-labels",
+      "criterion": "Bulk buttons appear from two pending suggestions and their label follows the ticks",
+      "steps": "Enable the Work Journal and open today's page with three made-up suggestions pending. Tick one suggestion, then tick all with the header box.",
+      "expected": "Every suggestion has a tick box and the header a select-all box; the header reads Accept all / Reject all, then Accept 1 / Reject 1, then Accept 3 / Reject 3; with one suggestion there is a tick box but no bulk buttons."
+    },
+    {
+      "key": "src/components/workjournal/suggestions-bulk-accept",
+      "criterion": "Accept N adds N cards in list order",
+      "steps": "Tick the third and then the first suggestion, then press Accept 2.",
+      "expected": "Two cards at the end of the page in list order (first, then third); the middle suggestion stays."
+    },
+    {
+      "key": "src/components/workjournal/suggestions-bulk-reject",
+      "criterion": "Reject N asks once and rejects N",
+      "steps": "Tick two suggestions and press Reject 2; press No; press Reject 2 again and press Yes.",
+      "expected": "'Reject 2? Yes / No' in the header; No keeps everything and its ticks; Yes removes both and the page does not change."
+    },
+    {
+      "key": "src/components/workjournal/suggestions-ticks-life",
+      "criterion": "New suggestions arrive unticked, a rewritten one loses its tick, switching day clears ticks",
+      "steps": "Tick one suggestion and press run now so a new one arrives. Tick all and let a run rewrite one summary. Go to another day and back.",
+      "expected": "The old tick stays and the new one is unticked; the rewritten one is unticked; after the day change nothing is ticked."
+    },
+    {
+      "key": "src/components/workjournal/suggestions-bulk-failure",
+      "criterion": "One failure leaves the rest done and the failed one ticked with its error",
+      "steps": "Have an update suggestion for a card plus two new suggestions. Edit that card by hand, then press Accept all.",
+      "expected": "The two new cards are added; the update stays ticked and the error reads '1 suggestion was not accepted and stays ticked.' followed by the card-changed message."
+    }
+  ],
+  "no_qa_reason": null
+}

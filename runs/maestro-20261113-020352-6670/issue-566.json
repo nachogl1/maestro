@@ -1,0 +1,48 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 566,
+  "title": "Work Journal suggestions: tick boxes, select all, and Accept or Reject all or only the ticked ones",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T22:47:00Z",
+  "finished_at": "2026-11-14T00:30:00Z",
+  "outcome": "merged",
+  "pr": 587,
+  "summary": "The Work Journal Suggestions box gains a tick box per suggestion, a select-all box, and Accept all / Reject all (Accept N / Reject N when ticked), running each item through the single Accept or Reject so its safety checks hold and one failure never stops the rest.",
+  "agents": [
+    {
+      "name": "dev-566",
+      "model": "opus",
+      "tokens_total": 212734
+    },
+    {
+      "name": "review-566",
+      "model": "opus",
+      "tokens_total": 181786
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 4300,
+    "review_seconds": 740,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [
+    "The dev agent's gate was killed for low memory a second time, because its own earlier Vitest run was still alive in the background while it built; the brief now says to confirm no earlier run is alive before the next step"
+  ],
+  "lessons_learned": [
+    "Tell dev agents to run each gate command in the foreground and check no earlier run from their worktree is still alive; a backgrounded Vitest plus a build exhausts the 7.8 GB machine"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/workjournal/",
+      "what": "The effect in WorkJournalEditor.tsx around line 307 that restores the stored body can run in the middle of a card insert through Tiptap's flushSync, so a later change that writes the stored body just before an append would silently lose a card while Accept reports it saved (today only reproducible under act())",
+      "why": "No user path triggers it today; hardening it is a design change to the editor sync",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
