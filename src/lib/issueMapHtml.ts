@@ -188,7 +188,7 @@ else{if(m.parent!==null&&META[m.parent]){h+='<div class="row"><b>Epic</b> #'+m.p
 h+='<div style="margin-top:6px"><b>Blocked by:</b> '+(m.blockers.length?'':'nothing')+'</div>';
 if(m.blockers.length){h+=list(m.blockers,b=>b.state==='OPEN'?'o':'c')}
 h+='<div style="margin-top:6px"><b>Waiting on it:</b> '+(m.waiting.length?m.waiting.map(w=>'#'+w).join(', '):'nothing')+'</div>'}
-h+='<div class="pin">Click the box again to clear · double-click opens it on GitHub</div>';return h}
+h+='<div class="pin">Click outside to close · double-click opens it on GitHub</div>';return h}
 function showTip(id,ev){tip.innerHTML=tipHtml(id);tip.style.display='block';moveTip(ev)}
 function moveTip(ev){if(!ev)return;const r=tip.getBoundingClientRect();let x=ev.clientX+16,y=ev.clientY+16;if(x+r.width>innerWidth-8)x=ev.clientX-r.width-16;if(y+r.height>innerHeight-8)y=ev.clientY-r.height-16;tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px'}
 function focus(id,ev){svg.classList.add('focus');const m=META[id];const u=walk(id,up),dn=walk(id,down);const all=new Set([...u,...dn,id,...m.stories.map(k=>k.n)]);if(m.parent!==null)all.add(m.parent);
@@ -234,6 +234,9 @@ wrap.addEventListener('pointerdown',ev=>{if(ev.button!==0||ev.target.closest('#z
 addEventListener('pointermove',ev=>{if(!drag)return;const dx=ev.clientX-drag.x,dy=ev.clientY-drag.y;if(!moved&&Math.hypot(dx,dy)<4)return;moved=true;wrap.classList.add('drag');tip.style.display='none';tx=drag.tx+dx;ty=drag.ty+dy;paint()});
 addEventListener('pointerup',()=>{drag=null;wrap.classList.remove('drag')});
 wrap.addEventListener('click',ev=>{if(moved){ev.stopPropagation();moved=false}},true);
+let pressInTip=false;addEventListener('pointerdown',ev=>{pressInTip=tip.contains(ev.target);moved=false},true);
+document.addEventListener('click',ev=>{const inTip=pressInTip||tip.contains(ev.target);pressInTip=false;if(moved){moved=false;return}
+if(pinned!==null&&!inTip&&!ev.target.closest('.node')){pinned=null;clear()}});
 const mid=()=>[wrap.clientWidth/2,wrap.clientHeight/2];
 document.getElementById('zin').onclick=()=>zoomAt(1.25,...mid());document.getElementById('zout').onclick=()=>zoomAt(0.8,...mid());
 document.getElementById('zfit').onclick=()=>fit(true);document.getElementById('z100').onclick=()=>{const [cx,cy]=mid();zoomAt(1/z,cx,cy)};
