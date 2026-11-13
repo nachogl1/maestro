@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 562,
+  "title": "Triggers: an optional name, all or ticked terminals, the new 'send to' wording, edit in the row, and saved across restarts",
+  "login": "nachogl1",
+  "started_at": "2026-11-13T18:52:00Z",
+  "finished_at": "2026-11-13T19:40:00Z",
+  "outcome": "merged",
+  "pr": 581,
+  "summary": "Injector triggers now take an optional name, watch every terminal (including later ones) or only ticked ones, use the new 'send the message to only that terminal | every terminal it watches' wording, edit in the row, and survive a restart.",
+  "agents": [
+    {
+      "name": "dev-562",
+      "model": "opus",
+      "tokens_total": 168923
+    },
+    {
+      "name": "review-562",
+      "model": "opus",
+      "tokens_total": 132716
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1027,
+    "review_seconds": 342,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/sidebar/",
+      "what": "Saving an edit of a ticked trigger replaces its watched terminals with whatever is ticked in the Injector at that moment, even for a message-only edit, so a trigger can silently start typing into other terminals; with no ticks, Save is disabled for a message-only edit",
+      "why": "Follows the decision 'edit to pick terminals'; changing it is a design decision",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

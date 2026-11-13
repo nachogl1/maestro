@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261113-020352-6670",
+  "issue": 562,
+  "title": "Triggers: an optional name, all or ticked terminals, the new 'send to' wording, edit in the row, and saved across restarts",
+  "login": "nachogl1",
+  "pr": 581,
+  "merged_at": "2026-11-13T19:39:00Z",
+  "merge_commit": "71ddd9db35cc4b53e79a8a1df14182fd7834d7f3",
+  "seam": "src/components/sidebar/InjectorTriggersSection.tsx",
+  "story": "Triggers under the Injector now have an optional name and can watch every terminal, including ones opened later, or only the ticked ones. The form now reads 'When a terminal reaches N% context, send the message to only that terminal | every terminal it watches', and 'only that terminal' replaces the old default 'all watched terminals'. Each row has edit and delete buttons, a clickable watched-terminals pill instead of a written list of names, and 'Not fired yet' until it fires. Triggers now survive a restart, where before they were lost; ticked ones come back watching nothing.",
+  "checks": [
+    {
+      "key": "src/components/sidebar/triggers-unnamed-name",
+      "criterion": "An unnamed trigger shows the message's first words as its name",
+      "steps": "Open the Injector panel. In Triggers leave Name empty, pick 'All terminals, also new ones', type 'Stop and write a handoff note now' and click '+ Add trigger'.",
+      "expected": "A new row titled 'Stop and write a…' reading 'At 80% → only that terminal'."
+    },
+    {
+      "key": "src/components/sidebar/triggers-all-terminals-new-terminal",
+      "criterion": "An 'all terminals' trigger also watches a terminal opened after it was made",
+      "steps": "Add a trigger at 5% with 'All terminals, also new ones' and message 'echo hello'. Open a new Claude terminal and let its context pass 5%.",
+      "expected": "'echo hello' is typed into the new terminal, its header shows the amber message icon, and the row reads 'Last fired HH:MM by <that terminal>: sent to 1'."
+    },
+    {
+      "key": "src/components/sidebar/triggers-send-to",
+      "criterion": "'Only that terminal' sends to the terminal that reached the percent; 'every terminal it watches' sends to all",
+      "steps": "Open terminals A and B and tick both. Add trigger 1 (only that terminal, 5%) and trigger 2 (every terminal it watches, 5%) with different messages. Let only A pass 5%.",
+      "expected": "Trigger 1's message reaches A only; trigger 2's reaches A and B."
+    },
+    {
+      "key": "src/components/sidebar/triggers-edit-and-pill",
+      "criterion": "Edit, Save and Cancel change or keep the trigger; the pill lists watched terminals",
+      "steps": "Tick two terminals and add a trigger named 'Compact'. Click the '2 terminals' pill. Click the pencil, change the name, click Cancel. Click the pencil, set 65 and Save.",
+      "expected": "The pill lists both as 'name · project'; Cancel keeps 'Compact'; Save shows 'At 65% → only that terminal'."
+    },
+    {
+      "key": "src/components/sidebar/triggers-restart",
+      "criterion": "After a restart every trigger is back and re-armed; a ticked one with no terminals shows 'watches nothing'",
+      "steps": "Add one 'all terminals' trigger and one ticked trigger. Quit Maestro and start it again.",
+      "expected": "Both rows are back reading 'Not fired yet'; the ticked one reads 'watches nothing, edit to pick terminals'; the all-terminals one fires again for a terminal passing its percent."
+    }
+  ],
+  "no_qa_reason": null
+}
