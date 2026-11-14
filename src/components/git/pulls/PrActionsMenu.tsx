@@ -115,7 +115,7 @@ export function PrActionsMenu({ pr, repoPath }: PrActionsMenuProps) {
       // Issue #139: a PR review used to leave NOTHING on disk, so its brief
       // and audit rows had no work to belong to. The same arm hop writes a
       // persistent record — PR, title, repo, steps — which is the review's
-      // identity in the Second Brain.
+      // identity on disk.
       prRun: {
         pr: pr.number,
         title: pr.title,

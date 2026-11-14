@@ -78,20 +78,6 @@ describe("usePendingLaunchStore", () => {
     expect(usePendingLaunchStore.getState().consume("tab-1")).toBeNull();
   });
 
-  // Issue #98: two identical "Harvest now" clicks are ONE launch (the store
-  // is the double-click guard), but a harvest launch never dedupes against a
-  // plain launch that happens to match on every other field.
-  it("dedupes identical harvest requests but not harvest-vs-plain", () => {
-    const plain: PendingLaunch = { ...launchFor("tab-1"), resumeSessionId: null };
-    const harvest: PendingLaunch = { ...plain, harvest: true };
-    usePendingLaunchStore.getState().request(harvest);
-    usePendingLaunchStore.getState().request({ ...harvest });
-    expect(usePendingLaunchStore.getState().pending).toHaveLength(1);
-
-    usePendingLaunchStore.getState().request(plain);
-    expect(usePendingLaunchStore.getState().pending).toHaveLength(2);
-  });
-
   // Generic initial-prompt launches: two identical requests are ONE launch
   // (the store is the double-click guard), but two launches carrying
   // DIFFERENT prompts must both queue — deduping them would silently drop a

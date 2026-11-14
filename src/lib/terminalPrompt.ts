@@ -3,20 +3,17 @@ import { invoke } from "@tauri-apps/api/core";
 /**
  * Thin wrapper over the generic initial-prompt tauri command
  * (`src-tauri/src/commands/initial_prompt.rs`), following the per-domain lib
- * module convention (`lib/samurai.ts`, `lib/processes.ts`, …).
+ * module convention (`lib/processes.ts`, …).
  *
  * This is the "launch a terminal with an initial prompt" capability any
  * feature can reuse: queue a `PendingLaunch` carrying `initialPrompt` and the
- * grid does the rest. It deliberately lives outside `lib/samurai.ts` — the
- * harvest triage wrapper next door is one CALLER of this mechanism, not its
- * owner.
+ * grid does the rest.
  */
 
 /**
  * Arms a one-shot initial prompt for a just-launched session (Rust
  * `terminal_arm_initial_prompt`). TerminalGrid calls this right before it
- * types the CLI command — like the samurai successor registration and the
- * harvest arm — so the backend can type the prompt into the PTY on the
+ * types the CLI command, so the backend can type the prompt into the PTY on the
  * session's first SessionStarted hook signal, when claude is actually up.
  *
  * The prompt may be multi-line: the backend collapses every whitespace run to
@@ -32,7 +29,7 @@ import { invoke } from "@tauri-apps/api/core";
  *
  * `prRun` is optional PR-review metadata (issue #139): supplying it makes the
  * backend write a persistent run record for the review, which is what gives it
- * an identity to group its artifacts under in the Second Brain. A failed
+ * an identity to group its artifacts under on disk. A failed
  * record write never fails the launch.
  */
 export function terminalArmInitialPrompt(
@@ -53,7 +50,7 @@ export function terminalArmInitialPrompt(
 
 /**
  * What a PR-review launch records about itself (issue #139) — mirrors the Rust
- * `PrReviewLaunch`, snake_case on the wire like every samurai payload. The
+ * `PrReviewLaunch`, snake_case on the wire. The
  * session id and the brief path are added backend-side: only the arm hop knows
  * them.
  */

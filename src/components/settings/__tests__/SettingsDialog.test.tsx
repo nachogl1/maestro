@@ -100,7 +100,7 @@ describe("SettingsDialog", () => {
   it("holds the settings that used to live in the sidebar and in separate dialogs", async () => {
     render(<SettingsDialog onClose={vi.fn()} />);
     openSection("Features");
-    expect(screen.getByRole("switch", { name: "Show Second Brain" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable the Work Journal" })).toBeInTheDocument();
     openSection("Notifications");
     expect(screen.getByText("Show notifications")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Toggle notifications" })).toBeInTheDocument();

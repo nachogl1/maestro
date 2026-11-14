@@ -12,7 +12,6 @@ export const PANEL_IDS = [
   "notes",
   "workjournal",
   "inject",
-  "secondbrain",
   "workshop",
   "infra",
   "settings",

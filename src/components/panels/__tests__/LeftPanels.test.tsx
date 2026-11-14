@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The persisted feature settings hydrate through the Tauri store plugin.
+// The persisted Work Journal settings hydrate through the Tauri store plugin.
 vi.mock("@tauri-apps/plugin-store", () => ({
   LazyStore: class {
     async get() {
@@ -21,7 +21,6 @@ vi.mock("../PanelBody", () => ({
 }));
 vi.mock("../GitPanel", () => ({ GitPanelHeaderExtra: () => null }));
 
-import { useFeatureSettingsStore } from "@/stores/useFeatureSettingsStore";
 import {
   PANEL_DEFAULT_WIDTH,
   PANEL_MAX_WIDTH,
@@ -52,7 +51,6 @@ const STRIP: [string, string][] = [
   ["Notes", "Notes panel"],
   ["Work Journal", "Work Journal panel"],
   ["Injector", "Injector panel"],
-  ["Second Brain", "Second Brain panel"],
   ["Workshop", "Workshop panel"],
   ["Infra", "Infra panel"],
   ["Settings", "Settings panel"],
@@ -82,7 +80,6 @@ describe("LeftPanels: the icon strip on the far left", () => {
   beforeEach(() => {
     localStorage.clear();
     setWindowRoomFor(10);
-    useFeatureSettingsStore.setState({ secondBrainEnabled: true });
     useWorkJournalSettingsStore.setState({ enabled: true });
   });
   afterEach(() => {
@@ -186,16 +183,13 @@ describe("LeftPanels: the icon strip on the far left", () => {
   });
 
   it("shows only the icons switched on in Settings → Features, closing a switched-off panel", () => {
-    renderPanels(["secondbrain"]);
+    renderPanels(["workjournal"]);
     act(() => {
-      useFeatureSettingsStore.setState({ secondBrainEnabled: false });
       useWorkJournalSettingsStore.setState({ enabled: false });
     });
     const strip = screen.getByRole("navigation", { name: "Panels" });
-    for (const name of ["Second Brain", "Work Journal"]) {
-      expect(within(strip).queryByRole("button", { name })).not.toBeInTheDocument();
-    }
-    expect(screen.queryByRole("region", { name: "Second Brain panel" })).not.toBeInTheDocument();
+    expect(within(strip).queryByRole("button", { name: "Work Journal" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Work Journal panel" })).not.toBeInTheDocument();
     expect(usePanelStripStore.getState().openPanels).toEqual([]);
   });
 
@@ -226,5 +220,17 @@ describe("LeftPanels: the icon strip on the far left", () => {
     renderPanels();
     const strip = screen.getByRole("navigation", { name: "Panels" });
     expect(within(strip).queryByRole("button", { name: "Launch" })).not.toBeInTheDocument();
+  });
+
+  it("has no Second Brain icon, and a Second Brain panel saved as open does not come back", async () => {
+    localStorage.setItem(
+      "maestro-panel-strip",
+      JSON.stringify({ state: { openPanels: ["secondbrain", "notes"], widths: {} }, version: 0 }),
+    );
+    await usePanelStripStore.persist.rehydrate();
+    render(<LeftPanels content={{ git: GIT }} />);
+    const strip = screen.getByRole("navigation", { name: "Panels" });
+    expect(within(strip).queryByRole("button", { name: "Second Brain" })).not.toBeInTheDocument();
+    expect(openPanelNames()).toEqual(["Notes panel"]);
   });
 });

@@ -99,14 +99,6 @@ vi.mock("@/lib/worktreeManager", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/samurai", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/samurai")>();
-  return {
-    ...actual,
-    samuraiHarvestArm: vi.fn(async () => {}),
-  };
-});
-
 vi.mock("@/lib/terminalPrompt", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/terminalPrompt")>();
   return {
@@ -117,7 +109,6 @@ vi.mock("@/lib/terminalPrompt", async (importOriginal) => {
 
 import { invoke } from "@tauri-apps/api/core";
 import { setSessionMcpServers } from "@/lib/mcp";
-import { samuraiHarvestArm } from "@/lib/samurai";
 import { killSession, spawnShell, writeStdin } from "@/lib/terminal";
 import { terminalArmInitialPrompt } from "@/lib/terminalPrompt";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
@@ -127,7 +118,6 @@ import { TerminalGrid, type TerminalGridHandle } from "../TerminalGrid";
 const invokeMock = vi.mocked(invoke);
 const spawnShellMock = vi.mocked(spawnShell);
 const writeStdinMock = vi.mocked(writeStdin);
-const harvestArmMock = vi.mocked(samuraiHarvestArm);
 const initialPromptArmMock = vi.mocked(terminalArmInitialPrompt);
 const killSessionMock = vi.mocked(killSession);
 const setMcpServersMock = vi.mocked(setSessionMcpServers);
@@ -157,7 +147,6 @@ describe("TerminalGrid pending launch", () => {
     });
     spawnShellMock.mockClear();
     writeStdinMock.mockClear();
-    harvestArmMock.mockClear();
     initialPromptArmMock.mockClear();
     useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
     usePendingLaunchStore.setState({ pending: [] });
@@ -187,53 +176,17 @@ describe("TerminalGrid pending launch", () => {
     await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
     const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
     expect(cli).toContain("claude --name feature-77");
+    // A plain interactive session: no forced skip-permissions.
+    expect(cli).not.toContain("--dangerously-skip-permissions");
 
     // Exactly one terminal: a second one in the project checkout is the bug.
     expect(spawnShellMock).toHaveBeenCalledTimes(1);
     expect(useSessionStore.getState().sessions).toHaveLength(1);
   });
 
-  // Issue #98: a "Harvest now" launch rides the same pending-launch flow —
-  // the grid must arm the backend's journal-prompt injection BEFORE the CLI
-  // command is typed, so the gate is set ahead of claude's SessionStart hook.
-  it("arms the harvest triage before launching the CLI for a harvest claim", async () => {
-    usePendingLaunchStore.getState().request({
-      tabId: "tab-1",
-      mode: "Claude",
-      resumeSessionId: null,
-      workingDirOverride: "C:/proj",
-      branch: null,
-      customName: "harvest triage",
-      harvest: true,
-    });
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    await waitFor(() => expect(spawnShellMock).toHaveBeenCalled());
-    // The shell opens in the project's MAIN checkout (the override), no
-    // worktree derivation.
-    const [workingDir] = spawnShellMock.mock.calls[0];
-    expect(workingDir).toBe("C:/proj");
-
-    // Armed exactly once, with the launched session's id…
-    await waitFor(() => expect(harvestArmMock).toHaveBeenCalledTimes(1));
-    expect(harvestArmMock).toHaveBeenCalledWith(1);
-    // …and strictly before the CLI command went to the PTY.
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
-    expect(harvestArmMock.mock.invocationCallOrder[0]).toBeLessThan(
-      writeStdinMock.mock.invocationCallOrder[0],
-    );
-
-    // A plain interactive session: no forced skip-permissions.
-    const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).not.toContain("--dangerously-skip-permissions");
-    expect(spawnShellMock).toHaveBeenCalledTimes(1);
-  });
-
   // The generic "launch a terminal with a prompt" capability: any caller can
   // queue a launch carrying `initialPrompt`, and the grid must arm the
-  // backend's injection BEFORE the CLI command is typed — the same ordering
-  // the harvest arm above relies on.
+  // backend's injection BEFORE the CLI command is typed.
   it("arms the initial prompt before launching the CLI for a prompted claim", async () => {
     usePendingLaunchStore.getState().request({
       tabId: "tab-1",
@@ -284,8 +237,6 @@ describe("TerminalGrid pending launch", () => {
       writeStdinMock.mock.invocationCallOrder[0],
     );
 
-    // A plain interactive session — no harvest.
-    expect(harvestArmMock).not.toHaveBeenCalled();
     expect(spawnShellMock).toHaveBeenCalledTimes(1);
   });
 

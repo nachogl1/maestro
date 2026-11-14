@@ -2,16 +2,13 @@ import { useEffect, useMemo } from "react";
 import { useAgentNameSync } from "@/hooks/useAgentNameSync";
 import type { useWorkJournalCandidateTimer } from "@/hooks/useWorkJournalCandidateTimer";
 import { useWorkshopTimer } from "@/hooks/useWorkshopTimer";
-import { HEALTH_CHECK_INTERVAL_MS } from "@/lib/healthRules";
 import { useGitHubWatchdogStore, watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
-import { useHealthStore } from "@/stores/useHealthStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 
 /**
  * App-lifetime background polling, mounted once by `App`: the update
  * auto-check interval, the GitHub watchdog (snapshot listener + keeping the
- * Rust poller's project set in sync with `tabs`), the health checker, the
- * weekly Workshop `/insights` run and the Claude agent-name sync that keeps
+ * Rust poller's project set in sync with `tabs`), the weekly Workshop `/insights` run and the Claude agent-name sync that keeps
  * terminal titles on agent names. The Work Journal's own background work
  * lives in `WorkJournalBackgroundWork`, which runs only while the journal is
  * turned on.
@@ -55,22 +52,6 @@ export function useBackgroundPollers(
   useEffect(() => {
     void useGitHubWatchdogStore.getState().syncProjects(JSON.parse(watchedProjectsJson));
   }, [watchedProjectsJson]);
-
-  // Health checker: rule-based Samurai-file checks on a quiet interval.
-  // Independent of the open tabs, so nothing here restarts the interval.
-  // The first run is delayed rather than fired on mount so it does not
-  // compete with first paint and terminal spawn. The badge still populates
-  // long before the first interval tick, and first-run suppression via
-  // `baselineKeys` keeps the toast behaviour identical whenever it lands.
-  useEffect(() => {
-    const runCheck = () => void useHealthStore.getState().runCheck();
-    const firstRun = setTimeout(runCheck, 30_000);
-    const interval = setInterval(runCheck, HEALTH_CHECK_INTERVAL_MS);
-    return () => {
-      clearTimeout(firstRun);
-      clearInterval(interval);
-    };
-  }, []);
 
   useWorkshopTimer();
   useAgentNameSync();

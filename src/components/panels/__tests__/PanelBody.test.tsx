@@ -18,7 +18,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   ask: vi.fn(),
 }));
 
-// AuditSection subscribes to the samurai-audit-event stream on mount.
+// Panels subscribe to backend events on mount; happy-dom has no Tauri backend.
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
@@ -82,24 +82,6 @@ function mockInvoke() {
         return [];
       case "list_docker_containers":
         return { available: false, containers: [] };
-      case "samurai_audit_read":
-        return {
-          events: [
-            {
-              ts: "2026-08-06T12:00:00Z",
-              epic: "#36",
-              event: "SPAWN",
-              generation: 2,
-              session_id: 1,
-              details: { kind: "registered" },
-            },
-          ],
-          file_size_bytes: 128,
-        };
-      case "samurai_list_runs":
-        return [];
-      case "samurai_harvest_list":
-        return [];
       case "work_journal_ensure_pages":
         return {
           layout_version: 1,
@@ -114,38 +96,6 @@ function mockInvoke() {
           deleted_dates: [],
           last_auto_created_date: "2026-10-14",
           settings: {},
-        };
-      case "samurai_files_list":
-        return {
-          // Issue #140: the panel renders one card per run / PR review, so
-          // the entry's group must be in the listing for its row to appear.
-          groups: [
-            {
-              id: "run:000000000000:38",
-              kind: "RUN",
-              label: "Epic #38 — Samurai supervision",
-              refs: ["#38"],
-              project_path: "C:\\git\\maestro",
-              created_at: "2026-08-06T11:00:00Z",
-              is_live: false,
-              audit_rows: 0,
-              journal_entries: 0,
-            },
-          ],
-          entries: [
-            {
-              group_id: "run:000000000000:38",
-              kind: "HANDOFF",
-              path: "C:\\data\\worktrees\\maestro\\samurai-38\\.maestro\\handoffs\\38-gen2.md",
-              size_bytes: 4096,
-              modified_at: "2026-08-06T12:00:00Z",
-              project_path: "C:\\git\\maestro",
-              epic: "#38",
-              in_use: false,
-              has_live_session: false,
-              fire_at: null,
-            },
-          ],
         };
       default:
         return undefined;
@@ -200,20 +150,6 @@ describe("panel contents in the left icon strip (formerly the right-hand panel s
     // The old two-pane implementation is gone: no Preview toggle, no textarea.
     expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
     expect(document.querySelector("textarea")).toBeNull();
-  });
-
-  it("renders the Second Brain panel with the audit stream and the files section", async () => {
-    renderPanel("secondbrain");
-    expect(screen.getByText("Second Brain")).toBeInTheDocument();
-    // Audit on top: the absorbed AuditSection, behavior unchanged.
-    expect(screen.getByText("Samurai Audit")).toBeInTheDocument();
-    expect(await screen.findByText("SPAWN")).toBeInTheDocument();
-    expect(screen.getByText("gen-2")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Clear audit log" })).toBeInTheDocument();
-    // Files below: the inventory grouped by run / PR review (issue #140).
-    expect(screen.getByText("Files")).toBeInTheDocument();
-    expect(await screen.findByText("38-gen2.md")).toBeInTheDocument();
-    expect(screen.getByText("Epic #38 — Samurai supervision")).toBeInTheDocument();
   });
 
   it("renders the Work Journal panel on today's page", async () => {

@@ -1,6 +1,5 @@
 import {
   BookOpenCheck,
-  BrainCircuit,
   FolderTree,
   GitFork,
   Hammer,
@@ -14,7 +13,7 @@ import {
 import type { ComponentType } from "react";
 import { useWorkJournalButtonLabel } from "@/components/shared/WorkJournalSuggestionsBadge";
 import type { PanelId } from "@/stores/usePanelStripStore";
-import { SecondBrainBadge, WorkJournalBadge } from "./panelBadges";
+import { WorkJournalBadge } from "./panelBadges";
 
 /** A keyboard shortcut that toggles a panel: Alt+key or Mod (Ctrl / Cmd)+key. */
 export interface PanelShortcut {
@@ -81,13 +80,6 @@ export const PANELS: readonly PanelDefinition[] = [
     icon: Syringe,
     group: 1,
     shortcut: { modifier: "alt", digit: "4" },
-  },
-  {
-    id: "secondbrain",
-    title: "Second Brain",
-    icon: BrainCircuit,
-    group: 1,
-    Badge: SecondBrainBadge,
   },
   { id: "workshop", title: "Workshop", icon: Hammer, group: 1 },
   {

@@ -4,7 +4,6 @@ import { HistorySection } from "@/components/sidebar/HistorySection";
 import { InfraTab } from "@/components/sidebar/InfraTab";
 import { InjectorSection } from "@/components/sidebar/InjectorSection";
 import { InjectorTriggersSection } from "@/components/sidebar/InjectorTriggersSection";
-import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
 import { SettingsPanelContent } from "@/components/sidebar/Sidebar";
 import type { PanelId } from "@/stores/usePanelStripStore";
 import { GitPanelBody, type GitPanelProps } from "./GitPanel";
@@ -121,8 +120,6 @@ function PaddedPanelBody({ id, content }: { id: PanelId; content: PanelContentPr
           <InjectorTriggersSection />
         </>
       );
-    case "secondbrain":
-      return <SecondBrainSection />;
     default:
       return null;
   }

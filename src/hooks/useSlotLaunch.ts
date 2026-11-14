@@ -10,7 +10,6 @@ import {
   setSessionSkills,
   writeSessionPluginConfig,
 } from "@/lib/plugins";
-import { samuraiHarvestArm } from "@/lib/samurai";
 import {
   AI_CLI_CONFIG,
   assignSessionBranch,
@@ -373,28 +372,8 @@ export function useSlotLaunch({
                 agentName ?? undefined,
               );
 
-              // Harvest triage launch (issue #98): arm the backend BEFORE
-              // the CLI launches, so the journal-prompt injection gate is
-              // set strictly ahead of claude's SessionStart hook. Failure is
-              // logged, not fatal — the terminal still opens, just without
-              // the injected prompt.
-              if (slot.harvest) {
-                try {
-                  await samuraiHarvestArm(sessionId);
-                } catch (err) {
-                  // Surfaced, not just logged: the Journal card has already
-                  // told the user the entries will be injected here, so a
-                  // silent failure leaves them believing the journal was
-                  // triaged while the terminal sits at an empty prompt.
-                  console.error("[Harvest] Failed to arm the triage prompt:", err);
-                  setError(
-                    `Harvest triage prompt was not armed (${err instanceof Error ? err.message : String(err)}) — the journal entries were NOT injected`,
-                  );
-                }
-              }
-
-              // Generic initial prompt: same gate as harvest — arm the
-              // backend BEFORE the CLI launches so the injection is set
+              // Generic initial prompt: arm the backend BEFORE the CLI
+              // launches so the injection is set
               // strictly ahead of claude's SessionStart hook, which is what
               // types the prompt in. Claude only: no other CLI posts that
               // hook, so an armed non-Claude session would never inject.

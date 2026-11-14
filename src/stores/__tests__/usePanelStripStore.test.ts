@@ -95,6 +95,11 @@ describe("sanitizePanelStrip (saved state is untrusted)", () => {
       { openPanels: ["git"], widths: { git: 300 } },
     ],
     [
+      "the removed Second Brain panel",
+      { openPanels: ["secondbrain", "notes"], widths: { secondbrain: 500, notes: 300 } },
+      { openPanels: ["notes"], widths: { notes: 300 } },
+    ],
+    [
       "bad and out-of-range widths",
       {
         openPanels: [],
