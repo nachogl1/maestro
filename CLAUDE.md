@@ -56,12 +56,15 @@ src-tauri/                    # Tauri Rust backend
 ## Boundaries
 
 - Deploys to: GitHub Releases on the fork `nachogl1/maestro`, from `main` (`.github/workflows/release.yml` builds a
-  signed installer per push to `main`; the app self-updates from those releases).
+  signed installer per push to `main`; the app self-updates from those releases), and GitHub Pages, built from
+  `main` (`.github/workflows/pages.yml` publishes the `website/` site at `https://nachogl1.github.io/maestro/`
+  when `website/` changes; approved by the maintainer on issue #484, the public page decision).
 - External read-only repositories: the upstream `its-maestro-baby/maestro` (work-item key format: GitHub issue
   numbers). Never open a pull request or push there; every pull request targets `nachogl1/maestro`.
 - Sensitive data classes that never enter the repository: Claude session transcripts and app data, API keys, tokens
   and the updater signing key, Granola meeting content, Work Journal entries, and anything carrying a person's name
-  or email.
+  or email, except an author credit that person chose to publish (such as the public site's footer, "Created by
+  Jack, adapted by Ignacio Gonzalez").
 - Boundaries an agent must not move: Maestro edits the user's real Claude Code configuration files when it manages
   MCP servers; never widen what it writes there without a ticket.
 - Working language for code, comments, commits, issues and docs: English.

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maestro: one screen for every AI coding session</title>
+    <meta name="description" content="{{ site.description }}" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0d0d10" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 26 26%27%3E%3Crect x=%271%27 y=%273%27 width=%2711%27 height=%278%27 rx=%272%27 fill=%27%236366f1%27/%3E%3Crect x=%2714%27 y=%273%27 width=%2711%27 height=%278%27 rx=%272%27 fill=%27%23bc8cff%27/%3E%3Crect x=%271%27 y=%2715%27 width=%2711%27 height=%278%27 rx=%272%27 fill=%27%23bc8cff%27/%3E%3Crect x=%2714%27 y=%2715%27 width=%2711%27 height=%278%27 rx=%272%27 fill=%27%23ff1a3a%27/%3E%3C/svg%3E" />
+    <link rel="canonical" href="{{ page.url | absolute_url }}" />
+    {% include head_custom.html %}
+    <link rel="stylesheet" href="{{ '/assets/css/landing.css' | relative_url }}" />
+    <script type="module" src="{{ '/assets/js/hero.js' | relative_url }}"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="topbar">
+      <div class="wrap">
+        <a class="brand" href="{{ '/' | relative_url }}">
+          <svg class="brand-mark" viewBox="0 0 26 26" aria-hidden="true">
+            <rect x="1" y="3" width="11" height="8" rx="2" fill="none" stroke="#6366f1" stroke-width="1.6" />
+            <rect x="14" y="3" width="11" height="8" rx="2" fill="none" stroke="#bc8cff" stroke-width="1.6" />
+            <rect x="1" y="15" width="11" height="8" rx="2" fill="none" stroke="#bc8cff" stroke-width="1.6" />
+            <rect x="14" y="15" width="11" height="8" rx="2" fill="#ff1a3a" />
+          </svg>
+          Maestro
+        </a>
+        <nav class="topnav" aria-label="Site">
+          <a href="{% link features.md %}">Features</a>
+          <a href="{% link installation.md %}">Installation</a>
+          <a class="optional" href="{% link troubleshooting.md %}">Troubleshooting</a>
+          <a href="{{ site.repository_url }}">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      {{ content }}
+    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        {% include credit.html %}
+        <nav aria-label="Footer">
+          <a href="{% link installation.md %}">Installation</a>
+          <a href="{% link features.md %}">Features</a>
+          <a href="{% link troubleshooting.md %}">Troubleshooting</a>
+          <a href="{{ site.repository_url }}">Source code</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

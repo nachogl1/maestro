@@ -1,10 +1,14 @@
 title: Maestro
-description: Orchestrate multiple AI coding assistants in parallel
+description: One screen for every AI coding session you run, and a nudge when one of them needs you.
 theme: just-the-docs
-url: "https://its-maestro-baby.github.io"
+url: "https://nachogl1.github.io"
 baseurl: "/maestro"
 
-logo: "/maestro/assets/images/banner.jpg"
+logo: "/assets/images/banner.jpg"
+
+# Links the Home page and the docs pages share.
+repository_url: "https://github.com/nachogl1/maestro"
+releases_url: "https://github.com/nachogl1/maestro/releases/latest"
 
 search_enabled: true
 search.heading_level: 3
@@ -12,14 +16,11 @@ search.heading_level: 3
 heading_anchors: true
 
 aux_links:
-  GitHub: "https://github.com/its-maestro-baby/maestro"
-  Discord: "https://discord.gg/3tQyFUYPVP"
+  GitHub: "https://github.com/nachogl1/maestro"
 
 aux_links_new_tab: true
 
 nav_sort: case_insensitive
-
-footer_content: 'Built with love by Jack. Licensed under <a href="https://github.com/its-maestro-baby/maestro/blob/main/LICENSE">MIT</a>.'
 
 color_scheme: dark
 
@@ -33,3 +34,11 @@ callouts:
   tip:
     title: Tip
     color: green
+
+# Build-only files that must never be published.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - _vendor/
+  - vendor/
+  - .bundle/

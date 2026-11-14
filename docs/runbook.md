@@ -664,3 +664,30 @@ A scratch project is a plain folder (not a git repository) for work that belongs
   mark is removed as the list is read, so a later start never brings them back unasked again; the start after a
   normal close shows nothing.
 - The real update path (installer, relaunch) needs a released build; the first real update is its live check.
+
+## Public page: the website on GitHub Pages
+
+Maestro's public page is <https://nachogl1.github.io/maestro/>. It is the only place with the install steps; the
+README links to it.
+
+- **Four pages:** Home (what Maestro does, screenshots, download buttons for the latest release), Installation
+  (Windows `.msi`, macOS `.dmg` with the first-launch quarantine step, Linux build from source), Features and
+  Troubleshooting. The footer of every page reads "Created by Jack, adapted by Ignacio Gonzalez" with the MIT
+  licence link.
+- **Home page animation:** a three.js scene of terminal tiles that gather into a grid behind the headline. With
+  "reduce motion" set in the operating system it shows one still frame; without JavaScript or WebGL the page shows a
+  plain background and all its content.
+- **Where it lives:** the Jekyll site in `website/`. The screenshots are in `website/assets/images/screenshots/`;
+  the three.js file the Home page loads is `website/assets/js/vendor/three.min.js`, rebuilt with the command at the
+  top of `website/_vendor/three-entry.js`.
+- **Publishing:** the "Public page" workflow (`.github/workflows/pages.yml`) builds the site on every pull request
+  that touches `website/`, and deploys it when such a change reaches `main`. It can also be run by hand from the
+  Actions tab on `main`. It needs GitHub Actions turned on for the repository.
+- **Build it locally** (Docker, no Ruby needed), from the repository root:
+
+  ```bash
+  docker run --rm -v "$PWD/website:/srv/site" -w /srv/site ruby:3.3 \
+    bash -c "bundle install && bundle exec jekyll build"
+  ```
+
+  The result is in `website/_site/`, built for the `/maestro` base path.

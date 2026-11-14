@@ -11,7 +11,16 @@
     "lineWidth": 100
   },
   "files": {
-    "includes": ["**/*", "!**/node_modules", "!**/dist", "!**/target", "!**/src-tauri/gen"]
+    "includes": [
+      "**/*",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/target",
+      "!**/src-tauri/gen",
+      "!**/website/assets/js/vendor",
+      "!**/website/_layouts",
+      "!**/website/_includes"
+    ]
   },
   "linter": {
     "enabled": true,
