@@ -51,7 +51,6 @@
   .row.gone .what { color: var(--orange); }
   .tag { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-size: 10px; color: var(--muted); }
   .tag.parked { color: var(--purple); border-color: rgba(188,140,255,.5); }
-  .samurai { margin: 10px 0 0; padding: 6px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
   .dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; }
   .btn { border-radius: 5px; padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: none; color: var(--text); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
@@ -77,7 +76,6 @@
       <li><b>Offer:</b> shown once, on the first start after an unexpected stop. Title carries the day and time of the stop. Every terminal is ticked; one tick box at the top ticks or unticks all.</li>
       <li>Rows are grouped by project, in the order the terminals had. Each row: name, kind (Claude or Shell), "was parked" when it was on the shelf, and at the right what comes back.</li>
       <li>A terminal whose folder is gone is greyed, with the reason, and cannot be ticked.</li>
-      <li>Samurai terminals are not listed; one line under the list points to the Launch panel.</li>
       <li><b>Bring back N</b> counts the ticks and is disabled at zero. <b>Don't bring back</b>, the × and Esc all end the offer for good.</li>
       <li><b>Brought back:</b> Claude terminals continue their conversation and show no warning. A plain shell, or a Claude terminal whose conversation is gone, shows an amber line under its header until its × is clicked.</li>
       <li>Terminals that were parked return to the shelf with the red "needs you" border and dot.</li>
@@ -103,7 +101,6 @@
         <div class="body">
           <label class="all"><input type="checkbox" id="all" checked> <span id="all-label"></span></label>
           <div id="rows"></div>
-          <div class="samurai">1 Samurai run is not listed here. Recover it from the Launch panel.</div>
         </div>
         <footer>
           <button type="button" class="btn" id="decline">Don't bring back</button>

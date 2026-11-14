@@ -182,8 +182,6 @@ const PANELS = [
   { id: "notes",       title: "Notes",        icon: "sticky-note",     w: 340 },
   { id: "workjournal", title: "Work Journal", icon: "book-open-check", w: 360 },
   { id: "inject",      title: "Injector",     icon: "syringe",         w: 340 },
-  { id: "launch",      title: "Launch",       icon: "rocket",          w: 320 },
-  { id: "secondbrain", title: "Second Brain", icon: "brain-circuit",   w: 320 },
   { id: "workshop",    title: "Workshop",     icon: "hammer",          w: 320 },
   { id: "sep" },
   { id: "infra",       title: "Infra",        icon: "package",         w: 300 },
@@ -215,16 +213,11 @@ const CONTENT = {
   inject: () => `<div class="lbl">Triggers</div>
     <div class="card"><div class="row"><b class="grow">Compact at 80%</b><span class="sw on"></span></div><div class="muted">At 80% context, send <span class="mono">/compact</span> to only that terminal</div><div class="row"><span class="chip" style="background:var(--card);color:var(--text);border:1px solid var(--border)">All terminals</span></div></div>
     <div class="card"><div class="row"><b class="grow">Summarise at 60%</b><span class="sw"></span></div><div class="muted">Watches 2 terminals</div></div>`,
-  launch: () => `<div class="lbl">Samurai runs</div>
-    <div class="card"><div class="row"><span class="dot" style="background:var(--blue)"></span><b class="grow">dev-next · checkout-api</b></div><div class="muted">Started 14:02 · reviewing</div></div>
-    <div class="card"><div class="row"><span class="dot" style="background:var(--green)"></span><b class="grow">dev-next · faq-page</b></div><div class="muted">Merged 11:58</div></div>`,
-  secondbrain: () => `<div class="lbl">Managed files</div>
-    ${["CLAUDE.md", "skills/review.md", "skills/release.md", "agents/tester.md"].map((f) => `<div class="row"><i data-lucide="file-text"></i><span class="grow mono">${f}</span><span class="muted">synced</span></div>`).join("")}`,
   workshop: () => `<div class="lbl">Workshop</div><div class="card">Draft a skill or agent here, then try it on a terminal before you save it.</div>`,
   infra: () => `<div class="lbl">MCP servers</div>
     ${[["github", true], ["sentry", true], ["maestro-status", true], ["notion", false]].map(([n, on]) => `<div class="row"><span class="dot" style="background:${on ? "var(--green)" : "var(--muted)"}"></span><span class="grow">${n}</span><span class="sw ${on ? "on" : ""}"></span></div>`).join("")}
     <div class="lbl" style="margin-top:6px">Plugins</div><div class="row"><span class="grow">stripe</span><span class="sw on"></span></div>`,
-  settings: () => `${[["Theme", "Dark"], ["Parking", "On"], ["Work Journal", "On"], ["Second Brain", "On"], ["Updates", "Automatic"]]
+  settings: () => `${[["Theme", "Dark"], ["Parking", "On"], ["Work Journal", "On"],["Updates", "Automatic"]]
       .map(([k, v]) => `<div class="card row"><span class="grow">${k}</span><span class="muted">${v}</span></div>`).join("")}`,
 };
 
