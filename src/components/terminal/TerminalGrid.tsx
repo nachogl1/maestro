@@ -2250,9 +2250,13 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
             </div>
           );
         })()}
+      {/* While zoomed, the area clips everything inside it, so no part of the
+          zoomed terminal can paint over the parked strip below (issue #551). */}
       <div
         className={
-          flatLayout ? "contents" : `relative flex min-h-0 flex-1 ${zoomActive ? "p-2" : ""}`
+          flatLayout
+            ? "contents"
+            : `relative flex min-h-0 flex-1 ${zoomActive ? "overflow-hidden p-2" : ""}`
         }
       >
         <SplitPaneView
