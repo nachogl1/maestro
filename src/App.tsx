@@ -30,9 +30,9 @@ import {
   type MultiProjectViewHandle,
 } from "./components/shared/MultiProjectView";
 import { NotificationToasts } from "./components/shared/NotificationToasts";
-import { SamuraiCleanupNotice } from "./components/shared/SamuraiCleanupNotice";
 import { ParticleEffectsLayer } from "./components/shared/ParticleEffectsLayer";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
+import { SamuraiCleanupNotice } from "./components/shared/SamuraiCleanupNotice";
 import { type EagleProjectOption, TopBar } from "./components/shared/TopBar";
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
 import { AutoUpdateQuestion } from "./components/update/AutoUpdateQuestion";

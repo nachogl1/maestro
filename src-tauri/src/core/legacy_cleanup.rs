@@ -299,11 +299,17 @@ async fn clean_up_worktree(record: &RunRecord, pr_review_paths: &[String]) -> Op
     // No `--force`: git refuses a worktree that is dirty or locked.
     match project.worktree_remove(&worktree, false).await {
         Ok(()) => {
-            log::info!("samurai cleanup: removed merged run worktree {}", worktree.display());
+            log::info!(
+                "samurai cleanup: removed merged run worktree {}",
+                worktree.display()
+            );
             None
         }
         Err(e) => {
-            log::warn!("samurai cleanup: could not remove {}: {e}", worktree.display());
+            log::warn!(
+                "samurai cleanup: could not remove {}: {e}",
+                worktree.display()
+            );
             Some(reasons(&[KeepReason::RemoveFailed]))
         }
     }
@@ -340,7 +346,12 @@ async fn is_on_default_branch(project: &Git, head: &str) -> Result<bool, ()> {
 /// else `master`; as a local branch and as `origin`'s, whichever exist.
 async fn default_branch_refs(project: &Git) -> Vec<String> {
     let from_origin = project
-        .run(&["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+        .run(&[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
         .await
         .ok()
         .and_then(|out| out.trimmed().strip_prefix("origin/").map(str::to_string));
@@ -377,7 +388,8 @@ async fn ref_exists(project: &Git, reference: &str) -> bool {
 
 /// Removes `<project>/.maestro/handoffs/` unless a link is on the way.
 fn remove_handoffs(project: &Path) {
-    let maestro = PathBuf::from(strip_extended_length(&project.to_string_lossy())).join(MAESTRO_DIR);
+    let maestro =
+        PathBuf::from(strip_extended_length(&project.to_string_lossy())).join(MAESTRO_DIR);
     match std::fs::symlink_metadata(&maestro) {
         Ok(meta) if meta.is_dir() && !is_link(&meta) => remove_tree(&maestro.join(HANDOFFS_DIR)),
         Ok(_) => log::warn!(
@@ -601,7 +613,12 @@ mod tests {
         let project = projects.path().join("app");
         let d = data.path();
         let record_dir = d.join("runs").join("app-0123456789ab");
-        run_record(&record_dir, "37", &project, &projects.path().join("gone-wt"));
+        run_record(
+            &record_dir,
+            "37",
+            &project,
+            &projects.path().join("gone-wt"),
+        );
         for file in [
             "audit/app-0123456789ab.jsonl",
             "journal/journal.jsonl",
@@ -615,7 +632,11 @@ mod tests {
         ] {
             write(&d.join(file), "x");
         }
-        for file in ["samurai-config.json", "samurai-workflow.json", "maestro-0123456789ab.json"] {
+        for file in [
+            "samurai-config.json",
+            "samurai-workflow.json",
+            "maestro-0123456789ab.json",
+        ] {
             write(&settings.path().join(file), "{}");
         }
         write(&project.join(".maestro/handoffs/37-gen2.md"), "handoff");
@@ -624,7 +645,13 @@ mod tests {
         let kept = run_once(&roots(&data, &settings)).await;
 
         assert!(kept.is_empty());
-        for gone in ["audit", "journal", "harvest", "samurai", "runs/app-0123456789ab"] {
+        for gone in [
+            "audit",
+            "journal",
+            "harvest",
+            "samurai",
+            "runs/app-0123456789ab",
+        ] {
             assert!(!d.join(gone).exists(), "{gone} should be deleted");
         }
         for stays in [
@@ -664,7 +691,10 @@ mod tests {
         let mut kept = run_once(&roots(&data, &settings)).await;
         kept.sort_by(|a, b| a.path.cmp(&b.path));
 
-        assert!(!wt("merged").exists(), "the merged clean worktree is removed");
+        assert!(
+            !wt("merged").exists(),
+            "the merged clean worktree is removed"
+        );
         assert!(wt("unmerged").join("work.txt").exists());
         assert!(wt("dirty").join("draft.txt").exists());
         assert_eq!(
@@ -708,7 +738,12 @@ mod tests {
         let worktree = root.path().join("plain-wt");
         std::fs::create_dir_all(&not_a_repo).unwrap();
         write(&worktree.join("file.txt"), "x");
-        run_record(&d.join("runs/plain-0123456789ab"), "1", &not_a_repo, &worktree);
+        run_record(
+            &d.join("runs/plain-0123456789ab"),
+            "1",
+            &not_a_repo,
+            &worktree,
+        );
         write(&d.join("audit/a.jsonl"), "x");
         write(&d.join("samurai/latches.json"), "{}");
 
@@ -716,7 +751,10 @@ mod tests {
 
         assert!(d.join("samurai/schedule.json/inner").exists());
         assert!(worktree.join("file.txt").exists());
-        assert_eq!(kept[0].reasons, vec!["could not be checked with git".to_string()]);
+        assert_eq!(
+            kept[0].reasons,
+            vec!["could not be checked with git".to_string()]
+        );
         assert!(!d.join("audit").exists());
         assert!(!d.join("samurai/latches.json").exists());
         assert!(d.join(MARKER_FILE).exists());
