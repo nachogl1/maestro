@@ -375,6 +375,8 @@ When a terminal needs you, Maestro tells you in three ways:
 - **Alt+U** again, or **Esc**, leaves the strip and puts the cursor back where it was before. While a terminal is
   zoomed, each restored terminal takes over the zoom, so leaving puts the cursor in the last one restored.
 - Restoring the last pill leaves the strip and puts the cursor in that terminal, the same as clicking it.
+- **While a terminal is zoomed**, the parked strip stays visible below it: the zoomed terminal ends above the
+  strip and never covers a pill. The strip still scrolls sideways, with no scroll bar showing.
 
 ## Parking: which notifications bring a parked terminal back
 
