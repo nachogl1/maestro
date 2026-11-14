@@ -1,4 +1,4 @@
-import { normalizePath } from "@/lib/path";
+import { normalizePath, samePath } from "@/lib/path";
 
 /** Month names as the default scratch name spells them. */
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -34,4 +34,18 @@ export function isScratchPath(path: string, scratchFolder: string | null): boole
   const cut = child.lastIndexOf("/");
   if (cut <= 0) return false;
   return child.slice(0, cut) === normalizePath(scratchFolder);
+}
+
+/**
+ * True when `path` is a scratch project Maestro made: a direct subfolder of the
+ * scratch folder that the backend listed. The backend lists only folders that
+ * carry Maestro's marker file, so a real folder that happens to sit in the
+ * scratch folder never counts.
+ */
+export function isScratchProject(
+  path: string,
+  scratchFolder: string | null,
+  listed: ReadonlyArray<{ path: string }>,
+): boolean {
+  return isScratchPath(path, scratchFolder) && listed.some((p) => samePath(p.path, path));
 }

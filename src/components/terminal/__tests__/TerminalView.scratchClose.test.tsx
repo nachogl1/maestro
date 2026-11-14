@@ -86,7 +86,12 @@ async function closeTerminal(sessionId: number): Promise<void> {
 
 describe("TerminalView close on a scratch project", () => {
   beforeEach(() => {
-    useScratchStore.setState({ folder: FOLDER, question: null, error: null });
+    useScratchStore.setState({
+      folder: FOLDER,
+      projects: [{ name: "demo", path: `${FOLDER}/demo`, createdAtMs: 1 }],
+      question: null,
+      error: null,
+    });
   });
   afterEach(cleanup);
 

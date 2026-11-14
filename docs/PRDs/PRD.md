@@ -275,6 +275,9 @@ are in `docs/ux/prototypes/` and are the layout to build.
 - The pill lists every scratch folder with its age; a click opens it, a bin deletes it after a Yes / No.
 - Delete removes the folder only; Claude Code's records and History rows stay, no longer resumable
   ([Scratch projects](https://github.com/nachogl1/maestro/issues/586)).
+- A folder counts as a scratch project only when Maestro created it and it carries Maestro's hidden marker file;
+  any other folder in the scratch folder is never listed, marked, asked about or deleted
+  ([marker file](https://github.com/nachogl1/maestro/issues/604)).
 
 ### 4.11 Conclave
 
