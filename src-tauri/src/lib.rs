@@ -36,6 +36,39 @@ use core::ProcessManager;
 /// second click cannot start a second save and destroy.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// The app menu's Quit item. A custom item instead of the predefined one: the
+/// predefined Quit ends the app without the main window's CloseRequested, so
+/// it skipped the quit confirmation and left the open-terminals list behind
+/// (the next start would have offered to bring back terminals after a normal
+/// quit). This one asks the main window to close, which runs that handler.
+const QUIT_MENU_ID: &str = "quit-maestro";
+
+/// The Quit item's shortcut: Cmd+Q on macOS only — elsewhere Ctrl+Q belongs
+/// to the terminals.
+#[cfg(target_os = "macos")]
+const QUIT_ACCELERATOR: Option<&str> = Some("Cmd+Q");
+#[cfg(not(target_os = "macos"))]
+const QUIT_ACCELERATOR: Option<&str> = None;
+
+/// Commits the quit: from here on it is a normal close, so the list of open
+/// terminals is removed and the next start offers nothing (issue #608).
+/// Returns false when a quit is already under way.
+fn commit_quit() -> bool {
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    crate::core::open_terminals::forget_on_normal_close();
+    true
+}
+
+/// The quit failed after it was committed: let the user try again, and keep
+/// saving the open-terminals list while the app runs on.
+fn undo_quit() {
+    QUITTING.store(false, Ordering::SeqCst);
+    crate::core::open_terminals::reopen_after_failed_close();
+    crate::core::work_journal_run::reopen_runs();
+}
+
 /// Entry point for the Tauri application.
 ///
 /// Registers plugins (store, dialog), injects shared state (ProcessManager,
@@ -135,6 +168,8 @@ pub fn run() {
     builder
         .menu(|handle| {
             // App submenu (macOS standard items)
+            let quit =
+                MenuItem::with_id(handle, QUIT_MENU_ID, "Quit Maestro", true, QUIT_ACCELERATOR)?;
             let app_menu = SubmenuBuilder::new(handle, "Maestro")
                 .about(None)
                 .separator()
@@ -144,7 +179,7 @@ pub fn run() {
                 .hide_others()
                 .show_all()
                 .separator()
-                .quit()
+                .item(&quit)
                 .build()?;
 
             // Edit submenu
@@ -198,15 +233,26 @@ pub fn run() {
                         log::error!("Failed to emit terminal-zoom event: {}", e);
                     }
                 }
+                QUIT_MENU_ID => {
+                    // Same path as the close button: CloseRequested below.
+                    match app.get_webview_window("main") {
+                        Some(main) => {
+                            if let Err(e) = main.close() {
+                                log::error!("Failed to close the main window on Quit: {e}");
+                            }
+                        }
+                        None => app.exit(0),
+                    }
+                }
                 _ => {}
             }
         })
         .on_window_event(|window, event| {
             // Confirm before quitting while terminals are still running.
             // CloseRequested fires for the custom titlebar close button,
-            // Alt+F4, and taskbar close; with zero terminals the window
-            // closes silently. (The macOS app-menu Quit item bypasses
-            // CloseRequested entirely — known gap.)
+            // Alt+F4, taskbar close and the app menu's Quit item (which
+            // closes this window); with zero terminals the window closes
+            // silently.
             // Only the main window quits the app; secondary windows (the
             // issue map) close silently and go away with the main one.
             if window.label() != "main" {
@@ -230,7 +276,7 @@ pub fn run() {
                     // Work journal: save the text still waiting in its windows
                     // first; destroying them skips their own close-time save.
                     api.prevent_close();
-                    if QUITTING.swap(true, Ordering::SeqCst) {
+                    if !commit_quit() {
                         return;
                     }
                     let win = window.clone();
@@ -244,8 +290,7 @@ pub fn run() {
                         if let Err(e) = win.destroy() {
                             log::error!("Failed to destroy window during quit: {e}");
                             // Let the user try again rather than ignore every later close.
-                            QUITTING.store(false, Ordering::SeqCst);
-                            crate::core::work_journal_run::reopen_runs();
+                            undo_quit();
                         }
                     });
                     return;
@@ -264,7 +309,7 @@ pub fn run() {
                     .show(move |confirmed| {
                         // Cancel leaves the flag clear; a second confirmed
                         // dialog does nothing once quitting has started.
-                        if !confirmed || QUITTING.swap(true, Ordering::SeqCst) {
+                        if !confirmed || !commit_quit() {
                             return;
                         }
                         let manager = win.state::<ProcessManager>().inner().clone();
@@ -288,8 +333,7 @@ pub fn run() {
                             if let Err(e) = win.destroy() {
                                 log::error!("Failed to destroy window during quit: {e}");
                                 // Let the user try again rather than ignore every later close.
-                                QUITTING.store(false, Ordering::SeqCst);
-                                crate::core::work_journal_run::reopen_runs();
+                                undo_quit();
                             }
                         });
                     });
@@ -551,6 +595,10 @@ pub fn run() {
             commands::trigger_history::load_trigger_history,
             commands::trigger_history::append_trigger_history,
             commands::trigger_history::clear_trigger_history,
+            // Crash recovery: the saved list of open terminals (issue #608)
+            core::open_terminals::open_terminals_save,
+            core::open_terminals::open_terminals_load,
+            core::open_terminals::open_terminals_clear,
             commands::terminal::terminal_shell_family,
             // CLI commands
             commands::cli::install_cli,

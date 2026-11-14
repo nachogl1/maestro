@@ -563,3 +563,27 @@ A scratch project is a plain folder (not a git repository) for work that belongs
   scratch project, so it won't delete it."). So pointing the scratch folder at a folder full of real work is safe.
 - Delete removes only the folder. Claude Code's own conversation records and Maestro's History rows stay, but
   those rows can no longer be resumed.
+
+## Crash recovery: bringing terminals back after an unexpected stop
+
+- While Maestro runs it keeps a list of the open terminals in its own app data (`open-terminals/open-terminals.json`
+  under Maestro's data folder, never in a project): project, order, name, pin, kind, folder, parked or not, whether
+  a Samurai run owns it, and a Claude terminal's conversation id. It changes whenever one of these does, and is
+  saved again every minute while terminals are open so its time stays close to a stop.
+- **A normal close removes the list:** the close button, Alt+F4, the taskbar close and the macOS **Quit Maestro**
+  menu item (Cmd+Q), which now goes through the same quit question as the close button. A list found on start
+  therefore means Maestro stopped unexpectedly (a crash, running out of memory, a power cut, Windows shutting down
+  or logging off, a kill from Task Manager). A first start or a start after a normal close offers nothing.
+- **The offer:** "Maestro stopped unexpectedly", with the day and time of the last save. Every terminal is ticked
+  and grouped by project in its order; the top box ticks or unticks all and shows "N of M selected". Each row shows
+  the name, Claude or Shell, "was parked", and what comes back. A terminal whose folder is gone is greyed with
+  "folder no longer exists" and cannot be ticked. Samurai terminals are not listed; one line counts them (they
+  recover from the Launch panel).
+- **Don't bring back**, the × and Esc remove the list for good; the Claude conversations stay in the History panel.
+- **Bring back N** reopens the ticked terminals in their project, in order, with their name and pin, in their
+  folder. A Claude terminal continues its conversation (resumed from its own folder, as History does); one whose
+  conversation is not found opens as a new Claude session. A plain shell reopens empty.
+- A plain shell, and a Claude terminal whose conversation was not found, shows an amber line under its header —
+  "Brought back after Maestro stopped. Its earlier content could not be retrieved." — until its × is clicked.
+- Terminals that were parked go back on the parked shelf with the "needs you" signal. Nothing is sent to any agent.
+- Not restored: eagle tile places and sizes, zoom and focus. "Order" is the order the project opened its terminals.

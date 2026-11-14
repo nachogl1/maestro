@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `Plain` is a raw terminal with no AI agent attached, useful for
 /// manual shell work within a worktree.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AiMode {
     Claude,
     Plain,

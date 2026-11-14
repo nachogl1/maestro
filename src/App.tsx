@@ -20,6 +20,7 @@ import { ConclaveDialog } from "./components/conclave/ConclaveDialog";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
 import { LeftPanels } from "./components/panels/LeftPanels";
 import { openPanelInWindow, togglePanelInWindow } from "./components/panels/panelLayout";
+import { CrashRecoveryDialog } from "./components/recovery/CrashRecoveryDialog";
 import { ScratchDeleteOrKeepDialog } from "./components/scratch/ScratchDeleteOrKeepDialog";
 import { BottomBar } from "./components/shared/BottomBar";
 import { EagleProjectPickerModal } from "./components/shared/EagleProjectPickerModal";
@@ -626,6 +627,7 @@ function App() {
 
       {/* Alt+C: ask the ticked agents to coordinate */}
       {conclaveOpen && <ConclaveDialog onClose={() => setConclaveOpen(false)} />}
+      <CrashRecoveryDialog />
 
       {/* Scratch project: delete its files or keep them */}
       <ScratchDeleteOrKeepDialog />
