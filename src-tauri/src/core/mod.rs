@@ -60,6 +60,7 @@ pub mod work_journal_markdown;
 pub mod work_journal_quit;
 pub mod work_journal_report;
 pub mod work_journal_run;
+pub mod work_journal_spelling;
 pub mod workshop;
 pub mod worktree_manager;
 

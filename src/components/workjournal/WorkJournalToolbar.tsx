@@ -11,6 +11,7 @@ import {
   List,
   ListChecks,
   ListOrdered,
+  SpellCheck,
   Strikethrough,
   Underline,
 } from "lucide-react";
@@ -49,6 +50,20 @@ export const WORK_JOURNAL_HIGHLIGHT_COLORS: WorkJournalSwatch[] = [
   { name: "Grey", value: "rgba(156, 163, 175, 0.35)" },
 ];
 
+/** The spelling fixer's tooltip, with its shortcut. */
+export const FIX_SPELLING_TITLE =
+  "Fix spelling and grammar (selection, or the whole page)  Ctrl+Shift+F";
+
+/** The spelling fixer as the toolbar shows it. */
+export interface WorkJournalSpellingState {
+  /** A fix is running: the icon spins and the page is locked. */
+  running: boolean;
+  /** The result line under the toolbar, if any. */
+  note: { text: string; failed: boolean; fading: boolean } | null;
+  /** Starts a fix of the selection, or of the whole page. */
+  onFix: () => void;
+}
+
 /** Which option row is open under the toolbar, if any. */
 type WorkJournalToolbarRow = "color" | "highlight" | "link";
 
@@ -75,6 +90,8 @@ interface WorkJournalToolbarProps {
    * replacing the journal). TipTap runs commands even on a read-only editor.
    */
   disabled?: boolean;
+  /** The spelling fixer's icon and result line. */
+  spelling: WorkJournalSpellingState;
 }
 
 /**
@@ -82,9 +99,14 @@ interface WorkJournalToolbarProps {
  * strike, headings, bullet, numbered and tick-box lists, links, and text
  * colour and highlight on the selection. No font family or size controls.
  * Colour, highlight and link options open in a row under the buttons.
- * "+ Add entry" at the right end adds an empty hand-made entry card.
+ * "+ Add entry" at the right end adds an empty hand-made entry card; the
+ * spelling fixer's icon sits just left of it, its result line under the row.
  */
-export function WorkJournalToolbar({ editor, disabled = false }: WorkJournalToolbarProps) {
+export function WorkJournalToolbar({
+  editor,
+  disabled = false,
+  spelling,
+}: WorkJournalToolbarProps) {
   const state = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -309,14 +331,36 @@ export function WorkJournalToolbar({ editor, disabled = false }: WorkJournalTool
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()}
+          onClick={spelling.onFix}
+          disabled={disabled}
+          aria-label="Fix spelling and grammar"
+          aria-busy={spelling.running}
+          title={FIX_SPELLING_TITLE}
+          className={`${TOOL_BUTTON} ml-auto mr-1 disabled:cursor-not-allowed disabled:opacity-40`}
+        >
+          <SpellCheck size={14} className={spelling.running ? "animate-spin" : undefined} />
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={addEntry}
           disabled={disabled}
           title="Add an empty entry at the end of the page"
-          className="ml-auto rounded border border-maestro-accent/50 px-2 py-0.5 text-[11px] font-semibold text-maestro-accent transition-colors hover:bg-maestro-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded border border-maestro-accent/50 px-2 py-0.5 text-[11px] font-semibold text-maestro-accent transition-colors hover:bg-maestro-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
         >
           + Add entry
         </button>
       </div>
+
+      {spelling.note && (
+        <output
+          className={`block px-3 pb-1 text-[11px] transition-opacity duration-700 ${
+            spelling.note.failed ? "text-maestro-red" : "text-maestro-muted"
+          } ${spelling.note.fading ? "opacity-0" : "opacity-100"}`}
+        >
+          {spelling.note.text}
+        </output>
+      )}
 
       {row === "color" && (
         <SwatchRow

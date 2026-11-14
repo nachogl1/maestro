@@ -291,6 +291,20 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
 - The cross deletes a card at once, with no question; Ctrl+Z brings it back.
 - Pages written before cards keep their plain `HH:MM - ...` lines exactly as they were.
 
+## Work Journal: the spelling fixer
+
+- The spell-check icon sits just left of **+ Add entry** in the formatting toolbar; **Ctrl+Shift+F** in the page does
+  the same. Its tooltip reads "Fix spelling and grammar (selection, or the whole page)  Ctrl+Shift+F".
+- With text selected only the selection is fixed; with nothing selected the whole day page is, cards and free notes.
+- Claude fixes spelling, grammar and punctuation in each text's own language, never translating, and keeps your
+  quick-note style. It uses your own Claude CLI and the Work Journal model setting, like the suggestions and the report.
+- Times, numbers, links, inline code, a card's project and the card's colon are never changed, so the bold part of a
+  card still ends at the first colon. A card's time, project chip and source tag are never sent.
+- While it runs the page cannot be edited and the icon spins. The fix lands all at once: one **Ctrl+Z** puts the page
+  back as it was.
+- A short line under the toolbar then says `N fixes made`, or `Not fixed:` and why (Claude Code not installed, no
+  network, Claude's own error, or the page changed meanwhile), and fades. A failure changes nothing.
+
 ## Work Journal suggestions: one summary per project per day
 
 - Each project gets one entry per day, built from all its work (commits, pull requests, issues, Claude sessions and

@@ -31,6 +31,7 @@ use crate::core::work_journal_activity::{
 };
 use crate::core::work_journal_report::{self, ReportError, ReportResult};
 use crate::core::work_journal_run::{self, CandidatesAdded, RunReport};
+use crate::core::work_journal_spelling;
 
 /// Serialises load-change-save cycles so two commands never interleave and
 /// lose a write.
@@ -916,6 +917,19 @@ pub async fn work_journal_generate_report(
         .await
         .map(report_outcome)
         .or_else(report_error_outcome)
+}
+
+/// Fixes the spelling, grammar and punctuation of `texts` (the pieces of
+/// the selection or the day page) with a headless `claude -p` (see
+/// [`work_journal_spelling`]) and returns the fixed texts in the same order.
+/// The error is a plain sentence the page shows: no Claude CLI, no network,
+/// or Claude's own error. Nothing is written here; the page applies the fix.
+#[tauri::command]
+pub async fn work_journal_fix_spelling(texts: Vec<String>) -> Result<Vec<String>, String> {
+    let journal = with_journal(|path| work_journal::load(&path)).await?;
+    work_journal_spelling::fix_spelling(&texts, journal.settings.model.as_deref())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
