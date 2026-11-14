@@ -1,146 +1,121 @@
 ---
 layout: default
 title: Troubleshooting
-nav_order: 7
+nav_order: 4
 ---
 
 # Troubleshooting
 {: .no_toc }
 
-## Table of Contents
-{: .no_toc .text-delta }
+Common problems and how to fix them. If yours is not here, open an issue on
+[GitHub](https://github.com/nachogl1/maestro/issues).
+{: .fs-5 .fw-300 }
 
 1. TOC
 {:toc}
 
 ---
 
-## Claude Command Not Found
+## Installing and opening
 
-The Claude CLI must be installed globally and in your PATH:
+### macOS says "Maestro is damaged" or "cannot be opened"
+
+Maestro is not registered with Apple, so macOS blocks its first launch. The app is fine. In the Terminal app, run:
 
 ```bash
-npm install -g @anthropic-ai/claude-code
-which claude  # Should show the path
+xattr -dr com.apple.quarantine /Applications/Maestro.app
 ```
 
-If `which claude` returns nothing, ensure your npm global bin directory is in your PATH. Common locations:
+Or try to open Maestro once, then click **Open Anyway** in **System Settings → Privacy & Security**. You only do
+this once; updates installed from inside the app open normally.
 
-- macOS/Linux: `~/.npm-global/bin` or `/usr/local/bin`
-- Windows: `%AppData%\npm`
+### Windows says "Windows protected your PC"
+
+The installer is not signed with a paid code-signing certificate. Click **More info**, then **Run anyway**.
+
+### macOS asks for Full Disk Access
+
+Projects in protected folders (Desktop, Documents, Downloads) need it. When Maestro shows **Full Disk Access
+Required**, click **Open System Settings**, turn Maestro on under **Privacy & Security → Full Disk Access**, and
+restart Maestro.
 
 ---
 
-## Worktree Issues
+## Terminals
 
-If worktrees get into a bad state:
+### "claude: command not found", or a Claude terminal ends at once
 
-```bash
-# List all worktrees
-git worktree list
+Maestro starts the `claude` command it finds on your computer's PATH (the list of folders searched for commands).
 
-# Remove a specific worktree
-git worktree remove /path/to/worktree --force
+1. Install Claude Code if it is missing: `npm install -g @anthropic-ai/claude-code`.
+2. Open a new terminal window outside Maestro and run `claude --version`. If that fails, add npm's global folder to
+   your PATH: `%AppData%\npm` on Windows; on macOS and Linux, the folder `npm prefix -g` prints, followed by `/bin`.
+3. Quit and reopen Maestro, so it picks up the new PATH.
 
-# Prune stale worktree entries
-git worktree prune
-```
+A plain shell terminal works without Claude Code, which helps tell a Claude Code problem from a Maestro one.
 
-### Common Worktree Problems
+### A terminal's status looks wrong
 
-**"Branch is already checked out"** — This means another worktree (or your main repo) already has that branch checked out. Either:
-- Close the session using that branch first
-- Use a different branch name
-- Manually remove the stale worktree with `git worktree remove`
+Maestro learns what each Claude terminal is doing from its own Claude Code hooks, which it writes into the
+project's `.claude/settings.local.json` next to any hooks of yours. Without them it guesses from the terminal's
+output.
 
-**Orphaned worktrees** — If Maestro crashes, worktrees may not be cleaned up. Run `git worktree prune` in your repository to remove stale references, then delete the leftover directories from `~/.claude-maestro/worktrees/`.
+- Check that the project folder is writable, so Maestro can write that file.
+- Close the terminal and open a new one; the hooks are added when a session starts.
+
+### A terminal is blank or draws badly
+
+- Resize the window or the terminal, which makes it redraw.
+- On Windows, make sure WebView2 is installed (see [Installation]({% link installation.md %})).
+- On Linux, make sure `libwebkit2gtk-4.1` is installed.
 
 ---
 
-## Build Issues
+## Git and GitHub
 
-If you encounter build issues:
+### Pull requests, issues or the issue map stay empty
+
+These use the GitHub CLI. Install it from [cli.github.com](https://cli.github.com/), run `gh auth login`, and make
+sure the project's `origin` remote is on GitHub.
+
+### Worktrees are in a bad state
+
+In the project folder:
 
 ```bash
-# Clear all Rust build caches
-rm -rf src-tauri/target
-rm -rf maestro-mcp-server/target
+git worktree list    # what git knows about
+git worktree prune   # forget worktrees whose folder is gone
+git worktree remove <path>   # remove one you no longer need
+```
 
-# Clear node modules and reinstall
-rm -rf node_modules
+`git worktree remove` refuses a worktree with uncommitted changes; commit or copy that work first. Maestro keeps
+the worktrees it creates in its data folder: `%AppData%\maestro\maestro\data\worktrees` on Windows,
+`~/Library/Application Support/com.maestro.maestro/worktrees` on macOS and `~/.local/share/maestro/worktrees` on
+Linux.
+
+**"Branch is already checked out"** means another worktree, or the main folder, already has that branch. Use that
+terminal, pick another branch, or remove the stale worktree.
+
+---
+
+## Updates
+
+### The update check fails or finds nothing
+
+Download the newest installer from the [latest release](https://github.com/nachogl1/maestro/releases/latest) and
+install it over the old one; your settings stay. A Maestro you built yourself on Linux has no in-app updates.
+
+---
+
+## Building from source
+
+If a build fails, start clean from the Maestro folder:
+
+```bash
+rm -rf target node_modules
 npm install
-
-# Rebuild MCP server first, then Tauri app
 cargo build --release -p maestro-mcp-server
 npm run tauri build
 ```
 
----
-
-## macOS: Full Disk Access (FDA)
-
-On macOS, Maestro may need Full Disk Access to work with projects in certain protected directories (Desktop, Documents, Downloads).
-
-**Symptoms:**
-- Terminal sessions can't access project files
-- Permission denied errors when opening projects in protected locations
-
-**Fix:**
-1. Open **System Settings > Privacy & Security > Full Disk Access**
-2. Add Maestro to the allowed applications
-3. Restart Maestro
-
-{: .note }
-Maestro will prompt you to grant FDA when it detects it's needed. You can also proactively enable it.
-
----
-
-## Windows: UNC Path Issues
-
-On Windows, terminal sessions may show a UNC path prefix (`\\?\`) in the working directory.
-
-**Symptoms:**
-- Terminal prompt shows `\\?\C:\Users\...` instead of `C:\Users\...`
-- Some CLI tools don't handle UNC paths correctly
-
-**Fix:** This is handled automatically in recent versions of Maestro. If you still see this issue, update to the latest release.
-
----
-
-## MCP Connection Issues
-
-If AI agents aren't reporting their status to Maestro:
-
-1. **Check the MCP server binary exists:**
-   ```bash
-   ls src-tauri/target/release/maestro-mcp-server
-   ```
-   If missing, rebuild: `cargo build --release -p maestro-mcp-server`
-
-2. **Check the MCP configuration:**
-   Ensure `.mcp.json` points to the correct binary path.
-
-3. **Check agent logs:**
-   Look for MCP-related errors in the AI agent's output.
-
----
-
-## Terminal Not Rendering
-
-If terminals appear blank or don't render properly:
-
-- **Try resizing the window** — This can trigger a re-render
-- **Check WebView2** (Windows) — Ensure WebView2 Runtime is installed
-- **Check webkit2gtk** (Linux) — Ensure `libwebkit2gtk-4.1-dev` is installed
-- **GPU acceleration** — Try disabling GPU acceleration if you see rendering artifacts
-
----
-
-## Session Won't Start
-
-If clicking "Launch" doesn't start sessions:
-
-1. Verify the selected project directory exists and is a git repository
-2. Check that Claude Code is installed (`which claude`)
-3. Look for errors in the terminal output area
-4. Try with "Plain Terminal" mode to isolate whether the issue is with the AI CLI or Maestro itself
+Check the versions too: Node.js 20 or newer and Rust 1.89 or newer (`node --version`, `rustc --version`).
