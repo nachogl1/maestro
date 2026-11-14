@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { isContextAlert } from "@/stores/useContextAlertStore";
 import type { ClaudeEvent } from "@/types/claude-events";
 import {
   type BackendSessionStatus,
@@ -61,6 +62,15 @@ function sessionStarted(sessionId: number): ClaudeEvent {
     claude_session_uuid: `uuid-${sessionId}`,
     transcript_path: "C:/t.jsonl",
     timestamp: "2026-08-06T10:00:00Z",
+  };
+}
+
+function contextCompacted(sessionId: number, contextTokens: number): ClaudeEvent {
+  return {
+    event_type: "ContextCompacted",
+    session_id: sessionId,
+    context_tokens: contextTokens,
+    timestamp: "2026-11-14T09:30:00Z",
   };
 }
 
@@ -192,5 +202,71 @@ describe("useSessionStore context usage (issue #41)", () => {
     useSessionStore.getState().addSession(session(3));
 
     expect(useSessionStore.getState().sessions[0].contextPercent).toBeUndefined();
+  });
+  describe("compaction (issue #635)", () => {
+    it("drops to the post-compaction percent over the remembered window, so the alert stops", () => {
+      useSessionStore.setState({ sessions: [session(1)] });
+      emitClaudeEvents([contextEvent(1, 91.2, 912_345)]);
+      expect(isContextAlert(useSessionStore.getState().sessions[0].contextPercent, 80)).toBe(true);
+
+      emitClaudeEvents([contextCompacted(1, 48_210)]);
+
+      const s = useSessionStore.getState().sessions[0];
+      expect(s.contextPercent).toBe(4.8);
+      expect(s.contextTokens).toBe(48_210);
+      expect(s.contextWindow).toBe(1_000_000);
+      expect(isContextAlert(s.contextPercent, 80)).toBe(false);
+    });
+
+    it("uses the remembered window of a 200k model, rounded to one decimal", () => {
+      useSessionStore.setState({ sessions: [session(1)] });
+      emitClaudeEvents([contextEvent(1, 95.0, 190_000, 200_000)]);
+
+      emitClaudeEvents([contextCompacted(1, 12_340)]);
+
+      expect(useSessionStore.getState().sessions[0].contextPercent).toBe(6.2);
+    });
+
+    it("with no remembered window, clears the session's context usage", async () => {
+      useSessionStore.setState({ sessions: [session(1), session(2)] });
+      emitClaudeEvents([contextEvent(2, 50.0, 500_000)]);
+
+      // Session 1 never had a reading; session 2 forgets its own in the batch.
+      emitClaudeEvents([
+        contextCompacted(1, 48_210),
+        sessionStarted(2),
+        contextCompacted(2, 9_000),
+      ]);
+
+      const [s1, s2] = useSessionStore.getState().sessions;
+      expect(s1.contextPercent).toBeUndefined();
+      expect(s2.contextPercent).toBeUndefined();
+      expect(s2.contextTokens).toBeUndefined();
+      expect(s2.contextWindow).toBeUndefined();
+
+      invokeMock.mockResolvedValueOnce([session(1), session(2)]);
+      await useSessionStore.getState().fetchSessions();
+      expect(useSessionStore.getState().sessions[1].contextPercent).toBeUndefined();
+    });
+
+    it("a ContextUsageUpdate after the compaction still replaces the value", () => {
+      useSessionStore.setState({ sessions: [session(1)] });
+      emitClaudeEvents([contextEvent(1, 91.2, 912_345)]);
+
+      emitClaudeEvents([contextCompacted(1, 48_210), contextEvent(1, 6.1, 61_000)]);
+      expect(useSessionStore.getState().sessions[0].contextPercent).toBe(6.1);
+
+      emitClaudeEvents([contextCompacted(1, 30_000)]);
+      emitClaudeEvents([contextEvent(1, 7.5, 75_000)]);
+      expect(useSessionStore.getState().sessions[0].contextPercent).toBe(7.5);
+    });
+
+    it("a replay ending on a boundary with no later assistant message ends at the post-compaction percent", () => {
+      useSessionStore.setState({ sessions: [session(1)] });
+
+      emitClaudeEvents([contextEvent(1, 85.0, 850_000), contextCompacted(1, 48_210)]);
+
+      expect(useSessionStore.getState().sessions[0].contextPercent).toBe(4.8);
+    });
   });
 });

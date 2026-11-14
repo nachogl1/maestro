@@ -127,6 +127,9 @@ narrow columns look the same as six. As the column gets narrower, the header giv
 
 The AI icon shows at every width. When the context threshold is reached, a small red warning
 icon blinks right after the terminal name; hover over it for "Context threshold reached" and the percentage.
+The context alert stops on its own once the context is back under the threshold: after `/clear`, and as soon as
+Claude compacts the conversation (automatically or with `/compact`), when the percentage drops to the compacted
+size at once instead of at Claude's next reply.
 
 ## Terminals: the message icon on the header
 

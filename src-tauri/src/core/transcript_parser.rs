@@ -45,6 +45,20 @@ struct Entry<'a> {
     tool_use_result: Option<&'a RawValue>,
     #[serde(borrow)]
     attachment: Option<&'a RawValue>,
+    #[serde(borrow)]
+    subtype: Option<&'a RawValue>,
+    #[serde(rename = "compactMetadata", borrow)]
+    compact_metadata: Option<&'a RawValue>,
+}
+
+/// The `subtype` of a `system` entry that marks a compaction.
+const COMPACT_BOUNDARY_SUBTYPE: &str = "compact_boundary";
+
+/// The fields of a compaction boundary's `compactMetadata` that are read.
+#[derive(Deserialize)]
+struct CompactMetadata<'a> {
+    #[serde(rename = "postTokens", borrow)]
+    post_tokens: Option<&'a RawValue>,
 }
 
 /// The fields of an `attachment` entry that are read. A task that finishes
@@ -168,6 +182,7 @@ pub fn parse_transcript_line(session_id: u32, line: &str) -> Vec<ClaudeEvent> {
         "user" => parse_user_message(session_id, &entry),
         "assistant" => parse_assistant_message(session_id, &entry),
         "attachment" => parse_attachment(session_id, &entry),
+        "system" => parse_system_entry(session_id, &entry),
         _ => Vec::new(), // skip file-history-snapshot, unknown types
     }
 }
@@ -485,6 +500,28 @@ fn parse_attachment(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
     background_task_finished(session_id, &prompt, &timestamp)
         .into_iter()
         .collect()
+}
+
+/// A `system` entry: only a compaction boundary is read. Its
+/// `compactMetadata.postTokens` is the context size right after the
+/// compaction, the only record of the drop until the next assistant message
+/// (issue #635). A boundary without it reports nothing.
+fn parse_system_entry(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
+    if raw_str(entry.subtype).as_deref() != Some(COMPACT_BOUNDARY_SUBTYPE) {
+        return Vec::new();
+    }
+    let Some(context_tokens) = entry
+        .compact_metadata
+        .and_then(|m| serde_json::from_str::<CompactMetadata>(m.get()).ok())
+        .and_then(|m| raw_u64(m.post_tokens))
+    else {
+        return Vec::new();
+    };
+    vec![ClaudeEvent::ContextCompacted {
+        session_id,
+        context_tokens,
+        timestamp: raw_str(entry.timestamp).unwrap_or_default(),
+    }]
 }
 
 fn parse_user_message(session_id: u32, entry: &Entry) -> Vec<ClaudeEvent> {
@@ -1483,6 +1520,76 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ClaudeEvent::ContextUsageUpdate { .. })),
             "no usage means no ContextUsageUpdate: {events:?}"
+        );
+    }
+
+    /// Synthetic compaction boundary with the field set Claude Code writes
+    /// (`type: system`, `subtype: compact_boundary`, `compactMetadata`); the
+    /// values are made up.
+    const COMPACT_BOUNDARY: &str = r#"{"parentUuid":null,"logicalParentUuid":"00000000-0000-4000-8000-0000000000a1","isSidechain":false,"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"timestamp":"2026-11-14T09:30:00.000Z","uuid":"00000000-0000-4000-8000-0000000000b2","level":"info","compactMetadata":{"trigger":"auto","preTokens":912345,"postTokens":48210,"durationMs":61234},"userType":"external","entrypoint":"cli","cwd":"C:\\proj","sessionId":"00000000-0000-4000-8000-0000000000c3","version":"2.1.300","gitBranch":"main"}"#;
+
+    /// A compaction boundary carries the new context size: it yields exactly
+    /// one compaction event with `postTokens`, so the context figure (and the
+    /// alert) can follow it without waiting for the next assistant message.
+    #[test]
+    fn test_compact_boundary_yields_one_context_compacted_event() {
+        let events = parse_transcript_line(4, COMPACT_BOUNDARY);
+
+        assert_eq!(events.len(), 1, "one boundary, one event: {events:?}");
+        match &events[0] {
+            ClaudeEvent::ContextCompacted {
+                session_id,
+                context_tokens,
+                timestamp,
+            } => {
+                assert_eq!(*session_id, 4);
+                assert_eq!(*context_tokens, 48_210, "postTokens is the new context");
+                assert_eq!(timestamp, "2026-11-14T09:30:00.000Z");
+            }
+            other => panic!("expected ContextCompacted, got {other:?}"),
+        }
+    }
+
+    /// Without `postTokens` there is no new size to report, and any other
+    /// `system` entry stays skipped.
+    #[test]
+    fn test_system_entries_without_post_tokens_yield_nothing() {
+        let no_post_tokens = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":300000},"uuid":"s1","timestamp":"2026-11-14T09:31:00Z"}"#;
+        let no_metadata = r#"{"type":"system","subtype":"compact_boundary","uuid":"s2","timestamp":"2026-11-14T09:32:00Z"}"#;
+        let other_system = r#"{"type":"system","subtype":"api_error","compactMetadata":{"postTokens":1000},"uuid":"s3","timestamp":"2026-11-14T09:33:00Z"}"#;
+        for line in [no_post_tokens, no_metadata, other_system] {
+            let events = parse_transcript_line(4, line);
+            assert!(events.is_empty(), "{line} must yield nothing: {events:?}");
+        }
+    }
+
+    /// Replaying a transcript whose last context-bearing entry is a boundary
+    /// (no assistant message after it) ends on the compaction, not on the
+    /// high pre-compaction reading.
+    #[test]
+    fn test_replay_ending_on_a_boundary_ends_on_the_compaction() {
+        let high = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"cache_creation_input_tokens":2000,"cache_read_input_tokens":910000,"output_tokens":300}},"uuid":"a-high","timestamp":"2026-11-14T09:29:00Z"}"#;
+        let last_context_event = [high, COMPACT_BOUNDARY]
+            .iter()
+            .flat_map(|line| parse_transcript_line(4, line))
+            .filter(|e| {
+                matches!(
+                    e,
+                    ClaudeEvent::ContextUsageUpdate { .. } | ClaudeEvent::ContextCompacted { .. }
+                )
+            })
+            .last()
+            .expect("a context event");
+
+        assert!(
+            matches!(
+                last_context_event,
+                ClaudeEvent::ContextCompacted {
+                    context_tokens: 48_210,
+                    ..
+                }
+            ),
+            "the replay must end on the compaction: {last_context_event:?}"
         );
     }
 

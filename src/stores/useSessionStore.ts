@@ -1295,6 +1295,11 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
  * the old conversation's context no longer applies, so a cleared terminal
  * stops showing its context alert. The transcript watcher then replays the
  * new transcript, so a resumed conversation gets its percentage back.
+ *
+ * A ContextCompacted (auto-compaction or `/compact`) drops the value to the
+ * post-compaction size over the session's last known window, so the context
+ * alert stops at once instead of at Claude's next reply (issue #635). With no
+ * known window the value is forgotten, as on SessionStarted.
  */
 function applyContextUsageEvents(events: ClaudeEvent[]): void {
   // null = forget the session's usage (it started a new conversation).
@@ -1302,6 +1307,14 @@ function applyContextUsageEvents(events: ClaudeEvent[]): void {
   for (const event of events) {
     if (event.event_type === "SessionStarted") {
       updates.set(event.session_id, null);
+    } else if (event.event_type === "ContextCompacted") {
+      const known = updates.has(event.session_id)
+        ? updates.get(event.session_id)
+        : lastContextUsage.get(event.session_id);
+      updates.set(
+        event.session_id,
+        known ? compactedUsage(event.context_tokens, known.window) : null,
+      );
     } else if (event.event_type === "ContextUsageUpdate") {
       updates.set(event.session_id, {
         percent: event.percent,
@@ -1351,6 +1364,14 @@ function applyContextUsageEvents(events: ClaudeEvent[]): void {
     // buffers the value for addSession/fetchSessions to apply).
     return changed ? { sessions } : state;
   });
+}
+
+/**
+ * Usage right after a compaction: `tokens` over the known `window`, rounded to
+ * one decimal the way the transcript parser rounds ContextUsageUpdate.
+ */
+function compactedUsage(tokens: number, window: number): ContextUsage {
+  return { percent: Math.round((tokens / window) * 1000) / 10, tokens, window };
 }
 
 // Global claude-events listener. `active` tracks the *desired* state so an

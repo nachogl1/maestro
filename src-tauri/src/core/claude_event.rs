@@ -265,6 +265,20 @@ pub enum ClaudeEvent {
         percent: f64,
         timestamp: String,
     },
+
+    /// Claude Code compacted the conversation (Transcript-sourced, from a
+    /// `system` entry with `subtype: "compact_boundary"`).
+    ///
+    /// Carries the context size right after the compaction, so the context
+    /// figure drops at once instead of waiting for the next assistant
+    /// message, which can come hours later or never. It has no window: the
+    /// frontend divides by the session's last known one.
+    ContextCompacted {
+        session_id: u32,
+        /// `compactMetadata.postTokens`: the context size after compaction.
+        context_tokens: u64,
+        timestamp: String,
+    },
 }
 
 impl ClaudeEvent {
@@ -291,7 +305,8 @@ impl ClaudeEvent {
             | ClaudeEvent::BackgroundLoopStopped { session_id, .. }
             | ClaudeEvent::StatusUpdate { session_id, .. }
             | ClaudeEvent::TokenUsageUpdate { session_id, .. }
-            | ClaudeEvent::ContextUsageUpdate { session_id, .. } => *session_id,
+            | ClaudeEvent::ContextUsageUpdate { session_id, .. }
+            | ClaudeEvent::ContextCompacted { session_id, .. } => *session_id,
         }
     }
 
@@ -439,6 +454,14 @@ impl ClaudeEvent {
             } => {
                 format!("ContextUsageUpdate:{session_id}:{context_tokens}:{timestamp}")
             }
+            // Timestamped: a session can compact twice to the same size.
+            ClaudeEvent::ContextCompacted {
+                session_id,
+                context_tokens,
+                timestamp,
+            } => {
+                format!("ContextCompacted:{session_id}:{context_tokens}:{timestamp}")
+            }
         }
     }
 }
@@ -583,6 +606,29 @@ mod tests {
         );
     }
 
+    /// Two compactions of one session are two occurrences, even at the same
+    /// size; a re-read of the same boundary line still dedups.
+    #[test]
+    fn test_context_compacted_dedup_key() {
+        let compacted = |session_id, timestamp: &str| ClaudeEvent::ContextCompacted {
+            session_id,
+            context_tokens: 48_210,
+            timestamp: timestamp.into(),
+        };
+        assert_eq!(
+            compacted(1, "t1").dedup_key(),
+            compacted(1, "t1").dedup_key()
+        );
+        assert_ne!(
+            compacted(1, "t1").dedup_key(),
+            compacted(1, "t2").dedup_key()
+        );
+        assert_ne!(
+            compacted(1, "t1").dedup_key(),
+            compacted(2, "t1").dedup_key()
+        );
+    }
+
     #[test]
     fn test_session_id_extraction() {
         let events: Vec<ClaudeEvent> = vec![
@@ -690,6 +736,11 @@ mod tests {
                 context_tokens: 400_000,
                 context_window: 1_000_000,
                 percent: 40.0,
+                timestamp: "t".into(),
+            },
+            ClaudeEvent::ContextCompacted {
+                session_id: 15,
+                context_tokens: 48_210,
                 timestamp: "t".into(),
             },
         ];
