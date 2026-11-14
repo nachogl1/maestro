@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { type Dispatch, type MutableRefObject, type SetStateAction, useCallback } from "react";
 import type { SessionSlot } from "@/components/terminal/PreLaunchCard";
 import { defaultAgentName, listLiveAgentNames, sanitizeAgentName } from "@/lib/agentName";
-import { setSessionMcpServers, writeOpenCodeMcpConfig, writeSessionMcpConfig } from "@/lib/mcp";
+import { setSessionMcpServers, writeSessionMcpConfig } from "@/lib/mcp";
 import { checkFullDiskAccess, pathRequiresFDA } from "@/lib/permissions";
 import {
   saveBranchConfig,
@@ -343,7 +343,7 @@ export function useSlotLaunch({
         // Update slot state FIRST to mount TerminalView and initialize xterm.js.
         // This MUST happen before sending any commands to the PTY, otherwise
         // xterm.js won't be listening when output arrives and it will be lost.
-        // This is also critical because CLIs like Codex send DSR (cursor position)
+        // This is also critical because CLIs send DSR (cursor position)
         // queries on startup, and xterm.js must be mounted to respond to them.
         setSlots((prev) =>
           prev.map((s) =>
@@ -407,31 +407,6 @@ export function useSlotLaunch({
                 } catch (err) {
                   console.warn("Failed to write hooks config:", err);
                   // Non-fatal: hooks are enhancement, session can work without them
-                }
-              } else if (workingDirectory && slot.mode === "OpenCode") {
-                // Write OpenCode MCP config (opencode.json format)
-                try {
-                  await writeOpenCodeMcpConfig(
-                    workingDirectory,
-                    sessionId,
-                    projectPath ?? workingDirectory,
-                    slot.enabledMcpServers,
-                  );
-                } catch (err) {
-                  console.error("Failed to write OpenCode MCP config:", err);
-                  // Non-fatal - continue with CLI launch
-                }
-
-                // Write plugin enabled/disabled state to settings.local.json
-                try {
-                  await writeSessionPluginConfig(
-                    workingDirectory,
-                    projectPath ?? workingDirectory,
-                    slot.enabledPlugins,
-                  );
-                } catch (err) {
-                  console.error("Failed to write plugin config:", err);
-                  // Non-fatal - continue with CLI launch
                 }
               }
 

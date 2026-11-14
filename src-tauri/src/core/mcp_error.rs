@@ -41,7 +41,7 @@ pub enum McpError {
         path: PathBuf,
         source: std::io::Error,
     },
-    /// Reading a named session config file (`.mcp.json`, `opencode.json`).
+    /// Reading a named session config file (`.mcp.json`).
     #[error("Failed to read {file}: {source}")]
     ReadConfig {
         file: &'static str,

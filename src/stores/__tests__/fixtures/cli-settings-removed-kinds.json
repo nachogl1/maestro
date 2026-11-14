@@ -1,0 +1,11 @@
+{
+  "state": {
+    "flags": {
+      "Claude": { "skipPermissions": true, "customFlags": "--model opus" },
+      "Gemini": { "skipPermissions": true, "customFlags": "--removed-kind" },
+      "Codex": { "skipPermissions": true, "customFlags": "--removed-kind" },
+      "OpenCode": { "skipPermissions": true, "customFlags": "--removed-kind" }
+    }
+  },
+  "version": 1
+}

@@ -2,7 +2,6 @@ import {
   AlertTriangle,
   BrainCircuit,
   ChevronDown,
-  Code2,
   Expand,
   GitBranch,
   Mail,
@@ -11,13 +10,12 @@ import {
   ParkingSquare,
   Pin,
   PinOff,
-  Sparkles,
   Terminal,
   X,
   ZoomIn,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { type IconComponent, OpenCodeIcon } from "@/components/icons";
+import type { IconComponent } from "@/components/icons";
 import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { useDismissable } from "@/hooks/useDismissable";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
@@ -33,7 +31,7 @@ export type SessionStatus =
   | "error"
   | "timeout";
 
-export type AIProvider = "claude" | "gemini" | "codex" | "opencode" | "plain";
+export type AIProvider = "claude" | "plain";
 
 interface TerminalHeaderProps {
   sessionId: number;
@@ -114,9 +112,6 @@ interface TerminalHeaderMenuItem {
 
 const providerConfig: Record<AIProvider, { icon: IconComponent; label: string }> = {
   claude: { icon: BrainCircuit, label: "Claude Code" },
-  gemini: { icon: Sparkles, label: "Gemini CLI" },
-  codex: { icon: Code2, label: "Codex" },
-  opencode: { icon: OpenCodeIcon, label: "OpenCode" },
   plain: { icon: Terminal, label: "Terminal" },
 };
 

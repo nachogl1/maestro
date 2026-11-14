@@ -64,9 +64,7 @@ vi.mock("@/lib/mcp", async (importOriginal) => {
     loadProjectMcpDefaults: vi.fn(async () => null),
     setSessionMcpServers: vi.fn(async () => {}),
     writeSessionMcpConfig: vi.fn(async () => {}),
-    writeOpenCodeMcpConfig: vi.fn(async () => {}),
     removeSessionMcpConfig: vi.fn(async () => {}),
-    removeOpenCodeMcpConfig: vi.fn(async () => {}),
   };
 });
 
@@ -623,13 +621,13 @@ describe("TerminalGrid pending samurai launch", () => {
     expect(writeStdinMock).not.toHaveBeenCalled();
   });
 
-  // The injection rides claude's SessionStart hook, which no other CLI posts:
-  // a non-Claude launch must NOT arm (it would strand a stale entry backend-
-  // side and inject nothing).
-  it("does not arm the initial prompt for a non-Claude launch", async () => {
+  // The injection rides claude's SessionStart hook, which a plain shell never
+  // posts: a plain terminal must NOT arm (it would strand a stale entry
+  // backend-side and inject nothing), and it types no CLI line at all.
+  it("does not arm the initial prompt for a plain terminal launch", async () => {
     usePendingLaunchStore.getState().request({
       tabId: "tab-1",
-      mode: "OpenCode",
+      mode: "Plain",
       resumeSessionId: null,
       workingDirOverride: "C:/proj",
       branch: null,
@@ -638,7 +636,8 @@ describe("TerminalGrid pending samurai launch", () => {
 
     render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
 
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId("terminal-view")).toBeInTheDocument());
     expect(initialPromptArmMock).not.toHaveBeenCalled();
+    expect(writeStdinMock).not.toHaveBeenCalled();
   });
 });

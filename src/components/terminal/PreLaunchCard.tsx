@@ -3,7 +3,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Code2,
   Expand,
   FolderGit2,
   FolderOpen,
@@ -15,7 +14,6 @@ import {
   Plus,
   Search,
   Server,
-  Sparkles,
   Star,
   Store,
   Terminal,
@@ -24,7 +22,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { type IconComponent, OpenCodeIcon } from "@/components/icons";
+import type { IconComponent } from "@/components/icons";
 
 import { formatRecentDate } from "@/lib/format";
 import type { BranchWithWorktreeStatus } from "@/lib/git";
@@ -173,9 +171,6 @@ const AI_MODES: {
   color: string;
 }[] = [
   { mode: "Claude", icon: BrainCircuit, label: "Claude Code", color: "text-violet-500" },
-  { mode: "Gemini", icon: Sparkles, label: "Gemini CLI", color: "text-blue-400" },
-  { mode: "Codex", icon: Code2, label: "Codex", color: "text-green-400" },
-  { mode: "OpenCode", icon: OpenCodeIcon, label: "OpenCode", color: "text-purple-500" },
   { mode: "Plain", icon: Terminal, label: "Terminal", color: "text-maestro-muted" },
 ];
 
