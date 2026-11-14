@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261114-215735-078e",
+  "issue": 635,
+  "title": "Context alert keeps blinking after a compaction until Claude's next reply",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 637,
+  "merged_at": "2026-11-14T22:23:04Z",
+  "merge_commit": "d7669b84fe8d466b12d55257f6f910c825f03c40",
+  "seam": "context-usage tracking: src-tauri/src/core/transcript_parser.rs, claude_event.rs, src/stores/useSessionStore.ts, src/types/claude-events.ts",
+  "story": "My terminal hit the context warning and started blinking red. Claude then compacted the conversation and the figure dropped to about 5%, but Maestro kept blinking until Claude's next answer. Now the figure and the blinking follow the compaction at once.",
+  "checks": [
+    {
+      "key": "context-alert/auto-compact",
+      "criterion": "After a compaction, a terminal that was at or above the alert percent shows the new low percent, and its alert is off.",
+      "steps": "Start Maestro fresh. In Settings, set the context alert card to 50%. Launch a Claude terminal and work until its context reads at least 50% (frame, project tab and header icon blink red). Type /compact and wait for 'Conversation compacted'. Send no other message.",
+      "expected": "Right after the compaction the context figure drops to a few percent, and the red frame, project tab, zoom tab, parked chip and header icon all stop blinking without waiting for Claude's next reply."
+    },
+    {
+      "key": "context-alert/later-reply",
+      "criterion": "A normal context reading after the compaction still replaces the value.",
+      "steps": "Continue from the check above. Send one message such as 'say hi' and wait for the reply.",
+      "expected": "The context figure updates to the new reading, slightly above the post-compaction figure, and the alert stays off."
+    },
+    {
+      "key": "context-alert/restart-replay",
+      "criterion": "Replaying a transcript that ends on a compaction lands on the post-compaction percent.",
+      "steps": "Compact a terminal as in the first check and send no message after it. Close and reopen Maestro, or resume that conversation from History.",
+      "expected": "The terminal shows the post-compaction percent (or none), never the old high figure, and no red alert."
+    }
+  ],
+  "no_qa_reason": null
+}

@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261114-215735-078e",
+  "issue": 635,
+  "title": "Context alert keeps blinking after a compaction until Claude's next reply",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T21:57:43Z",
+  "finished_at": "2026-11-14T22:23:04Z",
+  "outcome": "merged",
+  "pr": 637,
+  "summary": "After a compaction the context figure stayed at its old high value until Claude's next reply, so the red alert kept blinking. Maestro now reads the compaction note in the transcript and drops the figure at once; 5 new front-end and 4 new Rust tests.",
+  "agents": [
+    {
+      "name": "dev-635",
+      "model": "opus",
+      "tokens_total": 152377
+    },
+    {
+      "name": "review-635-r1",
+      "model": "opus",
+      "tokens_total": 130238
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1077,
+    "review_seconds": 316,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
