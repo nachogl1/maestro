@@ -3,7 +3,7 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import { samePath } from "@/lib/path";
-import { isScratchPath } from "@/lib/scratch";
+import { isScratchProject } from "@/lib/scratch";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 
 /** One scratch project as the backend lists it. */
@@ -41,7 +41,7 @@ type ScratchState = {
   folderSetting: string | null;
   /** The scratch folder in use, as the backend resolved it (null until listed). */
   folder: string | null;
-  /** Every scratch project, newest first. */
+  /** Every scratch project (folders carrying Maestro's marker file), newest first. */
   projects: ScratchProject[];
   /** The last failure, as one plain sentence. */
   error: string | null;
@@ -174,7 +174,7 @@ export const useScratchStore = create<ScratchState>()(
           await get().refresh();
         },
 
-        isScratch: (path) => isScratchPath(path, get().folder),
+        isScratch: (path) => isScratchProject(path, get().folder, get().projects),
 
         askBeforeClosingTab: (tabId) => raise(tabId, "close-tab"),
 

@@ -52,7 +52,12 @@ describe("stopProjectSessions (sidebar Stop All)", () => {
     vi.mocked(invoke).mockImplementation(async (cmd) =>
       cmd === "remove_sessions_for_project" ? [] : undefined,
     );
-    useScratchStore.setState({ folder: FOLDER, question: null, error: null });
+    useScratchStore.setState({
+      folder: FOLDER,
+      projects: [{ name: "demo", path: `${FOLDER}/demo`, createdAtMs: 1 }],
+      question: null,
+      error: null,
+    });
   });
 
   it("stops every terminal of the project and drops them from its tab", async () => {
@@ -77,6 +82,16 @@ describe("stopProjectSessions (sidebar Stop All)", () => {
       tabId: "scratch",
       reason: "last-terminal",
     });
+  });
+
+  it("asks nothing for a folder in the scratch folder that Maestro did not make", async () => {
+    const path = `${FOLDER}/real-work`;
+    useWorkspaceStore.setState({ tabs: [tab("real", path, [1, 2])] });
+    seedSessions(path, [1, 2]);
+
+    await stopProjectSessions("real", path);
+
+    expect(useScratchStore.getState().question).toBeNull();
   });
 
   it("asks nothing when the scratch project had no terminal to stop", async () => {

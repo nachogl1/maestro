@@ -21,6 +21,8 @@ const mockInvoke = vi.mocked(invoke);
 
 const FOLDER = "/home/someone/Maestro Scratch";
 const SCRATCH_PATH = `${FOLDER}/demo`;
+/** A real folder in the scratch folder that Maestro never made (no marker, so never listed). */
+const REAL_IN_FOLDER = `${FOLDER}/real-work`;
 
 function tab(id: string, projectPath: string, sessionIds: number[] = []): WorkspaceTab {
   return {
@@ -53,7 +55,7 @@ describe("useScratchStore", () => {
     useScratchStore.setState({
       folderSetting: null,
       folder: FOLDER,
-      projects: [],
+      projects: [{ name: "demo", path: SCRATCH_PATH, createdAtMs: 1 }],
       error: null,
       question: null,
     });
@@ -127,6 +129,17 @@ describe("useScratchStore", () => {
 
     store.askAfterTerminalClosed("scratch");
     expect(useScratchStore.getState().question?.reason).toBe("last-terminal");
+  });
+
+  it("asks nothing for a folder in the scratch folder that Maestro did not make", () => {
+    useWorkspaceStore.setState({ tabs: [tab("unmarked", REAL_IN_FOLDER)] });
+    const store = useScratchStore.getState();
+
+    expect(store.isScratch(REAL_IN_FOLDER)).toBe(false);
+    expect(store.askBeforeClosingTab("unmarked")).toBe(false);
+    store.askAfterTerminalClosed("unmarked");
+
+    expect(useScratchStore.getState().question).toBeNull();
   });
 
   it("Keep on closing the tab closes it and leaves the folder", async () => {

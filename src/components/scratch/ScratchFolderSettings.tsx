@@ -7,7 +7,8 @@ import { useScratchStore } from "@/stores/useScratchStore";
 /** Hover help for the row, in plain language. */
 const SCRATCH_FOLDER_HINT =
   "Where Maestro makes scratch projects: throwaway folders for work that belongs to no " +
-  "project. Every folder directly inside it counts as a scratch project.";
+  "project. Only folders Maestro made there count as scratch projects; any other folder in " +
+  "it is left alone.";
 
 /**
  * The Settings row that sets the scratch folder: `Maestro Scratch` in the
