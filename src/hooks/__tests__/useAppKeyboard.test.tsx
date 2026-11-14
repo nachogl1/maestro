@@ -17,6 +17,7 @@ function renderAppKeyboard(overrides: Partial<Parameters<typeof useAppKeyboard>[
     onNextProject: vi.fn(),
     onPrevProject: vi.fn(),
     onOpenIssueMap: vi.fn(),
+    onOpenConclave: vi.fn(),
   };
   renderHook(() =>
     useAppKeyboard({
@@ -161,5 +162,21 @@ describe("useAppKeyboard issue map (Alt+M)", () => {
     dispatch({ key: "M", code: "KeyM", altKey: true, shiftKey: true });
     dispatch({ key: "m", code: "KeyM", altKey: true, ctrlKey: true });
     expect(onOpenIssueMap).not.toHaveBeenCalled();
+  });
+});
+
+describe("useAppKeyboard Conclave (Alt+C)", () => {
+  it("opens the Conclave dialog and keeps the key from reaching the terminal", () => {
+    const { onOpenConclave } = renderAppKeyboard();
+    const ev = dispatch({ key: "c", code: "KeyC", altKey: true });
+    expect(ev.defaultPrevented).toBe(true);
+    expect(onOpenConclave).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Alt+Shift+C and Ctrl+Alt+C alone", () => {
+    const { onOpenConclave } = renderAppKeyboard();
+    dispatch({ key: "C", code: "KeyC", altKey: true, shiftKey: true });
+    dispatch({ key: "c", code: "KeyC", altKey: true, ctrlKey: true });
+    expect(onOpenConclave).not.toHaveBeenCalled();
   });
 });

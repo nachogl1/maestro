@@ -15,6 +15,9 @@ import { useSessionStore } from "@/stores/useSessionStore";
 /** Sender label for a message sent from the Injector panel. */
 export const INJECTOR_SENDER = "Injector";
 
+/** Sender label for a message sent from the Conclave dialog (Alt+C). */
+export const CONCLAVE_SENDER = "Conclave";
+
 /** Sender label for a trigger's message (triggers have no name of their own). */
 export function triggerSender(threshold: number): string {
   return `Trigger at ${threshold}%`;

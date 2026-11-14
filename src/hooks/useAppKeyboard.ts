@@ -17,6 +17,8 @@ interface UseAppKeyboardOptions {
   onPrevProject?: () => void;
   /** Alt+M: open the issue map for the focused project */
   onOpenIssueMap?: () => void;
+  /** Alt+C: open the Conclave dialog */
+  onOpenConclave?: () => void;
 }
 
 /**
@@ -32,6 +34,7 @@ function isMac(): boolean {
  * Shortcuts:
  * - Alt+1-4: Toggle the History / Infra / Settings / Injector panel
  * - Alt+M: Open the issue map for the focused project
+ * - Alt+C: Open the Conclave dialog
  * - Cmd/Ctrl+2: Toggle the Git panel
  * - Cmd/Ctrl+5: Toggle the Notes panel
  * - Cmd/Ctrl+T: Add a new terminal (project picker in eagle view)
@@ -46,6 +49,7 @@ export function useAppKeyboard({
   onNextProject,
   onPrevProject,
   onOpenIssueMap,
+  onOpenConclave,
 }: UseAppKeyboardOptions): void {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -68,6 +72,13 @@ export function useAppKeyboard({
           event.preventDefault();
           event.stopImmediatePropagation();
           onOpenIssueMap();
+          return;
+        }
+        // Alt+C: the Conclave dialog, whichever panel is open.
+        if (event.code === "KeyC" && onOpenConclave) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onOpenConclave();
         }
         return;
       }
@@ -133,5 +144,6 @@ export function useAppKeyboard({
     onNextProject,
     onPrevProject,
     onOpenIssueMap,
+    onOpenConclave,
   ]);
 }
