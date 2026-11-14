@@ -50,9 +50,9 @@ Maestro itself doesn't require API keys. However, Claude Code has its own authen
 
 Yes! Each session picks its own kind. For example, you could run Claude Code in Sessions 1 and 2 and a plain terminal in Session 3 — all at the same time.
 
-### What if an AI CLI isn't installed?
+### What if Claude Code isn't installed?
 
-Maestro detects which AI CLIs are available on your system. If a CLI isn't installed, its option won't appear in the mode selector. You can always use "Plain Terminal" mode without any AI CLI installed.
+A Claude Code session needs Claude Code installed and in your PATH; Maestro checks for it when the session launches. A "Plain Terminal" session needs nothing extra, so you can always use it without Claude Code installed.
 
 ---
 
