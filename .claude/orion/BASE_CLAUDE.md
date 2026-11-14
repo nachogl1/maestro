@@ -46,7 +46,7 @@
 - **GitHub Issues in the project's own repository are the only source of truth.** PRD → epic → story:
   `/prd-to-tickets` cuts a PRD into epics and stories built for parallel work (scaffold → contract stories →
   fan-out). Agents implement **stories** only, never an epic. (`/prd-to-tickets`, `/dev-next`, `/dev-quick`,
-  `/harvest`, `/harvest-qa`, `/issue-map`, `/reconcile-issue-map` and `/wayfinder` drive GitHub Issues and nothing
+  `/harvest`, `/harvest-qa`, `/issue-map`, `/reconcile` and `/wayfinder` drive GitHub Issues and nothing
   else.)
 - **The assignee owns the issue.** Assign yourself *before* writing any code. Never work on, edit or unassign someone
   else's. Two claims can land in the same second, so re-read after claiming: a second assignee, or an earlier
@@ -88,7 +88,7 @@
     `tier:stretch-2`); any other names where it came from (`tier:bug`, `tier:dev-quick`, …; the full list is in
     `new-issue.md`). Whoever files the story creates a missing tier label. **Nothing picks or orders work by tier.**
   - `wayfinder:*`: a planning ticket, never a story. `/dev-next` never takes an issue carrying one, and the drift
-    checks (`/dev-next`'s probe, `/reconcile-issue-map`) leave such issues out.
+    checks (`/dev-next`'s probe, `/reconcile`) leave such issues out.
   - `agent-ready`: nothing is left to ask. An agent claims it, builds it, gets a fresh-agent review and merges with no
     human. **An issue with none of `agent-ready`, `needs-human` or `outside-change` is not taken automatically**:
     `/dev-next` stops in preflight and asks the human what it is. A label given then earns one ready-check before
@@ -271,14 +271,14 @@ PRD wins on product, the rules files win on process.
   one agent at a time, shows the person each confirmed failure with its importance and files a `bug` issue only for
   the ones the person chooses, and ships its log in its own pull request. A deduped record counts as tested. `/harvest` and `/harvest-qa` never read each other's files.
   `/dev-next` only counts: at **5 untested records** it ends its run with `QA due: run /harvest-qa`.
-- **Reconciling.** `/reconcile-issue-map` is run by a person, never by another skill. It reads the PRDs, every issue
+- **Reconciling.** `/reconcile` is run by a person, never by another skill. It reads the PRDs, every issue
   with its native links, and the code on `main`, and lists every way they disagree — a PRD section no story covers
   or one changed after its stories were cut, a story the PRD never asked for or an outcome it never absorbed, a
   broken issue map (no epic, blocker forms that disagree, impossible label pairs, two stories on one folder, built
   out of order), work the code and the issues disagree on — then fixes each with the person's word, under the
   ownership rules above. A bookmark file on `main` records what was reconciled and what the person accepted as fine.
   `/dev-next` only probes: an impossible label pair or a story without an epic, or a PRD changed since the bookmark,
-  and it ends its run with `Drift found: run /reconcile-issue-map`.
+  and it ends its run with `Drift found: run /reconcile`.
 - **Sub-agents:** name each one after what it does (`review-auth-tests`, never `agent-3`); mechanical work runs on a
   cheap model at low effort, hard decisions and reviews on the top model; every spawn prompt asks for a bounded result
   (a verdict plus a few bullets, never an essay). A sub-agent never uses `git stash` and never switches branches — it
@@ -309,7 +309,7 @@ PRD wins on product, the rules files win on process.
 - `/harvest-qa` drives the QA checks every merged story left behind against `main`, in sequential rounds until every
   record is tested or deduped, then shows the person each failure reproduced twice, with its importance, and files a
   `bug` issue only for the ones the person chooses.
-- `/reconcile-issue-map` checks the issues, the PRDs and the code on `main` against each other and fixes the drift
+- `/reconcile` checks the issues, the PRDs and the code on `main` against each other and fixes the drift
   with the person present: issue edits under the ownership rules, PRD edits and its bookmark in a pull request a
   human merges. The PRD wins on what to build; `main` wins on what is done.
 - `/clear-git-resources` lists stale worktrees, branches and leftover files, deletes your own stale ones whose work is

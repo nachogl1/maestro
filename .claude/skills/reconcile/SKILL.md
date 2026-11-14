@@ -1,10 +1,10 @@
 ---
-name: reconcile-issue-map
-description: 'ORION - Check that the GitHub issues (the issue map: epics, stories, blockers, labels, order) and the PRDs under docs/PRDs/ still describe the same product, and that both still match what is on main, then fix the drift with the person present. It finds a story nothing in the PRD asks for, a PRD section no story covers, a PRD changed after its stories were cut, a closed story the PRD never absorbed, a story with no epic, blockers that disagree between the body and GitHub''s native relation, two open stories on one folder, a label pair that cannot coexist, and an order that cannot be built. Every finding is explained as if the person had never heard of the project, with how much it matters; nothing is edited, filed, accepted or dropped without their word. Works with GitHub Issues only, like dev-next. Use when the user types /reconcile-issue-map, asks "are the issues still in line with the PRD", "is the backlog up to date", "does the issue map still match the product", or when a /dev-next run ended with `Drift found: run /reconcile-issue-map`.'
+name: reconcile
+description: 'ORION - Check that the GitHub issues (the issue map: epics, stories, blockers, labels, order) and the PRDs under docs/PRDs/ still describe the same product, and that both still match what is on main, then fix the drift with the person present. It finds a story nothing in the PRD asks for, a PRD section no story covers, a PRD changed after its stories were cut, a closed story the PRD never absorbed, a story with no epic, blockers that disagree between the body and GitHub''s native relation, two open stories on one folder, a label pair that cannot coexist, and an order that cannot be built. Every finding is explained as if the person had never heard of the project, with how much it matters; nothing is edited, filed, accepted or dropped without their word. Works with GitHub Issues only, like dev-next. Use when the user types /reconcile, asks "are the issues still in line with the PRD", "is the backlog up to date", "does the issue map still match the product", or when a /dev-next run ended with `Drift found: run /reconcile`.'
 argument-hint: "(none) | <path to one PRD> | --since <yyyy-mm-dd>"
 ---
 
-# /reconcile-issue-map
+# /reconcile
 
 > [!NOTE]
 > **Editing this skill?** Keep everything here **general**: no project, person, company, product or stack names — the project's own `CLAUDE.md` and its PRDs supply those at run time. It works with GitHub Issues only, like `dev-next`, whose `references/new-issue.md` defines the issue shape it checks against and files to.
@@ -17,7 +17,7 @@ is the check: it reads both sources and the code on `main`, lists every way they
 drift right **with the person present**.
 
 **A person runs this.** It is never started by another skill: `/dev-next` only probes for the cheapest signs of drift
-at the end of its run and prints `Drift found: run /reconcile-issue-map`. Every decision below is the human's; this
+at the end of its run and prints `Drift found: run /reconcile`. Every decision below is the human's; this
 skill gathers, checks, explains, recommends, and then does what was decided.
 
 Read the project's `CLAUDE.md` first. It overrides this file where they disagree.
@@ -37,8 +37,8 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 
 | Form | Meaning |
 |---|---|
-| `/reconcile-issue-map` | Every PRD under `docs/PRDs/` against every issue, open and closed — the default. |
-| `/reconcile-issue-map docs/PRDs/<name>.md` | One PRD and only the issues that reference it (or its epics). Faster on a large backlog. |
+| `/reconcile` | Every PRD under `docs/PRDs/` against every issue, open and closed — the default. |
+| `/reconcile docs/PRDs/<name>.md` | One PRD and only the issues that reference it (or its epics). Faster on a large backlog. |
 | `--since <yyyy-mm-dd>` | Ignore the bookmark (below) and treat every PRD change and every issue touched on or after that date as new. |
 
 ## Roles — spawn these as sub-agents, never do their work yourself

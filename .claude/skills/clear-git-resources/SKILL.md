@@ -11,7 +11,7 @@ argument-hint: "(none) | --dry-run"
 
 Every skill that builds something leaves git resources behind: a worktree, a local branch, a remote branch, sometimes a
 folder or a log file in the worktree root. `/dev-next` deletes its own when a story merges, but nothing cleans up after a
-failed run, a human-merged pull request (`/harvest`, `/reconcile-issue-map`, `/prd-to-tickets`, `/wayfinder`), or a
+failed run, a human-merged pull request (`/harvest`, `/reconcile`, `/prd-to-tickets`, `/wayfinder`), or a
 person's own experiments. This skill is the sweep: it **deletes the person's own stale items whose work cannot be
 lost**, **asks** about the other stale ones, and **never touches** anything that still holds work or that another
 skill uses.
