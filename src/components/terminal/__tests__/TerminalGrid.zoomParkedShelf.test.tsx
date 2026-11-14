@@ -185,4 +185,23 @@ describe("TerminalGrid zoom view: the parked strip stays below the zoomed termin
       expect(zoomArea.className.split(/\s+/)).toContain(cls);
     }
   });
+
+  // T11: the sidebar's "open a parked run" test only asserts that onNavigate
+  // fired — nothing covered the unpark it promises. This is that half: App
+  // routes onNavigate to `zoomSession`, which must bring the tile back out of
+  // the tray, or the click opens a pane the user still cannot see.
+  it("unparks the session when zoomSession opens a parked tile", async () => {
+    const handle = await renderThreePaneGrid();
+    const [{ id: sessionId }] = useSessionStore.getState().sessions;
+    await act(async () => {
+      useSessionStore.getState().parkSession(sessionId);
+    });
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([sessionId]);
+
+    await act(async () => {
+      expect(handle.zoomSession(sessionId)).toBe(true);
+    });
+
+    expect(useSessionStore.getState().parkedSessionIds).toEqual([]);
+  });
 });
