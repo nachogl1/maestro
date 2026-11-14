@@ -104,7 +104,6 @@ Customize the command-line arguments passed to AI CLIs when sessions launch.
 Each session can have its own set of CLI flags. For example:
 
 - Claude Code: `--model claude-sonnet-4-5-20250929` to use a specific model
-- Gemini CLI: `--model gemini-2.5-pro` for model selection
 
 ### Global Defaults
 

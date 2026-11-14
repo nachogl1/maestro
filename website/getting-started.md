@@ -30,7 +30,7 @@ Choose a project directory — ideally a git repository. Maestro uses git worktr
 In the sidebar, set up your sessions:
 
 - **Number of terminals** — Choose between 1 and 12 concurrent sessions
-- **AI mode** — Select the AI assistant for each session (Claude Code, Gemini CLI, OpenAI Codex, or Plain Terminal)
+- **AI mode** — Select the AI assistant for each session (Claude Code or Plain Terminal)
 - **Branch assignment** — Pick a branch for each session to work on
 
 ### 4. Launch

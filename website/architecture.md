@@ -29,7 +29,7 @@ Maestro is built with [Tauri 2.0](https://tauri.app/), combining a Rust backend 
 │                                                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
 │  │  Session 1   │  │  Session 2   │  │  Session 3   │   ...    │
-│  │ Claude Code  │  │ Gemini CLI   │  │  Terminal    │          │
+│  │ Claude Code  │  │ Claude Code  │  │  Terminal    │          │
 │  │ feature/auth │  │ fix/bug-123  │  │    main      │          │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
 │         │                 │                 │                   │

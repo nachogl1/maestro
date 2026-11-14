@@ -11,7 +11,7 @@ permalink: /
 Orchestrate multiple AI coding assistants in parallel.
 {: .fs-6 .fw-300 }
 
-A cross-platform desktop application that lets you run 1–12 Claude Code (or other AI CLI) sessions simultaneously, each in its own isolated git worktree.
+A cross-platform desktop application that lets you run 1–12 Claude Code sessions simultaneously, each in its own isolated git worktree.
 
 [Get Started](/maestro/getting-started){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [Download](https://github.com/its-maestro-baby/maestro/releases){: .btn .fs-5 .mb-4 .mb-md-0 }
@@ -35,7 +35,7 @@ A cross-platform desktop application that lets you run 1–12 Claude Code (or ot
 |:----------|:------------|
 | **Parallel Development** | Launch 1–12 AI sessions simultaneously. Work on feature branches, bug fixes, and refactoring all at once. |
 | **True Isolation** | Each session operates in its own git worktree. No merge conflicts, no stepping on each other's changes. |
-| **AI-Native Workflow** | Built specifically for Claude Code, Gemini CLI, OpenAI Codex, and other AI coding assistants. |
+| **AI-Native Workflow** | Built specifically for Claude Code. |
 | **Cross-Platform** | Runs on macOS, Windows, and Linux with native performance via Tauri. |
 
 ---
@@ -49,8 +49,6 @@ A built-in MCP server lets AI agents report their status (idle, working, needs i
 ### Supported AI Assistants
 
 - **Claude Code** — Anthropic's Claude in the terminal
-- **Gemini CLI** — Google's Gemini AI
-- **OpenAI Codex** — OpenAI's coding assistant
 - **Plain Terminal** — Standard shell without AI
 
 ---
