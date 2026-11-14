@@ -212,7 +212,8 @@ describe("Work Journal spelling fixer", () => {
           .replace("10:30", "10.30")
           .replace("maestro", "Maestro")
           .replace("teh lnk", "the link")
-          .replace("wiht", "with"),
+          .replace("wiht", "with")
+          .replace("fixd", "fixed"),
       ),
     );
     const link = [{ type: "link", attrs: { href: "https://example.com" } }];
@@ -225,30 +226,73 @@ describe("Work Journal spelling fixer", () => {
             project: "maestro",
           }),
           paragraph(text("See "), text("teh lnk", link), text(" wiht notes")),
+          paragraph(text("I fixd it")),
         )}
       />,
     );
 
     await clickFix();
 
-    const [entry, note] = pageEditor().getJSON().content ?? [];
+    const [entry, note, plain] = pageEditor().getJSON().content ?? [];
     // The colon is never sent, and a colon added before it is refused.
     expect(sentTexts()).toEqual([
       "Fixd login",
       "deploy maestro at 10:30 wiht care",
       "See teh lnk wiht notes",
+      "I fixd it",
     ]);
+    // A text with any refused change is left whole; the clean one is fixed.
     expect(entry.attrs).toMatchObject({ time: "10:30", project: "maestro" });
     expect(entry.content?.[0].content?.[0].text).toBe(
-      "Fixd login: deploy maestro at 10:30 with care",
+      "Fixd login: deploy maestro at 10:30 wiht care",
     );
     expect(note.content).toEqual([
       text("See "),
       text("teh lnk", [
         { type: "link", attrs: expect.objectContaining({ href: "https://example.com" }) },
       ]),
-      text(" with notes"),
+      text(" wiht notes"),
     ]);
+    expect(plain.content).toEqual([text("I fixed it")]);
+    expect(screen.getByRole("status")).toHaveTextContent("1 fix made");
+  });
+
+  it("leaves a text whole when a fix of its link would shift the other words", async () => {
+    // Claude sees the link text as plain text, fixes it and adds an article;
+    // the word diff then pairs "lnk" with "with" and "wiht" with "the".
+    answerWith(() => ["See the link with the notes"]);
+    const link = [{ type: "link", attrs: { href: "https://example.com" } }];
+    render(
+      <WorkJournalEditor
+        date={DATE}
+        initialBody={doc(paragraph(text("See "), text("teh lnk", link), text(" wiht notes")))}
+      />,
+    );
+    const before = pageEditor().getJSON();
+
+    await clickFix();
+
+    expect(pageEditor().getJSON()).toEqual(before);
+    expect(screen.getByRole("status")).toHaveTextContent("0 fixes made");
+  });
+
+  it("never sends or changes a code block", async () => {
+    answerWith((texts) => texts.map((t) => t.replace("biuld", "build").replace("fixd", "fixed")));
+    render(
+      <WorkJournalEditor
+        date={DATE}
+        initialBody={doc(
+          { type: "codeBlock", content: [text("npm run biuld")] },
+          paragraph(text("I fixd it")),
+        )}
+      />,
+    );
+
+    await clickFix();
+
+    expect(sentTexts()).toEqual(["I fixd it"]);
+    expect(blockTexts()).toEqual(["npm run biuld", "I fixed it"]);
+    expect(screen.getByRole("status")).toHaveTextContent("1 fix made");
   });
 
   it("one undo puts the page back as it was", async () => {

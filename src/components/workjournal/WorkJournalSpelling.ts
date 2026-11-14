@@ -74,6 +74,8 @@ export function spellingSegments(doc: PmNode, range?: DocRange): SpellingSegment
   const segments: SpellingSegment[] = [];
   doc.nodesBetween(from, to, (node, pos, parent) => {
     if (!node.isTextblock) return true;
+    // A code block is code, never prose: it is not sent.
+    if (node.type.spec.code) return false;
     const project =
       parent?.type.name === WORK_JOURNAL_ENTRY_NODE ? String(parent.attrs.project ?? "") : null;
     for (const piece of blockPieces(node, pos + 1, project)) {
@@ -319,11 +321,26 @@ export function isSpellingFix(before: string, after: string): boolean {
 }
 
 /**
+ * Whether `edit` leaves alone what a fix must never change: links, code,
+ * numbers, the card's project, the formatting either side of a change of
+ * marks, and the colon that ends a card's bold lead.
+ */
+function isAllowed(segment: SpellingSegment, edit: SpellingEdit): boolean {
+  return (
+    !touchesLocked(edit, segment.locked) &&
+    !segment.markBreaks.some((at) => at > edit.from && at < edit.to) &&
+    !(segment.inLead && edit.text.includes(":"))
+  );
+}
+
+/**
  * The edits that turn each segment's text into its fixed text (`fixed[i]`
  * for `segments[i]`), or null when any fixed text is not a spelling fix of
- * its segment ({@link isSpellingFix}): the reply is then refused whole. A
- * change that would touch a link, code, a number or the card's project, or
- * add a colon to a card's bold lead, is left out.
+ * its segment ({@link isSpellingFix}): the reply is then refused whole.
+ * When any change in a text would touch a link, code, a number or the
+ * card's project, cross a change of formatting, or add a colon to a card's
+ * bold lead, that whole text is left as it was: the word diff may pair the
+ * refused words with the wrong ones, so its other changes cannot be trusted.
  */
 export function spellingEdits(segments: SpellingSegment[], fixed: string[]): SpellingEdit[] | null {
   const afters = segments.map((_, index) => (fixed[index] ?? "").trim());
@@ -332,18 +349,12 @@ export function spellingEdits(segments: SpellingSegment[], fixed: string[]): Spe
   }
   const edits: SpellingEdit[] = [];
   segments.forEach((segment, index) => {
-    const after = afters[index];
-    for (const hunk of diffText(segment.text, after)) {
-      const edit = {
-        from: segment.from + hunk.start,
-        to: segment.from + hunk.end,
-        text: hunk.text,
-      };
-      if (touchesLocked(edit, segment.locked)) continue;
-      if (segment.markBreaks.some((at) => at > edit.from && at < edit.to)) continue;
-      if (segment.inLead && edit.text.includes(":")) continue;
-      edits.push(edit);
-    }
+    const own = diffText(segment.text, afters[index]).map((hunk) => ({
+      from: segment.from + hunk.start,
+      to: segment.from + hunk.end,
+      text: hunk.text,
+    }));
+    if (own.every((edit) => isAllowed(segment, edit))) edits.push(...own);
   });
   return edits;
 }
