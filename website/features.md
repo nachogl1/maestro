@@ -21,7 +21,7 @@ Maestro's session grid lets you run 1–12 AI coding assistants simultaneously i
 
 - **Dynamic grid layout** — Automatically adjusts from 1x1 to 2x3 based on session count
 - **Real-time status indicators** — See each session's state at a glance (idle, working, waiting for input, done, error)
-- **Per-session mode selection** — Choose Claude Code, Gemini CLI, OpenAI Codex, or Plain Terminal for each slot
+- **Per-session mode selection** — Choose Claude Code or Plain Terminal for each slot
 - **Independent terminals** — Each session has its own full terminal with shell environment
 
 ---
@@ -96,18 +96,16 @@ Customize Maestro's look and feel.
 
 ---
 
-## Multi-AI Support
+## Terminal Kinds
 
-Maestro isn't locked to one AI assistant. Each session can use a different AI:
+Each session runs one of two kinds of terminal:
 
-| AI Assistant | CLI Command | Description |
-|:-------------|:------------|:------------|
+| Kind | CLI Command | Description |
+|:-----|:------------|:------------|
 | **Claude Code** | `claude` | Anthropic's Claude in the terminal |
-| **Gemini CLI** | `gemini` | Google's Gemini AI |
-| **OpenAI Codex** | `codex` | OpenAI's coding assistant |
 | **Plain Terminal** | — | Standard shell, no AI |
 
-Maestro detects which CLIs are installed and shows available options. You can mix and match — run Claude on one session and Gemini on another.
+You can mix the two — run Claude Code in one session and a plain shell in another.
 
 ---
 
@@ -126,6 +124,6 @@ Extend Maestro with community plugins.
 
 Customize how AI CLIs are launched with per-session flags.
 
-- **Custom arguments** — Pass additional flags to Claude Code, Gemini CLI, or Codex
+- **Custom arguments** — Pass additional flags to Claude Code
 - **Session presets** — Save flag configurations as reusable presets
 - **Fine-grained control** — Different flags for different sessions

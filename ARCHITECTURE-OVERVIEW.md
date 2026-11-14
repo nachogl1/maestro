@@ -223,7 +223,7 @@ The codebase forms several natural clusters based on cohesion analysis:
 1. **Clean Architecture**: No circular dependencies, well-separated concerns
 2. **Comprehensive Git Integration**: Full worktree isolation with visual graph
 3. **Extensible Plugin System**: Marketplace with multiple plugin types
-4. **Multi-AI Support**: Works with Claude, Gemini, and OpenAI Codex
+4. **Claude Code First**: Each session runs Claude Code or a plain shell
 5. **Rich Terminal Experience**: xterm.js with split panes and custom fonts
 
 ### Areas of High Complexity

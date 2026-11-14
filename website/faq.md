@@ -40,17 +40,15 @@ Maestro runs on:
 
 Maestro currently supports:
 - **Claude Code** by Anthropic
-- **Gemini CLI** by Google
-- **OpenAI Codex** by OpenAI
 - **Plain Terminal** (no AI, just a standard shell)
 
 ### Do I need API keys?
 
-Maestro itself doesn't require API keys. However, the AI CLIs you use (Claude Code, Gemini CLI, Codex) have their own authentication requirements. Refer to each CLI's documentation for setup instructions.
+Maestro itself doesn't require API keys. However, Claude Code has its own authentication requirements. Refer to its documentation for setup instructions.
 
-### Can I use different AI assistants in different sessions?
+### Can I mix Claude Code and plain terminals?
 
-Yes! Each session can use a different AI assistant. For example, you could run Claude Code in Session 1, Gemini CLI in Session 2, and a plain terminal in Session 3 — all at the same time.
+Yes! Each session picks its own kind. For example, you could run Claude Code in Sessions 1 and 2 and a plain terminal in Session 3 — all at the same time.
 
 ### What if an AI CLI isn't installed?
 
