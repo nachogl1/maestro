@@ -162,6 +162,47 @@ describe("Work Journal spelling fixer", () => {
     expect(screen.getByRole("status")).toHaveTextContent("1 fix made");
   });
 
+  it("widens a selection that cuts a word to the whole word", async () => {
+    answerWith(fixTypos);
+    render(<WorkJournalEditor date={DATE} initialBody={doc(paragraph(text("I fixd the bug")))} />);
+    // "I fixd th": the selection ends inside "the".
+    act(() => {
+      pageEditor().commands.setTextSelection({ from: 1, to: 10 });
+    });
+
+    await clickFix();
+
+    expect(sentTexts()).toEqual(["I fixd the"]);
+    expect(pageEditor().getText()).toBe("I fixed the bug");
+    expect(screen.getByRole("status")).toHaveTextContent("1 fix made");
+  });
+
+  it("never rewrites a stretch of differently formatted text as one run", async () => {
+    // Long enough that the word diff falls back to one change from the first
+    // fix to the last, which would span the bold word.
+    const filler = "work ".repeat(400);
+    answerWith(fixTypos);
+    render(
+      <WorkJournalEditor
+        date={DATE}
+        initialBody={doc(
+          paragraph(
+            text(`I fixd ${filler}`),
+            text("important", [{ type: "bold" }]),
+            text(` ${filler}teh end`),
+          ),
+        )}
+      />,
+    );
+    const before = pageEditor().getJSON();
+
+    await clickFix();
+
+    expect(sentTexts()).toHaveLength(1);
+    expect(pageEditor().getJSON()).toEqual(before);
+    expect(screen.getByRole("status")).toHaveTextContent("0 fixes made");
+  });
+
   it("keeps times, links, the project and the card's bold split as they were", async () => {
     // A model that also rewrites what it must not touch.
     answerWith((texts) =>

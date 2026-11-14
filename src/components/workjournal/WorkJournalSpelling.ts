@@ -25,6 +25,11 @@ export interface SpellingSegment extends DocRange {
   locked: DocRange[];
   /** Part of a card's bold lead: a fix may not add a colon, which would move the bold split. */
   inLead: boolean;
+  /**
+   * Where the formatting changes (one text node ends and the next starts): a
+   * replacement across one would give the whole stretch one formatting.
+   */
+  markBreaks: number[];
 }
 
 /** One replacement of page text: `from..to` becomes `text`. */
@@ -43,6 +48,9 @@ const ADDRESS_PATTERN = /\b(?:https?:\/\/|www\.)\S+/gi;
 
 /** Words (with inner apostrophes), runs of space, and single other characters. */
 const TOKEN_PATTERN = /[\p{L}\p{N}_'’]+|\s+|[^\p{L}\p{N}_'’\s]/gu;
+
+/** One character of a word. */
+const WORD_CHAR = /^[\p{L}\p{N}_'’]$/u;
 
 /** The words of a text: letters and digits, with inner apostrophes. */
 const WORD_PATTERN = /[\p{L}\p{N}_'’]+/gu;
@@ -79,8 +87,8 @@ export function spellingSegments(doc: PmNode, range?: DocRange): SpellingSegment
 
 /** A block's runs of text, split at the card colon, with their locked ranges. */
 function blockPieces(block: PmNode, start: number, project: string | null): SpellingSegment[] {
-  const runs: Array<{ from: number; text: string; locked: DocRange[] }> = [];
-  let run: { from: number; text: string; locked: DocRange[] } | null = null;
+  const runs: Array<{ from: number; text: string; locked: DocRange[]; markBreaks: number[] }> = [];
+  let run: { from: number; text: string; locked: DocRange[]; markBreaks: number[] } | null = null;
   block.forEach((child, offset) => {
     const at = start + offset;
     if (!child.isText || !child.text) {
@@ -88,8 +96,11 @@ function blockPieces(block: PmNode, start: number, project: string | null): Spel
       return;
     }
     if (!run) {
-      run = { from: at, text: "", locked: [] };
+      run = { from: at, text: "", locked: [], markBreaks: [] };
       runs.push(run);
+    } else {
+      // Neighbouring text nodes always differ in their marks.
+      run.markBreaks.push(at);
     }
     run.text += child.text;
     if (child.marks.some((m) => LOCKED_MARKS.has(m.type.name))) {
@@ -126,6 +137,7 @@ function blockPieces(block: PmNode, start: number, project: string | null): Spel
         text: r.text.slice(cut.from - r.from, cut.to - r.from),
         locked,
         inLead: isCard && (colon === null || cut.to <= colon),
+        markBreaks: r.markBreaks,
       });
     }
   }
@@ -148,7 +160,11 @@ function lockedText(text: string, from: number, project: string | null): DocRang
   return ranges;
 }
 
-/** `piece` cut to `from..to` and without outer space; null when no letter is left. */
+/**
+ * `piece` cut to `from..to`, widened to whole words where the cut falls inside
+ * one (a half word would be fixed on top of its other half), and without
+ * outer space; null when no letter is left.
+ */
 function clipAndTrim(
   doc: PmNode,
   piece: SpellingSegment,
@@ -158,6 +174,13 @@ function clipAndTrim(
   let start = Math.max(piece.from, from);
   let end = Math.min(piece.to, to);
   if (start >= end) return null;
+  const charAt = (pos: number): string => piece.text[pos - piece.from] ?? "";
+  while (start > piece.from && WORD_CHAR.test(charAt(start - 1)) && WORD_CHAR.test(charAt(start))) {
+    start--;
+  }
+  while (end < piece.to && WORD_CHAR.test(charAt(end - 1)) && WORD_CHAR.test(charAt(end))) {
+    end++;
+  }
   const text = doc.textBetween(start, end);
   start += text.length - text.trimStart().length;
   end -= text.length - text.trimEnd().length;
@@ -269,7 +292,9 @@ function wordDistance(a: string, b: string): number {
 
 /** Whether `fixed` reads as a spelling fix of `word`: the same word, or a typo away from it. */
 function sameWord(word: string, fixed: string): boolean {
-  return wordDistance(word, fixed) <= Math.max(1, Math.floor(word.length / 3));
+  if (word === fixed) return true;
+  const limit = Math.max(1, Math.floor(word.length / 3));
+  return Math.abs(word.length - fixed.length) <= limit && wordDistance(word, fixed) <= limit;
 }
 
 /**
@@ -315,6 +340,7 @@ export function spellingEdits(segments: SpellingSegment[], fixed: string[]): Spe
         text: hunk.text,
       };
       if (touchesLocked(edit, segment.locked)) continue;
+      if (segment.markBreaks.some((at) => at > edit.from && at < edit.to)) continue;
       if (segment.inLead && edit.text.includes(":")) continue;
       edits.push(edit);
     }
