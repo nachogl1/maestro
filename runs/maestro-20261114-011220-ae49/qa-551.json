@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261114-011220-ae49",
+  "issue": 551,
+  "title": "Parked shelf: a zoomed terminal no longer covers the parked pills",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 622,
+  "merged_at": "2026-11-14T01:41:00Z",
+  "merge_commit": "b63d3b055c78d6a7b3abe1afa4e67d5ffe22db74",
+  "seam": "src/components/terminal/",
+  "story": "When you zoom one terminal in a project, the strip of parked terminals stays visible underneath it. The zoomed terminal ends above that strip at any window size, so every parked pill can be seen and clicked to bring a terminal back. The strip still scrolls sideways with no visible scroll bar.",
+  "checks": [
+    {
+      "key": "src/components/terminal/zoom-parked-strip",
+      "criterion": "A zoomed terminal stops above the parked strip and no pill is covered",
+      "steps": "Start Maestro and open a throwaway project. Open three terminals, park two, then zoom the third. Resize the window from very small to very large.",
+      "expected": "The zoomed terminal's frame always ends above the Parked strip; every pill is fully visible and clickable."
+    },
+    {
+      "key": "src/components/terminal/zoom-parked-strip-scroll",
+      "criterion": "The parked strip still scrolls sideways with no visible scroll bar",
+      "steps": "With one terminal zoomed, park enough terminals to overflow the strip. Scroll over the strip with the mouse wheel.",
+      "expected": "The pills move sideways and no scroll bar shows."
+    }
+  ],
+  "no_qa_reason": null
+}
