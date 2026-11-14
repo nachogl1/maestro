@@ -16,6 +16,7 @@ import { useFDAStore } from "@/stores/useFDAStore";
 import { useScratchStore } from "@/stores/useScratchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { ConclaveDialog } from "./components/conclave/ConclaveDialog";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
 import { LeftPanels } from "./components/panels/LeftPanels";
 import { openPanelInWindow, togglePanelInWindow } from "./components/panels/panelLayout";
@@ -97,6 +98,7 @@ function App() {
   const [eagleView, setEagleView] = useState(false);
   // Eagle view Cmd/Ctrl+T: arrow-navigable project picker for the new terminal.
   const [eagleAddPickerOpen, setEagleAddPickerOpen] = useState(false);
+  const [conclaveOpen, setConclaveOpen] = useState(false);
   const scratchFolder = useScratchStore((s) => s.folder);
   // Eagle view git carousel: index of the project whose git panel card shows.
   const [eagleGitIndex, setEagleGitIndex] = useState(0);
@@ -465,6 +467,7 @@ function App() {
     onNextProject: switchToNextTab,
     onPrevProject: switchToPrevTab,
     onOpenIssueMap: handleOpenIssueMap,
+    onOpenConclave: useCallback(() => setConclaveOpen(true), []),
   });
 
   // Handler to enter grid view for the active project
@@ -619,6 +622,9 @@ function App() {
           onOpenScratch={handleOpenScratch}
         />
       )}
+
+      {/* Alt+C: ask the ticked agents to coordinate */}
+      {conclaveOpen && <ConclaveDialog onClose={() => setConclaveOpen(false)} />}
 
       {/* Scratch project: delete its files or keep them */}
       <ScratchDeleteOrKeepDialog />

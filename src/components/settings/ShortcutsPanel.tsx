@@ -36,6 +36,10 @@ function buildGroups(mod: string, alt: string): ShortcutGroup[] {
         },
         { keys: [mod, "G"], description: "Toggle eagle view (all projects)" },
         { keys: [alt, "M"], description: "Open the issue map for the focused project" },
+        {
+          keys: [alt, "C"],
+          description: "Invoke Conclave (ask the ticked agents to coordinate)",
+        },
 
         { keys: [alt, "P"], description: "Park the focused terminal" },
         {

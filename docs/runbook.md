@@ -130,11 +130,12 @@ icon blinks right after the terminal name; hover over it for "Context threshold 
 
 ## Terminals: the message icon on the header
 
-When you send a message from the **Injector** panel, or a trigger sends one, every terminal that received it shows
+When you send a message from the **Injector** panel or the **Conclave** dialog, or a trigger sends one, every
+terminal that received it shows
 a small amber envelope icon on its header, right after the name (after the red context icon when that shows). From
 two messages on, it carries a count, such as `3`.
 
-- Hover over the icon to see every message, newest first: who sent it (`Injector`, or `Trigger at 50%`), the time
+- Hover over the icon to see every message, newest first: who sent it (`Injector`, `Conclave`, or `Trigger at 50%`), the time
   (`14:20`) and the message's first line. The last line reads `Click to dismiss`.
 - Click the icon to clear all of that terminal's messages. Nothing else clears it: clicking, focusing or typing in
   the terminal leaves it in place, and it stays through tab switches, zoom and parking.
@@ -178,6 +179,33 @@ Under the Injector, **Triggers** send a message on their own when a terminal's c
 - The history is one app-wide file in Maestro's app data (`trigger-history/trigger-history.json`), never inside a
   project. It keeps names as they were at firing time and only a short excerpt of the message, never terminal
   output. Lines older than seven days are dropped; a damaged file loads as an empty history.
+
+## Conclave: asking agents to coordinate (Alt+C)
+
+**Alt+C** (Option+C on a Mac) opens the Conclave dialog from anywhere, whether or not the Injector panel is open.
+Conclave sends one message to the Claude Code terminals you tick, asking those agents to message each other (with
+Claude Code's own `ListAgents` and `SendMessage`), say what they are working on, offer help, and agree how to share
+ports, files, worktrees and long-running commands so nobody blocks anybody. There is no button for it; Settings →
+Shortcuts lists the key.
+
+- The title reads "Do you want to invoke Conclave?"; hover over or tab to the (i) icon after it for a one-line
+  explanation.
+- The list shows every running Claude Code terminal of every open project, grouped by project; parked ones carry a
+  small `parked` tag. Other CLIs (Gemini, Codex, OpenCode, plain shells) are never listed. Nothing is ticked when it
+  opens; **All** ticks every one.
+- The text box opens with the default Conclave message every time, even after an earlier edit; edit it freely for
+  this one send. When it is sent, Maestro adds one line you never edit, such as
+  `Agents in this Conclave: fox (alpha-app), owl (beta-app)`, naming each ticked agent by the name Claude knows it by.
+- **Invoke Conclave** stays off until at least two terminals are ticked and the text is not empty. **Cancel** or Esc
+  closes the dialog without sending.
+- When the Claude Code setting launches terminals with skip permissions and at least one terminal is ticked, a
+  warning reads: "These agents will ask you to approve each message. Set crossSessionInbound to accept in Claude Code
+  settings to stop that." Maestro never changes that setting for you. The warning follows the current launch setting,
+  so a terminal started before that setting changed may be judged wrong.
+- A clean send closes the dialog. When some terminals fail, the dialog stays open and lists each failure by name;
+  the ones reached still get the message.
+- Every terminal reached shows the amber message icon on its header with sender `Conclave` (see "Terminals: the
+  message icon on the header").
 
 ## Tabs: dragging one onto another swaps the two
 
