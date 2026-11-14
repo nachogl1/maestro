@@ -439,7 +439,7 @@ struct ProjectScope {
 /// A path for comparing: no Windows `\\?\` prefix, one kind of separator, no
 /// trailing separator.
 fn path_key(path: &str) -> String {
-    crate::core::samurai_injector::strip_extended_prefix(path.trim())
+    crate::core::extended_paths::strip_extended_prefix(path.trim())
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string()

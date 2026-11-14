@@ -55,9 +55,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use super::extended_paths::strip_extended_prefix;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_config::SharedSamuraiConfig;
-use super::samurai_injector::{strip_extended_prefix, SessionDirResolver};
+use super::samurai_injector::SessionDirResolver;
 use super::samurai_prompts::epic_slug;
 use super::samurai_replicator::read_repo_head;
 use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};

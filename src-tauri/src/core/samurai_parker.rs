@@ -1543,9 +1543,8 @@ mod tests {
     use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
     use crate::core::samurai_injector::SessionDirResolver;
     use crate::core::samurai_schedule::{ScheduledLaunchSpec, REASON_SCHEDULED_LAUNCH};
-    use crate::core::samurai_test_wait::{
-        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
-    };
+    use crate::core::samurai_test_wait::{tick_on_append, wait_for_row};
+    use crate::core::test_wait::{new_tick, wait_until, HarnessTick};
     use crate::core::windows_process::StdCommandExt;
     use std::collections::HashMap;
     use std::path::Path;
@@ -1709,7 +1708,7 @@ mod tests {
             config,
             // Issue #109: the injected writer confirms every body write, so
             // delivered rows behave as production's post-write verdict.
-            Arc::new(|_, _, outcome: crate::core::samurai_pty::DeliveryOutcome| outcome(Ok(()))),
+            Arc::new(|_, _, outcome: crate::core::pty_submit::DeliveryOutcome| outcome(Ok(()))),
             audit.clone(),
             resolver,
             None,

@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::core::samurai_files::canonical_stripped;
+use crate::core::extended_paths::canonical_stripped;
 use crate::core::windows_process::StdCommandExt;
 
 /// Text files up to this size preview; bigger ones show "Can't preview".

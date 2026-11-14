@@ -75,7 +75,7 @@ use std::sync::{Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use super::atomic_write::rename_with_retry;
-use super::samurai_files::normalize_project;
+use super::extended_paths::normalize_project;
 
 /// Name of the active journal file inside the journal dir.
 pub const JOURNAL_FILE: &str = "journal.jsonl";

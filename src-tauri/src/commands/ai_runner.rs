@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use chrono::Local;
 
-use crate::core::samurai_files::normalize_extended_path;
+use crate::core::extended_paths::normalize_extended_path;
 
 /// Base directory for one artifact kind: `<app data>/<kind>/`.
 pub fn artifact_base_dir(kind: &str) -> PathBuf {

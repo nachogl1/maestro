@@ -15,7 +15,7 @@
 //! prompt — triggers [`HarvestTriage::on_session_started`] (tapped from
 //! lib.rs's `hook_emit_fn`, the replicator's gate for successor briefs),
 //! which types the prompt in via
-//! `core::samurai_pty::submit_instruction_confirmed`.
+//! `core::pty_submit::submit_instruction_confirmed`.
 //!
 //! **Consumption — two-phase (issue #159):** at injection — the moment the
 //! prompt's PTY write SUCCEEDS — journal entries flip to PENDING, not
@@ -45,8 +45,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tauri::State;
 
 use super::ai_runner;
-use crate::core::samurai_brief;
-use crate::core::samurai_files::canonical_stripped;
+use crate::core::brief_files;
+use crate::core::extended_paths::canonical_stripped;
 use crate::core::samurai_injector::SessionDirResolver;
 use crate::core::samurai_journal::{HarvestMarker, JournalEntry, JournalEntryStatus, JournalStore};
 
@@ -60,7 +60,7 @@ const NOUN: &str = "harvest report";
 /// Cap on the rendered entries block when the prompt is TYPED into the PTY
 /// (the injected prompt stays a bounded paste — past ~4 KiB the PTY
 /// submit's scaled delay is already capped, see
-/// `core::samurai_pty::submit_delay`). A transport budget, and the only
+/// `core::pty_submit::submit_delay`). A transport budget, and the only
 /// cap that still has a transport reason (issue #154 split it out of the
 /// single `MAX_ENTRIES_CHARS` this used to be).
 const MAX_ENTRIES_CHARS_INLINE: usize = 12_000;
@@ -146,7 +146,7 @@ pub fn report_file_name(date: &str) -> String {
 /// brief yet somebody else's entries while its own stayed consumed and
 /// untriaged. Names disambiguate per delivery here exactly as
 /// `samurai_injector::injector_brief_name` (#143) and the #138 PR-review
-/// stem do. Stays inside `samurai_brief`'s stem bound: 15 + 10 + 2 + at most
+/// stem do. Stays inside `brief_files`'s stem bound: 15 + 10 + 2 + at most
 /// 10 digits = 37 characters.
 fn harvest_brief_name(date: &str, session_id: u32) -> String {
     format!("harvest-triage-{date}-s{session_id}")
@@ -279,7 +279,7 @@ fn build_triage_prompt(date: &str, entries_block: &str, downloads_dir: &str) -> 
 /// Delivery of the injected prompt into a session's PTY. `Ok` means the
 /// prompt BODY reached the PTY — the consumption gate (review F1): journal
 /// entries flip to consumed only on `Ok`. Production wires
-/// `core::samurai_pty::submit_instruction_confirmed` (the two-frame
+/// `core::pty_submit::submit_instruction_confirmed` (the two-frame
 /// paste-then-Enter submit with the issue-#103 scaled delay, body write
 /// confirmed on the calling thread); tests capture the call.
 pub type DeliverFn = Arc<dyn Fn(u32, String) -> Result<(), String> + Send + Sync>;
@@ -467,8 +467,8 @@ impl HarvestTriage {
     ///
     /// Render-then-VERIFY, not render-and-hope: the brief-cap render is
     /// delivered only once its write has actually succeeded, which is why
-    /// this uses [`samurai_brief::try_deliverable_instruction`] rather than
-    /// the infallible [`samurai_brief::deliverable_instruction`] the other
+    /// this uses [`brief_files::try_deliverable_instruction`] rather than
+    /// the infallible [`brief_files::deliverable_instruction`] the other
     /// callers take. A failed write must NOT fall back to typing that
     /// payload — it can be ten times the typing budget, exactly the multi-KB
     /// blind paste #137 showed arriving spliced mid-word. It re-renders at
@@ -480,7 +480,7 @@ impl HarvestTriage {
             return self.render_triage(date, entries, MAX_ENTRIES_CHARS_INLINE);
         };
         let staged = self.render_triage(date, entries, MAX_ENTRIES_CHARS_BRIEF);
-        match samurai_brief::try_deliverable_instruction(
+        match brief_files::try_deliverable_instruction(
             &dir,
             &harvest_brief_name(date, session_id),
             &staged.prompt,
@@ -492,7 +492,7 @@ impl HarvestTriage {
                 snapshot_len: staged.snapshot_len,
                 brief_downgrade: None,
             },
-            // Under `samurai_brief::INLINE_MAX_BYTES` — nothing was written
+            // Under `brief_files::INLINE_MAX_BYTES` — nothing was written
             // and the render is small enough to type as it stands.
             Ok(None) => staged,
             Err(e) => {
@@ -1901,7 +1901,7 @@ mod tests {
         // A RESOLVED brief route always writes a file: the stays-inline arm
         // of `try_deliverable_instruction` is unreachable from the harvest,
         // and a resolved route therefore always renders at the brief cap.
-        // The under-the-gate route itself is pinned in `samurai_brief`'s own
+        // The under-the-gate route itself is pinned in `brief_files`'s own
         // tests, which is where that rule lives.
         //
         // Measured on the ASSEMBLED prompt, not on the raw template:
@@ -1909,7 +1909,7 @@ mod tests {
         // toward the budget could slide under the gate while a raw-template
         // assertion still passed. Empty substitutions are the smallest
         // prompt that can ever be built.
-        assert!(build_triage_prompt("", "", "").len() > samurai_brief::INLINE_MAX_BYTES);
+        assert!(build_triage_prompt("", "", "").len() > brief_files::INLINE_MAX_BYTES);
     }
 
     #[test]
@@ -2231,7 +2231,7 @@ mod tests {
     fn test_a_failed_brief_write_falls_back_to_the_full_prompt_with_a_warning() {
         let worktree = tempdir().unwrap();
         // `.maestro` occupied by a FILE: `write_brief` cannot create the
-        // briefs directory underneath it (the `samurai_brief.rs` /
+        // briefs directory underneath it (the `brief_files.rs` /
         // `initial_prompt.rs` fallback trick).
         std::fs::write(worktree.path().join(".maestro"), "not a directory").unwrap();
         let journal_dir = tempdir().unwrap();
@@ -2329,7 +2329,7 @@ mod tests {
         assert_eq!(triage.arm(8).unwrap_err(), NOTHING_TO_HARVEST);
         // The PTY still only ever sees the one-frame pointer.
         let staged = delivered.lock().unwrap()[0].1.clone();
-        assert!(staged.len() <= samurai_brief::INLINE_MAX_BYTES, "{staged}");
+        assert!(staged.len() <= brief_files::INLINE_MAX_BYTES, "{staged}");
     }
 
     #[test]

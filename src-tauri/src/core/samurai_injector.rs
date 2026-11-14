@@ -57,14 +57,15 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use super::brief_files;
 use super::claude_event::ClaudeEvent;
+use super::extended_paths::strip_extended_prefix;
+use super::pty_submit::DeliveryOutcome;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
-use super::samurai_brief;
 use super::samurai_config::SharedSamuraiConfig;
 use super::samurai_context::SamuraiContextStore;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts;
-use super::samurai_pty::DeliveryOutcome;
 use super::samurai_replicator::{handoff_relpath_tolerant, SamuraiReplicator, StdinWriter};
 use super::supervisor::{SessionSnapshot, Supervisor, SupervisorState};
 use super::windows_process::StdCommandExt;
@@ -341,7 +342,7 @@ struct PendingInstruction {
     project: String,
     epic: String,
     generation: u32,
-    /// The instruction text. No submit key, ever — `samurai_pty` sends the
+    /// The instruction text. No submit key, ever — `pty_submit` sends the
     /// Enter as a separate PTY write at delivery time.
     instruction: String,
     /// Injection attempts so far: 0 (waiting for first idle), 1, or 2 (max).
@@ -680,26 +681,6 @@ fn ack_value(text: &str) -> Option<String> {
 
 fn written_value(text: &str) -> Option<String> {
     marker_value(text, WRITTEN_TAG)
-}
-
-/// `fs::canonicalize` on Windows returns `\\?\`-prefixed extended-length
-/// paths (the SessionManager and `WorktreeManager` store them verbatim);
-/// `CreateProcess` rejects that form as a working directory. Strip it, same
-/// as `commands/terminal.rs` / `commands/ai_runner.rs`. On other platforms
-/// the prefix never occurs and this is a no-op. `pub(crate)`: the replicator
-/// (issue #55) resolves session dirs through the same resolver and needs the
-/// identical stripping.
-///
-/// Issue #165: the strip is [`samurai_files::normalize_extended_path`]'s, not
-/// a bare `\\?\` chop. A worktree canonicalized on a share arrives as
-/// `\\?\UNC\server\share\…`, and dropping only `\\?\` left the RELATIVE
-/// `UNC\server\share\…` — which every consumer here (launch working
-/// directory, handoff resolution, HEAD reads, orphan probes) then resolved
-/// against the process cwd instead of the share. The same call also repairs a
-/// `worktree_path` already persisted in a run config under that mangled
-/// spelling, exactly as #161 did for `project_path`.
-pub(crate) fn strip_extended_prefix(path: &str) -> String {
-    super::samurai_files::normalize_extended_path(path)
 }
 
 /// Whether one `git status --porcelain` line blocks the handoff. Untracked
@@ -1199,7 +1180,7 @@ pub struct SamuraiInjector {
     /// Delivers one instruction into a session's PTY — the replicator's
     /// exact writer contract (issue #109): text without a submit key, and a
     /// verdict callback fired once the body write lands (or fails). The
-    /// production closure (lib.rs) wraps `samurai_pty::submit_instruction`
+    /// production closure (lib.rs) wraps `pty_submit::submit_instruction`
     /// with ctx `"injector"`; tests inject a recorder.
     deliver: StdinWriter,
     audit: AuditLog,
@@ -1850,7 +1831,7 @@ impl SamuraiInjector {
 
     /// Decision + bookkeeping for an idle signal, no I/O. Returns the
     /// instruction text when an injection is due — WITHOUT a submit key:
-    /// `samurai_pty::submit_instruction` sends the Enter as its own write, or
+    /// `pty_submit::submit_instruction` sends the Enter as its own write, or
     /// the CLI reads text+CR as one paste and never submits it.
     fn arm_injection_on_idle(&self, session_id: u32) -> Option<String> {
         let state = self.session_state(session_id)?;
@@ -1899,7 +1880,7 @@ impl SamuraiInjector {
     /// What is actually typed for `session_id`'s pending instruction, per
     /// issue #143: routed through the same brief-file gate
     /// [`SamuraiReplicator`] already uses
-    /// ([`samurai_brief::deliverable_instruction`]), resolved against the
+    /// ([`brief_files::deliverable_instruction`]), resolved against the
     /// pending entry's own kind/generation/corrective/episode and the
     /// session's worktree (`self.session_dirs`). No pending entry, or no
     /// recorded working directory, types `data` exactly as before #143 — the
@@ -1969,14 +1950,14 @@ impl SamuraiInjector {
     fn stage(target: Option<(String, String)>, data: String) -> String {
         match target {
             Some((name, dir)) => {
-                samurai_brief::deliverable_instruction(&PathBuf::from(dir), &name, data)
+                brief_files::deliverable_instruction(&PathBuf::from(dir), &name, data)
             }
             None => data,
         }
     }
 
     /// Write the instruction into the session's PTY through the injected
-    /// writer (production: `samurai_pty::submit_instruction`, which submits
+    /// writer (production: `pty_submit::submit_instruction`, which submits
     /// with a separate Enter — a single text-plus-CR write is read as a
     /// paste and never submits). The `delivered` audit row and the
     /// Enter-resend watch ride the writer's verdict callback (issue #109),
@@ -1997,7 +1978,7 @@ impl SamuraiInjector {
     /// [`SamuraiReplicator::try_brief_or_inline`](super::samurai_replicator) and
     /// [`Self::spawn_validation`] already follow.
     ///
-    /// The gate is [`samurai_brief::is_inline`] and nothing else: under it,
+    /// The gate is [`brief_files::is_inline`] and nothing else: under it,
     /// `deliverable_instruction` provably makes no filesystem call, so the
     /// delivery stays fully synchronous and lands before this call returns.
     /// Over it the hop is unconditional — including for a session whose
@@ -2053,7 +2034,7 @@ impl SamuraiInjector {
                 result,
             );
         });
-        if samurai_brief::is_inline(&data) {
+        if brief_files::is_inline(&data) {
             (self.deliver)(session_id, data, outcome);
             return;
         }
@@ -2487,7 +2468,7 @@ impl SamuraiInjector {
     #[cfg(test)]
     pub(crate) fn backdate_injection(&self, session_id: u32, by: Duration) {
         let mut done = false;
-        crate::core::samurai_test_wait::blocking_wait_until(
+        crate::core::test_wait::blocking_wait_until(
             "the delivery outcome that stamps `injected_at`",
             || {
                 let mut pending = self.lock_pending();
@@ -2540,9 +2521,8 @@ pub fn spawn_injector(injector: Arc<SamuraiInjector>) {
 mod tests {
     use super::*;
     use crate::core::samurai_config::SamuraiConfig;
-    use crate::core::samurai_test_wait::{
-        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
-    };
+    use crate::core::samurai_test_wait::{tick_on_append, wait_for_row};
+    use crate::core::test_wait::{new_tick, wait_until, HarnessTick};
     use std::sync::RwLock;
     use tempfile::tempdir;
 
@@ -2925,36 +2905,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_strip_extended_prefix() {
-        assert_eq!(strip_extended_prefix(r"\\?\C:\git\proj"), r"C:\git\proj");
-        assert_eq!(strip_extended_prefix(r"C:\git\proj"), r"C:\git\proj");
-        assert_eq!(strip_extended_prefix("/home/x"), "/home/x");
-    }
-
-    /// Issue #165: a worktree canonicalized on a share must stay ABSOLUTE.
-    /// Dropping only `\\?\` yielded `UNC\server\share\…`, which resolves
-    /// against the process cwd — the launch working directory, the handoff
-    /// resolution and every HEAD read then pointed at the wrong tree.
-    #[test]
-    fn test_strip_extended_prefix_keeps_a_unc_worktree_absolute() {
-        assert_eq!(
-            strip_extended_prefix(r"\\?\UNC\build01\shares\epic-wt"),
-            r"\\build01\shares\epic-wt",
-        );
-        // Accept-on-read: a `worktree_path` already persisted under the
-        // mangled spelling repairs back, same as #161 gave `project_path`.
-        assert_eq!(
-            strip_extended_prefix(r"UNC\build01\shares\epic-wt"),
-            r"\\build01\shares\epic-wt",
-        );
-        // An already-plain UNC path is left alone (idempotent).
-        assert_eq!(
-            strip_extended_prefix(r"\\build01\shares\epic-wt"),
-            r"\\build01\shares\epic-wt",
-        );
-    }
-
     // --- validation against real git repos in temp dirs ---
 
     /// `git init` + one committed file, returning the repo dir. Identity is
@@ -3045,7 +2995,7 @@ mod tests {
         let rel = samurai_prompts::handoff_file_relpath("#9", 1);
         write_handoff_file(repo, "#9", 1);
         let brief =
-            crate::core::samurai_brief::write_brief(repo, "gen-1-launch", "[Maestro Samurai] …")
+            crate::core::brief_files::write_brief(repo, "gen-1-launch", "[Maestro Samurai] …")
                 .unwrap();
         assert!(repo.join(&brief).is_file());
 
@@ -3497,7 +3447,7 @@ mod tests {
         injector.tick();
 
         // First idle → attempt 1, a single pasteable block with NO submit
-        // key: samurai_pty writes the Enter separately, or the CLI reads
+        // key: pty_submit writes the Enter separately, or the CLI reads
         // text+CR as one paste and never submits it.
         let data = injector.arm_injection_on_idle(1).expect("must inject");
         assert!(!data.contains('\r'), "no submit key in the payload");
@@ -3846,14 +3796,14 @@ mod tests {
 
         let instruction = samurai_prompts::handoff_instruction("epic-7", 3);
         assert!(
-            instruction.len() > samurai_brief::INLINE_MAX_BYTES,
+            instruction.len() > brief_files::INLINE_MAX_BYTES,
             "fixture assumption: the real handoff instruction is over the gate"
         );
 
         let staged = injector.deliverable(1, instruction.clone());
 
-        let relpath = format!("{}/epic-7-gen-3-handoff.md", samurai_brief::BRIEF_DIR);
-        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        let relpath = format!("{}/epic-7-gen-3-handoff.md", brief_files::BRIEF_DIR);
+        assert_eq!(staged, brief_files::pointer_instruction(&relpath));
         assert_eq!(
             std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
             instruction,
@@ -3875,12 +3825,12 @@ mod tests {
 
         let park = samurai_prompts::park_instruction(&snapshot.epic, snapshot.generation);
         assert!(
-            park.len() > samurai_brief::INLINE_MAX_BYTES,
+            park.len() > brief_files::INLINE_MAX_BYTES,
             "fixture assumption"
         );
         let staged = injector.deliverable(1, park.clone());
-        let relpath = format!("{}/epic-9-gen-2-park.md", samurai_brief::BRIEF_DIR);
-        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        let relpath = format!("{}/epic-9-gen-2-park.md", brief_files::BRIEF_DIR);
+        assert_eq!(staged, brief_files::pointer_instruction(&relpath));
         assert_eq!(
             std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
             park
@@ -3894,15 +3844,12 @@ mod tests {
             "bad",
         );
         assert!(
-            park_corrective.len() > samurai_brief::INLINE_MAX_BYTES,
+            park_corrective.len() > brief_files::INLINE_MAX_BYTES,
             "fixture assumption"
         );
         let staged = injector.deliverable(1, park_corrective.clone());
-        let relpath = format!(
-            "{}/epic-9-gen-2-park-corrective.md",
-            samurai_brief::BRIEF_DIR
-        );
-        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        let relpath = format!("{}/epic-9-gen-2-park-corrective.md", brief_files::BRIEF_DIR);
+        assert_eq!(staged, brief_files::pointer_instruction(&relpath));
         assert_eq!(
             std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
             park_corrective
@@ -3923,15 +3870,15 @@ mod tests {
         let handoff_corrective =
             samurai_prompts::handoff_corrective_instruction("epic-9", 5, "bad");
         assert!(
-            handoff_corrective.len() > samurai_brief::INLINE_MAX_BYTES,
+            handoff_corrective.len() > brief_files::INLINE_MAX_BYTES,
             "fixture assumption"
         );
         let staged = injector.deliverable(2, handoff_corrective.clone());
         let relpath = format!(
             "{}/epic-9-gen-5-handoff-corrective.md",
-            samurai_brief::BRIEF_DIR
+            brief_files::BRIEF_DIR
         );
-        assert_eq!(staged, samurai_brief::pointer_instruction(&relpath));
+        assert_eq!(staged, brief_files::pointer_instruction(&relpath));
         assert_eq!(
             std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
             handoff_corrective
@@ -3950,7 +3897,7 @@ mod tests {
         let snap = supervisor
             .register_session(1, project.into(), "epic-1".into(), 1)
             .unwrap();
-        let short = "x".repeat(samurai_brief::INLINE_MAX_BYTES);
+        let short = "x".repeat(brief_files::INLINE_MAX_BYTES);
         injector.lock_pending().insert(
             1,
             PendingInstruction::new(PendingKind::Handoff, &snap, short.clone()),
@@ -3960,7 +3907,7 @@ mod tests {
 
         assert_eq!(staged, short);
         assert!(
-            !repo.path().join(samurai_brief::BRIEF_DIR).exists(),
+            !repo.path().join(brief_files::BRIEF_DIR).exists(),
             "no brief written"
         );
     }
@@ -4100,8 +4047,8 @@ mod tests {
         wait_until(&tick, || captured.lock().unwrap().is_some()).await;
         let (typed, _) = captured.lock().unwrap().clone().expect("delivery captured");
         let full = samurai_prompts::handoff_instruction("epic-7", 3);
-        let relpath = format!("{}/epic-7-gen-3-handoff.md", samurai_brief::BRIEF_DIR);
-        assert_eq!(typed, samurai_brief::pointer_instruction(&relpath));
+        let relpath = format!("{}/epic-7-gen-3-handoff.md", brief_files::BRIEF_DIR);
+        assert_eq!(typed, brief_files::pointer_instruction(&relpath));
         assert_ne!(typed, full);
         assert_eq!(
             std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),
@@ -4137,8 +4084,7 @@ mod tests {
         context.observe(&context_event(1, 50.0));
         injector.tick();
         assert!(
-            samurai_prompts::handoff_instruction("epic-7", 3).len()
-                > samurai_brief::INLINE_MAX_BYTES,
+            samurai_prompts::handoff_instruction("epic-7", 3).len() > brief_files::INLINE_MAX_BYTES,
             "fixture assumption: the staged instruction is over the brief gate"
         );
 
@@ -4186,9 +4132,9 @@ mod tests {
 
         wait_until(&tick, || captured.lock().unwrap().is_some()).await;
         let (typed, _) = captured.lock().unwrap().clone().expect("delivery captured");
-        let relpath = format!("{}/epic-7-gen-3-handoff.md", samurai_brief::BRIEF_DIR);
+        let relpath = format!("{}/epic-7-gen-3-handoff.md", brief_files::BRIEF_DIR);
         let full = samurai_prompts::handoff_instruction("epic-7", 3);
-        assert_eq!(typed, samurai_brief::pointer_instruction(&relpath));
+        assert_eq!(typed, brief_files::pointer_instruction(&relpath));
         assert_ne!(typed, full, "the full instruction must never reach the PTY");
         assert_eq!(
             std::fs::read_to_string(repo.path().join(&relpath)).unwrap(),

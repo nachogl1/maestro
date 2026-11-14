@@ -762,7 +762,7 @@ fn read_new_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::samurai_test_wait::{new_tick, wait_until, HarnessTick};
+    use crate::core::test_wait::{new_tick, wait_until, HarnessTick};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -782,7 +782,7 @@ mod tests {
     /// on the test's own idle runtime while the filesystem notification
     /// queued behind a fully loaded suite (issues #197-#202). Waiting on this
     /// tick instead observes the emit itself; the bound that remains lives in
-    /// [`crate::core::samurai_test_wait`] and is a hang detector.
+    /// [`crate::core::test_wait`] and is a hang detector.
     fn ticked_event_bus() -> (
         Arc<EventBus>,
         Arc<std::sync::Mutex<Vec<ClaudeEvent>>>,

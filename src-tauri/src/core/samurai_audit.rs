@@ -35,8 +35,8 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
+use super::extended_paths::normalize_project;
 use super::project_key::project_key;
-use super::samurai_files::normalize_project;
 
 /// The audit event kinds (PRD §5.10). Sub-kinds (ack-timeout, breaker-tripped,
 /// threshold-crossed, illegal_transition, …) live in the free-form `details`.

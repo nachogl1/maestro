@@ -39,10 +39,10 @@ use std::sync::{Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use super::atomic_write::atomic_write_via;
+use super::extended_paths::normalize_project;
+use super::pr_runs;
 use super::project_key::project_key;
 use super::samurai_config::SamuraiConfig;
-use super::samurai_files::normalize_project;
-use super::samurai_pr_runs;
 use super::samurai_prompts::{epic_slug, RunRefs};
 use super::samurai_workflow::WorkflowGraph;
 
@@ -771,7 +771,7 @@ impl RunConfigStore {
             // existing Samurai-managed delete root; skipping it by name is
             // sound because a project directory is always
             // `<sanitized-basename>-<hash12>`, which `pr` can never be.
-            if dir.file_name().and_then(|n| n.to_str()) == Some(samurai_pr_runs::PR_RUNS_DIR) {
+            if dir.file_name().and_then(|n| n.to_str()) == Some(pr_runs::PR_RUNS_DIR) {
                 continue;
             }
             let files = match std::fs::read_dir(&dir) {
@@ -1247,7 +1247,7 @@ mod tests {
         let store = RunConfigStore::new(dir.path().to_path_buf());
         store.save(&sample("C:/git/maestro", "#38")).unwrap();
 
-        let pr_dir = dir.path().join(samurai_pr_runs::PR_RUNS_DIR);
+        let pr_dir = dir.path().join(pr_runs::PR_RUNS_DIR);
         std::fs::create_dir_all(&pr_dir).unwrap();
         std::fs::write(
             pr_dir.join("nachogl1-maestro-142-x.json"),

@@ -19,18 +19,16 @@ use tauri_plugin_store::StoreExt;
 
 use crate::commands::ai_runner::{artifact_base_dir, canonical_project_path};
 use crate::commands::usage::{get_claude_usage, UsageData};
+use crate::core::extended_paths::{self, normalize_project, strip_extended_prefix};
+use crate::core::pr_runs::PrRunStore;
 use crate::core::samurai_audit::{AuditEvent, AuditEventKind, AuditLog, AuditReadResult};
 use crate::core::samurai_config::{SamuraiConfig, SharedSamuraiConfig};
 use crate::core::samurai_context::SamuraiContextStore;
-use crate::core::samurai_files::{
-    self, normalize_project, SamuraiFileEntry, SamuraiFileGroup, SamuraiFilesRoots,
-};
-use crate::core::samurai_injector::strip_extended_prefix;
+use crate::core::samurai_files::{self, SamuraiFileEntry, SamuraiFileGroup, SamuraiFilesRoots};
 use crate::core::samurai_journal::{
     default_journal_file, JournalCategory, JournalEntry, JournalListResult, JournalStore,
 };
 use crate::core::samurai_parker::SamuraiParker;
-use crate::core::samurai_pr_runs::PrRunStore;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::samurai_prompts::{self, epic_slug, ref_slug, LaunchInput};
 use crate::core::samurai_replicator::{derive_repo_pin, DeliveryRoute, SamuraiReplicator};
@@ -59,7 +57,7 @@ const SAMURAI_CONFIG_KEY: &str = "config";
 
 /// Project identity at the samurai command boundary:
 /// [`canonical_project_path`] plus the shared samurai repair
-/// (`samurai_files::normalize_project`). `canonical_project_path` strips only
+/// (`extended_paths::normalize_project`). `canonical_project_path` strips only
 /// `\\?\`, which leaves a `\\?\UNC\server\share\…` checkout RELATIVE
 /// (`UNC\server\share\…`) — a spelling that matches none of the stores'
 /// normalized records and is unusable as a working directory (issue #161).
@@ -2657,7 +2655,7 @@ const FILE_READ_MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// inventory returned. Not "any file under the managed roots", not "any file
 /// in a project" — a listed file and nothing else, so this can never become
 /// a general-purpose file reader handed to a webview. Both sides go through
-/// [`samurai_files::canonical_stripped`], so `..` traversal, symlinks, 8.3
+/// [`extended_paths::canonical_stripped`], so `..` traversal, symlinks, 8.3
 /// short names and Windows `\\?\` / `\\?\UNC\` spellings all collapse to the
 /// same on-disk identity before the compare.
 ///
@@ -2667,12 +2665,12 @@ fn read_listed_file(entries: &[SamuraiFileEntry], path: &str) -> Result<String, 
     // A path that cannot be resolved never reaches the compare — this is
     // also the deleted-between-listing-and-click case, which must read as an
     // explanation, not a panic.
-    let requested = samurai_files::canonical_stripped(Path::new(path)).ok_or_else(|| {
+    let requested = extended_paths::canonical_stripped(Path::new(path)).ok_or_else(|| {
         format!("cannot read {path}: the file does not exist or cannot be resolved")
     })?;
 
     let listed = entries.iter().any(|entry| {
-        samurai_files::canonical_stripped(Path::new(&entry.path)).is_some_and(|p| p == requested)
+        extended_paths::canonical_stripped(Path::new(&entry.path)).is_some_and(|p| p == requested)
     });
     if !listed {
         return Err(format!(
@@ -2821,8 +2819,9 @@ pub fn samurai_journal_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::extended_paths::strip_extended_length;
     use crate::core::samurai_audit::AuditLog;
-    use crate::core::samurai_files::{strip_extended_length, SamuraiFileKind};
+    use crate::core::samurai_files::SamuraiFileKind;
     use crate::core::samurai_parker::PARK_REASON_ALLOWANCE;
     use crate::core::samurai_run_config::InterruptedStamp;
     // Issue #141's title lookup finishes on a background task the caller
@@ -2832,8 +2831,8 @@ mod tests {
     // idle, runtime — a race budget that expires on a merely-slow run
     // (issues #197, #198, #199). This is the shared version: the wall-clock
     // bound it keeps is a hang detector, never a budget.
-    use crate::core::samurai_test_wait::{await_or_hang, new_tick, wait_until};
     use crate::core::supervisor::SupervisorState;
+    use crate::core::test_wait::{await_or_hang, new_tick, wait_until};
     use crate::core::windows_process::StdCommandExt;
     use tempfile::tempdir;
 
@@ -3824,7 +3823,7 @@ mod tests {
             supervisor.clone(),
             context.clone(),
             config,
-            Arc::new(|_, _, outcome: crate::core::samurai_pty::DeliveryOutcome| outcome(Ok(()))),
+            Arc::new(|_, _, outcome: crate::core::pty_submit::DeliveryOutcome| outcome(Ok(()))),
             audit.clone(),
             Arc::new(|_| None),
             None,
