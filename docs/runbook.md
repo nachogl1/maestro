@@ -286,13 +286,16 @@ It never asks first, and it only removes what cannot hold anyone's work:
 - **In Maestro's settings folder:** the Samurai settings and the Samurai workflow.
 - **In each project a Samurai run worked on:** the `.maestro/handoffs/` folder. `.maestro/briefs/` stays, because
   PR review uses it.
-- **Run worktrees:** one is removed only when everything on it is already on the project's default branch and it
-  has no uncommitted or new files. A branch that was squash-merged does not count as merged, so its worktree is kept.
+- **Run worktrees:** one is removed only when everything on it is already on the project's default branch, no PR
+  review or terminal saved for reopening uses it, and the only files git does not hold are Samurai's own hand-over
+  and brief files (deleted first) or rebuildable build output (`node_modules/`, `target/`, `dist/`). Uncommitted
+  files, or ignored files such as a `.env`, keep it. A branch that was squash-merged does not count as merged, so its
+  worktree is kept.
 - Anything that is a link to another folder, or holds one, is left alone, and nothing is force-deleted. A file that
   cannot be removed is skipped and the rest still goes.
 
 When a run worktree is kept, a notice in the bottom-left corner lists each one with its folder and why it was kept
-(unmerged commits, uncommitted files). It stays until you close it with its **X**. When nothing was kept, there is
+(for example unmerged commits, uncommitted files, ignored files, open in a saved terminal). It stays until you close it with its **X**. When nothing was kept, there is
 no notice. Later starts do nothing: a `samurai-cleanup-done` file in Maestro's data folder records that the cleanup
 ran. A kept worktree is yours to look at and remove by hand.
 

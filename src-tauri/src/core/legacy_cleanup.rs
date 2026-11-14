@@ -18,8 +18,11 @@
 //! - **Each project a run record names:** `.maestro/handoffs/`
 //!   (`.maestro/briefs/` stays: PR review uses it).
 //! - **Each run worktree a run record names:** removed only when its commit is
-//!   already on the project's default branch and it has no uncommitted or
-//!   untracked files; any other is kept untouched and reported.
+//!   already on the project's default branch, no PR review or saved terminal
+//!   uses it, and the only files git does not hold are Samurai's own
+//!   (`.maestro/handoffs/`, `.maestro/briefs/`, which Samurai wrote there and
+//!   which are deleted first) or rebuildable build output (`node_modules/`,
+//!   `target/`, `dist/`). Any other is kept untouched and reported.
 //!
 //! The paths are the ones the Samurai code wrote before it was deleted
 //! (`samurai_files_roots`, `samurai_run_config` and `samurai_files` in git
@@ -29,11 +32,13 @@ use std::collections::BTreeSet;
 use std::fs::Metadata;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use super::extended_paths::{canonical_stripped, strip_extended_length};
+use super::open_terminals;
 use super::pr_runs::{PrRunStore, PR_RUNS_DIR};
 use crate::git::{Git, GitError};
 
@@ -55,6 +60,14 @@ const MAESTRO_DIR: &str = ".maestro";
 const HANDOFFS_DIR: &str = "handoffs";
 /// Length of the hash at the end of a run-record folder name.
 const PROJECT_KEY_HASH_LEN: usize = 12;
+/// Where Samurai wrote its own files inside a run worktree, as git prints
+/// them (`samurai_files::handoff_dir` / `brief_dir` at 30c9ac5^).
+const SAMURAI_WORKTREE_DIRS: [&str; 2] = [".maestro/handoffs/", ".maestro/briefs/"];
+/// Ignored folders that only hold output a build or install recreates.
+const REBUILDABLE_DIRS: [&str; 3] = ["node_modules", "target", "dist"];
+/// Deleting a worktree full of build output can take minutes on Windows; a
+/// git killed half-way would leave a half-deleted, still-registered worktree.
+const WORKTREE_REMOVE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Where the cleanup looks: Maestro's data folder (`artifact_base_dir`'s
 /// parent) and the settings folder the store plugin writes to, when known.
@@ -76,7 +89,9 @@ pub struct KeptWorktree {
 enum KeepReason {
     UnmergedCommits,
     UncommittedFiles,
+    IgnoredFiles,
     UsedByPrReview,
+    OpenInSavedTerminal,
     ContainsLink,
     NotAWorktree,
     CheckFailed,
@@ -88,7 +103,9 @@ impl KeepReason {
         match self {
             Self::UnmergedCommits => "unmerged commits",
             Self::UncommittedFiles => "uncommitted files",
+            Self::IgnoredFiles => "ignored files",
             Self::UsedByPrReview => "used by a PR review",
+            Self::OpenInSavedTerminal => "open in a saved terminal",
             Self::ContainsLink => "contains a link to another folder",
             Self::NotAWorktree => "not a git worktree of its project",
             Self::CheckFailed => "could not be checked with git",
@@ -116,7 +133,10 @@ pub async fn run_once(roots: &CleanupRoots) -> Vec<KeptWorktree> {
     let runs_dir = roots.data_dir.join(RUNS_DIR);
     let record_dirs = run_record_dirs(&runs_dir);
     let records = read_run_records(&record_dirs);
-    let pr_review_paths = pr_review_paths(&runs_dir);
+    let users = WorktreeUsers {
+        pr_reviews: pr_review_paths(&runs_dir),
+        saved_terminals: saved_terminal_dirs(&roots.data_dir),
+    };
 
     let mut kept = Vec::new();
     let mut seen = BTreeSet::new();
@@ -124,7 +144,7 @@ pub async fn run_once(roots: &CleanupRoots) -> Vec<KeptWorktree> {
         if !seen.insert((record.project_path.clone(), record.worktree_path.clone())) {
             continue;
         }
-        if let Some(reasons) = clean_up_worktree(record, &pr_review_paths).await {
+        if let Some(reasons) = clean_up_worktree(record, &users).await {
             log::info!(
                 "samurai cleanup: kept run worktree {} ({})",
                 record.worktree_path,
@@ -235,7 +255,16 @@ fn read_run_records(dirs: &[PathBuf]) -> Vec<RunRecord> {
     records
 }
 
-/// Folders a PR review record points at; a run worktree among them is kept.
+/// Folders surviving features still point at; a run worktree holding any of
+/// them is kept.
+struct WorktreeUsers {
+    pr_reviews: Vec<String>,
+    /// `None` when the saved terminal list exists but cannot be read: then
+    /// no worktree can be shown to be unused.
+    saved_terminals: Option<Vec<String>>,
+}
+
+/// Folders a PR review record points at.
 fn pr_review_paths(runs_dir: &Path) -> Vec<String> {
     PrRunStore::new(runs_dir.to_path_buf())
         .list_with_paths()
@@ -244,10 +273,111 @@ fn pr_review_paths(runs_dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The folders of the terminals crash recovery saved (and, after an update,
+/// reopens on this very start). Empty when there is no list.
+fn saved_terminal_dirs(data_dir: &Path) -> Option<Vec<String>> {
+    let path = data_dir
+        .join(open_terminals::STORE_DIR)
+        .join(open_terminals::FILE_NAME);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(e) => {
+            log::warn!("samurai cleanup: cannot read {}: {e}", path.display());
+            return None;
+        }
+    };
+    let Ok(list) = serde_json::from_str::<serde_json::Value>(&text) else {
+        log::warn!("samurai cleanup: {} is damaged", path.display());
+        return None;
+    };
+    let terminals = list.get("terminals").and_then(|t| t.as_array());
+    Some(
+        terminals
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.get("workingDirectory")?.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// What `git status` found in a run worktree beyond its commits.
+#[derive(Debug, Default)]
+struct WorktreeFiles {
+    /// Untracked files Samurai wrote there itself, as git prints them.
+    samurai_files: Vec<String>,
+    /// Changed tracked files, or untracked files that are not Samurai's.
+    uncommitted: bool,
+    /// Ignored files that are neither Samurai's nor rebuildable build output.
+    ignored_work: bool,
+}
+
+/// Lists every changed, untracked and ignored entry of a worktree.
+async fn worktree_files(worktree: &Path) -> Result<WorktreeFiles, ()> {
+    let out = Git::new(worktree)
+        .run(&[
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=all",
+        ])
+        .await
+        .map_err(|_| ())?;
+    Ok(classify_status(&out.stdout))
+}
+
+/// Sorts `git status --porcelain --ignored` lines. A path git quotes (unusual
+/// characters) matches no allowed prefix, so it always counts as work.
+fn classify_status(porcelain: &str) -> WorktreeFiles {
+    let mut files = WorktreeFiles::default();
+    for line in porcelain.lines().filter(|l| !l.is_empty()) {
+        match (line.get(..2), line.get(3..)) {
+            (Some("??"), Some(path)) if is_samurai_file(path) => {
+                files.samurai_files.push(path.to_string())
+            }
+            (Some("!!"), Some(path)) if is_disposable_ignored(path) => {}
+            (Some("!!"), _) => files.ignored_work = true,
+            _ => files.uncommitted = true,
+        }
+    }
+    files
+}
+
+fn is_samurai_file(path: &str) -> bool {
+    !path.split('/').any(|segment| segment == "..")
+        && SAMURAI_WORKTREE_DIRS
+            .iter()
+            .any(|dir| path.starts_with(dir))
+}
+
+/// Samurai's `.maestro/` folder, or anything inside a rebuildable folder.
+fn is_disposable_ignored(path: &str) -> bool {
+    if path.starts_with(".maestro/") {
+        return true;
+    }
+    let Some((folders, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    folders
+        .split('/')
+        .any(|segment| REBUILDABLE_DIRS.contains(&segment))
+}
+
+/// Whether `path` is `root` or lies inside it, on disk.
+fn is_inside(path: &str, root: &Path) -> bool {
+    match (
+        canonical_stripped(Path::new(&strip_extended_length(path))),
+        canonical_stripped(root),
+    ) {
+        (Some(path), Some(root)) => path.starts_with(root),
+        _ => false,
+    }
+}
+
 /// Removes one run worktree when that loses nothing. `None` when it was
 /// removed or there is nothing to keep (already gone, or it is the project's
 /// own checkout); otherwise the reasons it was kept.
-async fn clean_up_worktree(record: &RunRecord, pr_review_paths: &[String]) -> Option<Vec<String>> {
+async fn clean_up_worktree(record: &RunRecord, users: &WorktreeUsers) -> Option<Vec<String>> {
     let worktree = PathBuf::from(strip_extended_length(&record.worktree_path));
     match std::fs::symlink_metadata(&worktree) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
@@ -268,11 +398,15 @@ async fn clean_up_worktree(record: &RunRecord, pr_review_paths: &[String]) -> Op
     if entry.is_main_worktree {
         return None;
     }
-    if pr_review_paths
-        .iter()
-        .any(|p| same_path(Path::new(&strip_extended_length(p)), &worktree))
-    {
+    if users.pr_reviews.iter().any(|p| is_inside(p, &worktree)) {
         return Some(reasons(&[KeepReason::UsedByPrReview]));
+    }
+    match &users.saved_terminals {
+        None => return Some(reasons(&[KeepReason::CheckFailed])),
+        Some(dirs) if dirs.iter().any(|d| is_inside(d, &worktree)) => {
+            return Some(reasons(&[KeepReason::OpenInSavedTerminal]));
+        }
+        Some(_) => {}
     }
 
     let mut found = Vec::new();
@@ -281,13 +415,18 @@ async fn clean_up_worktree(record: &RunRecord, pr_review_paths: &[String]) -> Op
         Ok(false) => found.push(KeepReason::UnmergedCommits),
         Err(()) => found.push(KeepReason::CheckFailed),
     }
-    match Git::new(&worktree)
-        .run(&["status", "--porcelain", "--untracked-files=all"])
-        .await
-    {
-        Ok(out) if out.trimmed().is_empty() => {}
-        Ok(_) => found.push(KeepReason::UncommittedFiles),
-        Err(_) => found.push(KeepReason::CheckFailed),
+    let files = match worktree_files(&worktree).await {
+        Ok(files) => files,
+        Err(()) => {
+            found.push(KeepReason::CheckFailed);
+            WorktreeFiles::default()
+        }
+    };
+    if files.uncommitted {
+        found.push(KeepReason::UncommittedFiles);
+    }
+    if files.ignored_work {
+        found.push(KeepReason::IgnoredFiles);
     }
     if !found.is_empty() {
         found.dedup();
@@ -296,8 +435,25 @@ async fn clean_up_worktree(record: &RunRecord, pr_review_paths: &[String]) -> Op
     if contains_link(&worktree) {
         return Some(reasons(&[KeepReason::ContainsLink]));
     }
+    // Samurai's own hand-overs and briefs are the only untracked files left.
+    for file in &files.samurai_files {
+        remove_file(&worktree.join(file));
+    }
+    match worktree_files(&worktree).await {
+        Ok(left) if left.samurai_files.is_empty() && !left.uncommitted && !left.ignored_work => {}
+        Ok(_) => return Some(reasons(&[KeepReason::UncommittedFiles])),
+        Err(()) => return Some(reasons(&[KeepReason::CheckFailed])),
+    }
     // No `--force`: git refuses a worktree that is dirty or locked.
-    match project.worktree_remove(&worktree, false).await {
+    let worktree_arg = worktree.to_string_lossy().into_owned();
+    let removed = project
+        .run_with_timeout(
+            &["worktree", "remove", &worktree_arg],
+            WORKTREE_REMOVE_TIMEOUT,
+        )
+        .await
+        .map(|_| ());
+    match removed {
         Ok(()) => {
             log::info!(
                 "samurai cleanup: removed merged run worktree {}",
@@ -583,7 +739,8 @@ mod tests {
         git(&repo, &["config", "user.email", "test@example.com"]).await;
         git(&repo, &["config", "user.name", "Test"]).await;
         write(&repo.join("README.md"), "# test\n");
-        git(&repo, &["add", "README.md"]).await;
+        write(&repo.join(".gitignore"), ".env\nnode_modules/\n");
+        git(&repo, &["add", "README.md", ".gitignore"]).await;
         git(&repo, &["commit", "-m", "initial"]).await;
         repo
     }
@@ -678,36 +835,58 @@ mod tests {
         let project = repo(root.path()).await;
         let record_dir = data.path().join("runs").join("project-0123456789ab");
         let wt = |name: &str| root.path().join(name);
-        for name in ["merged", "unmerged", "dirty"] {
+        for name in ["merged", "unmerged", "dirty", "secrets", "reopened"] {
             let path = wt(name).to_string_lossy().into_owned();
             git(&project, &["worktree", "add", "-b", name, &path]).await;
             run_record(&record_dir, name, &project, &wt(name));
         }
+        // Samurai's own files, as it wrote them inside the run worktree (not
+        // git-ignored there), and rebuildable build output.
+        write(&wt("merged").join(".maestro/handoffs/merged-gen2.md"), "h");
+        write(&wt("merged").join(".maestro/briefs/gen-1-launch.md"), "b");
+        write(&wt("merged").join("node_modules/pkg/index.js"), "js");
         write(&wt("unmerged").join("work.txt"), "work\n");
         git(&wt("unmerged"), &["add", "work.txt"]).await;
         git(&wt("unmerged"), &["commit", "-m", "work"]).await;
         write(&wt("dirty").join("draft.txt"), "draft\n");
+        write(&wt("secrets").join(".env"), "TOKEN=made-up\n");
+        let saved_terminals = serde_json::json!({
+            "version": 1,
+            "savedAt": 0,
+            "afterUpdate": true,
+            "terminals": [{
+                "projectPath": project.to_string_lossy(),
+                "kind": "Claude",
+                "workingDirectory": wt("reopened").to_string_lossy(),
+            }],
+        });
+        write(
+            &data.path().join("open-terminals/open-terminals.json"),
+            &saved_terminals.to_string(),
+        );
 
         let mut kept = run_once(&roots(&data, &settings)).await;
         kept.sort_by(|a, b| a.path.cmp(&b.path));
 
         assert!(
             !wt("merged").exists(),
-            "the merged clean worktree is removed"
+            "the merged worktree holding only Samurai files and build output is removed"
         );
         assert!(wt("unmerged").join("work.txt").exists());
         assert!(wt("dirty").join("draft.txt").exists());
+        assert!(wt("secrets").join(".env").exists());
+        assert!(wt("reopened").exists());
+        let kept_entry = |name: &str, reason: &str| KeptWorktree {
+            path: wt(name).to_string_lossy().into_owned(),
+            reasons: vec![reason.to_string()],
+        };
         assert_eq!(
             kept,
             vec![
-                KeptWorktree {
-                    path: wt("dirty").to_string_lossy().into_owned(),
-                    reasons: vec!["uncommitted files".to_string()],
-                },
-                KeptWorktree {
-                    path: wt("unmerged").to_string_lossy().into_owned(),
-                    reasons: vec!["unmerged commits".to_string()],
-                },
+                kept_entry("dirty", "uncommitted files"),
+                kept_entry("reopened", "open in a saved terminal"),
+                kept_entry("secrets", "ignored files"),
+                kept_entry("unmerged", "unmerged commits"),
             ]
         );
     }

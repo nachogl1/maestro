@@ -34,8 +34,9 @@ use crate::commands::claude_sessions::claude_projects_root;
 use crate::core::atomic_write::atomic_write_durable;
 use crate::core::session_manager::AiMode;
 
-/// File name inside the app-data folder.
-const FILE_NAME: &str = "open-terminals.json";
+/// The app-data folder the list lives in, and its file name there.
+pub(crate) const STORE_DIR: &str = "open-terminals";
+pub(crate) const FILE_NAME: &str = "open-terminals.json";
 /// Version written into the file, for a later change of shape.
 const FILE_VERSION: u32 = 1;
 /// A file larger than this is not read at all (it cannot be ours).
@@ -402,7 +403,7 @@ impl OpenTerminalsStore {
 
 /// The app's one list, in its app data.
 static STORE: LazyLock<OpenTerminalsStore> =
-    LazyLock::new(|| OpenTerminalsStore::new(artifact_base_dir("open-terminals").join(FILE_NAME)));
+    LazyLock::new(|| OpenTerminalsStore::new(artifact_base_dir(STORE_DIR).join(FILE_NAME)));
 
 /// Called by every normal close of the main window (see `lib.rs`).
 pub fn forget_on_normal_close() {
