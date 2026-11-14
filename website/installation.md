@@ -113,20 +113,13 @@ Download the appropriate package for your platform:
 
 ---
 
-## Install AI CLIs
+## Install Claude Code
 
-Maestro works with several AI coding assistants. Install the ones you want to use:
+Maestro's AI sessions run Claude Code. Install it with:
 
 ```bash
-# Claude Code (recommended)
 npm install -g @anthropic-ai/claude-code
-
-# Gemini CLI
-npm install -g @google/gemini-cli
-
-# OpenAI Codex
-npm install -g @openai/codex
 ```
 
 {: .note }
-You don't need all AI CLIs installed — Maestro will detect which ones are available and only show those as options. You can also use "Plain Terminal" mode without any AI CLI.
+You can also use "Plain Terminal" mode without Claude Code installed.

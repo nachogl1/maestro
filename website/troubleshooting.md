@@ -29,9 +29,6 @@ If `which claude` returns nothing, ensure your npm global bin directory is in yo
 - macOS/Linux: `~/.npm-global/bin` or `/usr/local/bin`
 - Windows: `%AppData%\npm`
 
-{: .tip }
-The same applies to `gemini` and `codex` — they must be globally installed and in your PATH.
-
 ---
 
 ## Worktree Issues
@@ -144,6 +141,6 @@ If terminals appear blank or don't render properly:
 If clicking "Launch" doesn't start sessions:
 
 1. Verify the selected project directory exists and is a git repository
-2. Check that the AI CLI is installed (`which claude`, `which gemini`, `which codex`)
+2. Check that Claude Code is installed (`which claude`)
 3. Look for errors in the terminal output area
 4. Try with "Plain Terminal" mode to isolate whether the issue is with the AI CLI or Maestro itself
