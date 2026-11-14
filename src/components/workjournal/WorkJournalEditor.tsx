@@ -395,11 +395,16 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
         showSpellingNote("Not fixed: the page changed while Claude was working.", true);
         return;
       }
-      if (!Array.isArray(fixed) || fixed.length !== segments.length) {
+      // A reply of the wrong shape, or one that rewrites a text instead of
+      // fixing it (swapped, repeated, emptied), is refused whole.
+      const edits =
+        Array.isArray(fixed) && fixed.length === segments.length
+          ? spellingEdits(segments, fixed)
+          : null;
+      if (!edits) {
         showSpellingNote("Not fixed: Claude's reply could not be read. Try again.", true);
         return;
       }
-      const edits = spellingEdits(segments, fixed);
       if (edits.length > 0) {
         editor.view.dispatch(closeHistory(applySpellingEdits(editor.state.tr, edits)));
         // The next change starts its own undo step, never merged with the fix.

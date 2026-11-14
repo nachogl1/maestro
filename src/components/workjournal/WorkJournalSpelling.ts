@@ -44,6 +44,9 @@ const ADDRESS_PATTERN = /\b(?:https?:\/\/|www\.)\S+/gi;
 /** Words (with inner apostrophes), runs of space, and single other characters. */
 const TOKEN_PATTERN = /[\p{L}\p{N}_'’]+|\s+|[^\p{L}\p{N}_'’\s]/gu;
 
+/** The words of a text: letters and digits, with inner apostrophes. */
+const WORD_PATTERN = /[\p{L}\p{N}_'’]+/gu;
+
 /** Above this many token pairs the diff replaces the changed middle as one piece. */
 const MAX_DIFF_CELLS = 2_000_000;
 
@@ -239,17 +242,72 @@ function touchesLocked(edit: DocRange, locked: DocRange[]): boolean {
   );
 }
 
+/** The words of `text`, lower case. */
+function wordsOf(text: string): string[] {
+  return (text.match(WORD_PATTERN) ?? []).map((w) => w.toLowerCase());
+}
+
+/**
+ * The edit distance between two words, a swap of two neighbouring letters
+ * counting as one edit ("teh" and "the" are one apart).
+ */
+function wordDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/** Whether `fixed` reads as a spelling fix of `word`: the same word, or a typo away from it. */
+function sameWord(word: string, fixed: string): boolean {
+  return wordDistance(word, fixed) <= Math.max(1, Math.floor(word.length / 3));
+}
+
+/**
+ * Whether `after` is a spelling, grammar and punctuation fix of `before`
+ * rather than other text: at least half of the words, counted on the longer
+ * side, are kept in order (unchanged or a typo away). A swapped, repeated,
+ * rewritten or emptied text fails.
+ */
+export function isSpellingFix(before: string, after: string): boolean {
+  const a = wordsOf(before);
+  const b = wordsOf(after);
+  if (a.length * b.length > MAX_DIFF_CELLS) return before === after;
+  const kept = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      kept[i][j] = sameWord(a[i], b[j])
+        ? kept[i + 1][j + 1] + 1
+        : Math.max(kept[i + 1][j], kept[i][j + 1]);
+    }
+  }
+  return kept[0][0] * 2 >= Math.max(a.length, b.length, 1);
+}
+
 /**
  * The edits that turn each segment's text into its fixed text (`fixed[i]`
- * for `segments[i]`). A change that would touch a link, code, a number or
- * the card's project, or add a colon to a card's bold lead, is left out;
- * so is a fix that empties a segment.
+ * for `segments[i]`), or null when any fixed text is not a spelling fix of
+ * its segment ({@link isSpellingFix}): the reply is then refused whole. A
+ * change that would touch a link, code, a number or the card's project, or
+ * add a colon to a card's bold lead, is left out.
  */
-export function spellingEdits(segments: SpellingSegment[], fixed: string[]): SpellingEdit[] {
+export function spellingEdits(segments: SpellingSegment[], fixed: string[]): SpellingEdit[] | null {
+  const afters = segments.map((_, index) => (fixed[index] ?? "").trim());
+  if (segments.some((segment, index) => !isSpellingFix(segment.text, afters[index]))) {
+    return null;
+  }
   const edits: SpellingEdit[] = [];
   segments.forEach((segment, index) => {
-    const after = (fixed[index] ?? "").trim();
-    if (after === "") return;
+    const after = afters[index];
     for (const hunk of diffText(segment.text, after)) {
       const edit = {
         from: segment.from + hunk.start,

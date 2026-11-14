@@ -302,6 +302,36 @@ describe("Work Journal spelling fixer", () => {
     }
   });
 
+  it("refuses the whole reply when a text is rewritten rather than fixed", async () => {
+    // Right length, wrong content: duplicated, swapped, rewritten or emptied.
+    const replies = [
+      ["I fixed the login", "I fixed the login"],
+      ["Release with notes for the team", "I fixed the login"],
+      ["I fixed the login", "Shipped the whole new billing system today"],
+      ["I fixed the login", ""],
+    ];
+    const body = doc(
+      paragraph(text("I fixd teh login")),
+      paragraph(text("Release wiht notes for the team")),
+    );
+    render(<WorkJournalEditor date={DATE} initialBody={body} />);
+    const before = pageEditor().getJSON();
+
+    for (const reply of replies) {
+      invokeMock.mockResolvedValueOnce(reply);
+      await clickFix();
+      expect(pageEditor().getJSON()).toEqual(before);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Not fixed: Claude's reply could not be read. Try again.",
+      );
+    }
+
+    // Small fixes, a one-word typo and an added article still go through.
+    invokeMock.mockResolvedValueOnce(["I fixed the login", "Release with the notes for the team"]);
+    await clickFix();
+    expect(blockTexts()).toEqual(["I fixed the login", "Release with the notes for the team"]);
+  });
+
   it("changes nothing when the page changed while Claude was working", async () => {
     let answer: (texts: string[]) => void = () => {};
     invokeMock.mockImplementation(

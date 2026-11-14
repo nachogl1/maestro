@@ -304,6 +304,8 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
   back as it was.
 - A short line under the toolbar then says `N fixes made`, or `Not fixed:` and why (Claude Code not installed, no
   network, Claude's own error, or the page changed meanwhile), and fades. A failure changes nothing.
+- A reply that rewrites a text instead of fixing it (repeated, swapped, emptied, or with most words changed) is
+  refused whole: `Not fixed: Claude's reply could not be read. Try again.`, and nothing changes.
 
 ## Work Journal suggestions: one summary per project per day
 
