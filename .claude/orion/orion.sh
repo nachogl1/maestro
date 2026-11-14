@@ -58,6 +58,11 @@ HOOK_CMD='bash "${CLAUDE_PROJECT_DIR}/.claude/orion/orion.sh" check'
 # on update.
 HOOK_TIMEOUT=60
 CHECK_INTERVAL_SECONDS=86400
+# The time this orion.sh pins in global-offered once the personal rules were offered (2100-01-01 UTC): an older
+# orion.sh offers when that time is a day old, so a time in the future keeps it quiet for good.
+GLOBAL_OFFER_PIN=4102444800
+# The last orion version whose orion.sh offered the personal rules once a day: such a script carries no clause above it.
+LAST_DAILY_OFFER_VERSION=17
 BRANCH_LIMIT_DEFAULT=20
 WORKTREE_LIMIT_DEFAULT=20
 
@@ -1144,8 +1149,11 @@ global_newer() {
 # updateMode off, in any other mode only offered. Once per clause version per computer (any project):
 # global-offered-version holds "<highest clause version offered> <when>", and the offer comes back only when a project
 # carries a higher one, or on --force; no such record counts as nothing offered. global-offered is the Unix time an
-# older orion.sh on this computer reads and writes to offer at most once a day: an offer here refreshes it, and a time
-# there that is not this record's (an older orion.sh offered) keeps this one quiet for that day too. Prints the context or nothing.
+# older orion.sh on this computer reads and writes to offer at most once a day. Once an offer is recorded here, that
+# time is pinned to GLOBAL_OFFER_PIN, so an older orion.sh never offers again; a past time there (an older orion.sh
+# offered) less than a day old counts as this computer's offer of the project's clauses, recorded without a word,
+# unless a clause is newer than any older orion.sh carries (LAST_DAILY_OFFER_VERSION): that one is still offered.
+# Prints the context or nothing.
 check_global_ctx() {  # force now
     local n top dir offered ours last
     [ "$(config_get "$PROJECT/.claude/orion/config.json" updateMode ask)" = "off" ] && return 0
@@ -1157,14 +1165,27 @@ check_global_ctx() {  # force now
     offered="$(whole_number "${offered:-}")"; ours="$(whole_number "${ours:-}")"
     last="$(whole_number "$(tr -d ' \t\r\n' 2>/dev/null < "$dir/global-offered" || true)")"
     if [ "$1" != "1" ]; then
-        [ "${top:-0}" -gt "${offered:-0}" ] || return 0
-        if [ -n "$last" ] && [ "$last" != "$ours" ] && [ $(($2 - last)) -lt "$CHECK_INTERVAL_SECONDS" ]; then return 0; fi
+        if [ "${top:-0}" -le "${offered:-0}" ]; then
+            [ "$last" = "$GLOBAL_OFFER_PIN" ] || global_offer_record "$dir" "$offered" "$2"
+            return 0
+        fi
+        if [ -n "$last" ] && [ "$last" != "$ours" ] && [ "$last" -le "$2" ] 2>/dev/null \
+            && [ $(($2 - last)) -lt "$CHECK_INTERVAL_SECONDS" ] && [ "${top:-0}" -le "$LAST_DAILY_OFFER_VERSION" ]; then
+            global_offer_record "$dir" "$top" "$2"
+            return 0
+        fi
     fi
     [ "${top:-0}" -gt "${offered:-0}" ] || top="${offered:-0}"   # --force offers again and never lowers the record
-    mkdir -p "$dir" 2>/dev/null || true
-    printf '%s %s\n' "$top" "$2" 2>/dev/null > "$dir/global-offered-version" || true
-    printf '%s' "$2" 2>/dev/null > "$dir/global-offered" || true
+    global_offer_record "$dir" "$top" "$2"
     printf '%s' "orion recommends personal rules for the user's own rules file (~/.claude/CLAUDE.md), and $n of them are not in its ORION GLOBAL section yet. Ask the user with the AskUserQuestion tool whether to go through them now (options: 'Go through them now' recommended, 'Not now'). If yes, follow the steps at the top of .claude/orion/global/GLOBAL_CLAUDE.md exactly as written: the user's file changes only inside its ORION GLOBAL section and only on their word. If no, continue with their request: it is offered again only when orion adds or changes one of these rules, and the user can ask to go through orion's personal rules any time."
+}
+
+# Records "<version> <now>" as the highest personal rules version offered on this computer and pins an older
+# orion.sh's time stamp in the future, so only this record decides from then on. Never an error for the hook.
+global_offer_record() {  # dir version now
+    mkdir -p "$1" 2>/dev/null || true
+    printf '%s %s\n' "$2" "$3" 2>/dev/null > "$1/global-offered-version" || true
+    printf '%s' "$GLOBAL_OFFER_PIN" 2>/dev/null > "$1/global-offered" || true
 }
 
 # Every session: bring the branch the session opens on up to date with its remote copy, fast-forward only, as
