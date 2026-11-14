@@ -1,55 +1,35 @@
-//! Brief FILES for long Samurai instructions (issue #137).
+//! Brief FILES for long initial prompts (issues #137 and #138).
 //!
-//! Every Samurai instruction is typed into a live `claude` session's PTY, and
-//! that write is BLIND: `ProcessManager` exposes no read side, so nothing can
-//! confirm a frame landed. `pty_submit` already types the payload in
+//! A prompt is typed into a live `claude` session's PTY, and that write is
+//! BLIND: `ProcessManager` exposes no read side, so nothing can confirm a
+//! frame landed. `pty_submit` types the payload in
 //! [`CHUNK_BYTES`](super::pty_submit::CHUNK_BYTES)-sized frames, yet a
-//! multi-KB gen-1 launch brief was still observed arriving as two spliced
-//! fragments cut mid-word (2026-08-17) — the middle of the payload never
-//! landed and the run started on a headless fragment. No chunk/delay tuning
-//! can close that: the only payload size that is genuinely safe is one that
-//! fits in a SINGLE frame.
+//! multi-KB payload was still observed arriving as two spliced fragments cut
+//! mid-word (2026-08-17). No chunk/delay tuning can close that: the only
+//! payload size that is genuinely safe is one that fits in a SINGLE frame.
 //!
-//! So a long instruction stops being typed at all. It is written to a file in
-//! the run's worktree and the agent is handed a one-line POINTER at it
+//! So a long prompt stops being typed at all. It is written to a file in the
+//! checkout and the agent is handed a one-line POINTER at it
 //! ([`pointer_instruction`]) — short enough for one frame, and strictly
 //! easier for the agent to act on than a paste it may only half receive.
 //!
-//! The brief lives INSIDE the worktree, under [`BRIEF_DIR`], for three
-//! reasons: `.maestro/` is already exempt from the handoff WIP check
-//! (`samurai_injector::porcelain_line_blocks`), so a brief file can never
-//! block handoff validation; a worktree-relative path needs no Windows
-//! quoting and no out-of-project read permission; and it sits next to
-//! `.maestro/handoffs/`, which the Second Brain already inventories.
+//! The brief lives INSIDE the checkout, under [`BRIEF_DIR`]: a
+//! checkout-relative path needs no Windows quoting and no out-of-project read
+//! permission.
 //!
-//! The brief file carries the instruction VERBATIM, so any ACK or written
-//! marker the instruction demands is inside the file exactly as it would have
-//! been typed. A brief the agent never reads simply fails to ACK and walks
-//! the existing retry ladder — no new recovery machinery.
-//!
-//! **Two callers, two size gates.** The samurai path
-//! ([`deliverable_instruction`]) measures the RAW instruction and falls back
-//! to typing that raw text; the initial-prompt path
-//! (`commands::initial_prompt::InitialPromptInjector::arm`, issue #138)
-//! measures the WHITESPACE-FLATTENED prompt — that is what its PTY write
-//! would carry — and falls back to the flattened text. Same threshold, two
-//! measurements, on purpose: each gate weighs exactly the payload its own
-//! fallback would type. Neither is the other's bug.
-//!
-//! Only instructions over [`INLINE_MAX_BYTES`] take this route: short ones
-//! (handoff request, park, wind-down, corrective) keep today's inline
-//! delivery, which works and is well tested. And if the file write fails, the
-//! full text is typed exactly as it is today — a warning, never a new failure
+//! The caller (`commands::initial_prompt::InitialPromptInjector::arm`)
+//! measures the WHITESPACE-FLATTENED prompt against [`INLINE_MAX_BYTES`] —
+//! that is what its PTY write would carry — and falls back to typing the
+//! flattened text when the file write fails: a warning, never a new failure
 //! mode.
 
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// Brief files live beside handoffs, inside the run worktree. Forward slashes
-/// on purpose: the path appears verbatim in the pointer instruction, and
-/// `Path::join` accepts them on every platform (same rule as
-/// `samurai_prompts::handoff_file_relpath`).
+/// Brief files live inside the checkout. Forward slashes on purpose: the path
+/// appears verbatim in the pointer instruction, and `Path::join` accepts them
+/// on every platform.
 pub const BRIEF_DIR: &str = ".maestro/briefs";
 
 /// Instructions at or under this size keep the existing inline delivery — a
@@ -59,8 +39,8 @@ pub const BRIEF_DIR: &str = ".maestro/briefs";
 pub const INLINE_MAX_BYTES: usize = 500;
 
 /// Longest brief file stem [`write_brief`] will ever write. The pointer's
-/// fixed text is 189 bytes and `.maestro/briefs/` + `.md` adds 19, so a stem
-/// this long yields a 248-byte pointer — inside
+/// fixed text is 181 bytes and `.maestro/briefs/` + `.md` adds 19, so a stem
+/// this long yields a 240-byte pointer — inside
 /// [`CHUNK_BYTES`](super::pty_submit::CHUNK_BYTES) with room to spare, which
 /// is the whole point of the file (a spliced POINTER would be the #137 bug
 /// with extra steps). Longer names are truncated and hashed, never rejected.
@@ -210,7 +190,7 @@ fn ensure_maestro_ignored(worktree: &Path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
             log::warn!(
-                "samurai brief: cannot read {} ({e}) — leaving the exclude alone",
+                "brief: cannot read {} ({e}) — leaving the exclude alone",
                 exclude.display()
             );
             return;
@@ -232,7 +212,7 @@ fn ensure_maestro_ignored(worktree: &Path) {
     if let Some(parent) = exclude.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             log::warn!(
-                "samurai brief: cannot create {} ({e}) — the brief stays untracked-visible",
+                "brief: cannot create {} ({e}) — the brief stays untracked-visible",
                 parent.display()
             );
             return;
@@ -240,7 +220,7 @@ fn ensure_maestro_ignored(worktree: &Path) {
     }
     if let Err(e) = std::fs::write(&exclude, updated) {
         log::warn!(
-            "samurai brief: cannot update {} ({e}) — the brief stays untracked-visible",
+            "brief: cannot update {} ({e}) — the brief stays untracked-visible",
             exclude.display()
         );
     }
@@ -254,151 +234,10 @@ fn ensure_maestro_ignored(worktree: &Path) {
 pub fn pointer_instruction(relpath: &str) -> String {
     let relpath = relpath.split_whitespace().collect::<Vec<_>>().join(" ");
     format!(
-        "[Maestro Samurai] Read `{relpath}` in FULL with the Read tool before doing anything \
+        "[Maestro] Read `{relpath}` in FULL with the Read tool before doing anything \
          else, then follow it verbatim as your operating instructions for this run. Do not \
          skim it and do not summarise it."
     )
-}
-
-/// The single-line CORRECTIVE for a brief that was delivered but never read
-/// (issue #205): the agent started a turn on something else, so the pointer
-/// itself is repeated as a correction rather than as an opening instruction.
-///
-/// Takes the brief's file NAME — the only thing the receipt store keeps
-/// ([`pointer_brief_file_name`]) — and re-derives the worktree-relative path
-/// from [`BRIEF_DIR`], so the two spellings can never drift apart. Single
-/// line for the same reason as [`pointer_instruction`]: a newline inside the
-/// payload submits the prompt half-typed.
-///
-/// Deliberately re-parseable by [`pointer_brief_file_name`] (the brief path
-/// is its first backquoted span), so the corrective reads as the same
-/// pointer everything else in the trail already matches on.
-pub fn unread_corrective_instruction(file_name: &str) -> String {
-    let file_name = file_name.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!(
-        "[Maestro Samurai] You have not read your brief. Read `{BRIEF_DIR}/{file_name}` in \
-         FULL with the Read tool now, before anything else, then follow it verbatim as your \
-         operating instructions for this run. Do not skim it and do not summarise it."
-    )
-}
-
-/// The last segment of [`BRIEF_DIR`] — the directory name that sits directly
-/// above every brief file.
-///
-/// Issue #204's receipt matcher checks it, so that a same-named file
-/// elsewhere cannot pass for a brief. Derived rather than spelled again, so
-/// moving the brief directory can never leave the check behind.
-pub fn brief_dir_name() -> &'static str {
-    BRIEF_DIR.rsplit('/').next().unwrap_or(BRIEF_DIR)
-}
-
-/// The brief FILE NAME (`<stem>.md`) that `instruction` points an agent at,
-/// or `None` when `instruction` is not a pointer at all — an inline
-/// instruction under [`INLINE_MAX_BYTES`], or a full ritual text the file
-/// route never got to write.
-///
-/// The NAME, not the path, because the name is the only spelling every later
-/// sighting of the file shares (issue #204): the pointer carries the
-/// worktree-relative path, but an agent Reads it back as relative, absolute,
-/// forward- or back-slashed, or `\\?\`-prefixed, and a `cat` of it is quoted
-/// however the shell wanted it.
-///
-/// Recognises exactly what [`pointer_instruction`] emits: the first
-/// backquoted span, required to be a `<stem>.md` directly under
-/// [`BRIEF_DIR`]. Anything else — prose that merely contains backquotes, a
-/// pointer at some other file — is not a brief pointer.
-pub fn pointer_brief_file_name(instruction: &str) -> Option<String> {
-    let quoted = instruction.split('`').nth(1)?;
-    let file_name = quoted.strip_prefix(&format!("{BRIEF_DIR}/"))?;
-    if !file_name.ends_with(".md") || file_name.contains('/') {
-        return None;
-    }
-    Some(file_name.to_string())
-}
-
-/// Whether `instruction` is delivered as-is, small enough that
-/// [`deliverable_instruction`] makes no filesystem call for it at all.
-///
-/// The single definition of that rule. Callers who decide something else
-/// from it — the injector's issue-#153 gate, which only pays for a
-/// blocking-pool hop when a file might actually be written — ask here
-/// instead of re-comparing against [`INLINE_MAX_BYTES`], so the decision and
-/// the delivery can never drift apart.
-pub fn is_inline(instruction: &str) -> bool {
-    instruction.len() <= INLINE_MAX_BYTES
-}
-
-/// Longest payload allowed onto a `claude` LAUNCH LINE (issue #158).
-///
-/// Deliberately its own constant rather than a reuse of [`INLINE_MAX_BYTES`],
-/// which it happens to equal: the two gates measure different things. The
-/// inline gate is about ONE PTY FRAME (`pty_submit::CHUNK_BYTES`, 256 bytes,
-/// chunked); a launch line bypasses that transport entirely — it is one
-/// argument on a command line the shell parses, so the real ceiling is the
-/// shell's (cmd.exe's is 8191 characters, and quoting only adds two). 500 is a
-/// deliberately conservative fraction of that: comfortably above the ~250-byte
-/// pointer this exists for, and far below anything that could crowd a command
-/// line, so a FULL brief (multi-KB, staged only when the file write failed)
-/// can never take this route by accident.
-pub const LAUNCH_LINE_MAX_BYTES: usize = 500;
-
-/// Whether `instruction` may ride the `claude` LAUNCH LINE as a positional
-/// initial-prompt argument instead of being typed into the running REPL
-/// (issue #158).
-///
-/// Two conditions, both about the SHELL the launch command is typed into:
-/// - Single line. A CR or LF inside a command line submits it half-written —
-///   the very failure #137 exists to stop, and the reason
-///   [`pointer_instruction`] normalizes whitespace.
-/// - No bigger than [`LAUNCH_LINE_MAX_BYTES`].
-///
-/// Refusal is not a failure — the caller keeps the typed delivery it already
-/// had.
-pub fn launch_line_safe(instruction: &str) -> bool {
-    instruction.len() <= LAUNCH_LINE_MAX_BYTES && !instruction.contains(['\n', '\r'])
-}
-
-/// What is actually typed into the PTY for `instruction`: the instruction
-/// itself when it fits the inline budget, otherwise a pointer at a brief file
-/// written into `worktree` under `name`.
-///
-/// A failed write falls back to the full text — the pre-#137 behaviour — so
-/// the brief file can only ever improve delivery, never break it.
-pub fn deliverable_instruction(worktree: &Path, name: &str, instruction: String) -> String {
-    match try_deliverable_instruction(worktree, name, &instruction) {
-        Ok(Some(pointer)) => pointer,
-        Ok(None) => instruction,
-        Err(e) => {
-            log::warn!("samurai brief: {e} — typing the full instruction inline instead");
-            instruction
-        }
-    }
-}
-
-/// [`deliverable_instruction`] without the swallowed failure: the same
-/// routing — the instruction inline under [`INLINE_MAX_BYTES`], a pointer at
-/// a written brief over it — but a failed write comes back as `Err` instead
-/// of silently becoming "type the whole thing".
-///
-/// `Ok(None)` means keep `instruction` exactly as it is, nothing was
-/// written; `Ok(Some(pointer))` means the brief is on disk and `pointer` is
-/// what to type; `Err` means the file route was taken and FAILED.
-///
-/// Added for issue #154. `commands::harvest` sizes the payload it assembles
-/// to the route it is about to take, so its file-route payload is far too
-/// large to blind-type as a fallback — it has to learn the write failed,
-/// re-render smaller, and type that instead. Callers with nothing to
-/// re-render keep using [`deliverable_instruction`], whose infallible
-/// fallback is the right answer when the alternative is delivering nothing.
-pub fn try_deliverable_instruction(
-    worktree: &Path,
-    name: &str,
-    instruction: &str,
-) -> Result<Option<String>, String> {
-    if is_inline(instruction) {
-        return Ok(None);
-    }
-    write_brief(worktree, name, instruction).map(|relpath| Some(pointer_instruction(&relpath)))
 }
 
 #[cfg(test)]
@@ -406,15 +245,6 @@ mod tests {
     use super::*;
     use crate::core::pty_submit::{chunk_frames, CHUNK_BYTES};
     use tempfile::tempdir;
-
-    /// An instruction long enough to take the file route, with recognizable
-    /// ends so a spliced or truncated delivery is visible.
-    fn long_instruction() -> String {
-        format!(
-            "[Maestro Samurai] START {} END",
-            "you are generation 1, follow the workflow. ".repeat(40)
-        )
-    }
 
     #[test]
     fn test_write_brief_creates_the_directory_and_returns_a_relative_path() {
@@ -640,8 +470,7 @@ mod tests {
     #[test]
     fn test_the_brief_is_moved_into_place_leaving_no_temp_file() {
         // Written to a temp name and renamed over, so an agent reading the
-        // brief never sees a truncated file — and no `.tmp` litters the
-        // Second Brain's inventory.
+        // brief never sees a truncated file — and no `.tmp` is left behind.
         let dir = tempdir().unwrap();
         write_brief(dir.path(), "gen-1-launch", "first").unwrap();
         write_brief(dir.path(), "gen-1-launch", "second").unwrap();
@@ -672,181 +501,5 @@ mod tests {
         // It must send the agent to READ the file, in full, first.
         assert!(pointer.contains("Read"), "{pointer}");
         assert!(pointer.contains("FULL"), "{pointer}");
-    }
-
-    /// Issue #204: the receipt is matched on the brief's file NAME, so a
-    /// pointer has to give it back — and nothing else may claim to be one.
-    #[test]
-    fn test_the_brief_file_name_comes_back_out_of_its_own_pointer() {
-        assert_eq!(
-            pointer_brief_file_name(&pointer_instruction(
-                ".maestro/briefs/epic-9-gen-3-ritual.md"
-            )),
-            Some("epic-9-gen-3-ritual.md".to_string())
-        );
-        // A real staged brief, so the round trip is against what is on disk.
-        let dir = tempdir().unwrap();
-        let pointer =
-            deliverable_instruction(dir.path(), "epic-9-gen-1-launch", long_instruction());
-        assert_eq!(
-            pointer_brief_file_name(&pointer),
-            Some("epic-9-gen-1-launch.md".to_string())
-        );
-        // Not pointers: an inline instruction, prose with backquotes, a
-        // pointer at something that is not a brief, a nested path.
-        for other in [
-            long_instruction(),
-            "[Maestro Samurai] run `npm test` and report back".to_string(),
-            pointer_instruction("docs/samurai/prd.md"),
-            pointer_instruction(&format!("{BRIEF_DIR}/old/epic-9-gen-3-ritual.md")),
-            pointer_instruction(&format!("{BRIEF_DIR}/epic-9-gen-3-ritual")),
-        ] {
-            assert_eq!(pointer_brief_file_name(&other), None, "{other}");
-        }
-    }
-
-    /// Issue #205: the corrective repeats the pointer, so it must name the
-    /// same path, stay a single line, and read back as a brief pointer.
-    #[test]
-    fn test_the_unread_corrective_repeats_the_pointer_at_the_same_brief() {
-        let corrective = unread_corrective_instruction("epic-9-gen-3-ritual.md");
-        assert!(
-            corrective.contains(&format!("`{BRIEF_DIR}/epic-9-gen-3-ritual.md`")),
-            "{corrective}"
-        );
-        assert!(
-            corrective.contains("not read your brief"),
-            "it must say what is wrong: {corrective}"
-        );
-        assert!(corrective.contains("FULL"), "{corrective}");
-        // Single line, like every instruction typed into a PTY.
-        assert!(!corrective.contains('\n'), "{corrective}");
-        assert!(!corrective.contains('\r'), "{corrective}");
-        // The same brief comes back out of it.
-        assert_eq!(
-            pointer_brief_file_name(&corrective),
-            Some("epic-9-gen-3-ritual.md".to_string())
-        );
-        // It names the brief the delivered pointer named, whatever that was.
-        let dir = tempdir().unwrap();
-        let pointer =
-            deliverable_instruction(dir.path(), "epic-9-gen-1-launch", long_instruction());
-        let brief = pointer_brief_file_name(&pointer).unwrap();
-        assert_eq!(
-            pointer_brief_file_name(&unread_corrective_instruction(&brief)),
-            Some(brief)
-        );
-    }
-
-    #[test]
-    fn test_short_instructions_stay_inline_and_write_no_file() {
-        // The handoff/park/wind-down path is untouched: today's delivery
-        // works and must not grow an unread-file failure mode.
-        let dir = tempdir().unwrap();
-        let short = "[Maestro Samurai] ".to_string() + &"x".repeat(INLINE_MAX_BYTES - 18);
-        assert_eq!(short.len(), INLINE_MAX_BYTES);
-        // The predicate callers gate on is the same rule this function
-        // applies — the boundary byte is inline for both or for neither.
-        assert!(is_inline(&short));
-
-        let staged = deliverable_instruction(dir.path(), "gen-1-launch", short.clone());
-
-        assert_eq!(staged, short);
-        assert!(!dir.path().join(BRIEF_DIR).exists(), "no brief written");
-    }
-
-    #[test]
-    fn test_long_instructions_become_a_pointer_at_a_verbatim_brief() {
-        let dir = tempdir().unwrap();
-        let instruction = long_instruction();
-        assert!(instruction.len() > INLINE_MAX_BYTES);
-        assert!(!is_inline(&instruction));
-
-        let staged = deliverable_instruction(dir.path(), "gen-1-launch", instruction.clone());
-
-        assert_eq!(
-            staged,
-            pointer_instruction(".maestro/briefs/gen-1-launch.md")
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(".maestro/briefs/gen-1-launch.md")).unwrap(),
-            instruction,
-            "the brief on disk is the instruction, byte for byte"
-        );
-    }
-
-    #[test]
-    fn test_try_deliverable_instruction_reports_each_route_distinctly() {
-        // Issue #154: a caller that sized its payload for the FILE route
-        // must be able to tell "written, here is the pointer" from "the
-        // write failed" — the infallible wrapper collapses both into a
-        // string it would then type.
-        let short_dir = tempdir().unwrap();
-        let short = "[Maestro Samurai] ".to_string() + &"x".repeat(INLINE_MAX_BYTES - 18);
-        assert_eq!(short.len(), INLINE_MAX_BYTES);
-        assert_eq!(
-            try_deliverable_instruction(short_dir.path(), "gen-1-launch", &short).unwrap(),
-            None,
-            "under the budget: nothing to write, keep the instruction"
-        );
-        assert!(
-            !short_dir.path().join(BRIEF_DIR).exists(),
-            "no brief written"
-        );
-
-        let written_dir = tempdir().unwrap();
-        let instruction = long_instruction();
-        assert_eq!(
-            try_deliverable_instruction(written_dir.path(), "gen-1-launch", &instruction).unwrap(),
-            Some(pointer_instruction(".maestro/briefs/gen-1-launch.md"))
-        );
-
-        let failing_dir = tempdir().unwrap();
-        std::fs::write(failing_dir.path().join(".maestro"), "not a directory").unwrap();
-        assert!(
-            try_deliverable_instruction(failing_dir.path(), "gen-1-launch", &instruction).is_err(),
-            "a failed write is an Err here, never the full text"
-        );
-    }
-
-    #[test]
-    fn test_a_failed_brief_write_falls_back_to_the_full_text() {
-        // No new failure mode: if the file cannot be written, the agent gets
-        // exactly what it got before this module existed.
-        //
-        // #137 c6 also asks for a logged warning. That half is pinned by code
-        // review only — `deliverable_instruction` emits `log::warn!` and
-        // nothing here asserts it, because capturing `log` output needs a
-        // process-global logger that would race every other test.
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join(".maestro"), "not a directory").unwrap();
-        let instruction = long_instruction();
-
-        let staged = deliverable_instruction(dir.path(), "gen-1-launch", instruction.clone());
-
-        assert_eq!(staged, instruction);
-    }
-
-    #[test]
-    fn test_launch_line_safe_accepts_a_pointer_and_refuses_what_must_stay_typed() {
-        // Issue #158: only a payload that fits one shell command line may
-        // ride the `claude` launch line.
-        let dir = tempdir().unwrap();
-        let relpath = write_brief(dir.path(), "epic-38-gen-1-launch", "body").unwrap();
-        let pointer = pointer_instruction(&relpath);
-        assert!(
-            launch_line_safe(&pointer),
-            "the pointer is what this is for"
-        );
-
-        // A brief-write failure falls back to the FULL instruction — multi-KB
-        // and exactly the payload #137 took off the wire. It must not silently
-        // become a launch-line argument.
-        assert!(!launch_line_safe(&long_instruction()));
-        // A newline would submit the command half-typed.
-        assert!(!launch_line_safe("[Maestro Samurai] Read this\nand that"));
-        assert!(!launch_line_safe("[Maestro Samurai] Read this\rand that"));
-        // A short single-line instruction is fine — it is one frame either way.
-        assert!(launch_line_safe("[Maestro Samurai] Hand off now."));
     }
 }

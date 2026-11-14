@@ -5,25 +5,17 @@
 //! frontend arms the just-launched session via
 //! [`terminal_arm_initial_prompt`] right before the CLI command is typed, and
 //! the session's FIRST `SessionStarted` hook signal — claude at its prompt —
-//! triggers [`InitialPromptInjector::on_session_started`] (tapped from
-//! lib.rs's `hook_emit_fn`, the same gate the replicator uses for successor
-//! briefs and the harvest triage uses for its journal prompt).
+//! triggers [`InitialPromptInjector::on_session_started`] (tapped from the
+//! setup's `hook_emit_fn`).
 //!
-//! This is [`super::harvest`]'s delivery gate with the journal removed: same
-//! arm-then-inject-on-`SessionStarted` shape, the same
-//! `core::pty_submit::submit_instruction_confirmed` delivery (body write
-//! confirmed on the calling thread, then the scaled gap and the lone Enter —
-//! issue #103), and the same disarm-BEFORE-deliver ordering so a later
-//! `SessionStarted` in the same terminal (e.g. `/clear`) can never
-//! double-inject. Harvest keeps its own state machine because its prompt is
-//! built AT injection time from the live journal and its consumption commit
-//! is contingent on the write landing — neither of which a caller-supplied
-//! fixed prompt has to model. Both share [`super::harvest::DeliverFn`], so
-//! there is exactly one production delivery shape.
+//! Delivery goes through [`DeliverFn`], which production wires to
+//! `core::pty_submit::submit_instruction_confirmed` (body write confirmed on
+//! the calling thread, then the scaled gap and the lone Enter — issue #103).
+//! The session is disarmed BEFORE delivery, so a later `SessionStarted` in the
+//! same terminal (e.g. `/clear`) can never double-inject.
 //!
 //! **PTY safety is enforced here, not at the call site.** A newline inside an
-//! injected prompt submits a partial message (the `core::samurai_prompts`
-//! rule), so [`normalize_prompt`] collapses every whitespace run — newlines
+//! injected prompt submits a partial message, so [`normalize_prompt`] collapses every whitespace run — newlines
 //! included — to a single space before the text is ever handed to the PTY. A
 //! caller cannot get this wrong from TypeScript.
 //!
@@ -40,9 +32,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tauri::State;
 
-use super::harvest::DeliverFn;
 use crate::core::brief_files::{self, StagedBrief};
 use crate::core::pr_runs::{PrReviewLaunch, PrReviewRun, PrRunStore};
+
+/// Delivery of the injected prompt into a session's PTY. `Ok` means the
+/// prompt BODY reached the PTY. Production wires
+/// `core::pty_submit::submit_instruction_confirmed` (the two-frame
+/// paste-then-Enter submit with the issue-#103 scaled delay, body write
+/// confirmed on the calling thread); tests capture the call.
+pub type DeliverFn = Arc<dyn Fn(u32, String) -> Result<(), String> + Send + Sync>;
 
 /// The all-whitespace refusal — pinned by test, surfaced to the caller.
 const EMPTY_PROMPT: &str = "Cannot launch with an empty initial prompt.";
@@ -59,7 +57,7 @@ pub fn normalize_prompt(prompt: &str) -> String {
 
 /// Where a long prompt is staged as a brief FILE instead of being typed
 /// (issue #138): `dir` is the checkout whose `.maestro/briefs/` receives it —
-/// the same layout `core::brief_files` writes for samurai runs — and `stem`
+/// the layout `core::brief_files` writes — and `stem`
 /// names the file within it. A caller that supplies no target keeps the
 /// inline delivery, whatever the prompt's size.
 pub struct BriefTarget {
@@ -198,8 +196,7 @@ impl InitialPromptInjector {
 
 /// Arms a one-shot initial prompt for a just-launched session. TerminalGrid
 /// calls this right before it types the CLI command, so the injection gate is
-/// set strictly ahead of claude's SessionStart hook — the same ordering the
-/// samurai successor registration and the harvest arm rely on. The prompt is
+/// set strictly ahead of claude's SessionStart hook. The prompt is
 /// whitespace-normalized backend-side; callers may pass multi-line text.
 ///
 /// `brief_dir` + `brief_stem` are optional: supplying both lets a long prompt
@@ -651,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_failed_write_leaves_the_session_disarmed_and_rearmable() {
-        // Mirrors the harvest arm: the session is disarmed before delivery,
+        // The session is disarmed before delivery,
         // so a failed write injects nothing further, and a fresh arm retries
         // cleanly. Nothing to roll back — no side effect rides on the write.
         let attempts = Arc::new(Mutex::new(0u32));

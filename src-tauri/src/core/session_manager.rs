@@ -91,11 +91,6 @@ impl SessionManager {
         }
     }
 
-    /// Returns a snapshot of the session config, or `None` if not found.
-    pub fn get_session(&self, id: u32) -> Option<SessionConfig> {
-        self.sessions.get(&id).map(|s| s.clone())
-    }
-
     /// Updates the session's display name. Pass `None` to reset to the default.
     /// Returns the updated config, or `None` if the session does not exist.
     pub fn rename_session(&self, id: u32, name: Option<String>) -> Option<SessionConfig> {
