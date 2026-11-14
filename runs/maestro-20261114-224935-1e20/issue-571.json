@@ -1,0 +1,28 @@
+{
+  "run_id": "maestro-20261114-224935-1e20",
+  "issue": 571,
+  "title": "Public page: publish the website/ docs site on GitHub Pages from main, cut to four up-to-date pages",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T22:50:09Z",
+  "finished_at": "2026-11-14T23:23:51Z",
+  "outcome": "merged",
+  "pr": 640,
+  "summary": "Turns the old Jekyll docs site in website/ into Maestro's public page: a designed Home page with a three.js animation, the six current screenshots and download buttons, plus Installation, Features and Troubleshooting, published by a new Pages workflow from main. The README now links to the site for install steps. GitHub Actions is disabled on the fork, so the workflow has never run and the deploy is unverified.",
+  "agents": [
+    { "name": "dev-571", "model": "opus", "tokens_total": 249003 },
+    { "name": "review-571", "model": "opus", "tokens_total": 170151 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1287, "review_seconds": 532, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 0 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "ARCHITECTURE-OVERVIEW.md",
+      "what": "The architecture overview still sends readers to the upstream project's docs site and says website/ has 12 files; a reader following it lands on the wrong project's site",
+      "why": "The file is outside the story's seam (website/, README.md, CLAUDE.md Boundaries, the Pages workflow)",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

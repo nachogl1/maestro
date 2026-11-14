@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261114-224935-1e20",
+  "issue": 571,
+  "title": "Public page: publish the website/ docs site on GitHub Pages from main, cut to four up-to-date pages",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 640,
+  "merged_at": "2026-11-14T23:22:57Z",
+  "merge_commit": "cc594eada619c51241ed94bcbb41c37e7205628f",
+  "seam": "website/, README.md, the Boundaries section of CLAUDE.md, .github/workflows/pages.yml",
+  "story": "I can now send people to nachogl1.github.io/maestro. The front page has a moving grid of glowing terminals, the real screenshots and two download buttons, and the install and troubleshooting steps live there instead of in the README. The old getting started, configuration, architecture, contributing and FAQ pages are gone from the site.",
+  "checks": [
+    {
+      "key": "website/home-no-js",
+      "criterion": "Home is readable without JavaScript",
+      "steps": "Open https://nachogl1.github.io/maestro/ in a browser with JavaScript turned off.",
+      "expected": "The headline \"Many AI coding sessions. One conductor.\", two download buttons that open the latest release page, six screenshots with captions, and the footer \"Created by Jack, adapted by Ignacio Gonzalez. Licensed under MIT\"."
+    },
+    {
+      "key": "website/home-motion",
+      "criterion": "The Home page animation respects the reduced-motion setting",
+      "steps": "Turn on \"reduce motion\" in the operating system and open the Home page. Then turn the setting off and reload.",
+      "expected": "With reduce motion on: a still grid of tile outlines with two red ones and a small shelf below it, nothing moving. With it off: the tiles drift and gather."
+    },
+    {
+      "key": "website/four-pages",
+      "criterion": "The site has exactly four pages and every link points to the fork",
+      "steps": "Open the site, go to Installation and use the left menu to visit every page. Click each GitHub link.",
+      "expected": "Only Home, Installation, Features and Troubleshooting exist. Every GitHub link goes to nachogl1/maestro, and there is no Discord link."
+    },
+    {
+      "key": "website/readme-link",
+      "criterion": "The README links to the site and no longer carries its own install steps",
+      "steps": "Open the repository's README on GitHub.",
+      "expected": "A \"Download and install\" section linking to nachogl1.github.io/maestro, and no build or install commands."
+    },
+    {
+      "key": "website/deploy",
+      "criterion": "The Pages workflow deploys the site from main",
+      "steps": "Once GitHub Actions is enabled on the fork, open the Actions tab and run the \"Public page\" workflow by hand (or push a change under website/ to main). Then open https://nachogl1.github.io/maestro/.",
+      "expected": "The \"Public page\" run is green and the site is live at that address with the four pages."
+    }
+  ],
+  "no_qa_reason": null
+}
