@@ -9,6 +9,12 @@
 //! the computer shutting down or a kill from Task Manager. The start-up offer
 //! reads it back from here.
 //!
+//! Closing to install an update (issue #609) marks the list "after update"
+//! instead of removing it: the next start brings every terminal back with no
+//! dialog. Reading a marked list removes the mark at once, so the terminals
+//! come back unasked only once; a mark that is not exactly `true` is no mark,
+//! and that list is offered with the dialog as usual.
+//!
 //! The file is read back as untrusted: a missing, damaged or oversized file is
 //! "no list" (never a start-up failure), an entry that does not have the
 //! expected shape is skipped, a terminal on a conversation an earlier entry
@@ -90,6 +96,8 @@ pub struct OfferedTerminal {
 pub struct OpenTerminalsOffer {
     /// Epoch milliseconds of the last save, the closest record of the stop.
     pub saved_at: i64,
+    /// Maestro closed to install an update: bring everything back unasked.
+    pub after_update: bool,
     pub terminals: Vec<OfferedTerminal>,
 }
 
@@ -99,7 +107,16 @@ pub struct OpenTerminalsOffer {
 struct ListFile<'a> {
     version: u32,
     saved_at: i64,
+    /// Written by the update install; see the module notes.
+    after_update: bool,
     terminals: &'a [OpenTerminal],
+}
+
+/// The list as read back from the file.
+struct ParsedList {
+    saved_at: i64,
+    after_update: bool,
+    terminals: Vec<OpenTerminal>,
 }
 
 /// `text` cut to at most `max` characters, on a character boundary.
@@ -142,12 +159,13 @@ impl OpenTerminal {
 /// Reads the terminals out of the file's text, skipping anything that is not
 /// a usable entry and every terminal on an already-listed conversation.
 /// `None` when the text is not a list file at all.
-fn parse_list(text: &str) -> Option<(i64, Vec<OpenTerminal>)> {
+fn parse_list(text: &str) -> Option<ParsedList> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let Some(Value::Array(raw)) = value.get("terminals") else {
         return None;
     };
     let saved_at = value.get("savedAt").and_then(Value::as_i64).unwrap_or(0);
+    let after_update = value.get("afterUpdate") == Some(&Value::Bool(true));
     let mut seen_conversations = HashSet::new();
     let terminals = raw
         .iter()
@@ -159,7 +177,11 @@ fn parse_list(text: &str) -> Option<(i64, Vec<OpenTerminal>)> {
         })
         .take(MAX_TERMINALS)
         .collect();
-    Some((saved_at, terminals))
+    Some(ParsedList {
+        saved_at,
+        after_update,
+        terminals,
+    })
 }
 
 /// Whether `terminal`'s Claude conversation can still be resumed: Claude
@@ -199,6 +221,8 @@ struct StoreState {
     /// the terminals open now, not a stop, so a reload of the window must not
     /// offer them.
     saved_this_run: bool,
+    /// True once the list is marked for an update: a normal close keeps it.
+    marked_for_update: bool,
 }
 
 impl OpenTerminalsStore {
@@ -226,24 +250,65 @@ impl OpenTerminalsStore {
             .filter_map(OpenTerminal::sanitized)
             .take(MAX_TERMINALS)
             .collect();
+        self.write(now_ms, false, &terminals)
+    }
+
+    /// Writes the file. The caller holds the lock.
+    fn write(
+        &self,
+        saved_at: i64,
+        after_update: bool,
+        terminals: &[OpenTerminal],
+    ) -> Result<(), String> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {dir:?}: {e}"))?;
         }
         let file = ListFile {
             version: FILE_VERSION,
-            saved_at: now_ms,
-            terminals: &terminals,
+            saved_at,
+            after_update,
+            terminals,
         };
         let json = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         atomic_write_durable(&self.path, &json)
     }
 
+    /// Maestro is about to close to install an update: marks this run's list
+    /// "after update" and ignores every later save, so the terminals being
+    /// shut down cannot shrink it. A list this run never saved (one still
+    /// waiting for its start-up answer) is left unmarked. Blocking.
+    pub fn mark_for_update(&self) -> Result<(), String> {
+        let mut state = self.lock();
+        state.closed = true;
+        if !state.saved_this_run {
+            return Ok(());
+        }
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(format!(
+                    "could not read open-terminals list {:?}: {e}",
+                    self.path
+                ))
+            }
+        };
+        let list = parse_list(&text)
+            .ok_or_else(|| format!("open-terminals list {:?} is damaged", self.path))?;
+        self.write(list.saved_at, true, &list.terminals)?;
+        state.marked_for_update = true;
+        Ok(())
+    }
+
     /// The list a previous run left behind, or `None` when there is none,
     /// it cannot be read, or this run has already saved its own. Conversations
     /// are looked up under `claude_root` (Claude Code's projects folder).
-    /// Never changes the file. Blocking.
+    /// Changes the file only to remove an "after update" mark; when that
+    /// fails the list comes back unmarked, so it is asked about rather than
+    /// restored unasked a second time. Blocking.
     pub fn load_offer(&self, claude_root: Option<&Path>) -> Option<OpenTerminalsOffer> {
-        if self.lock().saved_this_run {
+        let state = self.lock();
+        if state.saved_this_run {
             return None;
         }
         match std::fs::metadata(&self.path) {
@@ -264,14 +329,17 @@ impl OpenTerminalsStore {
                 return None;
             }
         };
-        let Some((saved_at, terminals)) = parse_list(&text) else {
+        let Some(list) = parse_list(&text) else {
             log::warn!(
                 "open-terminals list {:?} is damaged; ignoring it",
                 self.path
             );
             return None;
         };
-        let terminals = terminals
+        let after_update = list.after_update && self.remove_update_mark(&list);
+        drop(state);
+        let terminals = list
+            .terminals
             .into_iter()
             .map(|terminal| OfferedTerminal {
                 folder_exists: Path::new(&terminal.working_directory).is_dir(),
@@ -280,9 +348,22 @@ impl OpenTerminalsStore {
             })
             .collect();
         Some(OpenTerminalsOffer {
-            saved_at,
+            saved_at: list.saved_at,
+            after_update,
             terminals,
         })
+    }
+
+    /// Writes `list` back without its "after update" mark; false when that
+    /// fails. The caller holds the lock.
+    fn remove_update_mark(&self, list: &ParsedList) -> bool {
+        match self.write(list.saved_at, false, &list.terminals) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("could not remove the update mark from the open-terminals list: {e}");
+                false
+            }
+        }
     }
 
     /// Removes the saved list (the offer was answered). Blocking.
@@ -292,9 +373,13 @@ impl OpenTerminalsStore {
     }
 
     /// A normal close has started: remove the list and ignore later saves.
+    /// A list marked for an update is kept for the start after it.
     pub fn forget_on_normal_close(&self) {
         let mut state = self.lock();
         state.closed = true;
+        if state.marked_for_update {
+            return;
+        }
         if let Err(e) = self.remove_file() {
             log::warn!("{e}");
         }
@@ -325,6 +410,13 @@ static STORE: LazyLock<OpenTerminalsStore> =
 /// Called by every normal close of the main window (see `lib.rs`).
 pub fn forget_on_normal_close() {
     STORE.forget_on_normal_close();
+}
+
+/// Called by the update install right before Maestro closes for it.
+pub fn mark_for_update() {
+    if let Err(e) = STORE.mark_for_update() {
+        log::warn!("could not mark the open-terminals list for the update: {e}");
+    }
 }
 
 /// Called when a committed close failed and the app keeps running.
@@ -468,6 +560,7 @@ mod tests {
 
         assert_eq!(saved["version"], json!(1));
         assert_eq!(saved["savedAt"], json!(NOW));
+        assert_eq!(saved["afterUpdate"], json!(false));
         assert_eq!(
             saved["terminals"][0],
             json!({
@@ -692,5 +785,87 @@ mod tests {
             "still unanswered: offered again"
         );
         assert_eq!(reload_after_saving, None);
+    }
+
+    /// Issue #609: "Update and restart" closes Maestro through the update
+    /// install, which marks the list instead of removing it.
+    #[test]
+    fn a_list_marked_for_the_update_comes_back_unasked_once_then_is_asked_about() {
+        let (dir, store) = temp_store();
+        let open = vec![
+            terminal("/p/shop", "a", AiMode::Claude, dir.path()),
+            terminal("/p/shop", "b", AiMode::Plain, dir.path()),
+        ];
+        store.save(open.clone(), NOW).unwrap();
+
+        store.mark_for_update().unwrap();
+        // The terminals are shut down for the install; the shrinking list
+        // they save, and the close itself, leave the marked list alone.
+        store.save(Vec::new(), NOW + 1).unwrap();
+        store.forget_on_normal_close();
+
+        let after_update = load(&store, &dir).expect("the marked list");
+        assert!(after_update.after_update);
+        assert_eq!(after_update.saved_at, NOW);
+        let names: Vec<_> = after_update
+            .terminals
+            .iter()
+            .map(|t| t.terminal.name.clone().unwrap())
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+        // Reading it removed the mark: a stop before the restore finished is
+        // an ordinary unexpected stop, never a second unasked restore.
+        let next = load(&store, &dir).expect("still a list");
+        assert!(!next.after_update);
+    }
+
+    #[test]
+    fn only_this_runs_own_list_is_marked() {
+        let (dir, store) = temp_store();
+        store
+            .save(
+                vec![terminal("/p/shop", "a", AiMode::Plain, dir.path())],
+                NOW,
+            )
+            .unwrap();
+        // A new run still showing the start-up offer for that list updates.
+        let next_run = OpenTerminalsStore::new(store.path.clone());
+        next_run.mark_for_update().unwrap();
+        assert!(!load(&store, &dir).expect("the old list").after_update);
+
+        // Nothing saved and nothing on disk: nothing to mark, no error.
+        let (dir, store) = temp_store();
+        store.mark_for_update().unwrap();
+        assert_eq!(load(&store, &dir), None);
+    }
+
+    #[test]
+    fn a_mark_that_is_not_exactly_true_is_no_mark() {
+        let (dir, store) = temp_store();
+        std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
+        let entry = json!({
+            "projectPath": "/p/shop",
+            "kind": "Plain",
+            "workingDirectory": dir.path().to_string_lossy(),
+        });
+        for mark in [
+            json!(false),
+            json!("true"),
+            json!(1),
+            json!(null),
+            json!({}),
+            json!([true]),
+        ] {
+            let file =
+                json!({"version": 1, "savedAt": NOW, "afterUpdate": mark, "terminals": [entry]});
+            std::fs::write(&store.path, file.to_string()).unwrap();
+            let offer = load(&store, &dir).expect("a list");
+            assert!(!offer.after_update, "{mark}");
+            assert_eq!(offer.terminals.len(), 1, "{mark}");
+        }
+        // A list written before the mark existed has no field at all.
+        let file = json!({"version": 1, "savedAt": NOW, "terminals": [entry]});
+        std::fs::write(&store.path, file.to_string()).unwrap();
+        assert!(!load(&store, &dir).expect("a list").after_update);
     }
 }

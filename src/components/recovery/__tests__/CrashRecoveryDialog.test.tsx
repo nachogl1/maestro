@@ -71,6 +71,7 @@ function terminal(name: string, overrides: Partial<OfferedTerminal> = {}): Offer
 /** The list from the prototype's scene 1 (made-up names). */
 const LIST: OpenTerminalsOffer = {
   savedAt: STOPPED_AT,
+  afterUpdate: false,
   terminals: [
     terminal("checkout-fix"),
     terminal("payments-review", { parked: true }),

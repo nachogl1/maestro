@@ -587,3 +587,19 @@ A scratch project is a plain folder (not a git repository) for work that belongs
   "Brought back after Maestro stopped. Its earlier content could not be retrieved." — until its × is clicked.
 - Terminals that were parked go back on the parked shelf with the "needs you" signal. Nothing is sent to any agent.
 - Not restored: eagle tile places and sizes, zoom and focus. "Order" is the order the project opened its terminals.
+
+### After a Maestro update
+
+- **The update prompt:** with terminals open, **Download and Install** first asks "Update Maestro to <version>?":
+  "Your N open terminals will close and come back after the update.", then three points: whatever they are doing
+  right now is cut off, so make sure none is doing critical work; Claude conversations come back, the step that was
+  running does not; plain shells come back empty, in the same folder. **Not now** changes nothing; **Update and
+  restart** installs. With no terminals open the update installs straight away, as before.
+- Closing for the update keeps the list of open terminals and marks it "bring back after update" instead of
+  removing it. A list Maestro is still asking about from an earlier unexpected stop is left as it was.
+- **On the start after the update** every terminal in the marked list comes back with no dialog, under the crash
+  recovery rules above: a Claude terminal continues its conversation, a plain shell reopens empty with the amber
+  line, parked ones return to the shelf with the "needs you" signal, and one whose folder is gone is skipped. The
+  mark is removed as the list is read, so a later start never brings them back unasked again; the start after a
+  normal close shows nothing.
+- The real update path (installer, relaunch) needs a released build; the first real update is its live check.

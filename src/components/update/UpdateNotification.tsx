@@ -4,13 +4,14 @@ import { DialogShell, dialogButtonClass } from "@/components/shared/DialogShell"
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 
-/** The warning shown before an update restarts Maestro while terminals are open. */
-export function updateKillsTerminalsWarning(count: number): string {
-  const terminals = count === 1 ? "1 terminal is" : `${count} terminals are`;
-  return (
-    `${terminals} open. Installing the update restarts Maestro, which closes every ` +
-    "terminal and stops anything running in them."
-  );
+/**
+ * The first line of the prompt shown before an update restarts Maestro while
+ * terminals are open (issue #609): they close, and the next start brings them
+ * back with no question. Layout: `docs/ux/prototypes/crash-recovery/`, scene 3.
+ */
+export function updateRestartsTerminalsLine(count: number): string {
+  const terminals = count === 1 ? "1 open terminal" : `${count} open terminals`;
+  return `Your ${terminals} will close and come back after the update.`;
 }
 
 export function UpdateNotification() {
@@ -42,7 +43,7 @@ export function UpdateNotification() {
     return null;
   }
 
-  // An update restarts Maestro, which kills every terminal: ask first when any are open.
+  // An update restarts Maestro, which cuts off every terminal: ask first when any are open.
   const requestInstall = () => {
     if (openTerminals > 0) setConfirming(true);
     else void downloadAndInstall();
@@ -145,10 +146,9 @@ export function UpdateNotification() {
       {/* Portalled to document.body, so it sits above everything despite living in the toast. */}
       {confirming && status === "available" && (
         <DialogShell
-          title="Close all terminals?"
+          title={updateInfo ? `Update Maestro to ${updateInfo.latest_version}?` : "Update Maestro?"}
           icon={<AlertTriangle size={16} />}
           onClose={() => setConfirming(false)}
-          size="sm"
           footer={
             <>
               <button
@@ -156,21 +156,29 @@ export function UpdateNotification() {
                 onClick={() => setConfirming(false)}
                 className={dialogButtonClass("ghost")}
               >
-                Cancel
+                Not now
               </button>
               <button
                 type="button"
                 onClick={confirmInstall}
                 className={dialogButtonClass("primary")}
               >
-                Install and restart
+                Update and restart
               </button>
             </>
           }
         >
           <p className="text-xs leading-relaxed text-maestro-text">
-            {updateKillsTerminalsWarning(openTerminals)}
+            {updateRestartsTerminalsLine(openTerminals)}
           </p>
+          <ul className="mt-1.5 list-disc space-y-1 pl-[18px] text-xs leading-relaxed text-maestro-text">
+            <li>
+              Whatever they are doing right now is <b>cut off</b>. Make sure none is doing critical
+              work.
+            </li>
+            <li>Claude conversations come back; the step that was running does not.</li>
+            <li>Plain shells come back empty, in the same folder.</li>
+          </ul>
         </DialogShell>
       )}
     </div>
