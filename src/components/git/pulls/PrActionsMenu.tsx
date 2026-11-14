@@ -1,4 +1,4 @@
-import { MoreVertical, Play } from "lucide-react";
+import { MoreVertical, Play, Workflow } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useDismissable } from "@/hooks/useDismissable";
 import {
@@ -16,6 +16,7 @@ import {
 import type { PullRequestInfo } from "@/stores/useGitHubStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { prWorkflowGraphForLaunch, usePrWorkflowStore } from "@/stores/usePrWorkflowStore";
+import { useWorkflowsViewStore } from "@/stores/useWorkflowsViewStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 
 interface PrActionsMenuProps {
@@ -47,6 +48,7 @@ export function PrActionsMenu({ pr, repoPath }: PrActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   const graph = usePrWorkflowStore((s) => s.graph) ?? DEFAULT_PR_WORKFLOW;
+  const openWorkflowEditor = useWorkflowsViewStore((s) => s.open);
   const steps = useMemo(() => prWorkflowStepsInOrder(graph), [graph]);
   const tabs = useWorkspaceStore((s) => s.tabs);
   const activeTab = tabs.find((t) => t.active);
@@ -186,9 +188,17 @@ export function PrActionsMenu({ pr, repoPath }: PrActionsMenuProps) {
             Launch {ticked} {ticked === 1 ? "step" : "steps"}
           </button>
 
-          <p className="px-1 pt-1.5 text-[10px] leading-tight text-maestro-muted/70">
-            Steps come from the PR review workflow in the Launch panel.
-          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              openWorkflowEditor();
+            }}
+            className="mt-1 flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[10px] text-maestro-muted transition-colors hover:bg-maestro-card hover:text-maestro-text"
+          >
+            <Workflow size={11} />
+            Edit the PR review workflow
+          </button>
         </div>
       )}
     </div>

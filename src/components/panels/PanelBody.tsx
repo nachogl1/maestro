@@ -4,7 +4,6 @@ import { HistorySection } from "@/components/sidebar/HistorySection";
 import { InfraTab } from "@/components/sidebar/InfraTab";
 import { InjectorSection } from "@/components/sidebar/InjectorSection";
 import { InjectorTriggersSection } from "@/components/sidebar/InjectorTriggersSection";
-import { LaunchSection } from "@/components/sidebar/LaunchSection";
 import { SecondBrainSection } from "@/components/sidebar/SecondBrainSection";
 import { SettingsPanelContent } from "@/components/sidebar/Sidebar";
 import type { PanelId } from "@/stores/usePanelStripStore";
@@ -40,7 +39,7 @@ export interface PanelContentProps {
   launchedCount?: number;
   isStoppingAll?: boolean;
   onStopAll?: () => void;
-  /** Zoom into a terminal (Agents list, History, Launch's open button). */
+  /** Zoom into a terminal (Agents list, History). */
   onAgentNavigate?: (tabId: string, sessionId: number) => void;
   onAgentKill?: (tabId: string, sessionId: number) => void;
   /** History queued a recovery launch: reveal that project's grid. */
@@ -122,8 +121,6 @@ function PaddedPanelBody({ id, content }: { id: PanelId; content: PanelContentPr
           <InjectorTriggersSection />
         </>
       );
-    case "launch":
-      return <LaunchSection onNavigate={content.onAgentNavigate} />;
     case "secondbrain":
       return <SecondBrainSection />;
     default:

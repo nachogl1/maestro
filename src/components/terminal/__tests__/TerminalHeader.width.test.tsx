@@ -70,7 +70,7 @@ const MENU = "More terminal actions";
 beforeEach(() => {
   observers.length = 0;
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
-  useSessionStore.setState({ sessions: [], samuraiBySessionId: {} });
+  useSessionStore.setState({ sessions: [] });
 });
 
 afterEach(() => {
@@ -215,7 +215,7 @@ describe("TerminalHeader in narrow columns (issue #552)", () => {
     expect(name.getAttribute("title")).toContain("a very long terminal name");
   });
 
-  it("keeps the AI icon and the Samurai badge visible at every width", () => {
+  it("keeps the AI icon visible at every width", () => {
     useSessionStore.setState({
       sessions: [
         {
@@ -227,14 +227,10 @@ describe("TerminalHeader in narrow columns (issue #552)", () => {
           project_path: "C:/proj",
         },
       ],
-      samuraiBySessionId: {
-        7: { project: "C:/proj", epic: "#1", generation: 2, state: "WORKING" },
-      },
     });
     for (const width of [900, 400, 300, 200, 120]) {
       const { unmount } = renderHeaderAt(width);
       expect(screen.getByLabelText("Select AI provider"), `AI icon at ${width}px`).toBeVisible();
-      expect(screen.getByText("gen-2 · working"), `badge at ${width}px`).toBeVisible();
       unmount();
       observers.length = 0;
     }

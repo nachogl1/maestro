@@ -125,7 +125,7 @@ narrow columns look the same as six. As the column gets narrower, the header giv
 - The terminal name stays longest and is cut with **…** only when nothing else is left to give. Hover over the
   name to read in full whatever is hidden or cut: the name, the project and the branch.
 
-The AI icon and the Samurai badge show at every width. When the context threshold is reached, a small red warning
+The AI icon shows at every width. When the context threshold is reached, a small red warning
 icon blinks right after the terminal name; hover over it for "Context threshold reached" and the percentage.
 
 ## Terminals: the message icon on the header
@@ -139,8 +139,8 @@ two messages on, it carries a count, such as `3`.
   (`14:20`) and the message's first line. The last line reads `Click to dismiss`.
 - Click the icon to clear all of that terminal's messages. Nothing else clears it: clicking, focusing or typing in
   the terminal leaves it in place, and it stays through tab switches, zoom and parking.
-- A failed send adds nothing (the Injector panel and the trigger row show failures). Samurai instructions, the Work
-  Journal harvest prompt and the first prompt at launch never add one.
+- A failed send adds nothing (the Injector panel and the trigger row show failures). The Work Journal harvest prompt
+  and the first prompt at launch never add one.
 - The icons are kept in memory only: they clear when Maestro restarts, and a closed terminal's messages go with it.
 
 ## Terminals: two kinds, Claude Code and plain shell
@@ -230,7 +230,8 @@ Every panel opens from the thin column of icons on the far left, below the proje
 no right-hand panel and no panel button in the top bar any more.
 
 - The icons, top to bottom, in three groups: **History**, **Files** and **Git**; **Notes**, **Work Journal**, **Injector**,
-  **Launch**, **Second Brain** and **Workshop**; **Infra** and **Settings**. Hover an icon for its name and shortcut.
+  **Second Brain** and **Workshop**; **Infra** and **Settings**. Hover an icon for its name and shortcut. There is no
+  **Launch** icon any more: Samurai runs are no longer started from the app.
 - Click an icon to open its panel to the right of the strip; click it again, or the panel's **✕**, to close it. An
   open panel's icon is red with a small red bar beside it.
 - Several panels can be open at once. They always sit side by side in the strip's order, whatever order you opened
@@ -245,8 +246,27 @@ no right-hand panel and no panel button in the top bar any more.
 - The Settings panel holds what the sidebar's Settings tab held: **Open Settings**, the Agents list and **Stop All**.
   The Git panel shows its tab name, commit count and refresh button in its header, and keeps its per-project
   carousel in eagle view.
-- **Settings → Features → Panel icons** chooses whether the Launch, Second Brain and Work Journal icons show;
-  switching one off also closes its panel.
+- **Settings → Features → Panel icons** chooses whether the Second Brain and Work Journal icons show; switching one
+  off also closes its panel. A Launch panel left open from an older version does not come back.
+
+## Samurai is gone from the app's screens
+
+Nothing in Maestro starts, shows or mentions a Samurai run any more:
+
+- No **Launch** icon or panel, no **Settings → Samurai** section, no "Samurai launch" switch in **Settings → Features**.
+- No Samurai badge or hand-off banner on a terminal header, no park countdown chip in the Agents list, no parked-runs
+  badge in the top bar, no Samurai toasts, and no amber "parked on token allowance" shine on the parked shelf.
+- Parking and unparking by hand, the parked shelf, the context alert, the Injector and its triggers, History resume
+  and PR review launches work as before.
+- Settings saved by an older version that still carry the Samurai launch switch load as before; the switch is
+  ignored. The Second Brain panel still exists until its own removal.
+
+## PR monitor: editing the PR review workflow
+
+- Open a PR row's action menu (the **⋮** button) and click **Edit the PR review workflow** at the bottom. The menu
+  closes and the full-screen workflow editor opens on the PR review workflow; Esc or **✕** closes it.
+- Each box is one checkbox in that menu: edit its label and text, add a step, remove one (the last one cannot be
+  removed), rewire the arrows, or **Reset** to the default. The editor has no Samurai mode any more.
 
 ## Files panel: the focused terminal's folder
 
@@ -567,8 +587,8 @@ A scratch project is a plain folder (not a git repository) for work that belongs
 ## Crash recovery: bringing terminals back after an unexpected stop
 
 - While Maestro runs it keeps a list of the open terminals in its own app data (`open-terminals/open-terminals.json`
-  under Maestro's data folder, never in a project): project, order, name, pin, kind, folder, parked or not, whether
-  a Samurai run owns it, and a Claude terminal's conversation id. It changes whenever one of these does, and is
+  under Maestro's data folder, never in a project): project, order, name, pin, kind, folder, parked or not, and a
+  Claude terminal's conversation id. It changes whenever one of these does, and is
   saved again every minute while terminals are open so its time stays close to a stop.
 - **A normal close removes the list:** the close button, Alt+F4, the taskbar close and the macOS **Quit Maestro**
   menu item (Cmd+Q), which now goes through the same quit question as the close button. A list found on start
@@ -577,8 +597,8 @@ A scratch project is a plain folder (not a git repository) for work that belongs
 - **The offer:** "Maestro stopped unexpectedly", with the day and time of the last save. Every terminal is ticked
   and grouped by project in its order; the top box ticks or unticks all and shows "N of M selected". Each row shows
   the name, Claude or Shell, "was parked", and what comes back. A terminal whose folder is gone is greyed with
-  "folder no longer exists" and cannot be ticked. Samurai terminals are not listed; one line counts them (they
-  recover from the Launch panel).
+  "folder no longer exists" and cannot be ticked. There is no Samurai line: a list saved by an older version lists
+  its Samurai terminals like any other.
 - **Don't bring back**, the × and Esc remove the list for good; the Claude conversations stay in the History panel.
 - **Bring back N** reopens the ticked terminals in their project, in order, with their name and pin, in their
   folder. A Claude terminal continues its conversation (resumed from its own folder, as History does); one whose

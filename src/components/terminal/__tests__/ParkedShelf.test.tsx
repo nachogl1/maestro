@@ -48,9 +48,7 @@ describe("ParkedShelf", () => {
     useSessionStore.setState({
       sessions: [],
       parkedSessionIds: [],
-      samuraiBySessionId: {},
-      samuraiParkAlerts: [],
-      runFatalSessionIds: [],
+      attentionSessionIds: [],
     });
     // The dragged order is app-wide state; every test starts from the natural order.
     useParkedOrderStore.setState({ order: [] });
@@ -129,38 +127,14 @@ describe("ParkedShelf", () => {
     expect(screen.getByText("Parked").className).toContain("text-maestro-accent");
   });
 
-  /**
-   * Issue #174 regression: a run-fatal park (circuit breaker, unconfirmed
-   * handoff, ...) used to look exactly like any other parked terminal — the
-   * only warning was an ephemeral toast. `runFatalSessionIds` is what
-   * survives `parkSession`'s attention wipe (see useSessionStore.ts); the
-   * shelf must actually render it.
-   */
-  it("marks a run-fatal parked chip with the existing attention treatment", () => {
-    useSessionStore.setState({
-      sessions: [session(1, "C:/proj", "Dead-run", "Working"), session(2, "C:/proj", "Busy")],
-      parkedSessionIds: [1, 2],
-      runFatalSessionIds: [1],
-    });
-
-    render(<ParkedShelf onUnpark={vi.fn()} />);
-
-    const deadChip = screen.getByText("Dead-run").closest("button");
-    const busyChip = screen.getByText("Busy").closest("button");
-    expect(deadChip?.className).toContain("parked-chip-attention");
-    expect(deadChip?.getAttribute("title")).toBe("Samurai run died — restore terminal");
-    expect(busyChip?.className).not.toContain("parked-chip-attention");
-    expect(screen.getByText("Parked").className).toContain("text-maestro-accent");
-  });
-
   it("does not mark an ordinary parked chip just because it once had attention", () => {
-    // Only the run-fatal marker earns the treatment — an id merely present
-    // in the general attention set (e.g. a stale auto-unpark highlight)
-    // must not leak into the shelf.
+    // Only the session's own status earns the treatment — an id merely
+    // present in the general attention set (e.g. a stale auto-unpark
+    // highlight) must not leak into the shelf.
     useSessionStore.setState({
       sessions: [session(1, "C:/proj", "Plain", "Working")],
       parkedSessionIds: [1],
-      runFatalSessionIds: [],
+      attentionSessionIds: [1],
     });
 
     render(<ParkedShelf onUnpark={vi.fn()} />);
@@ -195,7 +169,7 @@ describe("ParkedShelf", () => {
       expect(roomyChip?.className).not.toContain("parked-chip-context-alert");
     });
 
-    it("the alert outranks the needs-input pulse and the allowance shine", () => {
+    it("the alert outranks the needs-input pulse", () => {
       useSessionStore.setState({
         sessions: [{ ...session(1, "C:/proj", "Waiting", "NeedsInput"), contextPercent: 85 }],
         parkedSessionIds: [1],
@@ -232,90 +206,6 @@ describe("ParkedShelf", () => {
     render(<ParkedShelf onUnpark={vi.fn()} />);
 
     expect(screen.getByText("Parked").className).toContain("text-maestro-muted");
-  });
-
-  describe("allowance-parked Samurai runs", () => {
-    function parkTheRun(sessionId: number, projectPath = "C:/proj") {
-      useSessionStore.setState({
-        samuraiBySessionId: {
-          [sessionId]: { project: projectPath, epic: "#37", generation: 2, state: "PARKED" },
-        },
-        samuraiParkAlerts: [
-          {
-            key: `${projectPath}|#37|2026-08-13T09:05:00+00:00`,
-            project: projectPath,
-            epic: "#37",
-            fireAt: "2026-08-13T09:05:00+00:00",
-            acknowledged: false,
-          },
-        ],
-      });
-    }
-
-    it("shines the chip and tints the shelf until the run is restored", () => {
-      useSessionStore.setState({
-        sessions: [session(1, "C:/proj", "Samurai-1"), session(2, "C:/proj", "Busy")],
-        parkedSessionIds: [1, 2],
-      });
-      parkTheRun(1);
-      const onUnpark = vi.fn();
-
-      render(<ParkedShelf onUnpark={onUnpark} />);
-
-      const chip = screen.getByText("Samurai-1").closest("button");
-      expect(chip?.className).toContain("samurai-park-shine");
-      expect(chip?.getAttribute("title")).toContain("Parked on token allowance");
-      expect(screen.getByText("Busy").closest("button")?.className).not.toContain(
-        "samurai-park-shine",
-      );
-      expect(screen.getByText("Parked").className).toContain("text-maestro-accent");
-
-      // Restoring the run IS the acknowledgement — the shine has done its job.
-      if (chip) fireEvent.click(chip);
-      expect(onUnpark).toHaveBeenCalledWith(1);
-      expect(useSessionStore.getState().samuraiParkAlerts[0].acknowledged).toBe(true);
-      expect(screen.getByText("Samurai-1").closest("button")?.className).not.toContain(
-        "samurai-park-shine",
-      );
-    });
-
-    it("does not shine a supervised session that is not parked", () => {
-      useSessionStore.setState({
-        sessions: [session(1, "C:/proj", "Samurai-1")],
-        parkedSessionIds: [1],
-      });
-      parkTheRun(1);
-      useSessionStore.setState({
-        samuraiBySessionId: {
-          1: { project: "C:/proj", epic: "#37", generation: 2, state: "WORKING" },
-        },
-      });
-
-      render(<ParkedShelf onUnpark={vi.fn()} />);
-
-      expect(screen.getByText("Samurai-1").closest("button")?.className).not.toContain(
-        "samurai-park-shine",
-      );
-    });
-
-    it("does not shine when the park belongs to another project", () => {
-      useSessionStore.setState({
-        sessions: [session(1, "C:/proj", "Samurai-1")],
-        parkedSessionIds: [1],
-      });
-      parkTheRun(1, "C:/other");
-      useSessionStore.setState({
-        samuraiBySessionId: {
-          1: { project: "C:/proj", epic: "#37", generation: 2, state: "PARKED" },
-        },
-      });
-
-      render(<ParkedShelf onUnpark={vi.fn()} />);
-
-      expect(screen.getByText("Samurai-1").closest("button")?.className).not.toContain(
-        "samurai-park-shine",
-      );
-    });
   });
 
   describe("dragging pills to reorder them", () => {

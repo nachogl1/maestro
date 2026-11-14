@@ -3,35 +3,6 @@ import type { PrReviewLaunch } from "@/lib/terminalPrompt";
 import type { AiMode } from "@/stores/useSessionStore";
 
 /**
- * Samurai successor metadata riding on a pending launch (issue #55). Its
- * presence makes the launch a supervised successor spawn: the CLI command is
- * forced to skip permissions, and right before the CLI launches the session
- * is registered via `samurai_register_session` with exactly these values —
- * which the backend matches against its staged verify ritual.
- */
-export interface SamuraiSuccessorInfo {
-  /** Canonical project path, exactly as the backend event delivered it. */
-  project: string;
-  epic: string;
-  /** The successor's generation (predecessor + 1). */
-  generation: number;
-  /**
-   * Model preference from the epic's run config (review F4) — the grid
-   * appends `--model <value>` to the CLI launch. Absent/null = default.
-   */
-  model?: string | null;
-  /**
-   * The gen-1 brief POINTER the backend offered for the `claude` launch line
-   * (issue #158): the grid appends it as a quoted positional initial prompt
-   * so it is submitted WITH the launch instead of typed into the REPL
-   * afterwards. Only a gen-1 launch ever carries one; absent/null means the
-   * backend types the instruction on the session's first SessionStarted, as
-   * it always has.
-   */
-  launchPrompt?: string | null;
-}
-
-/**
  * A one-shot request, made from outside the terminal grid (e.g. the sidebar
  * History tab), to create a pre-configured slot in a project's grid and
  * launch it immediately. The grid for `tabId` consumes the request on mount
@@ -49,8 +20,6 @@ export interface PendingLaunch {
   branch: string | null;
   /** Custom session name applied at launch (terminal header). */
   customName?: string | null;
-  /** Present only for Samurai successor spawns (issue #55). */
-  samurai?: SamuraiSuccessorInfo | null;
   /**
    * Interactive harvest triage launch (issue #98): the grid arms the
    * session via `samurai_harvest_arm` right before the CLI launches, and
@@ -95,8 +64,7 @@ interface PendingLaunchState {
   /**
    * FIFO queue of unconsumed requests (fresh-eyes finding B). A single slot
    * silently dropped launches when two arrived before either was consumed —
-   * e.g. two epics' successor spawns in one tick, or a samurai spawn racing
-   * a History-tab launch. A queue with one entry behaves exactly like the
+   * e.g. two terminals brought back by crash recovery in one tick. A queue with one entry behaves exactly like the
    * old single slot, so History-tab callers are unchanged.
    */
   pending: PendingLaunch[];
@@ -120,9 +88,6 @@ function sameLaunch(a: PendingLaunch, b: PendingLaunch): boolean {
     a.workingDirOverride === b.workingDirOverride &&
     a.branch === b.branch &&
     (a.customName ?? null) === (b.customName ?? null) &&
-    (a.samurai?.project ?? null) === (b.samurai?.project ?? null) &&
-    (a.samurai?.epic ?? null) === (b.samurai?.epic ?? null) &&
-    (a.samurai?.generation ?? null) === (b.samurai?.generation ?? null) &&
     (a.harvest ?? false) === (b.harvest ?? false) &&
     (a.initialPrompt ?? null) === (b.initialPrompt ?? null) &&
     // Issue #136 review (C11): two launches carrying the SAME prompt can
@@ -152,3 +117,21 @@ export const usePendingLaunchStore = create<PendingLaunchState>((set, get) => ({
     return queue[index];
   },
 }));
+
+/**
+ * Whether a queued or claimed launch is about to land in the grid for `tabId`
+ * (fresh-eyes finding A). TerminalGrid's last-slot kill path checks this
+ * before returning the project to the idle landing view: unmounting the grid
+ * at that moment would destroy a launch that is still queued here or already
+ * claimed by the grid's consume effect (and not yet handed to launchSlot).
+ * `claimedLaunchCount` is grid-local, so it counts regardless of `tabId`.
+ */
+export function pendingLaunchImminent(
+  queued: readonly Pick<PendingLaunch, "tabId">[],
+  claimedLaunchCount: number,
+  tabId: string | null | undefined,
+): boolean {
+  if (claimedLaunchCount > 0) return true;
+  if (!tabId) return false;
+  return queued.some((p) => p.tabId === tabId);
+}

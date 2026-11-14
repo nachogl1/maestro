@@ -7,7 +7,6 @@ import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
-import { ParkedRunsBadge } from "./ParkedRunsBadge";
 
 /** One entry of the eagle-view "add terminal" project dropdown. */
 export interface EagleProjectOption {
@@ -24,8 +23,7 @@ interface TopBarProps {
   /** Whether a project is open and active — the plus button shows whenever
    *  there is a project to add a terminal to, idle or not. */
   hasActiveProject?: boolean;
-  /** Slots in the active project that count against maxSessions (parked samurai
-   *  terminal-state tiles excluded, as in TerminalGrid's addSession) */
+  /** Slots in the active project, weighed against maxSessions */
   slotCount?: number;
   /** Maximum number of sessions allowed */
   maxSessions?: number;
@@ -44,8 +42,6 @@ interface TopBarProps {
   /** GitHub watchdog badge: navigate to the git panel with the matching
    *  tab + search filter. Badge hides itself when totals are zero. */
   onWatchdogNavigate?: (kind: "prs" | "issues") => void;
-  /** Parked-runs badge: select the project whose Samurai run is parked. */
-  onParkNavigate?: (projectPath: string) => void;
 }
 
 export function TopBar({
@@ -61,7 +57,6 @@ export function TopBar({
   onAddSessionToProject,
   onOpenScratch,
   onWatchdogNavigate,
-  onParkNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
 
@@ -116,9 +111,6 @@ export function TopBar({
             <LayoutGrid size={14} />
           </button>
         )}
-        {/* Allowance-parked Samurai runs — the one park surface that shows in
-            every view. Hides itself when nothing is parked. */}
-        <ParkedRunsBadge onNavigate={onParkNavigate} />
         {/* GitHub watchdog totals (review requests / assigned issues) */}
         {onWatchdogNavigate && <GitHubWatchdogBadge onNavigate={onWatchdogNavigate} />}
         <ProjectsPill />

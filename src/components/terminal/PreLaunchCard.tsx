@@ -86,12 +86,6 @@ export interface SessionSlot {
    */
   configDir?: string | null;
   /**
-   * Samurai successor metadata (issue #55): forces skip-permissions on the
-   * CLI command and registers the session under supervision right before the
-   * CLI launches. Never set for manually created slots.
-   */
-  samurai?: import("@/stores/usePendingLaunchStore").SamuraiSuccessorInfo | null;
-  /**
    * Interactive harvest triage (issue #98): arms the backend's journal
    * prompt injection right before the CLI launches. Never set for manually
    * created slots.

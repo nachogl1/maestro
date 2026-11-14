@@ -2,11 +2,8 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Bot, ChevronDown, ChevronRight, Settings, SlidersHorizontal, Square } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { SettingsDialog } from "@/components/settings";
-import { SamuraiScheduleChip } from "@/components/terminal/SamuraiScheduleChip";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
-import { samePath } from "@/lib/path";
 import { projectColorFor } from "@/lib/projectColor";
-import { isParkEntry } from "@/lib/samurai";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { type SubagentInfo, useAgentStore } from "@/stores/useAgentStore";
@@ -86,7 +83,6 @@ function AgentsSection({
   const [expanded, setExpanded] = useState(true);
   const tabs = useWorkspaceStore((s) => s.tabs);
   const sessions = useSessionStore((s) => s.sessions);
-  const samuraiSchedule = useSessionStore((s) => s.samuraiSchedule);
   const agents = useAgentStore((s) => s.agents);
   const projectColors = useProjectColors();
 
@@ -94,20 +90,8 @@ function AgentsSection({
     () =>
       tabs
         .map((tab) => ({ tab, sessions: sessionsForTab(tab, sessions) }))
-        // A fully-parked project has NO sessions (parked tiles auto-close;
-        // PRD decision #6) but must keep its row — that row carries the
-        // park-countdown chip (issue #61).
-        .filter(
-          (p) =>
-            p.sessions.length > 0 ||
-            // Park timers only: a scheduled launch (issue #129) is a run that
-            // does not exist yet, so it must not keep an empty Agents row
-            // alive with a chip that renders nothing.
-            samuraiSchedule.some(
-              (e) => isParkEntry(e) && samePath(e.project_path, p.tab.projectPath),
-            ),
-        ),
-    [tabs, sessions, samuraiSchedule],
+        .filter((p) => p.sessions.length > 0),
+    [tabs, sessions],
   );
 
   // Group agents by session and count running ones in a single pass instead
@@ -196,8 +180,6 @@ function AgentsSection({
                   <span className="truncate" style={{ color }}>
                     {tab.name}
                   </span>
-                  {/* Park countdown (issue #61) — nothing without a pending timer. */}
-                  <SamuraiScheduleChip projectPath={tab.projectPath} />
                 </div>
 
                 {/* Terminal rows */}

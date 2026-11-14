@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
-import { initSamuraiSpawnListener, stopSamuraiSpawnListener } from "@/lib/spawnSession";
 import { initActivityListener, stopActivityListener } from "@/stores/useActivityStore";
 import { initAgentListener, stopAgentListener } from "@/stores/useAgentStore";
 import {
@@ -11,9 +10,7 @@ import {
 } from "@/stores/useBackgroundTaskStore";
 import {
   initContextUsageListener,
-  initSamuraiSupervisorListener,
   stopContextUsageListener,
-  stopSamuraiSupervisorListener,
   useSessionStore,
 } from "@/stores/useSessionStore";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
@@ -23,7 +20,7 @@ import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 /**
  * App-lifetime setup and backend event subscriptions, mounted once by `App`:
  * platform tagging, orphaned-PTY cleanup + session fetch, terminal settings,
- * and the update / activity / context-usage / Samurai / agent / CLI-open
+ * and the update / activity / context-usage / agent / CLI-open
  * listeners. Each effect tears down its own subscription on unmount.
  */
 export function useAppListeners(): void {
@@ -108,32 +105,6 @@ export function useAppListeners(): void {
     });
     return () => {
       stopContextUsageListener();
-    };
-  }, []);
-
-  // Samurai supervisor listener: tracks generation/state for the badges
-  // (issue #46), flips DEAD sessions (silent-death watchdog, issue #44) to
-  // Error chrome + attention, and flags supervised sessions on allowance
-  // threshold crossings (issue #45).
-  useEffect(() => {
-    initSamuraiSupervisorListener().catch((err) => {
-      console.error("Failed to initialize samurai supervisor listener:", err);
-    });
-    return () => {
-      stopSamuraiSupervisorListener();
-    };
-  }, []);
-
-  // Samurai successor spawns (issue #55): after killing gen-N the backend
-  // emits samurai-spawn-successor; this listener queues the gen-N+1 launch
-  // through the existing pending-launch flow (same path as History-tab
-  // recoveries) and the grid registers it under supervision.
-  useEffect(() => {
-    initSamuraiSpawnListener().catch((err) => {
-      console.error("Failed to initialize samurai spawn listener:", err);
-    });
-    return () => {
-      stopSamuraiSpawnListener();
     };
   }, []);
 

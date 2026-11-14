@@ -28,7 +28,6 @@ import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import type { ClaudeEvent } from "@/types/claude-events";
 import { QuickActionPills } from "./QuickActionPills";
-import { SamuraiHandoffBanner } from "./SamuraiHandoffBanner";
 import { type AIProvider, type SessionStatus, TerminalHeader } from "./TerminalHeader";
 
 /**
@@ -442,10 +441,6 @@ export const TerminalView = memo(function TerminalView({
         contextAlert={contextAlert}
         contextAlertTitle={contextAlertTitle}
       />
-
-      {/* Can't-miss attention strip: Maestro is about to hand off or park
-          this agent. Renders nothing outside those states. */}
-      <SamuraiHandoffBanner sessionId={sessionId} />
 
       {/* Crash recovery: brought back without its earlier content (issue #608). */}
       <RecoveryWarning sessionId={sessionId} />

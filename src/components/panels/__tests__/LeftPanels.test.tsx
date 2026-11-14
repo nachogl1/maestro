@@ -52,7 +52,6 @@ const STRIP: [string, string][] = [
   ["Notes", "Notes panel"],
   ["Work Journal", "Work Journal panel"],
   ["Injector", "Injector panel"],
-  ["Launch", "Launch panel"],
   ["Second Brain", "Second Brain panel"],
   ["Workshop", "Workshop panel"],
   ["Infra", "Infra panel"],
@@ -83,7 +82,7 @@ describe("LeftPanels: the icon strip on the far left", () => {
   beforeEach(() => {
     localStorage.clear();
     setWindowRoomFor(10);
-    useFeatureSettingsStore.setState({ samuraiLaunchEnabled: true, secondBrainEnabled: true });
+    useFeatureSettingsStore.setState({ secondBrainEnabled: true });
     useWorkJournalSettingsStore.setState({ enabled: true });
   });
   afterEach(() => {
@@ -187,16 +186,16 @@ describe("LeftPanels: the icon strip on the far left", () => {
   });
 
   it("shows only the icons switched on in Settings → Features, closing a switched-off panel", () => {
-    renderPanels(["launch"]);
+    renderPanels(["secondbrain"]);
     act(() => {
-      useFeatureSettingsStore.setState({ samuraiLaunchEnabled: false, secondBrainEnabled: false });
+      useFeatureSettingsStore.setState({ secondBrainEnabled: false });
       useWorkJournalSettingsStore.setState({ enabled: false });
     });
     const strip = screen.getByRole("navigation", { name: "Panels" });
-    for (const name of ["Launch", "Second Brain", "Work Journal"]) {
+    for (const name of ["Second Brain", "Work Journal"]) {
       expect(within(strip).queryByRole("button", { name })).not.toBeInTheDocument();
     }
-    expect(screen.queryByRole("region", { name: "Launch panel" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Second Brain panel" })).not.toBeInTheDocument();
     expect(usePanelStripStore.getState().openPanels).toEqual([]);
   });
 
@@ -220,6 +219,12 @@ describe("LeftPanels: the icon strip on the far left", () => {
     expect(icon("Injector")).toHaveAttribute("title", "Injector (Alt+4)");
     expect(icon("Git")).toHaveAttribute("title", "Git (Ctrl+2)");
     expect(icon("Notes")).toHaveAttribute("title", "Notes (Ctrl+5)");
-    expect(icon("Launch")).toHaveAttribute("title", "Launch");
+    expect(icon("Workshop")).toHaveAttribute("title", "Workshop");
+  });
+
+  it("has no Launch icon: Samurai runs are no longer started from the app", () => {
+    renderPanels();
+    const strip = screen.getByRole("navigation", { name: "Panels" });
+    expect(within(strip).queryByRole("button", { name: "Launch" })).not.toBeInTheDocument();
   });
 });

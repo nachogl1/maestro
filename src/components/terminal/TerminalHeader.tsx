@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { IconComponent } from "@/components/icons";
-import { SamuraiBadge } from "@/components/terminal/SamuraiBadge";
 import { useDismissable } from "@/hooks/useDismissable";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, comboLabel, modLabel, shiftLabel, titleWithShortcut } from "@/lib/shortcuts";
@@ -583,10 +582,6 @@ export const TerminalHeader = memo(function TerminalHeader({
             )}
           </button>
         )}
-
-        {/* Samurai supervision (issue #46): gen-N · state · context %.
-            Renders nothing for non-supervised sessions. */}
-        <SamuraiBadge sessionId={sessionId} />
       </div>
 
       {/* Right cluster */}

@@ -74,7 +74,6 @@ function offered(overrides: Partial<OfferedTerminal> = {}): OfferedTerminal {
     branch: null,
     pinned: false,
     parked: false,
-    samurai: false,
     conversationId: CONVERSATION,
     folderExists: true,
     conversationFound: true,
@@ -105,7 +104,6 @@ describe("buildOpenTerminals", () => {
     sessions: [],
     parkedSessionIds: [],
     pinnedSessionIds: [],
-    samuraiSessionIds: [],
     conversationBySessionId: {},
   };
 
@@ -131,7 +129,7 @@ describe("buildOpenTerminals", () => {
     ]);
   });
 
-  it("records name, kind, folder, branch, pin, park, Samurai and the latest conversation", () => {
+  it("records name, kind, folder, branch, pin, park and the latest conversation", () => {
     const worktree = "C:\\wt\\shop-api-feature";
     const list = buildOpenTerminals({
       ...base,
@@ -142,7 +140,6 @@ describe("buildOpenTerminals", () => {
       ],
       pinnedSessionIds: [1],
       parkedSessionIds: [2],
-      samuraiSessionIds: [1],
       conversationBySessionId: { 1: CONVERSATION, 2: "ignored-for-a-shell" },
     });
 
@@ -155,7 +152,6 @@ describe("buildOpenTerminals", () => {
         branch: "feat/x",
         pinned: true,
         parked: false,
-        samurai: true,
         conversationId: CONVERSATION,
       },
       {
@@ -166,7 +162,6 @@ describe("buildOpenTerminals", () => {
         branch: null,
         pinned: false,
         parked: true,
-        samurai: false,
         conversationId: null,
       },
     ]);
@@ -185,7 +180,6 @@ describe("useOpenTerminalsSnapshotStore", () => {
       parkedSessionIds: [],
       pinnedSessionIds: [],
       attentionSessionIds: [],
-      samuraiBySessionId: {},
     });
     useWorkspaceStore.setState({ tabs: [tab("shop", SHOP), tab("docs", DOCS)] });
   });
@@ -193,10 +187,6 @@ describe("useOpenTerminalsSnapshotStore", () => {
   it.each([
     // A normal close removes the list, so its next start is a first start.
     ["a first start or a start after a normal close (no list)", null],
-    [
-      "a list holding only Samurai terminals",
-      { savedAt: 1, afterUpdate: false, terminals: [offered({ samurai: true })] },
-    ],
     ["an empty list", { savedAt: 1, afterUpdate: false, terminals: [] }],
   ])("offers nothing on %s and starts saving the open terminals", async (_case, offer) => {
     backend(offer);
@@ -350,7 +340,6 @@ describe("useOpenTerminalsSnapshotStore", () => {
         conversationFound: false,
       }),
       offered({ name: "old-experiment", folderExists: false }),
-      offered({ name: "samurai-run", samurai: true }),
     ];
     backend({ savedAt: 1, afterUpdate: marked, terminals });
 

@@ -4,12 +4,6 @@ import { create } from "zustand";
 import { playAttentionTone } from "@/lib/attentionSound";
 import { emitParticleEffect } from "@/lib/particleEffects";
 import { normalizePath, samePath } from "@/lib/path";
-import {
-  epicSlug,
-  type SamuraiBriefStatus,
-  type SamuraiScheduleEntry,
-  type SamuraiSupervisorState,
-} from "@/lib/samurai";
 import type { AiMode } from "@/lib/terminal";
 import { useAgentStore } from "@/stores/useAgentStore";
 import { useAttentionSoundStore } from "@/stores/useAttentionSoundStore";
@@ -20,8 +14,6 @@ import {
   useBackgroundTaskStore,
 } from "@/stores/useBackgroundTaskStore";
 import type { ClaudeEvent } from "@/types/claude-events";
-
-export type { SamuraiScheduleEntry, SamuraiSupervisorState };
 
 /** AI provider variants supported by the backend orchestrator, defined once in `@/lib/terminal`. */
 export type { AiMode };
@@ -423,124 +415,6 @@ export function resolveStatusEvent(
 }
 
 /**
- * What the badge UI (issue #46) needs to know about one Samurai-supervised
- * session: which project it belongs to (ids alone are not trusted to be
- * unique across projects), its epic, and the latest generation + state.
- */
-export interface SamuraiSessionInfo {
-  /** Canonical project path, `\\?\` prefix already stripped by the backend. */
-  project: string;
-  epic: string;
-  generation: number;
-  state: SamuraiSupervisorState;
-}
-
-/**
- * A queued samurai toast — a run-fatal event (issue #174) or an allowance
- * park. Both queue through the same slice so the stack has one cap, one
- * dismiss path and one priority order; only the tint and the wording differ.
- */
-export interface SamuraiToast {
-  id: string;
-  /**
-   * `allowance` is the account-wide crossing raised when NOTHING is
-   * supervised (see {@link applySamuraiAllowanceEvent}) — it carries no run,
-   * so it renders with the fatal chrome rather than the park chrome, which
-   * would claim a run went away.
-   *
-   * `attention` (issue #206) is the tier between the two: something is wrong
-   * and supervision is still fixing it (an unread brief, mid-nudge), so it
-   * gets its own amber chrome — the fatal red would say the run is dead.
-   */
-  kind: "fatal" | "park" | "allowance" | "attention";
-  /** Canonical project path the event belongs to. */
-  project: string;
-  epic: string;
-  /** Orchestrator generation; 0 on park toasts (a resume timer has none). */
-  generation: number;
-  /** What happened: the fatal label, or the park's resume reading. */
-  label: string;
-}
-
-/** Shared identity of one run across the surfaces that can resume it. */
-export function samuraiRunKey(project: string, epic: string): string {
-  return `${normalizePath(project)}|${epic.trim()}`;
-}
-
-/**
- * One run the circuit breaker parked (issue #209), as the chips read it.
- *
- * Kept in the store rather than derived from `samuraiSchedule` because a
- * breaker park arms NO timer — that is the whole point of it — so the
- * schedule, which is the source for every other park surface, knows nothing
- * about it. Seeded from the run list at startup and refreshed by the Active
- * Runs panel, so a resume or an abandon takes the chip with it.
- */
-export interface SamuraiBreakerPark {
-  /** Canonical project path of the parked run. */
-  project: string;
-  /** The run's identity string — what the resume command is called with. */
-  epic: string;
-  /** RFC 3339 UTC time of the park. */
-  at: string;
-}
-
-/**
- * Issue #206: whether one run's NEWEST generation has actually READ the brief
- * it was given.
- *
- * `ACTIVE`/`WORKING` only ever said an agent is alive; the two audit rows
- * behind this say whether it is working off its own instructions. Kept per
- * RUN (not per session) because the Active Runs row must show it for a run
- * with no live session at all — a cold start, where the seed reads it back
- * out of the audit log.
- *
- * Only the newest generation is kept: a gen-4 that read its brief says
- * nothing about gen-3's, and the badge speaks for the agent working now.
- */
-export interface SamuraiBriefState {
-  /** The generation this verdict is about — older rows are ignored. */
-  generation: number;
-  /** The session the row named; 0 when unknown (a seeded pre-restart row). */
-  sessionId: number;
-  status: SamuraiBriefStatus;
-}
-
-/**
- * Identity of a run for {@link SessionState.samuraiBriefByRun}.
- *
- * `epicSlug` rather than the raw string {@link samuraiRunKey} compares: the
- * audit row and the run config are two producers of the same epic label
- * (`#38`, `38`, `epic #38 · issues #7`), and the badge must not go blank
- * because the two spelled it differently — the same reason
- * `samuraiAuditKey` exists.
- */
-export function samuraiBriefKey(project: string, epic: string): string {
-  return `${normalizePath(project)}|${epicSlug(epic)}`;
-}
-
-/**
- * One allowance-parked Samurai run the user has not looked at yet.
- *
- * A park is not fatal — it resumes on its own — so it deliberately raises no
- * error chrome. But it can last a week, and the user is away for most of it:
- * this marker is what makes a park still visible when they come back, long
- * after the toast is gone. It is derived from (and pruned to) the live
- * resume-timer list, so a fired or cancelled timer takes its marker with it.
- */
-export interface SamuraiParkAlert {
-  /** Dedupe + acknowledge key: normalized project and epic (one timer each). */
-  key: string;
-  /** Canonical project path of the parked run. */
-  project: string;
-  epic: string;
-  /** RFC 3339 resume time — every reading goes through `lib/parkTime`. */
-  fireAt: string;
-  /** Seen by the user: the surfaces stay legible but stop shining. */
-  acknowledged: boolean;
-}
-
-/**
  * Zustand store slice for session metadata (not PTY I/O -- that lives in terminal.ts).
  *
  * @property sessions - Authoritative list of sessions fetched from the backend.
@@ -573,16 +447,6 @@ interface SessionState {
    */
   attentionSessionIds: number[];
   /**
-   * Subset of `attentionSessionIds` that was set by a run-fatal audit row
-   * (issue #174) rather than the auto-unpark-while-parked flow above.
-   * Tracked separately so `parkSession` can tell the two attention flavors
-   * apart: the auto-unpark highlight is stale once the session is hidden
-   * again by a fresh park, but a run-fatal highlight IS the point of that
-   * park (the session was just auto-parked because the run died) and must
-   * survive it so the parked shelf can still show it.
-   */
-  runFatalSessionIds: number[];
-  /**
    * Terminals the user pinned. A pinned terminal keeps showing in the pinned
    * strip under the grid even while ANOTHER project is the active one — the
    * only way to watch project A's agent while working in project B.
@@ -592,55 +456,6 @@ interface SessionState {
    * at an unrelated new terminal.
    */
   pinnedSessionIds: number[];
-  /**
-   * Samurai-supervised sessions, keyed by session id — fed by
-   * `samurai-supervisor-event` and seeded from `samurai_list_sessions` on
-   * listener init. Sessions absent from this map are not supervised and
-   * render no Samurai chrome (issue #46: non-supervised sessions unchanged).
-   */
-  samuraiBySessionId: Record<number, SamuraiSessionInfo>;
-  /**
-   * Every pending Samurai resume timer, all projects (issue #61; PRD §9 park
-   * countdown) — fed by `samurai-schedule-event` (full list per event) and
-   * seeded from `samurai_schedule_list` on listener init. Drives the
-   * project-level "parked — resumes at HH:MM" chip.
-   */
-  samuraiSchedule: SamuraiScheduleEntry[];
-  /**
-   * Queued toasts for RUN-FATAL samurai events (issue #174) — a supervised
-   * run that died or stranded silently must come to the human. Transition-
-   * only by construction (each audit row is emitted once), queued only while
-   * notifications are enabled; the attention badge is set regardless.
-   */
-  samuraiToasts: SamuraiToast[];
-  /**
-   * Allowance parks awaiting the user's eye (see {@link SamuraiParkAlert}) —
-   * derived from `samuraiSchedule`, and the one park surface that survives an
-   * app restart's worth of absence.
-   */
-  samuraiParkAlerts: SamuraiParkAlert[];
-  /**
-   * Runs the circuit breaker parked (see {@link SamuraiBreakerPark}) — the
-   * one park kind that arms no timer, so it appears nowhere in
-   * `samuraiSchedule` and needs its own list.
-   */
-  samuraiBreakerParks: SamuraiBreakerPark[];
-  /**
-   * Issue #206: brief read/unread per run, keyed by {@link samuraiBriefKey}.
-   * Fed by the live audit stream and seeded from the audit log at startup.
-   */
-  samuraiBriefByRun: Record<string, SamuraiBriefState>;
-  /**
-   * Runs whose resume is in flight right now, as {@link samuraiRunKey}s.
-   *
-   * SHARED, because two surfaces offer the same one-click resume — the
-   * Active Runs row and the park chip — and each only knew about its own
-   * click. `recover_run_inner` takes no lock and its "no live session" check
-   * cannot bite until the successor registers, so the second click staged a
-   * duplicate gen-N+1 into the same worktree (the hazard PR #131 review F2
-   * closed for two clicks on ONE surface).
-   */
-  samuraiResumingRuns: string[];
   isLoading: boolean;
   error: string | null;
   parkSession: (sessionId: number) => void;
@@ -649,17 +464,6 @@ interface SessionState {
   /** Pin/unpin a terminal so it stays visible from every project. */
   toggleSessionPin: (sessionId: number) => void;
   clearSessionAttention: (sessionId: number) => void;
-  dismissSamuraiToast: (id: string) => void;
-  /** Clears the queue outright — used when notifications are switched off. */
-  dismissAllSamuraiToasts: () => void;
-  /** Marks parks seen — one project's, or every project's when omitted. */
-  acknowledgeSamuraiParks: (projectPath?: string) => void;
-  /** Replaces the breaker-park list wholesale — the run list is the truth,
-   *  and a resumed or abandoned run must lose its chip. */
-  setSamuraiBreakerParks: (parks: SamuraiBreakerPark[]) => void;
-  /** Marks one run's resume as in flight, or done — see
-   *  {@link SessionStore.samuraiResumingRuns}. */
-  setSamuraiRunResuming: (project: string, epic: string, resuming: boolean) => void;
   fetchSessions: () => Promise<void>;
   fetchSessionsForProject: (projectPath: string) => Promise<void>;
   addSession: (session: SessionConfig) => void;
@@ -967,15 +771,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   parkedSessionIds: [],
   flaggedSessionIds: [],
   attentionSessionIds: [],
-  runFatalSessionIds: [],
   pinnedSessionIds: [],
-  samuraiBySessionId: {},
-  samuraiSchedule: [],
-  samuraiToasts: [],
-  samuraiParkAlerts: [],
-  samuraiBreakerParks: [],
-  samuraiBriefByRun: {},
-  samuraiResumingRuns: [],
   isLoading: false,
   error: null,
 
@@ -988,7 +784,6 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     set((state) => {
       const alreadyParked = state.parkedSessionIds.includes(sessionId);
       const hasAttention = state.attentionSessionIds.includes(sessionId);
-      const isRunFatal = state.runFatalSessionIds.includes(sessionId);
       // No-op guard: don't replace arrays (and re-render subscribers)
       // when nothing changes.
       if (alreadyParked && !hasAttention) return state;
@@ -997,15 +792,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           ? state.parkedSessionIds
           : [...state.parkedSessionIds, sessionId],
         // Parking is a deliberate act on the session — an auto-unpark
-        // attention highlight would be stale once it's hidden again. A
-        // run-fatal highlight (issue #174) is the opposite: TerminalGrid's
-        // auto-park effect IS the fatal event playing out, so wiping the
-        // badge here erased it milliseconds after it was set — keep it so
-        // the parked shelf can still show it.
-        attentionSessionIds:
-          hasAttention && !isRunFatal
-            ? state.attentionSessionIds.filter((id) => id !== sessionId)
-            : state.attentionSessionIds,
+        // attention highlight would be stale once it's hidden again.
+        attentionSessionIds: hasAttention
+          ? state.attentionSessionIds.filter((id) => id !== sessionId)
+          : state.attentionSessionIds,
       };
     });
   },
@@ -1038,64 +828,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   clearSessionAttention: (sessionId: number) => {
     set((state) =>
       state.attentionSessionIds.includes(sessionId)
-        ? {
-            attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
-            runFatalSessionIds: state.runFatalSessionIds.includes(sessionId)
-              ? state.runFatalSessionIds.filter((id) => id !== sessionId)
-              : state.runFatalSessionIds,
-          }
+        ? { attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId) }
         : state,
     );
-  },
-
-  dismissSamuraiToast: (id: string) => {
-    set((state) => ({
-      samuraiToasts: state.samuraiToasts.filter((t) => t.id !== id),
-    }));
-  },
-
-  dismissAllSamuraiToasts: () => {
-    set((state) => (state.samuraiToasts.length === 0 ? state : { samuraiToasts: [] }));
-  },
-
-  acknowledgeSamuraiParks: (projectPath?: string) => {
-    set((state) => {
-      let changed = false;
-      const samuraiParkAlerts = state.samuraiParkAlerts.map((alert) => {
-        if (alert.acknowledged) return alert;
-        if (projectPath !== undefined && !samePath(alert.project, projectPath)) return alert;
-        changed = true;
-        return { ...alert, acknowledged: true };
-      });
-      // No-op guard: nothing left to acknowledge — don't re-render the chips.
-      return changed ? { samuraiParkAlerts } : state;
-    });
-  },
-
-  setSamuraiBreakerParks: (parks: SamuraiBreakerPark[]) => {
-    set((state) => {
-      // No-op guard: this runs on every Active Runs refresh, and the list is
-      // empty on virtually all of them.
-      const same =
-        state.samuraiBreakerParks.length === parks.length &&
-        state.samuraiBreakerParks.every(
-          (p, i) => samePath(p.project, parks[i].project) && p.epic === parks[i].epic,
-        );
-      return same ? state : { samuraiBreakerParks: parks };
-    });
-  },
-
-  setSamuraiRunResuming: (project: string, epic: string, resuming: boolean) => {
-    set((state) => {
-      const key = samuraiRunKey(project, epic);
-      const present = state.samuraiResumingRuns.includes(key);
-      if (present === resuming) return state;
-      return {
-        samuraiResumingRuns: resuming
-          ? [...state.samuraiResumingRuns, key]
-          : state.samuraiResumingRuns.filter((k) => k !== key),
-      };
-    });
   },
 
   fetchSessions: async () => {
@@ -1117,9 +852,6 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             sessions.some((s) => s.id === id),
           ),
           attentionSessionIds: state.attentionSessionIds.filter((id) =>
-            sessions.some((s) => s.id === id),
-          ),
-          runFatalSessionIds: state.runFatalSessionIds.filter((id) =>
             sessions.some((s) => s.id === id),
           ),
           pinnedSessionIds: state.pinnedSessionIds.filter((id) =>
@@ -1154,9 +886,6 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             sessions.some((s) => s.id === id),
           ),
           attentionSessionIds: state.attentionSessionIds.filter((id) =>
-            sessions.some((s) => s.id === id),
-          ),
-          runFatalSessionIds: state.runFatalSessionIds.filter((id) =>
             sessions.some((s) => s.id === id),
           ),
           pinnedSessionIds: state.pinnedSessionIds.filter((id) =>
@@ -1296,21 +1025,13 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       pendingStatusUpdates.delete(bufferKey);
     }
 
-    set((state) => {
-      // Same stale-id hygiene for the supervision map: a future session
-      // reusing this id must not inherit a Samurai badge.
-      const samuraiBySessionId = { ...state.samuraiBySessionId };
-      delete samuraiBySessionId[sessionId];
-      return {
-        sessions: state.sessions.filter((s) => s.id !== sessionId),
-        parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
-        flaggedSessionIds: state.flaggedSessionIds.filter((id) => id !== sessionId),
-        attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
-        runFatalSessionIds: state.runFatalSessionIds.filter((id) => id !== sessionId),
-        pinnedSessionIds: state.pinnedSessionIds.filter((id) => id !== sessionId),
-        samuraiBySessionId,
-      };
-    });
+    set((state) => ({
+      sessions: state.sessions.filter((s) => s.id !== sessionId),
+      parkedSessionIds: state.parkedSessionIds.filter((id) => id !== sessionId),
+      flaggedSessionIds: state.flaggedSessionIds.filter((id) => id !== sessionId),
+      attentionSessionIds: state.attentionSessionIds.filter((id) => id !== sessionId),
+      pinnedSessionIds: state.pinnedSessionIds.filter((id) => id !== sessionId),
+    }));
   },
 
   removeSessionsForProject: async (projectPath: string) => {
@@ -1326,31 +1047,17 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         turnEndPending.delete(session.id);
       }
       // Remove the sessions from local state
-      set((state) => {
-        const samuraiBySessionId = { ...state.samuraiBySessionId };
-        for (const session of removed) {
-          delete samuraiBySessionId[session.id];
-        }
-        return {
-          sessions: state.sessions.filter((s) => !removed.some((r) => r.id === s.id)),
-          parkedSessionIds: state.parkedSessionIds.filter(
-            (id) => !removed.some((r) => r.id === id),
-          ),
-          flaggedSessionIds: state.flaggedSessionIds.filter(
-            (id) => !removed.some((r) => r.id === id),
-          ),
-          attentionSessionIds: state.attentionSessionIds.filter(
-            (id) => !removed.some((r) => r.id === id),
-          ),
-          runFatalSessionIds: state.runFatalSessionIds.filter(
-            (id) => !removed.some((r) => r.id === id),
-          ),
-          pinnedSessionIds: state.pinnedSessionIds.filter(
-            (id) => !removed.some((r) => r.id === id),
-          ),
-          samuraiBySessionId,
-        };
-      });
+      set((state) => ({
+        sessions: state.sessions.filter((s) => !removed.some((r) => r.id === s.id)),
+        parkedSessionIds: state.parkedSessionIds.filter((id) => !removed.some((r) => r.id === id)),
+        flaggedSessionIds: state.flaggedSessionIds.filter(
+          (id) => !removed.some((r) => r.id === id),
+        ),
+        attentionSessionIds: state.attentionSessionIds.filter(
+          (id) => !removed.some((r) => r.id === id),
+        ),
+        pinnedSessionIds: state.pinnedSessionIds.filter((id) => !removed.some((r) => r.id === id)),
+      }));
       return removed;
     } catch (err) {
       console.error("Failed to remove sessions for project:", err);
@@ -1371,21 +1078,13 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         terminalReportedThisTurn.delete(session.id);
         turnEndPending.delete(session.id);
       }
-      set((state) => {
-        const samuraiBySessionId = { ...state.samuraiBySessionId };
-        for (const session of orphaned) {
-          delete samuraiBySessionId[session.id];
-        }
-        return {
-          sessions: state.sessions.filter((s) => !isOrphan(s.id)),
-          parkedSessionIds: state.parkedSessionIds.filter((id) => !isOrphan(id)),
-          flaggedSessionIds: state.flaggedSessionIds.filter((id) => !isOrphan(id)),
-          attentionSessionIds: state.attentionSessionIds.filter((id) => !isOrphan(id)),
-          runFatalSessionIds: state.runFatalSessionIds.filter((id) => !isOrphan(id)),
-          pinnedSessionIds: state.pinnedSessionIds.filter((id) => !isOrphan(id)),
-          samuraiBySessionId,
-        };
-      });
+      set((state) => ({
+        sessions: state.sessions.filter((s) => !isOrphan(s.id)),
+        parkedSessionIds: state.parkedSessionIds.filter((id) => !isOrphan(id)),
+        flaggedSessionIds: state.flaggedSessionIds.filter((id) => !isOrphan(id)),
+        attentionSessionIds: state.attentionSessionIds.filter((id) => !isOrphan(id)),
+        pinnedSessionIds: state.pinnedSessionIds.filter((id) => !isOrphan(id)),
+      }));
       // The backend still holds them: nothing was removed there.
       return [];
     }
@@ -1687,12 +1386,3 @@ export function stopContextUsageListener(): void {
     contextUnlisten = null;
   }
 }
-// The Samurai event listener and its appliers live in `samuraiEvents.ts`;
-// re-exported here so existing importers keep their import path.
-export {
-  initSamuraiSupervisorListener,
-  SAMURAI_ACCOUNT_PROJECT,
-  SAMURAI_ACCOUNT_RUN,
-  SAMURAI_TERMINAL_STATES,
-  stopSamuraiSupervisorListener,
-} from "@/stores/samuraiEvents";

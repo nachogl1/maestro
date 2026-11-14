@@ -20,22 +20,19 @@ function featureSwitch(name: string): HTMLElement {
 
 describe("FeaturesSettingsPanel", () => {
   beforeEach(() => {
-    useFeatureSettingsStore.setState({ samuraiLaunchEnabled: true, secondBrainEnabled: true });
+    useFeatureSettingsStore.setState({ secondBrainEnabled: true });
     useWorkJournalSettingsStore.setState({ enabled: null });
   });
 
   it("shows a switch for each optional feature with its current state", () => {
     render(<FeaturesSettingsPanel />);
-    expect(featureSwitch("Show Samurai launch").getAttribute("aria-checked")).toBe("true");
     expect(featureSwitch("Show Second Brain").getAttribute("aria-checked")).toBe("true");
     expect(featureSwitch("Enable the Work Journal").getAttribute("aria-checked")).toBe("false");
   });
 
-  it("turning Samurai launch off saves the choice", () => {
+  it("offers no Samurai launch switch", () => {
     render(<FeaturesSettingsPanel />);
-    fireEvent.click(featureSwitch("Show Samurai launch"));
-    expect(useFeatureSettingsStore.getState().samuraiLaunchEnabled).toBe(false);
-    expect(featureSwitch("Show Samurai launch").getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("switch", { name: "Show Samurai launch" })).not.toBeInTheDocument();
   });
 
   it("turning Second Brain off saves the choice", () => {

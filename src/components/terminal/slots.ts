@@ -1,31 +1,6 @@
 import type { McpServerConfig } from "@/lib/mcp";
 import type { PluginConfig, SkillConfig } from "@/lib/plugins";
-import { SAMURAI_TERMINAL_STATES, useSessionStore } from "@/stores/useSessionStore";
 import type { SessionSlot } from "./PreLaunchCard";
-
-/**
- * How many of these slots count against `MAX_SESSIONS`.
- *
- * Parked samurai terminal-state tiles (issue #122) are dead weight: the PTY
- * is gone and only the transcript remains. A long autonomous run leaves one
- * per generation, so counting them would first drop a successor's launch
- * AFTER `consume` claimed it (silently stalling the run) and then make the
- * "+" button a silent no-op for the whole project. Both call sites — the
- * pending-launch claim and `addSession` — go through here so the exemption
- * cannot drift apart again (PR #131 review M4/F4).
- */
-export function occupiedSlotCount(slots: SessionSlot[]): number {
-  const { samuraiBySessionId, parkedSessionIds } = useSessionStore.getState();
-  return slots.filter((slot) => {
-    if (slot.sessionId === null) return true;
-    const info = samuraiBySessionId[slot.sessionId];
-    return !(
-      info !== undefined &&
-      SAMURAI_TERMINAL_STATES.has(info.state) &&
-      parkedSessionIds.includes(slot.sessionId)
-    );
-  }).length;
-}
 
 /**
  * The folder whose session config (MCP, plugins, hooks) a closing terminal

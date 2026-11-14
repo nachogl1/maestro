@@ -187,7 +187,7 @@ describe("History, Infra and Settings panels (the former sidebar tabs)", () => {
     });
     openOnly("history");
     useWorkspaceStore.setState({ tabs: [buildTab()] });
-    useSessionStore.setState({ sessions: [], samuraiSchedule: [] });
+    useSessionStore.setState({ sessions: [] });
     useSessionSummaryStore.setState({ entries: {} });
   });
 
@@ -202,48 +202,6 @@ describe("History, Infra and Settings panels (the former sidebar tabs)", () => {
     // Content from closed panels is not mounted
     expect(screen.queryByText("Agents")).not.toBeInTheDocument();
     expect(screen.queryByText("MCP Servers")).not.toBeInTheDocument();
-  });
-
-  // A parked project keeps its Agents row (the row carries the park chip),
-  // but a scheduled-launch timer (issue #129) is a run that does not exist
-  // yet: keeping the row alive for one leaves an empty project heading with
-  // no chip under it.
-  it("does not keep an Agents row alive for a scheduled launch", () => {
-    useSessionStore.setState({
-      sessions: [],
-      samuraiSchedule: [
-        {
-          project_path: "C:\\git\\maestro",
-          epic: "#42",
-          fire_at: "2099-01-01T09:00:00Z",
-          reason: "scheduled_launch",
-        },
-      ],
-    });
-    openOnly("settings");
-    render(<ControlledSidebar />);
-
-    expect(screen.getByText("No running agents")).toBeInTheDocument();
-    expect(screen.queryByText("maestro")).not.toBeInTheDocument();
-  });
-
-  it("keeps the Agents row alive for a real park", () => {
-    useSessionStore.setState({
-      sessions: [],
-      samuraiSchedule: [
-        {
-          project_path: "C:\\git\\maestro",
-          epic: "#42",
-          fire_at: "2099-01-01T09:00:00Z",
-          reason: "park",
-        },
-      ],
-    });
-    openOnly("settings");
-    render(<ControlledSidebar />);
-
-    expect(screen.queryByText("No running agents")).not.toBeInTheDocument();
-    expect(screen.getByText(/^parked/)).toBeInTheDocument();
   });
 
   it("opens Infra (MCP + skills + project context)", () => {

@@ -9,7 +9,7 @@ import {
   type OpenTerminalsOffer,
   useOpenTerminalsSnapshotStore,
 } from "@/stores/useOpenTerminalsSnapshotStore";
-import { formatStopTime, groupByProject, samuraiLine, whatComesBack } from "./recovery";
+import { formatStopTime, groupByProject, whatComesBack } from "./recovery";
 
 /**
  * Crash recovery (issue #608): after Maestro stopped unexpectedly, the first
@@ -44,7 +44,6 @@ function OfferDialog({ offer }: OfferDialogProps): JSX.Element {
   );
   const [ticked, setTicked] = useState<Set<number>>(() => new Set(possible));
   const allRef = useRef<HTMLInputElement>(null);
-  const samurai = samuraiLine(offer.terminals);
 
   const allTicked = ticked.size === possible.length;
   useEffect(() => {
@@ -154,12 +153,6 @@ function OfferDialog({ offer }: OfferDialogProps): JSX.Element {
           </div>
         );
       })}
-
-      {samurai && (
-        <p className="border-t border-maestro-border pt-1.5 text-xs text-maestro-muted">
-          {samurai}
-        </p>
-      )}
     </DialogShell>
   );
 }

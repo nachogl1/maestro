@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { type PendingLaunch, usePendingLaunchStore } from "../usePendingLaunchStore";
+import {
+  type PendingLaunch,
+  pendingLaunchImminent,
+  usePendingLaunchStore,
+} from "../usePendingLaunchStore";
 
 function launchFor(tabId: string, resumeSessionId?: string): PendingLaunch {
   return {
@@ -151,20 +155,6 @@ describe("usePendingLaunchStore", () => {
     expect(usePendingLaunchStore.getState().pending).toHaveLength(7);
   });
 
-  it("still queues near-duplicates that differ in samurai generation", () => {
-    const gen2: PendingLaunch = {
-      ...launchFor("tab-1"),
-      resumeSessionId: null,
-      samurai: { project: "C:/p", epic: "#37", generation: 2 },
-    };
-    if (!gen2.samurai) throw new Error("expected gen2 to carry samurai info");
-    const gen3 = { ...gen2, samurai: { ...gen2.samurai, generation: 3 } };
-    usePendingLaunchStore.getState().request(gen2);
-    usePendingLaunchStore.getState().request(gen3);
-
-    expect(usePendingLaunchStore.getState().pending).toHaveLength(2);
-  });
-
   it("consuming one tab's entry leaves other tabs' entries untouched", () => {
     const other = launchFor("tab-2");
     usePendingLaunchStore.getState().request(launchFor("tab-1"));
@@ -173,5 +163,20 @@ describe("usePendingLaunchStore", () => {
     usePendingLaunchStore.getState().consume("tab-1");
 
     expect(usePendingLaunchStore.getState().pending).toEqual([other]);
+  });
+});
+
+// The last-slot guard in TerminalGrid: the grid must not drop to the landing
+// view (unmounting itself) while a launch for it is queued or already claimed.
+describe("pendingLaunchImminent", () => {
+  it.each([
+    ["nothing queued, nothing claimed (a normal last-slot close)", [], 0, "tab-1", false],
+    ["a launch queued for this tab", [launchFor("tab-1")], 0, "tab-1", true],
+    ["a launch queued for another tab only", [launchFor("tab-2")], 0, "tab-1", false],
+    ["a launch this grid has claimed", [], 1, "tab-1", true],
+    ["a claimed launch, even without a tab id", [], 1, undefined, true],
+    ["a queued launch, but no tab id to match it", [launchFor("tab-1")], 0, undefined, false],
+  ] as const)("%s", (_label, queued, claimed, tabId, expected) => {
+    expect(pendingLaunchImminent(queued, claimed, tabId)).toBe(expected);
   });
 });

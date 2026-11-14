@@ -32,8 +32,6 @@ import {
 import { sortByParkedOrder, useParkedOrderStore } from "@/stores/useParkedOrderStore";
 import {
   type BackendSessionStatus,
-  type SamuraiParkAlert,
-  type SamuraiSupervisorState,
   type SessionConfig,
   useSessionStore,
 } from "@/stores/useSessionStore";
@@ -67,25 +65,6 @@ function chipAttentionClass(status: BackendSessionStatus): string {
 
 /** Statuses that make the shelf itself call for the user's eye. */
 const ATTENTION_STATUSES: BackendSessionStatus[] = ["NeedsInput", "Error", "Timeout"];
-
-/**
- * Whether this parked terminal is a Samurai run the token allowance parked
- * and the user has not acknowledged yet — the chips that must still be
- * obvious hours later.
- *
- * Matched on the PROJECT, not the epic: the alert's epic comes from the
- * resume timer and the supervisor's from the session snapshot, and the two
- * spell the same epic differently often enough (`#37` vs `epic-37`) that a
- * string compare would silently drop the shine.
- */
-function isUnacknowledgedPark(
-  session: SessionConfig,
-  samuraiState: SamuraiSupervisorState | undefined,
-  parkAlerts: SamuraiParkAlert[],
-): boolean {
-  if (samuraiState !== "PARKED") return false;
-  return parkAlerts.some((a) => !a.acknowledged && samePath(a.project, session.project_path));
-}
 
 /** How far the pointer must travel before a press on a chip becomes a drag, not a click. */
 const DRAG_START_DISTANCE_PX = 5;
@@ -189,14 +168,6 @@ export function ParkedShelf({
 }: ParkedShelfProps) {
   const sessions = useSessionStore((s) => s.sessions);
   const parkedIds = useSessionStore((s) => s.parkedSessionIds);
-  const samuraiBySessionId = useSessionStore((s) => s.samuraiBySessionId);
-  const parkAlerts = useSessionStore((s) => s.samuraiParkAlerts);
-  // Run-fatal badges (issue #174) that survived the auto-park — see
-  // `parkSession` in useSessionStore.ts. Read separately from the general
-  // `attentionSessionIds` so this chip only shines for a dead run, never for
-  // an ordinary user-initiated park.
-  const runFatalIds = useSessionStore((s) => s.runFatalSessionIds);
-  const acknowledgeParks = useSessionStore((s) => s.acknowledgeSamuraiParks);
   // Context alert (Settings): a parked terminal past the threshold blinks its
   // chip red, the same way its hidden frame would.
   const contextAlertThreshold = useContextAlertStore((s) => s.threshold);
@@ -290,10 +261,6 @@ export function ParkedShelf({
   }, [keyboardEnabled, hasParked, leaveShelf]);
 
   const restore = (sess: SessionConfig, options?: ParkedShelfUnparkOptions) => {
-    // Restoring the run IS the acknowledgement.
-    if (isUnacknowledgedPark(sess, samuraiBySessionId[sess.id]?.state, parkAlerts)) {
-      acknowledgeParks(sess.project_path);
-    }
     if (options) {
       onUnpark(sess.id, options);
     } else {
@@ -341,12 +308,7 @@ export function ParkedShelf({
 
   if (!hasParked) return null;
 
-  const hasAttention = parkedSessions.some(
-    (sess) =>
-      ATTENTION_STATUSES.includes(sess.status) ||
-      isUnacknowledgedPark(sess, samuraiBySessionId[sess.id]?.state, parkAlerts) ||
-      runFatalIds.includes(sess.id),
-  );
+  const hasAttention = parkedSessions.some((sess) => ATTENTION_STATUSES.includes(sess.status));
 
   return (
     <div
@@ -382,34 +344,14 @@ export function ParkedShelf({
           {parkedSessions.map((sess) => {
             const project = basenameOf(sess.project_path);
             const projectColor = projectColors.get(project) ?? projectColorFor(project);
-            // An unacknowledged allowance park outranks the status classes: the
-            // tile is done running (every wake-up is a fresh spawn), so its last
-            // status has nothing left to say, while the park does.
-            const parked = isUnacknowledgedPark(
-              sess,
-              samuraiBySessionId[sess.id]?.state,
-              parkAlerts,
-            );
-            // A run-fatal badge outranks even the allowance shine: "resumes at
-            // HH:MM" is simply wrong for a run the circuit breaker killed, and
-            // the existing NeedsInput treatment already reads as "come look now".
-            const runFatal = runFatalIds.includes(sess.id);
-            // The context alert outranks everything: the terminal is about to run
-            // out of room whatever else it is doing, and the frame it stands in
-            // for would be blinking red too.
+            // The context alert outranks the status classes: the terminal is
+            // about to run out of room whatever else it is doing, and the frame
+            // it stands in for would be blinking red too.
             const contextAlert = isContextAlert(sess.contextPercent, contextAlertThreshold);
             const attention = contextAlert
               ? "parked-chip-context-alert"
-              : runFatal
-                ? "parked-chip-attention"
-                : parked
-                  ? "samurai-park-shine"
-                  : chipAttentionClass(sess.status);
-            const restoreTitle = runFatal
-              ? "Samurai run died — restore terminal"
-              : parked
-                ? "Parked on token allowance — restore terminal"
-                : "Restore terminal";
+              : chipAttentionClass(sess.status);
+            const restoreTitle = "Restore terminal";
             return (
               <ParkedChip
                 key={sess.id}

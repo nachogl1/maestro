@@ -25,7 +25,6 @@ import {
 import { useAttentionBlink } from "@/hooks/useAttentionBlink";
 import { type FocusStep, useEagleTerminalKeyboard } from "@/hooks/useEagleTerminalKeyboard";
 import { usePendingLaunch } from "@/hooks/usePendingLaunch";
-import { useSamuraiAutoPark } from "@/hooks/useSamuraiAutoPark";
 import { useSessionContextAlert } from "@/hooks/useSessionContextAlert";
 import { useSlotLaunch } from "@/hooks/useSlotLaunch";
 import { useTerminalDragDrop } from "@/hooks/useTerminalDragDrop";
@@ -65,7 +64,6 @@ import {
 import { projectColorFor } from "@/lib/projectColor";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
-import { successorLaunchImminent } from "@/lib/spawnSession";
 import {
   killSession,
   pathsForTerminalInput,
@@ -77,7 +75,7 @@ import { cleanupSessionWorktree } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
 import { useFocusedTerminalStore } from "@/stores/useFocusedTerminalStore";
 import { useMcpStore } from "@/stores/useMcpStore";
-import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
+import { pendingLaunchImminent, usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { usePluginStore } from "@/stores/usePluginStore";
 import type { AiMode } from "@/stores/useSessionStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -90,7 +88,7 @@ import { useWorktreeSettingsStore } from "@/stores/useWorktreeSettingsStore";
 import { ParkedShelf, type ParkedShelfUnparkOptions } from "./ParkedShelf";
 import { PreLaunchCard, type SessionSlot } from "./PreLaunchCard";
 import { SplitPaneView } from "./SplitPaneView";
-import { createEmptySlot, occupiedSlotCount, sessionConfigDir } from "./slots";
+import { createEmptySlot, sessionConfigDir } from "./slots";
 import {
   buildGridTree,
   collectSlotIds,
@@ -108,8 +106,6 @@ import {
 } from "./splitTree";
 import { TerminalView } from "./TerminalView";
 import { SessionStatusDot } from "./ThinkingIndicator";
-
-export { MAX_RETAINED_PARKED_SAMURAI_TILES } from "@/hooks/useSamuraiAutoPark";
 
 /** Stable empty arrays to avoid infinite re-render loops in Zustand selectors. */
 const EMPTY_MCP_SERVERS: McpServerConfig[] = [];
@@ -227,8 +223,7 @@ export interface TerminalGridHandle {
  * @property tabId - Workspace tab ID for session-project association.
  * @property preserveOnHide - If true, don't kill sessions when component unmounts (for project switching).
  * @property onSessionCountChange - Fires whenever session counts change,
- *   providing the total slot count, the launched session count, and the count
- *   that weighs against MAX_SESSIONS (parked samurai terminal-state tiles exempt).
+ *   providing the total slot count and the launched session count.
  */
 interface TerminalGridProps {
   projectPath?: string;
@@ -239,7 +234,7 @@ interface TerminalGridProps {
   tabId?: string;
   preserveOnHide?: boolean;
   isActive?: boolean;
-  onSessionCountChange?: (slotCount: number, launchedCount: number, occupiedCount: number) => void;
+  onSessionCountChange?: (slotCount: number, launchedCount: number) => void;
   onAllSessionsClosed?: () => void;
   /**
    * Focus the initial card's Window Name input on mount. Set when Cmd/Ctrl+T
@@ -502,12 +497,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   // Ref to access latest onAllSessionsClosed without adding it to callback deps
   const onAllSessionsClosedRef = useRef(onAllSessionsClosed);
   onAllSessionsClosedRef.current = onAllSessionsClosed;
-  // Slots configured from consumed pending launches (History tab / samurai
-  // successor) whose deferred launch has not fired yet. An array, not a
+  // Slots configured from consumed pending launches (History tab, PR review,
+  // crash recovery) whose deferred launch has not fired yet. An array, not a
   // single id: the FIFO pending-launch store can deliver several claims
   // before the first launch fires (fresh-eyes finding B). Also feeds the
   // landing-view guard in handleKill (finding A) — a claimed-but-unlaunched
-  // successor must keep this grid mounted.
+  // launch must keep this grid mounted.
   const autoLaunchSlotIdsRef = useRef<string[]>([]);
   // Slots whose deferred launch HAS fired but has not yet written a
   // sessionId. `launchSlotInner` only sets sessionId after ~8 awaited IPC
@@ -786,16 +781,12 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     onDrop: insertPathsIntoSession,
   });
 
-  // Selected as a number so a park/unpark or a samurai state change re-reports
-  // the count without re-rendering the grid on every unrelated store update.
-  const occupiedCount = useSessionStore(() => occupiedSlotCount(slots));
-
   // Sync refs with state and report counts to parent
   useEffect(() => {
     slotsRef.current = slots;
     const launchedCount = slots.filter((s) => s.sessionId !== null).length;
-    onSessionCountChange?.(slots.length, launchedCount, occupiedCount);
-  }, [slots, onSessionCountChange, occupiedCount]);
+    onSessionCountChange?.(slots.length, launchedCount);
+  }, [slots, onSessionCountChange]);
 
   // Refresh branches callback (used by useEffect and exposed via handle)
   const refreshBranches = useCallback(() => {
@@ -1065,17 +1056,9 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
   /**
    * Handles killing/closing a session, updating the slot state.
    * Also cleans up any associated worktree and session-specific MCP config.
-   *
-   * `opts.keepDirArtifacts` (samurai kills, issue #55) skips every
-   * working-directory cleanup — MCP/plugin/hooks config removal and the
-   * worktree prompt/delete — because the successor launches into the SAME
-   * directory moments later (stable epic worktree, PRD §5.9) and a
-   * fire-and-forget remove racing its config writes would strip the hooks
-   * the successor depends on.
    */
   const handleKill = useCallback(
-    (sessionId: number, opts?: { keepDirArtifacts?: boolean }) => {
-      const keepDirArtifacts = opts?.keepDirArtifacts ?? false;
+    (sessionId: number) => {
       // Find the slot to get worktree path before removing
       const slot = slotsRef.current.find((s) => s.sessionId === sessionId);
       const worktreePath = slot?.worktreePath;
@@ -1083,17 +1066,16 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       const workingDir = sessionConfigDir(slot, projectPath);
 
       // If this is the last slot, return to idle landing view immediately —
-      // UNLESS a queued/claimed launch is about to land in this grid (samurai
-      // successor spawn, issue #55 — fresh-eyes finding A; History-tab resume
-      // shares the mechanism). Dropping to the landing view unmounts the grid,
-      // which would destroy that launch: a successor whose predecessor was the
-      // project's only session would never spawn. In that case fall through to
-      // the normal in-place removal and let the pending-launch effects (below)
-      // spawn the successor into the surviving grid.
+      // UNLESS a queued/claimed launch is about to land in this grid (a
+      // History-tab resume, a PR review, a crash-recovery restore — fresh-eyes
+      // finding A). Dropping to the landing view unmounts the grid, which
+      // would destroy that launch. In that case fall through to the normal
+      // in-place removal and let the pending-launch effects (below) launch it
+      // into the surviving grid.
       // Both markers count: a claim that has already STARTED launching left
       // autoLaunchSlotIdsRef, and unmounting the grid under an in-flight launch
       // destroys it just as thoroughly as unmounting under a queued one.
-      const launchImminent = successorLaunchImminent(
+      const launchImminent = pendingLaunchImminent(
         usePendingLaunchStore.getState().pending,
         autoLaunchSlotIdsRef.current.length + launchingSlotIdsRef.current.size,
         tabId,
@@ -1106,7 +1088,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
         // This branch skips setSlots, so the count-reporting effect never fires
         // with 0 — report it explicitly or the parent keeps stale counts
         // (e.g. the sidebar's "Stop All (1)" with nothing running).
-        onSessionCountChange?.(0, 0, 0);
+        onSessionCountChange?.(0, 0);
         onAllSessionsClosedRef.current();
       } else {
         // Clean up cached focus callback for this slot
@@ -1146,22 +1128,22 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       }
 
       // Clean up session-specific MCP config (fire-and-forget)
-      if (workingDir && !keepDirArtifacts) {
+      if (workingDir) {
         removeSessionMcpConfig(workingDir, sessionId).catch(console.error);
       }
 
       // Clean up session-specific plugin config (fire-and-forget)
-      if (workingDir && !keepDirArtifacts) {
+      if (workingDir) {
         removeSessionPluginConfig(workingDir).catch(console.error);
       }
 
       // Clean up session-specific hooks config (fire-and-forget)
-      if (workingDir && slot?.mode === "Claude" && !keepDirArtifacts) {
+      if (workingDir && slot?.mode === "Claude") {
         removeSessionHooksConfig(workingDir).catch(console.error);
       }
 
       // Clean up worktree based on session close action setting
-      if (effectiveRepoPath && worktreePath && !keepDirArtifacts) {
+      if (effectiveRepoPath && worktreePath) {
         const closeAction = useWorktreeSettingsStore.getState().worktreeCloseAction;
         if (closeAction === "delete") {
           cleanupSessionWorktree(effectiveRepoPath, worktreePath, worktreeBasePath)
@@ -1208,7 +1190,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
       // If removing the last slot, return to idle landing view immediately
       // rather than going through an intermediate empty state
       if (slotsRef.current.length <= 1 && onAllSessionsClosedRef.current) {
-        onSessionCountChange?.(0, 0, 0);
+        onSessionCountChange?.(0, 0);
         onAllSessionsClosedRef.current();
         return;
       }
@@ -1679,10 +1661,10 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
    * Adds a new pre-launch slot to the grid.
    */
   const addSession = useCallback((): string | null => {
-    if (occupiedSlotCount(slotsRef.current) >= MAX_SESSIONS) return null;
+    if (slotsRef.current.length >= MAX_SESSIONS) return null;
     const newSlot = createEmptySlot(mcpServers, skills, plugins);
     setSlots((prev) => {
-      if (occupiedSlotCount(prev) >= MAX_SESSIONS) return prev;
+      if (prev.length >= MAX_SESSIONS) return prev;
       return [...prev, newSlot];
     });
     // Rebuild layout as a clean 2D grid (matching old CSS grid dimensions)
@@ -1721,7 +1703,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     ],
   );
 
-  // History-tab / samurai-successor launches: consume the pending-launch
+  // History-tab / PR-review / crash-recovery launches: consume the pending-launch
   // store and launch each claimed slot once it has committed to state.
   usePendingLaunch({
     tabId,
@@ -1739,12 +1721,6 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
     setFocusedSlotId,
     setError,
   });
-
-  // Deliberately called AFTER usePendingLaunch (fresh-eyes finding A):
-  // effects run in definition order, so when a KILLED update and the
-  // successor's queued launch land in the same commit, the consume effect
-  // claims and appends the successor slot first.
-  useSamuraiAutoPark({ slotsRef, parkedSet, handlePark, handleKill });
 
   // Handle zoom toggle for a slot
   const handleToggleZoom = useCallback(

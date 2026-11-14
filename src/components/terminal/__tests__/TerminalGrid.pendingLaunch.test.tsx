@@ -40,8 +40,8 @@ vi.mock("@/lib/terminal", async (importOriginal) => {
       project_path: "C:/proj",
       name: null,
     })),
-    // Unlike the samuraiClose suite this must be TRUE: the CLI-launch half of
-    // launchSlotInner is exactly what this test is about.
+    // TRUE: the CLI-launch half of launchSlotInner is exactly what this
+    // test is about.
     checkCliAvailable: vi.fn(async () => true),
     killSession: vi.fn(async () => {}),
     assignSessionBranch: vi.fn(async () => ({ branch: null, worktree_path: null })),
@@ -50,9 +50,6 @@ vi.mock("@/lib/terminal", async (importOriginal) => {
     writeSessionHooksConfig: vi.fn(async () => {}),
     removeSessionHooksConfig: vi.fn(async () => {}),
     renameSession: vi.fn(async () => {}),
-    // Issue #158: the quoting family comes from the backend, never from the
-    // OS. Default posix; the cmd-refusal test overrides it.
-    terminalShellFamily: vi.fn(async () => "posix"),
   };
 });
 
@@ -106,20 +103,7 @@ vi.mock("@/lib/samurai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/samurai")>();
   return {
     ...actual,
-    // Issue #158: the real command answers with the route it ARMED. The
-    // default models a backend that honours the claim; refusal tests
-    // override it.
-    samuraiRegisterSession: vi.fn(
-      async (
-        _sessionId: number,
-        _projectPath: string,
-        _epic: string,
-        _generation: number,
-        launchLinePrompt = false,
-      ) => ({ session: {}, launch_line_prompt: launchLinePrompt }),
-    ),
     samuraiHarvestArm: vi.fn(async () => {}),
-    samuraiRevertLaunchLinePrompt: vi.fn(async () => true),
   };
 });
 
@@ -131,57 +115,35 @@ vi.mock("@/lib/terminalPrompt", async (importOriginal) => {
   };
 });
 
-// The cap-exemption tests below have to FILL the grid, and every filled slot
-// is a full mocked launch. At the production cap of 12 that cost ~8s of a
-// 15s budget — the flake class tracked in issue #116. The behaviour under
-// test is "parked samurai tiles do not count", which is identical at any
-// cap, so the cap itself is mocked down to 3 (the rest of splitTree stays
-// real).
-vi.mock("../splitTree", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../splitTree")>();
-  return { ...actual, MAX_SESSIONS: 3 };
-});
-
 import { invoke } from "@tauri-apps/api/core";
 import { setSessionMcpServers } from "@/lib/mcp";
-import {
-  samuraiHarvestArm,
-  samuraiRegisterSession,
-  samuraiRevertLaunchLinePrompt,
-} from "@/lib/samurai";
-import { killSession, spawnShell, terminalShellFamily, writeStdin } from "@/lib/terminal";
+import { samuraiHarvestArm } from "@/lib/samurai";
+import { killSession, spawnShell, writeStdin } from "@/lib/terminal";
 import { terminalArmInitialPrompt } from "@/lib/terminalPrompt";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { useSessionStore } from "@/stores/useSessionStore";
-import { MAX_SESSIONS } from "../splitTree";
 import { TerminalGrid, type TerminalGridHandle } from "../TerminalGrid";
 
 const invokeMock = vi.mocked(invoke);
 const spawnShellMock = vi.mocked(spawnShell);
 const writeStdinMock = vi.mocked(writeStdin);
-const registerMock = vi.mocked(samuraiRegisterSession);
 const harvestArmMock = vi.mocked(samuraiHarvestArm);
-const shellFamilyMock = vi.mocked(terminalShellFamily);
-const revertMock = vi.mocked(samuraiRevertLaunchLinePrompt);
 const initialPromptArmMock = vi.mocked(terminalArmInitialPrompt);
 const killSessionMock = vi.mocked(killSession);
 const setMcpServersMock = vi.mocked(setSessionMcpServers);
 
-const WORKTREE = "C:/wt/samurai-77-78";
+const WORKTREE = "C:/wt/feature-77";
 
 /**
- * Regression cover for the samurai launch landing in the WRONG place.
+ * Regression cover for a queued launch landing in the WRONG place.
  *
- * A samurai launch queues into `usePendingLaunchStore` and then forces the
- * grid to mount (`setSessionsLaunched`), so the consume effect and the
- * deferred auto-launch effect run in the SAME passive-effect flush. React
- * cannot re-render between them, so the ref-sync effect has not run — and the
- * launch used to read the PRISTINE slot from the stale ref: a plain claude
- * session in the project directory, no `--dangerously-skip-permissions`, and
- * no supervision registration. The backend then re-emitted 180s later and
- * opened a SECOND terminal, which is the one that actually worked.
+ * A queued launch can arrive before the grid mounts, so the consume effect
+ * and the deferred auto-launch effect run in the SAME passive-effect flush.
+ * React cannot re-render between them, so the ref-sync effect has not run —
+ * and the launch used to read the PRISTINE slot from the stale ref: a plain
+ * session in the project directory instead of the one it asked for.
  */
-describe("TerminalGrid pending samurai launch", () => {
+describe("TerminalGrid pending launch", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
@@ -195,209 +157,40 @@ describe("TerminalGrid pending samurai launch", () => {
     });
     spawnShellMock.mockClear();
     writeStdinMock.mockClear();
-    registerMock.mockClear();
     harvestArmMock.mockClear();
     initialPromptArmMock.mockClear();
-    revertMock.mockClear();
-    shellFamilyMock.mockClear();
-    useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
+    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
     usePendingLaunchStore.setState({ pending: [] });
   });
 
-  it("launches a queued samurai claim in its worktree, supervised, on the mount commit", async () => {
-    // Queued BEFORE the grid exists — the real ordering: the spawn listener
-    // requests the launch and only then mounts the grid.
+  it("launches a queued claim in its own directory, on the mount commit", async () => {
+    // Queued BEFORE the grid exists — the real ordering for a History resume
+    // into a worktree: the request lands first, then the grid mounts.
     usePendingLaunchStore.getState().request({
       tabId: "tab-1",
       mode: "Claude",
       resumeSessionId: null,
       workingDirOverride: WORKTREE,
       branch: null,
-      customName: "samurai gen-1 77-78",
-      samurai: { project: "C:/proj", epic: "77, 78", generation: 1, model: "claude-opus-5" },
+      customName: "feature 77",
     });
 
     render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
 
     await waitFor(() => expect(spawnShellMock).toHaveBeenCalled());
 
-    // The shell opens in the EPIC WORKTREE, not the project checkout.
+    // The shell opens in the requested WORKTREE, not the project checkout.
     const [workingDir] = spawnShellMock.mock.calls[0];
     expect(workingDir).toBe(WORKTREE);
 
-    // Registered under supervision — this is what arms the backend's brief
-    // delivery and stops it re-emitting the spawn event.
-    await waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
-    // Issue #158: no launch prompt was offered, so the pointer stays typed.
-    expect(registerMock).toHaveBeenCalledWith(expect.any(Number), "C:/proj", "77, 78", 1, false);
-
-    // …and the CLI carries the autonomy flags a samurai generation needs.
+    // …and the CLI launches under the requested name.
     await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
     const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("--dangerously-skip-permissions");
-    expect(cli).toContain("--model claude-opus-5");
+    expect(cli).toContain("claude --name feature-77");
 
-    // Exactly one terminal: the stray unsupervised one is the bug.
+    // Exactly one terminal: a second one in the project checkout is the bug.
     expect(spawnShellMock).toHaveBeenCalledTimes(1);
     expect(useSessionStore.getState().sessions).toHaveLength(1);
-  });
-
-  // Issue #158: a gen-1 launch whose spawn event offered a brief POINTER
-  // carries it on the `claude` command line itself, and tells the backend so
-  // the same pointer is not typed into the REPL a second time.
-  it("puts the gen-1 brief pointer on the claude launch line, quoted, and says so", async () => {
-    const pointer = "[Maestro Samurai] Read `.maestro/briefs/epic-77-78-gen-1-launch.md` in FULL";
-    usePendingLaunchStore.getState().request({
-      tabId: "tab-1",
-      mode: "Claude",
-      resumeSessionId: null,
-      workingDirOverride: WORKTREE,
-      branch: null,
-      customName: "samurai gen-1 77-78",
-      samurai: {
-        project: "C:/proj",
-        epic: "77, 78",
-        generation: 1,
-        model: null,
-        launchPrompt: pointer,
-      },
-    });
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
-    const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    // ONE argument, quoted for the test environment's shell family (happy-dom
-    // reports a non-Windows platform, so posix single quotes) — and the
-    // backticks the pointer carries are inert inside them.
-    expect(cli).toContain(`--dangerously-skip-permissions '${pointer}'`);
-
-    // Registered as a launch-line delivery, strictly before the CLI line.
-    expect(registerMock).toHaveBeenCalledWith(expect.any(Number), "C:/proj", "77, 78", 1, true);
-    expect(registerMock.mock.invocationCallOrder[0]).toBeLessThan(
-      writeStdinMock.mock.invocationCallOrder[0],
-    );
-  });
-
-  /** Queues the gen-1 launch every #158 test below drives. */
-  function queueLaunchWithPointer(pointer: string): void {
-    usePendingLaunchStore.getState().request({
-      tabId: "tab-1",
-      mode: "Claude",
-      resumeSessionId: null,
-      workingDirOverride: WORKTREE,
-      branch: null,
-      customName: "samurai gen-1 77-78",
-      samurai: {
-        project: "C:/proj",
-        epic: "77, 78",
-        generation: 1,
-        model: null,
-        launchPrompt: pointer,
-      },
-    });
-  }
-
-  it("falls back to the typed pointer when cmd.exe cannot quote it (#158)", async () => {
-    // The refusal that can actually happen end to end: `launch_line_safe`
-    // already rejects newlines backend-side, but a `%` reaches the grid
-    // intact and cmd.exe has no escape for it.
-    shellFamilyMock.mockResolvedValueOnce("cmd");
-    const pointer = "[Maestro Samurai] Read `.maestro/briefs/100%-gen-1-launch.md` in FULL";
-    queueLaunchWithPointer(pointer);
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
-    const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("claude --name samurai-gen-1-77-78 --dangerously-skip-permissions");
-    expect(cli).not.toContain("Maestro Samurai");
-    expect(registerMock).toHaveBeenCalledWith(expect.any(Number), "C:/proj", "77, 78", 1, false);
-  });
-
-  it("takes the pointer back off the line when registration fails (#158)", async () => {
-    // The backend never heard the claim, so it will type the pointer on
-    // SessionStarted. Writing a line that ALSO carries it delivers the brief
-    // twice — the failure this whole gate exists to prevent.
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    registerMock.mockRejectedValueOnce(new Error("supervisor unavailable"));
-    const pointer = "[Maestro Samurai] Read `.maestro/briefs/epic-77-78-gen-1-launch.md` in FULL";
-    queueLaunchWithPointer(pointer);
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
-    const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("claude --name samurai-gen-1-77-78 --dangerously-skip-permissions");
-    expect(cli).not.toContain("Maestro Samurai");
-    errorSpy.mockRestore();
-  });
-
-  it("reverts the launch-line claim when the line never reaches the PTY (#158)", async () => {
-    // Claimed before the write (it has to beat the SessionStart hook), so a
-    // failed write leaves the backend believing a delivery happened. Without
-    // the revert a later SessionStarted consumes the entry, types nothing,
-    // and audits `delivered` — zero delivery behind a false trail.
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    // SessionNotFound is raised before a single byte is written — the one
-    // rejection that PROVES the line never landed.
-    writeStdinMock.mockRejectedValueOnce({
-      code: "SessionNotFound",
-      message: "Session 1 not found",
-    });
-    const pointer = "[Maestro Samurai] Read `.maestro/briefs/epic-77-78-gen-1-launch.md` in FULL";
-    queueLaunchWithPointer(pointer);
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    await waitFor(() => expect(revertMock).toHaveBeenCalledTimes(1));
-    expect(revertMock).toHaveBeenCalledWith(expect.any(Number));
-    errorSpy.mockRestore();
-  });
-
-  it("leaves the claim standing when the write fails AFTER the bytes landed (#158)", async () => {
-    // `write_stdin` also rejects when `write_all` succeeded and `flush` did
-    // not: the whole line plus the CR is already in the PTY and claude
-    // launches with the pointer. Reverting there would type it a second time
-    // on SessionStarted — a double paste, which is worse than the ALERT the
-    // activity watch raises if the launch really did fail.
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    writeStdinMock.mockRejectedValueOnce({ code: "WriteFailed", message: "Flush failed: EPIPE" });
-    const pointer = "[Maestro Samurai] Read `.maestro/briefs/epic-77-78-gen-1-launch.md` in FULL";
-    queueLaunchWithPointer(pointer);
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    // Anchored on the write settling plus an explicit tick, NOT on the outer
-    // catch logging: that only happens to run after the revert decision
-    // because the revert is awaited before the rethrow. Draining the
-    // continuations the rejection scheduled is what makes "never called"
-    // mean it, whatever order the handlers take.
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
-    await act(async () => {
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(revertMock).not.toHaveBeenCalled();
-    errorSpy.mockRestore();
-  });
-
-  it("types the pointer when the backend REFUSES the launch-line claim (#158)", async () => {
-    // The refusal resolves like a success — the replicator only logs that it
-    // was never offered this route and keeps `Typed`. Reading "no exception"
-    // as acceptance writes a line carrying a pointer that is then typed too.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    registerMock.mockResolvedValueOnce({ session: {}, launch_line_prompt: false } as never);
-    const pointer = "[Maestro Samurai] Read `.maestro/briefs/epic-77-78-gen-1-launch.md` in FULL";
-    queueLaunchWithPointer(pointer);
-
-    render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
-
-    await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());
-    const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
-    expect(cli).toContain("claude --name samurai-gen-1-77-78 --dangerously-skip-permissions");
-    expect(cli).not.toContain("Maestro Samurai");
-    warnSpy.mockRestore();
   });
 
   // Issue #98: a "Harvest now" launch rides the same pending-launch flow —
@@ -431,9 +224,7 @@ describe("TerminalGrid pending samurai launch", () => {
       writeStdinMock.mock.invocationCallOrder[0],
     );
 
-    // A plain interactive session: no samurai supervision registration, no
-    // forced skip-permissions.
-    expect(registerMock).not.toHaveBeenCalled();
+    // A plain interactive session: no forced skip-permissions.
     const cli = writeStdinMock.mock.calls.map((c) => String(c[1])).join("\n");
     expect(cli).not.toContain("--dangerously-skip-permissions");
     expect(spawnShellMock).toHaveBeenCalledTimes(1);
@@ -493,113 +284,9 @@ describe("TerminalGrid pending samurai launch", () => {
       writeStdinMock.mock.invocationCallOrder[0],
     );
 
-    // A plain interactive session — no harvest, no supervision registration.
+    // A plain interactive session — no harvest.
     expect(harvestArmMock).not.toHaveBeenCalled();
-    expect(registerMock).not.toHaveBeenCalled();
     expect(spawnShellMock).toHaveBeenCalledTimes(1);
-  });
-
-  // A run's every past generation leaves a permanently-parked terminal-state
-  // tile (issue #122), so a long autonomous run fills the session cap with
-  // dead weight — and its successor's pending launch used to be dropped
-  // AFTER `consume` had already claimed it, silently stalling the run.
-  /**
-   * Fills the grid to MAX_SESSIONS launched sessions, then auto-parks the
-   * oldest one as a finished samurai generation. Returns the grid handle and
-   * that parked session's id.
-   */
-  async function fillGridWithOneParkedGeneration(
-    onSessionCountChange?: (slots: number, launched: number, occupied: number) => void,
-  ) {
-    let nextId = 100;
-    spawnShellMock.mockImplementation(async () => nextId++);
-    const ref = createRef<TerminalGridHandle>();
-    render(
-      <TerminalGrid
-        ref={ref}
-        projectPath="C:/proj"
-        tabId="tab-1"
-        isActive
-        onSessionCountChange={onSessionCountChange}
-      />,
-    );
-    const handle = ref.current;
-    if (!handle) throw new Error("expected TerminalGrid ref to be attached");
-
-    await act(async () => {
-      for (let i = 1; i < MAX_SESSIONS; i++) handle.addSession();
-    });
-    await act(async () => {
-      await handle.launchAll();
-    });
-    await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(MAX_SESSIONS));
-
-    // One earlier samurai generation ended: the auto-park effect moves its
-    // tile to the tray, where it stays a KILLED transcript forever.
-    const deadId = useSessionStore.getState().sessions[0].id;
-    await act(async () => {
-      useSessionStore.setState((s) => ({
-        samuraiBySessionId: {
-          ...s.samuraiBySessionId,
-          [deadId]: { project: "C:/proj", epic: "77, 78", generation: 1, state: "KILLED" },
-        },
-      }));
-    });
-    await waitFor(() => expect(useSessionStore.getState().parkedSessionIds).toEqual([deadId]));
-    return { handle, deadId };
-  }
-
-  it("exempts parked samurai terminal-state slots from the session cap (PR #131 review M4)", async () => {
-    await fillGridWithOneParkedGeneration();
-    const launchesBefore = spawnShellMock.mock.calls.length;
-
-    // The successor's queued launch must still get a slot.
-    await act(async () => {
-      usePendingLaunchStore.getState().request({
-        tabId: "tab-1",
-        mode: "Claude",
-        resumeSessionId: null,
-        workingDirOverride: WORKTREE,
-        branch: null,
-        customName: "samurai gen-2 77-78",
-        samurai: { project: "C:/proj", epic: "77, 78", generation: 2, model: null },
-      });
-    });
-
-    await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(launchesBefore + 1));
-    expect(screen.queryByText(/maximum of/)).not.toBeInTheDocument();
-  });
-
-  // The same exemption has to hold for the manual "+" button: it lives on a
-  // different code path (`addSession`), and counting parked samurai tiles
-  // there makes "+" a SILENT no-op — early return, no error — so after a few
-  // generations the user cannot open a terminal in that project at all.
-  it("exempts parked samurai terminal-state slots from the '+' button cap too", async () => {
-    const { handle } = await fillGridWithOneParkedGeneration();
-    const launchesBefore = spawnShellMock.mock.calls.length;
-
-    await act(async () => {
-      handle.addSession();
-    });
-    // The new slot is real only if it can actually launch a terminal — a
-    // refused `addSession` leaves nothing for `launchAll` to spawn.
-    await act(async () => {
-      await handle.launchAll();
-    });
-
-    await waitFor(() => expect(spawnShellMock).toHaveBeenCalledTimes(launchesBefore + 1));
-  });
-
-  // The top-bar "+" and the eagle picker grey out on the reported occupied
-  // count, so it must apply the same exemption as addSession — otherwise the
-  // button looks full while Ctrl+T still adds a terminal.
-  it("reports the parked samurai exemption in the occupied count it hands the parent", async () => {
-    const onCounts = vi.fn();
-    await fillGridWithOneParkedGeneration(onCounts);
-
-    await waitFor(() =>
-      expect(onCounts).toHaveBeenLastCalledWith(MAX_SESSIONS, MAX_SESSIONS, MAX_SESSIONS - 1),
-    );
   });
 
   // A step between spawnShell and the slot taking the session (here the MCP

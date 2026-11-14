@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 
 /**
- * How a parked Samurai run's resume time reads on every surface that shows one
- * (the sidebar project chip, the Second Brain timer rows, the Active Runs
- * list). One module so the three never drift apart.
+ * How a parked Samurai run's resume time reads on the Second Brain timer
+ * rows, the one surface left that shows one.
  *
  * A park is governed by the allowance window that ran out — which can be the
  * 7-day one. A bare `HH:MM` therefore reads as "this afternoon" for a run that

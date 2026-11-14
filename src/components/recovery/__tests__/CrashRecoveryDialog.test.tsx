@@ -60,7 +60,6 @@ function terminal(name: string, overrides: Partial<OfferedTerminal> = {}): Offer
     branch: null,
     pinned: false,
     parked: false,
-    samurai: false,
     conversationId: CONVERSATION,
     folderExists: true,
     conversationFound: true,
@@ -77,7 +76,6 @@ const LIST: OpenTerminalsOffer = {
     terminal("payments-review", { parked: true }),
     terminal("dev server", { kind: "Plain", conversationId: null, conversationFound: false }),
     terminal("old-experiment", { folderExists: false }),
-    terminal("night-run", { samurai: true }),
     terminal("rewrite-intro", { projectPath: DOCS, workingDirectory: DOCS, parked: true }),
     terminal("search-index", {
       projectPath: DOCS,
@@ -98,8 +96,8 @@ function cleared(): number {
   return invokeMock.mock.calls.filter(([c]) => c === "open_terminals_clear").length;
 }
 
-async function openDialog(): Promise<HTMLElement> {
-  backend(LIST);
+async function openDialog(offer: OpenTerminalsOffer = LIST): Promise<HTMLElement> {
+  backend(offer);
   render(<CrashRecoveryDialog />);
   return screen.findByRole("dialog", { name: "Maestro stopped unexpectedly" });
 }
@@ -167,15 +165,14 @@ describe("CrashRecoveryDialog", () => {
     expect(within(dialog).getByText("folder no longer exists")).toBeInTheDocument();
   });
 
-  it("leaves Samurai terminals out and counts them in one line", async () => {
-    const dialog = await openDialog();
+  it("shows no Samurai line, even for a list saved before Samurai was removed", async () => {
+    // A list saved by an older version still marks its Samurai terminals.
+    const old = { ...terminal("night-run"), samurai: true } as OfferedTerminal;
+    const dialog = await openDialog({ ...LIST, terminals: [...LIST.terminals, old] });
 
-    expect(within(dialog).queryByRole("checkbox", { name: "night-run" })).toBeNull();
-    expect(
-      within(dialog).getByText(
-        "1 Samurai run is not listed here. Recover it from the Launch panel.",
-      ),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("checkbox", { name: "night-run" })).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Samurai/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Launch panel/)).not.toBeInTheDocument();
   });
 
   it("counts the ticks on the button and turns it off at zero", async () => {

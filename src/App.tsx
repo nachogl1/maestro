@@ -56,7 +56,7 @@ import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
 /**
  * Full-screen workflow editor, loaded on demand: it pulls in React Flow,
  * which would otherwise sit in the entry chunk even though the editor only
- * renders once opened from the Launch tab via `useWorkflowsViewStore`.
+ * renders once opened from the PR monitor via `useWorkflowsViewStore`.
  */
 const WorkflowsView = lazy(() =>
   import("./components/workflows/WorkflowsView").then((m) => ({ default: m.WorkflowsView })),
@@ -91,7 +91,7 @@ function App() {
   // whenever repoPath changes, so no per-project tab state is needed.
   const [gitPanelTab, setGitPanelTab] = useState<GitPanelTab>("status");
   const [sessionCounts, setSessionCounts] = useState<
-    Map<string, { slotCount: number; launchedCount: number; occupiedCount: number }>
+    Map<string, { slotCount: number; launchedCount: number }>
   >(new Map());
   const [isStoppingAll, setIsStoppingAll] = useState(false);
   const [currentBranch, setCurrentBranch] = useState<string | undefined>(undefined);
@@ -104,9 +104,9 @@ function App() {
   const scratchProjects = useScratchStore((s) => s.projects);
   // Eagle view git carousel: index of the project whose git panel card shows.
   const [eagleGitIndex, setEagleGitIndex] = useState(0);
-  // Full-screen workflow editor (Launch tab → "Open workflow editor"):
+  // Full-screen workflow editor (PR action menu → "Edit the PR review workflow"):
   // opened via a store rather than local state, since the trigger lives deep
-  // inside the sidebar rather than a prop App can pass down.
+  // inside the git panel rather than a prop App can pass down.
   const workflowsViewOpen = useWorkflowsViewStore((s) => s.isOpen);
   const closeWorkflowsView = useWorkflowsViewStore((s) => s.close);
   const [theme, setTheme] = useState<Theme>(() => {
@@ -250,9 +250,6 @@ function App() {
   const activeTabCounts = activeTab ? sessionCounts.get(activeTab.id) : undefined;
   const activeTabSlotCount = activeTabCounts?.slotCount ?? 0;
   const activeTabLaunchedCount = activeTabCounts?.launchedCount ?? 0;
-  // What the "+" button weighs against MAX_SESSIONS: parked samurai terminal-state
-  // tiles are exempt, same as addSession, so the button and Ctrl+T agree.
-  const activeTabOccupiedCount = activeTabCounts?.occupiedCount ?? 0;
 
   const handleStopAll = useCallback(async () => {
     if (!activeTab || isStoppingAll) return;
@@ -262,7 +259,7 @@ function App() {
       setSessionsLaunched(activeTab.id, false);
       setSessionCounts((prev) => {
         const next = new Map(prev);
-        next.set(activeTab.id, { slotCount: 0, launchedCount: 0, occupiedCount: 0 });
+        next.set(activeTab.id, { slotCount: 0, launchedCount: 0 });
         return next;
       });
     } finally {
@@ -296,7 +293,7 @@ function App() {
     tabId: t.id,
     name: t.name,
     color: projectColors.get(t.name) ?? projectColorFor(t.name),
-    atMax: (sessionCounts.get(t.id)?.occupiedCount ?? 0) >= MAX_SESSIONS,
+    atMax: (sessionCounts.get(t.id)?.slotCount ?? 0) >= MAX_SESSIONS,
   }));
 
   const handleAddSessionToProject = useCallback(
@@ -364,21 +361,6 @@ function App() {
     // A scratch project's last terminal asks: delete its files or keep them.
     useScratchStore.getState().askAfterTerminalClosed(tabId);
   }, []);
-
-  // Top-bar parked-runs badge: land on the project whose Samurai run is
-  // parked. Leaves eagle view because the project's own grid is where the
-  // park's chip and shelf chip live.
-  const handleParkNavigate = useCallback(
-    (projectPath: string) => {
-      const target = useWorkspaceStore
-        .getState()
-        .tabs.find((t) => samePath(t.projectPath, projectPath));
-      if (!target) return;
-      setEagleView(false);
-      selectTab(target.id);
-    },
-    [selectTab],
-  );
 
   // Closing a project tab terminates every terminal running in it, so when the
   // tab has live sessions we confirm first. `getState()` (not the reactive
@@ -480,10 +462,10 @@ function App() {
   };
 
   const handleSessionCountChange = useCallback(
-    (tabId: string, slotCount: number, launchedCount: number, occupiedCount: number) => {
+    (tabId: string, slotCount: number, launchedCount: number) => {
       setSessionCounts((prev) => {
         const next = new Map(prev);
-        next.set(tabId, { slotCount, launchedCount, occupiedCount });
+        next.set(tabId, { slotCount, launchedCount });
         return next;
       });
     },
@@ -550,7 +532,7 @@ function App() {
             <TopBar
               hideWindowControls
               hasActiveProject={activeTab != null}
-              slotCount={activeTabOccupiedCount}
+              slotCount={activeTabSlotCount}
               maxSessions={MAX_SESSIONS}
               onAddSession={handleAddSessionShortcut}
               onTidyLayout={() => multiProjectRef.current?.tidyActiveProject()}
@@ -560,7 +542,6 @@ function App() {
               onAddSessionToProject={handleAddSessionToProject}
               onOpenScratch={handleOpenScratch}
               onWatchdogNavigate={handleWatchdogNavigate}
-              onParkNavigate={handleParkNavigate}
             />
           </div>
 

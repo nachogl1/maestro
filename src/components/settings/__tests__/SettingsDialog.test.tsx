@@ -31,7 +31,6 @@ const SECTION_LABELS = [
   "Updates",
   "Terminal",
   "AI command lines",
-  "Samurai",
   "Work Journal",
   "Keyboard shortcuts",
   "Changelog",
@@ -56,7 +55,6 @@ describe("SettingsDialog", () => {
     useWorkJournalSettingsStore.setState({ enabled: true });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "samurai_get_config") return null;
       if (cmd === "is_cli_installed") return false;
       if (cmd === "get_app_version") return "0.3.9";
       if (cmd === "load_work_journal") {
@@ -73,6 +71,8 @@ describe("SettingsDialog", () => {
     for (const label of SECTION_LABELS) {
       expect(within(nav()).getByRole("button", { name: label })).toBeInTheDocument();
     }
+    // Samurai is gone from the app, and its settings section with it.
+    expect(within(nav()).queryByRole("button", { name: "Samurai" })).not.toBeInTheDocument();
   });
 
   it("opens on Appearance and marks it as the current section", () => {
@@ -100,7 +100,7 @@ describe("SettingsDialog", () => {
   it("holds the settings that used to live in the sidebar and in separate dialogs", async () => {
     render(<SettingsDialog onClose={vi.fn()} />);
     openSection("Features");
-    expect(screen.getByRole("switch", { name: "Show Samurai launch" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Show Second Brain" })).toBeInTheDocument();
     openSection("Notifications");
     expect(screen.getByText("Show notifications")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Toggle notifications" })).toBeInTheDocument();
@@ -109,8 +109,6 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Custom Flags")).toBeInTheDocument();
     openSection("Updates");
     expect(screen.getByText("Auto-check")).toBeInTheDocument();
-    openSection("Samurai");
-    expect(screen.getByText("Samurai Thresholds")).toBeInTheDocument();
     openSection("Keyboard shortcuts");
     expect(screen.getByText("Panels")).toBeInTheDocument();
     openSection("Changelog");

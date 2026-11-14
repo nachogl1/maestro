@@ -20,20 +20,9 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import {
-  Loader2,
-  Maximize2,
-  Plus,
-  RotateCcw,
-  Trash2,
-  Workflow,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from "lucide-react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, Plus, RotateCcw, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
+import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import { DEFAULT_PR_WORKFLOW } from "@/lib/prWorkflow";
-import { samuraiDefaultWorkflow } from "@/lib/samurai";
 import {
   addWorkflowNode,
   connectWorkflow,
@@ -46,29 +35,20 @@ import {
 } from "@/lib/workflowGraph";
 import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import { usePrWorkflowStore } from "@/stores/usePrWorkflowStore";
-import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
 
 /**
- * Full-screen editor for the workflow graphs (issue #91 Part B, promoted out
- * of the Launch tab's sidebar card to its own overlay). Step text is edited
- * in place; steps can be added, removed and rewired. Opened from
- * `LaunchSection` via `useWorkflowsViewStore`, rendered by `App` next to
- * the old landscape graph — same overlay shell (`absolute inset-0 z-50`), same
- * "toolbar + React Flow canvas" shape.
+ * Full-screen editor for the PR review workflow (issue #91 Part B). Step text
+ * and labels are edited in place; steps can be added, removed and rewired.
+ * Opened from the PR monitor's action menu via `useWorkflowsViewStore`,
+ * rendered by `App` as a full-screen overlay (`absolute inset-0 z-50`).
  *
- * The same canvas edits TWO workflows, chosen by the mode toggle in the
- * toolbar:
- *  - Samurai — the run workflow the backend compiles into every brief; the
- *    edited graph persists (`useSamuraiWorkflowStore`) and the launch sends
- *    it verbatim;
- *  - PR review — a frontend-only workflow (`usePrWorkflowStore`) whose steps
- *    are the checkboxes in the PR monitor's action menu. Its boxes carry a
- *    short label as well as the instruction text, because a checkbox needs a
- *    one-line handle. Adding a box there adds a checkbox, no code change.
+ * The workflow is frontend-only (`usePrWorkflowStore`): its steps are the
+ * checkboxes in the PR monitor's action menu. Each box carries a short label
+ * as well as the instruction text, because a checkbox needs a one-line
+ * handle. Adding a box adds a checkbox, no code change.
  *
- * The graph mutations live in `@/lib/workflowGraph` and mirror the backend
- * compile rule (`src-tauri/src/core/samurai_workflow.rs`); they are
- * re-exported below so this module stays the one import site for them.
+ * The graph mutations live in `@/lib/workflowGraph`; they are re-exported
+ * below so this module stays the one import site for them.
  */
 
 /* ── Pure graph edits (exported for tests) ───────────────────────────── */
@@ -90,9 +70,8 @@ export {
 const START_ID = "__workflow_start__";
 
 const NODE_W = 320;
-const NODE_H = 190;
-/** Taller box for the PR review mode — it also carries the label input. */
-const NODE_H_LABELLED = 226;
+/** Tall enough for the label input and the instruction text. */
+const NODE_H = 226;
 const V_GAP = 48;
 const START_W = 100;
 const START_H = 36;
@@ -115,14 +94,12 @@ const WorkflowActionsContext = createContext<WorkflowActions>({
 
 type StepData = {
   text: string;
-  /** The PR step's short label; null in Samurai mode, which has no labels. */
-  label: string | null;
+  /** The step's short label — the text its checkbox shows. */
+  label: string;
   /** Compiled step number; null when the compile emits no step for it. */
   step: number | null;
   /** On the walk from START. Off-walk boxes are excluded from the run. */
   reachable: boolean;
-  /** Box height for the current mode — labelled boxes are taller. */
-  height: number;
   /** The only box left: it cannot be removed (see `removeNode`). */
   isLast: boolean;
 };
@@ -144,16 +121,16 @@ function StartNode(_: NodeProps) {
 }
 
 /**
- * One workflow step card: a status badge (doubling as the card's title), an
- * editable instruction body, and a clearly-labelled delete action. PR review
- * steps additionally carry a short label — the text their checkbox shows.
+ * One workflow step card: a status badge (doubling as the card's title), a
+ * short label (the text its checkbox shows), an editable instruction body,
+ * and a clearly-labelled delete action.
  */
 function StepNode({ id, data }: NodeProps) {
   const d = data as StepData;
   const { setText, setLabel, removeNode } = useContext(WorkflowActionsContext);
   return (
     <div
-      style={{ width: NODE_W, height: d.height }}
+      style={{ width: NODE_W, height: NODE_H }}
       className={`flex flex-col rounded-lg border bg-maestro-card p-3 shadow-[0_1px_4px_rgb(0_0_0/0.15),0_0_0_1px_rgb(255_255_255/0.03)_inset] transition-opacity ${
         d.reachable ? "border-maestro-border" : "border-maestro-border/40 opacity-40"
       }`}
@@ -196,16 +173,14 @@ function StepNode({ id, data }: NodeProps) {
           Delete
         </button>
       </div>
-      {d.label !== null && (
-        <input
-          value={d.label}
-          onChange={(e) => setLabel(id, e.target.value)}
-          aria-label={`Edit step ${id} label`}
-          placeholder="Short label…"
-          title="The name this step shows as in the PR action's checkbox list"
-          className="nodrag mb-2 w-full rounded border border-maestro-border/40 bg-maestro-surface px-2.5 py-1.5 text-[12px] font-semibold text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
-        />
-      )}
+      <input
+        value={d.label}
+        onChange={(e) => setLabel(id, e.target.value)}
+        aria-label={`Edit step ${id} label`}
+        placeholder="Short label…"
+        title="The name this step shows as in the PR action's checkbox list"
+        className="nodrag mb-2 w-full rounded border border-maestro-border/40 bg-maestro-surface px-2.5 py-1.5 text-[12px] font-semibold text-maestro-text placeholder:text-maestro-muted/60 focus:border-maestro-accent focus:outline-none"
+      />
       <textarea
         value={d.text}
         onChange={(e) => setText(id, e.target.value)}
@@ -275,17 +250,8 @@ interface WorkflowsViewProps {
   onClose: () => void;
 }
 
-/** Which workflow the canvas is editing. */
-type WorkflowMode = "samurai" | "pr";
-
-const MODES: { id: WorkflowMode; label: string }[] = [
-  { id: "samurai", label: "Samurai" },
-  { id: "pr", label: "PR review" },
-];
-
-/** Derived React Flow model for one graph, laid out as a single column. */
-function buildModel(graph: WorkflowGraph, pr: boolean): { nodes: Node[]; edges: Edge[] } {
-  const nodeH = pr ? NODE_H_LABELLED : NODE_H;
+/** Derived React Flow model for the graph, laid out as a single column. */
+function buildModel(graph: WorkflowGraph): { nodes: Node[]; edges: Edge[] } {
   const order = workflowWalkOrder(graph);
   const reachable = new Set(order);
   const rest = graph.nodes.filter((n) => !reachable.has(n.id)).map((n) => n.id);
@@ -313,23 +279,20 @@ function buildModel(graph: WorkflowGraph, pr: boolean): { nodes: Node[]; edges: 
       (id, index): Node => ({
         id,
         type: "step",
-        position: { x: PAD, y: PAD + START_H + V_GAP + index * (nodeH + V_GAP) },
+        position: { x: PAD, y: PAD + START_H + V_GAP + index * (NODE_H + V_GAP) },
         data: {
           text: byId.get(id)?.text ?? "",
-          // Only the PR workflow has labels — null keeps the input off the
-          // Samurai boxes entirely.
-          label: pr ? (byId.get(id)?.label ?? "") : null,
+          label: byId.get(id)?.label ?? "",
           step: stepOf.get(id) ?? null,
           reachable: reachable.has(id),
-          height: nodeH,
           isLast: graph.nodes.length <= 1,
         } satisfies StepData,
         deletable: false,
         width: NODE_W,
-        height: nodeH,
+        height: NODE_H,
         handles: [
           { type: "target", position: Position.Top, x: NODE_W / 2, y: 0 },
-          { type: "source", position: Position.Bottom, x: NODE_W / 2, y: nodeH },
+          { type: "source", position: Position.Bottom, x: NODE_W / 2, y: NODE_H },
         ],
       }),
     ),
@@ -368,66 +331,30 @@ const toolbarButton =
   "flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-maestro-border bg-maestro-card px-2 py-1 text-[11px] text-maestro-muted transition-colors hover:text-maestro-text disabled:opacity-40";
 
 function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
-  const stored = useSamuraiWorkflowStore((s) => s.graph);
-  const setSamuraiGraph = useSamuraiWorkflowStore((s) => s.setGraph);
-  const resetSamuraiGraph = useSamuraiWorkflowStore((s) => s.resetGraph);
-  const prStored = usePrWorkflowStore((s) => s.graph);
-  const setPrGraph = usePrWorkflowStore((s) => s.setGraph);
-  const resetPrGraph = usePrWorkflowStore((s) => s.resetGraph);
-  const [mode, setMode] = useState<WorkflowMode>("samurai");
-  // The backend default template, fetched only while nothing is stored —
-  // it is the display fallback AND what the first edit is applied to.
-  const [fallback, setFallback] = useState<WorkflowGraph | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // Bumped to re-run the fetch below. Without it a single failed fetch was
-  // terminal: `stored` is already null, so the effect never re-ran, and the
-  // canvas showed "Loading workflow…" forever with no way to edit the
-  // Samurai workflow until the overlay was remounted.
-  const [reloadKey, setReloadKey] = useState(0);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is not read in the body but is the intended trigger — bumping it is the only way to retry a failed fetch, since `stored` is already null when the fetch fails.
-  useEffect(() => {
-    if (stored !== null) return;
-    let disposed = false;
-    samuraiDefaultWorkflow()
-      .then((graph) => {
-        if (disposed) return;
-        setFallback(graph);
-        setError(null);
-      })
-      .catch((err) => {
-        if (!disposed) setError(String(err));
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [stored, reloadKey]);
-
-  const pr = mode === "pr";
-  // Same fallback rule in both modes ("null means the default governs"); the
-  // PR default is a frontend constant because no backend compiles that graph.
-  const graph = pr ? (prStored ?? DEFAULT_PR_WORKFLOW) : (stored ?? fallback);
-  const setGraph = pr ? setPrGraph : setSamuraiGraph;
+  const stored = usePrWorkflowStore((s) => s.graph);
+  const setGraph = usePrWorkflowStore((s) => s.setGraph);
+  const resetGraph = usePrWorkflowStore((s) => s.resetGraph);
+  // "null means the default governs": the default is a frontend constant
+  // because no backend compiles this graph.
+  const graph = stored ?? DEFAULT_PR_WORKFLOW;
 
   // Every edit lands in the persisted store, whichever graph it started from.
   const actions = useMemo<WorkflowActions>(
     () => ({
-      setText: (id, text) => graph && setGraph(setWorkflowNodeText(graph, id, text)),
-      setLabel: (id, label) => graph && setGraph(setWorkflowNodeLabel(graph, id, label)),
+      setText: (id, text) => setGraph(setWorkflowNodeText(graph, id, text)),
+      setLabel: (id, label) => setGraph(setWorkflowNodeLabel(graph, id, label)),
       // The LAST box never goes: an empty graph persists as
       // `{nodes: [], edges: [], start: ""}`, which compiles to nothing — the
-      // run would then launch with no WORKFLOW section at all, and the only
-      // hint would be an empty canvas.
-      removeNode: (id) =>
-        graph && graph.nodes.length > 1 && setGraph(removeWorkflowNode(graph, id)),
-      removeEdge: (from, to) => graph && setGraph(removeWorkflowEdge(graph, from, to)),
+      // PR action menu would then offer no step at all, and the only hint
+      // would be an empty canvas.
+      removeNode: (id) => graph.nodes.length > 1 && setGraph(removeWorkflowNode(graph, id)),
+      removeEdge: (from, to) => setGraph(removeWorkflowEdge(graph, from, to)),
     }),
     [graph, setGraph],
   );
 
   const handleConnect = (connection: Connection) => {
-    if (!graph || !connection.source || !connection.target) return;
+    if (!connection.source || !connection.target) return;
     if (connection.target === START_ID) return;
     setGraph(
       connection.source === START_ID
@@ -436,30 +363,19 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
     );
   };
 
-  const handleAdd = () => {
-    // A new PR step arrives with a placeholder label so it is identifiable in
-    // the checkbox list before the user renames it.
-    if (graph) setGraph(addWorkflowNode(graph, pr ? "New step" : undefined));
-  };
+  // A new step arrives with a placeholder label so it is identifiable in the
+  // checkbox list before the user renames it.
+  const handleAdd = () => setGraph(addWorkflowNode(graph, "New step"));
 
-  const handleReset = () => {
-    // Reset returns to "never edited" (null): the default GOVERNS again — for
-    // Samurai the launch sends `workflow: null` and future changes to the
-    // backend template apply. Storing a materialized copy of today's default
-    // would silently pin the user to it forever. The effect above refetches
-    // it for display the moment `stored` flips back to null.
-    setError(null);
-    if (pr) resetPrGraph();
-    else resetSamuraiGraph();
-    // Refetch, not just clear the message: when `stored` is already null the
-    // effect above has no dependency change to react to.
-    setReloadKey((key) => key + 1);
-  };
+  // Reset returns to "never edited" (null): the default GOVERNS again, so
+  // future changes to it apply. Storing a materialized copy of today's
+  // default would silently pin the user to it forever.
+  const handleReset = () => resetGraph();
 
   // Walk order first (the run's actual sequence), then the disconnected
   // boxes. Positions are only the STARTING point for a fresh node — see the
   // sync effects below, which preserve wherever the user has dragged a node.
-  const model = useMemo(() => (graph ? buildModel(graph, pr) : null), [graph, pr]);
+  const model = useMemo(() => buildModel(graph), [graph]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -467,32 +383,24 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
   // Re-derive nodes from the store on every edit, but never yank a node the
   // user already positioned: an existing node keeps its current (possibly
   // dragged) position, only its `data` is refreshed. Only a brand-new node
-  // (added via "Add step") gets the computed layout position. Switching mode
-  // is the exception — the two graphs share step ids, so carrying positions
-  // across would drop the other workflow's boxes into stale slots.
-  const positionsMode = useRef(mode);
+  // (added via "Add step") gets the computed layout position.
   useEffect(() => {
-    if (!model) return;
-    const modeChanged = positionsMode.current !== mode;
-    positionsMode.current = mode;
     setNodes((previous) => {
-      if (modeChanged) return model.nodes;
       const byId = new Map(previous.map((n) => [n.id, n]));
       return model.nodes.map((node) => {
         const existing = byId.get(node.id);
         return existing ? { ...node, position: existing.position } : node;
       });
     });
-  }, [model, mode, setNodes]);
+  }, [model, setNodes]);
 
   useEffect(() => {
-    if (!model) return;
     setEdges(model.edges);
   }, [model, setEdges]);
 
   const { fitView, zoomIn, zoomOut } = useReactFlow();
 
-  // Fit once per mode, and only after React Flow has measured the nodes —
+  // Fit once, and only after React Flow has measured the nodes —
   // fitting before that leaves the graph at zoom 1 with steps off-screen.
   const nodesInitialized = useNodesInitialized();
   const fittedRef = useRef(false);
@@ -526,57 +434,15 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
           Workflow Editor
         </span>
 
-        <div role="tablist" aria-label="Workflow to edit" className="flex shrink-0 gap-0.5">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              role="tab"
-              aria-selected={mode === m.id}
-              onClick={() => {
-                setMode(m.id);
-                // The other graph is a different shape; re-fit once it lands.
-                fittedRef.current = false;
-              }}
-              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                mode === m.id
-                  ? "bg-maestro-accent/15 text-maestro-accent"
-                  : "text-maestro-muted hover:bg-maestro-card hover:text-maestro-text"
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-
         <span className="min-w-0 flex-1 truncate text-[11px] text-maestro-muted">
-          {pr
-            ? "The steps a PR review runs. Each box is one checkbox in the PR monitor's action menu — add a box here and the checkbox appears there."
-            : "The step-by-step process every run follows, compiled into each orchestrator brief. Removing a step re-connects its neighbours; removing an arrow cuts the run short."}
+          The steps a PR review runs. Each box is one checkbox in the PR monitor's action menu — add
+          a box here and the checkbox appears there.
         </span>
-
-        {/* Only the Samurai default is fetched from the backend, so its error
-            belongs to that mode alone. */}
-        {!pr && error && (
-          <span className="flex shrink-0 items-center gap-1">
-            <span className="max-w-[220px] truncate text-[10px] text-maestro-red" title={error}>
-              {error}
-            </span>
-            <button
-              type="button"
-              onClick={() => setReloadKey((key) => key + 1)}
-              className="rounded border border-maestro-border px-1.5 py-0.5 text-[10px] text-maestro-muted hover:text-maestro-text"
-            >
-              Retry
-            </button>
-          </span>
-        )}
 
         <button
           type="button"
           onClick={handleAdd}
-          disabled={!graph}
-          title={`Add an empty step box at the end of the ${pr ? "PR review" : "run"}`}
+          title="Add an empty step box at the end of the PR review"
           className={toolbarButton}
         >
           <Plus size={12} />
@@ -631,39 +497,30 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
 
       {/* Canvas */}
       <div className="relative min-h-0 flex-1">
-        {model === null ? (
-          !error && (
-            <div className="flex h-full items-center justify-center gap-2 text-xs text-maestro-muted">
-              <Loader2 size={14} className="animate-spin" />
-              Loading workflow…
-            </div>
-          )
-        ) : (
-          <WorkflowActionsContext.Provider value={actions}>
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={handleConnect}
-              nodesConnectable
-              edgesFocusable={false}
-              deleteKeyCode={null}
-              minZoom={0.25}
-              maxZoom={1.5}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background
-                variant={BackgroundVariant.Dots}
-                gap={26}
-                size={1}
-                color="rgb(var(--maestro-border))"
-              />
-            </ReactFlow>
-          </WorkflowActionsContext.Provider>
-        )}
+        <WorkflowActionsContext.Provider value={actions}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={handleConnect}
+            nodesConnectable
+            edgesFocusable={false}
+            deleteKeyCode={null}
+            minZoom={0.25}
+            maxZoom={1.5}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={26}
+              size={1}
+              color="rgb(var(--maestro-border))"
+            />
+          </ReactFlow>
+        </WorkflowActionsContext.Provider>
       </div>
     </div>
   );
