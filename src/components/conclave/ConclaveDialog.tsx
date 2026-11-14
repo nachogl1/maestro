@@ -165,6 +165,8 @@ export function ConclaveDialog({ onClose }: ConclaveDialogProps): JSX.Element {
         onChange={(e) => setMessage(e.target.value)}
         rows={7}
         aria-label="Conclave message"
+        // biome-ignore lint/a11y/noAutofocus: Alt+C is usually pressed inside a terminal, whose xterm swallows Esc and typing; focus must move into the dialog.
+        autoFocus
         className="w-full resize-y rounded border border-maestro-border/60 bg-maestro-bg px-2 py-1.5 text-xs text-maestro-text focus:border-maestro-accent focus:outline-none"
       />
       <p className="text-[10px] text-maestro-muted">

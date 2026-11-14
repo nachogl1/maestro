@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Terminal } from "@xterm/xterm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The persisted zustand stores hydrate through the Tauri store plugin at
@@ -238,5 +239,31 @@ describe("ConclaveDialog", () => {
 
     expect(onClose).toHaveBeenCalledTimes(2);
     expect(injectCalls()).toHaveLength(0);
+  });
+
+  it("takes keyboard focus from the terminal it was opened over, so Esc closes it there", () => {
+    seedTwoProjects();
+    // Alt+C is usually pressed inside a terminal: xterm handles Escape itself
+    // (sends it to the agent and stops the event), so focus must leave it.
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const term = new Terminal();
+    term.open(host);
+    const typed: string[] = [];
+    term.onData((data) => typed.push(data));
+    term.focus();
+    expect(host.contains(document.activeElement)).toBe(true);
+
+    const onClose = vi.fn();
+    render(<ConclaveDialog onClose={onClose} />);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(typed).toEqual([]);
+
+    term.dispose();
+    host.remove();
   });
 });
