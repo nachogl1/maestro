@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultScratchName, formatScratchAge, isScratchPath } from "../scratch";
+import { defaultScratchName, formatScratchAge, isScratchPath, isScratchProject } from "../scratch";
 
 describe("defaultScratchName", () => {
   it("names a scratch project after the day, month and time", () => {
@@ -42,5 +42,28 @@ describe("isScratchPath", () => {
 
   it("counts nothing before the scratch folder is known", () => {
     expect(isScratchPath("/home/someone/Maestro Scratch/demo", null)).toBe(false);
+  });
+});
+
+describe("isScratchProject", () => {
+  it("counts only a listed scratch project, never another folder in the scratch folder", () => {
+    const folder = "C:\\Users\\someone\\Maestro Scratch";
+    const listed = [{ path: "C:\\Users\\someone\\Maestro Scratch\\demo" }];
+    const cases: Array<[string, boolean]> = [
+      ["C:\\Users\\someone\\Maestro Scratch\\demo", true],
+      ["\\\\?\\c:\\users\\someone\\maestro scratch\\DEMO", true],
+      ["C:\\Users\\someone\\Maestro Scratch\\real-work", false],
+      ["C:\\Users\\someone\\Maestro Scratch\\demo\\nested", false],
+      ["C:\\git\\real-project", false],
+    ];
+    for (const [path, expected] of cases) {
+      expect(isScratchProject(path, folder, listed), path).toBe(expected);
+    }
+  });
+
+  it("counts nothing before the scratch projects are listed", () => {
+    const path = "/home/someone/Maestro Scratch/demo";
+    expect(isScratchProject(path, "/home/someone/Maestro Scratch", [])).toBe(false);
+    expect(isScratchProject(path, null, [{ path }])).toBe(false);
   });
 });

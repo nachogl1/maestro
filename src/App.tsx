@@ -7,7 +7,7 @@ import { openIssueMapFor, syncIssueMapProjects } from "@/lib/issueMapWindow";
 import { samePath } from "@/lib/path";
 import { isMac } from "@/lib/platform";
 import { projectColorFor } from "@/lib/projectColor";
-import { isScratchPath } from "@/lib/scratch";
+import { isScratchProject } from "@/lib/scratch";
 import { stopProjectSessions } from "@/lib/stopProjectSessions";
 import { killSession } from "@/lib/terminal";
 import { useOpenProject } from "@/lib/useOpenProject";
@@ -100,6 +100,7 @@ function App() {
   const [eagleAddPickerOpen, setEagleAddPickerOpen] = useState(false);
   const [conclaveOpen, setConclaveOpen] = useState(false);
   const scratchFolder = useScratchStore((s) => s.folder);
+  const scratchProjects = useScratchStore((s) => s.projects);
   // Eagle view git carousel: index of the project whose git panel card shows.
   const [eagleGitIndex, setEagleGitIndex] = useState(0);
   // Full-screen workflow editor (Launch tab → "Open workflow editor"):
@@ -502,7 +503,7 @@ function App() {
           name: t.name,
           active: t.active,
           color: projectColors.get(t.name) ?? projectColorFor(t.name),
-          scratch: isScratchPath(t.projectPath, scratchFolder),
+          scratch: isScratchProject(t.projectPath, scratchFolder, scratchProjects),
         }))}
         onSelectTab={selectTab}
         onCloseTab={handleCloseTab}

@@ -556,7 +556,10 @@ A scratch project is a plain folder (not a git repository) for work that belongs
   several terminals, or any terminal of a normal project, never asks; quitting Maestro never asks either.
 - **Where they live:** Settings → **Scratch projects** → **Scratch folder**. The default is `Maestro Scratch` in
   your home folder, made on first use. **Choose folder** picks another one and the pill then lists that folder's
-  subfolders; **Use default** goes back. Every folder directly inside the scratch folder counts as a scratch
-  project.
+  scratch projects; **Use default** goes back.
+- **Only folders Maestro made count.** Maestro leaves a small hidden file, `.maestro-scratch`, in every scratch
+  project it makes. A folder directly inside the scratch folder without that file is never listed, gets no flask
+  mark and no Delete-or-keep question, and Maestro refuses to delete it ("Maestro didn't make that folder as a
+  scratch project, so it won't delete it."). So pointing the scratch folder at a folder full of real work is safe.
 - Delete removes only the folder. Claude Code's own conversation records and Maestro's History rows stay, but
   those rows can no longer be resumed.
