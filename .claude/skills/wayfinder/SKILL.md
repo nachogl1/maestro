@@ -1,6 +1,6 @@
 ---
 name: wayfinder
-description: 'ORION - Turn an idea that is too large for a single agent session into a plan kept on GitHub Issues: one map issue that states the DESTINATION (one of two: PRD, every decision a PRD needs, which the person then writes; or TICKETS, the work filed as stories ready to build) and a set of small decision tickets hung under it, then settle those tickets one per session until every open question has an answer. Questions that can already be asked precisely become tickets; questions that cannot be asked precisely yet are written down as fog on the map and become tickets later; anything beyond the destination is recorded as out of scope. Every ticket has one kind — research (the agent reads and cites), prototype (a rough thing for the person to react to), grilling (a conversation with the person), task (hands-on work needed before a decision) — and the steps for each kind are written here, so the skill runs no other skill (it only reads dev-next''s references/new-issue.md for the issue links and the shape of a TICKETS map''s stories). It DECIDES, IT DOES NOT BUILD. GitHub Issues only, like dev-next: tickets are native sub-issues of the map and every blocker is set as GitHub''s native relation and as a Blocked by section in the body. One ticket per session, research tickets excepted. Started by hand only: use when the user types /wayfinder; when they say "help me plan this big thing", "this is too big for one session", "chart the work", "work the map", or bring a vague idea with no clear path to the end, suggest they type /wayfinder.'
+description: 'ORION - Turn an idea that is too large for a single agent session into a plan kept on GitHub Issues: one map issue that states the DESTINATION (one of two: PRD, every decision a PRD needs, which the person then writes; or TICKETS, the work filed as stories ready to build) and a set of small decision tickets hung under it, then settle those tickets one per session until every open question has an answer. Questions that can already be asked precisely become tickets; questions that cannot be asked precisely yet are written down as fog on the map and become tickets later; anything beyond the destination is recorded as out of scope. Every ticket has one kind — research (the agent reads and cites), prototype (a rough thing for the person to react to), grilling (a conversation with the person), task (hands-on work needed before a decision) — and the steps for each kind are written here, so the skill runs no other skill (it only reads dev-next''s references/new-issue.md for the issue links and the shape of a TICKETS map''s stories). It DECIDES, IT DOES NOT BUILD. GitHub Issues only, like dev-next: tickets are native sub-issues of the map, every ticket blocks the map so the map closes last, and every blocker is set as GitHub''s native relation and as a Blocked by section in the body. One ticket per session, research tickets excepted. Started by hand only: use when the user types /wayfinder; when they say "help me plan this big thing", "this is too big for one session", "chart the work", "work the map", or bring a vague idea with no clear path to the end, suggest they type /wayfinder.'
 argument-hint: "An idea to plan, or the URL or number of an existing map"
 disable-model-invocation: true
 ---
@@ -73,7 +73,13 @@ Then tell the user, in one line, which repository you are using and that both ki
 
 One issue with the label `wayfinder:map` (create the label if it is missing). The map only **points**: each decision
 is written out once, on its own ticket, and the map holds a one-line summary with a link. Open tickets are never
-listed in the map; ask GitHub for the map's open sub-issues instead.
+listed in the map's prose; ask GitHub for the map's open sub-issues instead.
+
+**Every ticket blocks the map**, so the map is always the last issue of its effort to close. Each ticket is set as a
+blocker of the map in both forms (Step 0): GitHub's native relation, and a line in the map's `### Blocked by`
+section. That section is the one list of tickets the map keeps; it keeps closed tickets too (a closed blocker no
+longer blocks), so it is only ever added to. A map written before this rule gets every one of its tickets added as a
+blocker on its next edit.
 
 ```markdown
 ## Destination
@@ -102,6 +108,11 @@ or documents every session should read; and preferences the user wants kept for 
 
 <!-- Things deliberately placed beyond the destination. It never becomes a ticket on
      this map. -->
+
+### Blocked by
+
+<!-- One `#<N> — <title>` line per ticket of this map, open or closed, each also set as
+     the native relation (Step 0), so the map closes last. -->
 ```
 
 A map with `## Decisions so far` / `## Not yet specified` (the earlier names) is read as `## Settled` / `## Fog` and
@@ -280,7 +291,7 @@ The user gives an idea. With no argument, ask what they want to plan.
    under **Fog**.
 5. **Create every ticket you can already write** as a sub-issue of the map. Add the blockers **afterwards, in a
    separate pass**, because a ticket must exist before another can point at it; set both forms and read each back
-   (Step 0). Tickets with no open blocker form the frontier; what you cannot write yet stays under **Fog**.
+   (Step 0). In the same pass, make **every ticket a blocker of the map**, in both forms, and read it back. Tickets with no open blocker form the frontier; what you cannot write yet stays under **Fog**.
 6. **Start the research sub-agents** for every `research` ticket just created, as the research steps say. Each posts
    its findings on its own ticket.
 7. **Ask the PRD question** once, after the batch ([The PRD question](#the-prd-question)).
@@ -301,7 +312,7 @@ ticket is your job; do not ask them to pick.
 4. **Record the answer:** post it as a comment, **close** the ticket, and **add one line** under *Settled* on the map,
    with the ticket's title as a link.
 5. **Update the plan:** create any new tickets the answer raised (create first, then link the blockers in both
-   forms); turn every fog entry the answer made precise into a ticket and **remove that entry from *Fog*** so it
+   forms, and make each new ticket a blocker of the map in both forms); turn every fog entry the answer made precise into a ticket and **remove that entry from *Fog*** so it
    exists in one place only; move anything the answer placed beyond the destination to *Out of scope*; update or
    close the tickets the decision made wrong.
 6. **File the stories** when this was a TICKETS map's last open ticket and no fog is left
@@ -382,12 +393,13 @@ Keep it short, one fact per line:
 | Building the destination inside a ticket | That is execution, not planning. Hand over instead. |
 | Working on a ticket someone has claimed | Another session already has it, and the two will clash. |
 | Treating "assigned to me" as a won claim | Your other sessions share your login, so every one of them sees the same. Only the claim comment with the lowest id wins. |
+| Leaving a ticket off the map's blockers | The map looks free to close while that ticket is still open. Every ticket blocks the map. |
 | Making a map for a job that fits in one session | All overhead and no benefit. Say so and stop. |
 
 ## When it is done
 
 - **Writing a new map is finished** when the map issue states its destination, every ticket that can be written exists
-  with its blockers linked, everything else is listed under *Fog*, the research sub-agents are running, and the user
+  with its blockers linked and is itself a blocker of the map, everything else is listed under *Fog*, the research sub-agents are running, and the user
   has the map's title, its link and the current frontier.
 - **A working session is done** when exactly one ticket (research excepted) has its answer comment, is closed and has
   its line under *Settled*; *Fog* and *Out of scope* are up to date; and the new frontier has been reported.
