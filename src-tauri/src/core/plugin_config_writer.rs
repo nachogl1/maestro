@@ -21,9 +21,9 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::config_recovery::read_json_or_recover;
+use super::extended_paths::{canonical_key, strip_extended_length};
 use super::mcp_config_writer::{atomic_write, dir_lock};
 use super::plugin_error::{PluginError, PluginResult};
-use super::samurai_files::{canonical_key, strip_extended_length};
 
 /// One `enabledPlugins` key Maestro has written.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

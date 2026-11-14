@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use crate::core::extended_paths::canonical_key;
 use crate::core::mcp_config_writer;
 use crate::core::mcp_manager::McpManager;
 use crate::core::plugin_manager::PluginManager;
 use crate::core::process_manager::ProcessManager;
 use crate::core::samurai_context::SamuraiContextStore;
-use crate::core::samurai_files::canonical_key;
 use crate::core::samurai_injector::SamuraiInjector;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::session_manager::{AiMode, SessionConfig, SessionManager};

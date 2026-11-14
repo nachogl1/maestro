@@ -11,7 +11,7 @@
 //!
 //! This is [`super::harvest`]'s delivery gate with the journal removed: same
 //! arm-then-inject-on-`SessionStarted` shape, the same
-//! `core::samurai_pty::submit_instruction_confirmed` delivery (body write
+//! `core::pty_submit::submit_instruction_confirmed` delivery (body write
 //! confirmed on the calling thread, then the scaled gap and the lone Enter —
 //! issue #103), and the same disarm-BEFORE-deliver ordering so a later
 //! `SessionStarted` in the same terminal (e.g. `/clear`) can never
@@ -30,7 +30,7 @@
 //! Flattening keeps the PTY safe but destroys a long prompt's structure, and
 //! a multi-KB payload is not reliably delivered even flattened (issue #137).
 //! So a caller may also name a brief target ([`BriefTarget`]): an over-budget
-//! prompt is then written UNFLATTENED through `core::samurai_brief` and what
+//! prompt is then written UNFLATTENED through `core::brief_files` and what
 //! is typed is the one-line pointer at that file. Normalization still runs on
 //! whatever is actually typed, so the invariant above is unchanged.
 
@@ -41,8 +41,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tauri::State;
 
 use super::harvest::DeliverFn;
-use crate::core::samurai_brief::{self, StagedBrief};
-use crate::core::samurai_pr_runs::{PrReviewLaunch, PrReviewRun, PrRunStore};
+use crate::core::brief_files::{self, StagedBrief};
+use crate::core::pr_runs::{PrReviewLaunch, PrReviewRun, PrRunStore};
 
 /// The all-whitespace refusal — pinned by test, surfaced to the caller.
 const EMPTY_PROMPT: &str = "Cannot launch with an empty initial prompt.";
@@ -59,7 +59,7 @@ pub fn normalize_prompt(prompt: &str) -> String {
 
 /// Where a long prompt is staged as a brief FILE instead of being typed
 /// (issue #138): `dir` is the checkout whose `.maestro/briefs/` receives it —
-/// the same layout `core::samurai_brief` writes for samurai runs — and `stem`
+/// the same layout `core::brief_files` writes for samurai runs — and `stem`
 /// names the file within it. A caller that supplies no target keeps the
 /// inline delivery, whatever the prompt's size.
 pub struct BriefTarget {
@@ -110,7 +110,7 @@ impl InitialPromptInjector {
     /// one initial prompt.
     ///
     /// With a `brief` target, a prompt too long to type safely
-    /// (`samurai_brief::INLINE_MAX_BYTES`, measured on the flattened text —
+    /// (`brief_files::INLINE_MAX_BYTES`, measured on the flattened text —
     /// that is what would have gone to the PTY) is written to a brief file
     /// UNFLATTENED, and the one-line pointer at it is armed instead. So the
     /// agent reads the prompt's real structure while the PTY still only ever
@@ -140,12 +140,11 @@ impl InitialPromptInjector {
         }
         let mut staged: Option<StagedBrief> = None;
         let armed = brief
-            .filter(|_| normalized.len() > samurai_brief::INLINE_MAX_BYTES)
-            .and_then(|target| {
-                match samurai_brief::write_brief(&target.dir, &target.stem, prompt) {
+            .filter(|_| normalized.len() > brief_files::INLINE_MAX_BYTES)
+            .and_then(
+                |target| match brief_files::write_brief(&target.dir, &target.stem, prompt) {
                     Ok(relpath) => {
-                        let pointer =
-                            normalize_prompt(&samurai_brief::pointer_instruction(&relpath));
+                        let pointer = normalize_prompt(&brief_files::pointer_instruction(&relpath));
                         staged = Some(StagedBrief {
                             root: target.dir,
                             relpath,
@@ -158,8 +157,8 @@ impl InitialPromptInjector {
                         );
                         None
                     }
-                }
-            })
+                },
+            )
             .unwrap_or(normalized);
         self.armed
             .lock()
@@ -263,7 +262,7 @@ fn record_pr_review(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::samurai_pr_runs::staged_brief_path;
+    use crate::core::pr_runs::staged_brief_path;
     use tempfile::tempdir;
 
     /// Captured `(session_id, prompt)` pairs handed to a stubbed [`DeliverFn`].
@@ -392,7 +391,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (injector, delivered) = injector();
         let prompt = long_prompt();
-        assert!(normalize_prompt(&prompt).len() > samurai_brief::INLINE_MAX_BYTES);
+        assert!(normalize_prompt(&prompt).len() > brief_files::INLINE_MAX_BYTES);
 
         injector
             .arm(5, &prompt, Some(target(dir.path(), "pr-138-check-review")))
@@ -403,7 +402,7 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(
             d[0].1,
-            samurai_brief::pointer_instruction(".maestro/briefs/pr-138-check-review.md")
+            brief_files::pointer_instruction(".maestro/briefs/pr-138-check-review.md")
         );
         // Still PTY-safe: the typed text is one line, well under the payload
         // size that was observed arriving spliced.
@@ -431,7 +430,7 @@ mod tests {
 
         let d = delivered.lock().unwrap();
         assert_eq!(d[0].1, normalize_prompt(&prompt));
-        assert!(d[0].1.len() > samurai_brief::INLINE_MAX_BYTES);
+        assert!(d[0].1.len() > brief_files::INLINE_MAX_BYTES);
         assert!(!d[0].1.contains('\n'));
     }
 
@@ -456,7 +455,7 @@ mod tests {
             "review the diff and summarise it"
         );
         assert!(
-            !dir.path().join(samurai_brief::BRIEF_DIR).exists(),
+            !dir.path().join(brief_files::BRIEF_DIR).exists(),
             "no brief written"
         );
     }
@@ -479,7 +478,7 @@ mod tests {
 
         assert_eq!(
             delivered.lock().unwrap()[0].1,
-            samurai_brief::pointer_instruction(".maestro/briefs/escaped.md")
+            brief_files::pointer_instruction(".maestro/briefs/escaped.md")
         );
         assert!(worktree.join(".maestro/briefs/escaped.md").is_file());
         assert!(!dir.path().join("escaped.md").exists(), "nothing escaped");
@@ -522,7 +521,7 @@ mod tests {
         injector.on_session_started(7);
         assert!(delivered.lock().unwrap().is_empty());
         assert!(
-            !dir.path().join(samurai_brief::BRIEF_DIR).exists(),
+            !dir.path().join(brief_files::BRIEF_DIR).exists(),
             "a refused prompt writes nothing"
         );
     }
@@ -549,7 +548,7 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(
             d[0].1,
-            samurai_brief::pointer_instruction(".maestro/briefs/pr-138-check-review.md")
+            brief_files::pointer_instruction(".maestro/briefs/pr-138-check-review.md")
         );
     }
 

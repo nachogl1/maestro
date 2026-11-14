@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
+use crate::core::extended_paths::{canonical_key, project_store_name};
 use crate::core::mcp_config_writer;
 use crate::core::mcp_manager::{McpManager, McpServerConfig, McpServerSource};
 use crate::core::mcp_settings::{self, McpScope, McpStatusView};
-use crate::core::samurai_files::{canonical_key, project_store_name};
 use crate::core::status_server::StatusServer;
 
 /// Store filename for custom MCP servers (global, user-level).

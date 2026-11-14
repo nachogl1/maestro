@@ -53,7 +53,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::atomic_write::atomic_write_via;
-use super::samurai_files::normalize_project;
+use super::extended_paths::normalize_project;
 use super::samurai_prompts::epic_slug;
 use super::samurai_workflow::WorkflowGraph;
 
@@ -114,7 +114,7 @@ pub struct ScheduledLaunchSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleEntry {
     /// Canonical project path, normalized per
-    /// `samurai_files::normalize_project` (fork convention); re-normalized
+    /// `extended_paths::normalize_project` (fork convention); re-normalized
     /// on `arm` and on load so lookups by any spelling match.
     pub project_path: String,
     /// Epic reference — with `project_path`, the timer's identity: one
@@ -559,7 +559,7 @@ fn persist(path: &PathBuf, entries: &[ScheduleEntry]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::samurai_test_wait::await_or_hang;
+    use crate::core::test_wait::await_or_hang;
     use tempfile::tempdir;
 
     /// Collects fired entries synchronously — `fire_due` invokes the

@@ -223,13 +223,13 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     let ritual_pm = app.state::<ProcessManager>().inner().clone();
     let ritual_writer: core::samurai_replicator::StdinWriter =
         Arc::new(move |session_id, data, outcome| {
-            // Text, then a separate Enter (samurai_pty) — one
+            // Text, then a separate Enter (pty_submit) — one
             // text-plus-CR write is read as a paste and never
             // submits. Both frames go to the blocking pool. The
             // outcome callback (issue #109) reports whether the body
             // write landed — the replicator's delivered row and
             // Enter-resend watch hang off it.
-            core::samurai_pty::submit_instruction(
+            core::pty_submit::submit_instruction(
                 ritual_pm.clone(),
                 session_id,
                 data,
@@ -243,7 +243,7 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // submit key. NEVER the body: it already sits in the input box.
     let resend_pm = app.state::<ProcessManager>().inner().clone();
     let enter_resender: core::samurai_replicator::EnterResender = Arc::new(move |session_id| {
-        core::samurai_pty::resend_submit(resend_pm.clone(), session_id, "replicator");
+        core::pty_submit::resend_submit(resend_pm.clone(), session_id, "replicator");
     });
     // The parker (issue #60) tears parked sessions down with this
     // same closure — a PARKED terminal serves no purpose, every
@@ -273,7 +273,7 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     let injector_pm = app.state::<ProcessManager>().inner().clone();
     let injector_writer: core::samurai_replicator::StdinWriter =
         Arc::new(move |session_id, data, outcome| {
-            core::samurai_pty::submit_instruction(
+            core::pty_submit::submit_instruction(
                 injector_pm.clone(),
                 session_id,
                 data,
@@ -314,12 +314,12 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
         commands::ai_runner::artifact_base_dir("runs"),
     ));
     app.manage(run_configs.clone());
-    // Issue #139: PR-review run records, inside the same `runs` root
-    // so they fall under the existing managed-delete guard.
-    let pr_runs = Arc::new(core::samurai_pr_runs::PrRunStore::new(
-        commands::ai_runner::artifact_base_dir("runs"),
-    ));
-    app.manage(pr_runs.clone());
+    // Issue #139: PR-review run records. Built and managed by
+    // `setup::run_setup` (PR review outlives Samurai, issue #610).
+    let pr_runs = app
+        .state::<Arc<core::pr_runs::PrRunStore>>()
+        .inner()
+        .clone();
     // PRD §8 row 1 (issue #45's `handoff_retention_days`): handoff
     // files auto-clean once their epic has completed — i.e. its run
     // config is ARCHIVED. One sweep per app start: it is the only
@@ -445,7 +445,7 @@ pub(super) fn setup_samurai(app: &tauri::App, tees: SamuraiTees) {
     // on the blocking pool (the hook tap's spawn_blocking above).
     let harvest_pm = app.state::<ProcessManager>().inner().clone();
     let harvest_deliver: commands::harvest::DeliverFn = Arc::new(move |session_id, prompt| {
-        core::samurai_pty::submit_instruction_confirmed(
+        core::pty_submit::submit_instruction_confirmed(
             harvest_pm.clone(),
             session_id,
             prompt,

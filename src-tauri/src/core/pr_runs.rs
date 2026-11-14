@@ -32,8 +32,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use super::samurai_brief::StagedBrief;
-use super::samurai_files::normalize_project;
+use super::brief_files::StagedBrief;
+use super::extended_paths::normalize_project;
 
 /// Directory name, inside the `runs` root, holding PR-review records.
 pub const PR_RUNS_DIR: &str = "pr";
@@ -110,7 +110,7 @@ pub struct PrReviewRun {
     pub repo: String,
     pub project_path: String,
     pub steps: Vec<String>,
-    /// Path of the brief the prompt was staged as (`samurai_brief`),
+    /// Path of the brief the prompt was staged as (`brief_files`),
     /// RELATIVE to [`Self::brief_root`], or `None` when the prompt was short
     /// enough to type inline — a review is not required to have a brief.
     #[serde(default)]

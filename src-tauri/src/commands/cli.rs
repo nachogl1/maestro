@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::core::samurai_files::normalize_extended_path;
+use crate::core::extended_paths::normalize_extended_path;
 
 /// The shell script installed as `maestro` on the user's PATH. Embedded at
 /// compile time so `cli/maestro.sh` is the single source of truth — editing

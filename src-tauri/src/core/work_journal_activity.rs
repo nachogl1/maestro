@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::core::samurai_injector::strip_extended_prefix;
+use crate::core::extended_paths::strip_extended_prefix;
 use crate::core::session_manager::SessionConfig;
 use crate::core::work_journal::work_journal_dir;
 use crate::git::Git;

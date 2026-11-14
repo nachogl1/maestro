@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use directories::BaseDirs;
 use serde::Serialize;
 
-use crate::core::samurai_files::canonical_stripped;
+use crate::core::extended_paths::canonical_stripped;
 
 /// The scratch folder's name inside the home folder when Settings names none.
 pub const DEFAULT_SCRATCH_FOLDER_NAME: &str = "Maestro Scratch";

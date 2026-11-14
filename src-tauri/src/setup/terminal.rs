@@ -36,7 +36,7 @@ pub(super) fn setup_terminal(
     let initial_prompt_pm = app.state::<ProcessManager>().inner().clone();
     let initial_prompt_deliver: commands::harvest::DeliverFn =
         Arc::new(move |session_id, prompt| {
-            core::samurai_pty::submit_instruction_confirmed(
+            core::pty_submit::submit_instruction_confirmed(
                 initial_prompt_pm.clone(),
                 session_id,
                 prompt,

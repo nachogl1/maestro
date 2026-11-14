@@ -80,13 +80,12 @@ use serde_json::json;
 
 use crate::commands::ai_runner::{strip_ansi, truncate_chars};
 
+use super::brief_files;
 use super::claude_event::ClaudeEvent;
+use super::extended_paths::strip_extended_prefix;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
-use super::samurai_brief;
 use super::samurai_config::SharedSamuraiConfig;
-use super::samurai_injector::{
-    idle_effect, strip_extended_prefix, AgeableInstant, SessionDirResolver,
-};
+use super::samurai_injector::{idle_effect, AgeableInstant, SessionDirResolver};
 use super::samurai_journal::default_journal_file;
 use super::samurai_prompts;
 use super::samurai_workflow;
@@ -109,7 +108,7 @@ pub type SuccessorEmitter = Arc<dyn Fn(&SuccessorSpawn) + Send + Sync>;
 ///
 /// The writer OWNS submission: it receives the instruction text alone and is
 /// responsible for sending the Enter itself. The production closure routes
-/// through `samurai_pty::submit_instruction`, which writes the text and then
+/// through `pty_submit::submit_instruction`, which writes the text and then
 /// a lone `\r` a moment later — a single text-plus-CR write is read by the
 /// CLI as a paste and leaves the instruction sitting in the input box,
 /// unsubmitted.
@@ -119,7 +118,7 @@ pub type SuccessorEmitter = Arc<dyn Fn(&SuccessorSpawn) + Send + Sync>;
 /// the write failed. The `delivered` audit row and the Enter-resend watch
 /// hang off that verdict, so neither can ever describe a write that did not
 /// happen. The injector's deliveries share this exact contract.
-pub type StdinWriter = Arc<dyn Fn(u32, String, super::samurai_pty::DeliveryOutcome) + Send + Sync>;
+pub type StdinWriter = Arc<dyn Fn(u32, String, super::pty_submit::DeliveryOutcome) + Send + Sync>;
 
 /// Issue #103: re-sends ONLY the lone Enter into a session's PTY. Used by
 /// the post-delivery watch when a typed-in instruction shows no evidence of
@@ -127,7 +126,7 @@ pub type StdinWriter = Arc<dyn Fn(u32, String, super::samurai_pty::DeliveryOutco
 /// above all) can be consumed as part of the paste burst, leaving the brief
 /// fully typed but never submitted. The body is NEVER re-sent: it already
 /// sits in the input box, and a re-paste would duplicate the prompt. The
-/// production closure wraps `samurai_pty::resend_submit`.
+/// production closure wraps `pty_submit::resend_submit`.
 pub type EnterResender = Arc<dyn Fn(u32) + Send + Sync>;
 
 /// Resolves a session's transcript file for the recovery digest (issue #56).
@@ -177,7 +176,7 @@ pub struct SuccessorSpawn {
     /// to the `claude` launch command as a positional initial-prompt
     /// argument. Every fresh spawn — gen-1 launches AND successors — composes
     /// its own `claude` command in the grid, so all of them get the offer,
-    /// for any payload [`samurai_brief::launch_line_safe`] clears. (The Nido
+    /// for any payload [`brief_files::launch_line_safe`] clears. (The Nido
     /// run of 2026-08-20 proved typed delivery into a freshly started CLI is
     /// lossy for successors exactly as #137/#103 proved it for gen-1.) Only
     /// the INJECTOR's instructions, typed into an already-running PTY, have
@@ -375,7 +374,7 @@ pub(crate) fn handoff_relpath_tolerant(dir: &Path, epic: &str, generation: u32) 
 /// The file write is blocking, so it runs on the blocking pool like every
 /// other file write in this module.
 ///
-/// Routing is [`samurai_brief::try_deliverable_instruction`]'s: `Ok` is the
+/// Routing is [`brief_files::try_deliverable_instruction`]'s: `Ok` is the
 /// pointer at a written brief, or the instruction itself when it was short
 /// enough that nothing needed writing. There is deliberately NO infallible
 /// sibling any more (the old `brief_or_inline`, removed with finding E2) —
@@ -384,7 +383,7 @@ pub(crate) fn handoff_relpath_tolerant(dir: &Path, epic: &str, generation: u32) 
 /// Finding E2 (the Nido gen-2 loss). Every ritual staging path shares one
 /// property: the full ritual text is several KB, so a swallowed write failure
 /// that hands the full text back ALSO fails
-/// [`samurai_brief::launch_line_safe`] — the pointer cannot ride argv
+/// [`brief_files::launch_line_safe`] — the pointer cannot ride argv
 /// either, and the entry stays on [`DeliveryRoute::Typed`] with several KB to
 /// type into a *starting* CLI, the exact issue #137/#103 failure mode. So
 /// every caller raises `successor_spawn_failed` instead of staging (or
@@ -396,7 +395,7 @@ async fn try_brief_or_inline(
 ) -> Result<String, String> {
     let worktree = PathBuf::from(working_dir);
     tokio::task::spawn_blocking(move || {
-        let routed = samurai_brief::try_deliverable_instruction(&worktree, &name, &instruction);
+        let routed = brief_files::try_deliverable_instruction(&worktree, &name, &instruction);
         routed.map(|pointer| pointer.unwrap_or(instruction))
     })
     .await
@@ -594,7 +593,7 @@ fn turn_activity_session(event: &ClaudeEvent) -> Option<u32> {
 // ---------------------------------------------------------------------------
 
 /// Shell readers whose command line naming the brief counts as reading it
-/// (issue #204). [`samurai_brief::pointer_instruction`] asks for the `Read`
+/// (issue #204). [`brief_files::pointer_instruction`] asks for the `Read`
 /// tool by name, but an agent that legitimately `cat`s the file has still
 /// read it, and recording that as "never read" is the false negative #205
 /// would then enforce on.
@@ -632,7 +631,7 @@ fn summary_tokens(summary: &str) -> impl Iterator<Item = &str> {
 ///
 /// The parent check (PR review) is what keeps a same-named file ELSEWHERE
 /// from receipting a brief nobody opened: every spelling of a real brief path
-/// has [`samurai_brief::BRIEF_DIR`]'s last segment directly above the file, so
+/// has [`brief_files::BRIEF_DIR`]'s last segment directly above the file, so
 /// requiring it costs no real read and rules out a coincidence like
 /// `docs/epic-9-gen-3-ritual.md`.
 ///
@@ -662,7 +661,7 @@ fn summary_names_file(summary: &str, file_name: &str) -> bool {
             return false;
         }
         match segments.next() {
-            Some(parent) => parent.eq_ignore_ascii_case(samurai_brief::brief_dir_name()),
+            Some(parent) => parent.eq_ignore_ascii_case(brief_files::brief_dir_name()),
             None => true,
         }
     })
@@ -703,7 +702,7 @@ struct BriefReceipt {
     generation: u32,
     session_id: u32,
     /// The brief's file name (`<stem>.md`), from
-    /// [`samurai_brief::pointer_brief_file_name`].
+    /// [`brief_files::pointer_brief_file_name`].
     brief: String,
     /// The `instruction` label its `delivered` row carried, repeated on the
     /// receipt row so the pair reads as one exchange.
@@ -1554,7 +1553,7 @@ impl SamuraiReplicator {
         // spawn_first_generation: the frontend may refuse, and the entry
         // keeps its own copy either way.
         let launch_prompt =
-            samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
+            brief_files::launch_line_safe(&instruction).then(|| instruction.clone());
         let launch_prompt_offered = launch_prompt.is_some();
         let spawn = SuccessorSpawn {
             project: snapshot.project.clone(),
@@ -1794,10 +1793,10 @@ impl SamuraiReplicator {
                 // `claude` command too — offer the pointer on its launch
                 // line, same contract as replicate/spawn_first_generation.
                 let launch_prompt =
-                    samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
+                    brief_files::launch_line_safe(&instruction).then(|| instruction.clone());
                 // The brief file this re-stage wrote, if any — needed below
                 // should the entry have vanished while the write ran.
-                let written = samurai_brief::pointer_brief_file_name(&instruction);
+                let written = brief_files::pointer_brief_file_name(&instruction);
                 let restaged = {
                     let mut pending = this.lock_pending();
                     if let Some(p) = pending.iter_mut().find(|p| {
@@ -1825,7 +1824,7 @@ impl SamuraiReplicator {
                 if !restaged {
                     if let Some(name) = written {
                         let path = PathBuf::from(&working_dir)
-                            .join(samurai_brief::BRIEF_DIR)
+                            .join(brief_files::BRIEF_DIR)
                             .join(name);
                         let removed =
                             tokio::task::spawn_blocking(move || std::fs::remove_file(&path)).await;
@@ -2165,7 +2164,7 @@ impl SamuraiReplicator {
         // the entry and the payload under the same lock, and mirrored into
         // the respawn state so a re-emitted event carries the same offer.
         let launch_prompt =
-            samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
+            brief_files::launch_line_safe(&instruction).then(|| instruction.clone());
         let staged = {
             let mut pending = self.lock_pending();
             match pending
@@ -2223,7 +2222,7 @@ impl SamuraiReplicator {
         // inline delivery. Issue #152: epic-scoped like every other brief
         // stem — a launch is ALWAYS gen-1, so two epics opened against one
         // working directory collided on `gen-1-launch` every single time.
-        let instruction = samurai_brief::deliverable_instruction(
+        let instruction = brief_files::deliverable_instruction(
             Path::new(&working_dir),
             &format!(
                 "{}-gen-{generation}-launch",
@@ -2240,7 +2239,7 @@ impl SamuraiReplicator {
         // only for a payload that fits a command line: the frontend decides,
         // and the entry below keeps the instruction either way.
         let launch_prompt =
-            samurai_brief::launch_line_safe(&instruction).then(|| instruction.clone());
+            brief_files::launch_line_safe(&instruction).then(|| instruction.clone());
         let launch_prompt_offered = launch_prompt.is_some();
         let spawn = SuccessorSpawn {
             project: project.to_string(),
@@ -2596,9 +2595,9 @@ impl SamuraiReplicator {
             // anything it can be handed. `None` = an inline instruction, so
             // there is no file for the agent to read and nothing to receipt.
             let receipts = self.brief_receipts.clone();
-            let brief = samurai_brief::pointer_brief_file_name(&instruction);
+            let brief = brief_files::pointer_brief_file_name(&instruction);
             let (excerpt, total_chars) = super::samurai_audit::instruction_excerpt(&instruction);
-            let outcome: super::samurai_pty::DeliveryOutcome = Box::new(move |result| {
+            let outcome: super::pty_submit::DeliveryOutcome = Box::new(move |result| {
                 match result {
                     Ok(()) => {
                         // Issue #101: the brief Maestro typed into the fresh
@@ -2733,7 +2732,7 @@ impl SamuraiReplicator {
     /// What it does NOT catch: a prompt that arrived MANGLED. Any turn
     /// activity releases the watch, so an agent that starts a turn on a
     /// truncated pointer looks identical to a healthy one. Nothing downstream
-    /// can see it either — the launch line bypasses `samurai_pty`'s chunked
+    /// can see it either — the launch line bypasses `pty_submit`'s chunked
     /// writer, which is where the #137 splice was observable at all. The
     /// evidence that WOULD see it is the agent's own Read of the brief, and
     /// issue #204 records exactly that as an `INJECT phase=receipt` row
@@ -2774,7 +2773,7 @@ impl SamuraiReplicator {
         // the CLI ignored or mangled is invisible to everything else here (see
         // the note above), and the agent's own Read of the brief is the one
         // signal that distinguishes it from a healthy launch.
-        if let Some(brief) = samurai_brief::pointer_brief_file_name(&p.instruction) {
+        if let Some(brief) = brief_files::pointer_brief_file_name(&p.instruction) {
             Self::arm_brief_receipt(
                 &self.brief_receipts,
                 BriefReceipt {
@@ -3399,30 +3398,29 @@ impl SamuraiReplicator {
                         let epic = d.epic.clone();
                         let generation = d.generation;
                         let session_id = d.session_id;
-                        let outcome: super::samurai_pty::DeliveryOutcome =
-                            Box::new(move |result| {
-                                if let Err(error) = result {
-                                    // The re-type never reached the
-                                    // PTY; the kept watch's own
-                                    // give-up still ends the story
-                                    // with submit_unconfirmed.
-                                    audit.append(
-                                        &project,
-                                        AuditEvent::now(
-                                            epic,
-                                            AuditEventKind::Alert,
-                                            generation,
-                                            session_id,
-                                            json!({
-                                                "kind": "delivery_failed",
-                                                "source": "replicator",
-                                                "retype": true,
-                                                "error": error,
-                                            }),
-                                        ),
-                                    );
-                                }
-                            });
+                        let outcome: super::pty_submit::DeliveryOutcome = Box::new(move |result| {
+                            if let Err(error) = result {
+                                // The re-type never reached the
+                                // PTY; the kept watch's own
+                                // give-up still ends the story
+                                // with submit_unconfirmed.
+                                audit.append(
+                                    &project,
+                                    AuditEvent::now(
+                                        epic,
+                                        AuditEventKind::Alert,
+                                        generation,
+                                        session_id,
+                                        json!({
+                                            "kind": "delivery_failed",
+                                            "source": "replicator",
+                                            "retype": true,
+                                            "error": error,
+                                        }),
+                                    ),
+                                );
+                            }
+                        });
                         (self.write_stdin)(session_id, instruction, outcome);
                         return true;
                     }
@@ -3575,7 +3573,7 @@ impl SamuraiReplicator {
             // so an agent is never failed for a corrective it has not
             // had time to act on.
             r.deadline = Some(AgeableInstant::now());
-            let instruction = samurai_brief::unread_corrective_instruction(&r.brief);
+            let instruction = brief_files::unread_corrective_instruction(&r.brief);
             log::warn!(
                 "samurai replicator: pointing session {} back at its unread gen-{} brief {} — one corrective (issue #205)",
                 r.session_id,
@@ -3592,7 +3590,7 @@ impl SamuraiReplicator {
             let brief = r.brief.clone();
             // Only the rows, so the callback takes no lock this tick
             // holds (the #171 re-type's contract exactly).
-            let outcome: super::samurai_pty::DeliveryOutcome =
+            let outcome: super::pty_submit::DeliveryOutcome =
                 Box::new(move |result| match result {
                     Ok(()) => audit.append(
                         &project,
@@ -3890,9 +3888,8 @@ mod tests {
     use crate::core::samurai_config::SamuraiConfig;
     use crate::core::samurai_context::SamuraiContextStore;
     use crate::core::samurai_injector::SamuraiInjector;
-    use crate::core::samurai_test_wait::{
-        new_tick, tick_on_append, wait_for_row, wait_for_rows, wait_until, HarnessTick,
-    };
+    use crate::core::samurai_test_wait::{tick_on_append, wait_for_row, wait_for_rows};
+    use crate::core::test_wait::{new_tick, wait_until, HarnessTick};
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tempfile::tempdir;
@@ -4500,7 +4497,7 @@ mod tests {
 
         // The armed session's first SessionStarted delivers the ritual. The
         // payload carries NO submit key — the writer sends Enter separately
-        // (samurai_pty), because text+CR in one write is read as a paste.
+        // (pty_submit), because text+CR in one write is read as a paste.
         h.replicator.observe_hook(&session_started(2));
         let writes = h.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 1);
@@ -4756,7 +4753,7 @@ mod tests {
             h.supervisor.clone(),
             context.clone(),
             h.config.clone(),
-            Arc::new(|_, _, outcome: crate::core::samurai_pty::DeliveryOutcome| outcome(Ok(()))),
+            Arc::new(|_, _, outcome: crate::core::pty_submit::DeliveryOutcome| outcome(Ok(()))),
             h.audit.clone(),
             session_dirs,
             Some(h.replicator.clone()),
@@ -4862,7 +4859,7 @@ mod tests {
             context.clone(),
             h.config.clone(),
             Arc::new(
-                move |_, data: String, outcome: crate::core::samurai_pty::DeliveryOutcome| {
+                move |_, data: String, outcome: crate::core::pty_submit::DeliveryOutcome| {
                     typed_rec.lock().unwrap().push(data);
                     outcome(Ok(()));
                 },
@@ -4912,9 +4909,9 @@ mod tests {
         let typed_text = typed.lock().unwrap().join("");
         assert_eq!(
             typed_text,
-            samurai_brief::pointer_instruction(&format!(
+            brief_files::pointer_instruction(&format!(
                 "{}/{}-gen-1-handoff.md",
-                samurai_brief::BRIEF_DIR,
+                brief_files::BRIEF_DIR,
                 samurai_prompts::epic_slug(epic)
             )),
             "the injected text must be the pointer at gen-1's handoff brief: {typed_text}"
@@ -6066,7 +6063,7 @@ mod tests {
         h.replicator.observe_hook(&session_started(5));
         let writes = h.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 1);
-        // Verbatim, and WITHOUT a submit key — samurai_pty sends the Enter
+        // Verbatim, and WITHOUT a submit key — pty_submit sends the Enter
         // as its own write so the CLI does not read the pair as a paste.
         assert_eq!(writes[0], (5, brief.clone()));
         assert!(h.replicator.pending_view(1).is_none(), "claimed = pruned");
@@ -6296,7 +6293,7 @@ mod tests {
         let worktree = tempdir().unwrap();
         std::fs::write(worktree.path().join(".maestro"), "not a directory").unwrap();
         let brief = format!("[Maestro Samurai] LAUNCH {}", "do the work. ".repeat(60));
-        assert!(!samurai_brief::is_inline(&brief), "the file route is taken");
+        assert!(!brief_files::is_inline(&brief), "the file route is taken");
         h.replicator.spawn_first_generation(
             project,
             "epic-9",
@@ -6624,7 +6621,7 @@ mod tests {
         h.replicator.observe_hook(&session_started(2));
 
         let pointer = h.writes.lock().unwrap()[0].1.clone();
-        let brief = samurai_brief::pointer_brief_file_name(&pointer)
+        let brief = brief_files::pointer_brief_file_name(&pointer)
             .expect("a several-KB ritual takes the brief-file route");
         assert_eq!(
             h.replicator.brief_receipt_view(2),
@@ -6730,7 +6727,7 @@ mod tests {
         h.replicator.observe_hook(&session_started(2));
 
         let pointer = h.writes.lock().unwrap()[0].1.clone();
-        let brief = samurai_brief::pointer_brief_file_name(&pointer)
+        let brief = brief_files::pointer_brief_file_name(&pointer)
             .expect("a several-KB ritual takes the brief-file route");
 
         // Read it: the receipt is SEEN — the old code's earliest early
@@ -6774,7 +6771,7 @@ mod tests {
             let project = format!("C:/git/proj-204-launch-{i}");
             let worktree = tempdir().unwrap();
             let pointer = stage_launch_with_pointer(&h, &project, worktree.path());
-            let brief = samurai_brief::pointer_brief_file_name(&pointer)
+            let brief = brief_files::pointer_brief_file_name(&pointer)
                 .expect("the launch brief takes the brief-file route");
 
             let details = h.replicator.spawn_details(&project, "#38", 1).unwrap();
@@ -6845,7 +6842,7 @@ mod tests {
         let project = "C:/git/proj-204-turns";
         let worktree = tempdir().unwrap();
         let pointer = stage_launch_with_pointer(&h, project, worktree.path());
-        let brief = samurai_brief::pointer_brief_file_name(&pointer).unwrap();
+        let brief = brief_files::pointer_brief_file_name(&pointer).unwrap();
 
         let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
         let snapshot = h
@@ -6944,7 +6941,7 @@ mod tests {
         h.replicator.on_registered(&snapshot);
         h.replicator.observe_hook(&session_started(2));
         let pointer = h.writes.lock().unwrap()[0].1.clone();
-        let brief = samurai_brief::pointer_brief_file_name(&pointer)
+        let brief = brief_files::pointer_brief_file_name(&pointer)
             .expect("a several-KB ritual takes the brief-file route");
         assert_eq!(
             h.replicator.brief_receipt_stage(2),
@@ -7051,7 +7048,7 @@ mod tests {
             writes[1].1
         );
         assert_eq!(
-            samurai_brief::pointer_brief_file_name(&writes[1].1).as_deref(),
+            brief_files::pointer_brief_file_name(&writes[1].1).as_deref(),
             Some(brief.as_str()),
             "the corrective points at the SAME brief: {}",
             writes[1].1
@@ -7234,7 +7231,7 @@ mod tests {
         let (registered, staged) = h.replicator.pending_view(3).expect("re-armed");
         assert_eq!(registered, None, "unregistered, as every re-arm is");
         assert_eq!(
-            samurai_brief::pointer_brief_file_name(&staged).as_deref(),
+            brief_files::pointer_brief_file_name(&staged).as_deref(),
             Some(brief.as_str()),
             "the same brief is staged again"
         );
@@ -7264,7 +7261,7 @@ mod tests {
         let project = "C:/git/proj-205-launch";
         let worktree = tempdir().unwrap();
         let pointer = stage_launch_with_pointer(&h, project, worktree.path());
-        let brief = samurai_brief::pointer_brief_file_name(&pointer).unwrap();
+        let brief = brief_files::pointer_brief_file_name(&pointer).unwrap();
         let details = h.replicator.spawn_details(project, "#38", 1).unwrap();
         let snapshot = h
             .supervisor
@@ -7303,7 +7300,7 @@ mod tests {
         assert_eq!(writes.len(), 1, "the corrective is typed, not shell-borne");
         assert_eq!(writes[0].0, 5);
         assert_eq!(
-            samurai_brief::pointer_brief_file_name(&writes[0].1).as_deref(),
+            brief_files::pointer_brief_file_name(&writes[0].1).as_deref(),
             Some(brief.as_str())
         );
 
@@ -8540,8 +8537,8 @@ mod tests {
         let project = "C:/git/proj-two-epic-launch";
         let worktree = tempdir().unwrap();
         let working_dir = worktree.path().to_string_lossy().into_owned();
-        let brief_38 = "x".repeat(samurai_brief::INLINE_MAX_BYTES + 1);
-        let brief_41 = "y".repeat(samurai_brief::INLINE_MAX_BYTES + 1);
+        let brief_38 = "x".repeat(brief_files::INLINE_MAX_BYTES + 1);
+        let brief_41 = "y".repeat(brief_files::INLINE_MAX_BYTES + 1);
 
         h.replicator
             .spawn_first_generation(project, "#38", &working_dir, brief_38.clone());
@@ -8583,7 +8580,7 @@ mod tests {
         let (_, staged) = h.replicator.pending_view(1).unwrap();
         assert_eq!(
             staged,
-            samurai_brief::pointer_instruction(".maestro/briefs/38-gen-1-launch.md")
+            brief_files::pointer_instruction(".maestro/briefs/38-gen-1-launch.md")
         );
         assert_eq!(
             std::fs::read_to_string(worktree.path().join(".maestro/briefs/38-gen-1-launch.md"))
@@ -8604,7 +8601,7 @@ mod tests {
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0], (5, staged.clone()));
         assert_eq!(
-            crate::core::samurai_pty::chunk_frames(&staged).len(),
+            crate::core::pty_submit::chunk_frames(&staged).len(),
             1,
             "the pointer must be typed as a single frame"
         );
@@ -8631,7 +8628,7 @@ mod tests {
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         assert_eq!(
             staged,
-            samurai_brief::pointer_instruction(".maestro/briefs/epic-9-gen-3-ritual.md")
+            brief_files::pointer_instruction(".maestro/briefs/epic-9-gen-3-ritual.md")
         );
         // The ritual itself is intact in the file the pointer names.
         let brief = brief_text(repo.path(), &staged);
@@ -8661,7 +8658,7 @@ mod tests {
         let (_, staged) = h.replicator.pending_view(3).unwrap();
         assert_eq!(
             staged,
-            samurai_brief::pointer_instruction(".maestro/briefs/epic-9-gen-3-recovery.md")
+            brief_files::pointer_instruction(".maestro/briefs/epic-9-gen-3-recovery.md")
         );
         let brief = brief_text(repo.path(), &staged);
         assert!(brief.contains("RECOVERY MODE"), "{brief}");

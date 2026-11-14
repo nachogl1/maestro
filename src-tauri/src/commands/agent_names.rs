@@ -23,7 +23,7 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::State;
 
 use crate::core::process_manager::ProcessManager;
-use crate::core::samurai_pty;
+use crate::core::pty_submit;
 
 /// Registry files are a few hundred bytes; anything larger is not one.
 const MAX_REGISTRY_FILE_BYTES: u64 = 64 * 1024;
@@ -219,7 +219,7 @@ pub async fn rename_agent(
     if !is_valid_agent_name(&name) {
         return Err(format!("Invalid agent name: {name}"));
     }
-    samurai_pty::submit_instruction(
+    pty_submit::submit_instruction(
         processes.inner().clone(),
         session_id,
         format!("/rename {name}"),

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use crate::core::extended_paths::canonical_key;
 use crate::core::samurai_context::SamuraiContextStore;
-use crate::core::samurai_files::canonical_key;
 use crate::core::samurai_injector::SamuraiInjector;
 use crate::core::samurai_progress::SamuraiProgress;
 use crate::core::session_manager::SessionManager;

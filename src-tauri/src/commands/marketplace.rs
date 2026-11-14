@@ -5,9 +5,9 @@
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_store::StoreExt;
 
+use crate::core::extended_paths::canonical_key;
 use crate::core::marketplace_manager::MarketplaceManager;
 use crate::core::marketplace_models::*;
-use crate::core::samurai_files::canonical_key;
 
 /// Store filename for marketplace data persistence.
 const MARKETPLACE_STORE: &str = "marketplace.json";

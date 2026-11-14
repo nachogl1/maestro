@@ -15,9 +15,9 @@ pub struct BranchConfig {
     pub enabled_mcp_servers: Vec<String>,
 }
 
+use crate::core::extended_paths::{canonical_key, project_store_name};
 use crate::core::plugin_config_writer;
 use crate::core::plugin_manager::{PluginManager, ProjectPlugins};
-use crate::core::samurai_files::{canonical_key, project_store_name};
 
 /// Discovers and returns plugins/skills configured in the project's `.plugins.json`.
 ///
