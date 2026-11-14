@@ -195,9 +195,9 @@ describe("useOpenTerminalsSnapshotStore", () => {
     ["a first start or a start after a normal close (no list)", null],
     [
       "a list holding only Samurai terminals",
-      { savedAt: 1, terminals: [offered({ samurai: true })] },
+      { savedAt: 1, afterUpdate: false, terminals: [offered({ samurai: true })] },
     ],
-    ["an empty list", { savedAt: 1, terminals: [] }],
+    ["an empty list", { savedAt: 1, afterUpdate: false, terminals: [] }],
   ])("offers nothing on %s and starts saving the open terminals", async (_case, offer) => {
     backend(offer);
 
@@ -208,7 +208,7 @@ describe("useOpenTerminalsSnapshotStore", () => {
   });
 
   it("offers a found list and saves nothing over it until it is answered", async () => {
-    const offer = { savedAt: 1, terminals: [offered()] };
+    const offer = { savedAt: 1, afterUpdate: false, terminals: [offered()] };
     backend(offer);
 
     await useOpenTerminalsSnapshotStore.getState().begin();
@@ -220,7 +220,7 @@ describe("useOpenTerminalsSnapshotStore", () => {
 
   it("declining removes the list and then keeps the new one up to date", async () => {
     vi.useFakeTimers();
-    backend({ savedAt: 1, terminals: [offered()] });
+    backend({ savedAt: 1, afterUpdate: false, terminals: [offered()] });
     await useOpenTerminalsSnapshotStore.getState().begin();
 
     await useOpenTerminalsSnapshotStore.getState().decline();
@@ -279,7 +279,7 @@ describe("useOpenTerminalsSnapshotStore", () => {
       conversationId: null,
       conversationFound: false,
     });
-    backend({ savedAt: 1, terminals: [shell, shell] });
+    backend({ savedAt: 1, afterUpdate: false, terminals: [shell, shell] });
     await useOpenTerminalsSnapshotStore.getState().begin();
 
     await useOpenTerminalsSnapshotStore.getState().bringBack([shell, shell]);
@@ -333,6 +333,46 @@ describe("useOpenTerminalsSnapshotStore", () => {
     useSessionStore.getState().updateSession(31, { status: "Working" });
     useSessionStore.getState().updateSession(31, { status: "Idle" });
     expect(useSessionStore.getState().sessions[0]).toMatchObject({ status: "Idle" });
+  });
+
+  it.each([
+    // After an update every terminal that can come back does, with no dialog.
+    [true, null, 2],
+    // An ordinary list found on start always asks first.
+    [false, { savedAt: 1, afterUpdate: false }, 0],
+  ])("brings the list back with no dialog only when it is marked for the update (marked: %s)", async (marked, shownOffer, launches) => {
+    const terminals = [
+      offered({ name: "checkout-fix", parked: true }),
+      offered({
+        name: "dev server",
+        kind: "Plain",
+        conversationId: null,
+        conversationFound: false,
+      }),
+      offered({ name: "old-experiment", folderExists: false }),
+      offered({ name: "samurai-run", samurai: true }),
+    ];
+    backend({ savedAt: 1, afterUpdate: marked, terminals });
+
+    await useOpenTerminalsSnapshotStore.getState().begin();
+
+    const offer = useOpenTerminalsSnapshotStore.getState().offer;
+    expect(
+      offer === null ? null : { savedAt: offer.savedAt, afterUpdate: offer.afterUpdate },
+    ).toEqual(shownOffer);
+    expect(calls("open_terminals_clear")).toHaveLength(marked ? 1 : 0);
+    const pending = usePendingLaunchStore.getState().pending;
+    expect(pending).toHaveLength(launches);
+    if (marked) {
+      expect(pending.map((p) => [p.customName, p.resumeSessionId])).toEqual([
+        ["checkout-fix", CONVERSATION],
+        ["dev server", null],
+      ]);
+      addSession(session(41, SHOP, { name: "checkout-fix" }));
+      addSession(session(42, SHOP, { name: "dev server", mode: "Plain" }));
+      expect(useSessionStore.getState().parkedSessionIds).toEqual([41]);
+      expect(useOpenTerminalsSnapshotStore.getState().warnedSessionIds).toEqual([42]);
+    }
   });
 
   it("closing a warning removes it, and a closed terminal loses its warning", async () => {

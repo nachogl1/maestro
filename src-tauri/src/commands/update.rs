@@ -163,6 +163,8 @@ pub async fn download_and_install_update(
     let update = builder
         .on_before_exit(move || {
             log::info!("Update ready to install. Shutting down terminals first...");
+            // The next start brings the open terminals back unasked (#609).
+            crate::core::open_terminals::mark_for_update();
             let manager = hook_manager.clone();
             run_blocking(async move {
                 match manager.kill_all_sessions().await {
@@ -209,6 +211,7 @@ pub async fn download_and_install_update(
     // Only reached on platforms whose installer returns (macOS/Linux); on
     // Windows the before-exit hook above has already done this.
     log::info!("Update installed. Cleaning up PTY sessions before restart...");
+    crate::core::open_terminals::mark_for_update();
     if let Ok(count) = process_manager.kill_all_sessions().await {
         log::info!("Cleaned up {} PTY session(s)", count);
     }

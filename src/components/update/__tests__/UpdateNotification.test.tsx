@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 
 import { type SessionConfig, useSessionStore } from "@/stores/useSessionStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
-import { UpdateNotification, updateKillsTerminalsWarning } from "../UpdateNotification";
+import { UpdateNotification, updateRestartsTerminalsLine } from "../UpdateNotification";
 
 const LONG_ERROR =
   "Failed to check for updates: error sending request for url " +
@@ -72,29 +72,41 @@ describe("UpdateNotification install with open terminals", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("warns that the terminals will close and installs only after the user agrees", () => {
-    openTerminals(2);
+  it("says the open terminals close and come back, with the three points, then installs on agreement", () => {
+    openTerminals(6);
     render(<UpdateNotification />);
     fireEvent.click(screen.getByRole("button", { name: /download and install/i }));
     expect(downloadAndInstall).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(screen.getByText(updateKillsTerminalsWarning(2))).toBeTruthy();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Update Maestro to 1.1.0?");
+    expect(dialog.textContent).toContain(
+      "Your 6 open terminals will close and come back after the update.",
+    );
+    const points = Array.from(dialog.querySelectorAll("li")).map((li) => li.textContent);
+    expect(points).toEqual([
+      "Whatever they are doing right now is cut off. Make sure none is doing critical work.",
+      "Claude conversations come back; the step that was running does not.",
+      "Plain shells come back empty, in the same folder.",
+    ]);
 
-    fireEvent.click(screen.getByRole("button", { name: /install and restart/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Update and restart" }));
     expect(downloadAndInstall).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("does not install when the user cancels the warning", () => {
+  it("changes nothing when the user picks Not now", () => {
     openTerminals(1);
     render(<UpdateNotification />);
     fireEvent.click(screen.getByRole("button", { name: /download and install/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     expect(downloadAndInstall).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(useUpdateStore.getState().status).toBe("available");
   });
 
-  it("words the warning for one terminal", () => {
-    expect(updateKillsTerminalsWarning(1)).toMatch(/^1 terminal is open\./);
+  it("words the first line for one terminal", () => {
+    expect(updateRestartsTerminalsLine(1)).toBe(
+      "Your 1 open terminal will close and come back after the update.",
+    );
   });
 });

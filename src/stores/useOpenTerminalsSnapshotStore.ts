@@ -12,7 +12,8 @@ import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore
  * is kept on disk in Maestro's app data (`core::open_terminals` in the
  * backend). Every normal close removes it, so a list found on start means
  * Maestro stopped unexpectedly: the start-up dialog offers to bring the
- * terminals back, and this store reopens the ticked ones.
+ * terminals back, and this store reopens the ticked ones. A list the update
+ * install marked (issue #609) is brought back whole with no dialog.
  */
 
 /** One open terminal as the saved list holds it (mirrors the Rust `OpenTerminal`). */
@@ -37,10 +38,12 @@ export interface OfferedTerminal extends OpenTerminal {
   conversationFound: boolean;
 }
 
-/** The list found on start (an unexpected stop). */
+/** The list found on start (an unexpected stop, or an update). */
 export interface OpenTerminalsOffer {
   /** Epoch milliseconds of the last save, the closest record of the stop. */
   savedAt: number;
+  /** Maestro closed to install an update: bring everything back with no dialog. */
+  afterUpdate: boolean;
   terminals: OfferedTerminal[];
 }
 
@@ -325,7 +328,10 @@ interface OpenTerminalsSnapshotState {
   offer: OpenTerminalsOffer | null;
   /** Reopened terminals that show the amber warning line until it is closed. */
   warnedSessionIds: number[];
-  /** Reads the list a previous run left; offers it, or starts saving at once. */
+  /**
+   * Reads the list a previous run left: brings it back at once when an update
+   * closed Maestro, offers it after an unexpected stop, or starts saving.
+   */
   begin: () => Promise<void>;
   /** "Don't bring back", × or Esc: the list is removed for good. */
   decline: () => Promise<void>;
@@ -343,6 +349,44 @@ async function clearSavedList(): Promise<void> {
   }
 }
 
+/**
+ * Removes the saved list, then reopens the given terminals that can come
+ * back, in the list's order, and starts saving the new list.
+ */
+async function restore(terminals: OfferedTerminal[]): Promise<void> {
+  await clearSavedList();
+  const chosen = terminals.filter(canBringBack);
+  const expiresAt = Date.now() + RESTORE_MARK_TTL_MS;
+  startMarkWatcher();
+  for (const [position, terminal] of chosen.entries()) {
+    const tab = await tabFor(terminal.projectPath);
+    if (!tab) continue;
+    const resume = resumes(terminal);
+    let entry = pendingMarks.find((e) => samePath(e.projectPath, tab.projectPath));
+    if (!entry) {
+      entry = { projectPath: tab.projectPath, marks: [] };
+      pendingMarks.push(entry);
+    }
+    entry.marks.push({
+      pinned: terminal.pinned,
+      parked: terminal.parked,
+      warn: !resume,
+      expiresAt,
+    });
+    usePendingLaunchStore.getState().request({
+      tabId: tab.id,
+      mode: terminal.kind,
+      resumeSessionId: resume ? terminal.conversationId : null,
+      workingDirOverride: terminal.workingDirectory,
+      branch: terminal.branch,
+      customName: terminal.name,
+      restoreKey: `${expiresAt}:${position}`,
+    });
+    useWorkspaceStore.getState().setSessionsLaunched(tab.id, true);
+  }
+  startSync();
+}
+
 export const useOpenTerminalsSnapshotStore = create<OpenTerminalsSnapshotState>((set, get) => ({
   offer: null,
   warnedSessionIds: [],
@@ -355,6 +399,10 @@ export const useOpenTerminalsSnapshotStore = create<OpenTerminalsSnapshotState>(
       offer = await invoke<OpenTerminalsOffer | null>("open_terminals_load");
     } catch (err) {
       console.error("Failed to read the list of open terminals:", err);
+    }
+    if (offer?.afterUpdate === true) {
+      await restore(offer.terminals);
+      return;
     }
     if (offer?.terminals.some((t) => !t.samurai)) {
       set({ offer });
@@ -375,37 +423,7 @@ export const useOpenTerminalsSnapshotStore = create<OpenTerminalsSnapshotState>(
   bringBack: async (terminals: OfferedTerminal[]) => {
     if (!get().offer) return;
     set({ offer: null });
-    await clearSavedList();
-    const chosen = terminals.filter(canBringBack);
-    const expiresAt = Date.now() + RESTORE_MARK_TTL_MS;
-    startMarkWatcher();
-    for (const [position, terminal] of chosen.entries()) {
-      const tab = await tabFor(terminal.projectPath);
-      if (!tab) continue;
-      const resume = resumes(terminal);
-      let entry = pendingMarks.find((e) => samePath(e.projectPath, tab.projectPath));
-      if (!entry) {
-        entry = { projectPath: tab.projectPath, marks: [] };
-        pendingMarks.push(entry);
-      }
-      entry.marks.push({
-        pinned: terminal.pinned,
-        parked: terminal.parked,
-        warn: !resume,
-        expiresAt,
-      });
-      usePendingLaunchStore.getState().request({
-        tabId: tab.id,
-        mode: terminal.kind,
-        resumeSessionId: resume ? terminal.conversationId : null,
-        workingDirOverride: terminal.workingDirectory,
-        branch: terminal.branch,
-        customName: terminal.name,
-        restoreKey: `${expiresAt}:${position}`,
-      });
-      useWorkspaceStore.getState().setSessionsLaunched(tab.id, true);
-    }
-    startSync();
+    await restore(terminals);
   },
 
   dismissWarning: (sessionId: number) => {
