@@ -295,16 +295,40 @@ fn direct_child_of(root: &Path, path: &Path) -> Result<PathBuf, ScratchError> {
     Ok(real_path)
 }
 
-/// Removes the scratch project at `path`, one attempt. The folder must be a
-/// direct subfolder of `root` and hold the marker file; this is checked here,
-/// never taken on the front end's word.
-fn delete_in(root: &Path, path: &Path) -> Result<(), ScratchError> {
+/// The scratch project at `path`, checked: a direct subfolder of `root` that
+/// holds the marker file. This is checked here, never taken on the front
+/// end's word.
+fn checked_scratch_project(root: &Path, path: &Path) -> Result<PathBuf, ScratchError> {
     let target = direct_child_of(root, path)?;
     if !has_marker(&target) {
         return Err(ScratchError::NotScratchProject);
     }
-    std::fs::remove_dir_all(target)?;
-    Ok(())
+    Ok(target)
+}
+
+/// Removes the scratch project at `path` with `remove`, trying again for a
+/// short while when it fails on a file still held open (a terminal that was
+/// just closed can keep its folder busy for a moment).
+///
+/// The folder is checked once, before the first attempt: a failed attempt
+/// may already have removed the marker with the other files, and only the
+/// folder that passed the check is ever removed.
+async fn delete_with_retries(
+    root: &Path,
+    path: &Path,
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), ScratchError> {
+    let target = checked_scratch_project(root, path)?;
+    let mut attempt = 1;
+    loop {
+        match remove(&target).map_err(ScratchError::from) {
+            Err(ScratchError::Io(_)) if attempt < DELETE_ATTEMPTS => {
+                attempt += 1;
+                tokio::time::sleep(DELETE_RETRY_PAUSE).await;
+            }
+            result => return result,
+        }
+    }
 }
 
 /// Lists the scratch projects in the scratch folder (`folder`, or the
@@ -333,22 +357,22 @@ pub async fn scratch_create(folder: Option<String>, name: String) -> Result<Stri
 #[tauri::command]
 pub async fn scratch_delete(folder: Option<String>, path: String) -> Result<(), ScratchError> {
     let root = scratch_folder(folder.as_deref())?;
-    let path = PathBuf::from(path);
-    let mut attempt = 1;
-    loop {
-        match delete_in(&root, &path) {
-            Err(ScratchError::Io(_)) if attempt < DELETE_ATTEMPTS => {
-                attempt += 1;
-                tokio::time::sleep(DELETE_RETRY_PAUSE).await;
-            }
-            result => return result,
-        }
-    }
+    delete_with_retries(&root, Path::new(&path), |target| {
+        std::fs::remove_dir_all(target)
+    })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One delete attempt with the real removal, as the command makes it.
+    fn delete_in(root: &Path, path: &Path) -> Result<(), ScratchError> {
+        let target = checked_scratch_project(root, path)?;
+        std::fs::remove_dir_all(target)?;
+        Ok(())
+    }
 
     fn temp_root() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -585,6 +609,49 @@ mod tests {
             );
         }
         assert!(list_in(&root).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_retried_delete_finishes_after_the_first_attempt_removed_the_marker() {
+        let (_dir, root) = temp_root();
+        let made = create_in(&root, "busy").unwrap();
+        std::fs::write(made.join("notes.txt"), "x").unwrap();
+        let mut attempts = 0;
+
+        // The first attempt removes every file, the marker included, then
+        // fails on the folder itself, as Windows does while a terminal that
+        // was just closed still holds it.
+        let result = delete_with_retries(&root, &made, |target| {
+            attempts += 1;
+            if attempts == 1 {
+                std::fs::remove_file(target.join("notes.txt"))?;
+                std::fs::remove_file(target.join(SCRATCH_MARKER_FILE))?;
+                return Err(std::io::Error::other("the folder is in use"));
+            }
+            std::fs::remove_dir_all(target)
+        })
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(attempts, 2);
+        assert!(!made.exists());
+    }
+
+    #[tokio::test]
+    async fn a_retried_delete_still_refuses_a_folder_without_the_marker_before_any_attempt() {
+        let (_dir, root) = temp_root();
+        let real = real_folder(&root, "real-work");
+        let mut attempts = 0;
+
+        let result = delete_with_retries(&root, &real, |target| {
+            attempts += 1;
+            std::fs::remove_dir_all(target)
+        })
+        .await;
+
+        assert_eq!(result, Err(ScratchError::NotScratchProject));
+        assert_eq!(attempts, 0);
+        assert!(real.join("src").join("work.txt").is_file());
     }
 
     #[test]
