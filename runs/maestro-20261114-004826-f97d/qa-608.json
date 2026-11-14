@@ -1,0 +1,56 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 608,
+  "title": "Crash recovery: after an unexpected stop, a ticked list brings the open terminals back",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 627,
+  "merged_at": "2026-11-14T03:15:41Z",
+  "merge_commit": "796d9f95ae8939bf629f332735857a01f42ae303",
+  "seam": "src/components/recovery/",
+  "story": "After Maestro crashes, is killed or loses power, the next start shows a 'Maestro stopped unexpectedly' dialog listing the terminals that were open. Ticked ones come back: Claude terminals continue their conversation, shells reopen empty with an amber warning, parked ones return to the shelf, and a missing folder shows greyed. A normal close never shows the dialog; on macOS the menu's Quit now asks the same quit question as the close button.",
+  "checks": [
+    {
+      "key": "recovery/offer-after-crash",
+      "criterion": "After a kill, the dialog lists exactly the open terminals",
+      "steps": "Open project 'demo-app' with two Claude terminals ('alpha', 'beta') and one plain shell, kill Maestro in Task Manager, start it again.",
+      "expected": "'Maestro stopped unexpectedly' with day and time, all three rows ticked under DEMO-APP, '3 of 3 selected', 'Bring back 3'."
+    },
+    {
+      "key": "recovery/no-offer-after-normal-close",
+      "criterion": "A normal close by any path shows nothing",
+      "steps": "Open one terminal, quit with the close button and confirm, start again; repeat with Alt+F4 and on macOS Cmd+Q.",
+      "expected": "No dialog."
+    },
+    {
+      "key": "recovery/bring-back",
+      "criterion": "Ticked terminals reopen in order, name and pin; Claude resumes",
+      "steps": "From the offer above, with 'alpha' pinned, click 'Bring back 3'.",
+      "expected": "alpha, beta and the shell reopen in order with their names, alpha pinned, and both Claude terminals continue their conversation."
+    },
+    {
+      "key": "recovery/warning-dismiss",
+      "criterion": "A brought-back shell shows the amber line, and × removes it",
+      "steps": "After bringing back, look at the shell's header, then click × on the line.",
+      "expected": "'Brought back after Maestro stopped. Its earlier content could not be retrieved.' on the shell only; gone after ×."
+    },
+    {
+      "key": "recovery/greyed-missing-folder",
+      "criterion": "A terminal whose folder is gone is greyed and cannot be ticked",
+      "steps": "Open a terminal in worktree C:\\tmp\\gone-wt, kill Maestro, delete that folder, start again.",
+      "expected": "A greyed, unticked row with 'folder no longer exists'."
+    },
+    {
+      "key": "recovery/parked-shelf",
+      "criterion": "Parked terminals come back on the shelf",
+      "steps": "Park 'beta', kill Maestro, start again, bring all back.",
+      "expected": "beta on the parked shelf with the needs-you chip; nothing typed into any agent."
+    },
+    {
+      "key": "recovery/decline",
+      "criterion": "Don't bring back, × and Esc each remove the list",
+      "steps": "Get the offer, press Esc, quit normally and start again; repeat with × and 'Don't bring back'.",
+      "expected": "The dialog closes, no terminals open, and no dialog on the next start."
+    }
+  ],
+  "no_qa_reason": null
+}

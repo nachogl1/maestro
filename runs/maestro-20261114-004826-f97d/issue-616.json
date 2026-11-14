@@ -1,0 +1,31 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 616,
+  "title": "Docs: the README, website and prototypes no longer describe Samurai, Second Brain or the health checker",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T05:31:08Z",
+  "finished_at": "2026-11-14T05:45:07Z",
+  "outcome": "merged",
+  "pr": 633,
+  "summary": "The README and the left-panels and crash-recovery prototypes no longer describe Samurai, Second Brain or the Launch panel.",
+  "agents": [
+    {
+      "name": "dev-616",
+      "model": "opus",
+      "tokens_total": 125285
+    },
+    {
+      "name": "review-616",
+      "model": "opus",
+      "tokens_total": 122035
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

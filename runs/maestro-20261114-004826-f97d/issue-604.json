@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 604,
+  "title": "Scratch projects: only folders Maestro created, carrying its marker file, are listed, marked or deletable",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T01:27:05Z",
+  "finished_at": "2026-11-14T02:09:59Z",
+  "outcome": "merged",
+  "pr": 623,
+  "summary": "Maestro writes a hidden marker into each scratch project it creates; only marked folders are listed, flagged or deletable, and the marker is checked once before the delete retries.",
+  "agents": [
+    {
+      "name": "dev-604",
+      "model": "opus",
+      "tokens_total": 163639
+    },
+    {
+      "name": "review-604",
+      "model": "opus",
+      "tokens_total": 131387
+    },
+    {
+      "name": "review-604-r2",
+      "model": "opus",
+      "tokens_total": 149984
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/commands/scratch.rs",
+      "what": "When a process keeps a scratch project's folder busy longer than the retry window (~1.8 s), the first remove deletes the marker with the other files and the delete ends in an error; the project then drops out of the pill and a second Delete answers 'Maestro didn't make that folder…' while the empty folder keeps its name taken.",
+      "why": "Fails closed and loses no data; the fix (remove the marker last, or write it back) needs a design choice and its own test.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 608,
+  "title": "Crash recovery: after an unexpected stop, a ticked list brings the open terminals back",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T02:35:00Z",
+  "finished_at": "2026-11-14T03:15:41Z",
+  "outcome": "merged",
+  "pr": 627,
+  "summary": "Maestro saves the list of open terminals and, after a crash or kill, offers a ticked 'Maestro stopped unexpectedly' list that brings them back; Claude terminals resume their conversation.",
+  "agents": [
+    {
+      "name": "dev-608",
+      "model": "opus",
+      "tokens_total": 300259
+    },
+    {
+      "name": "review-608",
+      "model": "opus",
+      "tokens_total": 201513
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/lib.rs",
+      "what": "On macOS, quitting from the Dock or logging out skips the close handler, so the saved list stays and the next start offers terminals after an ordinary quit.",
+      "why": "Outside the quit paths the issue names.",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src/stores/useOpenTerminalsSnapshotStore.ts",
+      "what": "Pin, park and warning go to a project's next new sessions by position; if one restored launch fails before registering, later terminals take the previous one's mark (a resumed Claude terminal can come back parked with the amber warning) and the last mark lands on the next terminal opened there within 2 minutes.",
+      "why": "The fix carries the mark through the launch (restoreKey → slot → session), beyond this story's seam.",
+      "owner": "unowned — next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/open_terminals.rs",
+      "what": "The saved list lives under a data folder that does not depend on the app identifier, so a devtest copy beside the installed Maestro shares one file: its start offers the installed instance's live terminals as stopped, and its normal close deletes the installed instance's list.",
+      "why": "Not a product path, but it will cost every live QA run on a dev copy real time.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

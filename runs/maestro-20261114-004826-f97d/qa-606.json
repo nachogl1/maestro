@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 606,
+  "title": "Terminal kinds: only Claude and plain shell terminals are offered; Gemini, Codex and OpenCode are removed",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 624,
+  "merged_at": "2026-11-14T02:26:13Z",
+  "merge_commit": "c0df339c4e63718d52a45253199d5771e183c0a7",
+  "seam": "src/lib/terminal.ts",
+  "story": "New terminals can now only be Claude Code or a plain shell; Gemini CLI, Codex and OpenCode are gone from the new-terminal card's AI Mode list, Settings → AI command lines and the terminal header. Maestro no longer writes or cleans an opencode.json when a terminal starts or closes. Flags saved for the removed kinds stay in the settings file and are ignored.",
+  "checks": [
+    {
+      "key": "terminal/launch-card-kinds",
+      "criterion": "The launch card offers only Claude and a plain shell",
+      "steps": "Open any project, add a new terminal card with Ctrl+T, open the AI Mode list.",
+      "expected": "Exactly 'Claude Code' and 'Terminal'; Terminal launches a plain shell with no AI tool."
+    },
+    {
+      "key": "settings/ai-command-lines-kinds",
+      "criterion": "Settings 'AI command lines' offers only Claude",
+      "steps": "Open Settings → AI command lines and type --verbose in Custom Flags.",
+      "expected": "A single Claude tab; Command Preview reads 'claude --verbose'."
+    },
+    {
+      "key": "terminal/no-opencode-config",
+      "criterion": "Launching and closing a Claude terminal no longer touches opencode.json",
+      "steps": "In a test folder with an opencode.json holding {\"theme\":\"x\"}, launch a Claude terminal, then close it.",
+      "expected": "opencode.json is unchanged byte for byte."
+    }
+  ],
+  "no_qa_reason": null
+}

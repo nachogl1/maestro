@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 614,
+  "title": "Samurai removal 5 of 7: the Rust Samurai modules, commands, event taps and state are deleted",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 632,
+  "merged_at": "2026-11-14T05:30:24Z",
+  "merge_commit": "30c9ac5c8b7b831208336dcbc0963bc8c598ffdb",
+  "seam": "src-tauri/src/core/",
+  "story": "Maestro's Rust backend no longer contains any Samurai, harvest, journal or Second Brain code, so nothing Samurai runs in the background. Starting the app, Claude terminals, the Injector and Triggers, agent rename, PR review launches and crash recovery behave as before. The PR review brief pointer now starts with '[Maestro]' instead of '[Maestro Samurai]', and old brief files are removed at start-up after a fixed 14 days, replacing the old Samurai setting.",
+  "checks": [
+    {
+      "key": "src-tauri/app-start",
+      "criterion": "The app starts and a Claude terminal launches",
+      "steps": "Install the build from main, open any project, open a new Claude terminal with Ctrl+T.",
+      "expected": "Claude reaches its prompt and there is no error toast."
+    },
+    {
+      "key": "src-tauri/injector-send",
+      "criterion": "An Injector message still arrives",
+      "steps": "Open two Claude terminals and the Injector tab (Alt+4), tick both, type 'say hello', send.",
+      "expected": "'say hello' is typed and submitted in both terminals."
+    },
+    {
+      "key": "src-tauri/pr-review-launch",
+      "criterion": "A PR review launch still types its brief",
+      "steps": "In a project with an open PR, open the PR row's ⋮ menu, tick the review steps, launch.",
+      "expected": "The terminal receives a one-line message starting '[Maestro] Read `.maestro/briefs/pr-…md`' and the agent reads that file."
+    },
+    {
+      "key": "src-tauri/agent-rename",
+      "criterion": "Renaming an agent still works",
+      "steps": "Rename a Claude terminal from its header to 'qa-rename-check'.",
+      "expected": "The header shows 'qa-rename-check' and keeps it after the next turn."
+    }
+  ],
+  "no_qa_reason": null
+}

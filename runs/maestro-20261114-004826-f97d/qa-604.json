@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 604,
+  "title": "Scratch projects: only folders Maestro created, carrying its marker file, are listed, marked or deletable",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 623,
+  "merged_at": "2026-11-14T02:09:59Z",
+  "merge_commit": "bba81b21df9fa18f58f97fa8f664fb36aa155400",
+  "seam": "src-tauri/src/commands/scratch.rs",
+  "story": "Maestro writes a hidden marker file into every scratch project it makes, and only folders with that file count as scratch projects; before, every subfolder of the scratch folder counted. Real folders in a chosen scratch folder are no longer listed in the pill, get no flask mark and no Delete-or-keep question, and the backend refuses to delete them.",
+  "checks": [
+    {
+      "key": "scratch/new-project-marker",
+      "criterion": "A new scratch project holds the marker file",
+      "steps": "In eagle view press Ctrl+T, pick '+ New scratch project', accept 'scratch-qa-1', then open the scratch folder with hidden files shown.",
+      "expected": "A hidden '.maestro-scratch' file inside 'scratch-qa-1'."
+    },
+    {
+      "key": "scratch/unmarked-folder-ignored",
+      "criterion": "Unmarked subfolders are never listed, marked or asked about",
+      "steps": "Create C:\\qa-scratch\\real-work\\note.txt and set the scratch folder to C:\\qa-scratch. Open the pill. Open 'real-work' as a project, start and close a terminal, use Stop All, then close its tab.",
+      "expected": "The pill shows (0), no flask mark, no Delete-or-keep question, and note.txt is still there."
+    },
+    {
+      "key": "scratch/delete-marked-project",
+      "criterion": "A Maestro-made folder can still be deleted, even right after its terminals close",
+      "steps": "Make 'scratch-qa-2', start a terminal in it, close the tab and answer Delete; also try the pill's bin then Yes on another new project.",
+      "expected": "Each folder is gone with no error, and 'real-work' is untouched."
+    }
+  ],
+  "no_qa_reason": null
+}

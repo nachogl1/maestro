@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 612,
+  "title": "Samurai removal 3 of 7: the Launch panel, Samurai settings, badges, banners and toasts are gone from the app",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T03:45:59Z",
+  "finished_at": "2026-11-14T04:40:14Z",
+  "outcome": "merged",
+  "pr": 630,
+  "summary": "Every Samurai screen is removed from the front end; the PR review workflow editor now opens from the PR row's menu, and old saved settings and layouts still load.",
+  "agents": [
+    {
+      "name": "dev-612",
+      "model": "opus",
+      "tokens_total": 455122
+    },
+    {
+      "name": "review-612",
+      "model": "opus",
+      "tokens_total": 247589
+    },
+    {
+      "name": "review-612-r2",
+      "model": "opus",
+      "tokens_total": 289563
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [
+    "Removal stories delete whole test files; the dev and the reviewer must read every test in a deleted file, because one non-Samurai test (zooming a parked tile unparks it) went with a Samurai-named file and was only caught in review."
+  ],
+  "deferred": []
+}

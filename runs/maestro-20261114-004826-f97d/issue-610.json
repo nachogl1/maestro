@@ -1,0 +1,31 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 610,
+  "title": "Samurai removal 1 of 7: the shared Rust helpers move out of the samurai-named modules, with no change in behaviour",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T03:04:14Z",
+  "finished_at": "2026-11-14T03:32:03Z",
+  "outcome": "merged",
+  "pr": 628,
+  "summary": "Shared Rust helpers moved from samurai_* modules into neutral modules with no behaviour change; a test pins the legacy hash that names saved per-project files.",
+  "agents": [
+    {
+      "name": "dev-610",
+      "model": "opus",
+      "tokens_total": 203176
+    },
+    {
+      "name": "review-610",
+      "model": "opus",
+      "tokens_total": 165656
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

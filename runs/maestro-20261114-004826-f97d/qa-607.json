@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 607,
+  "title": "Docs: the website and the architecture overview no longer mention Gemini, Codex and OpenCode terminals",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 626,
+  "merged_at": "2026-11-14T02:47:27Z",
+  "merge_commit": "4a6f091137f9dc6e575e39b705e669065f3072bd",
+  "seam": "website/",
+  "story": "Documentation only: the website pages and architecture overview no longer mention Gemini, Codex or OpenCode terminals.",
+  "checks": [],
+  "no_qa_reason": "Documentation only; nothing in the app to drive."
+}

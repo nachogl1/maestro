@@ -1,0 +1,41 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 569,
+  "title": "Work Journal: a spell-check icon fixes spelling, grammar and punctuation of the selection or the whole page",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T00:49:22Z",
+  "finished_at": "2026-11-14T01:56:23Z",
+  "outcome": "merged",
+  "pr": 621,
+  "summary": "A spell-check icon (and Ctrl+Shift+F) in the Work Journal asks the user's Claude CLI to fix the selection or the whole page in one undoable step; any reply that rewrites, touches protected text or code is refused whole for that line.",
+  "agents": [
+    {
+      "name": "dev-569",
+      "model": "opus",
+      "tokens_total": 253157
+    },
+    {
+      "name": "review-569",
+      "model": "opus",
+      "tokens_total": 149674
+    },
+    {
+      "name": "review-569-r2",
+      "model": "opus",
+      "tokens_total": 158003
+    },
+    {
+      "name": "review-569-r3",
+      "model": "opus",
+      "tokens_total": 174908
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 3,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

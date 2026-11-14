@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 615,
+  "title": "Samurai removal 6 of 7: a one-time safe cleanup of Samurai's leftover data, with a notice of what was kept",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T05:30:59Z",
+  "finished_at": "2026-11-14T06:16:13Z",
+  "outcome": "merged",
+  "pr": 634,
+  "summary": "On the first start after Samurai's removal, Maestro deletes Samurai's leftover files once and removes only merged, clean run worktrees; anything that might hold work is kept and listed in a closeable notice.",
+  "agents": [
+    {
+      "name": "dev-615",
+      "model": "opus",
+      "tokens_total": 239417
+    },
+    {
+      "name": "review-615",
+      "model": "opus",
+      "tokens_total": 193302
+    },
+    {
+      "name": "review-615-r2",
+      "model": "opus",
+      "tokens_total": 172196
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/legacy_cleanup.rs",
+      "what": "On macOS and Linux, npm puts symlinks in node_modules/.bin, so every merged, clean run worktree that ran npm install is kept as 'contains a link to another folder' and the notice says it still holds work when it holds only build output.",
+      "why": "Safe direction (nothing lost) and Windows is unaffected; the fix needs a design choice on which links git may delete through.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

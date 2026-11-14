@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 609,
+  "title": "Updates: open terminals come back on their own after an update, and the update prompt warns first",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 629,
+  "merged_at": "2026-11-14T03:45:28Z",
+  "merge_commit": "975c1ccbc27db194f8e3492e63a787fb8c6f6df7",
+  "seam": "src/components/update/",
+  "story": "Updating Maestro no longer just warns that open terminals will close: the prompt says they will close and come back, with the three points from the crash-recovery prototype (scene 3). After the update restart they come back on their own with no question. This replaces the old 'Close all terminals?' warning; before, the start after an update showed the 'Maestro stopped unexpectedly' offer.",
+  "checks": [
+    {
+      "key": "update/update-prompt-with-terminals",
+      "criterion": "With terminals open, the prompt shows the count and three points; Not now changes nothing",
+      "steps": "On a build older than the latest release, open a project with one Claude and one plain terminal; click Download and Install on the update toast; click Not now; click Download and Install again.",
+      "expected": "A dialog 'Update Maestro to <version>?' saying 'Your 2 open terminals will close and come back after the update.' with three points and buttons Not now / Update and restart; after Not now nothing installs and the toast stays."
+    },
+    {
+      "key": "update/update-prompt-no-terminals",
+      "criterion": "With no terminals, the download starts straight away",
+      "steps": "Close every terminal, then click Download and Install.",
+      "expected": "No dialog; the download starts."
+    },
+    {
+      "key": "update/terminals-back-after-update",
+      "criterion": "After the update restart, terminals come back with no dialog, once",
+      "steps": "Open a Claude terminal with one message, a plain shell and a parked terminal; Download and Install, Update and restart; after it is back, close Maestro normally and start again.",
+      "expected": "No 'stopped unexpectedly' dialog; all three come back (Claude continues, shell empty with the amber line, parked one on the shelf); nothing is offered after the normal restart."
+    }
+  ],
+  "no_qa_reason": null
+}

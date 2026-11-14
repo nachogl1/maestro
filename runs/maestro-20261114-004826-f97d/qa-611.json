@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 611,
+  "title": "Samurai removal 2 of 7: the workflow-graph types move out of the Samurai library",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 625,
+  "merged_at": "2026-11-14T02:34:05Z",
+  "merge_commit": "8e7f3ce75fd38625b94f452fb288b876724d73df",
+  "seam": "src/lib/workflowGraph.ts",
+  "story": "Internal move of the workflow-graph types out of the Samurai library; nothing a user sees changed.",
+  "checks": [],
+  "no_qa_reason": "Type move only; no user-visible surface."
+}

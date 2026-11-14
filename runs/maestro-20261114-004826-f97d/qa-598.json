@@ -1,0 +1,50 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 598,
+  "title": "Conclave: Alt+C opens a dialog that asks the ticked agents to coordinate and share resources",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 619,
+  "merged_at": "2026-11-14T01:25:53Z",
+  "merge_commit": "a78ed1158f3cd7a5c504630526ca1b51aa04b0b5",
+  "seam": "src/components/conclave/",
+  "story": "Alt+C now opens a Conclave dialog from anywhere in Maestro. It sends one message to the Claude Code terminals you tick, asking them to message each other and share ports, files and worktrees; reached terminals show the amber header message icon with sender 'Conclave', and Settings → Shortcuts gains an Alt+C row. The dialog takes keyboard focus, so Esc closes it without reaching the terminal behind. Nothing earlier was removed.",
+  "checks": [
+    {
+      "key": "conclave/open-and-close",
+      "criterion": "Alt+C opens the dialog; Esc and Cancel close it without sending",
+      "steps": "Start Maestro, launch two Claude terminals, click into one terminal, press Alt+C, press Esc. Press Alt+C again and click Cancel.",
+      "expected": "The dialog 'Do you want to invoke Conclave?' opens with the cursor in its message box each time; Esc and Cancel close it; nothing reaches any terminal and no running turn is interrupted."
+    },
+    {
+      "key": "conclave/list-and-ticks",
+      "criterion": "The list shows every running Claude Code terminal by project, parked ones tagged, nothing ticked; Invoke needs two ticks and text",
+      "steps": "Open two projects with Claude terminals plus one plain shell, park one Claude terminal, press Alt+C, tick one, click All, then empty the text box.",
+      "expected": "The shell is not listed, the parked one shows 'parked', Invoke stays off with one tick, turns on after All, and turns off again with empty text."
+    },
+    {
+      "key": "conclave/default-text-reset",
+      "criterion": "The text box opens with the default message every time",
+      "steps": "Alt+C, change the text, Cancel, Alt+C.",
+      "expected": "The default 'Conclave: you and these agents are asked to coordinate…' text is back and nothing is ticked."
+    },
+    {
+      "key": "conclave/send",
+      "criterion": "Invoke sends the text plus the agent list to exactly the ticked terminals",
+      "steps": "Tick two terminals (e.g. 'fox' in alpha-app and 'owl' in beta-app), click Invoke Conclave.",
+      "expected": "The dialog closes; both terminals receive the text ending in 'Agents in this Conclave: fox (alpha-app), owl (beta-app)'; each header shows the amber icon with sender 'Conclave'."
+    },
+    {
+      "key": "conclave/skip-permissions-warning",
+      "criterion": "The warning shows only when skip permissions is on and a terminal is ticked",
+      "steps": "Turn on skip permissions for Claude in Settings, press Alt+C, tick one terminal; then repeat with the setting off.",
+      "expected": "'These agents will ask you to approve each message…' appears after the tick only when the setting is on."
+    },
+    {
+      "key": "settings/shortcuts-conclave",
+      "criterion": "Settings → Shortcuts lists Alt+C",
+      "steps": "Open Settings → Shortcuts.",
+      "expected": "A row 'Invoke Conclave (ask the ticked agents to coordinate)' with Alt + C."
+    }
+  ],
+  "no_qa_reason": null
+}

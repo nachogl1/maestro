@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 613,
+  "title": "Samurai removal 4 of 7: the Second Brain panel and the health checker are gone",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 631,
+  "merged_at": "2026-11-14T04:59:14Z",
+  "merge_commit": "af6a2938490af216bd01e29bd3153f916a3b2473",
+  "seam": "src/components/sidebar/",
+  "story": "The Second Brain panel is gone, with the Samurai audit stream, the ops journal, 'Harvest now', old harvest reports and the files list, its brain icon and its Features switch. The health checker that counted large Samurai files is gone too, with its badge and 'Health — Second Brain' toasts, so Settings → Notifications covers GitHub toasts only. Parking, PR review launches and the Work Journal are unchanged.",
+  "checks": [
+    {
+      "key": "panels/no-second-brain-icon",
+      "criterion": "No Second Brain icon or panel",
+      "steps": "Start Maestro fresh and look at the icon strip on the far left.",
+      "expected": "No brain icon."
+    },
+    {
+      "key": "panels/old-layout-without-second-brain",
+      "criterion": "A layout saved with Second Brain open loads",
+      "steps": "In a test profile set localStorage 'maestro-panel-strip' to {\"state\":{\"openPanels\":[\"secondbrain\",\"notes\"],\"widths\":{}},\"version\":0}, then restart.",
+      "expected": "Only the Notes panel open, no error."
+    },
+    {
+      "key": "settings/features-no-second-brain",
+      "criterion": "No Second Brain setting",
+      "steps": "Open Settings → Features.",
+      "expected": "Only the Work Journal switch."
+    },
+    {
+      "key": "notifications/no-health-toast",
+      "criterion": "No health badge or toast; GitHub toasts still work",
+      "steps": "Leave the app open 15 minutes; then toggle Settings → Notifications → Show notifications off and on.",
+      "expected": "No 'Health — …' toast, no orange count on any strip icon; GitHub toasts still work."
+    },
+    {
+      "key": "git/pr-review-launch",
+      "criterion": "Launching a PR review still works",
+      "steps": "Git panel → PR monitor → a PR row's ⋮ menu → tick a step → launch.",
+      "expected": "A new Claude terminal opens and receives the review prompt."
+    }
+  ],
+  "no_qa_reason": null
+}

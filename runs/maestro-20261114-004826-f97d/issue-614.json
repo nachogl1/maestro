@@ -1,0 +1,31 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 614,
+  "title": "Samurai removal 5 of 7: the Rust Samurai modules, commands, event taps and state are deleted",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T04:59:43Z",
+  "finished_at": "2026-11-14T05:30:24Z",
+  "outcome": "merged",
+  "pr": 632,
+  "summary": "The Rust Samurai, harvest, journal and Second Brain backend is deleted; every command the front end still calls stays registered, and PR review briefs now expire after a fixed 14 days.",
+  "agents": [
+    {
+      "name": "dev-614",
+      "model": "opus",
+      "tokens_total": 294914
+    },
+    {
+      "name": "review-614",
+      "model": "opus",
+      "tokens_total": 204513
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

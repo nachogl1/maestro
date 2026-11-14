@@ -1,0 +1,31 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 609,
+  "title": "Updates: open terminals come back on their own after an update, and the update prompt warns first",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T03:16:13Z",
+  "finished_at": "2026-11-14T03:45:28Z",
+  "outcome": "merged",
+  "pr": 629,
+  "summary": "The update prompt now says open terminals will close and come back, and after the update restart they return on their own with no recovery question.",
+  "agents": [
+    {
+      "name": "dev-609",
+      "model": "opus",
+      "tokens_total": 182424
+    },
+    {
+      "name": "review-609",
+      "model": "opus",
+      "tokens_total": 157955
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

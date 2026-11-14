@@ -1,0 +1,50 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 612,
+  "title": "Samurai removal 3 of 7: the Launch panel, Samurai settings, badges, banners and toasts are gone from the app",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 630,
+  "merged_at": "2026-11-14T04:40:14Z",
+  "merge_commit": "63a3377c78e56879a477c67a747f35e5a55eadda",
+  "seam": "src/components/sidebar/LaunchSection.tsx",
+  "story": "Every Samurai screen is gone: the Launch panel and its icon, Settings → Samurai, the Samurai launch switch, the terminal badge and hand-off banner, the park chip and parked-runs badge, the Samurai toasts, the workflow editor's Samurai mode and the crash-recovery dialog's Samurai line. The PR review workflow editor, which only opened from the Launch panel, now opens from 'Edit the PR review workflow' in the PR action menu. Parking, the shelf, the context alert, the Injector, History resume and PR review launches work as before.",
+  "checks": [
+    {
+      "key": "panels/no-launch-icon",
+      "criterion": "The left strip has no Launch icon",
+      "steps": "Start Maestro fresh and hover each icon in the strip on the far left.",
+      "expected": "No Launch (rocket) icon."
+    },
+    {
+      "key": "settings/no-samurai",
+      "criterion": "No Settings → Samurai and no Samurai switch",
+      "steps": "Open Settings, look at the section menu, then open Features.",
+      "expected": "No Samurai section or switch."
+    },
+    {
+      "key": "terminal/no-samurai-chrome",
+      "criterion": "No badge, banner, chip or toast; parking still works",
+      "steps": "Open a project, launch a Claude terminal, look at its header and the top bar, then park and unpark it.",
+      "expected": "No gen-N badge, hand-off banner or parked-runs badge; the terminal parks to the shelf and comes back on click."
+    },
+    {
+      "key": "terminal/agents-list-unparks",
+      "criterion": "Opening a parked terminal from the Agents list brings it back",
+      "steps": "Launch a terminal and park it, press Alt+3, click it in the Agents list.",
+      "expected": "The terminal leaves the parked shelf and shows zoomed in the grid."
+    },
+    {
+      "key": "pr/edit-workflow",
+      "criterion": "The PR review workflow editor is still reachable",
+      "steps": "Open the Git panel on a repo with an open PR, click the PR row's ⋮ menu, then 'Edit the PR review workflow'.",
+      "expected": "The full-screen editor with Check status / Review & post / Fix issues / Merge if green, and no Samurai tab."
+    },
+    {
+      "key": "recovery/no-samurai-line",
+      "criterion": "The crash-recovery dialog shows no Samurai line",
+      "steps": "Open two terminals, kill Maestro, start it again.",
+      "expected": "The dialog lists both terminals with no line mentioning Samurai or the Launch panel."
+    }
+  ],
+  "no_qa_reason": null
+}

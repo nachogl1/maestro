@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 615,
+  "title": "Samurai removal 6 of 7: a one-time safe cleanup of Samurai's leftover data, with a notice of what was kept",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 634,
+  "merged_at": "2026-11-14T06:16:13Z",
+  "merge_commit": "4a24ff3fdeedb6c2a31a2d151ad813247ac7fe3c",
+  "seam": "src-tauri/src/core/legacy_cleanup.rs",
+  "story": "On the first start after Samurai's removal, Maestro quietly deletes Samurai's old files: audit logs, run records, schedule and latches, journal, harvest reports, its two settings files and its hand-over folders. A run worktree is removed only when its work is on the default branch, no saved terminal reopens it, and its only extra files are Samurai's own notes or build output; any other worktree is kept and listed in a new closeable bottom-left notice. This replaces the earlier runbook line that Samurai files on disk are left where they are.",
+  "checks": [
+    {
+      "key": "shared/samurai-cleanup-notice-kept",
+      "criterion": "A kept run worktree is listed in one closeable notice",
+      "steps": "In a fresh test copy of Maestro, make a git repo 'demo-project' on main with one commit; add worktree 'demo-wt' on branch 'demo-run' with one committed file; write runs/demo-project-0123456789ab/demo.json in Maestro's data folder with project_path, worktree_path, epic, status ACTIVE and created_at; make sure there is no 'samurai-cleanup-done' file; start Maestro.",
+      "expected": "A bottom-left 'Samurai cleanup' card shows the demo-wt path with 'unmerged commits'; × closes it; demo-wt is still on disk."
+    },
+    {
+      "key": "shared/samurai-cleanup-notice-none",
+      "criterion": "With nothing kept there is no notice, and later starts do nothing",
+      "steps": "With no run records, start Maestro, then start it again.",
+      "expected": "No notice either time, and a 'samurai-cleanup-done' file exists in Maestro's data folder."
+    }
+  ],
+  "no_qa_reason": null
+}

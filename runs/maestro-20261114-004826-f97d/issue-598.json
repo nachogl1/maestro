@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 598,
+  "title": "Conclave: Alt+C opens a dialog that asks the ticked agents to coordinate and share resources",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T00:49:30Z",
+  "finished_at": "2026-11-14T01:25:53Z",
+  "outcome": "merged",
+  "pr": 619,
+  "summary": "Alt+C opens a Conclave dialog that sends one message to the ticked Claude Code terminals asking them to coordinate; it takes keyboard focus so Esc never reaches the terminal behind it.",
+  "agents": [
+    {
+      "name": "dev-598",
+      "model": "opus",
+      "tokens_total": 175684
+    },
+    {
+      "name": "review-598",
+      "model": "opus",
+      "tokens_total": 149943
+    },
+    {
+      "name": "review-598-r2",
+      "model": "opus",
+      "tokens_total": 146501
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/issue-map/",
+      "what": "The Vitest 'IssueMapModal > F5 and Ctrl+R rebuild the map from GitHub' failed once in a full-suite run on main (expected 1 to be 2) and passed on rerun, so a later gate can go red for no real reason.",
+      "why": "Outside this issue's files.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

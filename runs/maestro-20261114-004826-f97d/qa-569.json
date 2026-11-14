@@ -1,0 +1,56 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 569,
+  "title": "Work Journal: a spell-check icon fixes spelling, grammar and punctuation of the selection or the whole page",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 621,
+  "merged_at": "2026-11-14T01:56:23Z",
+  "merge_commit": "ce6923b9cfa3b2c1e66cb3661fefc67bff51ee76",
+  "seam": "src/components/workjournal/",
+  "story": "The Work Journal toolbar gained a spell-check icon left of '+ Add entry', also Ctrl+Shift+F. It asks your own Claude CLI to fix spelling, grammar and punctuation of the selection (widened to whole words) or the whole day page; one Ctrl+Z undoes it and a short line reports the result. Times, links, project chips, the card's bold split and code blocks are never changed; a line whose fix would touch them, or a reply that rewrites text, is left exactly as it was. Nothing earlier was removed.",
+  "checks": [
+    {
+      "key": "workjournal/spelling-whole-page",
+      "criterion": "With nothing selected, the whole page is fixed",
+      "steps": "Open today's Work Journal page. Type the free note 'I fixd teh login'. Add an entry and type 'Release wiht notes'. Click empty space, then the spell-check icon.",
+      "expected": "The icon spins and the page is locked; then the note reads 'I fixed the login', the card 'Release with notes', and '3 fixes made' shows and fades."
+    },
+    {
+      "key": "workjournal/spelling-selection",
+      "criterion": "With a selection, only the selection changes",
+      "steps": "Type 'teh start', then on a new line 'I fixd teh bug'. Select only 'I fixd' and press Ctrl+Shift+F.",
+      "expected": "Only 'I fixd' becomes 'I fixed'; both 'teh' stay; '1 fix made' shows."
+    },
+    {
+      "key": "workjournal/spelling-selection-cut-word",
+      "criterion": "A selection ending inside a word fixes the whole word",
+      "steps": "Type 'I fixd the bug'. Select from the start up to 'th'. Press Ctrl+Shift+F.",
+      "expected": "The line reads 'I fixed the bug', never 'I fixed thee bug'."
+    },
+    {
+      "key": "workjournal/spelling-protected",
+      "criterion": "Times, links, project chips and the bold split are unchanged",
+      "steps": "Add a card at 10:30 with any project, text 'Fixd login: deploy at 10:30 wiht care', and a free note with a link to example.com. Click the spell-check icon.",
+      "expected": "Time, chip, link and bold split are unchanged; a line whose fix would touch them keeps its old text, while other lines are fixed."
+    },
+    {
+      "key": "workjournal/spelling-code-block",
+      "criterion": "Code blocks are never sent or changed",
+      "steps": "Add a code block holding 'npm run biuld' and below it 'I fixd it'. Click the spell-check icon.",
+      "expected": "The code block still reads 'npm run biuld'; the line reads 'I fixed it'; '1 fix made'."
+    },
+    {
+      "key": "workjournal/spelling-undo",
+      "criterion": "One Ctrl+Z restores the page",
+      "steps": "After any fix that made changes, press Ctrl+Z once.",
+      "expected": "The page is exactly as before the fix."
+    },
+    {
+      "key": "workjournal/spelling-failure",
+      "criterion": "A failure leaves the page unchanged and shows the reason",
+      "steps": "Take the Claude CLI off PATH or go offline, then click the spell-check icon.",
+      "expected": "The page is unchanged and a red line 'Not fixed: …' with the reason shows, then fades."
+    }
+  ],
+  "no_qa_reason": null
+}

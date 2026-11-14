@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 607,
+  "title": "Docs: the website and the architecture overview no longer mention Gemini, Codex and OpenCode terminals",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T02:27:07Z",
+  "finished_at": "2026-11-14T02:47:27Z",
+  "outcome": "merged",
+  "pr": 626,
+  "summary": "The website and architecture overview describe only Claude Code and plain shell terminals; the FAQ now says Claude Code is checked at launch.",
+  "agents": [
+    {
+      "name": "dev-607",
+      "model": "opus",
+      "tokens_total": 124961
+    },
+    {
+      "name": "review-607",
+      "model": "opus",
+      "tokens_total": 107308
+    },
+    {
+      "name": "review-607-r2",
+      "model": "opus",
+      "tokens_total": 110416
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

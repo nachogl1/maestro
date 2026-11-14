@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 616,
+  "title": "Docs: the README, website and prototypes no longer describe Samurai, Second Brain or the health checker",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 633,
+  "merged_at": "2026-11-14T05:45:07Z",
+  "merge_commit": "73d8b55ef2e7a7ccbfdda7b52e4f9b80c84262ba",
+  "seam": "README.md",
+  "story": "Documentation and prototypes only: the README and two design mock-ups no longer mention Samurai runs, the Second Brain panel or the Launch panel.",
+  "checks": [],
+  "no_qa_reason": "Documentation and prototypes only; nothing in the app changed."
+}

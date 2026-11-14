@@ -1,0 +1,39 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 606,
+  "title": "Terminal kinds: only Claude and plain shell terminals are offered; Gemini, Codex and OpenCode are removed",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T01:57:03Z",
+  "finished_at": "2026-11-14T02:26:13Z",
+  "outcome": "merged",
+  "pr": 624,
+  "summary": "New terminals can only be Claude Code or a plain shell; Gemini, Codex and OpenCode and their config writers are removed, and old settings naming them still load.",
+  "agents": [
+    {
+      "name": "dev-606",
+      "model": "opus",
+      "tokens_total": 181898
+    },
+    {
+      "name": "review-606",
+      "model": "opus",
+      "tokens_total": 164251
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/core/work_journal_run.rs",
+      "what": "The Rust test test_a_timed_out_run_leaves_no_child_process_on_windows failed in 1 of 3 full cargo test runs ('child … of the timed-out run is still running') and passes 6/6 alone; with no CI the local merge gate can go red at random for any story.",
+      "why": "Not touched by this story; load-sensitive check right after the kill.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

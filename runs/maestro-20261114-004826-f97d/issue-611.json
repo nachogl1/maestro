@@ -1,0 +1,31 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 611,
+  "title": "Samurai removal 2 of 7: the workflow-graph types move out of the Samurai library",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-14T02:10:50Z",
+  "finished_at": "2026-11-14T02:34:05Z",
+  "outcome": "merged",
+  "pr": 625,
+  "summary": "The workflow-graph types moved to a neutral file; no behaviour changed. The one remaining Samurai import served the workflows view's Samurai mode, removed by issue #612.",
+  "agents": [
+    {
+      "name": "dev-611",
+      "model": "opus",
+      "tokens_total": 114931
+    },
+    {
+      "name": "review-611",
+      "model": "opus",
+      "tokens_total": 116421
+    }
+  ],
+  "phases": null,
+  "rounds": {
+    "review": 1,
+    "ci": 0
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

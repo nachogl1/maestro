@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261114-004826-f97d",
+  "issue": 610,
+  "title": "Samurai removal 1 of 7: the shared Rust helpers move out of the samurai-named modules, with no change in behaviour",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 628,
+  "merged_at": "2026-11-14T03:32:03Z",
+  "merge_commit": "98c9003835fa50b06b90a218fcf5906e68784dc2",
+  "seam": "src-tauri/src/core/",
+  "story": "Internal Rust move; nothing a user sees changed.",
+  "checks": [],
+  "no_qa_reason": "No behaviour change; nothing to drive."
+}
