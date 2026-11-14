@@ -8,15 +8,19 @@ use std::path::PathBuf;
 
 use crate::core::extended_paths::normalize_extended_path;
 
-/// Base directory for one artifact kind: `<app data>/<kind>/`.
-pub fn artifact_base_dir(kind: &str) -> PathBuf {
+/// Maestro's app data folder, the parent of every artifact kind's folder.
+pub fn app_data_root() -> PathBuf {
     directories::ProjectDirs::from("com", "maestro", "maestro")
         .map(|p| p.data_dir().to_path_buf())
         .unwrap_or_else(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".local/share/maestro")
         })
-        .join(kind)
+}
+
+/// Base directory for one artifact kind: `<app data>/<kind>/`.
+pub fn artifact_base_dir(kind: &str) -> PathBuf {
+    app_data_root().join(kind)
 }
 
 /// Canonicalizes a project path for artifact naming and as the `claude -p`

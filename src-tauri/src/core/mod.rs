@@ -8,6 +8,7 @@ pub mod event_bus;
 pub mod extended_paths;
 pub mod font_detector;
 pub mod hook_config_writer;
+pub mod legacy_cleanup;
 pub mod marketplace_error;
 pub mod marketplace_manager;
 pub mod marketplace_models;

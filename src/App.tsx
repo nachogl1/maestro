@@ -32,6 +32,7 @@ import {
 import { NotificationToasts } from "./components/shared/NotificationToasts";
 import { ParticleEffectsLayer } from "./components/shared/ParticleEffectsLayer";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
+import { SamuraiCleanupNotice } from "./components/shared/SamuraiCleanupNotice";
 import { type EagleProjectOption, TopBar } from "./components/shared/TopBar";
 import { MAX_SESSIONS } from "./components/terminal/splitTree";
 import { AutoUpdateQuestion } from "./components/update/AutoUpdateQuestion";
@@ -626,6 +627,7 @@ function App() {
       <UpdateNotification />
       <AutoUpdateQuestion />
       <NotificationToasts />
+      <SamuraiCleanupNotice />
       <ParticleEffectsLayer />
       <WorkJournalSettingsHost theme={theme} onToggleTheme={toggleTheme} />
       <WorkJournalBackgroundWork tabs={tabs} />
