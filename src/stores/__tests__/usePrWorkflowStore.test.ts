@@ -21,12 +21,12 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   },
 }));
 
-import type { SamuraiWorkflowGraph } from "@/lib/samurai";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import { prWorkflowGraphForLaunch, usePrWorkflowStore } from "../usePrWorkflowStore";
 
 const STORAGE_KEY = "maestro-pr-workflow";
 
-function graph(): SamuraiWorkflowGraph {
+function graph(): WorkflowGraph {
   return {
     nodes: [
       { id: "check", text: "Check status", label: "Check" },

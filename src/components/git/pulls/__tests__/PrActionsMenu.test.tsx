@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { DEFAULT_PR_WORKFLOW } from "@/lib/prWorkflow";
-import type { SamuraiWorkflowGraph } from "@/lib/samurai";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import type { PullRequestInfo } from "@/stores/useGitHubStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { prWorkflowGraphForLaunch, usePrWorkflowStore } from "@/stores/usePrWorkflowStore";
@@ -62,7 +62,7 @@ function buildPr(overrides: Partial<PullRequestInfo> = {}): PullRequestInfo {
 }
 
 /** The default chain plus a user-added fifth step, wired onto the end. */
-function graphWithExtraStep(): SamuraiWorkflowGraph {
+function graphWithExtraStep(): WorkflowGraph {
   return {
     nodes: [
       ...DEFAULT_PR_WORKFLOW.nodes,
@@ -266,7 +266,7 @@ describe("PrActionsMenu", () => {
     // relative to the edge order (so the prompt order can only come from the
     // graph walk, never from array position), plus a disconnected box that
     // must not leak into the prompt.
-    const edited: SamuraiWorkflowGraph = {
+    const edited: WorkflowGraph = {
       nodes: [
         { id: "verdict", label: "Verdict", text: "Custom verdict ritual." },
         { id: "triage", label: "Triage", text: "Custom triage ritual for <PR>." },
