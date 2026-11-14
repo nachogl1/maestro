@@ -1,7 +1,7 @@
 //! Injector sidebar tab: types one message into several running Maestro
 //! terminals at once and presses Enter in each.
 //!
-//! Delivery reuses `core::samurai_pty::submit_instruction_confirmed` — the
+//! Delivery reuses `core::pty_submit::submit_instruction_confirmed` — the
 //! same chunked body + delayed lone Enter every injected instruction uses
 //! (Samurai briefs, `/rename`, harvest). A single `"{text}\r"` write does NOT
 //! submit in the Claude CLI: the burst reads as a paste and the carriage
@@ -10,7 +10,7 @@
 use tauri::State;
 
 use crate::core::process_manager::ProcessManager;
-use crate::core::samurai_pty;
+use crate::core::pty_submit;
 
 /// Rejects a message that would type nothing. A whitespace-only message
 /// would still send the lone Enter, which submits whatever the user had left
@@ -40,7 +40,7 @@ pub async fn inject_message(
     // between frames), so it runs on the blocking pool, never on a runtime
     // worker.
     tokio::task::spawn_blocking(move || {
-        samurai_pty::submit_instruction_confirmed(pm, session_id, text, "injector")
+        pty_submit::submit_instruction_confirmed(pm, session_id, text, "injector")
     })
     .await
     .map_err(|e| format!("inject task for session {session_id} failed: {e}"))?

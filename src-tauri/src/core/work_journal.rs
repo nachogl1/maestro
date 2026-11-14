@@ -37,7 +37,7 @@ use serde_json::{Map, Value};
 
 use crate::commands::ai_runner::artifact_base_dir;
 use crate::core::atomic_write::{atomic_write_durable, rename_with_retry};
-use crate::core::samurai_files::normalize_extended_path;
+use crate::core::extended_paths::normalize_extended_path;
 use crate::core::work_journal_markdown;
 
 /// Environment variable that overrides the journal's folder.

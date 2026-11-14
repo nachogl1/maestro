@@ -105,9 +105,9 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::allowance_watcher::{ACCOUNT_PROJECT, ACCOUNT_RUN};
+use super::extended_paths::strip_extended_prefix;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_auth_watch::AuthProbe;
-use super::samurai_injector::strip_extended_prefix;
 use super::samurai_resumer::latest_handoff_generation;
 use super::samurai_run_config::{RunConfigStore, SamuraiRunConfig, UnreadableConfig};
 use super::samurai_schedule::ScheduleEntry;

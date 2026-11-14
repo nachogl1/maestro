@@ -41,8 +41,8 @@ use serde_json::{json, Map, Value};
 
 use super::atomic_write::rename_with_retry;
 use super::config_recovery::read_json_or_recover;
+use super::extended_paths::strip_extended_length;
 use super::mcp_error::{McpError, McpResult};
-use super::samurai_files::strip_extended_length;
 
 /// Serializes all in-process read-modify-write cycles on ~/.claude.json.
 static CLAUDE_JSON_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));

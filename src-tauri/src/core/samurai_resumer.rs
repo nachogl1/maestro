@@ -69,9 +69,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use chrono::Utc;
 use serde_json::json;
 
+use super::extended_paths::strip_extended_prefix;
 use super::samurai_audit::{AuditEvent, AuditEventKind, AuditLog};
 use super::samurai_auth_watch::GH_AUTH_RESTORED;
-use super::samurai_injector::strip_extended_prefix;
 use super::samurai_parker::SamuraiParker;
 use super::samurai_prompts::{epic_slug, parse_handoff_generation};
 use super::samurai_replicator::SamuraiReplicator;
@@ -925,10 +925,9 @@ mod tests {
     };
     use crate::core::samurai_run_config::SamuraiRunConfig;
     use crate::core::samurai_schedule::jitter_secs;
-    use crate::core::samurai_test_wait::{
-        new_tick, tick_on_append, wait_for_row, wait_for_rows, wait_until, HarnessTick,
-    };
+    use crate::core::samurai_test_wait::{tick_on_append, wait_for_row, wait_for_rows};
     use crate::core::supervisor::SupervisorState;
+    use crate::core::test_wait::{new_tick, wait_until, HarnessTick};
     use crate::core::windows_process::StdCommandExt;
     use chrono::{DateTime, Duration as ChronoDuration};
     use std::collections::HashMap;
@@ -1121,7 +1120,7 @@ mod tests {
             config,
             // Issue #109: the injected writer confirms every body write, so
             // delivered rows behave as production's post-write verdict.
-            Arc::new(|_, _, outcome: crate::core::samurai_pty::DeliveryOutcome| outcome(Ok(()))),
+            Arc::new(|_, _, outcome: crate::core::pty_submit::DeliveryOutcome| outcome(Ok(()))),
             audit.clone(),
             session_dirs.clone(),
             Some(replicator.clone()),

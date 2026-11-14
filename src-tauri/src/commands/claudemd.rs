@@ -5,8 +5,8 @@ use directories::BaseDirs;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+use crate::core::extended_paths::strip_extended_length;
 use crate::core::mcp_config_writer::{atomic_write, dir_lock};
-use crate::core::samurai_files::strip_extended_length;
 
 /// Status of CLAUDE.md file at project root (legacy shape kept for compatibility).
 #[derive(Debug, Clone, Serialize)]

@@ -532,7 +532,7 @@ fn skip_without_projects(projects: &[String]) -> Option<CandidateRunOutcome> {
 /// separator, no trailing separator. Case is kept, so the result does not
 /// depend on the host OS.
 fn project_key(path: &str) -> String {
-    crate::core::samurai_injector::strip_extended_prefix(path.trim())
+    crate::core::extended_paths::strip_extended_prefix(path.trim())
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string()
@@ -547,7 +547,7 @@ fn run_projects(open: &[String], terminals: &[String], known: &[String]) -> Vec<
     open.iter()
         .chain(terminals)
         .chain(known)
-        .map(|path| crate::core::samurai_injector::strip_extended_prefix(path.trim()))
+        .map(|path| crate::core::extended_paths::strip_extended_prefix(path.trim()))
         .filter(|path| !path.is_empty() && seen.insert(project_key(path)))
         .collect()
 }

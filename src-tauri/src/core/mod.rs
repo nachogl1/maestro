@@ -1,10 +1,12 @@
 pub mod allowance_watcher;
 pub mod atomic_write;
+pub mod brief_files;
 pub mod claude_event;
 pub mod cli_path;
 pub mod config_recovery;
 pub mod error;
 pub mod event_bus;
+pub mod extended_paths;
 pub mod font_detector;
 pub mod hook_config_writer;
 pub mod marketplace_error;
@@ -18,12 +20,13 @@ pub mod open_terminals;
 pub mod plugin_config_writer;
 pub mod plugin_error;
 pub mod plugin_manager;
+pub mod pr_runs;
 pub mod process_manager;
 pub mod project_key;
+pub mod pty_submit;
 pub mod redirection_guard;
 pub mod samurai_audit;
 pub mod samurai_auth_watch;
-pub mod samurai_brief;
 pub mod samurai_completion;
 pub mod samurai_config;
 pub mod samurai_context;
@@ -32,17 +35,15 @@ pub mod samurai_injector;
 pub mod samurai_journal;
 pub mod samurai_latches;
 pub mod samurai_parker;
-pub mod samurai_pr_runs;
 pub mod samurai_progress;
 pub mod samurai_prompts;
-pub mod samurai_pty;
 pub mod samurai_reconciler;
 pub mod samurai_replicator;
 pub mod samurai_resumer;
 pub mod samurai_run_config;
 pub mod samurai_schedule;
 pub mod samurai_test_gate;
-/// Event-driven waits shared by the samurai integration test harnesses.
+/// The audit-log waits of the samurai integration test harnesses.
 #[cfg(test)]
 pub mod samurai_test_wait;
 pub mod samurai_watchdog;
@@ -51,6 +52,9 @@ pub mod session_manager;
 pub mod status_server;
 pub mod supervisor;
 pub mod terminal_backend;
+/// Event-driven waits shared by the integration test harnesses.
+#[cfg(test)]
+pub mod test_wait;
 pub mod transcript_parser;
 pub mod transcript_watcher;
 pub mod windows_process;

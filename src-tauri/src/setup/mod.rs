@@ -28,6 +28,12 @@ pub(crate) fn run_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
 
     let (event_bus, tees) = events::build_event_bus(app);
     terminal::setup_terminal(app, instance_id, event_bus, &tees)?;
+    // Issue #139: PR-review run records, inside the shared `runs` root so they
+    // fall under the existing managed-delete guard. Built here, not in the
+    // Samurai setup, because PR review outlives Samurai (issue #610).
+    app.manage(Arc::new(crate::core::pr_runs::PrRunStore::new(
+        commands::ai_runner::artifact_base_dir("runs"),
+    )));
     samurai::setup_samurai(app, tees);
 
     // GitHub watchdog: background poller for review requests /

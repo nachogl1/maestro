@@ -2,8 +2,8 @@
 //!
 //! Every Samurai instruction is typed into a live `claude` session's PTY, and
 //! that write is BLIND: `ProcessManager` exposes no read side, so nothing can
-//! confirm a frame landed. `samurai_pty` already types the payload in
-//! [`CHUNK_BYTES`](super::samurai_pty::CHUNK_BYTES)-sized frames, yet a
+//! confirm a frame landed. `pty_submit` already types the payload in
+//! [`CHUNK_BYTES`](super::pty_submit::CHUNK_BYTES)-sized frames, yet a
 //! multi-KB gen-1 launch brief was still observed arriving as two spliced
 //! fragments cut mid-word (2026-08-17) — the middle of the payload never
 //! landed and the run started on a headless fragment. No chunk/delay tuning
@@ -61,7 +61,7 @@ pub const INLINE_MAX_BYTES: usize = 500;
 /// Longest brief file stem [`write_brief`] will ever write. The pointer's
 /// fixed text is 189 bytes and `.maestro/briefs/` + `.md` adds 19, so a stem
 /// this long yields a 248-byte pointer — inside
-/// [`CHUNK_BYTES`](super::samurai_pty::CHUNK_BYTES) with room to spare, which
+/// [`CHUNK_BYTES`](super::pty_submit::CHUNK_BYTES) with room to spare, which
 /// is the whole point of the file (a spliced POINTER would be the #137 bug
 /// with extra steps). Longer names are truncated and hashed, never rejected.
 const MAX_STEM_CHARS: usize = 40;
@@ -332,7 +332,7 @@ pub fn is_inline(instruction: &str) -> bool {
 ///
 /// Deliberately its own constant rather than a reuse of [`INLINE_MAX_BYTES`],
 /// which it happens to equal: the two gates measure different things. The
-/// inline gate is about ONE PTY FRAME (`samurai_pty::CHUNK_BYTES`, 256 bytes,
+/// inline gate is about ONE PTY FRAME (`pty_submit::CHUNK_BYTES`, 256 bytes,
 /// chunked); a launch line bypasses that transport entirely — it is one
 /// argument on a command line the shell parses, so the real ceiling is the
 /// shell's (cmd.exe's is 8191 characters, and quoting only adds two). 500 is a
@@ -404,7 +404,7 @@ pub fn try_deliverable_instruction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::samurai_pty::{chunk_frames, CHUNK_BYTES};
+    use crate::core::pty_submit::{chunk_frames, CHUNK_BYTES};
     use tempfile::tempdir;
 
     /// An instruction long enough to take the file route, with recognizable

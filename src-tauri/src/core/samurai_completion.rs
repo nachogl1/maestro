@@ -637,9 +637,8 @@ async fn apply_verdict(
 mod tests {
     use super::*;
     use crate::core::samurai_run_config::SamuraiRunConfig;
-    use crate::core::samurai_test_wait::{
-        new_tick, tick_on_append, wait_for_row, wait_until, HarnessTick,
-    };
+    use crate::core::samurai_test_wait::{tick_on_append, wait_for_row};
+    use crate::core::test_wait::{new_tick, wait_until, HarnessTick};
     use std::collections::HashMap;
     use std::time::Duration;
     use tempfile::tempdir;
