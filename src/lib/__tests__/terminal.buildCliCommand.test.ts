@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCliCommand, buildCliLaunchLine } from "@/lib/terminal";
+import { buildCliCommand } from "@/lib/terminal";
 
 describe("buildCliCommand resume-id safety", () => {
   it("includes a UUID-shaped resume id", () => {
@@ -26,108 +26,6 @@ describe("buildCliCommand resume-id safety", () => {
   });
 });
 
-// --- issue #158: the gen-1 pointer as a positional launch-line argument ---
-
-describe("buildCliLaunchLine", () => {
-  const FLAGS = { skipPermissions: true, customFlags: "" };
-  const POINTER =
-    "[Maestro Samurai] Read `.maestro/briefs/epic-38-gen-1-launch.md` in FULL with the Read tool";
-
-  it("appends the pointer as one quoted positional argument on posix", () => {
-    const line = buildCliLaunchLine("Claude", FLAGS, undefined, POINTER, "posix");
-    expect(line).toEqual({
-      command: `claude --dangerously-skip-permissions '${POINTER}'`,
-      launchPromptDelivered: true,
-    });
-  });
-
-  it("appends the pointer as one quoted positional argument on cmd", () => {
-    const line = buildCliLaunchLine("Claude", FLAGS, undefined, POINTER, "cmd");
-    expect(line).toEqual({
-      command: `claude --dangerously-skip-permissions "${POINTER}"`,
-      launchPromptDelivered: true,
-    });
-  });
-
-  it("keeps the pointer AFTER every flag, so it stays the positional prompt", () => {
-    const line = buildCliLaunchLine(
-      "Claude",
-      { skipPermissions: true, customFlags: "--model sonnet" },
-      "01234567-89ab-cdef-0123-456789abcdef",
-      POINTER,
-      "posix",
-    );
-    expect(line?.command).toBe(
-      "claude --resume 01234567-89ab-cdef-0123-456789abcdef " +
-        `--dangerously-skip-permissions --model sonnet '${POINTER}'`,
-    );
-  });
-
-  it("reports NOT delivered when there is no prompt to carry", () => {
-    expect(buildCliLaunchLine("Claude", FLAGS, undefined, null, "posix")).toEqual({
-      command: "claude --dangerously-skip-permissions",
-      launchPromptDelivered: false,
-    });
-  });
-
-  it("refuses the launch line rather than half-escaping it, and says so", () => {
-    // A `%` cannot be escaped for cmd.exe at all — the caller must fall back
-    // to the typed pointer, so the command comes back WITHOUT the prompt.
-    const line = buildCliLaunchLine("Claude", FLAGS, undefined, "read 100% of it", "cmd");
-    expect(line).toEqual({
-      command: "claude --dangerously-skip-permissions",
-      launchPromptDelivered: false,
-    });
-  });
-
-  it("returns null for a mode with no CLI at all", () => {
-    expect(buildCliLaunchLine("Plain", FLAGS, undefined, POINTER, "posix")).toBeNull();
-  });
-
-  it("refuses when the shell family is unknown", () => {
-    // The backend answers null for any shell without a verified quoter
-    // (PowerShell as COMSPEC, csh as $SHELL). Guessing there is the bug.
-    expect(buildCliLaunchLine("Claude", FLAGS, undefined, POINTER, null)).toEqual({
-      command: "claude --dangerously-skip-permissions",
-      launchPromptDelivered: false,
-    });
-  });
-
-  it("refuses when user custom flags could swallow the prompt as their value", () => {
-    // `customFlags` is free text appended immediately before the positional:
-    // a trailing value-taking flag would eat the pointer, and reporting
-    // success would ALSO suppress the typed fallback — brief never delivered.
-    const line = buildCliLaunchLine(
-      "Claude",
-      { skipPermissions: true, customFlags: "--append-system-prompt" },
-      undefined,
-      POINTER,
-      "posix",
-    );
-    expect(line).toEqual({
-      command: "claude --dangerously-skip-permissions --append-system-prompt",
-      launchPromptDelivered: false,
-    });
-  });
-
-  it("still allows the trusted --model flag the samurai flow generates", () => {
-    // `samuraiSuccessorCliFlags` puts the run config's model on this channel
-    // with a token-restricted value, and it always carries its own value —
-    // refusing it would disable the launch line for most real runs.
-    const line = buildCliLaunchLine(
-      "Claude",
-      { skipPermissions: true, customFlags: "--model claude-opus-4-5" },
-      undefined,
-      POINTER,
-      "posix",
-    );
-    expect(line).toEqual({
-      command: `claude --dangerously-skip-permissions --model claude-opus-4-5 '${POINTER}'`,
-      launchPromptDelivered: true,
-    });
-  });
-});
-
 describe("buildCliCommand agent name", () => {
   it("launches claude under the given agent name", () => {
     expect(buildCliCommand("Claude", undefined, undefined, "maestro-42")).toBe(
@@ -139,10 +37,5 @@ describe("buildCliCommand agent name", () => {
     expect(() => buildCliCommand("Claude", undefined, undefined, "x; rm -rf /")).toThrow(
       /unsafe agent name/i,
     );
-  });
-
-  it("keeps the name ahead of a positional launch prompt", () => {
-    const line = buildCliLaunchLine("Claude", undefined, undefined, "go", "posix", "maestro-42");
-    expect(line).toEqual({ command: "claude --name maestro-42 'go'", launchPromptDelivered: true });
   });
 });

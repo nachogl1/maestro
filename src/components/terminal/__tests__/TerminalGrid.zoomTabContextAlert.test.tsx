@@ -160,7 +160,6 @@ describe("TerminalGrid zoom strip tabs: context alert and active fill", () => {
     spawnShellMock.mockImplementation(async () => nextSessionId++);
     useSessionStore.setState({
       sessions: [],
-      samuraiBySessionId: {},
       parkedSessionIds: [],
       attentionSessionIds: [],
       flaggedSessionIds: [],

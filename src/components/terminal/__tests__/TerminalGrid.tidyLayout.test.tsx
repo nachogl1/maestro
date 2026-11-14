@@ -198,7 +198,7 @@ describe("TerminalGrid tidy up layout (issue #407)", () => {
     // Each launched pane needs its own session id or the store dedupes them.
     let nextSessionId = 1;
     spawnShellMock.mockImplementation(async () => nextSessionId++);
-    useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
+    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
   });
 
   it("shows a Tidy up button left of the Terminal n/m label while zoomed and evens the panes", async () => {

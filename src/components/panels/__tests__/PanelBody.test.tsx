@@ -216,19 +216,6 @@ describe("panel contents in the left icon strip (formerly the right-hand panel s
     expect(screen.getByText("Epic #38 — Samurai supervision")).toBeInTheDocument();
   });
 
-  it("renders the Launch panel with the run form and active runs", async () => {
-    renderPanel("launch");
-    expect(screen.getByText("Launch Run")).toBeInTheDocument();
-    // Issue #128: one free-text box replaced the epics + issues fields.
-    expect(screen.getByLabelText("What do you want to work on today")).toBeInTheDocument();
-    // One button: it runs preflight itself, so there is no separate step.
-    expect(screen.queryByRole("button", { name: "Run preflight" })).not.toBeInTheDocument();
-    // Scoped to the panel: the strip icon that opens it is also named "Launch".
-    const panel = screen.getByRole("region", { name: "Launch panel" });
-    expect(within(panel).getByRole("button", { name: "Launch" })).toBeDisabled();
-    expect(await screen.findByText("No active runs. Launch one above.")).toBeInTheDocument();
-  });
-
   it("renders the Work Journal panel on today's page", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date(2026, 9, 14, 10, 0, 0));
@@ -291,10 +278,10 @@ describe("panel contents in the left icon strip (formerly the right-hand panel s
   });
 
   it("closes the panel from the header close button", () => {
-    renderPanel("launch");
-    fireEvent.click(screen.getByRole("button", { name: "Close Launch panel" }));
+    renderPanel("inject");
+    fireEvent.click(screen.getByRole("button", { name: "Close Injector panel" }));
 
     expect(usePanelStripStore.getState().openPanels).toEqual([]);
-    expect(screen.queryByRole("region", { name: "Launch panel" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Injector panel" })).not.toBeInTheDocument();
   });
 });

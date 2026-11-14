@@ -6,9 +6,7 @@ import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 /**
  * The user's edited PR review workflow — the graph whose steps are the
  * checkboxes in the PR monitor's action dropdown. Persisted across app
- * restarts through the Tauri store plugin, mirroring
- * `useSamuraiWorkflowStore` (its own file, so the two workflows never
- * overwrite each other).
+ * restarts through the Tauri store plugin.
  *
  * `null` means "never edited": `DEFAULT_PR_WORKFLOW` (frontend-owned — no
  * Rust command compiles this graph) then governs, and future changes to that
@@ -101,9 +99,9 @@ const tauriStorage: StateStorage = {
 let pendingEdit: { graph: WorkflowGraph | null } | null = null;
 
 /**
- * Hydration-FAILURE latch — see `useSamuraiWorkflowStore`. zustand marks only
- * a SUCCESSFUL hydration as finished, so without this a failed read left
- * every gated PR action waiting forever. Cleared when an attempt starts.
+ * Hydration-FAILURE latch. zustand marks only a SUCCESSFUL hydration as
+ * finished, so without this a failed read left every gated PR action waiting
+ * forever. Cleared when an attempt starts.
  */
 let hydrationFailed = false;
 const hydrationFailureWaiters = new Set<() => void>();

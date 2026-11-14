@@ -3,15 +3,16 @@ import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 
 /**
- * Which optional tools show in the top bar. Off hides the tool's button and
- * closes its side pane; the Samurai supervisor itself keeps running.
+ * Which optional tools show in the strip on the left. Off hides the tool's
+ * icon and closes its panel.
  */
 type FeatureSettingsState = {
-  samuraiLaunchEnabled: boolean;
   secondBrainEnabled: boolean;
-  setSamuraiLaunchEnabled: (enabled: boolean) => void;
   setSecondBrainEnabled: (enabled: boolean) => void;
 };
+
+/** The saved switches this version still knows; older files may carry more. */
+type SavedFeatureSettings = Pick<FeatureSettingsState, "secondBrainEnabled">;
 
 const lazyStore = new LazyStore("feature-settings.json");
 
@@ -36,18 +37,23 @@ const tauriStorage: StateStorage = {
 export const useFeatureSettingsStore = create<FeatureSettingsState>()(
   persist(
     (set) => ({
-      samuraiLaunchEnabled: true,
       secondBrainEnabled: true,
-      setSamuraiLaunchEnabled: (enabled) => set({ samuraiLaunchEnabled: enabled }),
       setSecondBrainEnabled: (enabled) => set({ secondBrainEnabled: enabled }),
     }),
     {
       name: "maestro-feature-settings",
       storage: createJSONStorage(() => tauriStorage),
-      partialize: (state) => ({
-        samuraiLaunchEnabled: state.samuraiLaunchEnabled,
+      partialize: (state): SavedFeatureSettings => ({
         secondBrainEnabled: state.secondBrainEnabled,
       }),
+      // A file saved before Samurai was removed still carries its launch
+      // switch; only the switches that still exist are taken from it.
+      merge: (saved, current) => {
+        const value = (saved ?? {}) as Partial<SavedFeatureSettings>;
+        return typeof value.secondBrainEnabled === "boolean"
+          ? { ...current, secondBrainEnabled: value.secondBrainEnabled }
+          : current;
+      },
     },
   ),
 );

@@ -7,7 +7,6 @@ import {
   History,
   type LucideIcon,
   Package,
-  Rocket,
   Settings,
   StickyNote,
   Syringe,
@@ -83,7 +82,6 @@ export const PANELS: readonly PanelDefinition[] = [
     group: 1,
     shortcut: { modifier: "alt", digit: "4" },
   },
-  { id: "launch", title: "Launch", icon: Rocket, group: 1 },
   {
     id: "secondbrain",
     title: "Second Brain",

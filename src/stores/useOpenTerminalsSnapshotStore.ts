@@ -26,8 +26,6 @@ export interface OpenTerminal {
   branch: string | null;
   pinned: boolean;
   parked: boolean;
-  /** Owned by a Samurai run: never offered, only counted. */
-  samurai: boolean;
   /** The Claude conversation it was on, from the SessionStart hook. */
   conversationId: string | null;
 }
@@ -74,8 +72,6 @@ export interface OpenTerminalsInput {
   sessions: SessionConfig[];
   parkedSessionIds: number[];
   pinnedSessionIds: number[];
-  /** Ids of terminals a Samurai run supervises. */
-  samuraiSessionIds: number[];
   /** Each terminal's current Claude conversation, by session id. */
   conversationBySessionId: Record<number, string | undefined>;
 }
@@ -89,7 +85,6 @@ function toOpenTerminal(session: SessionConfig, input: OpenTerminalsInput): Open
     branch: session.branch,
     pinned: input.pinnedSessionIds.includes(session.id),
     parked: input.parkedSessionIds.includes(session.id),
-    samurai: input.samuraiSessionIds.includes(session.id),
     conversationId:
       session.mode === "Claude" ? (input.conversationBySessionId[session.id] ?? null) : null,
   };
@@ -139,14 +134,13 @@ function currentInput(): OpenTerminalsInput {
     sessions: session.sessions,
     parkedSessionIds: session.parkedSessionIds,
     pinnedSessionIds: session.pinnedSessionIds,
-    samuraiSessionIds: Object.keys(session.samuraiBySessionId).map(Number),
     conversationBySessionId,
   };
 }
 
 /** Whether a terminal from the list can be ticked and brought back. */
 export function canBringBack(terminal: OfferedTerminal): boolean {
-  return terminal.folderExists && !terminal.samurai;
+  return terminal.folderExists;
 }
 
 /** Whether a terminal comes back as a resumed Claude conversation. */
@@ -404,12 +398,12 @@ export const useOpenTerminalsSnapshotStore = create<OpenTerminalsSnapshotState>(
       await restore(offer.terminals);
       return;
     }
-    if (offer?.terminals.some((t) => !t.samurai)) {
+    if (offer && offer.terminals.length > 0) {
       set({ offer });
       return;
     }
-    // Nothing to offer: no list, or only Samurai terminals (which recover
-    // from their own panel). Saving the new list replaces the old one.
+    // Nothing to offer: no list, or an empty one. Saving the new list
+    // replaces the old one.
     startSync();
   },
 

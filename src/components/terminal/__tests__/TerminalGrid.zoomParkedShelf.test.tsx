@@ -145,7 +145,6 @@ describe("TerminalGrid zoom view: the parked strip stays below the zoomed termin
     spawnShellMock.mockImplementation(async () => nextSessionId++);
     useSessionStore.setState({
       sessions: [],
-      samuraiBySessionId: {},
       parkedSessionIds: [],
       attentionSessionIds: [],
       flaggedSessionIds: [],

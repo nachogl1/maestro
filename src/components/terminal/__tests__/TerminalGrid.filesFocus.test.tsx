@@ -127,7 +127,7 @@ describe("TerminalGrid tells the Files panel which terminal is focused", () => {
     let nextId = 100;
     spawnShellMock.mockReset();
     spawnShellMock.mockImplementation(async () => nextId++);
-    useSessionStore.setState({ sessions: [], samuraiBySessionId: {}, parkedSessionIds: [] });
+    useSessionStore.setState({ sessions: [], parkedSessionIds: [] });
     useMcpStore.setState({ projectServers: {} });
     usePluginStore.setState({ projectSkills: {}, projectPlugins: {} });
     useFocusedTerminalStore.setState({ focusedSessionId: null });

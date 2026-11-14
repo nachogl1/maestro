@@ -4,30 +4,10 @@ import { projectColorFor } from "@/lib/projectColor";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
-import { useSessionStore } from "@/stores/useSessionStore";
 import { Toast, ToastStack } from "./Toast";
 
 /** Attention tint for health toasts — the same orange the badges use. */
 const HEALTH_ACCENT = "rgb(var(--maestro-orange))";
-
-/** Tint for run-fatal samurai toasts (issue #174) — the error red. */
-const SAMURAI_FATAL_ACCENT = "rgb(var(--maestro-red))";
-
-/** Tint for allowance-park toasts — amber, the colour every park surface uses. */
-const SAMURAI_PARK_ACCENT = "rgb(var(--maestro-orange))";
-
-/**
- * Tint for the attention tier (issue #206): amber, not red — supervision is
- * still correcting the run, and the red card is reserved for a run that has
- * actually died.
- */
-const SAMURAI_ATTENTION_ACCENT = "rgb(var(--maestro-orange))";
-
-/** Last path segment — the toast names the project like the tab strip does. */
-function projectName(projectPath: string): string {
-  const segments = projectPath.split(/[\\/]/).filter(Boolean);
-  return segments[segments.length - 1] ?? projectPath;
-}
 
 /** Toast title per health area — names the panel whose badge has the detail. */
 const HEALTH_AREA_TITLES: Record<HealthArea, string> = {
@@ -63,21 +43,16 @@ export function NotificationToasts() {
   const dismissWatchdogToast = useGitHubWatchdogStore((s) => s.dismissToast);
   const healthToasts = useHealthStore((s) => s.toasts);
   const dismissHealthToast = useHealthStore((s) => s.dismissToast);
-  const samuraiToasts = useSessionStore((s) => s.samuraiToasts);
-  const dismissSamuraiToast = useSessionStore((s) => s.dismissSamuraiToast);
   const projectColors = useProjectColors();
 
-  if (watchdogToasts.length === 0 && healthToasts.length === 0 && samuraiToasts.length === 0) {
+  if (watchdogToasts.length === 0 && healthToasts.length === 0) {
     return null;
   }
 
-  // All queues are oldest-first, so trimming from the front keeps the newest.
-  // Run-fatal samurai toasts (issue #174) take priority — a dead run beats a
-  // review request — then the remainder splits between the other two queues.
-  const samuraiShown = samuraiToasts.slice(-MAX_VISIBLE_TOASTS);
-  const remaining = MAX_VISIBLE_TOASTS - samuraiShown.length;
-  const healthShown = remaining > 0 ? healthToasts.slice(-Math.ceil(remaining / 2)) : [];
-  const watchdogBudget = remaining - healthShown.length;
+  // Both queues are oldest-first, so trimming from the front keeps the newest.
+  // The cap splits between the two queues.
+  const healthShown = healthToasts.slice(-Math.ceil(MAX_VISIBLE_TOASTS / 2));
+  const watchdogBudget = MAX_VISIBLE_TOASTS - healthShown.length;
   const watchdogShown = watchdogBudget > 0 ? watchdogToasts.slice(-watchdogBudget) : [];
 
   return (
@@ -88,37 +63,6 @@ export function NotificationToasts() {
        * subject) is even read. Health toasts have no project, so "Health"
        * stands in for it.
        */}
-      {samuraiShown.map((toast) =>
-        toast.kind === "park" ? (
-          // A park is planned, not broken — amber, and the epic is the
-          // subject because "which run went away" is the first question.
-          <Toast
-            key={toast.id}
-            accentColor={SAMURAI_PARK_ACCENT}
-            kicker={`${projectName(toast.project)} — Samurai parked`}
-            title={`${toast.epic} parked on token allowance`}
-            detail={toast.label}
-            onDismiss={() => dismissSamuraiToast(toast.id)}
-          />
-        ) : (
-          // Issue #206: the attention tier says "look at this", the fatal tier
-          // says "this run is dead" — same card, opposite urgency, so the
-          // colour and the kicker have to differ or the loud one stops meaning
-          // anything.
-          <Toast
-            key={toast.id}
-            accentColor={
-              toast.kind === "attention" ? SAMURAI_ATTENTION_ACCENT : SAMURAI_FATAL_ACCENT
-            }
-            kicker={`${projectName(toast.project)} — ${
-              toast.kind === "attention" ? "Samurai needs a look" : "Samurai run needs you"
-            }`}
-            title={toast.label}
-            detail={`${toast.epic} · gen-${toast.generation}`}
-            onDismiss={() => dismissSamuraiToast(toast.id)}
-          />
-        ),
-      )}
       {watchdogShown.map((toast) => (
         <Toast
           key={toast.id}

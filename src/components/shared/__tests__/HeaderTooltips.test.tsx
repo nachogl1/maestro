@@ -13,7 +13,6 @@ vi.mock("@/hooks/useProjectStatus", () => ({
   useProjectStatus: () => ({ status: "idle", sessionCount: 0 }),
 }));
 // The badges poll stores/Tauri on mount; they are not what these tests cover.
-vi.mock("../ParkedRunsBadge", () => ({ ParkedRunsBadge: () => null }));
 vi.mock("../GitHubWatchdogBadge", () => ({ GitHubWatchdogBadge: () => null }));
 vi.mock("../HealthAttentionBadge", () => ({ HealthAttentionBadge: () => null }));
 vi.mock("../WorkJournalSuggestionsBadge", () => ({

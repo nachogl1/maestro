@@ -3,16 +3,14 @@ import { DialogToggle } from "@/components/shared/DialogShell";
 import { useAttentionSoundStore } from "@/stores/useAttentionSoundStore";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
 import { useHealthStore } from "@/stores/useHealthStore";
-import { useSessionStore } from "@/stores/useSessionStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 /**
  * Settings card (Settings → Notifications) for every background notification Maestro raises
  * (follows the UpdateSettingsSection pattern).
  *
- * One toggle covers every notifying watcher — the GitHub watchdog, the
- * Samurai-file health checker, and the run-fatal Samurai alerts
- * (issue #174). It mutes toasts only: all keep watching, and their
+ * One toggle covers every notifying watcher — the GitHub watchdog and the
+ * Second Brain health checker. It mutes toasts only: all keep watching, and their
  * badges (top-bar totals, panel attention counts, session attention
  * highlights) stay on either way, so nothing is ever silently missed.
  *
@@ -25,7 +23,6 @@ export function NotificationsSettingsSection() {
   const setNotificationsEnabled = useGitHubWatchdogStore((s) => s.setNotificationsEnabled);
   const status = useGitHubWatchdogStore((s) => s.status);
   const dismissHealthToasts = useHealthStore((s) => s.dismissAllToasts);
-  const dismissSamuraiToasts = useSessionStore((s) => s.dismissAllSamuraiToasts);
   const soundEnabled = useAttentionSoundStore((s) => s.enabled);
   const setSoundEnabled = useAttentionSoundStore((s) => s.setEnabled);
 
@@ -35,7 +32,6 @@ export function NotificationsSettingsSection() {
     // Muting clears what is already on screen, for every queue.
     if (!next) {
       dismissHealthToasts();
-      dismissSamuraiToasts();
     }
   };
 

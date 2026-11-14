@@ -1,6 +1,6 @@
 import { type Dispatch, type MutableRefObject, type SetStateAction, useEffect } from "react";
 import type { SessionSlot } from "@/components/terminal/PreLaunchCard";
-import { createEmptySlot, occupiedSlotCount } from "@/components/terminal/slots";
+import { createEmptySlot } from "@/components/terminal/slots";
 import { buildGridTree, MAX_SESSIONS, type TreeNode } from "@/components/terminal/splitTree";
 import type { McpServerConfig } from "@/lib/mcp";
 import type { PluginConfig, SkillConfig } from "@/lib/plugins";
@@ -25,7 +25,7 @@ interface UsePendingLaunchOptions {
 
 /**
  * Consumes this tab's queued launches from `usePendingLaunchStore` (History
- * tab, samurai successor, harvest triage, PR review) and launches each
+ * tab, crash recovery, harvest triage, PR review) and launches each
  * configured slot once it has committed to state.
  */
 export function usePendingLaunch({
@@ -44,8 +44,8 @@ export function usePendingLaunch({
   setFocusedSlotId,
   setError,
 }: UsePendingLaunchOptions): void {
-  // ── History-tab / samurai-successor launches ─────────────────────
-  // The sidebar History tab (and the samurai successor spawn listener)
+  // ── History-tab / PR-review / crash-recovery launches ────────────
+  // The sidebar History tab (like the PR monitor and crash recovery)
   // queues a pre-configured launch (resume id and/or worktree dir) in
   // usePendingLaunchStore because this grid may not even be mounted when
   // the request lands. Consume it here: configure a slot, then let the
@@ -75,12 +75,10 @@ export function usePendingLaunch({
       !launchingSlotIdsRef.current.has(current[0].id)
         ? current[0]
         : null;
-    // Parked samurai terminal-state tiles do not count — see
-    // `occupiedSlotCount`, shared with `addSession`.
-    if (!reusable && occupiedSlotCount(current) >= MAX_SESSIONS) {
+    if (!reusable && current.length >= MAX_SESSIONS) {
       // The claim is consumed by now, so the launch is gone: say what did
       // not happen rather than "cannot resume" — this path also carries
-      // harvest triage and samurai launches, whose own panels have already
+      // harvest triage and PR review launches, whose own panels have already
       // reported success.
       setError(
         `Could not open the requested session: maximum of ${MAX_SESSIONS} sessions per project — close one and try again`,
@@ -94,10 +92,8 @@ export function usePendingLaunch({
       branch: launch.branch,
       resumeSessionId: launch.resumeSessionId,
       workingDirOverride: launch.workingDirOverride,
-      // Samurai successor launches (issue #55) name their session and carry
-      // the registration metadata; History launches leave both unset.
+      // Launches that name their session (PR review, crash recovery) carry it.
       customName: launch.customName ?? base.customName,
-      samurai: launch.samurai ?? null,
       // Harvest triage launches (issue #98) arm the backend's journal
       // prompt injection right before the CLI launches.
       harvest: launch.harvest ?? false,
@@ -116,14 +112,14 @@ export function usePendingLaunch({
       worktreeMode: "project",
     };
     autoLaunchSlotIdsRef.current = [...autoLaunchSlotIdsRef.current, slot.id];
-    // Advance slotsRef EAGERLY, before the setSlots below (bug: a samurai
-    // launch opened an unsupervised terminal in the main checkout, and the
-    // backend re-emitted 180s later). On the grid's MOUNT commit this effect
-    // and the auto-launch effect below run in the SAME passive-effect flush:
-    // React cannot re-render between them, so the ref sync at line 574 has
-    // not run and launchSlot would read the PRISTINE slot — project dir, no
-    // samurai payload, no registration. The next commit's sync re-derives
-    // the ref from state, so an eager advance is self-healing.
+    // Advance slotsRef EAGERLY, before the setSlots below (bug: a queued
+    // launch opened its terminal in the main checkout instead of its own
+    // directory). On the grid's MOUNT commit this effect and the auto-launch
+    // effect below run in the SAME passive-effect flush: React cannot
+    // re-render between them, so the grid's ref sync has not run and
+    // launchSlot would read the PRISTINE slot — project dir, no launch
+    // payload. The next commit's sync re-derives the ref from state, so an
+    // eager advance is self-healing.
     //
     // The setSlots calls stay FUNCTIONAL updaters on purpose: replacing them
     // with this ref-derived array would clobber a concurrent functional

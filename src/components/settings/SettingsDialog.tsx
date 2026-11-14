@@ -9,7 +9,6 @@ import {
   Palette,
   ScrollText,
   Settings,
-  Swords,
   Zap,
 } from "lucide-react";
 import { type ElementType, type ReactNode, useEffect, useRef, useState } from "react";
@@ -22,7 +21,6 @@ import { TerminalSettingsPanel } from "@/components/terminal/TerminalSettingsPan
 import { AppearanceSettingsPanel, type Theme } from "./AppearanceSettingsPanel";
 import { ChangelogPanel } from "./ChangelogPanel";
 import { FeaturesSettingsPanel } from "./FeaturesSettingsPanel";
-import { SamuraiSettingsPanel } from "./SamuraiSettingsPanel";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { UpdatesSettingsPanel } from "./UpdatesSettingsPanel";
 import { WorkJournalSettingsGate } from "./WorkJournalSettingsGate";
@@ -34,7 +32,6 @@ export type SettingsSectionId =
   | "updates"
   | "terminal"
   | "ai-cli"
-  | "samurai"
   | "scratch"
   | "work-journal"
   | "shortcuts"
@@ -105,12 +102,6 @@ const SECTION_GROUPS: SettingsSectionGroup[] = [
         label: "AI command lines",
         icon: Zap,
         description: "Flags Maestro adds when it starts each AI command line.",
-      },
-      {
-        id: "samurai",
-        label: "Samurai",
-        icon: Swords,
-        description: "When the Samurai supervisor hands off, pauses or flags your agents.",
       },
       {
         id: "scratch",
@@ -191,8 +182,6 @@ export function SettingsDialog({
         return <TerminalSettingsPanel />;
       case "ai-cli":
         return <CliSettingsPanel />;
-      case "samurai":
-        return <SamuraiSettingsPanel />;
       case "scratch":
         return <ScratchFolderSettings />;
       case "work-journal":

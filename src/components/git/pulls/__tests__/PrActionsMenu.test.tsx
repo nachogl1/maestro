@@ -19,6 +19,7 @@ import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import type { PullRequestInfo } from "@/stores/useGitHubStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
 import { prWorkflowGraphForLaunch, usePrWorkflowStore } from "@/stores/usePrWorkflowStore";
+import { useWorkflowsViewStore } from "@/stores/useWorkflowsViewStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { PrActionsMenu } from "../PrActionsMenu";
 
@@ -89,6 +90,7 @@ describe("PrActionsMenu", () => {
     usePrWorkflowStore.setState({ graph: null });
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     usePendingLaunchStore.setState({ pending: [] });
+    useWorkflowsViewStore.setState({ isOpen: false });
   });
 
   it("derives one checkbox per workflow step, with only the first ticked", () => {
@@ -325,6 +327,18 @@ describe("PrActionsMenu", () => {
 
     openMenu();
     fireEvent.mouseDown(document.body);
+    expect(screen.queryByLabelText("Check status")).not.toBeInTheDocument();
+  });
+
+  // The Launch panel used to be the only way into the workflow editor; it went
+  // with Samurai, so the menu whose steps the editor defines opens it.
+  it("opens the PR review workflow editor and closes itself", () => {
+    render(<PrActionsMenu pr={buildPr()} repoPath={REPO_PATH} />);
+
+    openMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Edit the PR review workflow" }));
+
+    expect(useWorkflowsViewStore.getState().isOpen).toBe(true);
     expect(screen.queryByLabelText("Check status")).not.toBeInTheDocument();
   });
 });

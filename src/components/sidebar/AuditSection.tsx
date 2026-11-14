@@ -4,13 +4,14 @@ import { BookOpenCheck, ChevronRight, Loader2, RefreshCw, ScrollText, Trash2 } f
 import { useCallback, useEffect, useState } from "react";
 import { samePath } from "@/lib/path";
 import {
+  SAMURAI_ACCOUNT_PROJECT,
+  SAMURAI_ACCOUNT_RUN,
   type SamuraiAuditEvent,
   type SamuraiAuditEventKind,
   type SamuraiAuditEventPayload,
   samuraiAuditClear,
   samuraiAuditRead,
 } from "@/lib/samurai";
-import { SAMURAI_ACCOUNT_PROJECT, SAMURAI_ACCOUNT_RUN } from "@/stores/useSessionStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
 

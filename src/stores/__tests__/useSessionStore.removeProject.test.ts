@@ -35,10 +35,6 @@ describe("useSessionStore removeSessionsForProject", () => {
       parkedSessionIds: [1, 3],
       flaggedSessionIds: [2, 3],
       attentionSessionIds: [1, 2, 3],
-      samuraiBySessionId: {
-        1: { project: GONE, epic: "e", generation: 1, state: "WORKING" },
-        3: { project: KEPT, epic: "e", generation: 1, state: "WORKING" },
-      },
     });
     invokeMock.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -73,7 +69,6 @@ describe("useSessionStore removeSessionsForProject", () => {
     expect(state.parkedSessionIds).toEqual([3]);
     expect(state.flaggedSessionIds).toEqual([3]);
     expect(state.attentionSessionIds).toEqual([3]);
-    expect(Object.keys(state.samuraiBySessionId)).toEqual(["3"]);
   });
 
   it("leaves other projects alone when the backend rejects", async () => {

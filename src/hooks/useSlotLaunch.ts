@@ -10,18 +10,15 @@ import {
   setSessionSkills,
   writeSessionPluginConfig,
 } from "@/lib/plugins";
-import { samuraiHarvestArm, samuraiRevertLaunchLinePrompt } from "@/lib/samurai";
-import type { ShellFamily } from "@/lib/shellEscape";
-import { registerSamuraiSuccessor, samuraiSuccessorCliFlags } from "@/lib/spawnSession";
+import { samuraiHarvestArm } from "@/lib/samurai";
 import {
   AI_CLI_CONFIG,
   assignSessionBranch,
-  buildCliLaunchLine,
+  buildCliCommand,
   checkCliAvailable,
   createSession,
   killSession,
   spawnShell,
-  terminalShellFamily,
   waitForTerminalReady,
   writeSessionHooksConfig,
   writeStdin,
@@ -37,61 +34,6 @@ import { useSessionStore } from "@/stores/useSessionStore";
  * This prevents race conditions where multiple sessions share the same .mcp.json file.
  * Without worktrees, sessions can overwrite each other's MCP config before Claude CLI reads it.
  */
-/**
- * Whether a `writeStdin` rejection PROVES nothing reached the PTY (issue
- * #158). Only `SessionNotFound` does: it is raised before any byte is
- * written. `WriteFailed` covers a failed `flush` as well as a failed
- * `write_all` (`process_manager::write_stdin`), so it cannot rule out a line
- * that already landed, and a non-`PtyError` rejection rules out nothing at
- * all. Anything unproven leaves the launch-line claim standing.
- *
- * `WriteFailed` is deliberately not split finer, even though one of its three
- * causes — a poisoned writer lock — is strictly PRE-write and would be safe to
- * revert on. It is indistinguishable from the other two at this boundary, and
- * nothing is lost by treating it as unproven: with no bytes sent, claude never
- * launches, `SessionStarted` never fires, and the entry ends on the ordinary
- * `successor_no_start` ALERT. Letting the sweep report it beats widening a
- * rule whose failure mode is a double paste.
- */
-function writeReachedNothing(err: unknown): boolean {
-  if (!err || typeof err !== "object" || !("code" in err)) return false;
-  return (err as { code?: unknown }).code === "SessionNotFound";
-}
-
-/**
- * Hands a launch-line claim back to the typed route, reporting both ways it
- * can fail to take effect (issue #158). A `false` answer is NOT "nothing to
- * do": it also covers the entry having already been consumed by
- * `SessionStarted` on the launch-line route — audited as delivered, with
- * nothing actually typed — which only the 45s activity watch would otherwise
- * surface.
- */
-async function revertLaunchLineClaim(sessionId: number): Promise<void> {
-  try {
-    if (!(await samuraiRevertLaunchLinePrompt(sessionId))) {
-      console.warn(
-        `[Samurai] No launch-line claim was reverted for session ${sessionId} — it may already have been consumed as delivered`,
-      );
-    }
-  } catch (err) {
-    console.error("[Samurai] Failed to revert the launch-line claim:", err);
-  }
-}
-
-/**
- * The spawned shell's quoting family (issue #158), or `null` when the backend
- * cannot name it — including when the call itself fails. `null` is a refusal,
- * not an error: the caller keeps a route that needs no quoting.
- */
-async function shellFamilyOrNull(): Promise<ShellFamily | null> {
-  try {
-    return await terminalShellFamily();
-  } catch (err) {
-    console.error("[Samurai] Could not read the session shell family:", err);
-    return null;
-  }
-}
-
 const projectLaunchLocks = new Map<string, Promise<void>>();
 
 async function withProjectLock<T>(projectPath: string, fn: () => Promise<T>): Promise<T> {
@@ -422,81 +364,14 @@ export function useSlotLaunch({
               // Brief delay for shell to initialize
               await new Promise((resolve) => setTimeout(resolve, 100));
 
-              // Build CLI command with user-configured flags. A samurai
-              // successor (issue #55) additionally forces skip-permissions —
-              // an autonomous generation cannot answer permission prompts —
-              // and carries the run config's model preference (review F4).
+              // Build CLI command with user-configured flags.
               const cliFlags = useCliSettingsStore.getState().getFlags(slot.mode);
-              const effectiveFlags = slot.samurai
-                ? samuraiSuccessorCliFlags(cliFlags, slot.samurai.model)
-                : cliFlags;
-              // Issue #158: a gen-1 launch also carries its brief POINTER on
-              // this very line, as a quoted positional initial prompt, so the
-              // instruction that starts the run is submitted WITH the launch
-              // instead of typed into claude's REPL afterwards. The quoting
-              // family comes from the backend — the shell it actually spawns,
-              // not a guess from the OS — and an unavailable answer simply
-              // keeps the prompt off the line.
-              const launchPrompt = slot.samurai?.launchPrompt ?? null;
-              const shellFamily = launchPrompt ? await shellFamilyOrNull() : null;
-              let launchLine = buildCliLaunchLine(
+              const cliCommand = buildCliCommand(
                 slot.mode,
-                effectiveFlags,
+                cliFlags,
                 slot.resumeSessionId ?? undefined,
-                launchPrompt,
-                shellFamily,
                 agentName ?? undefined,
               );
-              let launchPromptOnLine = launchLine?.launchPromptDelivered ?? false;
-
-              // Samurai successor: register under supervision BEFORE the CLI
-              // launches, so the backend's verify-ritual delivery is armed
-              // strictly ahead of claude's SessionStart hook. Registration
-              // failure is logged, not fatal — the session still launches and
-              // the backend's successor_no_start ALERT surfaces the gap.
-              //
-              // Issue #158: the pointer may only stay on the line if the
-              // backend says it ARMED the launch-line route. A refusal
-              // resolves normally (it refuses a claim it never offered), and a
-              // throw says nothing either way — read as acceptance, both write
-              // a line carrying a pointer the backend is still going to type,
-              // delivering the brief TWICE. Either answer takes it back off.
-              //
-              // The mirror case is accepted, not unhandled: if the backend
-              // DID arm the route but the reply is lost, the pointer is
-              // stripped here and neither route delivers. That is exactly
-              // what the activity-only DeliveredWatch exists for — the
-              // session starts, no turn follows, and it raises
-              // `submit_unconfirmed`. A silent no-delivery is impossible; a
-              // double paste, had this branch guessed the other way, would
-              // not even be visible.
-              if (slot.samurai) {
-                let armed = false;
-                try {
-                  armed = await registerSamuraiSuccessor(
-                    sessionId,
-                    slot.samurai,
-                    launchPromptOnLine,
-                  );
-                } catch (err) {
-                  console.error("[Samurai] Failed to register successor session:", err);
-                }
-                if (launchPromptOnLine && !armed) {
-                  console.warn(
-                    "[Samurai] The backend did not arm the launch-line route — typing the pointer instead",
-                  );
-                  launchLine = buildCliLaunchLine(
-                    slot.mode,
-                    effectiveFlags,
-                    slot.resumeSessionId ?? undefined,
-                    null,
-                    shellFamily,
-                    agentName ?? undefined,
-                  );
-                  launchPromptOnLine = false;
-                }
-              }
-              const cliCommand = launchLine?.command ?? null;
 
               // Harvest triage launch (issue #98): arm the backend BEFORE
               // the CLI launches, so the journal-prompt injection gate is
@@ -540,22 +415,7 @@ export function useSlotLaunch({
               }
 
               // Send CLI launch command
-              try {
-                await writeStdin(sessionId, `${cliCommand}\r`);
-              } catch (err) {
-                // Issue #158: the claim above told the backend the pointer
-                // went out on this line. Hand the typed delivery back — but
-                // ONLY when the error proves nothing reached the shell.
-                // `writeStdin` also rejects after `write_all` succeeded (a
-                // failing `flush`, a join error), and there the whole line is
-                // already in the PTY: reverting would type the pointer a
-                // second time on SessionStarted. An unnecessary ALERT on a
-                // delivered run is cheap; a double paste corrupts it.
-                if (launchPromptOnLine && writeReachedNothing(err)) {
-                  await revertLaunchLineClaim(sessionId);
-                }
-                throw err;
-              }
+              await writeStdin(sessionId, `${cliCommand}\r`);
 
               // Brief delay for CLI initialization.
               // With session-specific MCP server names (maestro-1, maestro-2, etc.),

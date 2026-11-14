@@ -29,14 +29,10 @@ export interface RecoveryProjectGroup {
   rows: Array<{ index: number; terminal: OfferedTerminal }>;
 }
 
-/**
- * The dialog's rows, grouped by project in the order the list has them;
- * Samurai terminals are left out (the dialog only counts them).
- */
+/** The dialog's rows, grouped by project in the order the list has them. */
 export function groupByProject(terminals: OfferedTerminal[]): RecoveryProjectGroup[] {
   const groups: RecoveryProjectGroup[] = [];
   terminals.forEach((terminal, index) => {
-    if (terminal.samurai) return;
     let group = groups.find((g) => samePath(g.projectPath, terminal.projectPath));
     if (!group) {
       group = {
@@ -58,13 +54,4 @@ export function whatComesBack(terminal: OfferedTerminal): string {
   return terminal.conversationFound && terminal.conversationId
     ? "conversation continues"
     : "conversation not found, opens new";
-}
-
-/** The line under the list counting Samurai runs, or null when there are none. */
-export function samuraiLine(terminals: OfferedTerminal[]): string | null {
-  const count = terminals.filter((t) => t.samurai).length;
-  if (count === 0) return null;
-  return count === 1
-    ? "1 Samurai run is not listed here. Recover it from the Launch panel."
-    : `${count} Samurai runs are not listed here. Recover them from the Launch panel.`;
 }

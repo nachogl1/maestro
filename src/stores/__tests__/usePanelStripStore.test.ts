@@ -90,6 +90,11 @@ describe("sanitizePanelStrip (saved state is untrusted)", () => {
       { openPanels: ["git", "notes"], widths: {} },
     ],
     [
+      "the removed Launch panel",
+      { openPanels: ["launch", "git"], widths: { launch: 400, git: 300 } },
+      { openPanels: ["git"], widths: { git: 300 } },
+    ],
+    [
       "bad and out-of-range widths",
       {
         openPanels: [],
