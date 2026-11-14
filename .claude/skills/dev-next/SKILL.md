@@ -395,7 +395,7 @@ own commits: a commit in `git log --format=%H <reconciled_at>..origin/main -- do
 `git log --format=%H <reconciled_at>..origin/main -- docs/reconcile-state.json` is drift (the reconcile's pull request
 edits the PRD and the bookmark in one commit, so without that filter every reconcile would look like drift; no
 bookmark and at least one PRD → counts as changed, once, until a first reconcile writes it). Any sign → the summary ends with the line
-`Drift found: run /reconcile-issue-map`, after the `Harvest due` and `QA due` lines if they apply. Probing only; this skill never
+`Drift found: run /reconcile`, after the `Harvest due` and `QA due` lines if they apply. Probing only; this skill never
 reconciles and never edits an issue for it.
 
 Then print **ten lines per issue, no more** (the second touchpoint): issue and title · what shipped · pull request link · suite result ·

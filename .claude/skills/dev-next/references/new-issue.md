@@ -58,7 +58,7 @@ sees it. An epic never carries one. The first line that fits decides:
 
 | The story | Tier |
 |---|---|
-| Was cut from a PRD (by `/prd-to-tickets`, `/reconcile-issue-map` or a person writing PRD work) | The tier the PRD gives that work, lowercase with spaces as hyphens: `tier:mvp`, `tier:stretch`, `tier:stretch-2`. A PRD that gives that work no tier → ask the person, `mvp` recommended. |
+| Was cut from a PRD (by `/prd-to-tickets`, `/reconcile` or a person writing PRD work) | The tier the PRD gives that work, lowercase with spaces as hyphens: `tier:mvp`, `tier:stretch`, `tier:stretch-2`. A PRD that gives that work no tier → ask the person, `mvp` recommended. |
 | Reports or fixes a defect (a red `main`, a QA failure, a defect found anywhere else) | `tier:bug` |
 | Was filed by a skill for any other reason | The skill's name: `tier:dev-quick`, `tier:harvest`, `tier:wayfinder`, `tier:dev-next` (a `Critical:` finding that is not a defect) |
 | Was written by a person, outside any PRD, or asked for in chat with no skill running | `tier:manual` |
