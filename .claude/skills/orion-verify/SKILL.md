@@ -1,6 +1,6 @@
 ---
 name: orion-verify
-description: ORION - The consistency check that `orion init` asks for once, and the session-start hook asks for again each time orion's rules change on this computer. Verifies that the project's CLAUDE.md, the BASE_CLAUDE.md it imports, every skill under .claude/skills (orion's and the project's own), the settings and the person's own rules file (~/.claude/CLAUDE.md) fit together - no missing pieces, no duplicates, no rule in the project or the person's file that contradicts the mandatory rules, no skill that breaks them. Fixes what is mechanical by itself, asks before touching anything the project owns, and reports the rest in a few lines. Use when a session-start message says the orion post-install check is pending or that orion's rules changed, right after `orion init` or an `orion update` that changed the rules finished in this session, or when the user types /orion-verify.
+description: ORION - The consistency check that `orion init` asks for once, and the session-start hook asks for again each time orion's rules change on this computer and once on a computer where the repository is new (a fresh clone). Verifies that the project's CLAUDE.md, the BASE_CLAUDE.md it imports, every skill under .claude/skills (orion's and the project's own), the settings and the person's own rules file (~/.claude/CLAUDE.md) fit together - no missing pieces, no duplicates, no rule in the project or the person's file that contradicts the mandatory rules, no skill that breaks them. Fixes what is mechanical by itself, asks before touching anything the project owns, and reports the rest in a few lines. Use when a session-start message says the orion post-install check is pending, that orion's rules changed or that orion is new on this computer for this repository, right after `orion init` or an `orion update` that changed the rules finished in this session, or when the user types /orion-verify.
 argument-hint: (no arguments)
 ---
 
@@ -16,7 +16,8 @@ with one orion ships or may tell the agent to do what the rules forbid, a line m
 that whole-picture check. It runs **once after install** (the hook asks for it at the next session start, or `init`'s
 own closing message asks for it when it ran inside a session), **again each time orion's rules change on this
 computer** (`BASE_CLAUDE.md` or any `.md` file of an orion skill, after an update or a pull that brought one: the hook
-asks once, and `update` says so when it changed them), and whenever the user types `/orion-verify`.
+asks once, and `update` says so when it changed them), **once on a computer where the repository is new** (a fresh
+clone with no record of a check here; every worktree of one clone shares that record), and whenever the user types `/orion-verify`.
 
 Three kinds of outcome, kept strictly apart:
 
