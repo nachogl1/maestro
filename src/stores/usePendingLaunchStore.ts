@@ -83,6 +83,12 @@ export interface PendingLaunch {
    * simply leaves nothing on disk to group.
    */
   prRun?: PrReviewLaunch | null;
+  /**
+   * Crash recovery (issue #608): one id per terminal being brought back, so
+   * two terminals that look alike (two unnamed shells in one folder) are two
+   * launches, not one deduplicated request.
+   */
+  restoreKey?: string | null;
 }
 
 interface PendingLaunchState {
@@ -127,7 +133,8 @@ function sameLaunch(a: PendingLaunch, b: PendingLaunch): boolean {
     (a.prRun?.pr ?? null) === (b.prRun?.pr ?? null) &&
     (a.prRun?.repo ?? null) === (b.prRun?.repo ?? null) &&
     (a.prRun?.project_path ?? null) === (b.prRun?.project_path ?? null) &&
-    JSON.stringify(a.prRun?.steps ?? []) === JSON.stringify(b.prRun?.steps ?? [])
+    JSON.stringify(a.prRun?.steps ?? []) === JSON.stringify(b.prRun?.steps ?? []) &&
+    (a.restoreKey ?? null) === (b.restoreKey ?? null)
   );
 }
 

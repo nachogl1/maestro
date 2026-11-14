@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useShallow } from "zustand/react/shallow";
 import { QuickActionsManager } from "@/components/quickactions/QuickActionsManager";
+import { RecoveryWarning } from "@/components/recovery/RecoveryWarning";
 import { ActivityFeed } from "@/components/session/ActivityFeed";
 import { useSessionBranch } from "@/hooks/useSessionBranch";
 import { useXtermSession } from "@/hooks/useXtermSession";
@@ -445,6 +446,9 @@ export const TerminalView = memo(function TerminalView({
       {/* Can't-miss attention strip: Maestro is about to hand off or park
           this agent. Renders nothing outside those states. */}
       <SamuraiHandoffBanner sessionId={sessionId} />
+
+      {/* Crash recovery: brought back without its earlier content (issue #608). */}
+      <RecoveryWarning sessionId={sessionId} />
 
       {/* What this terminal is about, in one line. Rendered only when the
           session has produced something to say, so an empty shell keeps its
