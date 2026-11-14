@@ -30,6 +30,7 @@ import {
   type MultiProjectViewHandle,
 } from "./components/shared/MultiProjectView";
 import { NotificationToasts } from "./components/shared/NotificationToasts";
+import { SamuraiCleanupNotice } from "./components/shared/SamuraiCleanupNotice";
 import { ParticleEffectsLayer } from "./components/shared/ParticleEffectsLayer";
 import { ProjectTabs } from "./components/shared/ProjectTabs";
 import { type EagleProjectOption, TopBar } from "./components/shared/TopBar";
@@ -626,6 +627,7 @@ function App() {
       <UpdateNotification />
       <AutoUpdateQuestion />
       <NotificationToasts />
+      <SamuraiCleanupNotice />
       <ParticleEffectsLayer />
       <WorkJournalSettingsHost theme={theme} onToggleTheme={toggleTheme} />
       <WorkJournalBackgroundWork tabs={tabs} />

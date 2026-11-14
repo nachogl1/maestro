@@ -261,19 +261,40 @@ Nothing in Maestro starts, shows or mentions a Samurai run any more:
 - Settings saved by an older version that still carry the Samurai launch switch load as before; the switch is
   ignored.
 - Nothing Samurai runs in the background either: no supervision, hand-offs, parking timers, scheduled resumes or
-  audit log. Samurai files already on disk are left where they are.
+  audit log. Samurai files already on disk are removed once, where that is safe (see "Samurai's old files: the
+  one-time cleanup" below).
 - The brief file a PR review leaves in `.maestro/briefs/` is removed at the next start of Maestro once it is
   older than 14 days. The 14 days are fixed; there is no setting for them.
 
 ## Second Brain and the health checker are gone
 
 - No **Second Brain** icon or panel: the Samurai audit stream, the ops journal, **Harvest now**, the old harvest
-  reports and the Samurai files list are no longer shown. Journal entries and files already on disk stay there,
-  unseen.
+  reports and the Samurai files list are no longer shown. The journal and harvest files already on disk are removed
+  by the one-time cleanup below.
 - No health checker: no orange health count on any icon and no "Health — Second Brain" toast. **Settings →
   Notifications → Show notifications** now covers the GitHub review-request and issue-assigned toasts only.
 - **Settings → Features** has no "Show Second Brain" switch; its saved choice is ignored.
 - PR review launches from the PR action menu work as before and still write their run record and brief file.
+
+## Samurai's old files: the one-time cleanup
+
+On the first start of a version without Samurai, Maestro removes Samurai's leftover files in the background, once.
+It never asks first, and it only removes what cannot hold anyone's work:
+
+- **In Maestro's data folder:** the Samurai audit logs, the run records (not the PR review records), the schedule
+  and latches files, the ops journal and the harvest reports.
+- **In Maestro's settings folder:** the Samurai settings and the Samurai workflow.
+- **In each project a Samurai run worked on:** the `.maestro/handoffs/` folder. `.maestro/briefs/` stays, because
+  PR review uses it.
+- **Run worktrees:** one is removed only when everything on it is already on the project's default branch and it
+  has no uncommitted or new files. A branch that was squash-merged does not count as merged, so its worktree is kept.
+- Anything that is a link to another folder, or holds one, is left alone, and nothing is force-deleted. A file that
+  cannot be removed is skipped and the rest still goes.
+
+When a run worktree is kept, a notice in the bottom-left corner lists each one with its folder and why it was kept
+(unmerged commits, uncommitted files). It stays until you close it with its **X**. When nothing was kept, there is
+no notice. Later starts do nothing: a `samurai-cleanup-done` file in Maestro's data folder records that the cleanup
+ran. A kept worktree is yours to look at and remove by hand.
 
 ## PR monitor: editing the PR review workflow
 

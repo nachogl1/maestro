@@ -555,6 +555,8 @@ pub fn run() {
             core::open_terminals::open_terminals_save,
             core::open_terminals::open_terminals_load,
             core::open_terminals::open_terminals_clear,
+            // One-time Samurai cleanup: the run worktrees it kept (issue #615)
+            core::legacy_cleanup::samurai_cleanup_kept_worktrees,
             commands::terminal::terminal_shell_family,
             // CLI commands
             commands::cli::install_cli,

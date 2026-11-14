@@ -43,6 +43,25 @@ pub(crate) fn run_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
     }
     app.manage(pr_runs);
 
+    // Issue #615: on the first start without Samurai, remove what it left on
+    // disk in the background; the front end asks which worktrees were kept.
+    let cleanup_notice = Arc::new(crate::core::legacy_cleanup::CleanupNotice::default());
+    app.manage(cleanup_notice.clone());
+    let cleanup_roots = crate::core::legacy_cleanup::CleanupRoots {
+        data_dir: commands::ai_runner::app_data_root(),
+        settings_dir: app.path().app_data_dir().ok(),
+    };
+    // Its own thread: the deletes and link scans are blocking file work.
+    let spawned = std::thread::Builder::new()
+        .name("samurai-cleanup".to_string())
+        .spawn(move || {
+            let cleanup = crate::core::legacy_cleanup::run_once(&cleanup_roots);
+            cleanup_notice.publish(tauri::async_runtime::block_on(cleanup));
+        });
+    if let Err(e) = spawned {
+        log::warn!("samurai cleanup: could not start its thread: {e}");
+    }
+
     // GitHub watchdog: background poller for review requests /
     // assigned issues across all configured projects. The frontend
     // syncs the project set via `github_watchdog_set_projects`.
