@@ -217,26 +217,21 @@ describe("PreLaunchCard AI Mode Selection", () => {
     if (modeButton) fireEvent.click(modeButton);
   }
 
-  it("displays all AI providers in the mode dropdown", () => {
+  it("offers only Claude Code and a plain terminal in the mode dropdown", () => {
     render(<PreLaunchCard {...defaultProps} />);
 
     openModeDropdown();
 
-    // Verify all providers are shown in the dropdown
-    // Use getAllByText since provider names may appear in both button and dropdown
-    expect(screen.getAllByText("Claude Code").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Gemini CLI").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Codex").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("OpenCode").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Terminal").length).toBeGreaterThanOrEqual(1);
+    // The open dropdown lists one button per mode, the selected one ticked.
+    const aiModeLabel = screen.getByText("AI Mode");
+    const dropdownButtons = [...(aiModeLabel.parentElement?.querySelectorAll("button") ?? [])];
+    const optionLabels = dropdownButtons.slice(1).map((button) => button.textContent);
+    expect(optionLabels).toEqual(["Claude Code", "Terminal"]);
   });
 
   it("calls onModeChange with correct mode when each provider is selected", () => {
     const providers = [
       { label: "Claude Code", mode: "Claude" },
-      { label: "Gemini CLI", mode: "Gemini" },
-      { label: "Codex", mode: "Codex" },
-      { label: "OpenCode", mode: "OpenCode" },
       { label: "Terminal", mode: "Plain" },
     ];
 
@@ -289,8 +284,8 @@ describe("PreLaunchCard AI Mode Selection", () => {
     const label = [...card2.querySelectorAll("label")].find((l) => l.textContent === "AI Mode");
     if (!label) throw new Error("AI Mode label missing");
     fireEvent.click(label);
-    expect(within(card2).getAllByText("Gemini CLI").length).toBeGreaterThanOrEqual(1);
-    expect(within(screen.getByTestId("card-1")).queryByText("Gemini CLI")).toBeNull();
+    expect(within(card2).getAllByText("Terminal").length).toBeGreaterThanOrEqual(1);
+    expect(within(screen.getByTestId("card-1")).queryByText("Terminal")).toBeNull();
   });
 });
 

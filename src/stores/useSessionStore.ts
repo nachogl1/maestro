@@ -10,6 +10,7 @@ import {
   type SamuraiScheduleEntry,
   type SamuraiSupervisorState,
 } from "@/lib/samurai";
+import type { AiMode } from "@/lib/terminal";
 import { useAgentStore } from "@/stores/useAgentStore";
 import { useAttentionSoundStore } from "@/stores/useAttentionSoundStore";
 import {
@@ -22,8 +23,8 @@ import type { ClaudeEvent } from "@/types/claude-events";
 
 export type { SamuraiScheduleEntry, SamuraiSupervisorState };
 
-/** AI provider variants supported by the backend orchestrator. */
-export type AiMode = "Claude" | "Gemini" | "Codex" | "OpenCode" | "Plain";
+/** AI provider variants supported by the backend orchestrator, defined once in `@/lib/terminal`. */
+export type { AiMode };
 
 /**
  * Backend-emitted session lifecycle states.

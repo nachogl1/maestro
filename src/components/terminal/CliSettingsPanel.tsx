@@ -9,28 +9,13 @@ import { AI_CLI_CONFIG, buildCliCommand, type CliAiMode } from "@/lib/terminal";
 import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
 
 /** The AI modes that support CLI flags. */
-const CLI_MODES: CliAiMode[] = ["Claude", "Gemini", "Codex", "OpenCode"];
+const CLI_MODES: CliAiMode[] = ["Claude"];
 
 /** Mode display configuration */
 const MODE_CONFIG: Record<CliAiMode, { color: string; bgColor: string; skipFlagName: string }> = {
   Claude: {
     color: "text-maestro-orange",
     bgColor: "bg-maestro-orange/20",
-    skipFlagName: "--dangerously-skip-permissions",
-  },
-  Gemini: {
-    color: "text-maestro-accent",
-    bgColor: "bg-maestro-accent/20",
-    skipFlagName: "--yolo",
-  },
-  Codex: {
-    color: "text-maestro-green",
-    bgColor: "bg-maestro-green/20",
-    skipFlagName: "--dangerously-bypass-approvals-and-sandbox",
-  },
-  OpenCode: {
-    color: "text-purple-500",
-    bgColor: "bg-purple-500/20",
     skipFlagName: "--dangerously-skip-permissions",
   },
 };

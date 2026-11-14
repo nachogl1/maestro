@@ -143,6 +143,15 @@ two messages on, it carries a count, such as `3`.
   Journal harvest prompt and the first prompt at launch never add one.
 - The icons are kept in memory only: they clear when Maestro restarts, and a closed terminal's messages go with it.
 
+## Terminals: two kinds, Claude Code and plain shell
+
+- A new terminal card's **AI Mode** list offers two kinds: **Claude Code** and **Terminal** (a plain shell with no
+  AI tool started in it). Gemini CLI, Codex and OpenCode are no longer offered anywhere.
+- Settings → **AI command lines** shows flags for Claude Code only; a plain shell has none.
+- Flags saved for the removed kinds by an older Maestro stay in its settings file and are ignored.
+- Maestro no longer writes to or cleans up any `opencode.json`; entries an older Maestro wrote there stay until you
+  remove them yourself.
+
 ## Injector: triggers
 
 Under the Injector, **Triggers** send a message on their own when a terminal's context reaches a percent.
@@ -191,7 +200,7 @@ Shortcuts lists the key.
 - The title reads "Do you want to invoke Conclave?"; hover over or tab to the (i) icon after it for a one-line
   explanation.
 - The list shows every running Claude Code terminal of every open project, grouped by project; parked ones carry a
-  small `parked` tag. Other CLIs (Gemini, Codex, OpenCode, plain shells) are never listed. Nothing is ticked when it
+  small `parked` tag. Plain shell terminals are never listed. Nothing is ticked when it
   opens; **All** ticks every one.
 - The text box opens with the default Conclave message every time, even after an earlier edit; edit it freely for
   this one send. When it is sent, Maestro adds one line you never edit, such as

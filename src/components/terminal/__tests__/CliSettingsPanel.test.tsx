@@ -18,11 +18,12 @@ import { useCliSettingsStore } from "@/stores/useCliSettingsStore";
 import { CliSettingsPanel } from "../CliSettingsPanel";
 
 describe("CliSettingsPanel", () => {
-  it("shows the mode tabs, sections and reset actions", () => {
+  it("shows the Claude tab as the only mode, its sections and reset actions", () => {
     render(<CliSettingsPanel />);
-    for (const mode of ["Claude", "Gemini", "Codex", "OpenCode"]) {
-      expect(screen.getByRole("button", { name: mode })).toBeInTheDocument();
-    }
+    const modeTabs = screen
+      .getAllByRole("button")
+      .filter((button) => !button.textContent?.includes("Reset"));
+    expect(modeTabs.map((tab) => tab.textContent)).toEqual(["Claude"]);
     for (const section of ["Permissions", "Custom Flags", "Command Preview"]) {
       expect(screen.getByText(section)).toBeInTheDocument();
     }
@@ -30,13 +31,12 @@ describe("CliSettingsPanel", () => {
     expect(screen.getByRole("button", { name: "Reset Claude" })).toBeInTheDocument();
   });
 
-  it("switches the active mode and stores that mode's custom flags", () => {
+  it("stores the custom flags typed for Claude and shows them in the preview", () => {
     render(<CliSettingsPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Gemini" }));
-    expect(screen.getByRole("button", { name: "Reset Gemini" })).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("e.g., --verbose --model opus"), {
       target: { value: "--verbose" },
     });
-    expect(useCliSettingsStore.getState().flags.Gemini.customFlags).toBe("--verbose");
+    expect(useCliSettingsStore.getState().flags.Claude.customFlags).toBe("--verbose");
+    expect(screen.getByText("claude --verbose")).toBeInTheDocument();
   });
 });

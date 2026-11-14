@@ -9,9 +9,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AiMode {
     Claude,
-    Gemini,
-    Codex,
-    OpenCode,
     Plain,
 }
 

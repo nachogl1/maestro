@@ -45,7 +45,7 @@ import {
   invalidateCurrentBranchCache,
 } from "@/lib/git";
 import { clickHeaderAction, type HeaderAction } from "@/lib/headerShortcuts";
-import { type McpServerConfig, removeOpenCodeMcpConfig, removeSessionMcpConfig } from "@/lib/mcp";
+import { type McpServerConfig, removeSessionMcpConfig } from "@/lib/mcp";
 import {
   type MoveDirection,
   neighbourInDirection,
@@ -1147,11 +1147,7 @@ export const TerminalGrid = forwardRef<TerminalGridHandle, TerminalGridProps>(fu
 
       // Clean up session-specific MCP config (fire-and-forget)
       if (workingDir && !keepDirArtifacts) {
-        if (slot?.mode === "OpenCode") {
-          removeOpenCodeMcpConfig(workingDir, sessionId).catch(console.error);
-        } else {
-          removeSessionMcpConfig(workingDir, sessionId).catch(console.error);
-        }
+        removeSessionMcpConfig(workingDir, sessionId).catch(console.error);
       }
 
       // Clean up session-specific plugin config (fire-and-forget)

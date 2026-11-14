@@ -70,9 +70,7 @@ vi.mock("@/lib/mcp", async (importOriginal) => {
     loadProjectMcpDefaults: vi.fn(async () => null),
     setSessionMcpServers: vi.fn(async () => {}),
     writeSessionMcpConfig: vi.fn(async () => {}),
-    writeOpenCodeMcpConfig: vi.fn(async () => {}),
     removeSessionMcpConfig: vi.fn(async () => {}),
-    removeOpenCodeMcpConfig: vi.fn(async () => {}),
   };
 });
 
