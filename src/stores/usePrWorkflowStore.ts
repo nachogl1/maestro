@@ -1,7 +1,7 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
-import type { SamuraiWorkflowGraph } from "@/lib/samurai";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 
 /**
  * The user's edited PR review workflow — the graph whose steps are the
@@ -17,8 +17,8 @@ import type { SamuraiWorkflowGraph } from "@/lib/samurai";
 
 type PrWorkflowState = {
   /** The edited graph, or null when DEFAULT_PR_WORKFLOW still governs. */
-  graph: SamuraiWorkflowGraph | null;
-  setGraph: (graph: SamuraiWorkflowGraph) => void;
+  graph: WorkflowGraph | null;
+  setGraph: (graph: WorkflowGraph) => void;
   /** Back to "never edited" — the default workflow governs again. */
   resetGraph: () => void;
 };
@@ -98,7 +98,7 @@ const tauriStorage: StateStorage = {
  *  - a read inside that window would wrongly fall back to the default
  *    workflow → {@link prWorkflowGraphForLaunch} awaits hydration.
  */
-let pendingEdit: { graph: SamuraiWorkflowGraph | null } | null = null;
+let pendingEdit: { graph: WorkflowGraph | null } | null = null;
 
 /**
  * Hydration-FAILURE latch — see `useSamuraiWorkflowStore`. zustand marks only
@@ -160,7 +160,7 @@ usePrWorkflowStore.persist.onFinishHydration(() => {
  * fall back to the default while an edit exists on disk. `null` still means
  * "never edited" — the caller falls back to `DEFAULT_PR_WORKFLOW`.
  */
-export async function prWorkflowGraphForLaunch(): Promise<SamuraiWorkflowGraph | null> {
+export async function prWorkflowGraphForLaunch(): Promise<WorkflowGraph | null> {
   const { persist: persistApi } = usePrWorkflowStore;
   if (!persistApi.hasHydrated()) {
     await new Promise<void>((resolve) => {

@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_PR_WORKFLOW } from "@/lib/prWorkflow";
-import { type SamuraiWorkflowGraph, samuraiDefaultWorkflow } from "@/lib/samurai";
+import { samuraiDefaultWorkflow } from "@/lib/samurai";
 import {
   addWorkflowNode,
   connectWorkflow,
@@ -44,6 +44,7 @@ import {
   setWorkflowStart,
   workflowWalkOrder,
 } from "@/lib/workflowGraph";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import { usePrWorkflowStore } from "@/stores/usePrWorkflowStore";
 import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
 
@@ -283,7 +284,7 @@ const MODES: { id: WorkflowMode; label: string }[] = [
 ];
 
 /** Derived React Flow model for one graph, laid out as a single column. */
-function buildModel(graph: SamuraiWorkflowGraph, pr: boolean): { nodes: Node[]; edges: Edge[] } {
+function buildModel(graph: WorkflowGraph, pr: boolean): { nodes: Node[]; edges: Edge[] } {
   const nodeH = pr ? NODE_H_LABELLED : NODE_H;
   const order = workflowWalkOrder(graph);
   const reachable = new Set(order);
@@ -376,7 +377,7 @@ function WorkflowsCanvas({ onClose }: WorkflowsViewProps) {
   const [mode, setMode] = useState<WorkflowMode>("samurai");
   // The backend default template, fetched only while nothing is stored —
   // it is the display fallback AND what the first edit is applied to.
-  const [fallback, setFallback] = useState<SamuraiWorkflowGraph | null>(null);
+  const [fallback, setFallback] = useState<WorkflowGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Bumped to re-run the fetch below. Without it a single failed fetch was

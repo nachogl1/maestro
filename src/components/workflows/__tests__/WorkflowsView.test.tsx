@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { DEFAULT_PR_WORKFLOW, prWorkflowStepsInOrder } from "@/lib/prWorkflow";
-import type { SamuraiWorkflowGraph } from "@/lib/samurai";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import { usePrWorkflowStore } from "@/stores/usePrWorkflowStore";
 import { useSamuraiWorkflowStore } from "@/stores/useSamuraiWorkflowStore";
 import {
@@ -71,7 +71,7 @@ beforeAll(() => {
 });
 
 /** Test double of the backend's 7-step default (ids match the Rust chain). */
-function defaultGraph(): SamuraiWorkflowGraph {
+function defaultGraph(): WorkflowGraph {
   const ids = ["implement", "review", "qa-report", "push", "batch-review", "batch-qa", "batch-pr"];
   return {
     nodes: ids.map((id) => ({ id, text: `Do the ${id} work.` })),
@@ -81,7 +81,7 @@ function defaultGraph(): SamuraiWorkflowGraph {
 }
 
 /** A tiny 3-step chain for focused pure-function cases. */
-function chain(): SamuraiWorkflowGraph {
+function chain(): WorkflowGraph {
   return {
     nodes: [
       { id: "a", text: "A" },
@@ -96,7 +96,7 @@ function chain(): SamuraiWorkflowGraph {
   };
 }
 
-function storedGraph(): SamuraiWorkflowGraph {
+function storedGraph(): WorkflowGraph {
   const graph = useSamuraiWorkflowStore.getState().graph;
   if (!graph) throw new Error("expected an edited graph in the store");
   return graph;
@@ -394,7 +394,7 @@ describe("workflow graph edits (pure rules)", () => {
   });
 
   it("walk order follows the first outgoing edge and guards against cycles", () => {
-    const graph: SamuraiWorkflowGraph = {
+    const graph: WorkflowGraph = {
       ...chain(),
       edges: [
         { from: "a", to: "b" },
@@ -420,7 +420,7 @@ describe("workflow graph edits (pure rules)", () => {
 
   it("a bridge that would self-loop or duplicate an existing edge is dropped", () => {
     // a→b, b→a: removing b would bridge a→a — dropped, not created.
-    const loop: SamuraiWorkflowGraph = {
+    const loop: WorkflowGraph = {
       nodes: [
         { id: "a", text: "A" },
         { id: "b", text: "B" },
@@ -435,7 +435,7 @@ describe("workflow graph edits (pure rules)", () => {
 
     // a→b, a→c, b→c: removing b bridges a→c, which already exists — kept once,
     // in the removed edge's slot so it stays a's FIRST outgoing edge.
-    const diamond: SamuraiWorkflowGraph = {
+    const diamond: WorkflowGraph = {
       ...chain(),
       edges: [
         { from: "a", to: "b" },
@@ -500,7 +500,7 @@ describe("workflow graph edits (pure rules)", () => {
     // The walk stops at a revisit, so its tail can already HAVE an outgoing
     // edge. Appending a second edge from that tail left the new box off the
     // walk entirely — "Not in run" the moment it was created.
-    const cyclic: SamuraiWorkflowGraph = {
+    const cyclic: WorkflowGraph = {
       ...chain(),
       edges: [
         { from: "a", to: "b" },

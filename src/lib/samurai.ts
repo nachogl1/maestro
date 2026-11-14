@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WorkflowEdge, WorkflowGraph, WorkflowNode } from "@/lib/workflowGraphTypes";
 
 /**
  * Thin wrappers over the Samurai supervisor / audit tauri commands
@@ -565,45 +566,20 @@ export interface SamuraiPreflightCheck {
   overridable: boolean;
 }
 
-/**
- * One workflow step box — mirrors the Rust `WorkflowNode`
- * (`core/samurai_workflow.rs`). `id` is the stable identity edits preserve;
- * step numbers are assigned at compile time, never stored.
- */
-export interface SamuraiWorkflowNode {
-  id: string;
-  /** The step's instruction text (editable in the workflow editor). */
-  text: string;
-  /**
-   * Optional short display name, used where a step needs a one-line handle
-   * instead of its full text — the PR review workflow's checkboxes. Absent on
-   * Samurai run graphs; Rust's serde ignores the unknown field, so a graph
-   * carrying one still deserializes into `WorkflowNode`.
-   */
-  label?: string;
-}
+/** One workflow step box; the shape lives in `src/lib/workflowGraphTypes.ts`. */
+export type SamuraiWorkflowNode = WorkflowNode;
 
-/** One directed edge between two node ids — mirrors the Rust `WorkflowEdge`. */
-export interface SamuraiWorkflowEdge {
-  from: string;
-  to: string;
-}
+/** One directed edge between two node ids. */
+export type SamuraiWorkflowEdge = WorkflowEdge;
 
 /**
- * The run workflow graph (issue #91) — mirrors the Rust `WorkflowGraph`.
- * The backend compiles the path reachable from `start` (following the FIRST
- * outgoing edge per node, in edge-list order; cycles stop before a repeat;
- * unreachable nodes are excluded) into the numbered WORKFLOW section of
- * every orchestrator brief. The graph is instruction, not machinery — v1
- * has no step enforcement. Snapshotted into the run config at launch, so
- * successor briefs recompile the same workflow after handoffs.
+ * The run workflow graph (issue #91). The backend compiles the path reachable
+ * from `start` into the numbered WORKFLOW section of every orchestrator
+ * brief. The graph is instruction, not machinery — v1 has no step
+ * enforcement. Snapshotted into the run config at launch, so successor
+ * briefs recompile the same workflow after handoffs.
  */
-export interface SamuraiWorkflowGraph {
-  nodes: SamuraiWorkflowNode[];
-  edges: SamuraiWorkflowEdge[];
-  /** Node id the compile walk starts from. */
-  start: string;
-}
+export type SamuraiWorkflowGraph = WorkflowGraph;
 
 /**
  * Mirrors the Rust `InterruptedStamp` (PR #185): cold-start reconciliation

@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   },
 }));
 
-import type { SamuraiWorkflowGraph } from "@/lib/samurai";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 import {
   compilePrWorkflow,
   DEFAULT_PR_WORKFLOW,
@@ -22,7 +22,7 @@ import {
 } from "../prWorkflow";
 
 /** A tiny labelled chain — the shape the PR dropdown reads. */
-function chain(): SamuraiWorkflowGraph {
+function chain(): WorkflowGraph {
   return {
     nodes: [
       { id: "one", label: "First", text: "Do   one\nthing." },
@@ -37,7 +37,7 @@ function chain(): SamuraiWorkflowGraph {
   };
 }
 
-const ALL = (graph: SamuraiWorkflowGraph) => graph.nodes.map((n) => n.id);
+const ALL = (graph: WorkflowGraph) => graph.nodes.map((n) => n.id);
 
 describe("DEFAULT_PR_WORKFLOW", () => {
   it("is a linear check → review → fix → merge chain", () => {
@@ -81,7 +81,7 @@ describe("prWorkflowStepsInOrder", () => {
   });
 
   it("falls back to a text prefix when a box has no label", () => {
-    const graph: SamuraiWorkflowGraph = {
+    const graph: WorkflowGraph = {
       nodes: [
         { id: "long", text: "Check that absolutely everything about the PR is in order." },
         { id: "short", text: "  Short   one.  " },
@@ -115,7 +115,7 @@ describe("compilePrWorkflow", () => {
   });
 
   it("normalizes whitespace so each step is one line", () => {
-    const graph: SamuraiWorkflowGraph = {
+    const graph: WorkflowGraph = {
       nodes: [{ id: "one", text: "  Run\n\n  the   thing.\t\nThen stop.  " }],
       edges: [],
       start: "one",
@@ -146,7 +146,7 @@ describe("prWorkflowNeedsWorktree", () => {
   });
 
   it("matches on the label as well as the id", () => {
-    const graph: SamuraiWorkflowGraph = {
+    const graph: WorkflowGraph = {
       nodes: [
         { id: "step-1", label: "Push the branch", text: "git push" },
         { id: "step-2", label: "Look around", text: "read things" },
@@ -162,7 +162,7 @@ describe("prWorkflowNeedsWorktree", () => {
     // The text is what actually reaches the agent. A neutrally-named step
     // that orders a commit used to compile into the prompt alongside the
     // READ-ONLY workspace rule — contradictory orders, and no worktree.
-    const graph: SamuraiWorkflowGraph = {
+    const graph: WorkflowGraph = {
       nodes: [
         { id: "step-1", label: "Apply patches", text: "commit and push the fix" },
         { id: "step-2", label: "Look around", text: "read things" },

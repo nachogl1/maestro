@@ -1,5 +1,5 @@
-import type { SamuraiWorkflowGraph } from "@/lib/samurai";
 import { workflowWalkOrder } from "@/lib/workflowGraph";
+import type { WorkflowGraph } from "@/lib/workflowGraphTypes";
 
 /**
  * The PR review workflow: the same graph shape as the Samurai run workflow,
@@ -49,7 +49,7 @@ function displayLabel(label: string | undefined, text: string): string {
  * default" rule the Samurai workflow uses. Frontend-owned, because no Rust
  * command compiles this graph.
  */
-export const DEFAULT_PR_WORKFLOW: SamuraiWorkflowGraph = {
+export const DEFAULT_PR_WORKFLOW: WorkflowGraph = {
   nodes: [
     {
       id: "check",
@@ -85,7 +85,7 @@ export const DEFAULT_PR_WORKFLOW: SamuraiWorkflowGraph = {
  * Off-walk boxes are excluded — exactly like the run compile — so a box the
  * user disconnected on the canvas disappears from the dropdown too.
  */
-export function prWorkflowStepsInOrder(graph: SamuraiWorkflowGraph): PrWorkflowStep[] {
+export function prWorkflowStepsInOrder(graph: WorkflowGraph): PrWorkflowStep[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const steps: PrWorkflowStep[] = [];
   for (const id of workflowWalkOrder(graph)) {
@@ -104,7 +104,7 @@ export function prWorkflowStepsInOrder(graph: SamuraiWorkflowGraph): PrWorkflowS
  * contributes nothing — the same "empty text emits no step" rule the run
  * compile uses. An empty selection compiles to an empty string.
  */
-export function compilePrWorkflow(graph: SamuraiWorkflowGraph, selectedIds: string[]): string {
+export function compilePrWorkflow(graph: WorkflowGraph, selectedIds: string[]): string {
   const wanted = new Set(selectedIds);
   const parts: string[] = [];
   for (const step of prWorkflowStepsInOrder(graph)) {
@@ -135,10 +135,7 @@ const WRITE_STEP = /\b(fix|merge|push|commit)\b/i;
  * worktree and alongside the READ-ONLY workspace rule. Read-only selections
  * (check, review) still run in place.
  */
-export function prWorkflowNeedsWorktree(
-  selectedIds: string[],
-  graph: SamuraiWorkflowGraph,
-): boolean {
+export function prWorkflowNeedsWorktree(selectedIds: string[], graph: WorkflowGraph): boolean {
   const wanted = new Set(selectedIds);
   return prWorkflowStepsInOrder(graph).some(
     (step) =>

@@ -1,4 +1,4 @@
-import type { SamuraiWorkflowEdge, SamuraiWorkflowGraph, SamuraiWorkflowNode } from "@/lib/samurai";
+import type { WorkflowEdge, WorkflowGraph, WorkflowNode } from "@/lib/workflowGraphTypes";
 
 /**
  * Pure graph edits behind the workflow editor canvas
@@ -17,7 +17,7 @@ import type { SamuraiWorkflowEdge, SamuraiWorkflowGraph, SamuraiWorkflowNode } f
  */
 
 /** Node ids the compile walk reaches, in walk order (the backend rule). */
-export function workflowWalkOrder(graph: SamuraiWorkflowGraph): string[] {
+export function workflowWalkOrder(graph: WorkflowGraph): string[] {
   const order: string[] = [];
   const visited = new Set<string>();
   let current: string | undefined = graph.start;
@@ -39,12 +39,12 @@ export function workflowWalkOrder(graph: SamuraiWorkflowGraph): string[] {
  * existing pair are dropped. A removed start node hands `start` to its
  * bridge target (else the first remaining node), keeping the walk alive.
  */
-export function removeWorkflowNode(graph: SamuraiWorkflowGraph, id: string): SamuraiWorkflowGraph {
+export function removeWorkflowNode(graph: WorkflowGraph, id: string): WorkflowGraph {
   const next = graph.edges.find((e) => e.from === id)?.to ?? null;
-  const edges: SamuraiWorkflowEdge[] = [];
+  const edges: WorkflowEdge[] = [];
   const seen = new Set<string>();
   for (const edge of graph.edges) {
-    let kept: SamuraiWorkflowEdge | null;
+    let kept: WorkflowEdge | null;
     if (edge.from === id) kept = null;
     else if (edge.to === id) {
       kept = next !== null && next !== edge.from ? { from: edge.from, to: next } : null;
@@ -61,11 +61,7 @@ export function removeWorkflowNode(graph: SamuraiWorkflowGraph, id: string): Sam
 }
 
 /** Removes one edge — the user's explicit "cut the run short here". */
-export function removeWorkflowEdge(
-  graph: SamuraiWorkflowGraph,
-  from: string,
-  to: string,
-): SamuraiWorkflowGraph {
+export function removeWorkflowEdge(graph: WorkflowGraph, from: string, to: string): WorkflowGraph {
   const index = graph.edges.findIndex((e) => e.from === from && e.to === to);
   if (index === -1) return graph;
   return { ...graph, edges: graph.edges.filter((_, i) => i !== index) };
@@ -76,26 +72,18 @@ export function removeWorkflowEdge(
  * are dropped: the compile walk only ever follows the first one, so keeping
  * extras would be invisible state the editor cannot show honestly.
  */
-export function connectWorkflow(
-  graph: SamuraiWorkflowGraph,
-  from: string,
-  to: string,
-): SamuraiWorkflowGraph {
+export function connectWorkflow(graph: WorkflowGraph, from: string, to: string): WorkflowGraph {
   if (from === to) return graph;
   return { ...graph, edges: [...graph.edges.filter((e) => e.from !== from), { from, to }] };
 }
 
 /** Points the walk's entry at another node (the START pill was rewired). */
-export function setWorkflowStart(graph: SamuraiWorkflowGraph, id: string): SamuraiWorkflowGraph {
+export function setWorkflowStart(graph: WorkflowGraph, id: string): WorkflowGraph {
   return graph.start === id ? graph : { ...graph, start: id };
 }
 
 /** Replaces one node's text. */
-export function setWorkflowNodeText(
-  graph: SamuraiWorkflowGraph,
-  id: string,
-  text: string,
-): SamuraiWorkflowGraph {
+export function setWorkflowNodeText(graph: WorkflowGraph, id: string, text: string): WorkflowGraph {
   return {
     ...graph,
     nodes: graph.nodes.map((n) => (n.id === id ? { ...n, text } : n)),
@@ -104,10 +92,10 @@ export function setWorkflowNodeText(
 
 /** Replaces one node's short label (PR review workflow boxes only). */
 export function setWorkflowNodeLabel(
-  graph: SamuraiWorkflowGraph,
+  graph: WorkflowGraph,
   id: string,
   label: string,
-): SamuraiWorkflowGraph {
+): WorkflowGraph {
   return {
     ...graph,
     nodes: graph.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
@@ -121,14 +109,13 @@ export function setWorkflowNodeLabel(
  * mode; omitting it leaves the field off the node entirely, so Samurai
  * graphs serialize exactly as before.
  */
-export function addWorkflowNode(graph: SamuraiWorkflowGraph, label?: string): SamuraiWorkflowGraph {
+export function addWorkflowNode(graph: WorkflowGraph, label?: string): WorkflowGraph {
   let n = 1;
   while (graph.nodes.some((node) => node.id === `step-${n}`)) n += 1;
   const id = `step-${n}`;
   const walk = workflowWalkOrder(graph);
   const tail: string | undefined = walk[walk.length - 1];
-  const node: SamuraiWorkflowNode =
-    label === undefined ? { id, text: "" } : { id, text: "", label };
+  const node: WorkflowNode = label === undefined ? { id, text: "" } : { id, text: "", label };
   // The tail can already have an outgoing edge — the walk also stops on a
   // REVISIT, not just on a dead end. The compile follows the first outgoing
   // edge, so merely appending a second one left the new box off the run.
