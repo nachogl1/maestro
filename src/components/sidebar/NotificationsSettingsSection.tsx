@@ -2,17 +2,15 @@ import { Bell } from "lucide-react";
 import { DialogToggle } from "@/components/shared/DialogShell";
 import { useAttentionSoundStore } from "@/stores/useAttentionSoundStore";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
-import { useHealthStore } from "@/stores/useHealthStore";
 import { cardClass, SectionHeader } from "./sectionChrome";
 
 /**
  * Settings card (Settings → Notifications) for every background notification Maestro raises
  * (follows the UpdateSettingsSection pattern).
  *
- * One toggle covers every notifying watcher — the GitHub watchdog and the
- * Second Brain health checker. It mutes toasts only: all keep watching, and their
- * badges (top-bar totals, panel attention counts, session attention
- * highlights) stay on either way, so nothing is ever silently missed.
+ * One toggle covers the GitHub watchdog. It mutes toasts only: the watchdog
+ * keeps watching, and its badges stay on either way, so nothing is ever
+ * silently missed.
  *
  * A second switch, off by default, plays a short tone when a terminal needs
  * the user: a parked one comes back by itself, or one starts waiting for
@@ -22,17 +20,12 @@ export function NotificationsSettingsSection() {
   const notificationsEnabled = useGitHubWatchdogStore((s) => s.notificationsEnabled);
   const setNotificationsEnabled = useGitHubWatchdogStore((s) => s.setNotificationsEnabled);
   const status = useGitHubWatchdogStore((s) => s.status);
-  const dismissHealthToasts = useHealthStore((s) => s.dismissAllToasts);
   const soundEnabled = useAttentionSoundStore((s) => s.enabled);
   const setSoundEnabled = useAttentionSoundStore((s) => s.setEnabled);
 
+  // Muting also clears the toasts already on screen (the store does that).
   const handleToggle = () => {
-    const next = !notificationsEnabled;
-    setNotificationsEnabled(next);
-    // Muting clears what is already on screen, for every queue.
-    if (!next) {
-      dismissHealthToasts();
-    }
+    setNotificationsEnabled(!notificationsEnabled);
   };
 
   return (

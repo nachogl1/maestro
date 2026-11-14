@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useFeatureSettingsStore } from "@/stores/useFeatureSettingsStore";
 import {
   PANEL_MAX_WIDTH,
   type PanelId,
@@ -24,14 +23,12 @@ const SHAKE_DURATION_MS = 400;
 
 /** Panels Settings → Features can switch off; the rest always show. */
 function useEnabledPanels(): ReadonlySet<PanelId> {
-  const secondBrain = useFeatureSettingsStore((s) => s.secondBrainEnabled);
   const workJournal = useWorkJournalEnabled();
   return useMemo(() => {
     const disabled = new Set<PanelId>();
-    if (!secondBrain) disabled.add("secondbrain");
     if (!workJournal) disabled.add("workjournal");
     return new Set(PANELS.map((p) => p.id).filter((id) => !disabled.has(id)));
-  }, [secondBrain, workJournal]);
+  }, [workJournal]);
 }
 
 function titlesOf(ids: readonly PanelId[]): string {

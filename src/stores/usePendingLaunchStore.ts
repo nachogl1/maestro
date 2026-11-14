@@ -21,13 +21,6 @@ export interface PendingLaunch {
   /** Custom session name applied at launch (terminal header). */
   customName?: string | null;
   /**
-   * Interactive harvest triage launch (issue #98): the grid arms the
-   * session via `samurai_harvest_arm` right before the CLI launches, and
-   * the backend injects the journal-triage prompt on its first
-   * SessionStarted. Never set for manually created slots.
-   */
-  harvest?: boolean;
-  /**
    * Generic "launch a terminal with an initial prompt": the grid arms the
    * session via `terminal_arm_initial_prompt` right before the CLI launches,
    * and the backend types this text into the PTY on the session's first
@@ -47,8 +40,8 @@ export interface PendingLaunch {
   briefStem?: string | null;
   /**
    * PR-review launch metadata (issue #139): passed to the same arm hop, which
-   * writes the review's persistent run record — the identity the Second Brain
-   * groups its brief and audit rows under. A review without it still runs; it
+   * writes the review's persistent run record — the identity its brief and
+   * audit rows are grouped under on disk. A review without it still runs; it
    * simply leaves nothing on disk to group.
    */
   prRun?: PrReviewLaunch | null;
@@ -88,7 +81,6 @@ function sameLaunch(a: PendingLaunch, b: PendingLaunch): boolean {
     a.workingDirOverride === b.workingDirOverride &&
     a.branch === b.branch &&
     (a.customName ?? null) === (b.customName ?? null) &&
-    (a.harvest ?? false) === (b.harvest ?? false) &&
     (a.initialPrompt ?? null) === (b.initialPrompt ?? null) &&
     // Issue #136 review (C11): two launches carrying the SAME prompt can
     // still differ in where that prompt is staged as a brief, or in which PR

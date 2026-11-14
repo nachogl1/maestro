@@ -7,8 +7,8 @@ interface MarkdownBodyProps {
   /**
    * Whether raw HTML embedded in the markdown is rendered (rehype-raw).
    * Defaults to true, preserving every pre-existing call site. Pass false
-   * for content derived from untrusted input — e.g. harvest reports built
-   * from journal text any local process can write — so script-capable HTML
+   * for content derived from untrusted input — e.g. text any local process
+   * can write — so script-capable HTML
    * can never become live elements in this invoke-capable webview.
    */
   allowRawHtml?: boolean;

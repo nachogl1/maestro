@@ -10,7 +10,6 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   })),
 }));
 
-import { useFeatureSettingsStore } from "@/stores/useFeatureSettingsStore";
 import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { FeaturesSettingsPanel } from "../FeaturesSettingsPanel";
 
@@ -20,25 +19,19 @@ function featureSwitch(name: string): HTMLElement {
 
 describe("FeaturesSettingsPanel", () => {
   beforeEach(() => {
-    useFeatureSettingsStore.setState({ secondBrainEnabled: true });
     useWorkJournalSettingsStore.setState({ enabled: null });
   });
 
   it("shows a switch for each optional feature with its current state", () => {
     render(<FeaturesSettingsPanel />);
-    expect(featureSwitch("Show Second Brain").getAttribute("aria-checked")).toBe("true");
     expect(featureSwitch("Enable the Work Journal").getAttribute("aria-checked")).toBe("false");
   });
 
-  it("offers no Samurai launch switch", () => {
+  it("offers no Samurai launch switch and no Second Brain switch", () => {
     render(<FeaturesSettingsPanel />);
     expect(screen.queryByRole("switch", { name: "Show Samurai launch" })).not.toBeInTheDocument();
-  });
-
-  it("turning Second Brain off saves the choice", () => {
-    render(<FeaturesSettingsPanel />);
-    fireEvent.click(featureSwitch("Show Second Brain"));
-    expect(useFeatureSettingsStore.getState().secondBrainEnabled).toBe(false);
+    expect(screen.queryByRole("switch", { name: "Show Second Brain" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Second Brain")).not.toBeInTheDocument();
   });
 
   it("turning the Work Journal on enables it", () => {

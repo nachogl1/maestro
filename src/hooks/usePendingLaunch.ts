@@ -25,7 +25,7 @@ interface UsePendingLaunchOptions {
 
 /**
  * Consumes this tab's queued launches from `usePendingLaunchStore` (History
- * tab, crash recovery, harvest triage, PR review) and launches each
+ * tab, crash recovery, PR review) and launches each
  * configured slot once it has committed to state.
  */
 export function usePendingLaunch({
@@ -78,8 +78,7 @@ export function usePendingLaunch({
     if (!reusable && current.length >= MAX_SESSIONS) {
       // The claim is consumed by now, so the launch is gone: say what did
       // not happen rather than "cannot resume" — this path also carries
-      // harvest triage and PR review launches, whose own panels have already
-      // reported success.
+      // PR review launches, whose own panel has already reported success.
       setError(
         `Could not open the requested session: maximum of ${MAX_SESSIONS} sessions per project — close one and try again`,
       );
@@ -94,9 +93,6 @@ export function usePendingLaunch({
       workingDirOverride: launch.workingDirOverride,
       // Launches that name their session (PR review, crash recovery) carry it.
       customName: launch.customName ?? base.customName,
-      // Harvest triage launches (issue #98) arm the backend's journal
-      // prompt injection right before the CLI launches.
-      harvest: launch.harvest ?? false,
       // Generic initial prompt (any caller): armed right before the CLI
       // launches, typed into the PTY on the session's first SessionStarted.
       initialPrompt: launch.initialPrompt ?? null,

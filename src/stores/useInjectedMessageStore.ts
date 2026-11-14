@@ -5,8 +5,7 @@ import { useSessionStore } from "@/stores/useSessionStore";
 /**
  * Notices for messages the Injector panel or a trigger typed into a terminal
  * (issue #554): the terminal header shows an amber icon until the person
- * clicks it. Other deliveries (Samurai instructions, the Journal harvest
- * prompt, launch prompts) never record here.
+ * clicks it. Other deliveries (launch prompts) never record here.
  *
  * In memory only, never persisted: terminal numbers start again from 1 on
  * every launch, so a saved notice could land on the wrong terminal.

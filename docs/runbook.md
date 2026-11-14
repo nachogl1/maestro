@@ -139,8 +139,8 @@ two messages on, it carries a count, such as `3`.
   (`14:20`) and the message's first line. The last line reads `Click to dismiss`.
 - Click the icon to clear all of that terminal's messages. Nothing else clears it: clicking, focusing or typing in
   the terminal leaves it in place, and it stays through tab switches, zoom and parking.
-- A failed send adds nothing (the Injector panel and the trigger row show failures). The Work Journal harvest prompt
-  and the first prompt at launch never add one.
+- A failed send adds nothing (the Injector panel and the trigger row show failures). The first prompt at launch
+  never adds one.
 - The icons are kept in memory only: they clear when Maestro restarts, and a closed terminal's messages go with it.
 
 ## Terminals: two kinds, Claude Code and plain shell
@@ -229,9 +229,9 @@ one place left or right from the keyboard works as before.
 Every panel opens from the thin column of icons on the far left, below the project tabs. There is no left sidebar,
 no right-hand panel and no panel button in the top bar any more.
 
-- The icons, top to bottom, in three groups: **History**, **Files** and **Git**; **Notes**, **Work Journal**, **Injector**,
-  **Second Brain** and **Workshop**; **Infra** and **Settings**. Hover an icon for its name and shortcut. There is no
-  **Launch** icon any more: Samurai runs are no longer started from the app.
+- The icons, top to bottom, in three groups: **History**, **Files** and **Git**; **Notes**, **Work Journal**, **Injector**
+  and **Workshop**; **Infra** and **Settings**. Hover an icon for its name and shortcut. There is no **Launch** icon
+  and no **Second Brain** icon any more.
 - Click an icon to open its panel to the right of the strip; click it again, or the panel's **✕**, to close it. An
   open panel's icon is red with a small red bar beside it.
 - Several panels can be open at once. They always sit side by side in the strip's order, whatever order you opened
@@ -246,8 +246,8 @@ no right-hand panel and no panel button in the top bar any more.
 - The Settings panel holds what the sidebar's Settings tab held: **Open Settings**, the Agents list and **Stop All**.
   The Git panel shows its tab name, commit count and refresh button in its header, and keeps its per-project
   carousel in eagle view.
-- **Settings → Features → Panel icons** chooses whether the Second Brain and Work Journal icons show; switching one
-  off also closes its panel. A Launch panel left open from an older version does not come back.
+- **Settings → Features → Panel icons** chooses whether the Work Journal icon shows; switching it off also closes
+  its panel. A Launch or Second Brain panel left open from an older version does not come back.
 
 ## Samurai is gone from the app's screens
 
@@ -259,7 +259,17 @@ Nothing in Maestro starts, shows or mentions a Samurai run any more:
 - Parking and unparking by hand, the parked shelf, the context alert, the Injector and its triggers, History resume
   and PR review launches work as before.
 - Settings saved by an older version that still carry the Samurai launch switch load as before; the switch is
-  ignored. The Second Brain panel still exists until its own removal.
+  ignored.
+
+## Second Brain and the health checker are gone
+
+- No **Second Brain** icon or panel: the Samurai audit stream, the ops journal, **Harvest now**, the old harvest
+  reports and the Samurai files list are no longer shown. Journal entries and files already on disk stay there,
+  unseen.
+- No health checker: no orange health count on any icon and no "Health — Second Brain" toast. **Settings →
+  Notifications → Show notifications** now covers the GitHub review-request and issue-assigned toasts only.
+- **Settings → Features** has no "Show Second Brain" switch; its saved choice is ignored.
+- PR review launches from the PR action menu work as before and still write their run record and brief file.
 
 ## PR monitor: editing the PR review workflow
 

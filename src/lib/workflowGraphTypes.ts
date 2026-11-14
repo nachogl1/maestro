@@ -1,7 +1,6 @@
 /**
  * The workflow graph shape shared by the PR review workflow and the Samurai
- * run workflow. Kept apart from both so the PR workflow does not depend on
- * the Samurai library (`src/lib/samurai.ts`).
+ * run workflow. Kept apart from both so the PR workflow stands on its own.
  */
 
 /**

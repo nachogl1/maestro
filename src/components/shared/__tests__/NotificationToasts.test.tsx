@@ -21,8 +21,6 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 import type { WatchdogToast } from "@/stores/useGitHubWatchdogStore";
 import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
-import type { HealthToast } from "@/stores/useHealthStore";
-import { useHealthStore } from "@/stores/useHealthStore";
 import { NotificationToasts } from "../NotificationToasts";
 
 function watchdogToast(overrides: Partial<WatchdogToast> = {}): WatchdogToast {
@@ -38,20 +36,9 @@ function watchdogToast(overrides: Partial<WatchdogToast> = {}): WatchdogToast {
   };
 }
 
-function healthToast(overrides: Partial<HealthToast> = {}): HealthToast {
-  return {
-    id: "health-1",
-    area: "secondbrain",
-    target: "app.jsonl",
-    reason: "audit log 6.0 MB (warn at 5.0 MB)",
-    ...overrides,
-  };
-}
-
 describe("NotificationToasts", () => {
   it("composes the PR-review kicker as '<Project> — Review requested', title unchanged", () => {
     useGitHubWatchdogStore.setState({ toasts: [watchdogToast()] });
-    useHealthStore.setState({ toasts: [] });
 
     render(<NotificationToasts />);
 
@@ -68,22 +55,10 @@ describe("NotificationToasts", () => {
         watchdogToast({ id: "watchdog-2", kind: "issue", number: 7, title: "Crash on save" }),
       ],
     });
-    useHealthStore.setState({ toasts: [] });
 
     render(<NotificationToasts />);
 
     expect(screen.getByText("maestro — Issue assigned")).toBeInTheDocument();
     expect(screen.getByText("#7 Crash on save")).toBeInTheDocument();
-  });
-
-  it("composes the health kicker as 'Health — <Area>', keeping target/reason as title/detail", () => {
-    useGitHubWatchdogStore.setState({ toasts: [] });
-    useHealthStore.setState({ toasts: [healthToast()] });
-
-    render(<NotificationToasts />);
-
-    expect(screen.getByText("Health — Second Brain")).toBeInTheDocument();
-    expect(screen.getByText("app.jsonl")).toBeInTheDocument();
-    expect(screen.getByText("audit log 6.0 MB (warn at 5.0 MB)")).toBeInTheDocument();
   });
 });

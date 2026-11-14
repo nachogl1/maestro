@@ -86,12 +86,6 @@ export interface SessionSlot {
    */
   configDir?: string | null;
   /**
-   * Interactive harvest triage (issue #98): arms the backend's journal
-   * prompt injection right before the CLI launches. Never set for manually
-   * created slots.
-   */
-  harvest?: boolean;
-  /**
    * Generic initial prompt: arms the backend's one-shot prompt injection
    * right before the CLI launches (Claude mode only). Never set for manually
    * created slots.
