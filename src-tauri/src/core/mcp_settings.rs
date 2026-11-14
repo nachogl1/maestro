@@ -279,8 +279,14 @@ pub fn disabled_server_names(project_path: &str) -> HashSet<String> {
 /// Degrades per file: a corrupt `~/.claude.json` still shows `.mcp.json`
 /// servers and vice versa.
 pub fn get_status(project_path: &str) -> McpResult<McpStatusView> {
+    Ok(status_from(project_path, &claude_json_path()?))
+}
+
+/// Builds the management view from `<project>/.mcp.json` and the given
+/// `~/.claude.json` path (a parameter so tests can point at a fixture).
+fn status_from(project_path: &str, claude_json: &Path) -> McpStatusView {
     let project_key = claude_project_key(project_path);
-    let claude_root = read_json_lenient(&claude_json_path()?);
+    let claude_root = read_json_lenient(claude_json);
 
     let empty_map = Map::new();
     let projects = claude_root
@@ -372,10 +378,10 @@ pub fn get_status(project_path: &str) -> McpResult<McpStatusView> {
         })
         .unwrap_or_default();
 
-    Ok(McpStatusView {
+    McpStatusView {
         servers,
         connectors,
-    })
+    }
 }
 
 /// Adds or replaces a server entry in the file for the given scope.
@@ -753,28 +759,74 @@ mod tests {
         assert!(written["mcpServers"]["second"].is_object());
     }
 
-    /// Read-only smoke test against the developer's real config files.
-    /// Ignored by default: only meaningful on a machine with Claude Code set up.
     #[test]
-    #[ignore]
-    fn smoke_get_status_real_files() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let status = get_status(&repo_root).unwrap();
-        println!("servers:");
-        for s in &status.servers {
-            println!(
-                "  [{:?}] {} ({}) enabled={} pending={}",
-                s.scope, s.name, s.transport, s.enabled, s.pending
-            );
-        }
-        println!("connectors:");
-        for c in &status.connectors {
-            println!("  {} enabled={}", c.name, c.enabled);
-        }
+    fn test_status_lists_every_scope_with_its_state() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let project = project_dir.path().to_string_lossy().into_owned();
+        let claude_json = home_dir.path().join(".claude.json");
+
+        fs::write(
+            project_dir.path().join(".mcp.json"),
+            json!({"mcpServers": {
+                "approved": {"command": "npx"},
+                "blocked": {"command": "npx"},
+                "waiting": {"command": "npx"},
+                "maestro-status": {"command": "maestro"}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        let mut projects = Map::new();
+        projects.insert(
+            claude_project_key(&project),
+            json!({
+                "enabledMcpjsonServers": ["approved"],
+                "disabledMcpjsonServers": ["blocked"],
+                "disabledMcpServers": ["local-off", "claude.ai Off"],
+                "mcpServers": {"local-off": {"command": "x"}}
+            }),
+        );
+        fs::write(
+            &claude_json,
+            json!({
+                "projects": projects,
+                "mcpServers": {"remote": {"url": "http://localhost:1"}},
+                "claudeAiMcpEverConnected": ["claude.ai On", "claude.ai Off"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let status = status_from(&project, &claude_json);
+
+        let servers: Vec<(&str, McpScope, bool, bool, &str)> = status
+            .servers
+            .iter()
+            .map(|s| {
+                let name = s.name.as_str();
+                (name, s.scope, s.enabled, s.pending, s.transport.as_str())
+            })
+            .collect();
+        assert_eq!(
+            servers,
+            vec![
+                ("approved", McpScope::Project, true, false, "stdio"),
+                ("blocked", McpScope::Project, false, false, "stdio"),
+                ("waiting", McpScope::Project, false, true, "stdio"),
+                ("local-off", McpScope::Local, false, false, "stdio"),
+                ("remote", McpScope::User, true, false, "http"),
+            ]
+        );
+        let connectors: Vec<(&str, bool)> = status
+            .connectors
+            .iter()
+            .map(|c| (c.name.as_str(), c.enabled))
+            .collect();
+        assert_eq!(
+            connectors,
+            vec![("claude.ai On", true), ("claude.ai Off", false)]
+        );
     }
 
     #[test]
