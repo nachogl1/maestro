@@ -58,7 +58,7 @@ function buildSession(overrides: Partial<SessionConfig> = {}): SessionConfig {
 }
 
 /**
- * Two projects: alpha-app runs #1 (named, Claude), #2 (Gemini) and #4
+ * Two projects: alpha-app runs #1 (named, Claude), #2 (plain shell) and #4
  * (unnamed Claude, parked); beta-app runs #3 (named, Claude).
  */
 function seedTwoProjects(): void {
@@ -77,7 +77,7 @@ function seedTwoProjects(): void {
   useSessionStore.setState({
     sessions: [
       buildSession({ id: 1, name: "fox" }),
-      buildSession({ id: 2, name: "gem", mode: "Gemini" }),
+      buildSession({ id: 2, name: "sh", mode: "Plain" }),
       buildSession({ id: 3, name: "owl", project_path: "C:\\work\\beta-app" }),
       buildSession({ id: 4 }),
     ],
@@ -134,8 +134,8 @@ describe("ConclaveDialog", () => {
     const boxes = screen.getAllByRole("checkbox");
     expect(boxes.map((b) => b.getAttribute("aria-label"))).toEqual(["fox", "Terminal 4", "owl"]);
     for (const box of boxes) expect(box).not.toBeChecked();
-    // The Gemini terminal has no ListAgents / SendMessage, so it is never offered.
-    expect(screen.queryByRole("checkbox", { name: "gem" })).not.toBeInTheDocument();
+    // The plain shell has no ListAgents / SendMessage, so it is never offered.
+    expect(screen.queryByRole("checkbox", { name: "sh" })).not.toBeInTheDocument();
     expect(screen.getByText("alpha-app")).toBeInTheDocument();
     expect(screen.getByText("beta-app")).toBeInTheDocument();
     expect(screen.getAllByText("parked")).toHaveLength(1);

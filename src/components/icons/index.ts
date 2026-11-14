@@ -9,5 +9,3 @@ export type IconComponent = React.ComponentType<{
   className?: string;
   strokeWidth?: number | string;
 }>;
-
-export { OpenCodeIcon } from "./OpenCodeIcon";

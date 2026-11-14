@@ -80,13 +80,6 @@ describe("buildCliLaunchLine", () => {
     });
   });
 
-  it("never puts a prompt on a non-Claude launch line", () => {
-    // Only `claude` is known to take a positional initial prompt; Gemini and
-    // Codex would read it as something else entirely.
-    const line = buildCliLaunchLine("Gemini", FLAGS, undefined, POINTER, "posix");
-    expect(line).toEqual({ command: "gemini --yolo", launchPromptDelivered: false });
-  });
-
   it("returns null for a mode with no CLI at all", () => {
     expect(buildCliLaunchLine("Plain", FLAGS, undefined, POINTER, "posix")).toBeNull();
   });
@@ -146,10 +139,6 @@ describe("buildCliCommand agent name", () => {
     expect(() => buildCliCommand("Claude", undefined, undefined, "x; rm -rf /")).toThrow(
       /unsafe agent name/i,
     );
-  });
-
-  it("ignores the agent name for other CLIs", () => {
-    expect(buildCliCommand("Gemini", undefined, undefined, "maestro-42")).toBe("gemini");
   });
 
   it("keeps the name ahead of a positional launch prompt", () => {
