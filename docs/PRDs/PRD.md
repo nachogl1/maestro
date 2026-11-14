@@ -276,6 +276,20 @@ are in `docs/ux/prototypes/` and are the layout to build.
 - Delete removes the folder only; Claude Code's records and History rows stay, no longer resumable
   ([Scratch projects](https://github.com/nachogl1/maestro/issues/586)).
 
+### 4.11 Conclave
+
+- Alt+C, from anywhere (no icon or button), opens a dialog "Do you want to invoke Conclave?" with an (i) tooltip
+  explaining it. It lists every running Claude Code terminal across projects, parked ones tagged, none ticked at
+  first, with an All button; Invoke needs at least two ticked.
+- An editable box holds the default message: talk to each other with Claude Code's own `ListAgents` and
+  `SendMessage`, say what each is doing and which files, worktrees, ports and long commands it uses, help where
+  possible, and agree who uses which shared resource and when. Maestro adds one line naming the ticked agents.
+- When ticked terminals skip permissions, the dialog warns that each message will wait for the person's approval
+  unless `crossSessionInbound` is `accept` in Claude Code settings; Maestro never writes that setting.
+- Each reached terminal shows the header message icon with sender `Conclave`
+  ([Conclave](https://github.com/nachogl1/maestro/issues/589); story
+  [#598](https://github.com/nachogl1/maestro/issues/598)).
+
 ## 5. Out of scope
 
 - A Linux installer; Linux stays build-it-yourself.
