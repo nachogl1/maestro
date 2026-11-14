@@ -290,6 +290,46 @@ are in `docs/ux/prototypes/` and are the layout to build.
   ([Conclave](https://github.com/nachogl1/maestro/issues/589); story
   [#598](https://github.com/nachogl1/maestro/issues/598)).
 
+### 4.12 Crash recovery and terminals back after an update
+
+- After an unexpected stop (a crash, running out of memory, a power cut, Windows shutting down, a kill from Task
+  Manager) the next start shows "Maestro stopped unexpectedly" with the day and time and a ticked list of the
+  terminals that were open. After a normal close or a first start nothing is offered.
+- Ticked terminals come back in their project, in the same order, with their name and pin. Claude terminals continue
+  their conversation; a plain shell reopens empty with a closeable "content could not be retrieved" warning; parked
+  ones return to the shelf marked as needing the person; a terminal whose folder is gone is shown greyed.
+- "Don't bring back" ends the offer for good; there is no age limit. Eagle layout, zoom and focus are not restored.
+- After a Maestro update the open terminals come back on their own. The update prompt first warns that running work
+  is cut off and that plain shells come back empty
+  ([Crash recovery](https://github.com/nachogl1/maestro/issues/585); prototype `docs/ux/prototypes/crash-recovery/`;
+  stories [#608](https://github.com/nachogl1/maestro/issues/608) and
+  [#609](https://github.com/nachogl1/maestro/issues/609)).
+
+### 4.13 Terminal kinds: Claude and plain shell only
+
+- Gemini, Codex and OpenCode terminals are removed from the launch card, Settings and the code. Maestro no longer
+  writes to OpenCode's own config file; entries it wrote earlier, and saved options for the three kinds, are left
+  alone ([Terminal kinds audit](https://github.com/nachogl1/maestro/issues/594),
+  [leftovers](https://github.com/nachogl1/maestro/issues/602); stories
+  [#606](https://github.com/nachogl1/maestro/issues/606) and
+  [#607](https://github.com/nachogl1/maestro/issues/607)).
+
+### 4.14 Samurai, Second Brain and the health checker are removed
+
+- Samurai launches go completely: the Launch panel, Settings → Samurai, the supervised-terminal badge, schedules,
+  recovery and hand-offs. The Second Brain panel (audit stream, ops journal, harvest, file list) and the health
+  checker go with it. Section 3.4 describes them until the removal is built.
+- Parking, the context alert, the Injector and triggers, History resume and PR review stay; PR review keeps its
+  records and brief files, swept after a fixed number of days.
+- On the first start without Samurai a one-time cleanup deletes Samurai's own data files, the hand-over folders in
+  projects, and run worktrees that are merged and clean. A worktree with unmerged or uncommitted work is kept and
+  listed in one closeable notice.
+- The samurai banner image in the README stays as branding
+  ([Samurai removal audit](https://github.com/nachogl1/maestro/issues/595),
+  [what stays](https://github.com/nachogl1/maestro/issues/603); stories
+  [#610](https://github.com/nachogl1/maestro/issues/610) to [#616](https://github.com/nachogl1/maestro/issues/616),
+  in that order).
+
 ## 5. Out of scope
 
 - A Linux installer; Linux stays build-it-yourself.
@@ -297,6 +337,7 @@ are in `docs/ux/prototypes/` and are the layout to build.
 - Closed projects in the issue map's project list (Maestro keeps no list of closed tabs).
 - Choosing labels in Settings and combined-label rules for the PROJECTS pill.
 - Saving terminal output in the trigger history.
+- Saving a plain shell terminal's screen text for crash recovery (constant disk writes; it may hold secrets).
 
 ## 6. Acceptance bar
 
