@@ -14,6 +14,7 @@ pub mod mcp_config_writer;
 pub mod mcp_error;
 pub mod mcp_manager;
 pub mod mcp_settings;
+pub mod open_terminals;
 pub mod plugin_config_writer;
 pub mod plugin_error;
 pub mod plugin_manager;
