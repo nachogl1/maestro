@@ -1,13 +1,15 @@
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { BackgroundColor, Color, TextStyle } from "@tiptap/extension-text-style";
+import { closeHistory } from "@tiptap/pm/history";
 import { Fragment, type Node as PmNode, Slice } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { EditorContent, getSchema, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   WORK_JOURNAL_HIGHLIGHT_COLORS,
   WORK_JOURNAL_TEXT_COLORS,
+  type WorkJournalSpellingState,
   WorkJournalToolbar,
 } from "@/components/workjournal/WorkJournalToolbar";
 import {
@@ -25,9 +27,29 @@ import {
   WORK_JOURNAL_ENTRY_NODE,
   WorkJournalEntry,
 } from "./WorkJournalEntryNode";
+import {
+  applySpellingEdits,
+  fixesMessage,
+  fixWorkJournalSpelling,
+  spellingEdits,
+  spellingSegments,
+} from "./WorkJournalSpelling";
 
 /** How long typing must pause before the page body is saved. */
 export const WORK_JOURNAL_SAVE_DEBOUNCE_MS = 400;
+
+/** How long the spelling fixer's result line shows before it fades. */
+export const SPELLING_NOTE_MS = 4000;
+
+/** How long the result line takes to fade out (the toolbar's transition). */
+const SPELLING_FADE_MS = 700;
+
+/** Ctrl+Shift+F (Cmd+Shift+F on a Mac) starts the spelling fixer. */
+function isFixSpellingKey(event: KeyboardEvent): boolean {
+  return (
+    (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.code === "KeyF"
+  );
+}
 
 /** The editor's extension set; the body guard checks pages against the same schema. */
 const WORK_JOURNAL_EXTENSIONS = [
@@ -185,6 +207,11 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
   };
   const flushRef = useRef(flush);
   flushRef.current = flush;
+  // The spelling fixer: running locks the page; the note is its result line.
+  const [fixing, setFixing] = useState(false);
+  const [spellingNote, setSpellingNote] = useState<WorkJournalSpellingState["note"]>(null);
+  const noteTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const fixSpellingRef = useRef<() => void>(() => {});
 
   const editor = useEditor({
     extensions: WORK_JOURNAL_EXTENSIONS,
@@ -199,6 +226,12 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
       transformPastedHTML: stripForeignPastedColors,
       transformPasted: (slice) =>
         new Slice(dropEmptyTextStyles(slice.content), slice.openStart, slice.openEnd),
+      handleKeyDown: (_view, event) => {
+        if (!isFixSpellingKey(event)) return false;
+        event.preventDefault();
+        fixSpellingRef.current();
+        return true;
+      },
       attributes: {
         class: "focus:outline-none",
         "aria-label": "Work Journal page",
@@ -319,12 +352,79 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
     baseRevRef.current = useWorkJournalStore.getState().pages[date]?.rev;
   }, [editor, storedBody, date]);
 
-  // Read-only while a restore or undo replaces the journal. No update event:
-  // the text did not change, so nothing must be saved.
+  // Read-only while a restore or undo replaces the journal, or the spelling
+  // fixer runs. No update event: the text did not change, so nothing must be
+  // saved.
   const replacing = useWorkJournalStore((s) => s.replacing);
+  const locked = replacing || fixing;
   useEffect(() => {
-    if (editor && editor.isEditable === replacing) editor.setEditable(!replacing, false);
-  }, [editor, replacing]);
+    if (editor && editor.isEditable === locked) editor.setEditable(!locked, false);
+  }, [editor, locked]);
+
+  // The result line shows, then fades, then goes.
+  const showSpellingNote = (text: string, failed: boolean): void => {
+    for (const timer of noteTimersRef.current) clearTimeout(timer);
+    setSpellingNote({ text, failed, fading: false });
+    noteTimersRef.current = [
+      setTimeout(() => setSpellingNote((n) => n && { ...n, fading: true }), SPELLING_NOTE_MS),
+      setTimeout(() => setSpellingNote(null), SPELLING_NOTE_MS + SPELLING_FADE_MS),
+    ];
+  };
+  useEffect(() => () => noteTimersRef.current.forEach(clearTimeout), []);
+
+  // Fixes the selection, or the whole page with none: the texts go to Claude
+  // with the page locked, and the fix lands at once as one editor change (one
+  // Ctrl+Z). Nothing changes when the call fails or the page changed meanwhile.
+  const fixSpelling = async (): Promise<void> => {
+    if (!editor || editor.isDestroyed || !editor.isEditable || fixing) return;
+    const before = editor.state.doc;
+    const { from, to, empty } = editor.state.selection;
+    const segments = spellingSegments(before, empty ? undefined : { from, to });
+    if (segments.length === 0) {
+      showSpellingNote(fixesMessage(0), false);
+      return;
+    }
+    editor.setEditable(false, false);
+    setFixing(true);
+    const revision = useWorkJournalStore.getState().revision;
+    try {
+      const fixed = await fixWorkJournalSpelling(segments.map((s) => s.text));
+      if (editor.isDestroyed) return;
+      const store = useWorkJournalStore.getState();
+      if (editor.state.doc !== before || store.replacing || store.revision !== revision) {
+        showSpellingNote("Not fixed: the page changed while Claude was working.", true);
+        return;
+      }
+      // A reply of the wrong shape, or one that rewrites a text instead of
+      // fixing it (swapped, repeated, emptied), is refused whole.
+      const edits =
+        Array.isArray(fixed) && fixed.length === segments.length
+          ? spellingEdits(segments, fixed)
+          : null;
+      if (!edits) {
+        showSpellingNote("Not fixed: Claude's reply could not be read. Try again.", true);
+        return;
+      }
+      if (edits.length > 0) {
+        editor.view.dispatch(closeHistory(applySpellingEdits(editor.state.tr, edits)));
+        // The next change starts its own undo step, never merged with the fix.
+        editor.view.dispatch(closeHistory(editor.state.tr));
+      }
+      showSpellingNote(fixesMessage(edits.length), false);
+    } catch (error) {
+      showSpellingNote(
+        `Not fixed: ${error instanceof Error ? error.message : String(error)}`,
+        true,
+      );
+    } finally {
+      if (!editor.isDestroyed) {
+        editor.setEditable(!useWorkJournalStore.getState().replacing, false);
+        editor.commands.focus();
+      }
+      setFixing(false);
+    }
+  };
+  fixSpellingRef.current = () => void fixSpelling();
 
   // Best effort when the window closes: send the save right away. The OS may
   // still end the process before the backend writes it.
@@ -340,9 +440,22 @@ function RichWorkJournalEditor({ date, initialBody, className = "" }: WorkJourna
 
   return (
     <>
-      {editor && <WorkJournalToolbar editor={editor} disabled={replacing} />}
+      {editor && (
+        <WorkJournalToolbar
+          editor={editor}
+          disabled={locked}
+          spelling={{
+            running: fixing,
+            note: spellingNote,
+            onFix: () => fixSpellingRef.current(),
+          }}
+        />
+      )}
       <EditorContent
         editor={editor}
+        // Nothing on the page (card controls included) takes input while a
+        // spelling fix runs.
+        {...(fixing ? ({ inert: "", "aria-busy": true } as { inert: "" }) : {})}
         // Reuses the Notes editor's typography (headings, lists, links) so the
         // two editors read the same; only the CSS is shared, not the pipeline.
         // `work-journal-editor` scopes the checklist styles to this editor.

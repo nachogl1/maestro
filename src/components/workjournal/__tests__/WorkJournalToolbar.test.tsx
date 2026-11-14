@@ -251,6 +251,7 @@ describe("WorkJournalToolbar", () => {
       "Link",
       "Text colour",
       "Highlight",
+      "Fix spelling and grammar",
       "+ Add entry",
     ]);
     expect(screen.queryByRole("combobox")).toBeNull();
