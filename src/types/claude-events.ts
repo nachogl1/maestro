@@ -147,4 +147,12 @@ export type ClaudeEvent =
       context_window: number;
       percent: number;
       timestamp: string;
+    }
+  | {
+      /** Claude Code compacted the conversation; no window, only the new size. */
+      event_type: "ContextCompacted";
+      session_id: number;
+      /** The context size right after the compaction (`postTokens`). */
+      context_tokens: number;
+      timestamp: string;
     };
