@@ -44,7 +44,11 @@ export interface OpenTerminalsOffer {
   terminals: OfferedTerminal[];
 }
 
-/** Waits this long after a change before saving, so a burst is one write. */
+/**
+ * A change is saved this long after it, so a burst is one write. Not reset by
+ * later changes: a busy Claude stream changes the activity store many times a
+ * second and must not hold a new terminal's save back.
+ */
 const SAVE_DEBOUNCE_MS = 300;
 /**
  * While terminals are open the list is saved again this often, so its time
@@ -193,7 +197,7 @@ async function save(force: boolean): Promise<void> {
 }
 
 function scheduleSave(): void {
-  if (saveTimer) clearTimeout(saveTimer);
+  if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
     void save(false);
