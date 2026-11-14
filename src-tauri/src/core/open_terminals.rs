@@ -70,9 +70,6 @@ pub struct OpenTerminal {
     pub pinned: bool,
     #[serde(default)]
     pub parked: bool,
-    /// Whether a Samurai run owns it (never offered; counted only).
-    #[serde(default)]
-    pub samurai: bool,
     /// The Claude conversation it was on, from the SessionStart hook.
     #[serde(default)]
     pub conversation_id: Option<String>,
@@ -472,7 +469,6 @@ mod tests {
             branch: None,
             pinned: false,
             parked: false,
-            samurai: false,
             conversation_id: None,
         }
     }
@@ -552,8 +548,7 @@ mod tests {
     #[test]
     fn writes_the_shape_the_front_end_reads() {
         let (dir, store) = temp_store();
-        let mut shell = terminal("/p/shop", "dev server", AiMode::Plain, dir.path());
-        shell.samurai = true;
+        let shell = terminal("/p/shop", "dev server", AiMode::Plain, dir.path());
         store.save(vec![shell], NOW).unwrap();
         let saved: Value =
             serde_json::from_str(&std::fs::read_to_string(&store.path).unwrap()).unwrap();
@@ -571,7 +566,6 @@ mod tests {
                 "branch": null,
                 "pinned": false,
                 "parked": false,
-                "samurai": true,
                 "conversationId": null
             })
         );
@@ -651,6 +645,28 @@ mod tests {
         assert_eq!(terminals[0].terminal.project_path, "/p/shop");
         assert_eq!(terminals[0].terminal.name, None);
         assert!(!terminals[0].terminal.pinned);
+    }
+
+    #[test]
+    fn a_list_saved_by_a_version_with_samurai_still_comes_back() {
+        // Older versions wrote a `samurai` flag on every terminal (issue #614).
+        let (dir, store) = temp_store();
+        std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
+        let file = json!({
+            "version": 1,
+            "savedAt": NOW,
+            "terminals": [{
+                "projectPath": "/p/shop",
+                "kind": "Claude",
+                "workingDirectory": dir.path().to_string_lossy(),
+                "samurai": true,
+            }]
+        });
+        std::fs::write(&store.path, file.to_string()).unwrap();
+
+        let terminals = offered(&store, &dir);
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].terminal.project_path, "/p/shop");
     }
 
     #[test]

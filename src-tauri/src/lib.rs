@@ -108,8 +108,8 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         // Logging goes to a FILE, not just the console. A packaged Windows
         // build has no console attached, so the previous stderr-only logger
-        // discarded every line — which is why a Samurai run that silently
-        // failed to hand off left nothing to diagnose afterwards. The log
+        // discarded every line, so a failure left nothing to diagnose
+        // afterwards. The log
         // dir is the OS one for the bundle identifier
         // (`%LOCALAPPDATA%\com.maestro.app\logs\maestro.log` on Windows).
         // Stdout is kept so `tauri dev` still prints as before.
@@ -347,12 +347,6 @@ pub fn run() {
         .manage(WorktreeManager::new())
         .manage(commands::system::SystemMetricsState::new())
         .manage(commands::processes::ProcessScanState::new())
-        // Issue #106 review F1: the per-(project, epic) in-flight launch
-        // slots — the backend guard against a double Launch click while the
-        // test gate still runs.
-        .manage(std::sync::Arc::new(
-            commands::samurai::LaunchInFlight::default(),
-        ))
         .setup(setup::run_setup)
         .invoke_handler(tauri::generate_handler![
             // PTY commands (existing)
@@ -549,44 +543,6 @@ pub fn run() {
             // Hooks commands
             commands::hooks::write_session_hooks_config,
             commands::hooks::remove_session_hooks_config,
-            // Samurai supervisor + audit log (Phase 1)
-            commands::samurai::samurai_register_session,
-            commands::samurai::samurai_revert_launch_line_prompt,
-            commands::samurai::samurai_list_sessions,
-            commands::samurai::samurai_audit_read,
-            commands::samurai::samurai_audit_clear,
-            commands::samurai::samurai_schedule_list,
-            commands::samurai::samurai_schedule_launch,
-            commands::samurai::samurai_recover_run,
-            commands::samurai::samurai_resume_now,
-            commands::samurai::samurai_get_config,
-            commands::samurai::samurai_set_config,
-            // Samurai run launcher (issue #63) + workflow graph (issue #91)
-            commands::samurai::samurai_preflight,
-            commands::samurai::samurai_launch_run,
-            commands::samurai::samurai_default_workflow,
-            commands::samurai::samurai_list_runs,
-            commands::samurai::samurai_cleanup_epic,
-            commands::samurai::samurai_abandon_run,
-            // Samurai Second Brain file inventory (issue #65)
-            commands::samurai::samurai_files_list,
-            commands::samurai::samurai_file_delete,
-            // Guarded read of any listed Samurai file (issue #82)
-            commands::samurai::samurai_file_read,
-            commands::samurai::samurai_timer_cancel,
-            // Samurai journal (Phase 5, issue #69)
-            commands::samurai::samurai_journal_add,
-            commands::samurai::samurai_journal_list,
-            // Per-entry journal delete (issue #100)
-            commands::samurai::samurai_journal_delete,
-            // Samurai harvest (issue #98: interactive triage session; the
-            // read command keeps serving previously generated reports, and
-            // samurai_harvest_list surfaces them to the Journal panel —
-            // issue #142)
-            commands::harvest::samurai_harvest_arm,
-            commands::harvest::samurai_harvest_preview,
-            commands::harvest::samurai_harvest_read,
-            commands::harvest::samurai_harvest_list,
             // Generic "launch a terminal with an initial prompt" injection
             commands::initial_prompt::terminal_arm_initial_prompt,
             // Injector sidebar tab: one message into many terminals

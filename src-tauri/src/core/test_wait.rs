@@ -1,6 +1,5 @@
 //! Event-driven waits shared by the integration test harnesses (moved out of
-//! the Samurai module in issue #610; the audit-log waits stay in
-//! `samurai_test_wait`).
+//! the Samurai module in issue #610).
 //!
 //! Every one of those harnesses drives work that does **not** run on the
 //! test's own runtime: park validation, brief staging and the replicator's

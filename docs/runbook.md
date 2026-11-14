@@ -260,6 +260,10 @@ Nothing in Maestro starts, shows or mentions a Samurai run any more:
   and PR review launches work as before.
 - Settings saved by an older version that still carry the Samurai launch switch load as before; the switch is
   ignored.
+- Nothing Samurai runs in the background either: no supervision, hand-offs, parking timers, scheduled resumes or
+  audit log. Samurai files already on disk are left where they are.
+- The brief file a PR review leaves in `.maestro/briefs/` is removed at the next start of Maestro once it is
+  older than 14 days. The 14 days are fixed; there is no setting for them.
 
 ## Second Brain and the health checker are gone
 

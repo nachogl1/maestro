@@ -1,8 +1,8 @@
-//! Shared PTY submission for Samurai instructions.
+//! Shared PTY submission for text typed into a live `claude` session.
 //!
-//! Every Samurai instruction — the gen-1 launch brief, the handoff request,
-//! the corrective re-instruction, the wind-down, the park — is delivered by
-//! typing it into a live `claude` session's PTY. Until this module existed,
+//! Every such message — the initial prompt, an Injector or Triggers send, the
+//! `/rename` an agent rename types — is delivered by typing it into the
+//! session's PTY. Until this module existed,
 //! each caller wrote `format!("{instruction}\r")` as ONE `write_stdin` call,
 //! and that does not submit: the CLI's input reads a single large, fast
 //! chunk as a **paste**, so the trailing carriage return lands in the input
@@ -22,8 +22,7 @@
 //! multi-KB paste, and when the CLI is still consuming the burst 250 ms in,
 //! the Enter is read as part of the paste (or dropped) and the brief sits in
 //! the input box unsubmitted. The gap therefore scales with the payload
-//! ([`submit_delay`]), and the replicator arms a post-delivery check that
-//! re-sends the lone Enter ([`resend_submit`]) when no turn ever starts.
+//! ([`submit_delay`]).
 //!
 //! **The body itself is typed in chunks, not in one burst.** Observed live
 //! (2026-08-17): a gen-1 launch brief of several KB arrived at the agent as
@@ -50,8 +49,7 @@ pub const SUBMIT_DELAY: Duration = Duration::from_millis(250);
 /// CAP on the scaled gap. Past ~4 KiB more waiting stops buying certainty —
 /// the drain rate of the CLI's input pipeline is not observable from this
 /// side of the PTY (the `ProcessManager` exposes no read side) — so beyond
-/// the cap the recovery mechanism is the replicator's Enter-resend check
-/// (issue #103), not a longer sleep.
+/// the cap a lost Enter is left for the user to press, not a longer sleep.
 pub const SUBMIT_DELAY_CAP: Duration = Duration::from_secs(2);
 
 /// Pre-Enter gap for a payload of `payload_bytes`: 1 ms per 2 bytes (≈ half
@@ -115,9 +113,8 @@ pub type DeliveryOutcome = Box<dyn FnOnce(Result<(), String>) + Send + 'static>;
 /// [`submit_delay`]`(text.len())` later.
 ///
 /// `write_stdin` is fully blocking (std mutex + pipe write with no bounded
-/// completion time), so both frames run on the blocking pool — the policy
-/// every Samurai PTY write already followed. `ctx` names the caller in the
-/// warning logs ("injector" / "replicator"), because a half-delivered
+/// completion time), so both frames run on the blocking pool. `ctx` names the
+/// caller in the warning logs, because a half-delivered
 /// instruction (text in, Enter lost) looks exactly like the bug this module
 /// exists to fix and must be attributable.
 ///
@@ -152,8 +149,8 @@ pub fn submit_instruction(
         }
         outcome(Ok(()));
         tokio::time::sleep(delay).await;
-        // Enter-frame failures are logged only: the delivery watches (and,
-        // for harvest, the user) recover a submit that never landed.
+        // Enter-frame failures are logged only: the text sits visibly in the
+        // input box, and the user can press Enter.
         let _ = write_frame(
             &processes,
             session_id,
@@ -169,18 +166,15 @@ pub fn submit_instruction(
 /// the instruction body to the session's PTY ON THE CALLING THREAD and
 /// returns whether that write landed; only the delayed Enter stays
 /// fire-and-forget. For the one caller whose side effects must be contingent
-/// on the instruction actually reaching the PTY — the harvest triage, which
-/// consumes journal entries only after this returns `Ok` (a fire-and-forget
-/// submit would consume entries that were never injected). Samurai briefs
-/// keep [`submit_instruction`]: their delivery watches handle retries.
+/// on the instruction actually reaching the PTY.
 ///
 /// Only the BODY write is confirmed: an Enter lost after an `Ok` leaves the
 /// prompt sitting visibly in the input box (recoverable — the user presses
 /// Enter), unlike a lost body, which leaves nothing to recover.
 ///
 /// `write_stdin` is fully blocking (std mutex + pipe write), so callers must
-/// already be on the blocking pool — the harvest injection gate runs under
-/// `spawn_blocking` (lib.rs's `hook_emit_fn` tap).
+/// already be on the blocking pool — the initial-prompt gate runs under
+/// `spawn_blocking` (the setup's `hook_emit_fn` tap).
 pub fn submit_instruction_confirmed(
     processes: ProcessManager,
     session_id: u32,
@@ -218,24 +212,6 @@ pub fn submit_instruction_confirmed(
     Ok(())
 }
 
-/// Re-sends ONLY the lone submit key (issue #103): the recovery for an Enter
-/// that was swallowed by a still-draining paste burst. NEVER re-sends any
-/// instruction body — the text already sits in the CLI's input box, and a
-/// re-paste would duplicate the prompt. An extra Enter, by contrast, is
-/// harmless when the first one did land (an empty input box ignores it).
-pub fn resend_submit(processes: ProcessManager, session_id: u32, ctx: &'static str) {
-    tauri::async_runtime::spawn(async move {
-        let _ = write_frame(
-            &processes,
-            session_id,
-            SUBMIT_KEY.to_string(),
-            ctx,
-            "submit-resend",
-        )
-        .await;
-    });
-}
-
 /// One frame onto the blocking pool. `Err` = it did not reach the PTY (the
 /// failure is logged here either way; the message also travels back so the
 /// instruction-body caller can audit it — issue #109).
@@ -253,7 +229,7 @@ async fn write_frame(
         Ok(Err(e)) => format!("writing {frame} to session {session_id} failed: {e}"),
         Err(e) => format!("{frame} write task for session {session_id} failed: {e}"),
     };
-    log::warn!("samurai {ctx}: {failure}");
+    log::warn!("PTY submit {ctx}: {failure}");
     Err(failure)
 }
 
@@ -266,8 +242,8 @@ mod tests {
         // The whole point: the instruction carries NO submit key, and the
         // submit is a frame of its own. A single `format!("{text}\r")` write
         // is what the CLI mistook for a paste.
-        let body = chunk_frames("[Maestro Samurai] do the thing");
-        assert_eq!(body, ["[Maestro Samurai] do the thing"]);
+        let body = chunk_frames("[Maestro] do the thing");
+        assert_eq!(body, ["[Maestro] do the thing"]);
         assert!(!body[0].contains('\r'), "no submit key inside the payload");
         assert!(!body[0].contains('\n'), "still a single pasteable line");
         assert_eq!(SUBMIT_KEY, "\r");
@@ -288,7 +264,7 @@ mod tests {
         // The bug: a several-KB brief written as ONE burst reached the agent
         // as its last ~700 chars. Every frame must be small enough that the
         // CLI folds it into the input box before the next one lands.
-        let brief = "[Maestro Samurai] You are generation 1. ".repeat(200);
+        let brief = "[Maestro] You are generation 1. ".repeat(200);
         let chunks = chunk_frames(&brief);
         assert!(chunks.len() > 1, "a multi-KB brief must not be one write");
         for chunk in &chunks {

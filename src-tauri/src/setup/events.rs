@@ -1,28 +1,13 @@
-//! Event pipeline: the batched `claude-events` EventBus and the Samurai
-//! event tees that observe every deduped event before it is batched.
+//! Event pipeline: the batched `claude-events` EventBus.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use tauri::Emitter;
 
-use crate::commands;
-use crate::core;
-use crate::core::samurai_context::SamuraiContextStore;
-use crate::core::samurai_injector::SamuraiInjector;
 use crate::core::{ClaudeEvent, EventBus};
 
-/// Samurai consumers fed by the event tees. The context store is live from
-/// the start; the other three are late-bound slots filled once their
-/// controllers are constructed in [`super::samurai`].
-pub(super) struct SamuraiTees {
-    pub samurai_context: Arc<SamuraiContextStore>,
-    pub samurai_injector: Arc<OnceLock<Arc<SamuraiInjector>>>,
-    pub samurai_completion: Arc<OnceLock<Arc<core::samurai_completion::SamuraiCompletionWatcher>>>,
-    pub harvest_triage_slot: Arc<OnceLock<Arc<commands::harvest::HarvestTriage>>>,
-}
-
-/// Builds the EventBus (and spawns its flush task) plus the Samurai tees.
-pub(super) fn build_event_bus(app: &tauri::App) -> (Arc<EventBus>, SamuraiTees) {
+/// Builds the EventBus and spawns its flush task.
+pub(super) fn build_event_bus(app: &tauri::App) -> Arc<EventBus> {
     // Create EventBus - emits events to frontend via Tauri.
     //
     // Events are batched rather than emitted one IPC message at a time:
@@ -43,49 +28,10 @@ pub(super) fn build_event_bus(app: &tauri::App) -> (Arc<EventBus>, SamuraiTees) 
     let data_ready = Arc::new(tokio::sync::Notify::new());
     let flush_now = Arc::new(tokio::sync::Notify::new());
 
-    // Samurai (issue #52): backend tee. The context store observes
-    // every deduped event before it enters the frontend batch buffer,
-    // retaining the latest context % per session for Phase 2's
-    // handoff trigger and ACK scanner. Observation only — the
-    // batching path below is unchanged.
-    let samurai_context = Arc::new(SamuraiContextStore::new());
-
-    // Samurai (issue #53): the injection controller is constructed
-    // further down (it needs the supervisor/config/audit created
-    // there), but both event tees are built here — a late-bound slot
-    // bridges the gap. Events arriving before it is filled concern no
-    // supervised session and are safely ignored.
-    let samurai_injector: Arc<std::sync::OnceLock<Arc<SamuraiInjector>>> =
-        Arc::new(std::sync::OnceLock::new());
-    // Samurai (issue #96): the run-completion scanner rides the same
-    // tee; same late-bound slot (it needs the run-config store
-    // constructed further down).
-    let samurai_completion: Arc<
-        std::sync::OnceLock<Arc<core::samurai_completion::SamuraiCompletionWatcher>>,
-    > = Arc::new(std::sync::OnceLock::new());
-    // Interactive harvest triage (issue #98): armed sessions get the
-    // journal prompt injected on their first SessionStarted hook
-    // signal. Same late-bound slot pattern (it needs the journal
-    // store constructed further down).
-    let harvest_triage_slot: Arc<std::sync::OnceLock<Arc<commands::harvest::HarvestTriage>>> =
-        Arc::new(std::sync::OnceLock::new());
-
     let pending_for_emit = pending_events.clone();
     let data_ready_for_emit = data_ready.clone();
     let flush_now_for_emit = flush_now.clone();
-    let samurai_context_for_emit = samurai_context.clone();
-    let samurai_injector_for_emit = samurai_injector.clone();
-    let samurai_completion_for_emit = samurai_completion.clone();
     let emit_fn: Arc<dyn Fn(ClaudeEvent) + Send + Sync> = Arc::new(move |event: ClaudeEvent| {
-        samurai_context_for_emit.observe(&event);
-        // Samurai (issue #53): ACK scanning over AssistantMessage.
-        if let Some(injector) = samurai_injector_for_emit.get() {
-            injector.observe(&event);
-        }
-        // Samurai (issue #96): completion-declaration scanning.
-        if let Some(completion) = samurai_completion_for_emit.get() {
-            completion.observe(&event);
-        }
         // Recover from a poisoned lock rather than dropping the event —
         // losing one silently would corrupt the frontend's activity feed.
         let len = {
@@ -132,15 +78,5 @@ pub(super) fn build_event_bus(app: &tauri::App) -> (Arc<EventBus>, SamuraiTees) 
         }
     });
 
-    let event_bus = Arc::new(EventBus::new(emit_fn));
-
-    (
-        event_bus,
-        SamuraiTees {
-            samurai_context,
-            samurai_injector,
-            samurai_completion,
-            harvest_triage_slot,
-        },
-    )
+    Arc::new(EventBus::new(emit_fn))
 }

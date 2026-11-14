@@ -142,8 +142,8 @@ impl TranscriptWatcher {
         }
 
         // The session-start hook can fire before Claude Code has created the
-        // project directory itself — a samurai orchestrator in a fresh
-        // worktree always does (issue #125). Watching a missing directory
+        // project directory itself — a session in a fresh worktree always
+        // does (issue #125). Watching a missing directory
         // fails, the session is never retried, and every subagent of the
         // session stays invisible. Create it up front instead; Claude writes
         // the transcript into it moments later.
@@ -340,55 +340,6 @@ impl TranscriptWatcher {
         );
     }
 
-    /// Force-reattach a session's watch (issue #118): stop whatever watcher
-    /// the session has — even one registered for this SAME path, which
-    /// `start_watching` would treat as a no-op — and start a fresh one.
-    ///
-    /// The samurai blindness self-heal calls this when a session's
-    /// transcript stream went silent: the fresh reader re-reads from byte 0
-    /// (re-feeding the context store; marker scans are replay-safe by
-    /// design — `claude --resume` already re-reads transcripts from byte 0),
-    /// and, when this session was the directory's only subscriber, the
-    /// directory's OS watch is recreated instead of rejoining one that may
-    /// have silently died.
-    pub fn restart_watching(&self, session_id: u32, transcript_path: PathBuf) {
-        log::info!(
-            "TranscriptWatcher: force-restarting session {session_id} at {}",
-            transcript_path.display()
-        );
-        self.stop_watching(session_id);
-        self.start_watching(session_id, transcript_path);
-    }
-
-    /// The samurai blindness self-heal's entry point (issue #118), hardened
-    /// by fix C3 (issue #131 review 2): force-reattach `session_id` to the
-    /// transcript it is REGISTERED against, and refuse — `false`, which the
-    /// injector turns into the `context_blind` ALERT — when it is registered
-    /// against none.
-    ///
-    /// It used to re-bind to "the newest `*.jsonl` in the session's Claude
-    /// project directory", which matches no session identity at all. Every
-    /// generation of a run shares one worktree, so that directory holds
-    /// gen-1…gen-N transcripts: a session blind because its watch never
-    /// attached got the PREDECESSOR generation's file restarted from byte 0,
-    /// replaying gen-N-1's context readings into gen-N's handoff trigger and
-    /// its markers into the injector's ack scanner. A human ALERT is the
-    /// correct outcome for a session whose transcript was never registered.
-    pub fn rewatch_registered(&self, session_id: u32) -> bool {
-        match self.transcript_path(session_id) {
-            Some(path) => {
-                self.restart_watching(session_id, path);
-                true
-            }
-            None => {
-                log::warn!(
-                    "TranscriptWatcher: session {session_id} has no registered transcript — refusing to guess one (its session-start hook never landed)"
-                );
-                false
-            }
-        }
-    }
-
     /// Stop watching a session's transcript file and clean up resources.
     pub fn stop_watching(&self, session_id: u32) {
         if let Some((_, state)) = self.watchers.remove(&session_id) {
@@ -396,14 +347,6 @@ impl TranscriptWatcher {
             self.unsubscribe(session_id, &state.transcript_path);
             log::info!("TranscriptWatcher: stopped watching session {session_id}");
         }
-    }
-
-    /// The transcript file `session_id` is currently tailing, if any. Used by
-    /// the Samurai watchdog for its transcript-staleness (mtime) check.
-    pub fn transcript_path(&self, session_id: u32) -> Option<PathBuf> {
-        self.watchers
-            .get(&session_id)
-            .map(|state| state.transcript_path.clone())
     }
 
     /// Return the list of session IDs currently being watched.
@@ -1523,11 +1466,11 @@ mod tests {
         watcher.stop_watching(1);
     }
 
-    /// Issue #125: a samurai orchestrator runs in a fresh worktree, so its
-    /// session-start hook fires BEFORE Claude Code has created that worktree's
+    /// Issue #125: a session started in a fresh worktree has its
+    /// session-start hook fire BEFORE Claude Code has created that worktree's
     /// project directory under ~/.claude/projects. Watching the missing
     /// directory used to fail permanently (the session is never retried), so
-    /// every subagent of the orchestrator was invisible. Starting the watch
+    /// every subagent of the session was invisible. Starting the watch
     /// before the directory exists must still surface the spawns written later.
     #[tokio::test]
     async fn test_watch_started_before_project_dir_exists_still_surfaces_spawns() {
@@ -1557,7 +1500,7 @@ mod tests {
         );
 
         // Claude writes the orchestrator's transcript moments later.
-        let spawn = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_S","name":"Agent","input":{"description":"samurai subagent","subagent_type":"general-purpose","prompt":"do the thing"}}]},"uuid":"m1","timestamp":"2026-08-15T20:27:30Z"}"#;
+        let spawn = r#"{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"tool_use","id":"toolu_S","name":"Agent","input":{"description":"review subagent","subagent_type":"general-purpose","prompt":"do the thing"}}]},"uuid":"m1","timestamp":"2026-08-15T20:27:30Z"}"#;
         std::fs::write(&main_path, format!("{spawn}\n")).unwrap();
 
         wait_until(&tick, || {
@@ -1571,37 +1514,6 @@ mod tests {
         .await;
 
         watcher.stop_watching(1);
-    }
-
-    /// Fix C3 (issue #131 review 2): the blindness self-heal reattaches ONLY
-    /// the session's own registered transcript. A run's generations share one
-    /// worktree — and therefore one Claude project directory holding
-    /// gen-1…gen-N — so "newest file in the directory" would hand a blind
-    /// gen-N its PREDECESSOR's transcript and replay it from byte 0.
-    #[tokio::test]
-    async fn test_rewatch_only_reattaches_the_sessions_own_transcript() {
-        let (event_bus, _captured) = test_event_bus();
-        let watcher = TranscriptWatcher::new(event_bus);
-        let dir = tempfile::tempdir().unwrap();
-
-        // The shared project dir: the predecessor's transcript is the NEWEST
-        // file in it, written after this session's own.
-        let mine = dir.path().join("gen-2.jsonl");
-        std::fs::write(&mine, "").unwrap();
-        let predecessor = dir.path().join("gen-1-newer.jsonl");
-        std::fs::write(&predecessor, "").unwrap();
-
-        // A session with no registered transcript (its session-start hook
-        // never landed) refuses to heal — the injector ALERTs instead.
-        assert!(!watcher.rewatch_registered(7), "nothing registered");
-        assert!(watcher.watched_sessions().is_empty());
-
-        // A registered session reattaches to ITS OWN file, never the newer
-        // sibling.
-        watcher.start_watching(7, mine.clone());
-        assert!(watcher.rewatch_registered(7));
-        assert_eq!(watcher.transcript_path(7), Some(mine));
-        watcher.stop_watching(7);
     }
 
     #[test]
@@ -1787,13 +1699,10 @@ mod tests {
         watcher.stop_watching(3);
     }
 
-    /// Issue #118: a session whose watch silently died (or never attached)
-    /// can only be revived by a FORCED restart — `start_watching` with the
-    /// same path is a documented no-op, which would leave the stream dead.
-    /// `restart_watching` must attach a fresh reader that re-reads from
-    /// byte 0, proving the session got a live watcher again.
+    /// `start_watching` with the path a session is already watching is a
+    /// documented no-op: nothing is re-read.
     #[tokio::test]
-    async fn test_restart_watching_attaches_a_fresh_reader_for_the_same_path() {
+    async fn test_start_watching_the_same_path_again_is_a_no_op() {
         use std::time::Duration;
 
         let (event_bus, captured, tick) = ticked_event_bus();
@@ -1815,24 +1724,17 @@ mod tests {
         };
         wait_until(&tick, || count(&captured) >= 1).await;
 
-        // The bus dedups replayed uuids for 5s; a real heal happens minutes
-        // after the original read, so expire the window rather than sleep.
+        // The bus dedups replayed uuids for 5s; expire the window so a
+        // re-read would show up rather than be dropped as a duplicate.
         event_bus.clear_dedup_cache();
 
-        // Same path through start_watching: the documented no-op — nothing
-        // is re-read, which is exactly why a dead watch stayed dead.
-        watcher.start_watching(1, path.clone());
+        watcher.start_watching(1, path);
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(
             count(&captured),
             1,
             "start_watching with the same path is a no-op"
         );
-
-        // The forced restart attaches a fresh reader: byte 0 is re-read, so
-        // the same line is delivered again — the stream is demonstrably live.
-        watcher.restart_watching(1, path);
-        wait_until(&tick, || count(&captured) >= 2).await;
         assert_eq!(watcher.watched_sessions(), vec![1]);
         watcher.stop_watching(1);
     }

@@ -1,9 +1,8 @@
 //! The body of the Tauri `.setup` hook, split by subsystem. The phases run
 //! in the same order the single closure used to: event bus → terminal/status
-//! server → Samurai → GitHub watchdog → CLI path capture.
+//! server → PR review records → GitHub watchdog → CLI path capture.
 
 mod events;
-mod samurai;
 mod terminal;
 
 use std::sync::Arc;
@@ -26,15 +25,23 @@ pub(crate) fn run_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
     #[cfg(windows)]
     crate::core::cli_path::log_adopted_path();
 
-    let (event_bus, tees) = events::build_event_bus(app);
-    terminal::setup_terminal(app, instance_id, event_bus, &tees)?;
-    // Issue #139: PR-review run records, inside the shared `runs` root so they
-    // fall under the existing managed-delete guard. Built here, not in the
-    // Samurai setup, because PR review outlives Samurai (issue #610).
-    app.manage(Arc::new(crate::core::pr_runs::PrRunStore::new(
+    let event_bus = events::build_event_bus(app);
+    terminal::setup_terminal(app, instance_id, event_bus)?;
+    // Issue #139: PR-review run records, inside the app-data `runs` root.
+    let pr_runs = Arc::new(crate::core::pr_runs::PrRunStore::new(
         commands::ai_runner::artifact_base_dir("runs"),
-    )));
-    samurai::setup_samurai(app, tees);
+    ));
+    // Issue #145: old PR review briefs are removed once per app start; the
+    // window is measured in days, so a periodic tick would be pure noise.
+    let swept_briefs = pr_runs.sweep_expired_briefs();
+    if !swept_briefs.is_empty() {
+        log::info!(
+            "PR review retention: removed {} brief(s) older than {} days",
+            swept_briefs.len(),
+            crate::core::pr_runs::PR_REVIEW_BRIEF_RETENTION_DAYS
+        );
+    }
+    app.manage(pr_runs);
 
     // GitHub watchdog: background poller for review requests /
     // assigned issues across all configured projects. The frontend

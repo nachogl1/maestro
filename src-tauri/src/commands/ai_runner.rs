@@ -1,12 +1,10 @@
-//! Shared helpers for Maestro's app-data artifact stores (harvest, samurai):
-//! the per-kind artifact directory, project-path canonicalisation, today's
-//! date, and text cleanup/interpolation for prompts and saved output.
+//! Shared helpers for Maestro's app-data artifact stores: the per-kind
+//! artifact directory, project-path canonicalisation, and text cleanup for
+//! saved output.
 //!
 //! Artifacts live under `<app data>/<kind>/`.
 
 use std::path::PathBuf;
-
-use chrono::Local;
 
 use crate::core::extended_paths::normalize_extended_path;
 
@@ -39,11 +37,6 @@ pub fn canonical_project_path(project_path: &str) -> String {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| project_path.to_string());
     normalize_extended_path(&canonical)
-}
-
-/// Today's local calendar date (YYYY-MM-DD) — the artifact's file name.
-pub fn today_local() -> String {
-    Local::now().format("%Y-%m-%d").to_string()
 }
 
 /// Remove ANSI escape sequences (CSI and OSC) so saved artifacts are clean text.
@@ -90,46 +83,6 @@ pub fn strip_ansi(input: &str) -> String {
     out
 }
 
-/// Truncate on a char boundary, appending a marker when content was dropped.
-pub fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let truncated: String = s.chars().take(max_chars).collect();
-    format!("{}\n[... truncated ...]", truncated)
-}
-
-/// Single-pass placeholder interpolation over `template`: each `{token}` in
-/// the TEMPLATE is replaced once, and substituted material is never
-/// re-scanned — so a commit subject or issue title containing a literal
-/// "{sessions}"/"{overview}" cannot get expanded (unlike chained
-/// `str::replace`, which rescans the accumulated string).
-pub fn interpolate(template: &str, vars: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    loop {
-        let mut earliest: Option<(usize, &str, &str)> = None;
-        for &(token, value) in vars {
-            if let Some(pos) = rest.find(token) {
-                if earliest.is_none_or(|(p, _, _)| pos < p) {
-                    earliest = Some((pos, token, value));
-                }
-            }
-        }
-        match earliest {
-            Some((pos, token, value)) => {
-                out.push_str(&rest[..pos]);
-                out.push_str(value);
-                rest = &rest[pos + token.len()..];
-            }
-            None => {
-                out.push_str(rest);
-                return out;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,28 +123,5 @@ mod tests {
         assert_eq!(strip_ansi("a\u{1b}]0;title\u{1b}\\b"), "ab");
         // Trailing lone escape must not panic or loop.
         assert_eq!(strip_ansi("end\u{1b}"), "end");
-    }
-
-    #[test]
-    fn truncate_chars_marks_dropped_content() {
-        assert_eq!(truncate_chars("short", 10), "short");
-        let long = "x".repeat(20);
-        let cut = truncate_chars(&long, 10);
-        assert!(cut.starts_with("xxxxxxxxxx"));
-        assert!(cut.ends_with("[... truncated ...]"));
-    }
-
-    #[test]
-    fn interpolate_replaces_each_template_token_once() {
-        let out = interpolate("a {x} b {y} c", &[("{x}", "1"), ("{y}", "2")]);
-        assert_eq!(out, "a 1 b 2 c");
-    }
-
-    #[test]
-    fn interpolate_does_not_rescan_substituted_material() {
-        // Placeholder-looking text inside the material must pass through
-        // verbatim — only tokens in the template itself are interpolated.
-        let out = interpolate("{a}|{b}", &[("{a}", "says {b}"), ("{b}", "B")]);
-        assert_eq!(out, "says {b}|B");
     }
 }
