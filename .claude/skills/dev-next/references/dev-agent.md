@@ -33,14 +33,18 @@ You are implementing GitHub issue **#N** of this repository (the one `origin` po
    **export the variable the project uses to point at it** before running the suite — without it the suite finds
    whatever is on PATH, and tests fail on a machine where that is the wrong version.
 2. Implement the acceptance criteria test first: a failing test, then the code that passes it, then a refactor
-   (`BASE_CLAUDE.md`, *Test first, then clean code*). Nothing more — the `Out` list under `### Scope` means what it
-   says.
+   (`BASE_CLAUDE.md`, *Test first, then clean code*, and **Clean code** below). Nothing more — the `Out` list under
+   `### Scope` means what it says.
 3. **Use only synthetic or de-identified fixtures.** Never copy production, customer or personal data into the
    repository, a test, a log or an issue.
 4. **Honour every domain invariant the project's `CLAUDE.md` names** — a record that must be written for every
    artefact produced, a documented schema that must be kept in step with the code — and test it.
-5. Write tests for every new behaviour. **Never delete, skip or weaken an existing test. Never widen a timeout.**
-   Tests never reach the network: any external service is mocked behind its interface.
+5. Write tests for every new behaviour (`BASE_CLAUDE.md`, *Every new test earns its place*). **Search the existing
+   tests before writing one:** a behaviour something already checks gets no new test — extend or reuse that test
+   instead of repeating it. Prove each behaviour once, at the cheapest level that would fail if it broke (one function
+   before the whole app; a slow whole-app test only for what a fast one cannot reach). **Never delete, skip or weaken
+   an existing test. Never widen a timeout.** Tests never reach the network: any external service is mocked behind its
+   interface.
 6. Green the gate the project's `CLAUDE.md` lists (build → lint → typecheck → full suite). Every command in the chain.
    No exceptions.
 7. `git merge origin/main` if you are behind — **never rebase, never stash**. Resolve conflicts in your own files only.
@@ -54,6 +58,16 @@ You are implementing GitHub issue **#N** of this repository (the one `origin` po
 9. Push the branch the first time with `git push -u origin feat/<N>-<slug>` (it was created with no upstream, so a
    plain `git push` has nowhere to go), then open the pull request with **`Closes #<N>`** in the body, plus the
    evidence table below.
+
+**Clean code — what the refactor in step 2 looks for**, in the code this pull request writes or changes, never in code
+it does not touch:
+
+- **SOLID, as a guide** (five design rules, in plain words): each unit has one job; a unit is extended without editing
+  what already works; a subtype works wherever its parent does; interfaces stay small and focused; code depends on
+  interfaces, not on concrete parts. **Never add an interface, class or layer only to obey one of them** — the rule
+  against speculative abstractions wins.
+- **Six code smells** (signs of poor design) to remove before the pull request opens: copied code; a long function; a
+  long parameter list; deep nesting; one unit doing several jobs; one change that needs edits in many places.
 
 **Before step 9, the checks that cost review rounds when skipped:**
 

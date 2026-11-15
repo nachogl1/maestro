@@ -81,21 +81,30 @@
   issue, and the new issue names that pull request (or the issue, if no pull request is open yet) under
   `### References`.
 - **Read an issue only with `gh issue view <N> --json title,body,labels,comments`.** Shorter forms drop the body.
-- Labels: `epic` `story` `agent-ready` `needs-human` `in-progress` `outside-change` `bug`, plus the `wayfinder:*` set
-  the planning skill owns and the `tier:*` set. `/dev-next` creates any of the seven that are missing in its preflight.
+- Labels: `epic` `story` `agent-ready` `needs-human` `in-progress` `outside-change` `bug` `owner-merges`, plus the
+  `wayfinder:*` set the planning skill owns and the `tier:*` set. `/dev-next` creates any of the eight that are missing
+  in its preflight.
   - `tier:*`: what a story is for, so anyone reading the list sees it. Every story carries exactly one; an epic never
     does. A story cut from a PRD takes the tier the PRD gives that work (`tier:mvp`, `tier:stretch`,
     `tier:stretch-2`); any other names where it came from (`tier:bug`, `tier:dev-quick`, …; the full list is in
-    `new-issue.md`). Whoever files the story creates a missing tier label. **Nothing picks or orders work by tier.**
+    `new-issue.md`). Whoever files the story creates a missing tier label. **Tiers set the build order through real
+    blocks:** every story of a later PRD tier is blocked by the final stories of the tier before it (the stories of
+    that tier no other story of the same tier waits for), in both blocker forms, following the PRD's tier order
+    (`tier:stretch` waits for `tier:mvp`, `tier:stretch-2` for `tier:stretch`). A story added to a tier later is linked
+    the same way by whoever files it: it blocks the next tier's stories once it is one of its tier's final stories, and
+    it is blocked by the previous tier's final stories when it sits in a later tier. Tiers outside the PRD
+    (`tier:bug`, `tier:dev-quick`, `tier:manual`, …) are outside the chain. The blocks alone keep work in tier order.
   - `wayfinder:*`: a planning ticket, never a story. `/dev-next` never takes an issue carrying one, and the drift
     checks (`/dev-next`'s probe, `/reconcile`) leave such issues out.
   - `agent-ready`: nothing is left to ask. An agent claims it, builds it, gets a fresh-agent review and merges with no
-    human. **An issue with none of `agent-ready`, `needs-human` or `outside-change` is not taken automatically**:
-    `/dev-next` stops in preflight and asks the human what it is. A label given then earns one ready-check before
-    building.
+    human (unless it also carries `owner-merges`). **An issue with none of `agent-ready`, `needs-human` or
+    `outside-change` is not taken automatically**: `/dev-next` stops in preflight and asks the human what it is. A
+    label given then earns one ready-check before building.
   - `needs-human`: a person must act or decide first, then flips it to `agent-ready` — or the ticket is human-only
     work for good. The reason is the issue's **last comment**. Labelling `needs-human` removes `agent-ready`; the two
     never sit together.
+  - `owner-merges`: a person merges this story's pull request. It sits beside a readiness label, never in place of
+    one: an agent builds the story as usual, opens the pull request with its evidence and stops without merging.
   - **`outside-change`: the work touches a repository this team does not own. It never runs autonomously and always
     ends at a pull request for that repository's own reviewer.** It always also carries `needs-human`, so one filter
     catches every issue an agent must not take. The issue names the external work item under `### External reference`
@@ -105,22 +114,26 @@
 
 **The PRD is the north star for what we build.** Every product fact — vocabulary, scope, the do-not-build list, the
 acceptance bar, the build decisions — is read from `docs/PRDs/PRD.md` (every PRD under `docs/PRDs/`, if more than
-one), never restated in a rules file. Until PRD v1 exists the pre-PRDs there stand in. **Disagreement is a bug**: the
-PRD wins on product, the rules files win on process.
+one) together with its pending ADRs (below), never restated in a rules file. Until PRD v1 exists the pre-PRDs there
+stand in. **Disagreement is a bug**: the PRD wins on product, the rules files win on process.
 
 - **Three sizes of change, three kinds of record.**
   - **A fix or a tweak:** no document.
   - **A hard-to-reverse decision** (a new mechanism, a format, a dependency, a change of scope: something costly to
     undo, or that a later reader will ask "why?" about) gets an **ADR** (a short decision record: context, decision,
     consequences, alternatives) at `docs/ADRs/adr-<change-name>.md`. The agent proposes it and the person confirms
-    one is needed; the person approves the ADR before any ticket or code for that change exists. **During a PRD
-    split (`/prd-to-tickets`) this rule does not apply**: a hard-to-reverse decision taken there is recorded under
-    the stories it shapes and offered for the PRD's build-decisions section through the PRD pull request the split
-    already asks about, so the backlog and the drift checks see it; an ADR is optional rationale there and never
-    blocks a story.
+    one is needed; the person approves the ADR before any ticket or code for that change exists. Every ADR carries a
+    status line, `pending` or `folded into the PRD on <date>`. **During a PRD split (`/prd-to-tickets`) this rule
+    does not apply**: a hard-to-reverse decision taken there is recorded under the stories it shapes and offered for
+    the PRD's build-decisions section through the PRD pull request the split already asks about, so the backlog and
+    the drift checks see it; an ADR is optional rationale there and never blocks a story.
   - **A big change or a product update:** the agent only asks whether the person wants a PRD. Creating or updating a
     PRD is the person's process, on their terms — planned with `/wayfinder`, then written or provided by the person.
     **An agent never drafts a PRD on its own.**
+  - **PRD or ADRs after the first map.** A project's first `/wayfinder` map ends in a PRD. After it, the person chooses
+    for each map whether its decisions update the PRD or are written as ADRs only. Product truth is then the PRD plus
+    its pending ADRs, and `/reconcile` folds pending ADRs into the PRD through its `docs(prd)` pull request, changing
+    their status line in the same pull request. Decisions taken during a PRD split still go to the PRD.
 - **No real production data in the repository.** The project's `CLAUDE.md` names the sensitive data classes. Synthetic
   or de-identified fixtures only. **No personal data anywhere** — not in prompts, logs, tests, fixtures, issues or git
   history — and never run anything against production.
@@ -148,10 +161,11 @@ PRD wins on product, the rules files win on process.
 - **Code, comments, commits, issues and docs in the language the project's `CLAUDE.md` names.**
 - **Front-end development is led by the UX prototype in `docs/ux/prototypes/`.** A story that adds or changes a
   screen implements the prototype's screen, never a layout of its own, and names that screen under `### References`;
-  a screen the prototype lacks is a UX change first (pull request on `docs/ux/prototypes/`), then a story. The
-  prototype exists before any front-end story starts: the user provides it, or `/prd-to-tickets` drafts one from the
-  PRD in parallel with the split (a pull request a human merges) and blocks every front-end story on it until it is
-  on `main`.
+  a screen the prototype lacks is a UX change first (pull request on `docs/ux/prototypes/`), then a story. **The
+  prototype is merged before `/prd-to-tickets` cuts a PRD that names screens:** the user provides it, or the cut,
+  finding no prototype or one missing a screen the PRD names, drafts the missing screens, opens that pull request (a
+  person merges it) and stops; the person runs the cut again once it is on `main`. A later PRD update that adds a
+  screen takes the same gate.
 - **Take every reversible decision yourself** — simplest option that meets the acceptance criteria, recorded in the
   pull request. Only a genuinely irreversible one becomes `needs-human`. A run that waits costs money doing nothing.
 - **Two sources of truth, kept in step.** Issues track the work; the PRD holds the product. In a session with a person
@@ -167,11 +181,15 @@ PRD wins on product, the rules files win on process.
 - **NEVER push to `main`.** Not a fix, not a typo, not "only a doc". Every change reaches `main` as a merged pull
   request from a `feat/<desc>` / `fix/<desc>` branch (or the project's own branch pattern). Nothing but you enforces
   this where branch protection is off.
-- **Who merges.** `/dev-next` merges its own pull requests on its own (a `/dev-quick` run merges through it,
-  nothing else), and only once the project's build and test commands are filled in. Every other pull request —
-  planning, scaffolding, documentation, anything outside the dev skill — is merged by a human, or by the agent on
-  the person's explicit word to merge that one pull request, once its checks are green. Never auto-merge beyond
-  that, and never merge an `outside-change` pull request: its repository's own reviewer does.
+- **Who merges.** An agent merges every pull request it makes in the project on its own — `/dev-next`'s stories (a
+  `/dev-quick` run merges through it), planning, harvest and QA logs, reconciling, documentation, one made by hand —
+  with `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then
+  delete the branch. `/dev-next` merges only once the project's build and test commands are filled in. **A person
+  merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`: merging it is the person's
+  approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an agent never lands its own
+  rules), even when the rest is bookkeeping, and the pull request of an `owner-merges` story; the agent merges one of
+  these only on the person's explicit word for that one pull request, once its checks are green. Never merge an
+  `outside-change` pull request: its repository's own reviewer does.
 - **Squash-merge only, then delete the branch** (`--delete-branch` breaks on a worktree; see
   `.claude/skills/dev-next/references/merge-and-ci.md`). One commit on `main` per pull request.
 - **Work in a worktree on `feat/<slug>` or `fix/<slug>`** (`feat/<issue>-<slug>` when the branch serves one
@@ -211,10 +229,12 @@ PRD wins on product, the rules files win on process.
   makes it pass, then is refactored with the suite green. Clean code: names that say what a thing does, small units
   with one job each, no dead or commented-out code, no magic values (an unexplained number or string); follow the
   idiom of the code around it.
-- **Every new test earns its place.** It checks behaviour a user or caller relies on, through the public way in, never
-  the internals; it fails if that behaviour breaks; it repeats no other test (the same behaviour over several inputs is
-  one test over a list of inputs); it never tests a library, trivial code or the test's own mocks. The number of tests
-  follows the story: a few per acceptance criterion plus its edge cases, never dozens.
+- **Every new test earns its place.** Search the existing tests first: a behaviour something already checks gets no
+  new test (extend or reuse that one). Prove each behaviour once, at the cheapest level that would fail if it broke —
+  a slow whole-app test only for what a fast one cannot reach. A new test checks behaviour a user or caller relies on,
+  through the public way in, never the internals; it fails if that behaviour breaks; it repeats no other test (the same
+  behaviour over several inputs is one test over a list of inputs); it never tests a library, trivial code or the
+  test's own mocks. There is no cap on the count. Tests already in the suite are not pruned to meet this rule.
 - **Never delete, skip or weaken a test. Never widen a timeout to make a run pass. The skip count is baselined; a
   change to it fails.**
 - **Pre-existing failures are still your responsibility:** fix them or surface them explicitly and get an
@@ -223,6 +243,12 @@ PRD wins on product, the rules files win on process.
 - **The gate, before any pull request opens:** build → lint → typecheck → full suite, with exactly the commands the
   project's `CLAUDE.md` lists (the same chain as CI). A command still reading `TBD` means the stack decision has not
   landed and `/dev-next` cannot run.
+- **Test copies are sized fresh before every local test run** (the dev agent's gate, the reviewer's run if it runs
+  the suite, the run on the merged branch), so runs sharing one computer neither wait long nor clash. `cores` is the
+  computer's physical cores, not its logical ones; `runs` is the live entries in the in-flight file's `issues` list,
+  issue-less ones included and stale ones left out, counted from the moment a run starts its story. The copies
+  (parallel test workers) are the smaller of `cores ÷ runs` and `cores ÷ 2`, rounded down and at least 1; with less
+  than 2 GB of memory free, they are 1. They reach the full suite the way the project's `CLAUDE.md` names.
 - **If the project produces generated output, it is gated by evaluation, not by a passing build.** The project's
   `CLAUDE.md` names the deterministic checks, the evaluation harness and its baselined threshold. A run that cannot
   execute the evaluation is **red**, never "not applicable".
@@ -259,11 +285,12 @@ PRD wins on product, the rules files win on process.
   problems left for later, things that slowed the run down, and tips for the next run. Reports are named by date and
   time, so they sort in order.
 - **Harvesting.** `/harvest` is run by a person, never by another skill. A bookmark file on `main` records, per
-  developer, the newest report already harvested; the harvest reads only newer reports, works through them with the
-  human one item at a time, then moves the mark forward and ships it in its own pull request together with any
-  tickets or rule edits it made. It groups items touching the same area into one ticket (the fewer the better) and
-  drops an item only when the human says so. `/dev-next` only counts: at **10 unharvested items** it ends its run
-  with `Harvest due: run /harvest`.
+  developer, the newest report already harvested; the harvest reads only newer reports and works through them with
+  the human by importance: the high groups first, then the medium ones, one short question per group, then every
+  low note in one closing question. Then it moves the mark forward and ships it in its own pull request together
+  with any tickets or rule edits it made. It groups items touching the same area into one ticket (the fewer the
+  better) and drops an item only when the human says so. `/dev-next` only counts: at **10 unharvested items** it
+  ends its run with `Harvest due: run /harvest`; low notes the human kept for later still count towards the ten.
 - **QA, later and on `main`.** Nobody drives the product during a story's review. Instead every merged story leaves a
   QA record beside its run report on `audit/<login>`: the user-level checks for its acceptance criteria and a short
   story of what it changed. `/harvest-qa` is run by a person, never by another skill: it reads the records newer than
@@ -271,14 +298,14 @@ PRD wins on product, the rules files win on process.
   one agent at a time, shows the person each confirmed failure with its importance and files a `bug` issue only for
   the ones the person chooses, and ships its log in its own pull request. A deduped record counts as tested. `/harvest` and `/harvest-qa` never read each other's files.
   `/dev-next` only counts: at **5 untested records** it ends its run with `QA due: run /harvest-qa`.
-- **Reconciling.** `/reconcile` is run by a person, never by another skill. It reads the PRDs, every issue
-  with its native links, and the code on `main`, and lists every way they disagree — a PRD section no story covers
-  or one changed after its stories were cut, a story the PRD never asked for or an outcome it never absorbed, a
-  broken issue map (no epic, blocker forms that disagree, impossible label pairs, two stories on one folder, built
-  out of order), work the code and the issues disagree on — then fixes each with the person's word, under the
-  ownership rules above. A bookmark file on `main` records what was reconciled and what the person accepted as fine.
-  `/dev-next` only probes: an impossible label pair or a story without an epic, or a PRD changed since the bookmark,
-  and it ends its run with `Drift found: run /reconcile`.
+- **Reconciling.** `/reconcile` is run by a person, never by another skill. It reads the PRDs with their pending
+  ADRs, every issue with its native links, and the code on `main`, and lists every way they disagree — a PRD
+  section no story covers or one changed after its stories were cut, a story the PRD never asked for or an outcome it
+  never absorbed, a broken issue map (no epic, blocker forms that disagree, impossible label pairs, two stories on
+  one folder, built out of order), work the code and the issues disagree on — then fixes each with the person's
+  word, under the ownership rules above. A bookmark file on `main` records what was reconciled and what the person
+  accepted as fine. `/dev-next` only probes: an impossible label pair or a story without an epic, or a PRD changed
+  since the bookmark, and it ends its run with `Drift found: run /reconcile`.
 - **Sub-agents:** name each one after what it does (`review-auth-tests`, never `agent-3`); mechanical work runs on a
   cheap model at low effort, hard decisions and reviews on the top model; every spawn prompt asks for a bounded result
   (a verdict plus a few bullets, never an essay). A sub-agent never uses `git stash` and never switches branches — it
@@ -310,8 +337,9 @@ PRD wins on product, the rules files win on process.
   record is tested or deduped, then shows the person each failure reproduced twice, with its importance, and files a
   `bug` issue only for the ones the person chooses.
 - `/reconcile` checks the issues, the PRDs and the code on `main` against each other and fixes the drift
-  with the person present: issue edits under the ownership rules, PRD edits and its bookmark in a pull request a
-  human merges. The PRD wins on what to build; `main` wins on what is done.
+  with the person present: issue edits under the ownership rules, PRD edits and its bookmark in one pull request,
+  which a person merges when it touches the PRD (*Who merges*). The PRD wins on what to build; `main` wins on what
+  is done.
 - `/clear-git-resources` lists stale worktrees, branches and leftover files, deletes your own stale ones whose work is
   safe, and asks before deleting anyone else's.
 - `/handoff` packs the current conversation into a handoff document for the next session or agent.
@@ -325,7 +353,8 @@ Everything project-specific lives in the project's `CLAUDE.md`, never here. `ori
 when the project has none; otherwise add what is missing. A slot the project has no use for is deleted.
 
 - **Commands**: build, full suite, one file, one test, typecheck, lint, deterministic checks on generated output (if
-  any), dev server (how to start the product; the QA pass needs it) — one table, every row a real command or `TBD`.
+  any), dev server (how to start the product; the QA pass needs it), how to pass the copy count to the full suite
+  (or `none`) — one table, every row a real command or `TBD`.
 - **Stack and layout**: language and version with the file that pins it, test framework, application code path, test
   code path, skip-count baseline, CI runner.
 - **Worktrees**: the worktree root outside the project, the port rule (`<base port> + issue number`) and the env
