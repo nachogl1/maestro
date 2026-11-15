@@ -17,7 +17,7 @@ function statusWith(runs: WorkshopStatus["runs"]): WorkshopStatus {
 }
 
 function contentOf(id: string): WorkshopRunContent {
-  return { report_html: `<h1>${id}</h1>`, summary: `## At a glance\n${id}` };
+  return { report_html: `<h1>${id}</h1>`, summary: `## At a glance\n${id}`, summary_cards: null };
 }
 
 /** Routes the invoke mock: `status` for workshop_status, `outcome` for workshop_run. */

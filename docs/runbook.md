@@ -695,3 +695,21 @@ README links to it.
   ```
 
   The result is in `website/_site/`, built for the `/maestro` base path.
+
+## Workshop: the Summary tab as cards
+
+The Workshop's **Summary** tab now leads with what to improve. A new run's summary is drawn as cards, top to bottom:
+
+- **This week:** one sentence in a red-edged banner naming the week's biggest problem and its fix.
+- **Problems:** up to three, worst first, each numbered. Every card says **What** went wrong and **Why it matters**,
+  then a green **Fix** box that starts with a verb.
+- **Ideas to try:** up to three tips that fix no listed problem, each a title and what to do.
+- **What went well:** up to three wins, each with a green tick, a title and one sentence.
+- A section with no items is hidden, heading included. The tab is read only: it has no buttons.
+- **Failed summary:** when the summary call fails, or its answer misses this shape (a missing part, a fourth item,
+  an empty text, not JSON), the run keeps its report and the tab says why there is no summary. Nothing is retried;
+  the Real Transcript tab still has the full report.
+- **Past runs:** a run from before this change keeps showing its old Markdown summary ("At a glance", ...) as it
+  did. Old runs are never summarised again.
+- **Where it lives:** each run's folder under the app data `workshop/runs/<id>/` holds `report.html` and, for a new
+  run, `summary.json` (an older run has `summary.md` instead).
