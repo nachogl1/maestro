@@ -674,9 +674,13 @@ README links to it.
   (Windows `.msi`, macOS `.dmg` with the first-launch quarantine step, Linux build from source), Features and
   Troubleshooting. The footer of every page reads "Created by Jack, adapted by Ignacio Gonzalez" with the MIT
   licence link.
-- **Home page animation:** a three.js scene of terminal tiles that gather into a grid behind the headline. With
-  "reduce motion" set in the operating system it shows one still frame; without JavaScript or WebGL the page shows a
-  plain background and all its content.
+- **Home page animation:** a three.js scene of ember-red terminal tiles that gather into a grid behind the drawing,
+  with cherry-blossom petals falling. With "reduce motion" set in the operating system it shows one still frame;
+  without JavaScript or WebGL the page shows a plain background and all its content.
+- **Samurai theme:** black, one red and white lettering, after the samurai drawing at the top of the README. The
+  Home page palette is at the top of `website/assets/css/landing.css`, the docs pages' colours in
+  `website/_sass/color_schemes/samurai.scss`, the brush font (Knewave, SIL OFL, licence beside it) in
+  `website/assets/fonts/`, and the web-sized drawing in `website/assets/images/maestro-samurai.jpg`.
 - **Where it lives:** the Jekyll site in `website/`. The screenshots are in `website/assets/images/screenshots/`;
   the three.js file the Home page loads is `website/assets/js/vendor/three.min.js`, rebuilt with the command at the
   top of `website/_vendor/three-entry.js`.

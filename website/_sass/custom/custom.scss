@@ -1,0 +1,68 @@
+// Samurai extras for the docs pages: the brush font on page titles, the Home page's focus ring,
+// red hairlines and a glow on the logo. The colours live in color_schemes/samurai.scss.
+// The theme also compiles its own light and dark stylesheets with this file, without the samurai
+// scheme, so the red is given a default here.
+$samurai-red: #ff1a3a !default;
+@font-face {
+  font-family: "Knewave";
+  src: url("../fonts/knewave-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+.main-content h1 {
+  font-family: "Knewave", $body-font-family;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+
+  &::after {
+    content: "";
+    display: block;
+    width: min(220px, 60%);
+    height: 14px;
+    margin-top: $sp-3;
+    background: url("../images/brush-stroke.svg") no-repeat left center / 100% 100%;
+  }
+}
+
+.main-content h2 {
+  padding-bottom: $sp-1;
+  border-bottom: 1px solid $border-color;
+}
+
+.main-content hr {
+  background-color: $border-color;
+}
+
+a:focus-visible,
+.btn:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid $samurai-red;
+  outline-offset: 3px;
+}
+
+.btn:focus,
+.btn:focus:hover {
+  box-shadow: none;
+}
+
+.side-bar {
+  border-right-color: $border-color;
+}
+
+.site-logo {
+  filter: drop-shadow(0 0 10px rgba($samurai-red, 0.35));
+}
+
+.nav-list .nav-list-item .nav-list-link.active {
+  box-shadow: inset 3px 0 0 $samurai-red;
+}
+
+// The theme draws code blocks with a body-text border; a red hairline instead.
+div.highlighter-rouge div.highlight,
+div.listingblock div.content,
+figure.highlight pre {
+  border-color: $border-color;
+}

@@ -8,6 +8,9 @@ permalink: /
 <section class="hero" aria-labelledby="hero-title">
   <canvas class="hero-canvas" aria-hidden="true"></canvas>
   <div class="wrap hero-inner">
+    <figure class="hero-art">
+      <img src="{{ '/assets/images/maestro-samurai.jpg' | relative_url }}" width="1600" height="800" alt="Maestro Samurai: a red samurai mask with glowing white eyes and two crossed katanas before a blood-red moon, with a torii gate, a pagoda and falling cherry-blossom petals, above the brush lettering MAESTRO SAMURAI." fetchpriority="high">
+    </figure>
     <div class="hero-copy">
       <p class="eyebrow"><span class="dot"></span>Desktop app for Windows and macOS</p>
       <h1 id="hero-title">Many AI coding sessions.<br><span class="accent">One conductor.</span></h1>
