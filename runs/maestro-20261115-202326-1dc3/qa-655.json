@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261115-202326-1dc3",
+  "issue": 655,
+  "title": "Workshop: the Summary tab shows problems with their fixes first, as cards",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 658,
+  "merged_at": "2026-11-15T21:29:15Z",
+  "merge_commit": "7ce8071a9ac4e4327f30ab1c6f5a667ea781c017",
+  "seam": "src/components/workshop/",
+  "story": "The Workshop Summary tab now starts with the week's verdict and the problems with their fixes, as cards that follow the merged prototype; ideas and wins come after them. This replaces the Markdown summary (At a glance, What went well, Where things go wrong, Try this week) for new runs only. Past runs keep showing their old Markdown, and a summary that misses the shape shows the existing No summary message.",
+  "checks": [
+    {
+      "key": "workshop/summary-cards",
+      "criterion": "The Summary tab shows a new run as cards: the This week verdict, then numbered problems with What, Why it matters and a green Fix box, then Ideas to try, then What went well; no buttons.",
+      "steps": "Open Maestro, open the Workshop panel, click Run now, wait for the run to finish, stay on the Summary tab.",
+      "expected": "A red-edged This week banner and at most 3 problems, ideas and wins, each section with a count. No buttons below the tabs."
+    },
+    {
+      "key": "workshop/summary-empty-section",
+      "criterion": "A section with no items is hidden, heading included.",
+      "steps": "Open a run whose summary has no ideas or no wins.",
+      "expected": "No heading for the missing section; the other sections drawn as normal."
+    },
+    {
+      "key": "workshop/summary-old-markdown",
+      "criterion": "A run from before this change still shows its Markdown.",
+      "steps": "In the Workshop panel, pick an older run from Past runs.",
+      "expected": "The old At a glance style Markdown summary, unchanged."
+    },
+    {
+      "key": "workshop/summary-failed",
+      "criterion": "A summary call that fails or misses the shape keeps the report and says why.",
+      "steps": "Run the Workshop while the summary call cannot succeed, for example while signed out of Claude.",
+      "expected": "No summary for this run (reason). The Real Transcript tab still shows the report."
+    }
+  ],
+  "no_qa_reason": null
+}

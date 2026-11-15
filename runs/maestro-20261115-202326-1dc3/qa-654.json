@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261115-202326-1dc3",
+  "issue": 654,
+  "title": "UX prototype for the Workshop summary",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 657,
+  "merged_at": "2026-11-15T20:37:22Z",
+  "merge_commit": "b55e71bff76a2b1cf1416f5809ae1abdb04ef046",
+  "seam": "docs/ux/prototypes/workshop-summary/",
+  "story": "The UX prototype gained a Workshop Summary tab screen: a verdict banner, ranked problem cards each ending in a green Fix box, then idea and win cards. Nothing in the app changed.",
+  "checks": [],
+  "no_qa_reason": "Documentation-only prototype page; nothing in the app to try."
+}

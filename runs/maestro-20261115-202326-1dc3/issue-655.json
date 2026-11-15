@@ -1,0 +1,41 @@
+{
+  "run_id": "maestro-20261115-202326-1dc3",
+  "issue": 655,
+  "title": "Workshop: the Summary tab shows problems with their fixes first, as cards",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-15T20:38:06Z",
+  "finished_at": "2026-11-15T21:29:15Z",
+  "outcome": "merged",
+  "pr": 658,
+  "summary": "New Workshop runs ask the AI for a fixed-shape summary (verdict, problems with fixes, ideas, wins), store it as summary.json and draw it as cards; old runs keep their Markdown summary and a bad answer is a failed summary.",
+  "agents": [
+    {
+      "name": "dev-655",
+      "model": "opus",
+      "tokens_total": 213532
+    },
+    {
+      "name": "review-655-r1",
+      "model": "opus",
+      "tokens_total": 160595
+    },
+    {
+      "name": "review-655-r2",
+      "model": "opus",
+      "tokens_total": 151322
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2348,
+    "review_seconds": 626,
+    "ci_seconds": 114
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

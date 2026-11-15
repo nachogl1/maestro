@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261115-202326-1dc3",
+  "issue": 654,
+  "title": "UX prototype for the Workshop summary",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-15T20:23:26Z",
+  "finished_at": "2026-11-15T20:37:22Z",
+  "outcome": "merged",
+  "pr": 657,
+  "summary": "Added the Workshop Summary tab screen to the UX prototype: layout A of the planning mock, cards with the problems and their fixes first. Merged by the agent on the maintainer's explicit word.",
+  "agents": [
+    {
+      "name": "dev-654",
+      "model": "opus",
+      "tokens_total": 133775
+    },
+    {
+      "name": "review-654-r1",
+      "model": "opus",
+      "tokens_total": 134622
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 488,
+    "review_seconds": 202,
+    "ci_seconds": 145
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
