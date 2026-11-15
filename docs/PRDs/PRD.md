@@ -124,7 +124,9 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
   being overwritten.
 - History (sidebar tab): Claude conversations per project, grouped by checkout and worktree, ordered by latest
   message, each with an AI name, summary and last message time; search; resume in its own folder.
-- Workshop: a read-only weekly Claude Code `/insights` report with its run history and a manual run.
+- Workshop: a read-only weekly Claude Code `/insights` report with its run history and a manual run. Its AI
+  summary is drawn as cards that lead with what to improve: a one-line verdict, then the week's problems, worst
+  first, each with a fix, then ideas to try, then what went well.
 
 ### 3.8 Work Journal
 
