@@ -59,3 +59,10 @@ input:focus-visible {
 .nav-list .nav-list-item .nav-list-link.active {
   box-shadow: inset 3px 0 0 $samurai-red;
 }
+
+// The theme draws code blocks with a body-text border; a red hairline instead.
+div.highlighter-rouge div.highlight,
+div.listingblock div.content,
+figure.highlight pre {
+  border-color: $border-color;
+}
