@@ -51,8 +51,9 @@ never change the worktree's git state.
 
 ## Never block on these
 
-Style · naming · file structure · "this could be cleaner" · test organisation · anything you would phrase as a preference.
-At most **one** `Optional:` line in the whole review, and it must not read as a request.
+Style · naming · file structure · "this could be cleaner" · test organisation · code smells · anything you would phrase
+as a preference. A repeated test and a small smell the pull request added are at most a `Fix now:` (below), never a
+must-fix. At most **one** `Optional:` line in the whole review, and it must not read as a request.
 
 A reviewer that blocks on taste burns the team's budget and ships nothing. That failure is worse than the code being untidy.
 
@@ -72,6 +73,18 @@ Taste gets none of them.
 or it edits another pull request's file or an old single-file changelog. The same for a
 change to user-visible behaviour (a screen, a command, an output a person reads) that leaves `docs/runbook.md`
 untouched.
+
+**Also a `Fix now:`, never a must-fix** — only in what this pull request added; code and tests it did not touch are
+out of scope:
+
+- **A new test that clearly repeats one already in the suite** (the same behaviour, at any level), **or proves its
+  behaviour at a slower level than needed** (the whole app where one function would fail). Tests already in the suite
+  are never findings.
+- **A code smell the pull request added that a few lines fix with no design decision.** The six smells: copied code;
+  a long function; a long parameter list; deep nesting; one unit doing several jobs; one change that needs edits in
+  many places. A bigger smell, one that needs a design decision, gets no tag.
+
+These two need no concrete failure; every other tag does (below).
 
 **Do not over-file.** In doubt between `Fix now:` and `Defer:`, pick `Fix now:`. In doubt between `Defer:` and
 `Critical:`, pick `Defer:`. A finding you cannot tie to a concrete failure gets no tag at all — leave it out.
