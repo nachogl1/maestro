@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261115-110818-1545",
+  "issue": 645,
+  "title": "Release: the macOS build fails on Rust 1.100 — pin the Rust version to 1.99.1 in the workflows",
+  "login": "nachogl1",
+  "pr": 646,
+  "merged_at": "2026-11-15T11:20:29Z",
+  "merge_commit": "604c82dd5dc6f4afa9929690a24b344e275e26dd",
+  "seam": ".github/workflows/",
+  "story": "Mac app updates stopped being published after a new Rust version came out. The automatic builds now use the previous Rust version, so each merge publishes the Mac app again next to the Windows one. Nothing inside the app changed.",
+  "checks": [],
+  "no_qa_reason": "CI configuration only; the Release run after the merge is the proof."
+}

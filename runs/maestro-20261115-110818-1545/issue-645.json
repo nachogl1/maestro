@@ -1,0 +1,24 @@
+{
+  "run_id": "maestro-20261115-110818-1545",
+  "issue": 645,
+  "title": "Release: the macOS build fails on Rust 1.100 — pin the Rust version to 1.99.1 in the workflows",
+  "login": "nachogl1",
+  "started_at": "2026-11-15T11:08:23Z",
+  "finished_at": "2026-11-15T11:21:18Z",
+  "outcome": "merged",
+  "pr": 646,
+  "summary": "The macOS release build broke when Rust 1.100 changed Cargo's build-folder layout, which tauri-build 2.5.6 cannot handle. The Release and PR Checks workflows now pin Rust 1.99.1 until tauri-build supports the new layout.",
+  "agents": [
+    { "name": "dev-645", "model": "opus", "tokens_total": 74728 },
+    { "name": "review-645", "model": "opus", "tokens_total": 81276 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 370, "review_seconds": 276, "ci_seconds": null },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [
+    "GitHub silently disables Actions on forks it judges heavy ('Workflows on this fork have been disabled'); the API reports Actions enabled while dispatch returns 422 'Actions has been disabled', and nothing ran from 2026-11-10 to 2026-11-15. Re-enabling is a button on the repository's Actions page."
+  ],
+  "lessons_learned": [
+    "The Rust pin in .github/workflows must be lifted once tauri-build copes with Cargo 1.100's build-dir layout; dtolnay/rust-toolchain@stable will otherwise break the macOS release again."
+  ],
+  "deferred": []
+}
