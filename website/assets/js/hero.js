@@ -269,6 +269,8 @@ function start(canvas, hero, reducedMotion) {
   scene.add(field);
 
   const pointer = { x: 0, y: 0 };
+  const art = hero.querySelector(".hero-art");
+  let gridOffsetY = 0;
 
   function resize() {
     const width = hero.clientWidth;
@@ -281,6 +283,14 @@ function start(canvas, hero, reducedMotion) {
     camera.updateProjectionMatrix();
     const halfFov = (CAMERA_FOV * Math.PI) / 360;
     material.uniforms.uPixelsPerUnit.value = (height * pixelRatio) / (2 * Math.tan(halfFov));
+    // The grid gathers behind the drawing, so the headline and the buttons stay clear.
+    if (art) {
+      const heroBox = hero.getBoundingClientRect();
+      const artBox = art.getBoundingClientRect();
+      const artCentre = artBox.top + artBox.height / 2 - heroBox.top;
+      const unitsPerPixel = (2 * Math.tan(halfFov) * CAMERA_DISTANCE) / height;
+      gridOffsetY = (height / 2 - artCentre) * unitsPerPixel;
+    }
   }
 
   function draw(seconds) {
@@ -292,6 +302,7 @@ function start(canvas, hero, reducedMotion) {
       writeDust(mote, tiles.length + index, seconds, out);
     });
     for (const attribute of Object.values(attributes)) attribute.needsUpdate = true;
+    field.position.y = gridOffsetY;
     camera.position.x = lerp(camera.position.x, pointer.x * 0.6, 0.05);
     camera.position.y = lerp(camera.position.y, pointer.y * 0.4, 0.05);
     camera.lookAt(0, 0, 0);
