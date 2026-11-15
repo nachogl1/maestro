@@ -2,6 +2,7 @@ import { Loader2, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { formatWorkshopTime, isDue, withSectionsOpen } from "@/lib/workshopReport";
 import { useWorkshopStore } from "@/stores/useWorkshopStore";
+import { WorkshopCardSummary } from "./WorkshopCardSummary";
 import { WorkshopSummary } from "./WorkshopSummary";
 
 type WorkshopTab = "summary" | "transcript";
@@ -14,7 +15,8 @@ const TABS: { id: WorkshopTab; label: string }[] = [
 /**
  * Workshop (issue #415): the weekly `/insights` report, read-only. A header
  * with when the shown run ran, when the next run is and every past run, then
- * two tabs: the AI summary and the report exactly as `/insights` wrote it.
+ * two tabs: the AI summary (cards, or Markdown for a run from before the cards) and the report
+ * exactly as `/insights` wrote it.
  */
 export function WorkshopPanel() {
   const status = useWorkshopStore((s) => s.status);
@@ -113,7 +115,9 @@ export function WorkshopPanel() {
               : "No insights yet. The first run starts shortly after Maestro opens, or click Run now."}
           </p>
         ) : tab === "summary" ? (
-          content.summary ? (
+          content.summary_cards ? (
+            <WorkshopCardSummary summary={content.summary_cards} />
+          ) : content.summary ? (
             <WorkshopSummary markdown={content.summary} />
           ) : (
             <p className="px-4 py-6 text-sm leading-6 text-maestro-muted">

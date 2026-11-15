@@ -25,6 +25,7 @@ function showStore(state: Partial<ReturnType<typeof useWorkshopStore.getState>>)
     content: {
       report_html: "<h1>Claude Code Insights</h1>",
       summary: "## At a glance\n\nA **good** week.",
+      summary_cards: null,
     },
     running: false,
     error: null,
@@ -79,6 +80,27 @@ describe("WorkshopPanel", () => {
     expect(document.querySelector("[contenteditable], textarea, input[type=text]")).toBeNull();
   });
 
+  it("draws a run with a card summary as cards, not Markdown", () => {
+    const verdict = "An invented week spent on pretend widgets; plan them first.";
+    showStore({
+      content: {
+        report_html: "<p>r</p>",
+        summary: null,
+        summary_cards: {
+          verdict,
+          problems: [],
+          ideas: [],
+          wins: [{ title: "Made-up win", text: "A pretend change shipped." }],
+        },
+      },
+    });
+    render(<WorkshopPanel />);
+
+    expect(screen.getByText(verdict)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /What went well/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "At a glance" })).toBeNull();
+  });
+
   it("shows the real report in a script-free frame on the Real Transcript tab", () => {
     showStore({});
     render(<WorkshopPanel />);
@@ -93,7 +115,7 @@ describe("WorkshopPanel", () => {
   it("explains a missing summary", () => {
     showStore({
       status: { ...STATUS, runs: [{ ...NEWER, summary_error: "summary timed out" }, OLDER] },
-      content: { report_html: "<p>r</p>", summary: null },
+      content: { report_html: "<p>r</p>", summary: null, summary_cards: null },
     });
     render(<WorkshopPanel />);
 

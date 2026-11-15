@@ -26,10 +26,41 @@ export interface WorkshopStatus {
   running: boolean;
 }
 
-/** What `workshop_read` returns for one run. */
+/** Something that went wrong, with its one fix (backend `SummaryProblem`). */
+export interface WorkshopSummaryProblem {
+  title: string;
+  what: string;
+  why: string;
+  fix: string;
+}
+
+/** A tip that fixes no listed problem (backend `SummaryIdea`). */
+export interface WorkshopSummaryIdea {
+  title: string;
+  what: string;
+}
+
+/** Something that went well (backend `SummaryWin`). */
+export interface WorkshopSummaryWin {
+  title: string;
+  text: string;
+}
+
+/** The fixed-shape summary drawn as cards (backend `SummaryCards`); each list holds at most 3. */
+export interface WorkshopSummaryCards {
+  verdict: string;
+  /** Worst first. */
+  problems: WorkshopSummaryProblem[];
+  ideas: WorkshopSummaryIdea[];
+  wins: WorkshopSummaryWin[];
+}
+
+/** What `workshop_read` returns for one run: cards, Markdown (an older run) or neither. */
 export interface WorkshopRunContent {
   report_html: string;
+  /** The Markdown summary of a run from before the cards. */
   summary: string | null;
+  summary_cards: WorkshopSummaryCards | null;
 }
 
 /** What `workshop_run` did, tagged by `status`. */
