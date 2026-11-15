@@ -16,6 +16,7 @@ A rule written here must not contradict the mandatory rules.
 | Typecheck / static analysis | `npx tsc --noEmit` and `cargo clippy` |
 | Lint | `npm run lint` (Biome) and `cargo fmt --check` run inside `src-tauri` |
 | Dev server (if the review surface needs one) | `npm run tauri dev` (desktop app; `npm run dev` for the web front end alone) |
+| Pass the copy count (N) to the full suite | `npm test -- --maxWorkers=N` and `cargo test --workspace -- --test-threads=N` |
 
 Other useful commands: `npm run test:watch`, `npx vitest run --changed`, `npx vitest run --reporter=verbose`,
 `cargo build --release -p maestro-mcp-server` (build the MCP server), `npm run tauri build` (production app).
