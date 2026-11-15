@@ -70,12 +70,6 @@ src-tauri/                    # Tauri Rust backend
   MCP servers; never widen what it writes there without a ticket.
 - Working language for code, comments, commits, issues and docs: English.
 
-## Pending until PRD v1
-
-| # | File and section | Question | Decided by |
-|---|---|---|---|
-| P1 | `docs/PRDs/PRD.md` | No PRD exists yet; the product is defined by the shipped app and its GitHub issues. Should one be written with `/wayfinder`? | the maintainer |
-
 ## Code Style Guidelines
 
 **VERY IMPORTANT:** Only apply styling and formatting to lines of code that are new or changed.
