@@ -73,7 +73,8 @@ export function WorkshopCardSummary({ summary }: WorkshopCardSummaryProps) {
       <SummarySection title="Problems" tone="text-maestro-red" count={summary.problems.length}>
         {summary.problems.map((problem, at) => (
           <SummaryCard
-            key={problem.title}
+            // biome-ignore lint/suspicious/noArrayIndexKey: a summary is a fixed list drawn once per run; titles may repeat
+            key={at}
             title={
               <>
                 <span className="mr-1.5 inline-block h-[18px] w-[18px] rounded-full bg-maestro-red/15 text-center text-[11px] font-bold leading-[18px] text-red-400">
@@ -98,17 +99,19 @@ export function WorkshopCardSummary({ summary }: WorkshopCardSummaryProps) {
       </SummarySection>
 
       <SummarySection title="Ideas to try" tone="text-maestro-blue" count={summary.ideas.length}>
-        {summary.ideas.map((idea) => (
-          <SummaryCard key={idea.title} title={idea.title}>
+        {summary.ideas.map((idea, at) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a summary is a fixed list drawn once per run; titles may repeat
+          <SummaryCard key={at} title={idea.title}>
             <p className="mb-1 text-maestro-text">{idea.what}</p>
           </SummaryCard>
         ))}
       </SummarySection>
 
       <SummarySection title="What went well" tone="text-maestro-green" count={summary.wins.length}>
-        {summary.wins.map((win) => (
+        {summary.wins.map((win, at) => (
           <SummaryCard
-            key={win.title}
+            // biome-ignore lint/suspicious/noArrayIndexKey: a summary is a fixed list drawn once per run; titles may repeat
+            key={at}
             frame="border-maestro-green/25 py-2"
             title={
               <>

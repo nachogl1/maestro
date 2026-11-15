@@ -1,5 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { WorkshopSummaryCards } from "@/stores/useWorkshopStore";
 import { WorkshopCardSummary } from "../WorkshopCardSummary";
 
@@ -63,5 +63,30 @@ describe("WorkshopCardSummary", () => {
 
     expect(screen.queryByRole("heading", { name: new RegExp(heading) })).toBeNull();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(2);
+  });
+
+  it("draws every card when two in a section share a title, after switching runs too", () => {
+    const twice = <T,>(item: T): T[] => [item, item];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rerender } = render(<WorkshopCardSummary summary={CARDS} />);
+    rerender(
+      <WorkshopCardSummary
+        summary={{
+          ...CARDS,
+          problems: twice(CARDS.problems[0]),
+          ideas: twice(CARDS.ideas[0]),
+          wins: twice(CARDS.wins[0]),
+        }}
+      />,
+    );
+
+    const warnings = consoleError.mock.calls.map(([message]) => String(message));
+    consoleError.mockRestore();
+
+    expect(warnings.filter((message) => message.includes("same key"))).toEqual([]);
+    expect(screen.getAllByText(CARDS.problems[0].fix)).toHaveLength(2);
+    expect(screen.queryByText(CARDS.problems[1].fix)).toBeNull();
+    expect(screen.getAllByText(CARDS.ideas[0].what)).toHaveLength(2);
+    expect(screen.getAllByText(CARDS.wins[0].text)).toHaveLength(2);
   });
 });
