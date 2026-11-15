@@ -1,0 +1,22 @@
+{
+  "run_id": "maestro-20261115-103833-b5f0",
+  "issue": 642,
+  "title": "Public page: restyle the site in the black-and-red samurai theme of the README banner",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-15T10:38:33Z",
+  "finished_at": "2026-11-15T11:02:49Z",
+  "outcome": "merged",
+  "pr": 644,
+  "summary": "The public website now takes the black-and-red samurai look of the README banner: the drawing full width in the Home page hero, a self-hosted brush font, a recoloured hero animation and a samurai colour scheme on the docs pages. Words, pages, links and screenshots are unchanged.",
+  "agents": [
+    { "name": "dev-642", "model": "opus", "tokens_total": 240314 },
+    { "name": "review-642", "model": "opus", "tokens_total": 150258 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1029, "review_seconds": 273, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [
+    "No Ruby on this computer, so the Jekyll site cannot be built locally: preview a website change by downloading the github-pages artifact of the pull request's Build site job, serving it under /maestro/ and looking at it in headless Edge. A custom just-the-docs colour variable also needs a default in _sass/custom/setup.scss, because the theme compiles its built-in light and dark sheets too."
+  ],
+  "deferred": []
+}

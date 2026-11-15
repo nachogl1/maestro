@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261115-103833-b5f0",
+  "issue": 642,
+  "title": "Public page: restyle the site in the black-and-red samurai theme of the README banner",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 644,
+  "merged_at": "2026-11-15T11:02:49Z",
+  "merge_commit": "73fe0f2d8635de1d1596275a0873dd0a22a43c2e",
+  "seam": "website/",
+  "story": "The public website now looks like the samurai drawing at the top of the README. The Home page shows the drawing at the top in a red frame, with the headline and download buttons beneath it in place of the old side-by-side purple layout. Its animation now shows faint red tiles and falling pink petals instead of purple tiles. The Installation, Features and Troubleshooting pages swap the grey-and-blue dark theme for black and red, with the drawing as their logo.",
+  "checks": [
+    {
+      "key": "website/home-hero-samurai",
+      "criterion": "The Home page shows the samurai drawing whole in its hero, in black, red, white and petal pink only.",
+      "steps": "Open https://nachogl1.github.io/maestro/ in a desktop browser about 1440 px wide. Then narrow the window, or use a phone, to about 390 px wide.",
+      "expected": "At both widths the drawing (mask, katanas, MAESTRO SAMURAI lettering) is whole and nothing covers it. The headline, short description and two download buttons sit beneath it. The headline is in a brush font with 'One conductor.' in red. No blue or purple anywhere."
+    },
+    {
+      "key": "website/home-hero-fallbacks",
+      "criterion": "The Home page still works with JavaScript off, with WebGL off, and with reduce motion set.",
+      "steps": "Turn on 'reduce motion' in the operating system and reload the Home page. Then turn JavaScript off in the browser and reload the Home page.",
+      "expected": "With reduce motion, one still frame of faint red tiles and pink petals, with no movement. With JavaScript off, a plain black-and-red background, with the drawing, text and buttons all there."
+    },
+    {
+      "key": "website/docs-samurai-scheme",
+      "criterion": "The docs pages use the samurai colour scheme, with the drawing as the logo.",
+      "steps": "Open https://nachogl1.github.io/maestro/installation.html. Click 'Features' in the left menu.",
+      "expected": "Black page and sidebar, with the samurai drawing at the top left. The page title is in a brush font with a red brush stroke under it. Links are red. The current menu item has a red bar and a dark red background. Code blocks have a thin red border."
+    }
+  ],
+  "no_qa_reason": null
+}
