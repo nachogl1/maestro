@@ -1,5 +1,8 @@
 // Samurai extras for the docs pages: the brush font on page titles, the Home page's focus ring,
 // red hairlines and a glow on the logo. The colours live in color_schemes/samurai.scss.
+// The theme also compiles its own light and dark stylesheets with this file, without the samurai
+// scheme, so the red is given a default here.
+$samurai-red: #ff1a3a !default;
 @font-face {
   font-family: "Knewave";
   src: url("../fonts/knewave-regular.woff2") format("woff2");
