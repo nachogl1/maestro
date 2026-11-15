@@ -4,7 +4,7 @@ theme: just-the-docs
 url: "https://nachogl1.github.io"
 baseurl: "/maestro"
 
-logo: "/assets/images/banner.jpg"
+logo: "/assets/images/maestro-samurai.jpg"
 
 # Links the Home page and the docs pages share.
 repository_url: "https://github.com/nachogl1/maestro"
@@ -22,12 +22,12 @@ aux_links_new_tab: true
 
 nav_sort: case_insensitive
 
-color_scheme: dark
+color_scheme: samurai
 
 callouts:
   note:
     title: Note
-    color: blue
+    color: red
   warning:
     title: Warning
     color: red

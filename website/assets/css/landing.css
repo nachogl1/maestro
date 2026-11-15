@@ -1,15 +1,26 @@
-/* Home page. Colours are the app's own (src/styles/globals.css, dark theme). */
+/* Home page. Colours follow the samurai drawing (assets/maestro-samurai-banner.png): black,
+   one bright red, white lettering and petal pink as a small highlight. */
+@font-face {
+  font-family: "Knewave";
+  src: url("../fonts/knewave-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --bg: #0d0d10;
-  --surface: #121316;
-  --card: #18191c;
-  --border: #26262c;
-  --text: #e8e8ec;
-  --muted: #9a9aa6;
+  --bg: #050505;
+  --surface: #0b0809;
+  --card: #140b0d;
+  --border: #2a1216;
+  --hairline: rgba(255, 26, 58, 0.38);
+  --text: #f5f1f2;
+  --muted: #b0a6a8;
   --accent: #ff1a3a;
-  --indigo: #6366f1;
-  --purple: #bc8cff;
-  --radius: 14px;
+  --accent-deep: #d4112f;
+  --link: #ff4d63;
+  --petal: #ff8fab;
+  --radius: 6px;
   --max-width: 1180px;
   --gutter: clamp(16px, 4vw, 40px);
   --sans:
@@ -17,6 +28,7 @@
     sans-serif;
   --mono:
     "JetBrains Mono", ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  --brush: "Knewave", var(--sans);
   color-scheme: dark;
 }
 
@@ -41,12 +53,12 @@ body {
 }
 
 a {
-  color: var(--purple);
+  color: var(--link);
   text-underline-offset: 3px;
 }
 
 a:hover {
-  color: var(--text);
+  color: var(--petal);
 }
 
 a:focus-visible,
@@ -115,6 +127,7 @@ img {
   width: 26px;
   height: 26px;
   flex: none;
+  filter: drop-shadow(0 0 6px rgba(255, 26, 58, 0.55));
 }
 
 .topnav {
@@ -134,21 +147,17 @@ img {
   color: var(--text);
 }
 
-/* Hero */
+/* Hero: the drawing whole at the top, the headline and the download buttons beneath it. */
 .hero {
   position: relative;
   overflow: hidden;
-  min-height: min(760px, 100vh);
-  display: flex;
-  align-items: center;
-  padding: 120px 0 88px;
+  padding: 88px 0 104px;
+  text-align: center;
   background:
-    radial-gradient(60% 70% at 75% 45%, rgba(99, 102, 241, 0.22), transparent 70%),
-    radial-gradient(35% 40% at 85% 70%, rgba(255, 26, 58, 0.12), transparent 70%),
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px) 0 0 / 48px 48px,
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px) 0 0 / 48px 48px,
+    url("../images/brush-stroke.svg") no-repeat center bottom 28px / min(1100px, 88%) 22px,
+    radial-gradient(48% 42% at 50% 30%, rgba(255, 26, 58, 0.3), transparent 72%),
+    radial-gradient(70% 50% at 50% 100%, rgba(120, 8, 24, 0.35), transparent 70%),
     var(--bg);
-  border-bottom: 1px solid var(--border);
 }
 
 .hero-canvas {
@@ -165,31 +174,42 @@ img {
   opacity: 1;
 }
 
-/* Keeps the headline readable over the moving tiles. */
-.hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    rgba(13, 13, 16, 0.92) 0%,
-    rgba(13, 13, 16, 0.6) 45%,
-    transparent 75%
-  );
-  pointer-events: none;
-}
-
 .hero-inner {
   position: relative;
   z-index: 2;
 }
 
+/* The drawing already carries the "MAESTRO SAMURAI" lettering, so it is never cropped or covered. */
+.hero-art {
+  position: relative;
+  width: min(100%, 1040px, 96vh);
+  margin: 0 auto;
+}
+
+.hero-art::before {
+  content: "";
+  position: absolute;
+  inset: -12% -8%;
+  background: radial-gradient(closest-side, rgba(255, 26, 58, 0.42), transparent);
+  filter: blur(24px);
+  z-index: -1;
+}
+
+.hero-art img {
+  width: 100%;
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px var(--hairline),
+    0 30px 90px -30px rgba(255, 26, 58, 0.65);
+}
+
 .hero-copy {
-  max-width: 600px;
+  max-width: 780px;
+  margin: 44px auto 0;
 }
 
 .eyebrow {
-  margin: 0 0 18px;
+  margin: 0 0 16px;
   font-family: var(--mono);
   font-size: 13px;
   letter-spacing: 0.12em;
@@ -210,30 +230,33 @@ img {
 
 h1 {
   margin: 0;
-  font-size: clamp(40px, 6.4vw, 72px);
-  line-height: 1.04;
-  letter-spacing: -0.025em;
-  font-weight: 800;
+  font-family: var(--brush);
+  font-size: clamp(34px, 5vw, 62px);
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: 0.01em;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.9);
 }
 
 h1 .accent {
-  background: linear-gradient(90deg, var(--accent), var(--purple));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--accent);
+  text-shadow: 0 0 28px rgba(255, 26, 58, 0.45);
 }
 
 .lede {
-  margin: 24px 0 0;
+  margin: 22px auto 0;
+  max-width: 680px;
   font-size: clamp(18px, 2vw, 21px);
-  color: #c9c9d2;
+  color: #d9d1d3;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
 }
 
 .cta {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 12px;
-  margin-top: 34px;
+  margin-top: 32px;
 }
 
 .btn {
@@ -242,9 +265,9 @@ h1 .accent {
   gap: 10px;
   min-height: 48px;
   padding: 12px 22px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: rgba(24, 25, 28, 0.85);
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+  background: rgba(10, 6, 7, 0.88);
   color: var(--text);
   font-weight: 600;
   font-size: 16px;
@@ -252,25 +275,27 @@ h1 .accent {
   transition:
     border-color 0.2s ease,
     background 0.2s ease,
+    box-shadow 0.2s ease,
     transform 0.2s ease;
 }
 
 .btn:hover {
   color: var(--text);
-  border-color: var(--purple);
+  border-color: var(--accent);
+  box-shadow: 0 0 22px rgba(255, 26, 58, 0.3);
   transform: translateY(-1px);
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: var(--accent-deep);
   border-color: var(--accent);
   color: #fff;
-  box-shadow: 0 8px 30px rgba(255, 26, 58, 0.28);
+  box-shadow: 0 8px 30px rgba(255, 26, 58, 0.35);
 }
 
 .btn-primary:hover {
-  background: #ff3854;
-  border-color: #ff3854;
+  background: #b80e28;
+  border-color: var(--accent);
   color: #fff;
 }
 
@@ -308,14 +333,30 @@ section {
 
 h2 {
   margin: 0;
-  font-size: clamp(30px, 4vw, 42px);
-  line-height: 1.12;
-  letter-spacing: -0.02em;
+  font-family: var(--brush);
+  font-size: clamp(28px, 3.6vw, 40px);
+  font-weight: 400;
+  line-height: 1.18;
+  letter-spacing: 0.01em;
+}
+
+/* A red brush stroke under every section title, like the strokes behind the drawing's lettering. */
+h2::after {
+  content: "";
+  display: block;
+  width: min(220px, 60%);
+  height: 14px;
+  margin-top: 14px;
+  background: url("../images/brush-stroke.svg") no-repeat left center / 100% 100%;
 }
 
 .section-head p {
   margin: 14px 0 0;
   color: var(--muted);
+}
+
+.section-head p.kicker {
+  color: var(--accent);
 }
 
 /* Screenshots */
@@ -336,19 +377,18 @@ h2 {
 .shot a {
   display: block;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border: 1px solid var(--hairline);
   overflow: hidden;
   background: var(--card);
-  box-shadow:
-    0 30px 60px -30px rgba(0, 0, 0, 0.8),
-    0 0 0 1px rgba(99, 102, 241, 0.08);
+  box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.8);
   transition:
     border-color 0.25s ease,
     transform 0.25s ease;
 }
 
 .shot a:hover {
-  border-color: rgba(188, 140, 255, 0.55);
+  border-color: var(--accent);
+  box-shadow: 0 24px 60px -24px rgba(255, 26, 58, 0.45);
   transform: translateY(-2px);
 }
 
@@ -382,8 +422,8 @@ h2 {
 .feature-grid li {
   padding: 22px 22px 24px;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--card);
+  border: 1px solid var(--hairline);
+  background: linear-gradient(180deg, rgba(255, 26, 58, 0.06), transparent 60%), var(--card);
 }
 
 .feature-grid h3 {
@@ -417,7 +457,7 @@ h2 {
   position: relative;
   padding: 22px 22px 24px 64px;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border: 1px solid var(--hairline);
   background: var(--card);
   counter-increment: step;
 }
@@ -435,7 +475,8 @@ h2 {
   font-family: var(--mono);
   font-size: 14px;
   color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--indigo));
+  background: var(--accent-deep);
+  box-shadow: 0 0 14px rgba(255, 26, 58, 0.45);
 }
 
 .steps h3 {
@@ -499,8 +540,8 @@ code {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .hero::after {
-    background: rgba(13, 13, 16, 0.7);
+  .hero {
+    padding: 80px 0 88px;
   }
 
   section {

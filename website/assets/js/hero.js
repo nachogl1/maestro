@@ -1,6 +1,7 @@
-// Home page hero: a field of glowing terminal tiles that drift apart, gather into one grid,
-// park a few on a shelf and call one back in red, then drift apart again. It says what
-// Maestro does: many AI coding sessions, one conductor.
+// Home page hero: a field of ember-red terminal tiles that drift apart, gather into one grid
+// behind the samurai drawing, park a few on a shelf and call one back in white, then drift
+// apart again, while cherry-blossom petals fall through the scene. It says what Maestro does:
+// many AI coding sessions, one conductor.
 //
 // The page never depends on this file. Without JavaScript or WebGL the hero keeps its CSS
 // background; with "reduce motion" set, one still frame of the grid is drawn and nothing moves.
@@ -27,16 +28,18 @@ const CYCLE_SECONDS = 16;
 const STILL_FRAME_SECONDS = 9.5;
 const CAMERA_DISTANCE = 13;
 const CAMERA_FOV = 40;
-const WIDE_ASPECT = 1.15;
-// On wide screens the grid centre sits this share of the visible width right of centre.
-const WIDE_GRID_SHIFT = 0.27;
+// The scene is kept dim so it reads as embers around the drawing, never over it.
+const SCENE_OPACITY = 0.7;
+// Petals fall through this height (world units) and start again at the top.
+const PETAL_FALL_HEIGHT = 14;
 
-const INDIGO = new Color("#6366f1");
-const PURPLE = new Color("#bc8cff");
+const EMBER = new Color("#7a0a1c");
 const RED = new Color("#ff1a3a");
-const DUST = new Color("#8b7cf6");
+const WHITE = new Color("#ffffff");
+const PETAL = new Color("#ff8fab");
+const PETAL_LIGHT = new Color("#ffd3de");
 
-// Tiles that turn red ("needs you") and tiles that go to the parked shelf.
+// Tiles that turn white ("needs you", like the mask's eyes) and tiles that go to the parked shelf.
 const ATTENTION_TILES = [9, 22];
 const PARKED_TILES = [4, 15, 22];
 
@@ -78,8 +81,8 @@ const FRAGMENT_SHADER = /* glsl */ `
     float alpha;
     vec3 color;
     if (vKind > 0.5) {
-      float d = length(p);
-      alpha = smoothstep(0.5, 0.0, d) * 0.55;
+      float d = length(p * vec2(1.0, 1.7));
+      alpha = smoothstep(0.5, 0.1, d) * 0.8;
       color = vColor;
     } else {
       float d = roundedBox(p, vec2(0.44, 0.28), 0.05);
@@ -144,7 +147,7 @@ function buildTiles() {
       scatter,
       delay: distanceFromCentre * 1.4 + seeded(i, 4) * 0.3,
       phase: seeded(i, 5) * Math.PI * 2,
-      base: INDIGO.clone().lerp(PURPLE, seeded(i, 6) * 0.8),
+      base: EMBER.clone().lerp(RED, seeded(i, 6) * 0.7),
     });
   }
   const shelfY = -gridHeight / 2 - ROW_SPACING * 1.35;
@@ -160,7 +163,9 @@ function buildDust() {
     dust.push({
       origin: [(seeded(i, 7) - 0.5) * 26, (seeded(i, 8) - 0.5) * 14, (seeded(i, 9) - 0.8) * 12],
       phase: seeded(i, 10) * Math.PI * 2,
-      size: 0.08 + seeded(i, 11) * 0.14,
+      size: 0.1 + seeded(i, 11) * 0.16,
+      speed: 0.25 + seeded(i, 12) * 0.45,
+      color: PETAL.clone().lerp(PETAL_LIGHT, seeded(i, 13)),
     });
   }
   return dust;
@@ -194,7 +199,7 @@ function writeTile(tile, index, t, out) {
     ? smoothstep(8.8, 9.3, t) * (1 - smoothstep(12, 12.8, t)) * k
     : 0;
   const pulse = attention * (0.75 + 0.25 * Math.sin(t * 6));
-  const color = tile.base.clone().lerp(RED, attention);
+  const color = tile.base.clone().lerp(WHITE, attention);
 
   out.position.set([x, y, z], index * 3);
   out.color.set([color.r, color.g, color.b], index * 3);
@@ -202,13 +207,14 @@ function writeTile(tile, index, t, out) {
   out.glow[index] = 0.35 + 0.45 * k + pulse;
 }
 
+/** A petal falls at its own speed, sways sideways and starts again at the top. */
 function writeDust(mote, index, t, out) {
   const [ox, oy, oz] = mote.origin;
-  out.position.set(
-    [ox + Math.sin(t * 0.15 + mote.phase) * 0.8, oy + Math.cos(t * 0.12 + mote.phase) * 0.6, oz],
-    index * 3,
-  );
-  out.color.set([DUST.r, DUST.g, DUST.b], index * 3);
+  const half = PETAL_FALL_HEIGHT / 2;
+  const fallen = (oy + half - t * mote.speed) % PETAL_FALL_HEIGHT;
+  const y = ((fallen + PETAL_FALL_HEIGHT) % PETAL_FALL_HEIGHT) - half;
+  out.position.set([ox + Math.sin(t * 0.6 + mote.phase) * 0.7, y, oz], index * 3);
+  out.color.set([mote.color.r, mote.color.g, mote.color.b], index * 3);
   out.size[index] = mote.size;
   out.glow[index] = 0;
 }
@@ -253,7 +259,7 @@ function start(canvas, hero, reducedMotion) {
   const material = new ShaderMaterial({
     vertexShader: VERTEX_SHADER,
     fragmentShader: FRAGMENT_SHADER,
-    uniforms: { uPixelsPerUnit: { value: 1 }, uOpacity: { value: 1 } },
+    uniforms: { uPixelsPerUnit: { value: 1 }, uOpacity: { value: SCENE_OPACITY } },
     transparent: true,
     depthWrite: false,
     blending: AdditiveBlending,
@@ -263,7 +269,8 @@ function start(canvas, hero, reducedMotion) {
   scene.add(field);
 
   const pointer = { x: 0, y: 0 };
-  let gridOffsetX = 0;
+  const art = hero.querySelector(".hero-art");
+  let gridOffsetY = 0;
 
   function resize() {
     const width = hero.clientWidth;
@@ -276,9 +283,14 @@ function start(canvas, hero, reducedMotion) {
     camera.updateProjectionMatrix();
     const halfFov = (CAMERA_FOV * Math.PI) / 360;
     material.uniforms.uPixelsPerUnit.value = (height * pixelRatio) / (2 * Math.tan(halfFov));
-    // On wide screens the grid sits to the right of the headline; on narrow ones it is centred.
-    const visibleWidth = 2 * Math.tan(halfFov) * CAMERA_DISTANCE * camera.aspect;
-    gridOffsetX = camera.aspect > WIDE_ASPECT ? visibleWidth * WIDE_GRID_SHIFT : 0;
+    // The grid gathers behind the drawing, so the headline and the buttons stay clear.
+    if (art) {
+      const heroBox = hero.getBoundingClientRect();
+      const artBox = art.getBoundingClientRect();
+      const artCentre = artBox.top + artBox.height / 2 - heroBox.top;
+      const unitsPerPixel = (2 * Math.tan(halfFov) * CAMERA_DISTANCE) / height;
+      gridOffsetY = (height / 2 - artCentre) * unitsPerPixel;
+    }
   }
 
   function draw(seconds) {
@@ -290,7 +302,7 @@ function start(canvas, hero, reducedMotion) {
       writeDust(mote, tiles.length + index, seconds, out);
     });
     for (const attribute of Object.values(attributes)) attribute.needsUpdate = true;
-    field.position.x = gridOffsetX;
+    field.position.y = gridOffsetY;
     camera.position.x = lerp(camera.position.x, pointer.x * 0.6, 0.05);
     camera.position.y = lerp(camera.position.y, pointer.y * 0.4, 0.05);
     camera.lookAt(0, 0, 0);
