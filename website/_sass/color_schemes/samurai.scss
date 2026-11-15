@@ -1,0 +1,24 @@
+// Samurai: the black-and-red look of the samurai drawing (assets/maestro-samurai-banner.png),
+// built on the theme's dark scheme. Variable names are just-the-docs 0.12's (Gemfile.lock).
+@import "./color_schemes/dark";
+
+$samurai-red: #ff1a3a;
+$samurai-link: #ff4d63;
+
+$body-background-color: #070506;
+$body-heading-color: #fff;
+$body-text-color: #e8e2e3;
+$link-color: $samurai-link;
+$nav-child-link-color: #b8adaf;
+$sidebar-color: #000;
+$base-button-color: #1a1214;
+$btn-primary-color: #d4112f;
+$code-background-color: #120d0f;
+$feedback-color: #24090e;
+$table-background-color: #120c0e;
+$search-background-color: #120c0e;
+$search-result-preview-color: #e8e2e3;
+$border-color: #3d1219;
+
+// Callouts use the theme's red-300; this one is bright enough to read on black.
+$red-300: $samurai-link;
