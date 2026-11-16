@@ -21,8 +21,9 @@ sub-skill on the issue this skill files. Nothing in that pipeline is copied here
 interview (as many rounds as it takes until there is nothing left to ask), the ground preparation (things only you can
 do before an agent starts), and one look at the drafted issue before it is filed — none of them when the request is
 already clear (*The fast path* below). From the moment `/dev-next` takes
-over, the run is autonomous: anything it cannot resolve becomes `needs-human` on the issue, and you hear about it in
-the close-out, not mid-run.
+over, the run is autonomous: a story it cannot finish stays assigned to you — `needs-human` when a person must decide,
+still `agent-ready` after a technical failure, resumed with `/dev-next #<N>` — and you hear about it in the close-out,
+not mid-run.
 
 Read the project's `CLAUDE.md` first. It overrides this file where they disagree.
 
@@ -82,7 +83,7 @@ and phase 5 runs unchanged.
 |---|---|---|---|
 | this session | opus | the user's own | interviews, prepares, drafts, files, then invokes `/dev-next` and becomes its orchestrator |
 | `scout-quick` | sonnet | low | optional: reads the code the change touches and returns a bounded picture (phase 1) |
-| everything else | — | — | `/dev-next`'s own roles (`dev-N`, `review-N`), spawned by it, never by this skill |
+| everything else | — | — | `/dev-next`'s own roles (`dev-<N>`, `review-<N>-r<round>`, named for the issue), spawned by it, never by this skill |
 
 This session **never writes application code** — not before the hand-over, not after. If you are editing a source
 file, you have taken the dev agent's job.
@@ -98,7 +99,7 @@ file, you have taken the dev agent's job.
    boundaries an agent must not move, the standing decisions that are never asked about. Every question in phase 2 is
    checked against this file first — a question the project has already answered is not asked.
 3. Labels: `gh label list --limit 200 --json name --jq '.[].name'`; create any of `epic`, `story`, `agent-ready`,
-   `needs-human`, `in-progress`, `outside-change`, `bug` that is missing, with a one-line description. Never rename or
+   `needs-human`, `in-progress`, `outside-change`, `bug`, `owner-merges` that is missing, with a one-line description. Never rename or
    delete one. (`/dev-next` does the same; whichever runs first creates them.)
 4. **Latest `main`, read only, without switching any branch.** `git fetch origin main`, then read the code as it is
    on `origin/main` (`git show origin/main:<path>`, `git grep <pattern> origin/main`, `git ls-tree -r --name-only
@@ -231,7 +232,7 @@ that argument. This session is now `/dev-next`'s orchestrator and follows that f
   A stop there (a `TBD` gate command, a red install on `main`) is reported in one line; the issue stays filed and
   `agent-ready`, and the person runs `/dev-next #<N>` later.
 - Its phase 2 asks nothing: the issue was `agent-ready` before that run started, and its decisions are on the issue.
-- Claim, worktree on `feat/<N>-<slug>`, `dev-N`, fresh `review-N` per round, the merge slot, merge on green CI,
+- Claim, worktree on `feat/<N>-<slug>`, `dev-<N>`, fresh `review-<N>-r<round>` per round, the merge slot, merge on green CI,
   close, clean-up, the audit report on `audit/<login>`, the harvest count and the close-out — **all of it is
   `/dev-next`'s, unchanged.** This skill adds no step, skips no step, and never does one of them by hand.
 

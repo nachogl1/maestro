@@ -8,13 +8,13 @@ disable-model-invocation: true
 # /harvest-qa
 
 > [!NOTE]
-> **Editing this skill?** Keep everything here **general**: no project, person, company or stack names. It works with GitHub Issues only, like `dev-next`, whose `references/new-issue.md` and `references/audit.md` it relies on.
+> **Editing this skill?** Keep everything here **general**: no project, person, company or stack names. It works with GitHub Issues only, like `dev-next`, whose `references/new-issue.md`, `references/audit.md` and `references/merge-and-ci.md` it relies on.
 
 `/dev-next` builds, reviews and merges a story, but nobody starts the product and checks the acceptance criteria the way
 a user would. This skill does that **later, against `main`**, from the QA record `/dev-next` writes for every merged
 story (`.claude/skills/dev-next/references/audit.md`, *The QA record*). A person starts it; it then runs unattended
 until every record is tested, asks the person what to do with each confirmed failure, and ends with one pull request
-carrying its log.
+carrying its log, which it merges itself on green.
 
 It is the twin of `/harvest`, and the two never overlap: `/harvest` reads `runs/<run id>/issue-<N>.json` and writes
 `docs/harvest-state.json`; this skill reads `runs/<run id>/qa-<N>.json` and writes `docs/harvest-qa-state.json`.
@@ -137,17 +137,44 @@ finish.
    before the pull request opens. Red → do not open it: this pull request only adds a state file and a changelog file,
    so red means `main` itself is red; the close-out names the failing command first, for a person to fix, and the
    worktree is kept so the log is not lost. Green → commit those two files (never `git add -A`), push, open the pull
-   request; its body is the table below. **A human merges it** (or the agent, on the person's explicit word for this pull request) — this skill never merges on its own.
+   request; its body is the table below. Who merges it is set by *Who merges*, below.
 
 ```
 | Check (plain words) | From | Result | Where it went |
 |---|---|---|---|
 ```
 
-5. Close-out, always last, in plain words: how many checks were read, tested, passed, failed, dropped as superseded or
+5. **Merge it as *Who merges* says.** Wait for its checks (the host can take minutes to report them; "no checks
+   reported" counts as red), squash-merge on green, then remove the worktree and delete the branch, locally and on
+   the remote (`.claude/skills/dev-next/references/merge-and-ci.md`: never `--delete-branch` on a worktree). Red or
+   still pending after the wait → it is not merged: the close-out names the pull request and its checks first, for a
+   person to look at.
+6. Close-out, always last, in plain words: how many checks were read, tested, passed, failed, dropped as superseded or
    obsolete, already tracked, carried; every bug issue filed, named by what it is about, and every failure the person
-   chose not to file; the pull request link; and,
+   chose not to file; the pull request link and whether it merged; and,
    first of all if it happened, that the product would not start and what the agent saw.
+
+## Who merges
+
+The mandatory rules, *Who merges*, decide the pull request this skill opens:
+
+> An agent merges every pull request it makes in the project on its own — `/dev-next`'s stories (a `/dev-quick` run
+> merges through it), planning, harvest and QA logs, reconciling, documentation, one made by hand — with
+> `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then delete
+> the branch. […] **A person merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`:
+> merging it is the person's approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an
+> agent never lands its own rules), even when the rest is bookkeeping, and the pull request of an `owner-merges`
+> story; the agent merges one of these only on the person's explicit word for that one pull request, once its checks
+> are green. Never merge an `outside-change` pull request: its repository's own reviewer does.
+
+So, for the one pull request a QA run opens:
+
+| Pull request | Touches | Merged by |
+|---|---|---|
+| `feat/harvest-qa-<yyyymmdd>` — the log (`docs/harvest-qa-state.json`), the changelog file and, when the folder was missing, its `README.md` | none of `docs/PRDs/`, `docs/ADRs/`, `docs/ux/prototypes/` or the project's `CLAUDE.md` | this skill itself, on green, with `/dev-next`'s bar (Phase 3, step 5) |
+
+This skill writes nothing else, so a person never has to merge its pull request. The bug issues it files are issues,
+not pull requests, and no `outside-change` or `owner-merges` work is ever done here.
 
 ## Rules
 

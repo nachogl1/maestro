@@ -9,16 +9,24 @@ description: ORION - Pick up the next GitHub issue nobody owns and ship it end t
 > **Editing this skill?** Keep everything here **general**: no project, person, company or stack names — the project's own `CLAUDE.md` supplies those at run time.
 
 One command. **Two touchpoints with the human**: one batch of questions at the start, and a ten-line summary at the end.
-Everything between is autonomous. The run **never waits for a person** — anything it cannot resolve is labelled `needs-human`
-(`gh issue edit N --add-label needs-human --remove-label agent-ready` — the two readiness labels never sit together),
-explained in a comment, released, and the run carries on.
+Everything between is autonomous. The run **never waits for a person** — a story it cannot finish is stopped (below),
+explained in a comment, and the run carries on.
 
-**Releasing an issue always means all four:** the reason as the issue's last comment, `gh issue edit N
---remove-label in-progress --remove-assignee @me`, its entry dropped from the in-flight file, and the `merging` slot
-freed if it held it. An assignee left behind keeps the issue out of every later run (`references/eligibility.md`),
-even after a person re-marks it `agent-ready`; a leftover `in-progress` label tells the team someone is on it when
-nobody is. Remove both. Every give-up path below releases
-this way; only the branch and worktree may stay behind for a human.
+**Stopping a story always means all four, and never unassigns:** the reason as the issue's last comment, ending with
+`Resume with /dev-next #<N>.`; `gh issue edit N --remove-label in-progress` (the assignee stays: the story remains
+the runner's, so the team sees whose it is and no other run takes it, `references/eligibility.md`); its entry dropped
+from the in-flight file; and the `merging` slot freed if it held it. The readiness label follows the reason:
+
+- **A technical failure keeps `agent-ready`** — the dev reports `FAILED`, three review rounds end without approval, CI
+  is red after two rounds, no checks are reported, `gh pr merge` fails twice, or the gate is red on `main` (`INHERITED
+  RED`). Nothing is left for a person to decide; the runner looks at it and resumes.
+- **A real question for a person switches to `needs-human`** (`gh issue edit N --add-label needs-human --remove-label
+  agent-ready` — the two readiness labels never sit together): an "ask someone else" answer in phase 2, or a ready-check
+  finding no answer can make agent-ready. The comment says what the person must decide.
+
+Every give-up path below stops this way; the branch and worktree stay for the runner (an `INHERITED RED` story with
+no commit removes them, phase 3). A teammate takes a stopped story only with the runner's word (the runner unassigns
+it). A lost claim race (phase 1) is not a stop: it backs off.
 
 Read the project's `CLAUDE.md` first. It is not optional and it overrides this file where they disagree.
 
@@ -36,7 +44,7 @@ repository's files). This skill expects that file to state the items below; the 
 | Item | Default when `CLAUDE.md` is silent |
 |---|---|
 | **Tracker** | GitHub Issues in the repository `origin` points at — the only tracker this skill supports. A `CLAUDE.md` that names another tracker → stop in preflight (phase 0 step 1) and say so. |
-| **Labels** | `epic`, `story`, `agent-ready`, `needs-human`, `in-progress`, `outside-change`, `bug`, plus the `wayfinder:*` set the planning skill owns (`wayfinder:map`, `wayfinder:research`, …). Missing ones of the seven are created in preflight (phase 0 step 7); `wayfinder:*` labels are never created here. An issue carrying any `wayfinder:*` label is a planning ticket: never eligible, never asked about, never counted as drift. Every story also carries one `tier:*` label (`references/new-issue.md` step 2): it is for readers only, and never makes an issue more or less eligible or changes the order issues are taken in. |
+| **Labels** | `epic`, `story`, `agent-ready`, `needs-human`, `in-progress`, `outside-change`, `bug`, `owner-merges`, plus the `wayfinder:*` set the planning skill owns (`wayfinder:map`, `wayfinder:research`, …). Missing ones of the eight are created in preflight (phase 0 step 7); `wayfinder:*` labels are never created here. An issue carrying any `wayfinder:*` label is a planning ticket: never eligible, never asked about, never counted as drift. Every story also carries one `tier:*` label (`references/new-issue.md` step 2): it is for readers only, and never makes an issue more or less eligible or changes the order issues are taken in. |
 | **The gate chain** — build → lint → typecheck → full suite, with the exact commands | Derived from the CI workflow (`.github/workflows/`) and the project files (`package.json`, `pyproject.toml`, `Makefile`, …), and the run says so in the first touchpoint. Nothing derivable → stop (phase 0 step 3). |
 | **Skip-count baseline** | The skip count the suite reports on `main` before the change; any other number fails the gate. |
 | **Worktree root** `<wt root>` | `C:\wt` on Windows, `~/wt` elsewhere. Worktrees live outside the project. |
@@ -57,22 +65,23 @@ repository's files). This skill expects that file to state the items below; the 
 |---|---|
 | `/dev-next` | Pick **one** eligible issue and ship it end to end — the default. Zero eligible → diagnose, never "nothing to do". |
 | `/dev-next N` | Pick **N** eligible issues and ship them (N is 1-4; a bare number above four is read as an issue number, `/dev-next <N>` = `#<N>`, and the run says so). **Four is the cap** — beyond that this session's context holds too many reports and the decisions late in the run get worse. Fewer eligible than N → take what there is and say so. |
-| `/dev-next #<N> #<M>` | Claim exactly these, however many. **The only way to resume a crashed run** — an issue already assigned to you is never picked up automatically, because this terminal cannot tell whether another of your terminals still owns it. |
+| `/dev-next #<N> #<M>` | Claim exactly these, however many. **The only way to resume a crashed or stopped run** — an issue already assigned to you is never picked up automatically, because this terminal cannot tell whether another of your terminals still owns it; naming it is your word that none does (phase 1, *Resuming*). |
 
 **Several issues at once → one terminal with `/dev-next N`, never N terminals started together.** Sibling terminals of
 one login rank the same top candidate and lose claim races to each other.
 
-**Every issue, however many, ends the same way: its own pull request, merged into `main` on green CI.** The count changes
-how many run side by side, never the destination.
+**Every issue, however many, ends the same way: its own pull request, merged into `main` on green CI** — except a
+story labelled `owner-merges`, whose pull request is left open with green checks for its owner (phase 5). The count
+changes how many run side by side, never the destination.
 
 ## Roles — spawn these as sub-agents, never do their work yourself
 
 | Role | Model | Effort | Job |
 |---|---|---|---|
 | orchestrator | opus | the user's own | this session. Talks to GitHub, spawns the others. **Never writes application code.** |
-| `ready-check-N` | sonnet | low | reads one issue, returns `READY` or its questions, one line each with a recommended answer, nothing else |
-| `dev-N` | opus | high | one worktree, one branch, one pull request. Most of the tokens. |
-| `review-N` | opus | xhigh | fresh context, reads the CI suite result (runs the suite itself only when there is no CI), posts the verdict |
+| `ready-check-<N>` | sonnet | low | reads one issue, returns `READY` or its questions, one line each with a recommended answer, nothing else |
+| `dev-<N>` | opus | high | one worktree, one branch, one pull request. Most of the tokens. |
+| `review-<N>-r<round>` | opus | xhigh | fresh context, reads the CI suite result (runs the suite itself only when there is no CI), posts the verdict |
 
 **Every brief** asks for a bounded result (the report shape its reference file gives, never an essay) and says: never
 `git stash`, never switch branches in any checkout, never `git add -A` — commit only the files you touched (the
@@ -83,10 +92,18 @@ Mechanical work runs on the cheap model at low effort; only the dev and review r
 orchestrator runs at whatever effort the user's own session is set to (`/effort` or their settings); this skill never
 changes it.
 
-Name every sub-agent `role-N` (`dev-<N>`, `review-<N>-r2`, `ready-check-<N>`) — the audit finds them by that prefix;
-the Agent tool rejects `:` and `#` in names on some machines. **Keep the agent id each spawn returns** and resume with
+Name every sub-agent after its role and **the number of the issue it works on**, never a counter: `ready-check-<N>`,
+`dev-<N>`, `review-<N>-r<round>` (`review-<N>-r1` for the first round); a replacement spawn for the same role and issue
+takes the same name. The name goes into the Agent tool's `description` (and its `name`, where the tool has one), which
+is what the agent list and the Control Tower pane show, and into the issue's in-flight entry (below). The audit finds
+them by that prefix; the Agent tool rejects `:` and `#` in names on some machines. **Keep the agent id each spawn returns** and resume with
 SendMessage to that id: a finished agent is often not reachable by its name. **No cap on how many are alive at once**: every
 picked issue gets its own agents from the start; a rate-limit error (HTTP 429) is a reason to retry that spawn, never to queue.
+
+**Report progress in the in-flight file.** This run's entries carry `terminal` (this terminal's name), `step` (what the
+run is doing now) and `agents` (each sub-agent's name and status), in the shape and at the moments
+`references/in-flight.md`, *Progress fields*, gives: written at every phase change and every spawn, resume or report.
+They are what other terminals and the Control Tower pane show; a terminal name that cannot be found is left out.
 
 Team members may be on different Claude plans, and a plan that lacks a model fails instantly on HTTP 429 with no
 fallback. There is no separate probe: the first real spawn on a model is the probe, and an HTTP 429 on it retries that
@@ -124,9 +141,9 @@ develops them **side by side**. Speed is the reason; safety is the constraint. E
    remaining branch then merges `origin/main` again, pushes, and waits for a **fresh** CI run on the merged result —
    that is `references/merge-and-ci.md` step 1 repeated, not skipped. A conflict goes back to `dev-N`; the
    orchestrator never resolves one.
-7. **One failure never takes down the others.** An issue that goes `needs-human` is released on its own — including
-   its entry in the in-flight file, and the `merging` slot if it held one; the rest carry on to merge and audit as if
-   each had run alone.
+7. **One failure never takes down the others.** A story that is stopped is stopped on its own — including its entry
+   in the in-flight file, and the `merging` slot if it held one; the rest carry on to merge and audit as if each had
+   run alone.
 8. **Sibling terminals on one machine may talk.** A terminal may message another (ListAgents / SendMessage) to warn
    about a shared file or type it is changing and to announce that it takes the merge slot; a change to a type another
    in-flight story consumes stays additive (new members, no changed signatures) until both have merged. The in-flight
@@ -185,7 +202,7 @@ project's `CLAUDE.md`.
    **stop before claiming and print it** — every story would end `INHERITED RED`. On any other branch this check is
    skipped; the dev agent's first gate run reports a red `main` as `INHERITED RED` instead.
    Steps 1, 2, 3 and 6 (the update or the restore) are the only things that stop a run before it starts; step 8 pauses it.
-7. **Labels, then snapshot.** `gh label list --limit 200 --json name --jq '.[].name'`; create every one of the seven
+7. **Labels, then snapshot.** `gh label list --limit 200 --json name --jq '.[].name'`; create every one of the eight
    labels in *What this skill reads from the project* that is missing, with `gh label create <name> --description
    "<one line>"` (a fresh repository carries only GitHub's defaults, so without this step every run would stall in
    step 8). Never rename or delete a label. Then snapshot what everyone else is doing — open issues with assignees,
@@ -199,8 +216,9 @@ project's `CLAUDE.md`.
 9. Create the in-flight file if it is missing (`references/in-flight.md`) and read it. This is the whole
    coordination mechanism with the **other terminals on this machine** — note which issues are already in flight
    and whether someone is mid-merge. It never limits how many you take. **Before ranking**, write this run's own entry
-   with `"issue": null` (run id, `startedAt`), wait 5 s and re-read: sibling terminals started together then see each
-   other before any of them has claimed (`references/in-flight.md`, *Run entries*).
+   with `"issue": null` (run id, `startedAt`, and `terminal` and `step` per `references/in-flight.md`, *Progress
+   fields*), wait 5 s and re-read: sibling terminals started together then see each other before any of them has
+   claimed (`references/in-flight.md`, *Run entries*).
 
 ## Phase 1 — Pick and claim
 
@@ -228,13 +246,14 @@ Claim, in this order — the order matters:
 3. Comment: claimed by run `<run id>`, branch `feat/N-<slug>`. Advisory only, and posted **second**, once the slug exists.
 4. Add the issue's entry to the in-flight file: the first claim fills its number into this run's issue-less entry, a
    further claim adds an entry of its own. From here the issue is listed as in flight until phase 5 clean-up or a
-   `needs-human` release removes it.
+   stop removes it.
 
 This skill never rebuilds the issue map: `/issue-map` rebuilds it from the live issues whenever the person asks for it.
 
 Re-read the issue immediately before writing to it. Another terminal may have claimed it in the last few seconds; if the
 assignee is not you, release nothing and pick the next candidate. **A non-empty assignee on this re-read aborts the
-claim** — no edit, no comment, even when the assignee is your own login: a check that only printed its result once
+claim** (a resume by name is the one exception, *Resuming* below) — no edit, no comment, even when the assignee is
+your own login: a check that only printed its result once
 can let a claim comment through on an issue another terminal holds.
 
 **Re-read it again after step 3.** Two claims can land in the same second, from two machines or from two of your own
@@ -245,10 +264,26 @@ unassign yourself **only when the other assignee is a different login** (another
 assignee and must keep it — `references/eligibility.md`, *Claim contention*), never touch `in-progress`, and pick the
 next candidate.
 
+**Resuming.** An issue named with `/dev-next #<N>` whose only assignee is your own login (a stopped story, or a crashed
+run) is resumed, not claimed: naming it is the person's word that no other of their terminals holds it. The
+assignee check above passes for it, and the eligibility tests on the assignee, the open pull request and the remote
+branch are skipped; every other test still holds (`agent-ready`, every blocker closed). Skip step 1, then steps 2-4 as
+above, the comment reading `resumed by run <run id>`. **Two of your own terminals never resume one story:** before
+step 2, a live entry for the issue in the in-flight file from another run id stops the resume (pick nothing in its
+place). The message names the run that holds it and says the entry goes stale 4 hours after its `startedAt`
+(`references/in-flight.md`); once that terminal is closed, the person may remove the entry from
+`<wt root>/in-flight.json` and name the issue again. After step 3, the re-read counts only `claimed by run …` and `resumed by run …`
+comments posted after this run's `startedAt` (the stopped run's old claim comment never counts); when another run id
+has one, the lower comment id wins and the other run backs off as above. Phase 3 reuses what the stopped run left:
+the worktree when it still exists, else `git -C <main checkout> worktree add <wt root>/<N>-<slug> feat/<N>-<slug>` on
+the existing branch (when only the remote one is left, `git -C <main checkout> fetch origin
+feat/<N>-<slug>:feat/<N>-<slug>` first), else, when no branch is left at all (an `INHERITED RED` stop with no
+commit), phase 3's own command (`worktree add --no-track … -b feat/<N>-<slug> origin/main`); an open pull request stays the pull request. Another person's assignee is never resumed.
+
 ## Phase 2 — Q&A (the first touchpoint)
 
 - Issue labelled `agent-ready` before this run started → **ask nothing at all**. Go to phase 3.
-- Issue labelled `agent-ready` in this run's preflight (step 8) → spawn `ready-check-N` with the issue body. It returns
+- Issue labelled `agent-ready` in this run's preflight (step 8) → spawn `ready-check-<N>` with the issue body. It returns
   `READY`, or **every** question it has — no cap on the count, one line each with a recommended answer, no prose. It also checks two things a fresh label hides: **every acceptance
   criterion against the project's standing rules** (its `CLAUDE.md`: no build or run of a repository the team does not
   own, the skip-count baseline, no production, customer or personal data), and **every assumption in the body against
@@ -257,8 +292,9 @@ next candidate.
   An unanswered question becomes a guess the dev agent bakes into the code; a long list is cheaper than that.
 - Ask them all **in one batch**, each with a recommended answer the human can accept as-is.
 - Write the answers onto the issue under a `## Decisions (agent-ready)` heading. They are binding on the dev and the reviewer.
-- Any answer of the form "I don't know, ask someone else" → label `needs-human` and release the issue (the four steps
-  at the top: comment why, remove `in-progress`, unassign, drop the in-flight entry), then pick a replacement.
+- Any answer of the form "I don't know, ask someone else" → stop the story as `needs-human` (the four steps at the
+  top: comment what the person must decide, remove `in-progress`, keep the assignee, drop the in-flight entry), then
+  pick a replacement.
 
 ## Phase 3 — Develop
 
@@ -276,14 +312,14 @@ If the project's `CLAUDE.md` derives a per-issue resource from the issue number 
 now and write it where `CLAUDE.md` says (usually the worktree's `.env`), **replacing** any line already there for the
 same setting — never append to a copy of `.env.example`, which may carry an empty one that wins.
 
-Spawn `dev-N` with the brief in `references/dev-agent.md`. Give it: the issue, the worktree path, any per-issue
+Spawn `dev-<N>` with the brief in `references/dev-agent.md`. Give it: the issue, the worktree path, any per-issue
 resource, the exact runtime paths from phase 0 step 1, and the gate commands. **You do not write application code.**
 
 With more than one issue picked, run this phase for **all of them at the same time** — a worktree, a branch and a
 dev agent each, none told anything about the others. Nothing waits for a slot.
 
-Dev reports FAILED → label `needs-human` and release the issue (the failure is the reason comment), **leave the branch
-and worktree for a human**, and carry on with whatever else the run has.
+Dev reports FAILED → stop the story, **keeping `agent-ready`** (a technical failure; the failure is the reason
+comment), **leave the branch and worktree for the runner**, and carry on with whatever else the run has.
 
 Dev reports `INHERITED RED` (the gate was already failing on `main` before it changed anything) → the story is not the
 problem, `main` is. Open **one** `bug` issue for the red gate on `main` **per `references/new-issue.md`**: every
@@ -292,15 +328,15 @@ in, labels `story` + `bug` + `tier:bug` + `needs-human` (its rule for an issue f
 reason comment, the issue's last, asks a person to confirm the failures and flip it to `agent-ready`), native sub-issue
 of the story's epic. One per run: a second dev reporting the same failures links the same issue
 (`references/merge-and-ci.md`, *After the merge*). Once flipped, `references/eligibility.md` ranks it first. Then
-release the story **without** `needs-human`: the comment links the bug, `in-progress` removed, unassigned, in-flight
-entry dropped. The
+stop the story **keeping `agent-ready`**: the comment links the bug and says to resume once it is closed,
+`in-progress` removed, the assignee kept, in-flight entry dropped. The
 worktree and local branch are removed when the dev made no commit (nothing to keep, and the next run would otherwise
-have to clean them up); with commits they stay for a human. That bug issue is how a person learns about a pre-existing
+have to clean them up); with commits they stay for the runner. That bug issue is how a person learns about a pre-existing
 failure; the run never waits for them.
 
 ## Phase 4 — Review
 
-Spawn a **brand-new** `review-N` per `references/review-agent.md`. It gets only the issue, the pull request, the worktree,
+Spawn a **brand-new** `review-<N>-r<round>` per `references/review-agent.md`. It gets only the issue, the pull request, the worktree,
 the runtime paths and the commands — **no prior context, and never the agent that wrote the code**. A fresh one for every
 round: a reviewer that has already argued for its own findings is no longer fresh eyes.
 
@@ -317,9 +353,9 @@ request already changes** → fixed in this pull request. Critical → a GitHub 
 "to be safe"; a backlog nobody drains is worse than no backlog. The reviewer's tags are in `references/review-agent.md`.
 
 - `CHANGES REQUESTED` → send the must-fix list, plus every `Fix now:` line, back to the **same** `dev-N`
-  (SendMessage to the agent id kept at spawn, so it keeps its context; if it is no longer reachable, spawn a new `dev-N`
+  (SendMessage to the agent id kept at spawn, so it keeps its context; if it is no longer reachable, spawn a new `dev-<N>`
   on the same worktree and branch with the findings). It fixes them in the same branch, re-greens the gate, pushes, and
-  reports. Then a **new** `review-N` reviews the whole pull request again — that is one round.
+  reports. Then a **new** `review-<N>-r<round>` (the next round's number) reviews the whole pull request again — that is one round.
 - `APPROVED` with `Fix now:` lines → same loop: `dev-N` fixes them in this pull request, then a fresh review confirms.
   Small and safe is fixed in the same session, never deferred — **once**. After the first `APPROVED`, the confirming
   review is the last: a new `Fix now:` it raises becomes a `Defer:` line, never another round (otherwise every fresh
@@ -345,15 +381,21 @@ request already changes** → fixed in this pull request. Critical → a GitHub 
   and links it from the pull request. Nothing else becomes an
   issue, and nobody but the orchestrator opens one.
 
-**Every review is a round, approved or not.** Not approved after **three rounds** → `needs-human`, release the issue (the four steps at the top), leave the branch, and move on.
+**Every review is a round, approved or not.** Not approved after **three rounds** → stop the story, keeping `agent-ready` (the four steps at the top; the comment names the findings still open), leave the branch, and move on.
 
 ## Phase 5 — Merge
 
 Follow `references/merge-and-ci.md`. In short: take the `merging` slot in the in-flight file → merge `origin/main` into
-the branch and push so CI runs on what will actually land → poll for the check run id, then watch it → squash-merge →
+the branch and push so CI runs on what will actually land → poll for the check run id, then watch it → check the
+branch is not behind `origin/main` (behind → back to the merge step) → squash-merge →
 release the slot → verify the issue closed → delete worktree and branch → remove the issue from the in-flight file.
 
-**Never merge on red or pending. "No checks reported" is red.** Red after two rounds → `needs-human` and the issue released.
+**Never merge on red or pending. "No checks reported" is red.** Red after two rounds → the story stopped, keeping `agent-ready`.
+
+**A story labelled `owner-merges` is never merged by this skill.** It is built and reviewed as usual; then, without
+taking the `merging` slot, `references/merge-and-ci.md` steps 1-3 bring its pull request to green checks, and the run
+stops there (*Owner merges* in that file): the pull request stays open, the assignee stays, `in-progress` is removed
+and the in-flight entry dropped. The run report says the owner must try the change before merging it.
 
 More than one pull request → **one merge at a time, on the whole machine**. The `merging` slot is the queue: a terminal
 that finds it taken waits. After the first lands, each remaining branch merges `origin/main` again, pushes, and gets a
@@ -365,6 +407,9 @@ Write the per-issue JSON per `references/audit.md` to the `audit/<your login>` b
 local transcripts age out — so it happens on every run from the first. It carries the run's `Defer:` lines as the
 `deferred` list (phase 4), and only the `friction` and `lessons_learned` lines that meet the bar in `audit.md`
 (important or critical; a routine wait is not a line). The lists are usually empty.
+
+An `owner-merges` issue's report carries outcome `owner-merges` and the owner's step (`audit.md`); it gets no QA
+record — the owner tries the change before merging, and `/harvest-qa` drives only what is on `main`.
 
 A `merged` issue also gets its QA record, `runs/<run id>/qa-<N>.json` on the same branch, from the dev agent's
 `QA checks` blocks and story (`audit.md`, *The QA record*): the checks a later `/harvest-qa` run drives against
@@ -399,15 +444,17 @@ bookmark and at least one PRD → counts as changed, once, until a first reconci
 reconciles and never edits an issue for it.
 
 Then print **ten lines per issue, no more** (the second touchpoint): issue and title · what shipped · pull request link · suite result ·
-CI result · anything labelled `needs-human` and why · what is on deck next.
+CI result · anything stopped and why (and whether it waits on a person, `needs-human`, or on the runner,
+`agent-ready`) · an `owner-merges` pull request left for its owner · what is on deck next.
 
 The run then ends with a **close-out**, always last, after the `Harvest due`, `QA due` and `Drift found` lines if there are any.
 It tells the human whether anything in this session still waits on them:
 
 - **Something waits on them** → `For you in this session:` followed by a numbered list, one action per line, most
-  urgent first — a question left on a `needs-human` issue, a branch and worktree left for a human, a pull request left
-  open, red or pending CI, a merge slot still held, a failed audit write, `Harvest due`, `QA due`, `Drift found`. Each line names
-  the thing in plain words and says what to do.
+  urgent first — a question left on a `needs-human` issue, a stopped story to look at and resume with
+  `/dev-next #<N>`, an `owner-merges` pull request to try and then merge, a pull request left open, red or pending
+  CI, a merge slot still held, a failed audit write, `Harvest due`, `QA due`, `Drift found`. Each line names the thing
+  in plain words and says what to do.
 - **Nothing waits on them** → exactly: `All good: everything merged, nothing to report, nothing left for you. You can
   close this session.` Only when every claimed issue merged and closed, no pull request is open, the in-flight entries
   and the merge slot are released, the audit was written and there is no `Harvest due`, `QA due` or `Drift found` line.
@@ -419,10 +466,10 @@ The close-out only offers; the human closes the session, never the skill.
 ## Rules that are not negotiable
 
 0. **Never push to `main`.** Every change lands as a pull request that is then merged. Full autonomy means you may open,
-   review and merge it yourself — never that you may skip it. This skill merges only its own pull requests; every other
-   pull request is merged by a human unless the project's `CLAUDE.md` says otherwise.
+   review and merge it yourself — never that you may skip it. This skill merges only its own pull requests, and never
+   one of an `owner-merges` story; who merges any other pull request is the baseline's *Who merges* rule.
 1. **Never wait for a human after preflight.** The first touchpoint (phase 0 steps 2 and 8, phase 2) is the one place
-   questions are asked; from phase 3 on: label it, explain it, release it, move on.
+   questions are asked; from phase 3 on: stop it, explain it, keep the assignee, move on.
 2. **The reviewer is always fresh.** Enforced here, not left to good intentions.
 3. **Never merge on red or pending**, and "no checks reported" is red.
 4. **Assign first, comment second.** The assignee is the claim.

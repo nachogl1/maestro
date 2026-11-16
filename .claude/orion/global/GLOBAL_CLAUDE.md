@@ -3,25 +3,30 @@
 > **Owned by orion and only offered.** `orion init` and `orion update` copy this file to
 > `.claude/orion/global/GLOBAL_CLAUDE.md`; nothing imports it. Each person takes the clauses they want into their
 > own user-level `CLAUDE.md` (`~/.claude/CLAUDE.md`), clause by clause and only on their word. Some clauses repeat
-> a rule `BASE_CLAUDE.md` already makes for projects.
+> a rule `BASE_CLAUDE.md` already makes for projects. A clause orion adds or changes gets the note of the newest
+> version already released plus `+` (`<!-- orion:v2.4.1+ -->`, "changed after 2.4.1"), since its own version is only
+> known once it is released.
 
 **How the agent goes through these rules with the person** (these steps are not a clause and are never copied):
 
 1. Read this file and the person's `~/.claude/CLAUDE.md`. Their accepted clauses live in one section at the end of
-   that file: it starts with the line `# ORION GLOBAL — v<N>` and ends with the line `<!-- /ORION GLOBAL -->`.
-   `<N>` is the orion version number the person last went through.
-2. List the clauses whose version marker (the `orion:v<N>` comment at the end of each clause: the orion version that
-   last added or changed it) is higher than the heading's number; all of them when there is no section. A clause the
-   section already holds with a lower number is a changed clause: show the old and the new wording side by side and
-   replace it in place only if the person says yes.
+   that file: it starts with the line `# ORION GLOBAL — v<version>` and ends with the line `<!-- /ORION GLOBAL -->`.
+   `<version>` is the orion version the person last went through.
+2. List the clauses whose version note (the `orion:v<version>` comment at the end of each clause: when it was last
+   added or changed) is newer than the heading's version; all of them when there is no section. Versions have three
+   parts, `major.minor.patch`, compared part by part. A note ending in `+` means "changed after that version"
+   (`orion:v2.4.1+` is newer than 2.4.1 and older than any later version). A note without dots (such as `orion:v2`)
+   comes from before three-part versions: such notes compare with each other as whole numbers and are older than any
+   note with dots. A clause the section already holds with an older note is a changed clause: show the old and the
+   new wording side by side and replace it in place only if the person says yes.
 3. Ask about the listed clauses in batches with the AskUserQuestion tool, one clause per question, worded for
    someone who knows neither the stack nor the jargon, with the options "Accept", "Skip" and "Accept with an edit"
    (the person types the edit). Name any clash with a rule elsewhere in their file while asking.
 4. Write only inside the section, creating it at the end of the file (and the file itself) when missing. Accepted
    clauses go under the same `##` headings as here and keep their version marker, edited or not, so a later change
    to one can be matched with what the person has.
-5. Set the heading's number to the highest clause version in this file, whether the person accepted everything, part
-   or nothing. A person who declines everything still gets the heading line and the end line with nothing between.
+5. Set the heading's version to the newest clause version note in this file, exactly as the note writes it (`+`
+   included), whether the person accepted everything, part or nothing. A person who declines everything still gets the heading line and the end line with nothing between.
 6. Show the final section and save it only on the person's yes. Never change anything outside the section, and never
    copy the person's file into the project, a commit, an issue or a report.
 
@@ -32,7 +37,7 @@
 - **Full, correct sentences.** Shorten by cutting points, never by cutting words out of sentences (no telegraph style, no arrows for verbs). <!-- orion:v2 -->
 - **Include what changes what I do next, plus one or two lines of context that help me understand the result** (why it happened, what it affects). The reply ends in this order: `Next:` (exactly one step), then `More on: <topic>, <topic>` (optional, max 3, names only), then `Aside:` (optional, one line). <!-- orion:v2 -->
 - Every caveat stays as one short line; one that would make me do the wrong thing if ignored goes right after the first line. <!-- orion:v2 -->
-- **Label every line with what it is**, so I know what to expect before I read it: `Errors:`, `Result:`, `Changed:`, `Risk:`, `Next:`, `Summary:`. Pick the label that fits; one or two words, then the sentence. The first line and the 🟢 canary are labelled too. <!-- orion:v2 -->
+- **Label every line with what it is**, so I know what to expect before I read it: `Errors:`, `Result:`, `Changed:`, `Risk (open):`, `Risk (fixed):`, `Next:`, `Summary:`. Pick the label that fits; one or two words, then the sentence. The first line and the 🟢 canary are labelled too. A risk line always states in its label whether the risk is still open or already fixed: `Risk (open):` for a danger still open, `Risk (fixed):` for one already fixed. For example: "Result: the login change is merged." / "Risk (open): old sessions stay valid until they expire." / "Risk (fixed): the empty-password crash, fixed in this change." / "Next: I log out every session tonight." <!-- orion:v35 -->
 - **Example of the reply limits.** Bad: "🟢 The build failed because the analyser (a static code checker that runs during the build) flagged CA1822 in one file at line 40, which means the method doesn't use instance data and could be static, a warning promoted to ...". Good: "🟢 Error: the build failed because of one small code-style error." / "Fix: a one-line change, and nothing else is affected." / "Next: I make the change and run the build again." <!-- orion:v2 -->
 
 ## Reply content

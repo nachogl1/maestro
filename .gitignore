@@ -77,3 +77,6 @@ website/.jekyll-metadata
 
 # Python bytecode (orion skill scripts)
 __pycache__/
+
+# Playwright MCP browser logs and page snapshots
+.playwright-mcp/

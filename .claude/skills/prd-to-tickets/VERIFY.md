@@ -9,5 +9,6 @@ installs, changes or sends anything. A failed check is reported as "`prd-to-tick
 | GitHub Issues are enabled on that repository | `gh repo view --json hasIssuesEnabled` | Report: GitHub Issues are the only tracker this skill supports |
 | The project's `CLAUDE.md` names no other tracker | Read `CLAUDE.md`; a tracker other than GitHub Issues named as the source of truth | Needs a yes: that line contradicts the mandatory rules; propose deleting it |
 | The issue shape it files to is installed | `.claude/skills/dev-next/references/new-issue.md` exists | Report: `dev-next` ships it; `orion update` restores it |
+| The interview it holds before filing is installed | `.claude/skills/dev-next/references/planning-interview.md` exists | Report: `dev-next` ships it; `orion update` restores it |
 | A PRD exists to split | At least one `docs/PRDs/*.md` | Report (not a failure of the install): the skill has nothing to split until a PRD exists; `/wayfinder` helps find the way to one |
 | The worktree root is named | The worktrees section of `CLAUDE.md` names a root outside the project | Report: the prototype sub-agent and a PRD update each need a worktree |

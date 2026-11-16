@@ -1,6 +1,6 @@
 ---
 name: prd-to-tickets
-description: 'ORION - Split a PRD (a product requirements document under docs/PRDs/) into GitHub epics and stories that agents can build in parallel. Scaffold first, then the shared-contract stories, then everything fans out; blockers only on real contract dependencies; every story owns one folder or module; both blocker forms set (GitHub''s native relation and the Blocked by body section); epic to story as native sub-issues; every story labelled agent-ready or needs-human, and outside-change + needs-human when it lands in a repository the team does not own; existing open issues become blockers, never duplicates. Its first message checks docs/ux/prototypes/ for the screens the PRD describes and, when there is none, offers to draft one from the PRD in parallel so front-end stories have a design to follow. Works with GitHub Issues only, like dev-next. Use when the user types /prd-to-tickets, says "split this PRD into tickets", "cut the PRD into stories", or "create the epics and stories for this PRD".'
+description: 'ORION - Split a PRD (a product requirements document under docs/PRDs/) into GitHub epics and stories that agents can build in parallel. Scaffold first, then the shared-contract stories, then everything fans out; blockers only on real contract dependencies and the tier order (every later-tier story waits for the final stories of the tier before); every story owns one folder or module; both blocker forms set (GitHub''s native relation and the Blocked by body section); epic to story as native sub-issues; every story labelled agent-ready or needs-human, and outside-change + needs-human when it lands in a repository the team does not own; existing open issues become blockers, never duplicates. Reads the PRD together with its pending ADRs. Its first message checks docs/ux/prototypes/ on main for every screen the PRD names and, when one is missing, offers to draft the missing screens, opens that pull request and stops, so stories are cut only from screens already merged. Its own pull requests merge on green unless they touch the PRD, an ADR, the prototype or CLAUDE.md, which a person merges. Works with GitHub Issues only, like dev-next. Use when the user types /prd-to-tickets, says "split this PRD into tickets", "cut the PRD into stories", or "create the epics and stories for this PRD".'
 argument-hint: "<path to the PRD> --developers N"
 ---
 
@@ -13,9 +13,10 @@ A PRD says **what** to build. Agents build **stories**. This skill is the step b
 the epics and stories that let several developers (people or `/dev-next` runs) work on it **at the same time without
 colliding**, and it does so with the person present, so that nothing is filed `agent-ready` with a question left.
 
-**The output is tickets, nothing else.** This session never writes application code and never edits the PRD; the one
-thing it may add to the repository is a UX prototype, drafted by a sub-agent on its own branch when the PRD describes
-screens and no prototype exists yet (phase 1).
+**The output is tickets, nothing else.** This session never writes application code and never edits the PRD by hand;
+what reaches the repository arrives through a sub-agent's pull request: the missing screens of the UX prototype, with
+one PRD line pointing at the prototype folder (phase 1, after which the run stops), and an agreed PRD update (phase 6).
+Who merges each is under *Who merges* below.
 
 Read the project's `CLAUDE.md` first. It overrides this file where they disagree.
 
@@ -23,6 +24,8 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 
 - `.claude/skills/dev-next/references/new-issue.md` is installed (orion ships it; `orion update` restores it). It is
   the issue shape, the labels and the native links every ticket here follows. Missing → stop and say so.
+- `.claude/skills/dev-next/references/planning-interview.md` is installed beside it (orion ships it too). It is the
+  interview of phase 4. Missing → stop and say so.
 - GitHub Issues as the tracker, `gh` signed in to the repository `origin` points at. A `CLAUDE.md` naming another
   tracker → stop and say this skill needs GitHub Issues.
 - A PRD under `docs/PRDs/`. No PRD → stop: by the standing rule a PRD is the person's to write or provide, and this
@@ -35,7 +38,7 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 |---|---|
 | `/prd-to-tickets docs/PRDs/<name>.md` | Split this PRD. |
 | `/prd-to-tickets` | One PRD under `docs/PRDs/` → take it; several → ask which one (clickable options, newest first). |
-| `--developers N` | How many developers must stay busy in parallel once the scaffold is in. **The person states it explicitly, every run**: as this argument, or in answer to the question in phase 2 step 1 (after the UX check). It is never taken silently from the PRD or the project's `CLAUDE.md`; those numbers only shape the recommended option of that question. |
+| `--developers N` | How many developers must stay busy in parallel once the scaffold is in. **The person states it explicitly, every run**: as this argument, or in answer to the question in phase 2 step 1 (after the UX gate). It is never taken silently from the PRD or the project's `CLAUDE.md`; those numbers only shape the recommended option of that question. |
 
 ## Roles
 
@@ -43,7 +46,7 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 |---|---|---|---|
 | this session | opus | the user's own | reads the PRD, interviews, cuts the plan, files the issues; talks to GitHub |
 | `inventory-<slug>` | sonnet | low | optional: maps every open issue and the repository's layout onto the PRD's sections and returns a bounded table (phase 2) |
-| `ux-prototype-<slug>` | opus | high | drafts the UX prototype from the PRD in its own worktree and opens its pull request (phase 1, `references/ux-prototype.md`) |
+| `ux-prototype-<slug>` | opus | high | drafts the screens the prototype lacks from the PRD in its own worktree, adds the PRD's one line pointing at the prototype folder and opens its pull request (phase 1, `references/ux-prototype.md`) |
 | `plan-check-<slug>` | opus | xhigh | fresh context: reads the cut plan against the rules in phase 3 and returns PASS or every violation (phase 5) |
 | `prd-update-<slug>` | sonnet | low | only when the person says yes in phase 6 step 6: applies the agreed lines to the PRD in its own worktree and opens the `docs(prd)` pull request |
 
@@ -56,7 +59,8 @@ never stashes, never switches branches, commits only the files it touched, and o
 ## Phase 0 — Preflight
 
 1. `gh auth status`, `gh repo view --json nameWithOwner,hasIssuesEnabled`. Issues disabled or a different tracker
-   named in `CLAUDE.md` → stop and say so. `.claude/skills/dev-next/references/new-issue.md` exists → else stop.
+   named in `CLAUDE.md` → stop and say so. `.claude/skills/dev-next/references/new-issue.md` and
+   `.claude/skills/dev-next/references/planning-interview.md` exist → else stop.
 2. Read the project's `CLAUDE.md` in full: the layout (application and test code paths), the worktree root, the
    boundaries (external read-only repositories and their work-item key format, sensitive data classes, boundaries an
    agent must not move), the working language, the standing decisions. A question the project has already answered
@@ -69,43 +73,50 @@ never stashes, never switches branches, commits only the files it touched, and o
    `git grep <pattern> origin/main` — never through the main checkout's files. That checkout may sit on another branch
    or hold someone's work: never switch its branch, never stash, never reset. This session creates no branch of its
    own; only its sub-agents do, each in its own worktree.
-5. **Locate the PRD** (arguments above) and read it in full. Note every section number or heading, so each story can
-   name the one it serves under `### References` and `### Goal`. Nothing is asked of the person in this phase: the
-   first thing they hear is phase 1.
+5. **Locate the PRD** (arguments above) and read it in full, **together with its pending ADRs**: every
+   `docs/ADRs/*.md` on `origin/main` whose status line says `pending` (not yet folded into the PRD). Product truth is
+   the PRD plus those ADRs (the mandatory rules, *Standing decisions*); where a pending ADR changes what the PRD says,
+   the ADR is the later decision and wins, and the stories it shapes name it under `### References`. An ADR whose
+   status line says `folded into the PRD on <date>` is already in the PRD and is not read again. Note every section
+   number or heading, so each story can name the one it serves under `### References` and `### Goal`. Nothing is
+   asked of the person in this phase: the first thing they hear is phase 1.
 
-## Phase 1 — The UX check: the first thing the person hears
+## Phase 1 — The UX gate: the first thing the person hears
 
-The standing rule: **front-end development is led by the UX prototype in `docs/ux/prototypes/`**. A story that adds
-or changes a screen implements the prototype's screen, never a layout of its own. So before anything is cut:
+The standing rule: **front-end development is led by the UX prototype in `docs/ux/prototypes/`**, and **the prototype
+is merged before this skill cuts a PRD that names screens** (the mandatory rules, *Standing decisions*). A story that
+adds or changes a screen implements the prototype's screen, never a layout of its own, so stories are cut only from
+screens someone has already seen, with screen ids that already exist. Before anything is cut:
 
-1. **Does the PRD describe screens?** Pages, views, forms, dashboards, a user flow through a UI, anything a person
-   sees and clicks. Read the PRD for it; do not guess from the stack. No screens at all → say so in one line and go to
-   phase 2; nothing below applies.
-2. **Is there a prototype for them?** Look under `docs/ux/prototypes/` (and `docs/ux/` for older projects) for a
-   folder or file whose `README.md` or headings name the PRD's screens. Found → say which file leads, in one line;
-   every front-end story in phase 3 names its screen in that file under `### References`.
-3. **None found → tell the person, before any question about the split.** Say, in plain words:
-   *"There is no UX prototype for the front-end to lead with. My suggestion is that I draft one now from the PRD,
-   in parallel with the split, so that agents building a screen have a design to follow instead of inventing a
-   layout each."* Then ask once (clickable options, the recommendation first):
-   - **Draft it in parallel (recommended)** — spawn `ux-prototype-<slug>` with the brief in
-     `references/ux-prototype.md`. It works in its own worktree on `feat/ux-prototype-<slug>` (or the
-     project's own branch pattern), writes
-     `docs/ux/prototypes/<slug>/` (one self-contained HTML click-through plus a `README.md` listing the screens), opens
-     a pull request **a human merges**, and returns the pull request link and the screen list. The split carries on
-     while it works.
-   - **The person provides it** — nothing is spawned; the person says where it will live.
-   - **The PRD has no screens after all** — say so and continue without the front-end rules.
-4. **Whichever way, when the prototype does not exist on `main` yet, phase 3 cuts, and phase 6 files, one
-   `needs-human` story: "UX prototype for <PRD name>"**, seam `docs/ux/prototypes/<slug>/`, under the epic that
-   holds the most front-end stories (its own epic when none does), with the
-   prototype pull request (or the person's promise) as its last comment, and **every front-end story is blocked by
-   it**, in both blocker forms. It closes when the prototype is merged. That is what keeps a front-end agent from
-   starting on a screen nobody has drawn.
-
-The sub-agent's result arrives while later phases run. When it does, post its pull request link as the last comment
-on the prototype story (filed in phase 6) and say in the close-out that the pull request waits for a human review.
-A failure is reported in one line and the story stays `needs-human` with the person named to draw it.
+1. **Does the PRD name screens?** Pages, views, forms, dashboards, a user flow through a UI, anything a person sees
+   and clicks, in the PRD or a pending ADR. Read them for it; do not guess from the stack. No screens at all → say so
+   in one line and go to phase 2; nothing below applies.
+2. **Does the prototype on `main` hold every one of them?** Look under `docs/ux/prototypes/` (and `docs/ux/` for
+   older projects) on `origin/main` for a folder whose `README.md` or headings name the PRD's screens, and match the
+   PRD's screens against it one by one. A prototype that sits only on an open pull request is not on `main` yet.
+   **An open prototype pull request for this PRD** (`gh pr list --state open --head feat/ux-prototype-<slug>`, or the
+   project's own branch pattern) → name its link, say it waits for the person's merge, and stop: no second draft.
+   Every screen found → say which file leads, in one line, and go to phase 2; every front-end story in phase 3 names
+   its screen id in that file under `### References`.
+3. **A screen is missing (no prototype at all, or one that lacks a screen the PRD names) → tell the person, before
+   any question about the split**, in plain words: *"The PRD names screens the UX prototype on `main` does not have
+   yet: <the missing screens>. Stories are cut only from screens already merged, so I suggest I draft the missing
+   screens now and open that pull request; once you have merged it, run this split again."* Then ask once (clickable
+   options, the recommendation first):
+   - **Draft the missing screens (recommended)** — spawn `ux-prototype-<slug>` with the brief in
+     `references/ux-prototype.md`. It works in its own worktree on `feat/ux-prototype-<slug>` (or the project's own
+     branch pattern), adds only the missing screens to `docs/ux/prototypes/<slug>/` (one self-contained HTML
+     click-through plus a `README.md` listing the screens; a new folder when there is none), adds one line to the PRD
+     pointing at the prototype folder when the PRD has none yet, opens the pull request (a person merges it, *Who
+     merges*), and returns the pull request link and the screen list.
+   - **The person provides them** — nothing is spawned; the person says where the screens will live.
+   - **They are not screens after all** — say so and go to phase 2 without them.
+4. **Then stop.** On the first two answers, nothing is cut, asked or filed in this run: wait for the sub-agent's
+   result (it arrives as a notification), and end with a close-out of three lines or fewer: the missing screens, the
+   prototype pull request link waiting for the person's merge (or who provides the screens), and the one next action:
+   *merge it, then run `/prd-to-tickets` again*. A sub-agent failure is reported in one line, and the run still
+   stops. The next run passes this gate once every screen is on `main`. A later PRD update that adds a screen takes
+   the same gate: only its missing screens are drafted.
 
 ## Phase 2 — Read the PRD and the backlog
 
@@ -114,10 +125,11 @@ A failure is reported in one line and the story stays `needs-human` with the per
    is one, else the number of people the person named) and wait for the answer. Never take the number from the PRD or
    `CLAUDE.md` without the person confirming it: that number is what phase 3's parallelism check is measured against,
    and a wrong one cuts the backlog for the wrong team.
-2. **From the PRD, extract into a scratch note** (never into the repository): the vocabulary, the scope and the
-   do-not-build list, the acceptance bar, the build decisions already taken, the tier the PRD gives each part (MVP,
-   stretch, stretch 2, …), the repositories the work touches that this team does not own, the screens (phase 1),
-   the data types or interfaces several parts share (the **contracts**), and every question the PRD leaves open.
+2. **From the PRD and its pending ADRs (phase 0), extract into a scratch note** (never into the repository): the
+   vocabulary, the scope and the do-not-build list, the acceptance bar, the build decisions already taken, the tier
+   the PRD gives each part (MVP, stretch, stretch 2, …), the repositories the work touches that this team does not
+   own, the screens (phase 1), the data types or interfaces several parts share (the **contracts**), and every
+   question the PRD leaves open.
 3. **Inventory the backlog — mandatory, never skipped.**
    `gh issue list --state open --limit 200 --json number,title,labels,assignees,body`, and
    `gh issue list --state open --label epic --json number,title`. For every open issue, decide which PRD section (if
@@ -149,13 +161,23 @@ Epic → story is a **native sub-issue**, never a text list.
    there is nothing to parallelise before the skeleton builds and tests. A project that already builds skips this
    level, and level 1 is where work starts.
 2. **Level 1 — the contract stories.** Every type, interface, schema, shared project file or configuration that more
-   than one story would extend becomes **its own story**, blocked only by the scaffold. Their number is what the
-   developer count can take side by side: aim for one contract story per developer, never fewer than two unless the
-   PRD genuinely has one contract.
+   than one story would extend becomes **its own story**, blocked only by the scaffold (and, in a later tier, by the
+   tier block below). Their number is what the developer count can take side by side: aim for one contract story per
+   developer, never fewer than two unless the PRD genuinely has one contract.
 3. **Level 2 and below — the fan-out.** Every other story is blocked **only** by the contract story that defines
    what it consumes (the consumer of a type waits for its definer). A story blocked by a sibling that merely "comes
-   first in the PRD" is a cut mistake: a blocker is a real dependency on a definition, nothing else. Depth above
-   level 3 is a sign the cut is wrong; re-cut before going on.
+   first in the PRD" is a cut mistake: a blocker is a real dependency on a definition, or the tier order below,
+   nothing else. Depth above level 3 within one tier is a sign the cut is wrong; re-cut before going on.
+
+**The tiers chain by blocks.** When the PRD gives its work several tiers (MVP, stretch, stretch 2, …), every story of
+a later tier is blocked by the **final stories of the tier before it**: the stories of that tier that no other story
+of the same tier waits for. They can only close after everything before them in their tier, so this equals "the
+earlier tier is done" with far fewer links than a block on every story. The chain follows the PRD's tier order
+(`tier:stretch` waits for `tier:mvp`, `tier:stretch-2` for `tier:stretch`), in both blocker forms like every blocker,
+and is read back in phase 6. A later tier's own contract and fan-out stories sit below the tier block, so its levels
+continue after the earlier tier's; its depth is counted from its first stories. Tiers outside the PRD (`tier:bug`,
+`tier:dev-quick`, `tier:manual`, …) and existing open issues from phase 2 are outside the chain. The accepted cost:
+when one story of an earlier tier is stuck, every story of the later tier waits too.
 
 **Every story:**
 
@@ -174,27 +196,28 @@ Epic → story is a **native sub-issue**, never a text list.
 - **is labelled `story` plus exactly one readiness label:**
   - `agent-ready` — nothing left to ask: an agent claims it, builds in a worktree, opens the pull request, gets a
     fresh-agent review and merges on green with no human. Mandatory and mutually exclusive with `needs-human`.
-  - `needs-human` — a person must act or decide first (answer a question, grant access, draw the prototype, name an
-    evaluation set) and then flips it to `agent-ready`; or the ticket is human-only work for good (training, a written
-    rule, a compliance record). The reason is the issue's **last comment**, posted right after creation.
+  - `needs-human` — a person must act or decide first (answer a question, grant access, name an evaluation set) and
+    then flips it to `agent-ready`; or the ticket is human-only work for good (training, a written rule, a compliance
+    record). The reason is the issue's **last comment**, posted right after creation.
   - `outside-change` — the work lands in a repository this team does not own (the project's `CLAUDE.md` lists them):
     never autonomous, always ends at a pull request that repository's own reviewer merges, **always also
     `needs-human`**, always carries `### External reference` with that repository's work-item key. `/dev-next` skips
     it; the plan says who drives it.
 - **carries one tier label**, `tier:<name>` (`new-issue.md` step 2): the tier the PRD gives the work it covers
-  (`tier:mvp`, `tier:stretch`, `tier:stretch-2`). A scaffold, contract or UX prototype story takes the first tier,
-  in the PRD's order, of the stories that wait for it. Epics carry none. The tier never changes a blocker or a level.
-- **front-end** (adds or changes a screen) → blocked by the prototype story (phase 1 step 4) until the prototype is
-  on `main`, and references its screen.
+  (`tier:mvp`, `tier:stretch`, `tier:stretch-2`). A scaffold or contract story takes the first tier, in the PRD's
+  order, of the stories that wait for it. Epics carry none. The tier sets the tier blocks above.
+- **front-end** (adds or changes a screen) → references its screen id in the prototype on `main` (phase 1) under
+  `### References`; it waits for no prototype story, since the cut runs only once every screen is merged.
 
 **Blockers come in two forms, always both:** the `### Blocked by` body section (what agents parse) and GitHub's native
 "blocked by" relation (what people see). Existing open issues from phase 2 appear here like any other blocker.
 
 **The parallelism check — do it on paper before anything is filed.** Assign every story its level (0 when nothing
-blocks it, else one more than its highest blocker; an existing open blocker counts at the level it would have). The
-**contract level** is the lowest level that is not the scaffold: 1 when there is a scaffold, 0 when there is none.
-Then walk the levels: from the contract level on, the number of stories that become unblocked at once must be
-**at least the developer count** while later levels still hold work. A level that leaves developers idle is
+blocks it, else one more than its highest blocker, the tier blocks included; an existing open blocker counts at the
+level it would have). The **contract level** is the lowest level that is not the scaffold: 1 when there is a scaffold,
+0 when there is none. Then walk the levels: from the contract level on, the number of stories that become unblocked at
+once must be **at least the developer count** while later levels of the same tier still hold work (a tier's last
+level may leave developers idle: the tier chain's accepted cost). A level that leaves developers idle is
 re-cut: split a seam that is really two, promote a shared piece to a contract story, or drop a blocker that is not a
 real dependency. Write the per-level counts into the plan; the person sees them.
 
@@ -210,31 +233,16 @@ hundred tickets nobody can read.
 
 ## Phase 4 — The interview: every open question, nothing left to ask
 
-A story filed `agent-ready` with a question left becomes a guess the dev agent bakes in and the reviewer cannot judge.
-
-- **Ask every question the PRD leaves open**, grouped per story or per contract, through the clickable-options tool
-  (`AskUserQuestion`): distinct options, your recommended answer **first and marked**, so a whole batch can be
-  accepted in seconds. No cap on the number of questions. Plain language, as to a junior developer with no context.
-- **Never ask what is already decided**: the PRD's build decisions, the project's `CLAUDE.md` (worktree root, merge
-  method, data rules, language, deploy target), the standing decisions. The PRD wins on product; the rules win on
-  process; a contradiction between them is reported as a bug, not resolved by a question.
-- **Rounds.** After a batch, re-read the answers against the PRD and the cut: a question that only now arises goes
-  into the next batch. Stop when a round produces no new question.
-- **"I don't know, ask <someone>"** → that story is `needs-human`, with the open question and the person's name as
-  its last comment. Nothing is guessed on anyone's behalf. The rest of the plan is unaffected.
-- **A reversible decision the person could take now but did not** → recommend the simplest option that meets the
-  acceptance bar, say it is reversible, record the answer under that story's `## Decisions (agent-ready)`.
-- **A hard-to-reverse decision the PRD leaves open** → ask it like any other question, recommended answer first;
-  the answer goes under the `## Decisions (agent-ready)` of every story it shapes and is one of the lines of phase 6's
-  PRD question (the PRD's build-decisions section). No ADR, no story for it, no blocker on it.
-- **Work the PRD gives no tier** → one question per epic: which tier its stories take (`mvp` recommended, the PRD's
-  other tiers as the other options). The answer is a PRD fact, so it is one of the lines of phase 6's PRD question.
+**Load `.claude/skills/dev-next/references/planning-interview.md` and follow it**, with the PRD as the source and the
+plan of phase 3 as the cut, until it leaves no question open. Every rule of the interview lives in that file, which
+`/wayfinder` follows too.
 
 ## Phase 5 — A fresh check, then one look
 
 1. **Write the plan to a scratch file** (outside the repository): per epic, its stories in level order, each with
    title, seam, labels, blockers (by name), level, PRD section; the per-level counts against the developer count; the
-   "already done" and "becomes a blocker" lists from phase 2; the prototype line from phase 1.
+   "already done" and "becomes a blocker" lists from phase 2; the tier blocks (per later tier, the final stories of
+   the tier before it); the prototype line from phase 1.
 2. **Spawn `plan-check-<slug>`** with the plan, the PRD path and the rules of phase 3, asking for PASS or a numbered
    list of violations (one line each: the story, the rule, the fix). Fix every violation and run the check again;
    never show the person a plan that failed it.
@@ -252,14 +260,16 @@ File in dependency order, so every blocker exists before the issue it blocks:
    (`new-issue.md` step 2). Body to a UTF-8 file, `gh issue create --title "<title>" --label story --label
    <readiness> --label <tier> [--label outside-change] --body-file <file>` (PowerShell adds a byte-order mark; bash
    heredocs break on apostrophes — `.claude/skills/dev-next/references/shell-traps.md`). Names, not bare numbers,
-   in titles and bodies. The `### Blocked by` lines are filled with the numbers minted in this run as they appear.
+   in titles and bodies. The `### Blocked by` lines are filled with the numbers minted in this run as they appear;
+   a later-tier story's lines include the tier block, one `#<N> — <title>` line per final story of the tier before
+   it (phase 3).
 3. **Links, per `new-issue.md` steps 3 and 4, each read back:** the native sub-issue link to the epic
    (`.../issues/<epic>/sub_issues -X POST -F sub_issue_id=<child id>`, verified with `--jq 'map(.number)'`), then the
    native `blocked_by` relation for every `### Blocked by` line (`.../issues/<new>/dependencies/blocked_by -X POST -F
-   issue_id=<blocker id>`, verified the same way). **A read-back that does not match the body is fixed before the next
-   issue is filed**; the dev skill blocks on the union of the two, so a mismatch is a bug in the ticket.
-4. **`needs-human` and `outside-change` stories get their reason as the last comment now**, including the prototype
-   story's pull request link if it has arrived.
+   issue_id=<blocker id>`, verified the same way), the tier block included. **A read-back that does not match the
+   body is fixed before the next issue is filed**; the dev skill blocks on the union of the two, so a mismatch is a
+   bug in the ticket.
+4. **`needs-human` and `outside-change` stories get their reason as the last comment now.**
 5. **Rebuild the issue map** when `.claude/skills/issue-map/` is installed: run its generator with no arguments in
    the background, as its own command, never chained. Its footer confirms the body sections and native relations agree.
 6. **Ask once, after the batch:** "Should we update the PRD with this too?" — one line per change the interview made
@@ -267,29 +277,55 @@ File in dependency order, so every blocker exists before the issue it blocks:
    with the exact lines and sections: it works in its own worktree on `feat/prd-update-<slug>` (or the project's
    own branch pattern), adds its own changelog file, `docs/changelog/<YYYY-MM-DD>-<branch>.md` (one line; the folder
    created with a `README.md` explaining the format if missing), runs the gate (the gate commands the project's `CLAUDE.md` lists: build → lint → typecheck → full suite)
-   and on green commits only the PRD and the changelog file, opens a `docs(prd)` pull request a human merges, and
-   returns its link; red → it reports the failing command and stops. Never pushed to `main`.
+   and on green commits only the PRD and the changelog file, opens a `docs(prd)` pull request (a person merges it,
+   *Who merges*), and returns its link; red → it reports the failing command and stops. Never pushed to `main`.
 7. **Close-out, ten lines or fewer:** epics and stories filed (counts per level against the developer count), which
    story `/dev-next` takes first (the scaffold, or the contract stories when there is no scaffold), every
-   `needs-human` item with who acts and what, every `outside-change` with who drives it, the prototype pull request
-   waiting for a human if any, and the one next action: `/dev-next` for the first unblocked story.
+   `needs-human` item with who acts and what, every `outside-change` with who drives it, the PRD pull request waiting
+   for the person's merge if any, and the one next action: `/dev-next` for the first unblocked story.
+
+## Who merges
+
+The mandatory rules, *Who merges*, decide every pull request this skill opens:
+
+> An agent merges every pull request it makes in the project on its own — `/dev-next`'s stories (a `/dev-quick` run
+> merges through it), planning, harvest and QA logs, reconciling, documentation, one made by hand — with
+> `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then delete
+> the branch. […] **A person merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`:
+> merging it is the person's approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an
+> agent never lands its own rules), even when the rest is bookkeeping, and the pull request of an `owner-merges`
+> story; the agent merges one of these only on the person's explicit word for that one pull request, once its checks
+> are green. Never merge an `outside-change` pull request: its repository's own reviewer does.
+
+So, for each pull request this skill's sub-agents open:
+
+| Pull request | Touches | Merged by |
+|---|---|---|
+| The prototype, `ux-prototype-<slug>` (phase 1) | `docs/ux/prototypes/` and the PRD's one line under `docs/PRDs/` | **a person**; the run stops and the next run starts once it is on `main` |
+| The PRD update, `prd-update-<slug>` (phase 6 step 6) | `docs/PRDs/` | **a person** |
+| Any other pull request this skill opens | none of the paths above, no `outside-change` and no `owner-merges` story | the agent that opened it, on green, with `/dev-next`'s bar |
+
+The agent merges a person's pull request only on the person's explicit word for that one pull request, once its
+checks are green. The stories filed here are merged by `/dev-next` as usual (an `outside-change` story stops at its
+own repository's reviewer, an `owner-merges` story at its pull request).
 
 ---
 
 ## Rules that are not negotiable
 
 0. **Never push to `main`.** This session writes nothing to the repository; the prototype and a PRD update are each
-   written by a sub-agent in its own worktree and land as a pull request a human merges.
+   written by a sub-agent in its own worktree and land as a pull request, merged as *Who merges* says.
 1. **Nothing is filed `agent-ready` with a question left.** `agent-ready` and `needs-human` never sit together.
 2. **`outside-change` never travels alone**: always `needs-human`, always `### External reference`, never built here.
 3. **Both blocker forms, always, read back.** The body section for agents, the native relation for people.
 4. **Epic → story is a native sub-issue**, never a text list. A story never hangs loose.
 5. **Existing open issues are blockers, never duplicates.** The inventory of phase 2 is mandatory; a closed issue
    covers nothing.
-6. **Blockers only on real contract dependencies**; every story names its own seam; the chain stays shallow; after
-   the scaffold, the developer count stays busy at every level.
-7. **No front-end story without a prototype to follow**: it is blocked by the prototype story until the prototype
-   is on `main`.
+6. **Blockers only on real contract dependencies and the tier order**; every later-tier story is blocked by the final
+   stories of the tier before it; every story names its own seam; the chain stays shallow; after the scaffold, the
+   developer count stays busy at every level of a tier.
+7. **No cut while the PRD names a screen the prototype on `main` lacks**: the missing screens are drafted in their
+   own pull request and the run stops (phase 1).
 8. **Nothing is filed without the person's one look**, and nothing is filed that failed the fresh plan check.
 9. **This session never writes application code** and never edits the PRD by hand.
 10. **Never schedule a wakeup or a `/loop`.** The prototype sub-agent's result arrives as a notification.
@@ -299,5 +335,6 @@ File in dependency order, so every blocker exists before the issue it blocks:
 | File | Load at |
 |---|---|
 | `.claude/skills/dev-next/references/new-issue.md` | phase 3 (the shape) and phase 6 (the links and read-backs) |
-| `references/ux-prototype.md` | phase 1 step 3 — the brief for `ux-prototype-<slug>` |
+| `.claude/skills/dev-next/references/planning-interview.md` | phase 4 — the interview |
+| `references/ux-prototype.md` | phase 1 step 3 — the brief for `ux-prototype-<slug>` (only the missing screens) |
 | `.claude/skills/dev-next/references/shell-traps.md` | phase 6, and whenever a shell command behaves strangely |

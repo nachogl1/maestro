@@ -1,6 +1,6 @@
 ---
 name: generate-project-writeup
-description: "ORION - Generate a single polished Microsoft Word (.docx) PROJECT WRITE-UP / SUMMARY REPORT for the current repository, dropped into the user's Downloads folder, written for LEADERSHIP / COMMERCIAL STAKEHOLDERS to summarise the work delivered to date. It leads with an economic case — a transparent cost comparison (a defensible traditional team x duration x blended-rate baseline, cross-referenced to the COCOMO II Post-Architecture phase model) against the ACTUAL observed delivery, headlining the savings and time-to-market compression of an AI-assisted build. The contributor count and full-time/part-time FTE split that drive the cost math are ALWAYS confirmed with the user by NAMING the real contributors — both the embedded business-unit (BU) developers/owners and the central/shared specialist delivery-team developers — with the headcount and team-origin split derived from those named lists (git author lists over/under-count bots, AI-agent commits, and part-timers). It also ALWAYS confirms the project's start and end dates with the user and shows the total elapsed duration. NEUTRAL ON COMPLETION: it describes what has been delivered without claiming the project is finished to completion or production-ready, and equally without stating it is unfinished. Up front it also asks the user for an RFA or other supporting documents (business case, original pre-build estimate, rate card, revenue figures) so the economic baseline and value sections are populated from real, cited data rather than guesses. After the financial summary it assembles: project overview (what it is, the problem solved, the solution), scale-of-work quantitative metrics measured from the real repo (LOC split prod vs test, commits, duration, modules, models, endpoints, tests, docs), technical architecture (backend/frontend/infra stack tables with rationale), architecture patterns, security implementation, core features, an 'invisible excellence' section (testing, code quality, design system), a traditional-vs-modern comparison, value delivered (risk reduction + OPEX saving; revenue only if a business case is supplied), and a documentation inventory. Detects the project's stack and conventions from its own files at run time — assumes no stack. Renders the .docx via a bundled zero-dependency Python generator (no pandoc / python-docx / Word install required), with pandoc and HTML fallbacks. INVENTS NO NUMBERS — every metric is measured or marked 'not measured'. STRICTLY READ-ONLY: it reads git + repo files and writes ONE .docx to Downloads (deleting any sidecar/temporary files it creates once the .docx is rendered); it never edits the repo and never commits. Use when the user says '/generate-project-writeup', 'generate a project write-up', 'write up a project summary report', 'project summary / status report for this project', 'project delivery summary for leadership', 'AI-assisted development summary', or wants a single shareable Word document summarising a project for leadership."
+description: "ORION - Generate a single polished Microsoft Word (.docx) PROJECT WRITE-UP / SUMMARY REPORT for the current repository, dropped into the user's Downloads folder, written for LEADERSHIP / COMMERCIAL STAKEHOLDERS to summarise the work delivered to date. It opens with a one-page EXECUTIVE SUMMARY right after the cover and before the table of contents (what was built and why, the cost-and-time headline, and Table 1's three totals), then leads with an economic case — a transparent cost comparison (a defensible traditional team x duration x blended-rate baseline, cross-referenced to the COCOMO II Post-Architecture phase model) against the ACTUAL observed delivery, headlining the savings and time-to-market compression of an AI-assisted build. The contributor count and full-time/part-time FTE split that drive the cost math are ALWAYS confirmed with the user by NAMING the real contributors — both the embedded business-unit (BU) developers/owners and the central/shared specialist delivery-team developers — with the headcount and team-origin split derived from those named lists (git author lists over/under-count bots, AI-agent commits, and part-timers). It also ALWAYS confirms the project's start and end dates with the user and shows the total elapsed duration. NEUTRAL ON COMPLETION: it describes what has been delivered without claiming the project is finished to completion or production-ready, and equally without stating it is unfinished. Up front it also asks the user for an RFA or other supporting documents (business case, original pre-build estimate, rate card, revenue figures) so the economic baseline and value sections are populated from real, cited data rather than guesses. After the financial summary it assembles: project overview (what it is, the problem solved, the solution), scale-of-work quantitative metrics measured from the real repo (LOC split prod vs test, commits, duration, modules, models, endpoints, tests, docs), technical architecture (backend/frontend/infra stack tables with rationale), architecture patterns, security implementation, core features, an 'invisible excellence' section (testing, code quality, design system), a traditional-vs-modern comparison, value delivered (risk reduction + OPEX saving; revenue only if a business case is supplied), and a documentation inventory. Detects the project's stack and conventions from its own files at run time — assumes no stack. Renders the .docx via a bundled zero-dependency Python generator (no pandoc / python-docx / Word install required), with pandoc and HTML fallbacks. INVENTS NO NUMBERS — every metric is measured or marked 'not measured'. STRICTLY READ-ONLY: it reads git + repo files and writes ONE .docx to Downloads (deleting any sidecar/temporary files it creates once the .docx is rendered); it never edits the repo and never commits. Use when the user says '/generate-project-writeup', 'generate a project write-up', 'write up a project summary report', 'project summary / status report for this project', 'project delivery summary for leadership', 'AI-assisted development summary', or wants a single shareable Word document summarising a project for leadership."
 disable-model-invocation: true
 ---
 
@@ -317,36 +317,54 @@ sections the project can't substantiate rather than padding. Default structure:
 
 1. **Title block** — banner (org / programme), project name (+ codename), subtitle, fields
    (business unit, **project start → end dates with total duration**, owner), report-type
-   label, confidentiality line.
-2. **Table of contents** (`toc` block) + a page break.
-3. **Financial Summary** — a one-line method note; **Table 1 — Cost Comparison**; a
+   label, confidentiality line; then a page break.
+2. **Executive Summary** — one page, right after the cover and before the table of contents,
+   so a leader first reads what was built, why, and the cost-and-time headline. Draw it only
+   with blocks the generator already has, in this order:
+   - a `heading` (level 1) reading *Executive Summary*;
+   - a `paragraph` of two or three sentences on **what was built and why**: the problem, the
+     solution, who uses it (from the same sources as Part 1);
+   - a `paragraph` of one or two sentences on the **cost-and-time headline** (traditional vs.
+     actual, and the saving), ending with a one-line pointer to the method (*"Method and
+     assumptions: see the Financial Summary."*);
+   - a three-row `table` (traditional, actual, saving) with the **same headers and rows as
+     Table 1**, copied from Table 1's data, never retyped or rounded again; give it no "Table N"
+     caption, so Table 1 keeps its number;
+   - a `page_break`.
+
+   It adds no number of its own, so every rule above holds for it: every figure measured or
+   sourced, neutral on completion. Leave off delivery facts (people, dates, commits, tests),
+   value, risks and next steps: they have their own sections. If it runs past one page, shorten
+   the two paragraphs, never the table.
+3. **Table of contents** (`toc` block) + a page break.
+4. **Financial Summary** — a one-line method note; **Table 1 — Cost Comparison**; a
    "showing the working" paragraph (production SLOC measured, **the confirmed start→end dates
    and total duration**, team & rate assumptions including the **BU vs. central-specialist-team
    composition**, the arithmetic); **Table 2 — Time Investment by Phase** with the
    Boehm-distribution note.
-4. **Part 1 — Project Overview** — *What is `<project>`?* (plain-language description +
+5. **Part 1 — Project Overview** — *What is `<project>`?* (plain-language description +
    architecture in a sentence or two); *The problem we solved* (the gap/market/compliance
    need, drawn from README/RFA — only what's documented); *Our solution* (bulleted highlights).
-5. **Part 2 — Scale of Work** — the quantitative metrics table (metric → value → context),
+6. **Part 2 — Scale of Work** — the quantitative metrics table (metric → value → context),
    from Step 3. Everything measured.
-6. **Part 3 — Technical Architecture** — Backend / Frontend / Infrastructure stack tables
+7. **Part 3 — Technical Architecture** — Backend / Frontend / Infrastructure stack tables
    (component → technology → why this choice), from the real manifests.
-7. **Part 4 — Architecture Patterns** — the 3–5 load-bearing patterns (named heading +
+8. **Part 4 — Architecture Patterns** — the 3–5 load-bearing patterns (named heading +
    2–4 sentences each: what it is, why, the trade-off), from the real layout.
-8. **Part 5 — Security Implementation** — identity/auth, transport/cookies, middleware,
+9. **Part 5 — Security Implementation** — identity/auth, transport/cookies, middleware,
    any high-risk boundary, audit trail, tenancy/isolation — only what the code actually does.
-9. **Part 6 — Core Features** — a lifecycle/stages table if the domain has one, then a short
-   per-module breakdown (module → what it owns → key capabilities as bullets).
-10. **Part 7 — The Invisible Excellence** — Comprehensive Testing (counts + ratio), Code
+10. **Part 6 — Core Features** — a lifecycle/stages table if the domain has one, then a short
+    per-module breakdown (module → what it owns → key capabilities as bullets).
+11. **Part 7 — The Invisible Excellence** — Comprehensive Testing (counts + ratio), Code
     Quality (linters/formatters/CI gates), Design System / Accessibility (if frontend).
-11. **Part 8 — Comparison with Traditional Approach** — a "manual/legacy vs `<project>`"
+12. **Part 8 — Comparison with Traditional Approach** — a "manual/legacy vs `<project>`"
     aspect table, and an "operational efficiencies" (process → before → after → improvement)
     table. Keep "improvement" qualitative unless a real number exists.
-12. **Part 9 — Value Delivered** — **Revenue opportunity** (ONLY if a business case was
+13. **Part 9 — Value Delivered** — **Revenue opportunity** (ONLY if a business case was
     supplied; else a short "not provided — supply the business case to populate" note);
     **Risk reduction** (bulleted, grounded in the actual security/compliance/audit features);
     **OPEX / time-to-market saving** (from the economic model — restate the saving cleanly).
-13. **Appendix — Documentation Inventory** — document → lines → purpose, from Step 3.
+14. **Appendix — Documentation Inventory** — document → lines → purpose, from Step 3.
 
 Write the JSON to a sidecar (e.g. `<output-dir>/<repo>-writeup-data.json`).
 
@@ -373,10 +391,39 @@ python "<skill-dir>/assets/build_docx.py" "<data.json>" \
   TOC is a field — Word offers to update it on open (the bundled `settings.xml` requests it).
 - Confirm UTF-8 survived (em dashes, currency symbols, accents) by reading a slice of
   `document.xml` back.
+- **Check the Executive Summary (always).** Read `word/document.xml` back and confirm two
+  things: the *Executive Summary* heading comes after the cover's page break and **before the
+  table of contents** (the `TOC \o` field), and the one table between them **matches Table 1**
+  cell for cell (headers and every row). A standard-library check of the `build_docx.py` output
+  (`<file>` is the `.docx`; use `py -3` or `python3` where that is the launcher; on the pandoc or
+  HTML fallback, check the same two things by reading the file back):
+
+  ```bash
+  python - "<file>" <<'EOF'
+  import re, sys, zipfile
+  body = zipfile.ZipFile(sys.argv[1]).read("word/document.xml").decode("utf-8")
+  text = lambda s: "".join(re.findall(r"<w:t(?: [^>]*)?>([^<]*)</w:t>", s))
+  rows = lambda t: [[text(c) for c in re.findall(r"<w:tc>.*?</w:tc>", r, re.S)]
+                    for r in re.findall(r"<w:tr>.*?</w:tr>", t, re.S)]
+  tables = [(m.start(), rows(m.group(0))) for m in re.finditer(r"<w:tbl>.*?</w:tbl>", body, re.S)]
+  cover, summary, toc = (body.find(s) for s in ('w:type="page"', ">Executive Summary<", r"TOC \o"))
+  t1 = body.find(">Table 1", toc) if toc >= 0 else -1  # the real Table 1 sits after the contents
+  assert 0 <= cover < summary < toc, "the Executive Summary is not between the cover and the contents"
+  mine = [r for at, r in tables if summary < at < toc]
+  table1 = [r for at, r in tables if at > t1 >= 0][:1]
+  assert len(mine) == 1 and table1 and mine[0] == table1[0], "the summary's table does not match Table 1"
+  print("ok: cover, Executive Summary, contents; its table matches Table 1")
+  EOF
+  ```
+
+  If either check fails, fix the JSON and render again before reporting. If Word or
+  LibreOffice is available, also confirm the summary fits on one page (the contents start on
+  the page after it).
 - **Report in chat:** the absolute file path, the **generation path** used (build_docx /
   pandoc / HTML), the **economic headline** (traditional vs actual vs saving, with the FTE and
-  rate assumptions named), the section count, and a one-line note of anything marked
-  "not measured" or "not provided." The skill ends here — it does **not** edit the repo,
+  rate assumptions named), the first pages in order (*cover, Executive Summary, contents*, and
+  that the summary's table matches Table 1), the section count, and a one-line note of anything
+  marked "not measured" or "not provided." The skill ends here — it does **not** edit the repo,
   commit, or offer to.
 - **Clean up side files (always).** Once the `.docx` is written and verified, **delete every
   side file the run created** — the report-data JSON sidecar and any scratch/temporary files —
