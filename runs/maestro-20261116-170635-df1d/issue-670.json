@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261116-170635-df1d",
+  "issue": 670,
+  "title": "PROJECTS pill: fetch the counts in the background at start and for new tabs, so the first open is instant",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-16T17:06:36Z",
+  "finished_at": "2026-11-16T17:33:48Z",
+  "outcome": "owner-merges",
+  "pr": 671,
+  "summary": "The PROJECTS pill now fetches every open project's counts in the background 15 seconds after start and right away for new tabs, so its first open shows counts at once; 6 new tests, PRD 4.6 and the runbook updated. The owner must try the change, then merge pull request #671.",
+  "agents": [
+    { "name": "dev-670", "model": "opus", "tokens_total": 163189 },
+    { "name": "review-670-r1", "model": "opus", "tokens_total": 128595 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1233, "review_seconds": 250, "ci_seconds": 97 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
