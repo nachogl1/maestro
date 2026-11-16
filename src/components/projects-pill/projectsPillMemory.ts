@@ -6,8 +6,14 @@
 
 import type { PillProjectData } from "./projectsPillData";
 
-/** What a project's last finished load found. A failed load is never remembered. */
-export type RememberedProject = { kind: "no-repo" } | { kind: "ready"; data: PillProjectData };
+/** A load that found something to show. */
+export type LoadedProject = { kind: "no-repo" } | { kind: "ready"; data: PillProjectData };
+
+/**
+ * What a project's last finished load found. A failure is kept only while
+ * nothing has loaded, so a project that keeps failing is known as tried.
+ */
+export type RememberedProject = LoadedProject | { kind: "failed"; message: string };
 
 interface MemoryEntry {
   /** The folder the load asked GitHub about; a tab can switch repositories. */
@@ -23,7 +29,10 @@ export function recallProject(tabId: string, repoPath: string): RememberedProjec
   return entry && entry.repoPath === repoPath ? entry.last : null;
 }
 
+/** Remember a finished load; a failure never replaces something that loaded. */
 export function rememberProject(tabId: string, repoPath: string, last: RememberedProject): void {
+  const kept = recallProject(tabId, repoPath);
+  if (last.kind === "failed" && kept && kept.kind !== "failed") return;
   memory.set(tabId, { repoPath, last });
 }
 

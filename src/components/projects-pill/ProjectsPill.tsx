@@ -18,7 +18,12 @@ import {
   type PillProjectData,
   visibleIssues,
 } from "./projectsPillData";
-import { type RememberedProject, recallProject, rememberProject } from "./projectsPillMemory";
+import {
+  type LoadedProject,
+  type RememberedProject,
+  recallProject,
+  rememberProject,
+} from "./projectsPillMemory";
 import { useProjectsPillLockStore } from "./useProjectsPillLockStore";
 
 /** One open project tab, as the list's first level shows it. */
@@ -31,11 +36,17 @@ interface PillProject {
 }
 
 interface ProjectLoad {
-  /** The last finished load, shown while a newer one runs and after one fails. */
-  last: RememberedProject | null;
+  /** The last load that found something, shown while a newer one runs and after one fails. */
+  last: LoadedProject | null;
   updating: boolean;
-  /** Why the newest load failed; null when it did not. */
+  /** Why the newest finished load failed; null when it did not. */
   error: string | null;
+}
+
+/** A project's state as an open starts it: what it last showed, now refreshing. */
+function reopenedLoad(recalled: RememberedProject | null): ProjectLoad {
+  if (recalled?.kind === "failed") return { last: null, updating: true, error: recalled.message };
+  return { last: recalled, updating: true, error: null };
 }
 
 /** Where the list is: the projects, one project's labels, or one label's issues. */
@@ -96,9 +107,13 @@ export function ProjectsPill() {
     const seq = ++loadSeq.current;
     latestLoad.current[project.id] = seq;
     // A failed load (no `last`) keeps showing what the project last loaded.
-    const settle = (last: RememberedProject | null, error: string | null) => {
+    const settle = (last: LoadedProject | null, error: string | null) => {
       if (latestLoad.current[project.id] !== seq) return;
-      if (last) rememberProject(project.id, project.repoPath, last);
+      rememberProject(
+        project.id,
+        project.repoPath,
+        last ?? { kind: "failed", message: error ?? "" },
+      );
       setLoads((current) => ({
         ...current,
         [project.id]: { last: last ?? current[project.id]?.last ?? null, updating: false, error },
@@ -108,9 +123,14 @@ export function ProjectsPill() {
       settle({ kind: "no-repo" }, null);
       return;
     }
+    // Until it lands, the project keeps showing what it showed: its data or its error.
     setLoads((current) => ({
       ...current,
-      [project.id]: { last: current[project.id]?.last ?? null, updating: true, error: null },
+      [project.id]: {
+        last: current[project.id]?.last ?? null,
+        updating: true,
+        error: current[project.id]?.error ?? null,
+      },
     }));
     try {
       settle({ kind: "ready", data: await loadPillProject(project.repoPath) }, null);
@@ -140,10 +160,7 @@ export function ProjectsPill() {
     setProjects(tabProjects);
     setLoads(
       Object.fromEntries(
-        tabProjects.map((p) => [
-          p.id,
-          { last: recallProject(p.id, p.repoPath), updating: true, error: null },
-        ]),
+        tabProjects.map((p) => [p.id, reopenedLoad(recallProject(p.id, p.repoPath))]),
       ),
     );
     for (const project of tabProjects) void loadProject(project);
@@ -185,7 +202,8 @@ export function ProjectsPill() {
   // The projects this level shows: every one on the first level, else the one stepped into.
   const shownProjects = level === 1 ? projects : project ? [project] : [];
   const shownLoads = shownProjects.flatMap((p) => (loads[p.id] ? [loads[p.id]] : []));
-  const bodyLoading = shownLoads.some((l) => l.updating && !l.last);
+  // Only a project that has never finished a load has nothing to show yet.
+  const bodyLoading = shownLoads.some((l) => l.updating && !l.last && l.error === null);
   const refreshing = !bodyLoading && shownLoads.some((l) => l.updating);
   const failedRefresh = shownLoads.find((l) => l.error !== null && l.last);
   const retryFailedRefreshes = () => {

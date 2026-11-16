@@ -262,6 +262,33 @@ describe("ProjectsPill", () => {
     expect(within(list()).getByRole("button", { name: /gadgets/ })).toHaveTextContent("2 open");
   });
 
+  it("keeps a project that keeps failing from bringing the spinner back", async () => {
+    useWorkspaceStore.setState({ tabs: [tab("w", "widgets"), tab("d", "docs-site")] });
+    const answers = heldAnswers(
+      githubAnswers({
+        "/work/widgets": WIDGETS,
+        "/work/docs-site": new Error("Not authenticated with GitHub."),
+      }),
+    );
+    await openList();
+
+    answers.hold();
+    await closeAndOpen();
+
+    expect(within(list()).queryByRole("status")).toBeNull();
+    expect(within(list()).getByRole("button", { name: /widgets/ })).toHaveTextContent("2 open");
+    expect(within(list()).getByRole("button", { name: /docs-site/ })).not.toHaveTextContent("open");
+    expect(within(list()).getByText("updating")).toBeInTheDocument();
+    await answers.release();
+    expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
+
+    fireEvent.click(within(list()).getByRole("button", { name: /docs-site/ }));
+    expect(within(list()).getByRole("alert")).toHaveTextContent(
+      "Could not load this repository's labels: Not authenticated with GitHub.",
+    );
+    expect(within(list()).getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
   it("keeps the last counts when an update fails, with Try again", async () => {
     let fail = false;
     const answers = githubAnswers({ "/work/widgets": WIDGETS });
