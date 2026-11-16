@@ -1,7 +1,7 @@
 /**
  * The PROJECTS pill's memory of each project tab's last finished load, so a
- * later open shows it at once while it refreshes. Memory only: it is gone when
- * Maestro closes, and a newly opened tab starts with nothing.
+ * later open shows it at once while it refreshes. Filled by the background fetch
+ * too. Memory only: it is gone when Maestro closes.
  */
 
 import type { PillProjectData } from "./projectsPillData";

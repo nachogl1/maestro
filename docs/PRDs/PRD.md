@@ -220,11 +220,16 @@ are in `docs/ux/prototypes/` and are the layout to build.
 
 - A PROJECTS pill beside the GitHub badge opens a list you step into: open projects, then every label of that
   repository with its open-issue count, then that label's issues, which open on GitHub; back arrow and path; one lock
-  button ("Blocked counted" / "Ready only", remembered, default counted) using the issue map's blocked rule; the first open
-  after Maestro starts loads with a spinner, later opens show the last counts at once with an "updating" mark while
-  they refresh (kept in memory only, never on disk); no Settings and no combined-label rules
+  button ("Blocked counted" / "Ready only", remembered, default counted) using the issue map's blocked rule; 15 seconds
+  after Maestro starts, every open project tab's counts are fetched once in the background, and a tab opened later (or
+  whose repository changes) is fetched right away, so the first open already shows counts; every open shows the last
+  counts at once with an "updating" mark while they refresh, and an open during a background fetch waits for that
+  fetch instead of asking GitHub again (a spinner only while nothing has been fetched yet); a failed background fetch
+  shows nothing until the list opens; kept in memory only, never on disk, and nothing is fetched again while the list
+  is closed; no Settings and no combined-label rules
   ([Label pills](https://github.com/nachogl1/maestro/issues/482),
   [PROJECTS list: last counts at once](https://github.com/nachogl1/maestro/issues/662),
+  [PROJECTS list: background fetch at start](https://github.com/nachogl1/maestro/issues/670),
   [Prototype: the PROJECTS pill](https://github.com/nachogl1/maestro/issues/507)). Prototype:
   `docs/ux/prototypes/projects-pill/`.
 
