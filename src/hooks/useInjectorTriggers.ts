@@ -6,7 +6,6 @@ import {
   evaluateTriggers,
   firingHistory,
   type HistoryTerminal,
-  triggerRecipients,
 } from "@/lib/injectorTriggers";
 import { sessionDisplayName } from "@/lib/sessionDisplayName";
 import { recordInjectorRun, triggerSender } from "@/stores/useInjectedMessageStore";
@@ -30,9 +29,9 @@ function projectOf(session: SessionConfig): string {
 /**
  * Fires Injector triggers: whenever a session's context usage or the trigger
  * list changes, every watched terminal that just reached its trigger's
- * threshold sends that trigger's message. Each firing and each follow-up
- * line (a recipient's context dropping again) goes to the History. Mounted
- * once by `App`.
+ * threshold is sent that trigger's message (no other terminal is). Each
+ * firing and each follow-up line (a recipient's context dropping again) goes
+ * to the History. Mounted once by `App`.
  */
 export function useInjectorTriggers(): void {
   useEffect(() => {
@@ -52,7 +51,6 @@ export function useInjectorTriggers(): void {
       // (which re-runs `check`) sees the terminals as already fired.
       if (firedIds.size > 0) useInjectorTriggerStore.getState().setFiredIds(firedIds);
 
-      const liveIds = sessions.map((s) => s.id);
       const terminalOf = (id: number): HistoryTerminal => {
         const session = sessions.find((s) => s.id === id);
         return session
@@ -67,8 +65,9 @@ export function useInjectorTriggers(): void {
       for (const firing of firings) {
         const trigger = triggers.find((t) => t.id === firing.triggerId);
         if (!trigger) continue;
-        const recipients = triggerRecipients(trigger, firing.reachedIds, liveIds).map(terminalOf);
+        // Only the terminals that reached the percent are sent the message.
         const reached = firing.reachedIds.map(terminalOf);
+        const recipients = reached;
         const targets = recipients.map((r) => ({ sessionId: r.id, name: r.name }));
         const reachedNames = reached.map((r) => r.name);
         void injectIntoAll(targets, trigger.message).then((result) => {

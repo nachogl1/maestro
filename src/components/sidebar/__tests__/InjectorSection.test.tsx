@@ -88,6 +88,11 @@ describe("InjectorSection", () => {
     useSessionStore.setState({ sessions: [] });
   });
 
+  it("shows the panel's shortcut when the title is hovered", () => {
+    render(<InjectorSection />);
+    expect(screen.getByText("Injector")).toHaveAttribute("title", "Injector (Alt+4)");
+  });
+
   it("shows an empty state when nothing is running", () => {
     render(<InjectorSection />);
     expect(screen.getByText("No running terminals")).toBeInTheDocument();
