@@ -18,6 +18,7 @@ import {
   type PillProjectData,
   visibleIssues,
 } from "./projectsPillData";
+import { type RememberedProject, recallProject, rememberProject } from "./projectsPillMemory";
 import { useProjectsPillLockStore } from "./useProjectsPillLockStore";
 
 /** One open project tab, as the list's first level shows it. */
@@ -29,11 +30,13 @@ interface PillProject {
   nonGit: boolean;
 }
 
-type ProjectLoad =
-  | { kind: "loading" }
-  | { kind: "no-repo" }
-  | { kind: "error"; message: string }
-  | { kind: "ready"; data: PillProjectData };
+interface ProjectLoad {
+  /** The last finished load, shown while a newer one runs and after one fails. */
+  last: RememberedProject | null;
+  updating: boolean;
+  /** Why the newest load failed; null when it did not. */
+  error: string | null;
+}
 
 /** Where the list is: the projects, one project's labels, or one label's issues. */
 type PillPath = { projectId: string; label: string | null } | null;
@@ -44,7 +47,7 @@ const LOCK_TIP_COUNTED =
 const LOCK_TIP_READY =
   "Counting only ready issues: those with no open blocker, by the same rule as the issue map. " +
   "Click to count blocked issues too.";
-const LOADED_NOTE = "Loaded just now. Counts refresh each time you open this list.";
+const UPDATED_NOTE = "Updated just now.";
 const FALLBACK_LABEL_COLOR = "82828e";
 const HEX_COLOR_RE = /^[0-9a-f]{6}$/i;
 
@@ -59,8 +62,8 @@ const ROW_STATIC = "flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-
 /**
  * The PROJECTS pill in the top bar: a list you step into one level at a time
  * (open projects → their labels with open-issue counts → one label's open
- * issues, which open on GitHub). Loads only when it opens, every time, and
- * never polls.
+ * issues, which open on GitHub). Loads each time it opens, showing each
+ * project's last counts at once while it does, and never polls.
  */
 export function ProjectsPill() {
   const tabs = useWorkspaceStore((s) => s.tabs);
@@ -92,24 +95,32 @@ export function ProjectsPill() {
   const loadProject = useCallback(async (project: PillProject): Promise<void> => {
     const seq = ++loadSeq.current;
     latestLoad.current[project.id] = seq;
-    const settle = (load: ProjectLoad) => {
+    // A failed load (no `last`) keeps showing what the project last loaded.
+    const settle = (last: RememberedProject | null, error: string | null) => {
       if (latestLoad.current[project.id] !== seq) return;
-      setLoads((current) => ({ ...current, [project.id]: load }));
+      if (last) rememberProject(project.id, project.repoPath, last);
+      setLoads((current) => ({
+        ...current,
+        [project.id]: { last: last ?? current[project.id]?.last ?? null, updating: false, error },
+      }));
     };
     if (project.nonGit) {
-      settle({ kind: "no-repo" });
+      settle({ kind: "no-repo" }, null);
       return;
     }
-    settle({ kind: "loading" });
+    setLoads((current) => ({
+      ...current,
+      [project.id]: { last: current[project.id]?.last ?? null, updating: true, error: null },
+    }));
     try {
-      settle({ kind: "ready", data: await loadPillProject(project.repoPath) });
+      settle({ kind: "ready", data: await loadPillProject(project.repoPath) }, null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isNoRepositoryError(message)) {
-        settle({ kind: "no-repo" });
+        settle({ kind: "no-repo" }, null);
       } else {
         console.error(`Failed to load the PROJECTS list for ${project.name}:`, err);
-        settle({ kind: "error", message });
+        settle(null, message);
       }
     }
   }, []);
@@ -127,7 +138,14 @@ export function ProjectsPill() {
     setOpen(true);
     setPath(null);
     setProjects(tabProjects);
-    setLoads(Object.fromEntries(tabProjects.map((p) => [p.id, { kind: "loading" }])));
+    setLoads(
+      Object.fromEntries(
+        tabProjects.map((p) => [
+          p.id,
+          { last: recallProject(p.id, p.repoPath), updating: true, error: null },
+        ]),
+      ),
+    );
     for (const project of tabProjects) void loadProject(project);
   };
 
@@ -150,7 +168,7 @@ export function ProjectsPill() {
 
   const project = path ? projects.find((p) => p.id === path.projectId) : undefined;
   const projectLoad = project ? loads[project.id] : undefined;
-  const projectData = projectLoad?.kind === "ready" ? projectLoad.data : null;
+  const projectData = projectLoad?.last?.kind === "ready" ? projectLoad.last.data : null;
   const label =
     path?.label && projectData ? projectData.labels.find((l) => l.name === path.label) : undefined;
   const level = !project ? 1 : label ? 3 : 2;
@@ -164,8 +182,18 @@ export function ProjectsPill() {
     }
   };
 
-  const anyLoading = Object.values(loads).some((l) => l.kind === "loading");
-  const bodyLoading = level === 1 ? anyLoading : projectLoad?.kind === "loading";
+  // The projects this level shows: every one on the first level, else the one stepped into.
+  const shownProjects = level === 1 ? projects : project ? [project] : [];
+  const shownLoads = shownProjects.flatMap((p) => (loads[p.id] ? [loads[p.id]] : []));
+  const bodyLoading = shownLoads.some((l) => l.updating && !l.last);
+  const refreshing = !bodyLoading && shownLoads.some((l) => l.updating);
+  const failedRefresh = shownLoads.find((l) => l.error !== null && l.last);
+  const retryFailedRefreshes = () => {
+    for (const p of shownProjects) {
+      const load = loads[p.id];
+      if (load?.error && load.last) void loadProject(p);
+    }
+  };
 
   const renderProjectRow = (p: PillProject) => {
     const load = loads[p.id];
@@ -175,7 +203,7 @@ export function ProjectsPill() {
         style={{ backgroundColor: colors.get(p.name) }}
       />
     );
-    if (load?.kind === "no-repo") {
+    if (load?.last?.kind === "no-repo") {
       return (
         <div key={p.id} className={`${ROW_STATIC} text-maestro-muted`} aria-disabled="true">
           {dot}
@@ -185,7 +213,9 @@ export function ProjectsPill() {
       );
     }
     const count =
-      load?.kind === "ready" ? visibleIssues(load.data.openIssues, countBlocked).length : null;
+      load?.last?.kind === "ready"
+        ? visibleIssues(load.last.data.openIssues, countBlocked).length
+        : null;
     return (
       <button
         key={p.id}
@@ -292,10 +322,10 @@ export function ProjectsPill() {
       }
       return projects.map(renderProjectRow);
     }
-    if (projectLoad?.kind === "error" && project) {
+    if (projectLoad?.error && !projectLoad.last && project) {
       return (
         <div className="px-2.5 py-2.5 text-[11px] text-maestro-red" role="alert">
-          Could not load this repository's labels: {projectLoad.message.replace(/\.$/, "")}.{" "}
+          Could not load this repository's labels: {projectLoad.error.replace(/\.$/, "")}.{" "}
           <button
             type="button"
             className="text-maestro-text underline"
@@ -306,7 +336,7 @@ export function ProjectsPill() {
         </div>
       );
     }
-    if (projectLoad?.kind === "no-repo") {
+    if (projectLoad?.last?.kind === "no-repo") {
       return <div className="px-2.5 py-3 text-xs text-maestro-muted">No GitHub repository.</div>;
     }
     if (!projectData) return null;
@@ -331,6 +361,29 @@ export function ProjectsPill() {
       );
     }
     return issues.map(renderIssueRow);
+  };
+
+  const renderFooter = () => {
+    const footer = "border-t border-maestro-border px-2.5 py-1 text-[10px]";
+    if (!bodyLoading && !refreshing && failedRefresh?.error) {
+      return (
+        <div className={`${footer} text-maestro-red`}>
+          Could not update: {failedRefresh.error.replace(/\.$/, "")}. Showing the last counts.{" "}
+          <button
+            type="button"
+            className="text-maestro-text underline"
+            onClick={retryFailedRefreshes}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div className={`${footer} text-maestro-muted`}>
+        {bodyLoading ? "Loading…" : refreshing ? "Updating…" : UPDATED_NOTE}
+      </div>
+    );
   };
 
   const crumbLink = (text: string, onClick: () => void) => (
@@ -392,6 +445,15 @@ export function ProjectsPill() {
                 </>
               )}
             </nav>
+            {refreshing && (
+              <span
+                className="flex items-center gap-1 whitespace-nowrap text-[10px] text-maestro-muted"
+                title="Showing the last counts while they refresh"
+              >
+                <Loader2 size={9} className="animate-spin text-maestro-accent" />
+                updating
+              </span>
+            )}
             <button
               type="button"
               onClick={onToggleLock}
@@ -415,9 +477,7 @@ export function ProjectsPill() {
             </button>
           </div>
           <div className="max-h-[320px] overflow-y-auto py-1">{renderBody()}</div>
-          <div className="border-t border-maestro-border px-2.5 py-1 text-[10px] text-maestro-muted">
-            {anyLoading ? "Loading…" : LOADED_NOTE}
-          </div>
+          {renderFooter()}
         </div>
       )}
     </div>

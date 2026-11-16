@@ -345,8 +345,12 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
   with a small lock mark; **Ready only** leaves them out. Hover it for the explanation. The choice is remembered
   after a restart. "Blocked" is the issue map's rule: an open blocker by GitHub's own "blocked by" link or the
   issue's `### Blocked by` section, so the pill and the map always agree.
-- The list asks GitHub each time you open it, with a spinner while it loads; nothing refreshes in the background.
-  When a repository fails to load, its labels level shows the error and **Try again**. A repository with more than
+- The list asks GitHub each time you open it. The first open after starting Maestro (and the first for a newly
+  opened project tab) shows a spinner; every later open shows the last counts at once, with a small **updating** mark
+  beside the path and **Updating…** at the bottom until the fresh counts replace them (**Updated just now.**). The
+  last counts live in memory only, so they are gone when Maestro closes; nothing refreshes while the list is closed.
+- When an update fails, the last counts stay and the bottom line shows the error with **Try again**. When a
+  repository has never loaded, its labels level shows the error and **Try again**. A repository with more than
   1000 issues says its counts may be low, because only the newest 1000 are read (the issue map's limit).
 
 ## History tab: order and last message time

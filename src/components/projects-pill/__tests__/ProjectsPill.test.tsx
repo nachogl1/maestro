@@ -22,6 +22,7 @@ vi.mock("@/lib/terminal", () => ({
 
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { ProjectsPill } from "../ProjectsPill";
+import { forgetRememberedProjects } from "../projectsPillMemory";
 import { useProjectsPillLockStore } from "../useProjectsPillLockStore";
 
 const REPO = "https://github.com/acme/widgets";
@@ -89,15 +90,39 @@ function useAnswers(handler: Handler) {
 
 const pill = () => screen.getByRole("button", { name: /PROJECTS/ });
 const list = () => screen.getByRole("dialog", { name: "Projects list" });
+const UPDATED_NOTE = "Updated just now.";
 
 async function openList() {
   render(<ProjectsPill />);
   fireEvent.click(pill());
-  await screen.findByText("Loaded just now. Counts refresh each time you open this list.");
+  await screen.findByText(UPDATED_NOTE);
+}
+
+/** Answers that wait until the test lets the next batch through. */
+function heldAnswers(answers: Handler) {
+  let release: () => void = () => {};
+  let gate = Promise.resolve();
+  const hold = () => {
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  };
+  useAnswers(async (command, repoPath) => {
+    await gate;
+    return answers(command, repoPath);
+  });
+  return { hold, release: () => act(async () => release()) };
+}
+
+async function closeAndOpen() {
+  fireEvent.click(pill());
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(pill());
 }
 
 describe("ProjectsPill", () => {
   beforeEach(() => {
+    forgetRememberedProjects();
     useProjectsPillLockStore.setState({ countBlocked: true });
     useWorkspaceStore.setState({ tabs: [tab("w", "widgets")] });
     useAnswers(githubAnswers({ "/work/widgets": WIDGETS }));
@@ -188,31 +213,83 @@ describe("ProjectsPill", () => {
     ).toEqual(["bug0", "docs0"]);
   });
 
-  it("shows a spinner and asks GitHub again on every open", async () => {
-    let finish: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    const answers = githubAnswers({ "/work/widgets": WIDGETS });
-    useAnswers(async (command, repoPath) => {
-      await gate;
-      return answers(command, repoPath);
-    });
+  it("shows a spinner on the first open, then the last counts at once while they refresh", async () => {
+    let fixture = WIDGETS;
+    const answers = heldAnswers((command, repoPath) =>
+      githubAnswers({ "/work/widgets": fixture })(command, repoPath),
+    );
 
+    answers.hold();
     render(<ProjectsPill />);
     fireEvent.click(pill());
     expect(within(list()).getByRole("status")).toHaveTextContent("Loading labels and counts…");
-    await act(async () => finish());
-    await screen.findByText(/Loaded just now/);
+    expect(within(list()).getByText("Loading…")).toBeInTheDocument();
+    expect(within(list()).queryByText("updating")).toBeNull();
+    await answers.release();
+    expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
 
-    fireEvent.click(pill());
-    expect(screen.queryByRole("dialog")).toBeNull();
-    fireEvent.click(pill());
-    expect(within(list()).getByRole("status")).toBeInTheDocument();
-    await screen.findByText(/Loaded just now/);
+    // GitHub now has a third open bug; the second open shows the old count until it lands.
+    fixture = { ...WIDGETS, issues: [...WIDGETS.issues, issue(3, ["bug"])], links: [] };
+    answers.hold();
+    await closeAndOpen();
+    expect(within(list()).queryByRole("status")).toBeNull();
+    expect(within(list()).getByRole("button", { name: /widgets/ })).toHaveTextContent("2 open");
+    expect(within(list()).getByText("updating")).toBeInTheDocument();
+    expect(within(list()).getByText("Updating…")).toBeInTheDocument();
+
+    await answers.release();
+    expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
+    expect(within(list()).getByRole("button", { name: /widgets/ })).toHaveTextContent("3 open");
+    expect(within(list()).queryByText("updating")).toBeNull();
 
     const labelCalls = vi.mocked(invoke).mock.calls.filter(([c]) => c === "github_list_labels");
     expect(labelCalls).toHaveLength(2);
+  });
+
+  it("shows the spinner again for a newly opened project tab", async () => {
+    await openList();
+    useWorkspaceStore.setState({ tabs: [tab("w", "widgets"), tab("g", "gadgets")] });
+    const answers = heldAnswers(
+      githubAnswers({ "/work/widgets": WIDGETS, "/work/gadgets": WIDGETS }),
+    );
+    answers.hold();
+
+    await closeAndOpen();
+
+    expect(within(list()).getByRole("status")).toHaveTextContent("Loading labels and counts…");
+    await answers.release();
+    expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
+    expect(within(list()).getByRole("button", { name: /gadgets/ })).toHaveTextContent("2 open");
+  });
+
+  it("keeps the last counts when an update fails, with Try again", async () => {
+    let fail = false;
+    const answers = githubAnswers({ "/work/widgets": WIDGETS });
+    useAnswers(async (command, repoPath) => {
+      if (fail) throw new Error("GitHub did not answer.");
+      return answers(command, repoPath);
+    });
+    await openList();
+    fireEvent.click(within(list()).getByRole("button", { name: /widgets/ }));
+
+    fail = true;
+    await closeAndOpen();
+    fireEvent.click(within(list()).getByRole("button", { name: /widgets/ }));
+
+    const note = await within(list()).findByText(/Could not update/);
+    expect(note).toHaveTextContent(
+      "Could not update: GitHub did not answer. Showing the last counts. Try again",
+    );
+    expect(within(list()).queryByRole("alert")).toBeNull();
+    expect(
+      within(list())
+        .getAllByTestId("pill-label-row")
+        .map((r) => r.textContent),
+    ).toEqual(["bug2", "docs0"]);
+
+    fail = false;
+    fireEvent.click(within(note).getByRole("button", { name: "Try again" }));
+    expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
   });
 
   it("greys out a project with no GitHub repository", async () => {
