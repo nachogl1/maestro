@@ -64,8 +64,8 @@ src-tauri/                    # Tauri Rust backend
   numbers). Never open a pull request or push there; every pull request targets `nachogl1/maestro`.
 - Sensitive data classes that never enter the repository: Claude session transcripts and app data, API keys, tokens
   and the updater signing key, Granola meeting content, Work Journal entries, and anything carrying a person's name
-  or email, except an author credit that person chose to publish (such as the public site's footer, "Created by
-  Jack, adapted by Ignacio Gonzalez").
+  or email, except an author credit that person chose to publish (such as the public site's footer and the README's
+  Credits section, which credit Jack as the creator and Ignacio "Nacho" Gonzalez as the adapter).
 - Boundaries an agent must not move: Maestro edits the user's real Claude Code configuration files when it manages
   MCP servers; never widen what it writes there without a ticket.
 - Working language for code, comments, commits, issues and docs: English.
