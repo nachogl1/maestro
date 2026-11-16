@@ -50,11 +50,6 @@ export interface WatchdogToast {
   url: string;
 }
 
-/** Search filters the watchdog polls with; the badge navigation applies the
- *  same filters to the git panel so both show the same items. */
-export const WATCHDOG_PR_SEARCH = "review-requested:@me";
-export const WATCHDOG_ISSUE_SEARCH = "assignee:@me";
-
 /** Keep at most this many queued toasts; oldest are dropped first. */
 const MAX_TOASTS = 6;
 

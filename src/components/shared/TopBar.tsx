@@ -2,11 +2,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bird, LayoutGrid, Minus, Plus, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ProjectsPill } from "@/components/projects-pill/ProjectsPill";
+import { PrsPill } from "@/components/prs-pill/PrsPill";
 import { ScratchSection } from "@/components/scratch/ScratchSection";
 import { MAX_SESSIONS } from "@/components/terminal/splitTree";
 import { isMac } from "@/lib/platform";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
-import { GitHubWatchdogBadge } from "./GitHubWatchdogBadge";
 
 /** One entry of the eagle-view "add terminal" project dropdown. */
 export interface EagleProjectOption {
@@ -39,9 +39,6 @@ interface TopBarProps {
   onAddSessionToProject?: (tabId: string) => void;
   /** Eagle view: add a terminal to the scratch project at this path, opening its tab first. */
   onOpenScratch?: (path: string) => void;
-  /** GitHub watchdog badge: navigate to the git panel with the matching
-   *  tab + search filter. Badge hides itself when totals are zero. */
-  onWatchdogNavigate?: (kind: "prs" | "issues") => void;
 }
 
 export function TopBar({
@@ -56,7 +53,6 @@ export function TopBar({
   eagleProjects = [],
   onAddSessionToProject,
   onOpenScratch,
-  onWatchdogNavigate,
 }: TopBarProps) {
   const appWindow = useMemo(() => getCurrentWindow(), []);
 
@@ -111,8 +107,8 @@ export function TopBar({
             <LayoutGrid size={14} />
           </button>
         )}
-        {/* GitHub watchdog totals (review requests / assigned issues) */}
-        {onWatchdogNavigate && <GitHubWatchdogBadge onNavigate={onWatchdogNavigate} />}
+        {/* Open pull requests across open projects; hidden at zero. */}
+        <PrsPill />
         <ProjectsPill />
         {/* Active project: adds a pre-launch slot to its grid (mounting the
             grid first when the project is still on its idle landing). */}

@@ -358,6 +358,23 @@ back arrow and the path at the top (click **Projects** or the project's name) ta
 - Each conversation shows its last message time beside the relative label: `3h ago · 14:32` for today, and the date
   as well for an earlier day, such as `yesterday · Nov 4, 09:10`. Hover the label for the full date and time.
 
+## PRs pill: open pull requests per project
+
+The **PRs** pill in the top bar (for example **9 PRs**) shows how many pull requests are open across your open
+projects. It is hidden when none is open. It replaces the old review-request badge and no longer jumps to the Git
+panel; click it for a list you step into one level at a time. The back arrow and the path at the top (click **Pull
+requests** or the project's name) take you back up; Escape or a click outside closes it.
+
+- **Projects:** only open projects with at least one open pull request, with their count; 👁 and a number show how
+  many wait for your review. A project whose fetch failed shows the error with **Try again**, and the others stay.
+- **Pull requests:** that project's open pull requests, the ones waiting for your review first (marked 👁), then the
+  rest newest first. Drafts carry a small **draft** tag.
+- **Detail card:** click one for its title, number, author, draft or ready, checks (passing, failing, running or no
+  checks), review state and created date, and an **Open on GitHub** button that opens it in your browser.
+- The counts are fetched when Maestro starts, every 5 minutes with the GitHub watchdog, and each time you open the
+  list. An open shows the last results at once with a small **updating** mark while they refresh; nothing is saved
+  to disk. A project with more than 100 open pull requests says its count may be low.
+
 ## Work Journal suggestions: project and Accept or Reject
 
 - A suggestion that comes from work in a project shows that project's name in a small pill, in the project's own
