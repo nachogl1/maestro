@@ -14,9 +14,12 @@ export function SectionHeader({
   iconColor,
   badge,
   right,
+  title,
 }: {
   icon: React.ElementType;
   label: string;
+  /** Hover text on the label, e.g. the panel's shortcut. */
+  title?: string;
   breathe?: boolean;
   iconColor?: string;
   badge?: React.ReactNode;
@@ -28,7 +31,9 @@ export function SectionHeader({
         size={13}
         className={`${iconColor ?? "text-maestro-muted/80"} ${breathe ? "animate-breathe" : ""}`}
       />
-      <span className="flex-1">{label}</span>
+      <span className="flex-1" title={title}>
+        {label}
+      </span>
       {badge}
       {right}
     </div>

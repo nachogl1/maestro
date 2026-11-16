@@ -5,7 +5,6 @@ import { createJSONStorage, persist, type StateStorage } from "zustand/middlewar
 import {
   type InjectorTrigger,
   type InjectorTriggerFire,
-  type InjectorTriggerTarget,
   type InjectorTriggerWatch,
   type PendingFollowUp,
   parseSavedTriggers,
@@ -36,7 +35,6 @@ export interface InjectorTriggerInput {
   watchIds: number[];
   threshold: number;
   message: string;
-  target: InjectorTriggerTarget;
 }
 
 interface InjectorTriggerState {
@@ -59,7 +57,6 @@ function fromInput(input: InjectorTriggerInput) {
     watchIds: watch === "ticked" ? Array.from(new Set(input.watchIds)) : [],
     threshold: input.threshold,
     message: input.message,
-    target: input.target,
   };
 }
 

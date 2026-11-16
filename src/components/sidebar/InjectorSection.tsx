@@ -1,5 +1,7 @@
 import { Loader2, Send, Syringe } from "lucide-react";
 import { useCallback, useMemo } from "react";
+import { shortcutTitle } from "@/components/panels/IconStrip";
+import { panelDefinition } from "@/components/panels/panels";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
 import { injectIntoAll } from "@/lib/injector";
 import { projectColorFor } from "@/lib/projectColor";
@@ -81,6 +83,7 @@ export function InjectorSection() {
       <SectionHeader
         icon={Syringe}
         label="Injector"
+        title={shortcutTitle("Injector", panelDefinition("inject"))}
         iconColor="text-maestro-accent"
         badge={
           liveSelected.length > 0 ? (

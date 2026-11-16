@@ -51,14 +51,12 @@ describe("useInjectorTriggerStore", () => {
       watchIds: [1, 2],
       threshold: 80,
       message: "Run /compact",
-      target: "reached",
     });
     before.store.getState().addTrigger({
       watch: "all",
       watchIds: [],
       threshold: 90,
       message: "write a handoff",
-      target: "all",
     });
     const [ticked] = before.store.getState().triggers;
     before.store.getState().setFiredIds(new Map([[ticked.id, [1]]]));
@@ -74,7 +72,6 @@ describe("useInjectorTriggerStore", () => {
         watchIds: [],
         threshold: 80,
         message: "Run /compact",
-        target: "reached",
         firedIds: [],
         lastFire: null,
       },
@@ -84,7 +81,7 @@ describe("useInjectorTriggerStore", () => {
 
   it("saves an edit and a delete", async () => {
     const before = await launch();
-    const input = { watch: "all" as const, watchIds: [], threshold: 50, target: "all" as const };
+    const input = { watch: "all" as const, watchIds: [], threshold: 50 };
     before.store.getState().addTrigger({ ...input, message: "first" });
     before.store.getState().addTrigger({ ...input, message: "second" });
     const [first, second] = before.store.getState().triggers;
@@ -114,9 +111,7 @@ describe("useInjectorTriggerStore", () => {
       }),
     );
     const { store } = await launch();
-    store
-      .getState()
-      .addTrigger({ watch: "all", watchIds: [], threshold: 60, message: "b", target: "all" });
+    store.getState().addTrigger({ watch: "all", watchIds: [], threshold: 60, message: "b" });
 
     const ids = store.getState().triggers.map((t) => t.id);
     expect(new Set(ids).size).toBe(2);
@@ -132,9 +127,7 @@ describe("useInjectorTriggerStore", () => {
     const { store } = await launch();
 
     expect(store.getState().triggers).toEqual([]);
-    store
-      .getState()
-      .addTrigger({ watch: "all", watchIds: [], threshold: 60, message: "b", target: "all" });
+    store.getState().addTrigger({ watch: "all", watchIds: [], threshold: 60, message: "b" });
     expect(store.getState().triggers).toHaveLength(1);
   });
 
@@ -146,7 +139,6 @@ describe("useInjectorTriggerStore", () => {
       watchIds: [1, 2],
       threshold: 60,
       message: "b",
-      target: "all",
     });
 
     sessions.setState({ sessions: [liveSession(1)] });

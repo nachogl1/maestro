@@ -157,22 +157,27 @@ two messages on, it carries a count, such as `3`.
 
 ## Injector: triggers
 
-Under the Injector, **Triggers** send a message on their own when a terminal's context reaches a percent.
+Under the Injector, **Triggers** send a message on their own when a terminal's context reaches a percent. The
+message goes only to the terminal that reached the percent, never to the other terminals the trigger watches.
+Hover the **Injector** title to see its shortcut, `Injector (Alt+4)`.
 
 - The form: an optional **Name** (left empty, the trigger is called by the message's first four words); **Watch**
   either `All terminals, also new ones` or `Only the ones ticked above (N)` (the Injector's ticks); then "When a
-  terminal reaches [80]% context, send the message to [only that terminal | every terminal it watches]" (the
-  default is `only that terminal`); the **Message**; **+ Add trigger**. A ticked trigger needs at least one tick.
-- Each row shows the name with an edit (pencil) and a delete button, `At 80% → only that terminal`, a `Watches`
+  terminal reaches [80]% context, it gets:"; the **Message**; **+ Add trigger**. A ticked trigger needs at least
+  one tick. There is no choice of who gets the message.
+- Each row shows the name with an edit (pencil) and a delete button, `At 80% context`, a `Watches`
   pill (`3 terminals` or `all terminals`; click it to list them as `name · project`), the message, and
-  `Last fired 14:32 by api: sent to 1` (red with a failure count when some sends failed) or `Not fired yet`.
+  `Last fired 14:32 by api: delivered` (red `failed` when the send failed; `1 delivered, 1 failed` when two
+  terminals reached the percent at once) or `Not fired yet`.
 - The pencil turns the row into the same form, filled in, with **Cancel** and **Save**. Saving a ticked trigger
   watches the terminals ticked in the Injector at that moment.
 - A trigger fires once per terminal and fires again only after that terminal's context drops below the percent.
 - Triggers are saved in Maestro's app data (`injector-triggers.json`) and come back after a restart, re-armed. A
   ticked trigger comes back marked `watches nothing, edit to pick terminals`, because terminals never survive a
   restart; edit it to pick terminals. The same mark shows when every ticked terminal has closed. A damaged or
-  unreadable file loads as no triggers and the panel keeps working; the last-fired line is not saved.
+  unreadable file loads as no triggers and the panel keeps working; the last-fired line is not saved. A trigger
+  saved by an older Maestro with "send the message to: every terminal it watches" loads and now messages only the
+  terminal that reached the percent.
 
 ### Trigger history
 

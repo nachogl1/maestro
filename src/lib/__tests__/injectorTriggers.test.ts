@@ -13,7 +13,6 @@ import {
   TRIGGER_HISTORY_KEEP_MS,
   toSavedTrigger,
   triggerLabel,
-  triggerRecipients,
   watchedIds,
 } from "../injectorTriggers";
 
@@ -25,7 +24,6 @@ function buildTrigger(overrides: Partial<InjectorTrigger> = {}): InjectorTrigger
     watchIds: [1, 2],
     threshold: 60,
     message: "write a handoff",
-    target: "all",
     firedIds: [],
     lastFire: null,
     ...overrides,
@@ -105,20 +103,6 @@ describe("triggerLabel", () => {
   });
 });
 
-describe("triggerRecipients", () => {
-  it("sends to every open watched terminal when the target is all", () => {
-    expect(triggerRecipients(buildTrigger(), [1], [1, 2, 3])).toEqual([1, 2]);
-  });
-
-  it("sends only to the terminals that reached it when the target is reached", () => {
-    expect(triggerRecipients(buildTrigger({ target: "reached" }), [2], [1, 2, 3])).toEqual([2]);
-  });
-
-  it("sends to every open terminal when an all-terminals trigger targets all", () => {
-    expect(triggerRecipients(buildTrigger({ watch: "all" }), [1], [1, 2, 3])).toEqual([1, 2, 3]);
-  });
-});
-
 describe("saved triggers", () => {
   it("saves what defines a trigger and loads it back re-armed, watching no old terminal", () => {
     const trigger = buildTrigger({
@@ -182,10 +166,20 @@ describe("saved triggers", () => {
       watchIds: [],
       threshold: 100,
       message: "hand off",
-      target: "reached",
       firedIds: [],
       lastFire: null,
     });
+  });
+
+  it.each([
+    "all",
+    "reached",
+  ])("drops the old send-to choice %s, so the trigger messages only the terminal that reached it", (target) => {
+    const [loaded] = parseSavedTriggers([
+      { id: "old", name: "", watch: "all", threshold: 80, message: "m", target },
+    ]);
+    expect(loaded).toBeDefined();
+    expect(loaded).not.toHaveProperty("target");
   });
 });
 

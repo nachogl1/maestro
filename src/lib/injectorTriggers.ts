@@ -1,6 +1,6 @@
 /**
- * Injector triggers: watch some terminals' context usage and send a message
- * automatically when one of them reaches a chosen percent.
+ * Injector triggers: watch some terminals' context usage and, when one of them
+ * reaches a chosen percent, send a message automatically to that terminal only.
  */
 import type { InjectorRunResult } from "@/lib/injector";
 import {
@@ -8,12 +8,6 @@ import {
   MAX_CONTEXT_ALERT_THRESHOLD,
   MIN_CONTEXT_ALERT_THRESHOLD,
 } from "@/stores/useContextAlertStore";
-
-/**
- * Who receives a trigger's message when it fires: "reached" is only the
- * terminal(s) that reached the percent, "all" every terminal it watches.
- */
-export type InjectorTriggerTarget = "all" | "reached";
 
 /**
  * Which terminals a trigger watches: "all" is every terminal, also ones opened
@@ -41,7 +35,6 @@ export interface InjectorTrigger {
   /** Whole percent (1-100) that fires the trigger. */
   threshold: number;
   message: string;
-  target: InjectorTriggerTarget;
   /**
    * Watched terminals that already fired and are still at or over the
    * threshold. A terminal leaves this list when its context drops below it
@@ -122,16 +115,6 @@ export function evaluateTriggers(
   return { firedIds, firings };
 }
 
-/** Session ids that receive the message for one firing. */
-export function triggerRecipients(
-  trigger: InjectorTrigger,
-  reachedIds: number[],
-  liveIds: number[],
-): number[] {
-  if (trigger.target === "reached") return reachedIds;
-  return watchedIds(trigger, liveIds);
-}
-
 /**
  * What is saved to disk for one trigger. Terminal ids are left out on
  * purpose: terminals never survive a restart and their numbers start again
@@ -143,21 +126,21 @@ export interface SavedInjectorTrigger {
   watch: InjectorTriggerWatch;
   threshold: number;
   message: string;
-  target: InjectorTriggerTarget;
 }
 
 export function toSavedTrigger(trigger: InjectorTrigger): SavedInjectorTrigger {
-  const { id, name, watch, threshold, message, target } = trigger;
-  return { id, name, watch, threshold, message, target };
+  const { id, name, watch, threshold, message } = trigger;
+  return { id, name, watch, threshold, message };
 }
 
 /**
  * Reads triggers back from the saved file, which may be missing, damaged, from
  * an older version or edited by hand. Entries without a usable id, message or
- * threshold are skipped, a repeated id keeps its first entry, and unknown
- * choices fall back to the safe ones (watch the ticked terminals, send only to
- * the terminal that reached the percent). Every loaded trigger is re-armed and
- * watches no terminal of an earlier launch.
+ * threshold are skipped, a repeated id keeps its first entry, and an unknown
+ * watch choice falls back to the safe one (watch the ticked terminals). The
+ * "send the message to" choice of older versions is ignored: every trigger
+ * now messages only the terminal that reached the percent. Every loaded
+ * trigger is re-armed and watches no terminal of an earlier launch.
  */
 export function parseSavedTriggers(raw: unknown): InjectorTrigger[] {
   if (!Array.isArray(raw)) return [];
@@ -171,7 +154,7 @@ export function parseSavedTriggers(raw: unknown): InjectorTrigger[] {
 
 function parseSavedTrigger(entry: unknown): InjectorTrigger | null {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
-  const { id, name, watch, threshold, message, target } = entry as Record<string, unknown>;
+  const { id, name, watch, threshold, message } = entry as Record<string, unknown>;
   if (typeof id !== "string" || id === "") return null;
   if (typeof message !== "string" || message.trim() === "") return null;
   if (typeof threshold !== "number" || !Number.isFinite(threshold)) return null;
@@ -185,7 +168,6 @@ function parseSavedTrigger(entry: unknown): InjectorTrigger | null {
       Math.max(MIN_CONTEXT_ALERT_THRESHOLD, Math.round(threshold)),
     ),
     message,
-    target: target === "all" ? "all" : "reached",
     firedIds: [],
     lastFire: null,
   };
