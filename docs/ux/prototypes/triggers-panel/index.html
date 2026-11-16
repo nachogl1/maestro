@@ -64,7 +64,7 @@
 <div class="wrap">
   <div class="panel">
     <div class="card">
-      <div class="hdr">Injector</div>
+      <div class="hdr" title="Injector (Alt+4)">Injector</div>
       <div class="term"><input type="checkbox" checked> api <span class="muted small">· shop</span></div>
       <div class="term"><input type="checkbox" checked> ui <span class="muted small">· shop</span></div>
       <div class="term"><input type="checkbox" checked> docs <span class="muted small">· site</span></div>
@@ -73,7 +73,7 @@
 
     <div class="card" id="triggers">
       <div class="hdr"><span class="z">⚡</span> Triggers <span class="badge">3</span></div>
-      <p class="muted small" style="margin:0 0 6px">When a watched terminal's context reaches the level, the message is sent once. It is sent again only after that terminal's context drops below the level (for example after /clear).</p>
+      <p class="muted small" style="margin:0 0 6px">When a watched terminal's context reaches the level, the message is sent once, to that terminal only. It is sent again only after that terminal's context drops below the level (for example after /clear).</p>
 
       <ul id="rows"></ul>
 
@@ -99,19 +99,21 @@
       <li>Click a <b>"Last fired"</b> line to filter History to that trigger.</li>
       <li>The third row is how a "ticked" trigger looks after a restart.</li>
       <li>The add form and edit form are the same form.</li>
+      <li>The choice of who gets the message is gone: a trigger messages only the terminal that reached the level. A saved trigger that used "every terminal it watches" now does the same.</li>
+      <li>Hover the <b>Injector</b> title to see its shortcut (Alt+4).</li>
     </ul>
   </div>
 </div>
-<div class="tag">prototype for the Triggers panel ticket (#506), approved 2026-11-08</div>
+<div class="tag">prototype for the Triggers panel ticket (#506), approved 2026-11-08; "send to" removed for #664 (2026-11-16)</div>
 
 <script>
 const open = ["api · shop", "ui · shop", "docs · site", "worker · shop"];
 const triggers = [
-  { id: 1, name: "Compact reminder", watch: "ticked", terms: ["api · shop", "ui · shop", "docs · site"], pct: 80, target: "only",
-    msg: "Run /compact before you continue", last: { t: "14:32", by: "api", sent: 1, failed: 0 } },
-  { id: 2, name: "", watch: "all", terms: [], pct: 90, target: "every",
-    msg: "Stop and write a handoff note before your context runs out", last: { t: "11:02", by: "ui", sent: 4, failed: 1 } },
-  { id: 3, name: "Clear after release", watch: "ticked", terms: [], pct: 70, target: "only",
+  { id: 1, name: "Compact reminder", watch: "ticked", terms: ["api · shop", "ui · shop", "docs · site"], pct: 80,
+    msg: "Run /compact before you continue", last: { t: "14:32", by: "api", failed: false } },
+  { id: 2, name: "", watch: "all", terms: [], pct: 90,
+    msg: "Stop and write a handoff note before your context runs out", last: { t: "11:02", by: "ui", failed: true } },
+  { id: 3, name: "Clear after release", watch: "ticked", terms: [], pct: 70,
     msg: "/clear", last: null, stale: true },
 ];
 const history = [
@@ -120,10 +122,7 @@ const history = [
       { tid: 1, text: "14:32 Compact reminder: 81%, sent to api, delivered", cls: "" },
       { tid: 1, text: "14:35 context dropped to 22% (worked)", cls: "follow" } ] },
     { term: "ui", proj: "shop", entries: [
-      { tid: 2, text: "11:02 Stop and write a handoff…: 90%, sent to 4 terminals, 3 delivered, 1 failed (docs: terminal closed)", cls: "bad" },
-      { tid: 2, text: "11:20 context dropped to 15% (worked)", cls: "follow" } ] },
-    { term: "worker", proj: "shop", entries: [
-      { tid: 2, text: "11:24 context dropped to 31% (worked, from the 11:02 firing by ui)", cls: "follow" } ] } ] },
+      { tid: 2, text: "11:02 Stop and write a handoff…: 90%, sent to ui, failed (terminal closed)", cls: "bad" } ] } ] },
   { day: "Saturday 7 Nov", groups: [
     { term: "api", proj: "shop", entries: [
       { tid: 1, text: "17:48 Compact reminder: 80%, sent to api, delivered", cls: "" } ] },
@@ -136,7 +135,7 @@ const label = t => t.name || `${t.msg.split(" ").slice(0, 4).join(" ")}…`;
 const esc = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 
 function formHtml(t, isEdit) {
-  const v = t || { name: "", watch: "ticked", pct: 80, target: "only", msg: "" };
+  const v = t || { name: "", watch: "ticked", pct: 80, msg: "" };
   const k = isEdit ? "e" : "a";
   return `
     <div class="line"><label class="l">Name</label><input type="text" placeholder="optional" value="${esc(v.name)}" style="flex:1"></div>
@@ -145,9 +144,7 @@ function formHtml(t, isEdit) {
         <label><input type="radio" name="w${k}" ${v.watch === "all" ? "checked" : ""}> All terminals, also new ones</label>
         <label><input type="radio" name="w${k}" ${v.watch === "ticked" ? "checked" : ""}> Only the ones ticked above (3)</label>
       </div></div>
-    <div class="line">When a terminal reaches <input type="number" value="${v.pct}" style="width:50px">% context,</div>
-    <div class="line">send the message to
-      <select><option ${v.target === "only" ? "selected" : ""}>only that terminal</option><option ${v.target === "every" ? "selected" : ""}>every terminal it watches</option></select></div>
+    <div class="line">When a terminal reaches <input type="number" value="${v.pct}" style="width:50px">% context, it gets:</div>
     <div class="line"><label class="l">Message</label></div>
     <textarea rows="2" placeholder="Message to send when the trigger fires…">${esc(v.msg)}</textarea>
     ${isEdit
@@ -164,13 +161,13 @@ function rowHtml(t) {
     ? `<div class="pop"><div class="muted small">${t.watch === "all" ? "All terminals open now:" : "Watches:"}</div>${(t.watch === "all" ? open : t.terms).map(n => `<div>${n}</div>`).join("")}</div>`
     : "";
   const last = t.last
-    ? `<div class="fired ${t.last.failed ? "bad" : "ok"}" data-filter="${t.id}" title="Show this trigger's history">Last fired ${t.last.t} by ${t.last.by}: sent to ${t.last.sent}${t.last.failed ? `, ${t.last.failed} failed` : ""}</div>`
+    ? `<div class="fired ${t.last.failed ? "bad" : "ok"}" data-filter="${t.id}" title="Show this trigger's history">Last fired ${t.last.t} by ${t.last.by}: ${t.last.failed ? "failed" : "delivered"}</div>`
     : `<div class="small muted">Not fired yet</div>`;
   return `<li class="row">
     <div class="top"><div class="name">${esc(label(t))}</div>
       <button class="ibtn" data-edit="${t.id}" title="Edit trigger">✎</button>
       <button class="ibtn del" title="Delete trigger">✕</button></div>
-    <div class="muted">At ${t.pct}% → ${t.target === "only" ? "only that terminal" : "every terminal it watches"}</div>
+    <div class="muted">At ${t.pct}% context</div>
     <div style="margin:2px 0">Watches ${pill}</div>${pop}
     <div class="msg" title="${esc(t.msg)}">“${esc(t.msg)}”</div>
     ${last}</li>`;

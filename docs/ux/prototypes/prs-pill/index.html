@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRs pill prototype</title>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --green: #3fb950; --red: #f87171; --amber: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.4 system-ui, sans-serif; }
+  .topbar { height: 40px; display: flex; align-items: center; border-bottom: 1px solid var(--border); padding: 0 8px; }
+  .topbar .grow { flex: 1; }
+  .icons { display: flex; align-items: center; gap: 2px; position: relative; }
+  .ico { width: 26px; height: 26px; display: grid; place-items: center; color: var(--muted); border-radius: 4px; font-size: 13px; }
+  .ico:hover { background: var(--card); color: var(--text); }
+  .pill { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 2px 9px; font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--text); cursor: pointer; margin-right: 4px; }
+  .pill:hover, .pill.open { border-color: rgba(255,26,58,.6); color: var(--accent); }
+  .pill.hidden { display: none; }
+  .pill .tot { font-variant-numeric: tabular-nums; }
+  .menu { position: absolute; top: 34px; right: 150px; width: 340px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.55); z-index: 10; display: none; }
+  .menu.show { display: block; }
+  .mhdr { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .crumb { flex: 1; min-width: 0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .crumb a { color: var(--muted); cursor: pointer; text-decoration: none; }
+  .crumb a:hover { color: var(--text); }
+  .back { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 3px; }
+  .back:hover { background: var(--card); color: var(--text); }
+  .upd { display: none; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+  .upd.show { display: flex; }
+  .body { max-height: 340px; overflow-y: auto; padding: 4px 0; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+  .item:hover { background: var(--card); }
+  .item .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .chev { color: var(--muted); }
+  .item.static { cursor: default; }
+  .item.static:hover { background: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .num { color: var(--muted); font-variant-numeric: tabular-nums; width: 38px; flex-shrink: 0; }
+  .rev { color: var(--accent); font-size: 11px; }
+  .draft { border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 0 6px; font-size: 9.5px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 10px; }
+  .errline { color: var(--red); font-size: 10.5px; }
+  .errline a, .foot a { color: var(--text); cursor: pointer; text-decoration: underline; }
+  .spin { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted); }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: s .7s linear infinite; }
+  .spinner.sm { width: 9px; height: 9px; border-width: 1.5px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .detail { padding: 8px 10px 10px; }
+  .detail .title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .detail .sub { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+  .detail .forme { color: var(--accent); font-size: 11px; margin-bottom: 8px; }
+  .facts { display: grid; grid-template-columns: 70px 1fr; gap: 4px 8px; font-size: 11.5px; }
+  .facts .k { color: var(--muted); }
+  .st { display: inline-flex; align-items: center; gap: 5px; }
+  .gh { margin-top: 10px; width: 100%; background: none; border: 1px solid rgba(255,26,58,.6); color: var(--accent); border-radius: 4px; padding: 5px; font-weight: 600; cursor: pointer; font-size: 12px; }
+  .gh:hover { background: rgba(255,26,58,.1); }
+  .foot { border-top: 1px solid var(--border); padding: 5px 10px; color: var(--muted); font-size: 10px; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; display: none; }
+  .notes { max-width: 560px; padding: 16px; color: var(--muted); }
+  .notes h1 { color: var(--text); font-size: 15px; margin: 0 0 6px; }
+  .notes li { margin-bottom: 4px; }
+  .notes b { color: var(--text); }
+  .notes a { color: var(--text); cursor: pointer; text-decoration: underline; }
+  .tag { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="ico">▤</div>
+  <div class="grow"></div>
+  <div class="icons">
+    <div class="ico" title="Tidy up">▦</div>
+    <div class="pill hidden" id="pill" onclick="toggleMenu()" title="Open pull requests in your open projects">⇄ <span class="tot" id="tot">0</span> PRs</div>
+    <div class="pill" title="The PROJECTS pill (its own prototype)">▣ PROJECTS</div>
+    <div class="ico">＋</div>
+    <div class="ico">✎</div>
+    <div class="ico">⚡</div>
+    <div class="ico">☰</div>
+    <div class="ico">⚙</div>
+    <div class="menu" id="menu">
+      <div class="mhdr">
+        <button class="back" id="back" onclick="goBack()" title="Back" style="visibility:hidden">‹</button>
+        <div class="crumb" id="crumb">Pull requests</div>
+        <span class="upd" id="upd" title="Showing the last results while they refresh"><span class="spinner sm"></span>updating</span>
+      </div>
+      <div class="body" id="body"></div>
+      <div class="foot" id="foot">Updated just now.</div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <h1>PRs pill (throwaway prototype)</h1>
+  <p>Built only to react to; it is thrown away once you have. All data is made up. Click <b>⇄ PRs</b> in the bar above. It replaces the old review-request badge, which jumped to the Git panel.</p>
+  <ul>
+    <li><b>The pill:</b> the total of every open pull request in your open projects. It is hidden when there is none. It is fetched when Maestro starts and every 5 minutes, so it has a count while closed.</li>
+    <li><b>Level 1:</b> open projects with at least one open pull request, with their count; <span class="rev">👁</span> shows how many wait for your review. Projects with none (here <b>scratch</b> and <b>notes-app</b>) are hidden.</li>
+    <li><b>Level 2:</b> that project's open pull requests: the ones waiting for your review first, marked <span class="rev">👁</span>, then the rest, newest first. Drafts carry a small <b>draft</b> tag.</li>
+    <li><b>Level 3:</b> a detail card inside the dropdown: title, number, author, draft or ready, checks, review state, created date, and an <b>Open on GitHub</b> button.</li>
+    <li><b>Back arrow and path</b> as in the PROJECTS pill. Escape or a click outside closes it.</li>
+    <li><b>Loading:</b> the last results are shown at once, with a small <b>updating</b> mark while they refresh; nothing is saved to disk. Because the total is fetched at start, a spinner shows only if the list opens before anything has loaded (the pill itself appears once that first fetch lands).</li>
+    <li><b>A failed project:</b> <b>billing-ui</b> could not be loaded; it shows the error with <b>Try again</b> and the other projects stay. Its pull requests join the total once it loads.</li>
+  </ul>
+  <p><a onclick="restart()">Restart Maestro</a> · <label><input type="checkbox" id="none" onchange="setNone()"> Pretend no pull request is open</label></p>
+  <p>Decided with the maintainer on 2026-11-16 (#661, built by #663).</p>
+</div>
+<div class="toast" id="toast"></div>
+<div class="tag">prototype · throwaway</div>
+
+<script>
+const REVIEW_MARK = "👁";
+const LOAD_MS = 900;
+const PROJECTS = [
+  { name: "maestro", color: "#ff1a3a", prs: [
+    { n: 548, t: "Keep the parked strip open after a restart", by: "dev-kiwi", draft: false, checks: "passing", review: "review required", created: "2026-11-14", me: true },
+    { n: 551, t: "Trigger history: group by day", by: "dev-otter", draft: false, checks: "failing", review: "changes requested", created: "2026-11-15", me: false },
+    { n: 553, t: "Files tab: show hidden files on request", by: "dev-maple", draft: true, checks: "pending", review: null, created: "2026-11-16", me: false },
+    { n: 539, t: "Faster start when many projects are open", by: "dev-otter", draft: false, checks: "passing", review: "review required", created: "2026-11-09", me: true },
+    { n: 544, t: "Notes panel keeps its scroll position", by: "dev-kiwi", draft: false, checks: "passing", review: "approved", created: "2026-11-12", me: false },
+  ] },
+  { name: "shop-api", color: "#3fb950", prs: [
+    { n: 61, t: "Export orders as CSV", by: "dev-maple", draft: false, checks: "passing", review: "approved", created: "2026-11-10", me: false },
+    { n: 63, t: "Rate limit the search endpoint", by: "dev-kiwi", draft: true, checks: "none", review: null, created: "2026-11-15", me: false },
+  ] },
+  { name: "billing-ui", color: "#58a6ff", fails: true, prs: [
+    { n: 18, t: "Show the invoice total in bold", by: "dev-otter", draft: false, checks: "passing", review: "review required", created: "2026-11-13", me: true },
+  ] },
+  { name: "scratch", color: "#a371f7", prs: [] },
+  { name: "notes-app", color: "#e3b341", prs: [] },
+];
+const CHECKS = { passing: ["var(--green)", "Passing"], failing: ["var(--red)", "Failing"], pending: ["var(--amber)", "Running"], none: ["var(--muted)", "No checks"] };
+let path = [], token = 0, loaded = false, none = false;
+
+function esc(s) { return s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function shown() { return none ? [] : PROJECTS.filter(p => p.fails || p.prs.length); }
+function total() { return shown().filter(p => !p.fails).reduce((a, p) => a + p.prs.length, 0); }
+function sorted(prs) {
+  return [...prs].sort((a, b) => (b.me - a.me) || b.created.localeCompare(a.created));
+}
+function niceDate(d) {
+  const days = Math.round((Date.parse("2026-11-16") - Date.parse(d)) / 864e5);
+  const when = new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return `${when} (${days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`})`;
+}
+function setPill() {
+  const t = total();
+  document.getElementById("tot").textContent = t;
+  document.getElementById("pill").classList.toggle("hidden", !loaded || t === 0);
+  if (t === 0) closeMenu();
+}
+function setFoot(h) { document.getElementById("foot").innerHTML = h; }
+function setUpdating(on) { document.getElementById("upd").classList.toggle("show", on); }
+
+// Fetched at start and on the 5-minute cadence; an open shows the last results, then refreshes them.
+function fetchAll(then) {
+  const t = ++token;
+  setTimeout(() => { if (t !== token) return; loaded = true; setUpdating(false); setFoot("Updated just now."); setPill(); then(); }, LOAD_MS);
+}
+function toggleMenu() {
+  const m = document.getElementById("menu");
+  if (m.classList.contains("show")) { closeMenu(); return; }
+  m.classList.add("show"); document.getElementById("pill").classList.add("open");
+  path = [];
+  if (loaded) { render(); setUpdating(true); setFoot("Updating…"); }
+  else { document.getElementById("body").innerHTML = '<div class="spin"><div class="spinner"></div>Loading pull requests…</div>'; setFoot("Loading…"); }
+  fetchAll(render);
+}
+function closeMenu() { document.getElementById("menu").classList.remove("show"); document.getElementById("pill").classList.remove("open"); }
+
+function projectRow(p) {
+  if (p.fails) return `<div class="item static"><span class="dot" style="background:${p.color}"></span><span class="name">${p.name}</span><span class="errline">Could not load: GitHub did not answer. <a onclick="retry('${p.name}')">Try again</a></span></div>`;
+  const mine = p.prs.filter(x => x.me).length;
+  const rev = mine ? `<span class="rev" title="${mine} waiting for your review">${REVIEW_MARK} ${mine}</span>` : "";
+  return `<div class="item" onclick="openProject('${p.name}')"><span class="dot" style="background:${p.color}"></span><span class="name">${p.name}</span>${rev}<span class="muted small">${p.prs.length} open</span><span class="chev">›</span></div>`;
+}
+function prRow(proj, x) {
+  const rev = x.me ? `<span class="rev" title="Waiting for your review">${REVIEW_MARK}</span>` : "";
+  const draft = x.draft ? '<span class="draft">draft</span>' : "";
+  return `<div class="item" onclick="openPr('${proj}',${x.n})"><span class="num">#${x.n}</span><span class="name">${esc(x.t)}</span>${draft}${rev}<span class="chev">›</span></div>`;
+}
+function detail(x) {
+  const [c, cl] = CHECKS[x.checks];
+  return `<div class="detail">
+    <div class="title">${esc(x.t)}</div>
+    <div class="sub">#${x.n} · by ${x.by}</div>
+    ${x.me ? `<div class="forme">${REVIEW_MARK} Waiting for your review</div>` : ""}
+    <div class="facts">
+      <span class="k">State</span><span>${x.draft ? "Draft" : "Ready for review"}</span>
+      <span class="k">Checks</span><span class="st"><span class="dot" style="background:${c}"></span>${cl}</span>
+      <span class="k">Review</span><span>${x.review ? x.review[0].toUpperCase() + x.review.slice(1) : "No review yet"}</span>
+      <span class="k">Created</span><span>${niceDate(x.created)}</span>
+    </div>
+    <button class="gh" onclick="openGh(${x.n})">Open on GitHub ↗</button>
+  </div>`;
+}
+
+function render() {
+  const body = document.getElementById("body"), crumb = document.getElementById("crumb");
+  document.getElementById("back").style.visibility = path.length ? "visible" : "hidden";
+  const p = path.length ? PROJECTS.find(x => x.name === path[0]) : null;
+  if (path.length === 0) {
+    crumb.textContent = "Pull requests";
+    body.innerHTML = shown().map(projectRow).join("");
+  } else if (path.length === 1) {
+    crumb.innerHTML = `<a onclick="goTo(0)">Pull requests</a> › ${p.name}`;
+    body.innerHTML = sorted(p.prs).map(x => prRow(p.name, x)).join("");
+  } else {
+    crumb.innerHTML = `<a onclick="goTo(0)">Pull requests</a> › <a onclick="goTo(1)">${p.name}</a> › #${path[1]}`;
+    body.innerHTML = detail(p.prs.find(x => x.n === path[1]));
+  }
+}
+function openProject(n) { path = [n]; render(); }
+function openPr(p, n) { path = [p, n]; render(); }
+function goBack() { path.pop(); render(); }
+function goTo(n) { path = path.slice(0, n); render(); }
+function retry(n) {
+  setUpdating(true); setFoot(`Loading ${n}…`);
+  setTimeout(() => { PROJECTS.find(x => x.name === n).fails = false; setUpdating(false); setFoot("Updated just now."); setPill(); render(); }, LOAD_MS);
+}
+function openGh(n) { toast(`Would open pull request #${n} on GitHub in your browser.`); }
+function restart() { loaded = false; closeMenu(); setPill(); fetchAll(() => {}); toast("Maestro restarted: the pill comes back once the first fetch lands."); }
+function setNone() { none = document.getElementById("none").checked; setPill(); }
+function toast(t) { const el = document.getElementById("toast"); el.textContent = t; el.style.display = "block"; clearTimeout(el._t); el._t = setTimeout(() => { el.style.display = "none"; }, 2000); }
+document.addEventListener("click", e => {
+  // composedPath keeps the menu even when the click redrew (detached) its target.
+  const inside = e.composedPath().some(el => el.id === "menu" || el.id === "pill");
+  if (!inside) closeMenu();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
+fetchAll(() => {});
+</script>
+</body>
+</html>
