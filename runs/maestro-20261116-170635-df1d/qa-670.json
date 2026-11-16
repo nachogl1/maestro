@@ -1,0 +1,19 @@
+{
+  "run_id": "maestro-20261116-170635-df1d",
+  "issue": 670,
+  "title": "PROJECTS pill: fetch the counts in the background at start and for new tabs, so the first open is instant",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 671,
+  "merged_at": "2026-11-16T21:43:48Z",
+  "merge_commit": "1a20af804cf318d5d552ab8e8888f155f0579635",
+  "seam": "src/components/projects-pill/",
+  "story": "Before, the PROJECTS list showed a loading spinner the first time you opened it after starting Maestro, and again for each new tab. Now Maestro quietly fetches every open project's counts 15 seconds after start, and a new tab's counts as soon as it opens, so even the first open shows the numbers at once while they refresh. Nothing is saved to disk, and nothing refreshes while the list is closed.",
+  "checks": [
+    { "key": "projects-pill/first-open-instant", "criterion": "An open after the 15-second startup fetch shows counts at once, with the updating mark", "steps": "Start Maestro with two git project tabs, widgets and gadgets. Wait 20 seconds and click PROJECTS.", "expected": "Both rows show 'N open' right away with no 'Loading labels and counts…' spinner; an updating mark beside the path and 'Updating…' at the bottom, which then becomes 'Updated just now.'" },
+    { "key": "projects-pill/new-tab-instant", "criterion": "A tab opened after start is fetched in the background right away", "steps": "With Maestro running more than 20 seconds, open a new git project tab demo-repo. Wait 5 seconds and click PROJECTS.", "expected": "demo-repo shows its 'N open' count at once, with no spinner." },
+    { "key": "projects-pill/open-during-fetch", "criterion": "An open during the background fetch reuses it and shows the result when it lands", "steps": "Start Maestro with one git tab. Click PROJECTS about 15 seconds after start, while the fetch is still running.", "expected": "A spinner, then the counts; no error and no second load." },
+    { "key": "projects-pill/background-failure-quiet", "criterion": "A failed background fetch shows nothing until the pill opens, then behaves like a failed load", "steps": "Log out of GitHub with gh auth logout, start Maestro with one git tab widgets, wait 20 seconds and watch the top bar. Then click PROJECTS and click widgets.", "expected": "Nothing pops up before the click; after it, 'Could not load this repository's labels: …' with Try again." },
+    { "key": "projects-pill/non-git-no-call", "criterion": "Non-git tabs make no GitHub call", "steps": "Open a plain folder with no git, notes-folder, wait 20 seconds and click PROJECTS.", "expected": "notes-folder greyed out with 'no GitHub repository' at once." }
+  ],
+  "no_qa_reason": null
+}
