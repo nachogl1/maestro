@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 661,
+  "title": "UX prototype for the PRs dropdown, the PROJECTS 'updating' mark and the trigger form without 'send to'",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-16T13:05:56Z",
+  "finished_at": "2026-11-16T13:23:52Z",
+  "outcome": "merged",
+  "pr": 666,
+  "summary": "Added the PRs pill prototype screen and updated the PROJECTS pill (updating mark) and triggers panel (no 'send to') prototypes; merged by the agent on the maintainer's word in chat.",
+  "agents": [
+    {
+      "name": "dev-661",
+      "model": "opus",
+      "tokens_total": 151647
+    },
+    {
+      "name": "review-661-r1",
+      "model": "opus",
+      "tokens_total": 129830
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 740,
+    "review_seconds": 241,
+    "ci_seconds": 130
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

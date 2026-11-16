@@ -1,0 +1,41 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 662,
+  "title": "PROJECTS list: show the last counts at once and refresh them while open",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-16T13:05:56Z",
+  "finished_at": "2026-11-16T13:53:34Z",
+  "outcome": "merged",
+  "pr": 667,
+  "summary": "The PROJECTS list remembers each project's last counts in memory and shows them at once on later opens with an 'updating' mark; a failed refresh keeps the counts and offers Try again.",
+  "agents": [
+    {
+      "name": "dev-662",
+      "model": "opus",
+      "tokens_total": 164257
+    },
+    {
+      "name": "review-662-r1",
+      "model": "opus",
+      "tokens_total": 141307
+    },
+    {
+      "name": "review-662-r2",
+      "model": "opus",
+      "tokens_total": 136753
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 959,
+    "review_seconds": 644,
+    "ci_seconds": 83
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

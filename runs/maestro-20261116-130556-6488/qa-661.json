@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 661,
+  "title": "UX prototype for the PRs dropdown, the PROJECTS 'updating' mark and the trigger form without 'send to'",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 666,
+  "merged_at": "2026-11-16T13:23:52Z",
+  "merge_commit": "3ee586c01dd6fc44e20d3a5ce6e532035eefb1e5",
+  "seam": "docs/ux/prototypes/",
+  "story": "Added prototype screens under docs/ux/prototypes/ for the PRs pill, the PROJECTS pill updating mark and the triggers panel without 'send to'. No product behaviour changed.",
+  "checks": [],
+  "no_qa_reason": "Documentation-only prototype; no product surface to drive."
+}

@@ -1,0 +1,49 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 663,
+  "title": "PRs pill: a dropdown of projects with open PRs, their PRs, and a detail card per PR",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-16T13:05:56Z",
+  "finished_at": "2026-11-16T13:58:15Z",
+  "outcome": "merged",
+  "pr": 669,
+  "summary": "The top-bar review badge is replaced by a PRs pill with the total of open pull requests; it opens a dropdown of projects, their pull requests (review requests first) and a detail card with an Open on GitHub link.",
+  "agents": [
+    {
+      "name": "dev-663",
+      "model": "opus",
+      "tokens_total": 191604
+    },
+    {
+      "name": "review-663-r1",
+      "model": "opus",
+      "tokens_total": 167121
+    },
+    {
+      "name": "review-663-r2",
+      "model": "opus",
+      "tokens_total": 141987
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1170,
+    "review_seconds": 580,
+    "ci_seconds": 109
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/github/",
+      "what": "For a project whose git remote is not on GitHub, gh answers with a message containing 'gh auth login', which the runner maps to NotAuthenticated; the PRs pill then shows a lasting 'Could not load: Not authenticated ... Try again' row for it instead of leaving it out, and the watchdog stops its whole cycle there, so later projects lose their review marks.",
+      "why": "Pre-existing Rust outside the PRs pill story's seam, and the fix also changes the watchdog.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}

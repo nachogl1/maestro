@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 664,
+  "title": "Injector: shortcut tooltip on the panel title, and triggers message only the terminal that got full",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-16T13:05:56Z",
+  "finished_at": "2026-11-16T13:44:20Z",
+  "outcome": "merged",
+  "pr": 668,
+  "summary": "Triggers no longer offer 'send the message to': a trigger always messages only the terminal that passed its percent, old saved 'all' triggers load the same way, and the Injector title shows its Alt+4 shortcut on hover.",
+  "agents": [
+    {
+      "name": "dev-664",
+      "model": "opus",
+      "tokens_total": 187772
+    },
+    {
+      "name": "review-664-r1",
+      "model": "opus",
+      "tokens_total": 126563
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 838,
+    "review_seconds": 230,
+    "ci_seconds": 134
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

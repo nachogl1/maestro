@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 664,
+  "title": "Injector: shortcut tooltip on the panel title, and triggers message only the terminal that got full",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 668,
+  "merged_at": "2026-11-16T13:44:20Z",
+  "merge_commit": "636e5a227027366c3ce157ba4f0646342238509e",
+  "seam": "src/components/sidebar/",
+  "story": "The Injector's Triggers no longer ask who should get the message. A trigger now always messages only the terminal whose context passed the percent; the old 'every terminal it watches' option is gone, and triggers saved with it now act the same way. Rows read 'At N% context', and the last-fired line says delivered or failed instead of a count. Hovering the Injector panel title now shows its Alt+4 shortcut.",
+  "checks": [
+    {
+      "key": "sidebar/injector-title-shortcut",
+      "criterion": "Hovering the Injector panel title shows 'Injector (Alt+4)'",
+      "steps": "Start Maestro, press Alt+4 to open the Injector, hover the word 'Injector' in the panel header.",
+      "expected": "A tooltip reading 'Injector (Alt+4)' (on a Mac, the Option-key form)."
+    },
+    {
+      "key": "sidebar/trigger-form-no-send-to",
+      "criterion": "The trigger form has no 'send the message to' choice",
+      "steps": "Open the Injector, scroll to Triggers, look at the add form, then click the pencil on any trigger.",
+      "expected": "Both forms read 'When a terminal reaches [80]% context, it gets:' with no drop-down after it. Rows read 'At 80% context'."
+    },
+    {
+      "key": "sidebar/trigger-messages-only-full-terminal",
+      "criterion": "A trigger sends its message only to the watched terminal that passed the percent",
+      "steps": "Open three Claude terminals (alpha, beta, gamma), tick all three in the Injector, add a trigger watching the ticked ones at 5% with the message 'hello test'. Work in beta until its context passes 5%.",
+      "expected": "Only beta receives 'hello test' and gets the envelope icon. The row says 'Last fired HH:MM by beta: delivered', and History lists 'sent to beta'."
+    },
+    {
+      "key": "sidebar/trigger-old-send-to-all-loads",
+      "criterion": "A saved trigger with target 'all' loads and behaves as 'only that terminal'",
+      "steps": "Quit Maestro. In the app data injector-triggers.json set a trigger to {\"id\":\"old\",\"name\":\"Old\",\"watch\":\"all\",\"threshold\":5,\"message\":\"hello old\",\"target\":\"all\"}. Start Maestro, open two terminals, push one past 5%.",
+      "expected": "The trigger 'Old' is listed with no send-to text, and only the terminal that passed 5% gets 'hello old'."
+    }
+  ],
+  "no_qa_reason": null
+}

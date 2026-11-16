@@ -1,0 +1,56 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 663,
+  "title": "PRs pill: a dropdown of projects with open PRs, their PRs, and a detail card per PR",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 669,
+  "merged_at": "2026-11-16T13:58:15Z",
+  "merge_commit": "c01c10cb4c5776421352c06efdce727f607f6efb",
+  "seam": "src/components/prs-pill/",
+  "story": "The old top-bar review-request badge, which jumped to the Git panel, is replaced by a PRs pill showing all open pull requests across open projects. Clicking it opens a dropdown: projects with open pull requests, then that project's pull requests (review requests first, marked with an eye), then a detail card with an Open on GitHub button. Counts refresh at start, every 5 minutes with the watchdog, and on each open, showing the last results at once. The watchdog toasts and the Git panel's PRs tab are unchanged.",
+  "checks": [
+    {
+      "key": "prs-pill/total-and-hidden",
+      "criterion": "The pill shows the total of open pull requests across open projects and is hidden at zero",
+      "steps": "Open two projects whose GitHub repositories have open pull requests (say 2 and 3), and one with none. Look at the top bar, then close the two with pull requests.",
+      "expected": "'5 PRs' left of PROJECTS, then no pill."
+    },
+    {
+      "key": "prs-pill/projects-level",
+      "criterion": "Level 1 lists only projects with open pull requests",
+      "steps": "With the same setup, click the pill.",
+      "expected": "Only the two projects, each with 'N open', an eye count where your review is requested, and no empty project."
+    },
+    {
+      "key": "prs-pill/review-first-order",
+      "criterion": "Review-requested pull requests come first, marked, then newest first",
+      "steps": "In a project where your review is requested on an older pull request, click that project.",
+      "expected": "That pull request first with the eye mark, then the rest newest first, drafts tagged 'draft'."
+    },
+    {
+      "key": "prs-pill/detail-card",
+      "criterion": "Level 3 shows title, author, draft or ready, checks, review state and created date, and its link opens GitHub",
+      "steps": "Click a pull request, then 'Open on GitHub', then the back arrow and the path links.",
+      "expected": "The card shows '#N · by author', State, Checks, Review and Created ('… (N days ago)'); the browser opens that pull request; back returns level by level."
+    },
+    {
+      "key": "prs-pill/second-open-cached",
+      "criterion": "A second open shows the last results at once and refreshes them",
+      "steps": "Open the list, close it, open it again.",
+      "expected": "The lists appear at once with a small 'updating' mark and 'Updating…' in the footer, then 'Updated just now.'"
+    },
+    {
+      "key": "prs-pill/failed-project",
+      "criterion": "A project whose fetch fails shows the error with Try again without hiding the others",
+      "steps": "Sign out of gh for one repository (or go offline), then open the list.",
+      "expected": "That project in red, 'Could not load: … Try again', with the others still listed; once fixed, Try again brings it back."
+    },
+    {
+      "key": "prs-pill/close",
+      "criterion": "The dropdown closes on outside click and Escape",
+      "steps": "Open the list and press Escape; open it again and click outside it.",
+      "expected": "It closes both times."
+    }
+  ],
+  "no_qa_reason": null
+}

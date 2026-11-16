@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261116-130556-6488",
+  "issue": 662,
+  "title": "PROJECTS list: show the last counts at once and refresh them while open",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 667,
+  "merged_at": "2026-11-16T13:53:34Z",
+  "merge_commit": "cde0df759f91ca573028a5afa8ecef2e954a6578",
+  "seam": "src/components/projects-pill/",
+  "story": "Before this change the PROJECTS list showed a spinner every time it opened. Now it remembers each project tab's last counts in memory while Maestro runs and shows them at once on every later open, with a small 'updating' mark until the fresh counts arrive. A failed update keeps the old counts, a project that keeps failing no longer brings the spinner back, and the bottom note reads 'Updated just now.' instead of 'Loaded just now. Counts refresh each time you open this list.'",
+  "checks": [
+    {
+      "key": "projects-pill/instant-reopen",
+      "criterion": "A second open shows the old counts with no spinner, then the fresh ones",
+      "steps": "Start Maestro with one project tab that has a GitHub repository. Click PROJECTS and wait for the counts. Close the list. Add an issue on GitHub. Click PROJECTS again.",
+      "expected": "The old count shows at once, with 'updating' beside the path and 'Updating…' at the bottom; then the new count replaces it and the bottom reads 'Updated just now.'"
+    },
+    {
+      "key": "projects-pill/first-open-spinner",
+      "criterion": "The first open after start, or after opening a new project tab, shows the spinner",
+      "steps": "Restart Maestro and click PROJECTS. Then open a new project tab, close the list and click PROJECTS again.",
+      "expected": "'Loading labels and counts…' with a spinner both times."
+    },
+    {
+      "key": "projects-pill/failed-update-keeps-counts",
+      "criterion": "A failed update keeps the old counts and shows the error",
+      "steps": "Load the list once and close it. Go offline. Open the list again, then open the project.",
+      "expected": "The labels and counts are still shown; the bottom line is red: 'Could not update: … Showing the last counts. Try again'. Back online, Try again brings back 'Updated just now.'"
+    },
+    {
+      "key": "projects-pill/failing-project-no-spinner",
+      "criterion": "A project whose load keeps failing does not bring the spinner back",
+      "steps": "Open two project tabs, one on a working GitHub repository and one whose loads fail (a remote not on GitHub). Click PROJECTS and wait. Close the list and click PROJECTS again.",
+      "expected": "The working project's count shows at once with the updating mark; the failing project's row has no count, and clicking it shows the error with Try again."
+    }
+  ],
+  "no_qa_reason": null
+}
