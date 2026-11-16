@@ -98,7 +98,11 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
   fetch with prune, worktrees with an unsaved-work warning), Status (changed files per worktree, side-by-side diff,
   discard), and — with `gh` signed in — PRs (filters, detail, a configurable PR workflow menu), Issues (filter,
   search, comment, close, reopen, assignees) and Discussions (read and comment). In eagle view it is a per-project
-  carousel. A top-bar badge totals review requests and assigned issues, polled every 5 minutes.
+  carousel. Review requests and assigned issues are polled every 5 minutes and announced as toasts. A top-bar PRs
+  pill totals every open pull request across open projects (shown whenever there is one) and opens a dropdown:
+  projects with open pull requests, then their pull requests (the ones waiting for your review first, marked with a
+  symbol), then a detail card (title, author, draft or ready, checks, review state, created date, Open on GitHub)
+  ([PRs pill dropdown](https://github.com/nachogl1/maestro/issues/663)).
 - The issue map (Alt+M, or "Show issue map" in Issues) opens in its own window for the focused project, with a
   picker for every open project and each repository of a multi-repo project. Issues sit in columns by level, epics on
   the left, coloured by who takes them (agent-ready, needs-human, outside-change, no label, epic), with a progress
@@ -181,10 +185,12 @@ are in `docs/ux/prototypes/` and are the layout to build.
 ### 4.3 Triggers
 
 - Optional name (else the message's first words); watch all terminals, including new ones, or only the ticked ones;
-  "When a terminal reaches N% context, send the message to only that terminal (default) or every terminal it
-  watches"; a full row with a clickable watched-terminals pill; edit in the row; saved across restarts, a ticked
-  trigger whose terminals are gone marked "watches nothing"
-  ([Triggers: their name, the 'send to' wording](https://github.com/nachogl1/maestro/issues/480)).
+  "When a terminal reaches N% context", the message goes to that terminal only (the choice to send it to every
+  watched terminal is gone; saved triggers that used it now message only the terminal that reached N%); a full row
+  with a clickable watched-terminals pill; edit in the row; saved across restarts, a ticked trigger whose terminals
+  are gone marked "watches nothing"; the Injector panel title shows its shortcut (Alt+4) on hover
+  ([Triggers: their name, the 'send to' wording](https://github.com/nachogl1/maestro/issues/480),
+  [Injector: shortcut tooltip, triggers message only the full terminal](https://github.com/nachogl1/maestro/issues/664)).
 - A History list under the triggers records every firing (time, trigger, terminal and percent, message excerpt,
   recipients, delivered or failed) and a follow-up line when context drops again; grouped by day, then terminal;
   kept one week across restarts in one app-wide file; filter by trigger; Clear history
@@ -214,9 +220,11 @@ are in `docs/ux/prototypes/` and are the layout to build.
 
 - A PROJECTS pill beside the GitHub badge opens a list you step into: open projects, then every label of that
   repository with its open-issue count, then that label's issues, which open on GitHub; back arrow and path; one lock
-  button ("Blocked counted" / "Ready only", remembered, default counted) using the issue map's blocked rule; loads on
-  open with a spinner; no Settings and no combined-label rules
+  button ("Blocked counted" / "Ready only", remembered, default counted) using the issue map's blocked rule; the first open
+  after Maestro starts loads with a spinner, later opens show the last counts at once with an "updating" mark while
+  they refresh (kept in memory only, never on disk); no Settings and no combined-label rules
   ([Label pills](https://github.com/nachogl1/maestro/issues/482),
+  [PROJECTS list: last counts at once](https://github.com/nachogl1/maestro/issues/662),
   [Prototype: the PROJECTS pill](https://github.com/nachogl1/maestro/issues/507)). Prototype:
   `docs/ux/prototypes/projects-pill/`.
 
