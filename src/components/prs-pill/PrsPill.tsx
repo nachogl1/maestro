@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, GitPullRequest, Loader2 } from "lucide-react
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizePath } from "@/lib/path";
 import { useProjectColors } from "@/lib/useProjectColors";
-import { useGitHubWatchdogStore } from "@/stores/useGitHubWatchdogStore";
+import { useGitHubWatchdogStore, watchedProjectsFromTabs } from "@/stores/useGitHubWatchdogStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { checksLabel, createdLabel, type PillPr, reviewLabel, sortPrs } from "./prsPillData";
 import { type PrsLoad, type PrsPillProject, usePrsPillStore } from "./usePrsPillStore";
@@ -29,17 +29,12 @@ const CHECKS_DOT: Record<PillPr["checks"], string> = {
 
 /** Open git projects, one per repository (the first tab wins), as the pill reads them. */
 export function pillProjects(tabs: WorkspaceTab[]): PrsPillProject[] {
-  const seen = new Set<string>();
-  const projects: PrsPillProject[] = [];
-  for (const tab of tabs) {
-    if (tab.workspaceType === "non-git") continue;
-    const repoPath = tab.selectedRepoPath ?? tab.projectPath;
-    const key = normalizePath(repoPath);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    projects.push({ key, name: tab.name, repoPath });
-  }
-  return projects;
+  const gitTabs = tabs.filter((tab) => tab.workspaceType !== "non-git");
+  return watchedProjectsFromTabs(gitTabs).map(({ name, repoPath }) => ({
+    key: normalizePath(repoPath),
+    name,
+    repoPath,
+  }));
 }
 
 const projectsSignature = (projects: PrsPillProject[]): string =>
