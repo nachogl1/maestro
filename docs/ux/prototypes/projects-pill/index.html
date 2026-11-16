@@ -50,6 +50,11 @@
   .spin { display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted); }
   .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: s .7s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }
+  .upd { display: none; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+  .upd.show { display: flex; }
+  .spinner.sm { width: 9px; height: 9px; border-width: 1.5px; }
+  .foot.bad { color: var(--red); }
+  .foot a { color: var(--text); cursor: pointer; text-decoration: underline; }
   .err { padding: 10px; color: var(--red); font-size: 11px; }
   .foot { border-top: 1px solid var(--border); padding: 5px 10px; color: var(--muted); font-size: 10px; }
   .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; display: none; }
@@ -77,12 +82,13 @@
       <div class="mhdr">
         <button class="back" id="back" onclick="goBack()" title="Back" style="visibility:hidden">‹</button>
         <div class="crumb" id="crumb">Projects</div>
+        <span class="upd" id="upd" title="Showing the last counts while they refresh"><span class="spinner sm"></span>updating</span>
         <button class="lock on" id="lock" onclick="toggleLock(event)"><span id="lockIco">🔒</span><span id="lockTxt">Blocked counted</span>
           <span class="tip" id="tip"></span>
         </button>
       </div>
       <div class="body" id="body"></div>
-      <div class="foot" id="foot">Loaded just now. Counts refresh each time you open this list.</div>
+      <div class="foot" id="foot">Updated just now.</div>
     </div>
   </div>
 </div>
@@ -95,9 +101,13 @@
     <li><b>Level 2:</b> every label of that repository with its open-issue count; a label with no open issue shows <b>0</b>.</li>
     <li><b>Level 3:</b> that label's open issues by number and title; clicking one opens it on GitHub.</li>
     <li><b>Lock button:</b> on (default) counts blocked issues too, and marks them with a small lock; off counts and lists only ready issues. Hover it for the message. It is remembered across restarts.</li>
-    <li><b>Loading:</b> a spinner each time the list is opened; nothing polls in the background. Try project <b>docs-site</b> to see a failed load.</li>
+    <li><b>Loading:</b> the first open after starting Maestro shows a spinner. Every later open shows the last counts at once, with a small <b>updating</b> mark beside the path (and "Updating…" at the bottom) while they refresh; the fresh counts then replace them. Close and open the list again to see it: the second time, <b>maestro › bug</b> gains an issue.</li>
+    <li>The last counts live in memory only, so they are gone when Maestro closes; a newly opened project tab also starts with the spinner. Nothing polls while the list is closed.</li>
+    <li><b>Failed update:</b> the last counts stay and the bottom line shows the error with <b>Try again</b>. <label><input type="checkbox" id="failNext"> Make the next update fail</label></li>
+    <li>Try project <b>docs-site</b> to see a project whose labels could not be loaded at all.</li>
   </ul>
-  <p>Approved by the maintainer on 2026-11-08: step in one level at a time, with a back arrow and a clickable path at the top.</p>
+  <p><a style="color:var(--text);cursor:pointer;text-decoration:underline" onclick="restart()">Restart Maestro</a> to forget the last counts and see the first-open spinner again.</p>
+  <p>Approved by the maintainer on 2026-11-08: step in one level at a time, with a back arrow and a clickable path at the top. Last counts shown at once, decided 2026-11-16 (#662).</p>
 </div>
 <div class="toast" id="toast"></div>
 <div class="tag">prototype · throwaway</div>
@@ -126,7 +136,7 @@ const LABELS = {
     { n: "good first issue", c: "#3fb950", issues: [] },
   ],
 };
-let lockOn = true, path = [], token = 0;
+let lockOn = true, path = [], token = 0, loadedOnce = false, refreshes = 0;
 
 function toggleMenu() {
   const m = document.getElementById("menu"), p = document.getElementById("pill");
@@ -134,12 +144,36 @@ function toggleMenu() {
   m.classList.add("show"); p.classList.add("open");
   path = []; load(render);
 }
+function setFoot(html, bad) { const f = document.getElementById("foot"); f.innerHTML = html; f.classList.toggle("bad", !!bad); }
+function setUpdating(on) { document.getElementById("upd").classList.toggle("show", on); }
+// First open after start: spinner. Later opens: the last counts at once, then refresh them.
 function load(then) {
   const t = ++token;
-  document.getElementById("body").innerHTML = '<div class="spin"><div class="spinner"></div>Loading labels and counts…</div>';
-  document.getElementById("foot").textContent = "Loading…";
-  setTimeout(() => { if (t === token) { document.getElementById("foot").textContent = "Loaded just now. Counts refresh each time you open this list."; then(); } }, 900);
+  if (!loadedOnce) {
+    setUpdating(false);
+    document.getElementById("body").innerHTML = '<div class="spin"><div class="spinner"></div>Loading labels and counts…</div>';
+    setFoot("Loading…");
+  } else {
+    then();
+    setUpdating(true);
+    setFoot("Updating…");
+  }
+  setTimeout(() => {
+    if (t !== token) return;
+    setUpdating(false);
+    const fail = document.getElementById("failNext");
+    if (loadedOnce && fail.checked) {
+      fail.checked = false;
+      setFoot('Could not update: GitHub did not answer. Showing the last counts. <a onclick="retry()">Try again</a>', true);
+      return;
+    }
+    if (loadedOnce && ++refreshes === 1) LABELS.maestro[0].issues.push([540, "Back arrow skips a level", false]);
+    loadedOnce = true;
+    setFoot("Updated just now.");
+    then();
+  }, 900);
 }
+function restart() { loadedOnce = false; toast("Maestro restarted: the last counts are forgotten."); }
 function visible(issues) { return lockOn ? issues : issues.filter(i => !i[2]); }
 function esc(s) { return s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 function totalFor(p) {
