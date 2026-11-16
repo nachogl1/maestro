@@ -6,7 +6,11 @@ const REPO_ROOT = resolve(__dirname, "../..");
 const SITE_DIR = join(REPO_ROOT, "website");
 const SITE_URL = "https://nachogl1.github.io/maestro/";
 const FORK_LICENSE_URL = "https://github.com/nachogl1/maestro/blob/main/legal/LICENSE";
-const AUTHOR_CREDIT = "Created by Jack, adapted by Ignacio Gonzalez";
+const AUTHOR_CREDIT = 'Adapted by Ignacio "Nacho" Gonzalez';
+const ORIGINAL_AUTHOR_URL = "https://github.com/AngryAnt3201";
+/** The one upstream link the site keeps: the footer credit to the original project. */
+const ORIGINAL_PROJECT_LINK =
+  '<a href="https://github.com/its-maestro-baby/maestro">its-maestro-baby/maestro</a>';
 const LATEST_RELEASE_URL = "https://github.com/nachogl1/maestro/releases/latest";
 const SCREENSHOTS = [
   "terminals.png",
@@ -50,10 +54,12 @@ describe("public site (website/)", () => {
     ]);
   });
 
-  it("links only to the fork: no upstream repository and no Discord link remain", () => {
+  it("links only to the fork, apart from the credit to the original project, and no Discord", () => {
     const offenders = listFiles(SITE_DIR)
       .filter((path) => TEXT_EXTENSIONS.some((ext) => path.endsWith(ext)))
-      .filter((path) => /its-maestro-baby|discord/i.test(read(path)));
+      .filter((path) =>
+        /its-maestro-baby|discord/i.test(read(path).replace(ORIGINAL_PROJECT_LINK, "")),
+      );
     expect(offenders).toEqual([]);
     expect(read(join(SITE_DIR, "_config.yml"))).toContain('url: "https://nachogl1.github.io"');
   });
@@ -61,6 +67,8 @@ describe("public site (website/)", () => {
   it("credits the author with the decided wording and the MIT licence link on every page", () => {
     const credit = read(join(SITE_DIR, "_includes", "credit.html"));
     expect(credit).toContain(AUTHOR_CREDIT);
+    expect(credit).toContain(`Created by Jack (<a href="${ORIGINAL_AUTHOR_URL}">`);
+    expect(credit).toContain(ORIGINAL_PROJECT_LINK);
     expect(credit).toContain(`<a href="${FORK_LICENSE_URL}">MIT</a>`);
     for (const footer of ["_includes/footer_custom.html", "_layouts/landing.html"]) {
       expect(read(join(SITE_DIR, footer))).toContain("{% include credit.html %}");
