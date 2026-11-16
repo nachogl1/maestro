@@ -11,29 +11,11 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useProjectColors } from "@/lib/useProjectColors";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import {
-  isNoRepositoryError,
-  loadPillProject,
-  type PillIssue,
-  type PillProjectData,
-  visibleIssues,
-} from "./projectsPillData";
-import {
-  type LoadedProject,
-  type RememberedProject,
-  recallProject,
-  rememberProject,
-} from "./projectsPillMemory";
+import { type PillIssue, type PillProjectData, visibleIssues } from "./projectsPillData";
+import { loadAndRemember, type PillProject, toPillProject } from "./projectsPillLoad";
+import { type LoadedProject, type RememberedProject, recallProject } from "./projectsPillMemory";
 import { useProjectsPillLockStore } from "./useProjectsPillLockStore";
-
-/** One open project tab, as the list's first level shows it. */
-interface PillProject {
-  id: string;
-  name: string;
-  repoPath: string;
-  /** The tab's folder is not a git repository, so there is nothing to ask GitHub. */
-  nonGit: boolean;
-}
+import { useProjectsPillWarmup } from "./useProjectsPillWarmup";
 
 interface ProjectLoad {
   /** The last load that found something, shown while a newer one runs and after one fails. */
@@ -73,8 +55,9 @@ const ROW_STATIC = "flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-
 /**
  * The PROJECTS pill in the top bar: a list you step into one level at a time
  * (open projects → their labels with open-issue counts → one label's open
- * issues, which open on GitHub). Loads each time it opens, showing each
- * project's last counts at once while it does, and never polls.
+ * issues, which open on GitHub). Fetches every project in the background after
+ * Maestro starts and when a tab opens, then loads each time it opens, showing
+ * each project's last counts at once while it does, and never polls.
  */
 export function ProjectsPill() {
   const tabs = useWorkspaceStore((s) => s.tabs);
@@ -92,37 +75,12 @@ export function ProjectsPill() {
   const loadSeq = useRef(0);
   const latestLoad = useRef<Record<string, number>>({});
 
-  const tabProjects = useMemo<PillProject[]>(
-    () =>
-      tabs.map((tab) => ({
-        id: tab.id,
-        name: tab.name,
-        repoPath: tab.selectedRepoPath ?? tab.projectPath,
-        nonGit: tab.workspaceType === "non-git",
-      })),
-    [tabs],
-  );
+  const tabProjects = useMemo<PillProject[]>(() => tabs.map(toPillProject), [tabs]);
+  useProjectsPillWarmup(tabProjects);
 
   const loadProject = useCallback(async (project: PillProject): Promise<void> => {
     const seq = ++loadSeq.current;
     latestLoad.current[project.id] = seq;
-    // A failed load (no `last`) keeps showing what the project last loaded.
-    const settle = (last: LoadedProject | null, error: string | null) => {
-      if (latestLoad.current[project.id] !== seq) return;
-      rememberProject(
-        project.id,
-        project.repoPath,
-        last ?? { kind: "failed", message: error ?? "" },
-      );
-      setLoads((current) => ({
-        ...current,
-        [project.id]: { last: last ?? current[project.id]?.last ?? null, updating: false, error },
-      }));
-    };
-    if (project.nonGit) {
-      settle({ kind: "no-repo" }, null);
-      return;
-    }
     // Until it lands, the project keeps showing what it showed: its data or its error.
     setLoads((current) => ({
       ...current,
@@ -132,17 +90,16 @@ export function ProjectsPill() {
         error: current[project.id]?.error ?? null,
       },
     }));
-    try {
-      settle({ kind: "ready", data: await loadPillProject(project.repoPath) }, null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isNoRepositoryError(message)) {
-        settle({ kind: "no-repo" }, null);
-      } else {
-        console.error(`Failed to load the PROJECTS list for ${project.name}:`, err);
-        settle(null, message);
-      }
-    }
+    const result = await loadAndRemember(project);
+    if (latestLoad.current[project.id] !== seq) return;
+    // A failed load keeps showing what the project last loaded.
+    setLoads((current) => ({
+      ...current,
+      [project.id]:
+        result.kind === "failed"
+          ? { last: current[project.id]?.last ?? null, updating: false, error: result.message }
+          : { last: result, updating: false, error: null },
+    }));
   }, []);
 
   const close = useCallback(() => {

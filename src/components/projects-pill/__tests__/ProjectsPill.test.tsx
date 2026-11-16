@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -22,8 +22,10 @@ vi.mock("@/lib/terminal", () => ({
 
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
 import { ProjectsPill } from "../ProjectsPill";
-import { forgetRememberedProjects } from "../projectsPillMemory";
+import { forgetRunningLoads } from "../projectsPillLoad";
+import { forgetRememberedProjects, recallProject } from "../projectsPillMemory";
 import { useProjectsPillLockStore } from "../useProjectsPillLockStore";
+import { WARMUP_DELAY_MS } from "../useProjectsPillWarmup";
 
 const REPO = "https://github.com/acme/widgets";
 
@@ -114,6 +116,25 @@ function heldAnswers(answers: Handler) {
   return { hold, release: () => act(async () => release()) };
 }
 
+/**
+ * Renders the pill on a fake clock that also follows real time, so waiting for
+ * the list still works, and lets the startup delay pass.
+ */
+async function renderPastStartup() {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  render(<ProjectsPill />);
+  await act(() => vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS));
+}
+
+/** Changes the open tabs the way opening, closing or switching one does. */
+const setTabs = (tabs: WorkspaceTab[]) =>
+  act(async () => {
+    useWorkspaceStore.setState({ tabs });
+  });
+
+const labelCalls = () =>
+  vi.mocked(invoke).mock.calls.filter(([command]) => command === "github_list_labels");
+
 async function closeAndOpen() {
   fireEvent.click(pill());
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -123,6 +144,7 @@ async function closeAndOpen() {
 describe("ProjectsPill", () => {
   beforeEach(() => {
     forgetRememberedProjects();
+    forgetRunningLoads();
     useProjectsPillLockStore.setState({ countBlocked: true });
     useWorkspaceStore.setState({ tabs: [tab("w", "widgets")] });
     useAnswers(githubAnswers({ "/work/widgets": WIDGETS }));
@@ -130,6 +152,7 @@ describe("ProjectsPill", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.mocked(invoke).mockReset();
     vi.mocked(openUrl).mockClear();
   });
@@ -242,8 +265,7 @@ describe("ProjectsPill", () => {
     expect(within(list()).getByRole("button", { name: /widgets/ })).toHaveTextContent("3 open");
     expect(within(list()).queryByText("updating")).toBeNull();
 
-    const labelCalls = vi.mocked(invoke).mock.calls.filter(([c]) => c === "github_list_labels");
-    expect(labelCalls).toHaveLength(2);
+    expect(labelCalls()).toHaveLength(2);
   });
 
   it("shows the spinner again for a newly opened project tab", async () => {
@@ -376,5 +398,93 @@ describe("ProjectsPill", () => {
       "GitHub sent an answer Maestro could not read",
     );
     expect(within(list()).getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  describe("background fetch", () => {
+    it("fetches each open tab once when the startup delay ends, and non-git tabs never", async () => {
+      vi.useFakeTimers();
+      useWorkspaceStore.setState({
+        tabs: [tab("w", "widgets"), tab("n", "notes", { workspaceType: "non-git" })],
+      });
+      render(<ProjectsPill />);
+
+      await act(() => vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS - 1));
+      expect(invoke).not.toHaveBeenCalled();
+
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(labelCalls()).toEqual([["github_list_labels", { repoPath: "/work/widgets" }]]);
+      expect(recallProject("n", "/work/notes")).toEqual({ kind: "no-repo" });
+
+      // A tab change that keeps every folder fetches nothing again.
+      await setTabs([tab("w", "widgets", { active: true })]);
+      await act(() => vi.advanceTimersByTimeAsync(WARMUP_DELAY_MS));
+      expect(labelCalls()).toHaveLength(1);
+    });
+
+    it("opens with the fetched counts at once and the updating mark", async () => {
+      const answers = heldAnswers(githubAnswers({ "/work/widgets": WIDGETS }));
+      await renderPastStartup();
+      await waitFor(() => expect(recallProject("w", "/work/widgets")).not.toBeNull());
+
+      answers.hold();
+      fireEvent.click(pill());
+
+      expect(within(list()).queryByRole("status")).toBeNull();
+      expect(within(list()).getByRole("button", { name: /widgets/ })).toHaveTextContent("2 open");
+      expect(within(list()).getByText("updating")).toBeInTheDocument();
+      await answers.release();
+      expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
+    });
+
+    it("fetches a tab opened later right away, and again when its folder changes", async () => {
+      useAnswers(githubAnswers({ "/work/widgets": WIDGETS, "/work/gadgets": WIDGETS }));
+      await renderPastStartup();
+
+      await setTabs([tab("w", "widgets"), tab("g", "gadgets")]);
+      await waitFor(() => expect(recallProject("g", "/work/gadgets")).not.toBeNull());
+
+      await setTabs([
+        tab("w", "widgets"),
+        tab("g", "gadgets", { selectedRepoPath: "/work/widgets" }),
+      ]);
+      await waitFor(() => expect(recallProject("g", "/work/widgets")).not.toBeNull());
+      expect(labelCalls().map(([, args]) => args)).toEqual([
+        { repoPath: "/work/widgets" },
+        { repoPath: "/work/gadgets" },
+        { repoPath: "/work/widgets" },
+      ]);
+    });
+
+    it("joins a background fetch still running when the list opens", async () => {
+      const answers = heldAnswers(githubAnswers({ "/work/widgets": WIDGETS }));
+      answers.hold();
+      await renderPastStartup();
+
+      fireEvent.click(pill());
+      expect(within(list()).getByRole("status")).toHaveTextContent("Loading labels and counts…");
+      await answers.release();
+
+      expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
+      expect(within(list()).getByRole("button", { name: /widgets/ })).toHaveTextContent("2 open");
+      expect(labelCalls()).toHaveLength(1);
+    });
+
+    it("keeps a failed background fetch quiet until the list opens", async () => {
+      const failure = vi.spyOn(console, "error").mockImplementation(() => {});
+      useAnswers(githubAnswers({ "/work/widgets": new Error("Not authenticated with GitHub.") }));
+      await renderPastStartup();
+      await waitFor(() => expect(failure).toHaveBeenCalled());
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      fireEvent.click(pill());
+      expect(within(list()).queryByRole("status")).toBeNull();
+      expect(await within(list()).findByText(UPDATED_NOTE)).toBeInTheDocument();
+      fireEvent.click(within(list()).getByRole("button", { name: /widgets/ }));
+      expect(within(list()).getByRole("alert")).toHaveTextContent(
+        "Could not load this repository's labels: Not authenticated with GitHub.",
+      );
+      failure.mockRestore();
+    });
   });
 });
