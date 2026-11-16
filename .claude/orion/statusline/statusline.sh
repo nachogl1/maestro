@@ -7,7 +7,7 @@
 #     --agent, else the session's name from --name, /rename or its AI title)
 #   - context usage % (green/yellow/red)
 #   - git branch (or "detached:<short commit id>" on a detached HEAD) + state
-#     words (stashed / untracked / modified / unpushed)
+#     words (stashed / untracked / modified / unstaged / unpushed)
 #   - cost: API-equivalent USD for the open session (green) + current
 #     calendar month to date across all projects (blue), aggregated from
 #     local transcripts by ccusage (cached, background-refreshed via `npx`)
@@ -236,6 +236,7 @@ else
     _mag="\033[0;35m"   # magenta — stashes
     _yel="\033[0;33m"   # yellow  — untracked
     _red="\033[0;31m"   # red     — modifications
+    _cyn="\033[0;36m"   # cyan    — unstaged
     _blu="\033[0;34m"   # blue    — ahead
     _rst="\033[0m"
 
@@ -248,11 +249,26 @@ else
     git_indicators="${git_indicators} ${_yel}untracked:${untracked_count:-0}${_rst}"
 
     # 3. Uncommitted modifications — staged + unstaged tracked (red modified:N) — always shown
-    #    Count lines from `git status --porcelain` where the first two chars are NOT "??"
-    mod_count=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null | grep -v '^??' | wc -l | tr -d ' ')
-    git_indicators="${git_indicators} ${_red}modified:${mod_count:-0}${_rst}"
+    # 4. Of those, the ones with changes not staged yet (cyan unstaged:N) — always shown
+    #    One `git status --porcelain` feeds both, counted in bash with no extra process. Each line is
+    #    "XY path": X = staged state, Y = unstaged state. Every line but "??" (untracked) is modified;
+    #    a line whose Y is not a space is unstaged (a file staged and then edited again counts in both).
+    mod_count=0
+    unstaged_count=0
+    while IFS= read -r _status_line; do
+      case "$_status_line" in
+        ''|'??'*) continue ;;
+      esac
+      mod_count=$(( mod_count + 1 ))
+      case "$_status_line" in
+        ?' '*) ;;
+        *) unstaged_count=$(( unstaged_count + 1 )) ;;
+      esac
+    done <<< "$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null)"
+    git_indicators="${git_indicators} ${_red}modified:${mod_count}${_rst}"
+    git_indicators="${git_indicators} ${_cyn}unstaged:${unstaged_count}${_rst}"
 
-    # 4. Commits ahead of upstream, i.e. not pushed yet (blue unpushed:N) — always shown; default to 0 when no upstream
+    # 5. Commits ahead of upstream, i.e. not pushed yet (blue unpushed:N) — always shown; default to 0 when no upstream
     ahead_count=$(git -C "$cwd" --no-optional-locks rev-list --count '@{u}..HEAD' 2>/dev/null)
     git_indicators="${git_indicators} ${_blu}unpushed:${ahead_count:-0}${_rst}"
   fi

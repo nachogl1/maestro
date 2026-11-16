@@ -50,7 +50,7 @@ project wrote:
 
 | Finding | Fix |
 |---|---|
-| `core-files`, `skills`, `skill-file`, `skill-name` (orion-managed), `settings-hook` missing, `rules-reference` | `bash .claude/orion/orion.sh update --force` (needs network; `init --force` when a project skill without the orion marker sits in an orion skill's place — ask first in that case, the project's copy is theirs) |
+| `core-files`, `skills`, `skill-file`, `skill-name` (orion-managed), `settings-hook` missing, `rules-reference` | `bash .claude/orion/orion.sh update --force` (needs network; `init --force --yes` when a project skill without the orion marker sits in an orion skill's place — ask first in that case, the project's copy is theirs) |
 | `claude-md-import` 0 times | Add the exact import line the finding prints as the first line of `CLAUDE.md`, followed by a blank line |
 | `claude-md-import` more than once | Keep the first occurrence, delete the others |
 | `claude-md-old-import` | Delete the retired `@.claude/orion/ORION.md` line |
@@ -137,7 +137,7 @@ project's own), and for every folder under `~/.claude/skills/` whose name matche
   the yes.
 - **A project skill in an orion skill's place** (same folder name, no marker; `init` printed `skip <name>` for it) —
   the rules may rely on orion's version (`rules-reference` in step 1 says so when they do). **Needs a yes**: rename the
-  project's copy, or replace it with orion's through `init --force`.
+  project's copy, or replace it with orion's through `init --force --yes`.
 - **A user-level skill shadowing a project skill** (`skill-shadow` in step 1) — **reported**; the user removes one.
 - **A skill whose front matter is broken** (no `name`, name differs from the folder, no `description`) — orion-managed:
   fixed by `update --force` in step 1; the project's own: **reported** with the exact fix.

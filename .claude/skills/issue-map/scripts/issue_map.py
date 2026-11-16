@@ -8,9 +8,12 @@ never committed, and carries a banner saying who built it and when. Rebuild it w
     python .claude/skills/issue-map/scripts/issue_map.py            # rebuild the map, print its path
     python .claude/skills/issue-map/scripts/issue_map.py --open     # rebuild, then open it in the default browser
     python .claude/skills/issue-map/scripts/issue_map.py --silent   # rebuild only, print nothing
+    python .claude/skills/issue-map/scripts/issue_map.py --search "label:bug"   # only the issues a GitHub search matches
+    python .claude/skills/issue-map/scripts/issue_map.py --repo owner/name      # another repository's issues
 
 Needs Python 3.9+ and `gh` signed in. No third-party packages. One run is one issue list plus one GraphQL call
-per 25 issues for the native links.
+per 25 issues for the native links (and, with --search, one per 25 blockers the search left out, plus one per 25
+blockers those name only in their body section).
 
 Mechanic (the same rules as the work-tracking section of BASE_CLAUDE.md):
 - Nodes: every issue, open and closed, of any label. Epics (label `epic`) sit in their own far-left column,
@@ -21,10 +24,13 @@ Mechanic (the same rules as the work-tracking section of BASE_CLAUDE.md):
   dropped and listed as a data problem; so is an open issue whose body section and native relation disagree.
 - Level: 0 when an issue has no link, else 1 + the highest level among its blockers. Closed blockers
   count; labels never change a level. The columns are the levels.
+- With --search, a blocker the search left out is still loaded and drawn as a faded box, so an issue waiting on
+  it never looks free; its own blockers are loaded with their state (not drawn), so it never looks free either. With neither option, the map is built exactly as before.
 """
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import html
 import json
@@ -49,6 +55,8 @@ CHIP_CHAR_W, CHIP_PAD_X, CHIP_GAP, CHIP_TEXT_MAX, CHIP_MAX = 5.6, 10, 4, 10, 3
 TITLE_MAX, ASSIGNEE_MAX, DESCRIPTION_MAX = 30, 28, 600
 TIP_KEEP = 60  # pixels of a dragged issue card that stay on screen so it can be grabbed again
 EPICS_COLUMN = "Epics"
+UNKNOWN_AUTHOR = "unknown"  # the card says "opened by unknown" when GitHub names no usable author
+DELETED_ACCOUNT_LOGIN = "ghost"  # the login GitHub gives an issue whose author's account was deleted
 
 # Icon = progress, in the order the Progress filter lists them. A closed box gets a red cross drawn over it instead.
 STATUS = {
@@ -74,7 +82,7 @@ ENCODING = ("Background = who takes it (green agent-ready, red needs-human, blue
             "else, purple epic). Icon = progress (\U0001F528 in progress, \U0001F7E2 ready, \U0001F512 blocked). "
             "A cross means closed.")
 HINT = ("Drag to move around, scroll the wheel to zoom (or use the buttons). Click an issue to see its chain and its "
-        "card, click it again to clear. Double-click opens it on GitHub. The filter menus hide or show issues "
+        "card, click outside to close. Double-click opens it on GitHub. The filter menus hide or show issues "
         "(hidden issues leave the map and the rest close up); each option shows shown/total.")
 LEVELS = ("An issue's level is 1 + the highest level among its blockers; Level 0 has no blockers. Only GitHub's "
           "'blocked by' relation and a '### Blocked by' section count. Epics sit in the far-left column, outside "
@@ -86,6 +94,11 @@ LABELS_NOTE = ("Every label on the loaded issues except the ones that decide who
 PROBLEMS_NOTE = ('Some "blocked by" links could not be drawn, or two sources disagree. Each one says what it changes '
                  "on the map and how to fix it on GitHub.")
 LIMIT_WARNING = f"⚠ Showing the first {MAP_ISSUE_LIMIT} issues, links beyond it are dropped."
+OUTSIDE_ENCODING = "A faded, dashed box is outside the search: a matching issue waits on it."
+OUTSIDE_NOTE = ("the search did not match it; it is on the map because a matching issue waits on it. Its own "
+                "blockers are listed below and decide its progress, but are not drawn.")
+# owner/name: an owner never starts with a hyphen, a name is never "." or ".."; nothing that could break the query
+REPO_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/(?!\.\.?$)[A-Za-z0-9_.][A-Za-z0-9_.-]*")
 
 
 def find_root() -> Path:
@@ -138,16 +151,21 @@ def ensure_excluded() -> None:
 
 LINK_FIELDS = ("number parent { number } blockedBy(first: 100) { nodes { number } } "
                "subIssues(first: 100) { nodes { number } }")
+# The fields `gh issue list --json` gives, for the blockers a search left out, plus their own blockers' state.
+BRIEF_FIELDS = "number title state"
+ISSUE_FIELDS = ("number title state url body author { login } labels(first: 100) { nodes { name color } } "
+                f"assignees(first: 100) {{ nodes {{ login }} }} blockedBy(first: 100) {{ nodes {{ {BRIEF_FIELDS} }} }}")
 
 
-def load_links(owner: str, name: str, numbers: list[int]) -> dict[int, dict]:
-    """Native parent, blocked-by and sub-issue links of every issue, LINKS_PER_QUERY issues per GraphQL call."""
-    def numbers_of(conn: dict | None) -> list[int]:
-        return [x["number"] for x in (conn or {}).get("nodes") or [] if x and "number" in x]
+def nodes_of(conn: dict | None) -> list[dict]:
+    return [x for x in (conn or {}).get("nodes") or [] if x]
 
-    links: dict[int, dict] = {}
+
+def query_issues(owner: str, name: str, numbers: list[int], fields: str) -> list[dict]:
+    """The given fields of every issue that exists, LINKS_PER_QUERY issues per GraphQL call."""
+    found: list[dict] = []
     for start in range(0, len(numbers), LINKS_PER_QUERY):
-        aliases = " ".join(f"i{k}: issue(number: {n}) {{ {LINK_FIELDS} }}"
+        aliases = " ".join(f"i{k}: issue(number: {n}) {{ {fields} }}"
                            for k, n in enumerate(numbers[start:start + LINKS_PER_QUERY]))
         query = f'{{ repository(owner: "{owner}", name: "{name}") {{ {aliases} }} }}'
         # gh exits non-zero when one alias errors (an issue moved away); the rest of the answer still counts
@@ -159,12 +177,51 @@ def load_links(owner: str, name: str, numbers: list[int]) -> dict[int, dict]:
             repo = None
         if not repo:
             raise subprocess.CalledProcessError(run.returncode or 1, "gh api graphql", run.stdout, run.stderr)
-        for issue in repo.values():
-            if issue:
-                links[issue["number"]] = {"parent": (issue.get("parent") or {}).get("number"),
-                                          "blocked_by": numbers_of(issue.get("blockedBy")),
-                                          "sub_issues": numbers_of(issue.get("subIssues"))}
-    return links
+        found += [issue for issue in repo.values() if issue and "number" in issue]
+    return found
+
+
+def load_links(owner: str, name: str, numbers: list[int]) -> dict[int, dict]:
+    """Native parent, blocked-by and sub-issue links of every issue."""
+    def numbers_of(conn: dict | None) -> list[int]:
+        return [x["number"] for x in nodes_of(conn) if "number" in x]
+
+    return {issue["number"]: {"parent": (issue.get("parent") or {}).get("number"),
+                              "blocked_by": numbers_of(issue.get("blockedBy")),
+                              "sub_issues": numbers_of(issue.get("subIssues"))}
+            for issue in query_issues(owner, name, numbers, LINK_FIELDS)}
+
+
+def brief_of(issue: dict) -> dict:
+    """Number, title and state, as the card lists a blocker; a missing state counts as open, so nothing looks free."""
+    return {"n": issue["number"], "title": issue.get("title") or "", "state": (issue.get("state") or "OPEN").upper()}
+
+
+def load_outside(owner: str, name: str, issues: list[dict], links: dict[int, dict]) -> list[dict]:
+    """The blockers the loaded issues name but the search left out, shaped like `gh issue list` rows and marked
+    outside, each with its own blockers (number, title, state) from both sources, so its progress is true. A number
+    that is no issue of the repository (a pull request, a typo) is simply not found, as on the full map."""
+    loaded = {i["number"] for i in issues}
+    named = {b for i in issues
+             for b in set(links.get(i["number"], {}).get("blocked_by", [])) | body_blockers(i.get("body"))}
+    found = query_issues(owner, name, sorted(named - loaded), ISSUE_FIELDS)
+    known = {i["number"]: brief_of(i) for i in issues + found}
+    known.update({b["number"]: brief_of(b) for x in found for b in nodes_of(x.get("blockedBy")) if "number" in b})
+    unknown = {b for x in found for b in body_blockers(x.get("body"))} - known.keys()
+    known.update({b["number"]: brief_of(b) for b in query_issues(owner, name, sorted(unknown), BRIEF_FIELDS)})
+
+    def own_blockers(x: dict) -> list[dict]:
+        native = {b["number"] for b in nodes_of(x.get("blockedBy")) if "number" in b}
+        return [known[b] for b in sorted(native | body_blockers(x.get("body"))) if b in known]
+
+    return [{"number": x["number"], "title": x.get("title") or "", "state": x.get("state") or "OPEN",
+             "url": x.get("url") or "", "body": x.get("body") or "", "outside": True,
+             "own_blockers": own_blockers(x),
+             "labels": [{"name": lab["name"], "color": lab.get("color", "")}
+                        for lab in nodes_of(x.get("labels")) if "name" in lab],
+             "assignees": [{"login": a["login"]} for a in nodes_of(x.get("assignees")) if "login" in a],
+             "author": x.get("author")}
+            for x in found]
 
 
 def body_blockers(body: str | None) -> set[int]:
@@ -172,6 +229,14 @@ def body_blockers(body: str | None) -> set[int]:
     them; empty when the body has no such section."""
     m = re.search(r"### Blocked by\s*\n(.*?)(?=\n#{1,6} |\Z)", re.sub(r"\r\n?", "\n", body or ""), re.S)
     return {int(x) for x in re.findall(r"#(\d+)", m.group(1))} if m else set()
+
+
+def opened_by(author: object) -> str:
+    """Who opened the issue, as its card names it. The author is untrusted input: any odd shape, an empty login or
+    a deleted account is UNKNOWN_AUTHOR."""
+    login = author.get("login") if isinstance(author, dict) else None
+    login = login.strip() if isinstance(login, str) else ""
+    return UNKNOWN_AUTHOR if login in ("", DELETED_ACCOUNT_LOGIN) else login
 
 
 def kind_of(labels: list[str]) -> tuple[str, str | None]:
@@ -224,11 +289,14 @@ def build_map(issues: list[dict], links: dict[int, dict]) -> dict:
         return kind_of(labels[n])[0] == "epic"
 
     no_links = {"parent": None, "blocked_by": [], "sub_issues": []}
+    outside = {n for n, i in by.items() if i.get("outside")}  # left out by the search: no links of their own loaded
     nodes = sorted(n for n in by if not is_epic(n))
     epics = sorted(n for n in by if is_epic(n))
     edges: list[tuple[int, int]] = []
     problems: list[dict] = []
     for n in nodes:
+        if n in outside:
+            continue
         native = set(links.get(n, no_links)["blocked_by"])
         section = body_blockers(by[n].get("body"))
         # Every ticket sets both forms, so on an open issue any difference, a missing section included, is a problem.
@@ -281,15 +349,18 @@ def build_map(issues: list[dict], links: dict[int, dict]) -> dict:
     for lv in range(max(level.values(), default=-1) + 1):
         columns.append((f"Level {lv}", ordered([n for n in nodes if level[n] == lv])))
 
+    def brief(n: int) -> dict:
+        return {"n": n, "title": by[n]["title"], "state": by[n]["state"].upper()}
+
+    def blockers(n: int) -> list[dict]:  # a left-out blocker brings its own, which are not on the map
+        return by[n]["own_blockers"] if n in outside else [brief(b) for b in up.get(n, [])]
+
     def status(n: int) -> str:
         if not is_open(n):
             return "closed"
-        if any(is_open(b) for b in up.get(n, [])):
+        if any(b["state"] == "OPEN" for b in blockers(n)):
             return "blocked"
         return "inprog" if by[n]["assignees"] else "ready"
-
-    def brief(n: int) -> dict:
-        return {"n": n, "title": by[n]["title"], "state": by[n]["state"].upper()}
 
     meta: dict[int, dict] = {}
     for name, members in columns:
@@ -297,10 +368,12 @@ def build_map(issues: list[dict], links: dict[int, dict]) -> dict:
             kind, kind_label = kind_of(labels[n])
             meta[n] = {"title": by[n]["title"], "state": by[n]["state"].upper(), "url": by[n]["url"],
                        "status": status(n), "kind": kind, "kindLabel": kind_label, "column": name,
+                       "outside": n in outside,
                        "labels": labels[n], "body": description_text(by[n].get("body") or ""),
-                       "assignees": [a["login"] for a in by[n]["assignees"]], "parent": parent.get(n),
+                       "assignees": [a["login"] for a in by[n]["assignees"]],
+                       "openedBy": opened_by(by[n].get("author")), "parent": parent.get(n),
                        "stories": [brief(k) for k in kids.get(n, [])],
-                       "blockers": [brief(b) for b in up.get(n, [])], "waiting": down.get(n, [])}
+                       "blockers": blockers(n), "waiting": down.get(n, [])}
     colours = {lab["name"]: lab.get("color", "") for i in issues for lab in i["labels"]}
     return {"columns": columns, "meta": meta, "up": up, "edges": [(s, t, is_open(s)) for s, t in sorted(edges)],
             "epic_edges": [(e, k) for e in epics for k in kids[e]], "problems": problems,
@@ -423,7 +496,8 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def render(m: dict, repo_name: str, user: str, stamp: str, truncated: bool) -> str:
+def render(m: dict, repo_name: str, user: str, stamp: str, truncated: bool, search: str | None = None,
+           repo: str | None = None) -> str:
     esc = html.escape
     columns, meta = m["columns"], m["meta"]
     rows = max([1, *(len(members) for _, members in columns)])
@@ -459,7 +533,8 @@ def render(m: dict, repo_name: str, user: str, stamp: str, truncated: bool) -> s
         chips = "".join(f'<g class="lb" transform="translate({10 + cx},{CHIP_Y})"><rect width="{w}" '
                         f'height="{CHIP_H}" rx="8"/><text x="{w / 2:g}" y="{CHIP_H - 4}" text-anchor="middle" '
                         f'font-size="{CHIP_FONT}">{esc(text)}</text></g>' for text, cx, w in label_chips(d["labels"]))
-        svg.append(f'<g class="node {d["status"]} k-{d["kind"]}" data-id="{n}" transform="translate({x:g},{y:g})">'
+        faded = " outside" if d["outside"] else ""
+        svg.append(f'<g class="node {d["status"]} k-{d["kind"]}{faded}" data-id="{n}" transform="translate({x:g},{y:g})">'
                    f'<rect width="{NODE_W}" height="{NODE_H}" rx="7"/>{cross}'
                    f'<text class="num" x="10" y="18">#{n} <tspan class="ic">{icon}</tspan></text>'
                    f'<text class="ep" x="{NODE_W - 10}" y="18" text-anchor="end">{esc(tag)}</text>'
@@ -477,22 +552,28 @@ def render(m: dict, repo_name: str, user: str, stamp: str, truncated: bool) -> s
     else:
         pane_body = '<p class="pn">Every "blocked by" link was drawn and no two sources disagree.</p>'
         pane_title = "✓ No data problems"
-    epic_count = sum(d["kind"] == "epic" for d in meta.values())
-    counts = (f"{plural(len(meta) - epic_count, 'issue')} + {plural(epic_count, 'epic')} · "
-              f"{plural(len(m['edges']), 'blocked-by link')}")
+    issue_count, epic_count, outside_count = map_counts(m)
+    counts = (f"{plural(issue_count, 'issue')} + {plural(epic_count, 'epic')}"
+              + (f" + {outside_count} outside the search" if outside_count else "")
+              + f" · {plural(len(m['edges']), 'blocked-by link')}")
     title = f"{repo_name} · issue map: what is blocked by what, level by level"
+    scope = (f" Built for the repository <b>{esc(repo)}</b>." if repo else "") + (
+        f" Only the issues matching the GitHub search <b>{esc(search)}</b>, plus the blockers it left out, drawn "
+        "faded." if search else "")
+    encoding = ENCODING + (" " + OUTSIDE_ENCODING if outside_count else "")
     data = {"META": meta, "UP": m["up"], "LAYOUT": [members for _, members in columns], "STATUS": STATUS,
             "KIND": KIND, "KINDLABELS": [name for _, name in KIND_LABELS], "START": START_HIDDEN, "HINT": HINT,
-            "LABELS_NOTE": LABELS_NOTE, "COLOURS": m["label_colours"], "PROBLEMS": len(problems),
+            "LABELS_NOTE": LABELS_NOTE, "OUTSIDE_NOTE": OUTSIDE_NOTE, "COLOURS": m["label_colours"],
+            "PROBLEMS": len(problems),
             "G": {"COLW": COL_W, "NODEW": NODE_W, "NODEH": NODE_H, "ROWH": ROW_H, "X0": X0, "Y0": Y0,
                   "BANDY": BAND_Y, "TIPKEEP": TIP_KEEP}}
     consts = "".join(f"const {k}={script_json(v)};" for k, v in data.items())
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body>
 <header><div class="bar"><h1>{esc(title)}</h1><span class="sub">{counts}</span>{f'<span class="limit">{esc(LIMIT_WARNING)}</span>' if truncated else ""}<span class="grow"></span><button type="button" id="ptoggle" class="tb{" warn" if problems else ""}" aria-pressed="false" title="Show or hide the data problems">{pane_title} {PANEL_ICON}</button></div>
-<div class="top"><div id="banner">⚠ Transient snapshot, not a source of truth. Generated by <b>{esc(user)}</b> on <b>{esc(stamp)}</b> from the GitHub issues as they were at that moment; it goes stale as soon as any issue changes. Rebuild it with <code>/issue-map</code> or ask "show me the issue map". The live state is always the GitHub issues.</div>
+<div class="top"><div id="banner">⚠ Transient snapshot, not a source of truth. Generated by <b>{esc(user)}</b> on <b>{esc(stamp)}</b> from the GitHub issues as they were at that moment; it goes stale as soon as any issue changes.{scope} Rebuild it with <code>/issue-map</code> or ask "show me the issue map". The live state is always the GitHub issues.</div>
 <div id="filters"><b class="fb-name">Filters</b><span id="menus"></span><span id="count"></span><a href="#" id="all">show all</a></div>
-<div id="enc">{esc(ENCODING)}</div><div id="hint"></div></div></header>
+<div id="enc">{esc(encoding)}</div><div id="hint"></div></div></header>
 <div id="main"><div id="wrap"><div id="zoom"><button type="button" class="tb" id="zin" title="Zoom in">+</button><button type="button" class="tb" id="zout" title="Zoom out">−</button><button type="button" class="tb" id="zfit" title="Fit the whole map">Fit</button><button type="button" class="tb" id="z100" title="Actual size">100%</button><span id="zpct"></span></div><svg id="map"><g id="vp">{"".join(svg)}</g></svg></div>
 <aside id="problems" aria-label="Data problems" hidden><div class="ptitle"><span class="{"warn" if problems else "ok"}">{pane_title}</span><span class="grow"></span><button type="button" id="pclose" class="x-btn" aria-label="Hide data problems" title="Hide">✕</button></div>{pane_body}</aside></div>
 <footer>{esc(LEVELS)} {esc(links_sentence(problems)).replace("### Blocked by", "<code>### Blocked by</code>", 1)}</footer>
@@ -501,12 +582,39 @@ def render(m: dict, repo_name: str, user: str, stamp: str, truncated: bool) -> s
 {JS}</script></body></html>"""
 
 
+def map_counts(m: dict) -> tuple[int, int, int]:
+    """Issues and epics the map was asked for, and the blockers a search left out."""
+    asked = [d for d in m["meta"].values() if not d["outside"]]
+    epics = sum(d["kind"] == "epic" for d in asked)
+    return len(asked) - epics, epics, len(m["meta"]) - len(asked)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Rebuild docs/issue_map/issue_map.html from the GitHub issues.")
+    parser.add_argument("--open", action="store_true", help="open the map in the default browser once rebuilt")
+    parser.add_argument("--silent", action="store_true", help="rebuild only (the default without --open)")
+    parser.add_argument("--search", help="a GitHub issue search, for example 'label:bug': map only the issues it "
+                                         "matches (write --search=-label:x when the search starts with a hyphen)")
+    parser.add_argument("--repo", help="owner/name: map that repository's issues instead of this checkout's")
+    args = parser.parse_args(argv)
+    if args.repo is not None and not REPO_PATTERN.fullmatch(args.repo):
+        parser.exit(2, f"issue-map: --repo takes owner/name, got {args.repo!r}; nothing rebuilt\n")
+    return args
+
+
 def main() -> None:
+    args = parse_args(sys.argv[1:])
+    scope = ["--repo", args.repo] if args.repo else []
+    search = ["--search", args.search] if args.search else []
     try:
-        issues = json.loads(gh("issue", "list", "--state", "all", "--limit", str(MAP_ISSUE_LIMIT), "--json",
-                               "number,title,state,labels,assignees,body,url"))
-        repo = json.loads(gh("repo", "view", "--json", "name,owner"))
-        links = load_links(repo["owner"]["login"], repo["name"], sorted(i["number"] for i in issues))
+        issues = json.loads(gh("issue", "list", *scope, "--state", "all", "--limit", str(MAP_ISSUE_LIMIT), *search,
+                               "--json", "number,title,state,labels,assignees,author,body,url"))
+        repo = json.loads(gh("repo", "view", *([args.repo] if args.repo else []), "--json", "name,owner"))
+        owner, name = repo["owner"]["login"], repo["name"]
+        links = load_links(owner, name, sorted(i["number"] for i in issues))
+        truncated = len(issues) >= MAP_ISSUE_LIMIT
+        if args.search:
+            issues += load_outside(owner, name, issues, links)
     except FileNotFoundError:
         sys.exit("issue-map: `gh` (the GitHub CLI) is not installed or not on PATH; nothing rebuilt")
     except subprocess.CalledProcessError as e:
@@ -521,12 +629,14 @@ def main() -> None:
     stamp = datetime.datetime.now().astimezone().strftime("%d %b %Y %H:%M %Z")
     issue_map = build_map(issues, links)
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(render(issue_map, repo["name"], user, stamp, len(issues) >= MAP_ISSUE_LIMIT), encoding="utf-8")
+    OUT.write_text(render(issue_map, args.repo or name, user, stamp, truncated, args.search, args.repo),
+                   encoding="utf-8")
     ensure_excluded()
-    epic_count = sum(d["kind"] == "epic" for d in issue_map["meta"].values())
-    print(f"{OUT} - {len(issue_map['meta']) - epic_count} issues + {epic_count} epics - generated by {user} on {stamp}")
+    issue_count, epic_count, outside_count = map_counts(issue_map)
+    print(f"{OUT} - {issue_count} issues + {epic_count} epics"
+          + (f" + {outside_count} outside the search" if outside_count else "") + f" - generated by {user} on {stamp}")
     print(links_sentence(issue_map["problems"]))
-    if "--open" in sys.argv[1:]:
+    if args.open:
         if os.name == "nt":
             os.startfile(OUT)  # type: ignore[attr-defined]
         else:
@@ -595,6 +705,7 @@ h1{font-size:14px;font-weight:600;margin:0;white-space:nowrap;overflow:hidden;te
 .node .lb rect{fill:var(--card);stroke:var(--border);stroke-width:1}.lb text{fill:var(--muted)}
 .node.k-decision .tt{fill:var(--muted);font-style:italic}
 .node .x{stroke:var(--red);stroke-width:2;opacity:.55}
+.node.outside{opacity:.45}.node.outside>rect{stroke-dasharray:6 4}svg.focus .node.outside.hl{opacity:.6}
 .node.off,.e.off,.band.off,.wl.off{display:none}
 svg.focus .node,svg.focus .e{opacity:.12}svg.focus .node.hl,svg.focus .e.hl{opacity:1}svg.focus .e.hl{stroke-width:3}svg.focus .node.sel>rect{stroke-width:7}
 footer{flex:none;max-height:6em;overflow:auto;border-top:1px solid var(--border);padding:6px 12px;color:var(--muted);font-size:11px}
@@ -678,14 +789,15 @@ function cardHtml(id){const m=META[id];const [ic,name,mean]=STATUS[m.status];con
 let h='<div class="handle" title="Drag to move this card">'+GRIP+'<h3>#'+id+' '+esc(m.title)+'</h3></div>';
 h+='<div class="row"><b>Progress</b> <span class="st">'+ic+' '+esc(name)+'</span> <span class="m">'+esc(mean)+'</span></div>';
 h+='<div class="row"><b>Who takes it</b> <span class="st k-'+m.kind+'">'+esc(kname)+'</span> <span class="m">'+esc(kmean)+'</span></div>';
-h+='<span class="m">'+esc(m.column)+' \\u00b7 GitHub state: '+esc(m.state)+(m.assignees.length?' \\u00b7 assigned to '+esc(m.assignees.join(', ')):' \\u00b7 nobody assigned')+'</span>';
+if(m.outside)h+='<div class="row"><b>Outside the search</b> <span class="m">'+esc(OUTSIDE_NOTE)+'</span></div>';
+h+='<span class="m">'+esc(m.column)+' \\u00b7 GitHub state: '+esc(m.state)+' \\u00b7 opened by '+esc(m.openedBy)+(m.assignees.length?' \\u00b7 assigned to '+esc(m.assignees.join(', ')):' \\u00b7 nobody assigned')+'</span>';
 h+='<div class="row"><b>Labels:</b>'+(m.labels.length?m.labels.map(l=>'<span class="lbl'+(l===m.kindLabel?' k':'')+'">'+esc(l)+'</span>').join(''):' none')+'</div>';
 h+='<div class="row"><b>Description</b><div class="desc">'+(m.body?esc(m.body):'<i>empty</i>')+'</div></div>';
 if(m.kind==='epic'){h+='<div class="row"><b>Stories:</b> '+(m.stories.length?'':'none linked as sub-issues')+'</div>';if(m.stories.length)h+=list(m.stories,b=>b.state==='CLOSED'?'c':'')}
 else{if(m.parent!==null&&META[m.parent])h+='<div class="row"><b>Epic</b> #'+m.parent+' '+esc(META[m.parent].title)+'</div>';
 h+='<div class="row"><b>Blocked by:</b> '+(m.blockers.length?'':'nothing')+'</div>';if(m.blockers.length)h+=list(m.blockers,b=>b.state==='OPEN'?'o':'c');
 h+='<div class="row"><b>Waiting on it:</b> '+(m.waiting.length?m.waiting.map(w=>'#'+w).join(', '):'nothing')+'</div>'}
-return h+'<div class="acts"><button type="button" class="tb" data-open>Open on GitHub</button><span class="m">Click the box again to clear \\u00b7 double-click opens it on GitHub \\u00b7 drag the title to move this card</span></div>'}
+return h+'<div class="acts"><button type="button" class="tb" data-open>Open on GitHub</button><span class="m">Click outside to close \\u00b7 double-click opens it on GitHub \\u00b7 drag the title to move this card</span></div>'}
 function place(ev){if(tipSpot){tip.style.left=tipSpot.left+'px';tip.style.top=tipSpot.top+'px';return}
 const r=tip.getBoundingClientRect();let x=ev.clientX+16,y=ev.clientY+16;if(x+r.width>innerWidth-8)x=ev.clientX-r.width-16;if(y+r.height>innerHeight-8)y=ev.clientY-r.height-16;
 tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px'}
@@ -714,6 +826,9 @@ tipSpot={left,top};tip.style.left=left+'px';tip.style.top=top+'px';return}
 if(!drag)return;const dx=ev.clientX-drag.x,dy=ev.clientY-drag.y;if(!moved&&Math.hypot(dx,dy)<4)return;moved=true;wrap.classList.add('drag');if(!tipSpot)tip.style.display='none';tx=drag.tx+dx;ty=drag.ty+dy;paint()});
 addEventListener('pointerup',()=>{drag=null;tipDrag=null;wrap.classList.remove('drag')});
 wrap.addEventListener('click',ev=>{if(moved){ev.stopPropagation();moved=false}},true);
+let pressInTip=false;addEventListener('pointerdown',ev=>{pressInTip=tip.contains(ev.target);moved=false},true);
+document.addEventListener('click',ev=>{const inTip=pressInTip||tip.contains(ev.target);pressInTip=false;if(moved){moved=false;return}
+if(pinned!==null&&!inTip&&!ev.target.closest('.node')){pinned=null;clear()}});
 const mid=()=>[wrap.clientWidth/2,wrap.clientHeight/2];
 document.getElementById('zin').onclick=()=>zoomAt(1.25,...mid());document.getElementById('zout').onclick=()=>zoomAt(0.8,...mid());
 document.getElementById('zfit').onclick=()=>fit(true);document.getElementById('z100').onclick=()=>{const [cx,cy]=mid();zoomAt(1/z,cx,cy)};

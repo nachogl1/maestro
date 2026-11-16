@@ -1,6 +1,6 @@
 ---
 name: wayfinder
-description: 'ORION - Turn an idea that is too large for a single agent session into a plan kept on GitHub Issues: one map issue that states the DESTINATION (one of two: PRD, every decision a PRD needs, which the person then writes; or TICKETS, the work filed as stories ready to build) and a set of small decision tickets hung under it, then settle those tickets one per session until every open question has an answer. Questions that can already be asked precisely become tickets; questions that cannot be asked precisely yet are written down as fog on the map and become tickets later; anything beyond the destination is recorded as out of scope. Every ticket has one kind — research (the agent reads and cites), prototype (a rough thing for the person to react to), grilling (a conversation with the person), task (hands-on work needed before a decision) — and the steps for each kind are written here, so the skill runs no other skill (it only reads dev-next''s references/new-issue.md for the issue links and the shape of a TICKETS map''s stories). It DECIDES, IT DOES NOT BUILD. GitHub Issues only, like dev-next: tickets are native sub-issues of the map, every ticket blocks the map so the map closes last, and every blocker is set as GitHub''s native relation and as a Blocked by section in the body. One ticket per session, research tickets excepted. Started by hand only: use when the user types /wayfinder; when they say "help me plan this big thing", "this is too big for one session", "chart the work", "work the map", or bring a vague idea with no clear path to the end, suggest they type /wayfinder.'
+description: 'ORION - Turn an idea that is too large for a single agent session into a plan kept on GitHub Issues: one map issue that states the DESTINATION (PRD, every decision a PRD needs, which the person then writes before /prd-to-tickets drafts any missing prototype screens and cuts it; ADRS, offered only once a PRD exists, every decision written as a pending ADR in one pull request the person merges; or TICKETS, the work filed as stories ready to build) and a set of small decision tickets hung under it, then settle those tickets one per session until every open question has an answer. Questions that can already be asked precisely become tickets; questions that cannot be asked precisely yet are written down as fog on the map and become tickets later; anything beyond the destination is recorded as out of scope. Every ticket has one kind — research (the agent reads and cites), prototype (a rough thing for the person to react to), grilling (a conversation with the person), task (hands-on work needed before a decision) — and the steps for each kind are written here, so the skill runs no other skill (it only reads dev-next''s references/new-issue.md for the issue links and the shape of a TICKETS map''s stories, and references/planning-interview.md for the interview before they are filed). It DECIDES, IT DOES NOT BUILD. GitHub Issues only, like dev-next: tickets are native sub-issues of the map, every ticket blocks the map so the map closes last, and every blocker is set as GitHub''s native relation and as a Blocked by section in the body. Its own pull requests merge on green unless they touch the PRD, an ADR, the prototype or CLAUDE.md, which a person merges. One ticket per session, research tickets excepted. Started by hand only: use when the user types /wayfinder; when they say "help me plan this big thing", "this is too big for one session", "chart the work", "work the map", or bring a vague idea with no clear path to the end, suggest they type /wayfinder.'
 argument-hint: "An idea to plan, or the URL or number of an existing map"
 disable-model-invocation: true
 ---
@@ -17,9 +17,15 @@ until every open question has an answer and the work can be handed to whoever bu
 
 ## Words this skill uses
 
-- **Destination** — the end point of the map, always one of two:
+- **Destination** — the end point of the map, always one of three:
   - **PRD** — every decision a PRD (product requirements document) needs has been taken. The person then writes or
-    updates the PRD under `docs/PRDs/`; an agent never drafts one. `/prd-to-tickets` cuts it into stories later.
+    updates the PRD under `docs/PRDs/`; an agent never drafts one. `/prd-to-tickets` then drafts any screens the
+    prototype lacks and cuts the PRD into stories ([Ending a PRD map](#ending-a-prd-map)).
+  - **ADRS** (ADRs only) — offered only once a PRD exists under `docs/PRDs/`, so a project's first map always keeps
+    its PRD. Every decision has been taken **and** each is written as an ADR (a short decision record) under
+    `docs/ADRs/` whose status line says `pending` (not yet folded into the PRD), in one pull request the person
+    merges ([Writing the ADRs](#writing-the-adrs-adrs-only)). The PRD is not edited: `/prd-to-tickets` reads pending
+    ADRs beside it, and `/reconcile` folds them in later.
   - **TICKETS** — every decision has been taken **and** the work is filed as an epic with its stories, ready for
     `/dev-next`, with no PRD in between ([Filing the stories](#filing-the-stories-tickets-only)).
 - **Map** — a single issue that holds the whole effort in summary. It is the record every session starts from.
@@ -84,7 +90,7 @@ blocker on its next edit.
 ```markdown
 ## Destination
 
-**<PRD | TICKETS>** — <one or two lines: what is true once this map is finished. Every
+**<PRD | ADRS | TICKETS>** — <one or two lines: what is true once this map is finished. Every
 session reads this before it picks a ticket.>
 
 ## Notes
@@ -116,8 +122,9 @@ or documents every session should read; and preferences the user wants kept for 
 ```
 
 A map with `## Decisions so far` / `## Not yet specified` (the earlier names) is read as `## Settled` / `## Fog` and
-renamed on its next edit. A map whose Destination names neither PRD nor TICKETS (written before the two kinds) is
-read as PRD; ask the person once whether it should be TICKETS instead, and write the answer on the map.
+renamed on its next edit. A map whose Destination names none of PRD, ADRS or TICKETS (written before the kinds) is
+read as PRD; ask the person once whether it should be TICKETS instead (or ADRS, when a PRD exists), and write the
+answer on the map.
 
 ## A ticket
 
@@ -277,11 +284,18 @@ The user gives an idea. With no argument, ask what they want to plan.
 
 1. **Fix the destination first**, because it decides what is in scope. Read the repository before you ask —
    `CLAUDE.md`, `README.md`, the manifest files, the existing issues, `docs/PRDs/` — so the questions fit this
-   project. Then the **first question** is its kind, asked with `AskUserQuestion` offering exactly two options and
-   nothing else: **PRD** (the map ends with the decisions a PRD needs, and the person writes the PRD) and
-   **TICKETS** (the map ends with the stories filed, ready for `/dev-next`). Recommend PRD when the idea changes what
-   the product does or who it is for, TICKETS when the product stays as the PRD describes it. Then grill the user
-   (see grilling) and sort out the vocabulary until the end point is clear in one or two lines.
+   project. Then the **first question** is its kind, asked with `AskUserQuestion` and nothing else:
+   - **No PRD under `docs/PRDs/` yet: two options.** **PRD** (the map ends with the decisions a PRD needs, and the
+     person writes the PRD) and **TICKETS** (the map ends with the stories filed, ready for `/dev-next`). Recommend
+     PRD when the idea changes what the product does or who it is for, TICKETS when it does not. A project's first
+     map never ends in ADRs only.
+   - **A PRD exists: three options.** **PRD** (a PRD update), **ADRS** (each decision written as a pending ADR,
+     [Writing the ADRs](#writing-the-adrs-adrs-only)) and **TICKETS**. Recommend a PRD update when the map changes
+     the product's scope, vocabulary or acceptance bar; ADRs only when it changes none of those but takes decisions
+     the PRD should absorb later; TICKETS when the product stays exactly as the PRD describes it. The person can
+     overrule the recommendation either way.
+
+   Then grill the user (see grilling) and sort out the vocabulary until the end point is clear in one or two lines.
 2. **Survey the open questions, wide before deep.** Grill again, touching every area of the effort briefly instead
    of following one thread down, to list the decisions still open and what can be started right away. **If no
    fog appears** — the path is already clear and the whole job fits in one session — say that a map would only add
@@ -294,7 +308,7 @@ The user gives an idea. With no argument, ask what they want to plan.
    (Step 0). In the same pass, make **every ticket a blocker of the map**, in both forms, and read it back. Tickets with no open blocker form the frontier; what you cannot write yet stays under **Fog**.
 6. **Start the research sub-agents** for every `research` ticket just created, as the research steps say. Each posts
    its findings on its own ticket.
-7. **Ask the PRD question** once, after the batch ([The PRD question](#the-prd-question)).
+7. **Ask the PRD question** once, after the batch, unless the map is ADRS ([The PRD question](#the-prd-question)).
 8. **Stop.** Writing the map is a whole session; settle nothing else. Report the map's title with its link, the
    frontier tickets by title, and how many fog entries remain.
 
@@ -315,9 +329,10 @@ ticket is your job; do not ask them to pick.
    forms, and make each new ticket a blocker of the map in both forms); turn every fog entry the answer made precise into a ticket and **remove that entry from *Fog*** so it
    exists in one place only; move anything the answer placed beyond the destination to *Out of scope*; update or
    close the tickets the decision made wrong.
-6. **File the stories** when this was a TICKETS map's last open ticket and no fog is left
-   ([Filing the stories](#filing-the-stories-tickets-only)).
-7. **Ask the PRD question** once, when this session created or edited any ticket or story
+6. **End the map** when this was its last open ticket and no fog is left: a TICKETS map files its stories
+   ([Filing the stories](#filing-the-stories-tickets-only)), an ADRS map writes its ADRs
+   ([Writing the ADRs](#writing-the-adrs-adrs-only)), and a PRD map hands over ([Ending a PRD map](#ending-a-prd-map)).
+7. **Ask the PRD question** once, when this session created or edited any ticket or story, unless the map is ADRS
    ([The PRD question](#the-prd-question)).
 8. **Stop after this one ticket** (research excepted). Report the ticket's title, the decision in one line, and what
    is on the frontier now.
@@ -332,22 +347,84 @@ When the last ticket of a TICKETS map closes and no fog is left, the session tha
 stops, with the person present:
 
 1. Run the dedupe deep-dive below for every story; an open issue that already covers one is linked, not repeated.
-2. File one **epic** for the map's destination: the `epic` label only (an epic never carries a tier), and a body
+2. **Interview the person before anything is filed**: load `.claude/skills/dev-next/references/planning-interview.md`
+   and follow it, with the map as the source and the epic and stories about to be filed as the cut, until it leaves
+   no question open. Every rule of the interview lives in that file, which `/prd-to-tickets` follows too.
+3. File one **epic** for the map's destination: the `epic` label only (an epic never carries a tier), and a body
    that states the destination in a line or two and links the map.
-3. File one **story** per piece of work, in the shape of `.claude/skills/dev-next/references/new-issue.md` (body
+4. File one **story** per piece of work, in the shape of `.claude/skills/dev-next/references/new-issue.md` (body
    headings, a `### Seam`, the labels and its readiness label, `tier:wayfinder`, the native sub-issue link to the
    epic, both blocker forms, every read-back). Each story's `### References` links the map and the tickets whose
    answers it rests on. A story that adds or changes a screen names its screen in the UX prototype under
    `### References`; a screen the prototype lacks first gets a `needs-human` story of its own under the epic, "UX
    prototype for <screen>", seam `docs/ux/prototypes/<slug>/`, and the front-end story is blocked on it. **No `wayfinder:*` label on the epic or any story**: `/dev-next` never takes an issue that
    carries one.
-4. Add one line under the map's **Settled** linking the epic, then close the map.
+5. Add one line under the map's **Settled** linking the epic, then close the map.
 
-A PRD map files nothing: it ends with the decisions, and the person writes the PRD.
+## Writing the ADRs (ADRS only)
+
+When the last ticket of an ADRS map closes and no fog is left, the session that closed it records the decisions
+before it stops, with the person present:
+
+1. **Dedupe first:** read `docs/ADRs/` on `origin/main` and the open pull requests that touch it. A decision an
+   existing ADR already records is linked, not written again; one that changes an existing ADR gets a new ADR that
+   says which one it replaces.
+2. **One ADR per decision** the map took (a research ticket that only found a fact feeds the ADR it supports), each
+   at `docs/ADRs/adr-<change-name>.md` in the mandatory rules' ADR shape: a title, the status line
+   `**Status: pending**` (not yet folded into the PRD) right under it, then context, decision, consequences and
+   alternatives. Each one links the map and the tickets whose answers it rests on, and names the PRD sections it
+   changes, so the later fold knows where it goes. The words come from the person's answers on the tickets, never
+   from new decisions.
+3. **Ship them all in one pull request** under Guardrails, *Git*, on `feat/wayfinder-adrs-<map-slug>`. It touches
+   `docs/ADRs/`, so **a person merges it** ([Who merges](#who-merges)): merging it is their approval, which comes
+   before any ticket or code for these decisions.
+4. Add one line under the map's **Settled** linking the pull request, then close the map. The PRD question is not
+   asked ([The PRD question](#the-prd-question)).
+5. Report the pull request and the one next step: the person merges it. After that, `/prd-to-tickets` reads the
+   pending ADRs beside the PRD when it next cuts, and `/reconcile` folds them into the PRD later.
+
+## Ending a PRD map
+
+A PRD map files nothing: it ends with the decisions, and the order from there is fixed. Report it as numbered steps:
+
+1. The person writes or updates the PRD under `docs/PRDs/` from the map's decisions, and merges it.
+2. `/prd-to-tickets` checks the UX prototype on `main` first: when the PRD names screens it lacks, it drafts the
+   missing screens, opens that pull request (a person merges it) and stops.
+3. Once the prototype is on `main`, the next `/prd-to-tickets` run cuts the PRD into stories.
+
+A TICKETS map's stories never pass through `/prd-to-tickets` and its gate, so it keeps its own "UX prototype for
+<screen>" story ([Filing the stories](#filing-the-stories-tickets-only)).
 
 ## The PRD question
 
-A session with the person present asks it **once, after its batch of ticket creations or edits**, whenever at least one PRD exists under `docs/PRDs/` (before any PRD exists there is nothing to update): **"Should we update the PRD with this too?"**, followed by one line per change, naming the PRD section it touches. "No" ends it. "Yes" → the PRD edit ships in a `docs(prd)` pull request, made under Guardrails, *Git* (worktree, changelog file, gate, merged by a human).
+A session with the person present asks it **once, after its batch of ticket creations or edits**, whenever at least one PRD exists under `docs/PRDs/` (before any PRD exists there is nothing to update): **"Should we update the PRD with this too?"**, followed by one line per change, naming the PRD section it touches. "No" ends it. "Yes" → the PRD edit ships in a `docs(prd)` pull request, made under Guardrails, *Git* (worktree, changelog file, gate); it touches `docs/PRDs/`, so a person merges it ([Who merges](#who-merges)).
+
+An ADRS map never asks it: the person chose to record that map's decisions as ADRs instead of a PRD update, and `/reconcile` folds them into the PRD later.
+
+## Who merges
+
+The mandatory rules, *Who merges*, decide every pull request this skill opens:
+
+> An agent merges every pull request it makes in the project on its own — `/dev-next`'s stories (a `/dev-quick` run
+> merges through it), planning, harvest and QA logs, reconciling, documentation, one made by hand — with
+> `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then delete
+> the branch. […] **A person merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`:
+> merging it is the person's approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an
+> agent never lands its own rules), even when the rest is bookkeeping, and the pull request of an `owner-merges`
+> story; the agent merges one of these only on the person's explicit word for that one pull request, once its checks
+> are green. Never merge an `outside-change` pull request: its repository's own reviewer does.
+
+So, for each pull request this skill opens:
+
+| Pull request | Touches | Merged by |
+|---|---|---|
+| The ADRs of an ADRS map, `feat/wayfinder-adrs-<map-slug>` | `docs/ADRs/` | **a person** |
+| The PRD edit from the PRD question, `docs(prd)` | `docs/PRDs/` | **a person** |
+| Any other pull request this skill opens | none of the paths above, no `outside-change` and no `owner-merges` story | the agent that opened it, on green, with `/dev-next`'s bar |
+
+The agent that merges waits for the checks first (the host can take minutes to report them), squash-merges, then
+deletes the branch and removes its worktree. A pull request a person merges is reported with its link as their next
+step.
 
 ## Asking the user questions
 
@@ -364,7 +441,7 @@ Before creating a map, a ticket, or *offering* to create one, confirm nothing al
 
 ## Guardrails
 
-- **Git.** Never commit to `main` and never work in the main checkout. Anything this skill writes into the repo (rare — usually only a prototype or a PRD edit) goes on a `feat/<slug>` branch (or the project's own branch pattern) in a worktree outside the project, at the worktree root the project's `CLAUDE.md` names: `git -C <main checkout> worktree add <wt root>/<slug> -b feat/<slug> origin/main`. Before the pull request opens, add the pull request's own changelog file, `docs/changelog/<YYYY-MM-DD>-<branch>.md` (one line; every pull request carries one; create the folder with a `README.md` explaining the format if it does not exist), then run **the gate** — the gate commands the project's `CLAUDE.md` lists, build → lint → typecheck → full suite — and open the pull request only on green. Conventional Commit messages (`type(scope): summary`), never `git add -A`, and a pull request a **human** merges. Never force-push, never `--no-verify`, never auto-merge.
+- **Git.** Never commit to `main` and never work in the main checkout. Anything this skill writes into the repo (rare — usually only a prototype or a PRD edit) goes on a `feat/<slug>` branch (or the project's own branch pattern) in a worktree outside the project, at the worktree root the project's `CLAUDE.md` names: `git -C <main checkout> worktree add <wt root>/<slug> -b feat/<slug> origin/main`. Before the pull request opens, add the pull request's own changelog file, `docs/changelog/<YYYY-MM-DD>-<branch>.md` (one line; every pull request carries one; create the folder with a `README.md` explaining the format if it does not exist), then run **the gate** — the gate commands the project's `CLAUDE.md` lists, build → lint → typecheck → full suite — and open the pull request only on green. Conventional Commit messages (`type(scope): summary`), never `git add -A`, and the pull request merged as [Who merges](#who-merges) says. Never force-push, never `--no-verify`, never merge on red or pending checks.
 - **Sensitive data.** Everyone with access to the repository can read the map and every ticket under it. Never put passwords, tokens, personal data or absolute machine paths on them; say where something is kept, not what it is.
 - **Scope does not grow quietly.** If settling a ticket starts to turn into building the destination, stop and tell the user: that is the moment to hand over, not a licence to carry on.
 - **Nothing disappears without a yes.** Closing or deleting a ticket someone else wrote, or changing the destination, waits for the user's explicit agreement.
@@ -404,4 +481,5 @@ Keep it short, one fact per line:
 - **A working session is done** when exactly one ticket (research excepted) has its answer comment, is closed and has
   its line under *Settled*; *Fog* and *Out of scope* are up to date; and the new frontier has been reported.
 - **The whole map is finished** once no ticket is open and no fog is left — every decision the builders need has been
-  taken — and, for a TICKETS map, the epic and its stories are filed. Say so plainly and close the map issue.
+  taken — and, for a TICKETS map, the epic and its stories are filed, or, for an ADRS map, the pull request of
+  pending ADRs is open. Say so plainly and close the map issue.

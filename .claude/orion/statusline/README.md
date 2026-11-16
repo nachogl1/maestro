@@ -7,7 +7,7 @@ A starting-point [Claude Code status line](https://docs.anthropic.com/en/docs/cl
 | Session alive time (`1h23m`) | cyan | transcript file creation time |
 | Session or agent name (`my-feature`) | bold white | `agent.name` when Claude Code runs with `--agent`, else `session_name` (set with `--name` or `/rename`, or the AI-generated title) from the stdin JSON; omitted until one exists |
 | Context usage (`ctx: 42.5%`) | green / yellow ≥70% / red ≥90% | Claude Code stdin JSON |
-| Git branch + state (`[branch] stashed:0 untracked:2 modified:5 unpushed:1`) | per-word (magenta / yellow / red / blue) | `git` in the session's cwd — stashes, untracked files, uncommitted changes, commits not pushed yet |
+| Git branch + state (`[branch] stashed:0 untracked:2 modified:5 unstaged:3 unpushed:1`) | per-word (magenta / yellow / red / cyan / blue) | `git` in the session's cwd — stashes, untracked files, uncommitted changes, the uncommitted changes not staged yet, commits not pushed yet |
 | **Session cost** (`$1.23`) | green | `cost.total_cost_usd` from Claude Code stdin JSON |
 | **Month-to-date cost** (`$345.67`) | blue | [ccusage](https://github.com/ryoppippi/ccusage) over local transcripts, current calendar month to date (resets on the 1st), cached 10 min, refreshed in background |
 | **Model** (`Opus`) | cyan | `model.display_name` from Claude Code stdin JSON |
@@ -16,7 +16,9 @@ A starting-point [Claude Code status line](https://docs.anthropic.com/en/docs/cl
 | **Weekly usage** (`7d:41% ↻3d5h`) | bright blue | `rate_limits.seven_day` from Claude Code stdin JSON |
 | **Worktree** (`wkt:feat-login`), second line, after the working directory | plain | `workspace.git_worktree`, else `worktree.name` (a `--worktree` session), from Claude Code stdin JSON; omitted when neither is sent |
 
-On a **detached HEAD** (no branch checked out, as in a worktree made from a commit or a tag) the git segment names the commit instead of a branch, `[detached:<short commit id>]`, with the same four state words; outside a git repository there is no git segment.
+On a **detached HEAD** (no branch checked out, as in a worktree made from a commit or a tag) the git segment names the commit instead of a branch, `[detached:<short commit id>]`, with the same five state words; outside a git repository there is no git segment.
+
+`modified` counts every tracked file with an uncommitted change, staged or not; `unstaged` counts the ones among them that still have a change not staged yet (`git add` not run on it since its last edit). A file staged and then edited again counts in both, so `modified:2 unstaged:1` means one file is fully staged and one is not. Both come from the one `git status` call, so the extra word costs no extra git run.
 
 Second line: the session's working directory, then `  |  wkt:<name>` when the session is in a linked git worktree.
 

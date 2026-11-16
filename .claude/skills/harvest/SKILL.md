@@ -1,6 +1,6 @@
 ---
 name: harvest
-description: 'ORION - Work through the one pile agents leave behind — the audit reports on every developer''s audit branch, which hold three kinds of note (a product problem left for later, something that slowed a run down, a tip for the next run) — with the person running it, in three waves (fix now, throw away or keep, then tasks), every item explained as if the person had never heard of the project, with its kind and how much it matters said out loud, never proposing anything an open task already covers, and grouping what belongs together into as few tickets as possible. Nothing is filed or dropped without the person''s word. Use when the user types /harvest, or when a /dev-next run ended with `Harvest due: run /harvest`.'
+description: 'ORION - Work through the one pile agents leave behind — the audit reports on every developer''s audit branch, which hold three kinds of note (a product problem left for later, something that slowed a run down, a tip for the next run) — with the person running it, most important first: every note rated high, medium or low by fixed tests, notes about the same area grouped, one short three-line question per high group and then per medium group, the question of how many tasks in all, and every low note in one closing question. Every item is explained as if the person had never heard of the project, with its kind and how much it matters said out loud (the long explanation only on request), never proposing anything an open task already covers, and grouping what belongs together into as few tickets as possible. Nothing is filed or dropped without the person''s word. Its own pull request merges on green unless it touches the PRD, an ADR, the prototype or CLAUDE.md, which a person merges. Use when the user types /harvest, or when a /dev-next run ended with `Harvest due: run /harvest`.'
 argument-hint: "(no arguments)"
 disable-model-invocation: true
 ---
@@ -33,12 +33,26 @@ cannot tell them apart unless you do it for them:
 | **Something that slowed a run down** | A step in *how we work* that wasted an agent's time: a flaky command, a missing tool, a rule that two runs tripped over. Not a bug in the product | the `friction` list |
 | **A tip for the next run** | Advice the agent wrote for whoever works on this next: about the code, the domain or the process. Not a bug either | the `lessons_learned` list |
 
-The first two words of every item's first line name its kind, in exactly those phrases. A group that mixes kinds says
+The first words of every item's first line name its kind, in exactly those phrases. A group that mixes kinds says
 so ("two product problems and one slow-down about the same screen").
 
 ## How to explain each item — plain language, every time
 
-Every group and every item is shown in this shape, in this order, one short sentence per line:
+**The question: three lines.** Every group is asked in three lines, in this order, one or two short sentences each:
+
+1. **The problem, with what that part does.** The kind first (the phrases above), then what that part of the product
+   or process does and who it is for, then the problem in everyday words. A group of several items says how many of
+   each kind it holds and gives the problem of the group as a whole.
+2. **How much it matters, and why.** **"Worth doing soon"**, **"worth doing some day"** or **"probably never
+   matters"** (the rating of Phase 1, step 3), then its reasoning line in concrete terms: the test it meets, how many
+   runs hit it, what a user would see, what happens if we leave it. This is the line the person cares most about;
+   never leave it out or make it vague.
+3. **What I suggest, and what it would touch.** The recommendation and its size in plain words: "fix it now: one line
+   in one file, no test changes", "a task for later: three files in the import code, clashes with the open search
+   story".
+
+**The long explanation, only when the person asks** ("tell me more", "where did this come from?", "what does that
+mean?"): the seven lines below, for the group and, when asked, for each item in it. Never printed unasked.
 
 1. **Kind** — one of the three phrases above.
 2. **What part of the product or process this is about** — one sentence on what that part *does and who it is for*,
@@ -51,8 +65,8 @@ Every group and every item is shown in this shape, in this order, one short sent
 5. **How much it matters, and why** — this line is the one the person cares most about; never leave it out or make it
    vague. Say one of **"worth doing soon"**, **"worth doing some day"** or **"probably never matters"**, then the
    reason in concrete terms: how many runs hit it, what a user would see, what breaks or gets slower, whether a story
-   now open will hit it. The severity in the report is an input, not the answer: a medium three runs have hit is
-   "worth doing soon"; a high that a merged story already removed is never shown at all (Phase 1, step 1).
+   now open will hit it. The severity in the report is a hint only: a medium three runs have hit is "worth doing
+   soon"; a high that a merged story already removed is never shown at all (Phase 1, step 1).
 6. **What happens if we leave it** — the real consequence, concrete: "a new developer will run the wrong command and
    lose ten minutes", "nothing, unless someone renames that folder".
 7. **What I suggest, and what it would touch** — the recommendation and its size in plain words: "fix it now: one line
@@ -78,12 +92,16 @@ Words and habits to follow:
 Bad: "Group 3 — seam `src/<area>/Ledger`, 2 deferred (#<N>, #<N>), friction ×3 from audit runs; blast radius 4 files;
 rec: ticket."
 
-Good: "A product problem left for later. The product keeps a record of every file it generates and who approved it,
-so auditors can later prove where a change came from. Two agents noticed that this record does not save the time in
-the same format everywhere. Both saw it while building the stories that write those records, last week, in one
-developer's runs. Worth doing soon: three runs lost time over it, and the report auditors will read sorts generated
-files by that time. If we leave it, that report will list files in the wrong order. I suggest a task for later: it
-touches four files in that one area and nothing else is working there."
+Good (the three-line question):
+
+> A product problem left for later, two notes. The product keeps a record of every file it generates and who approved
+> it, so auditors can later prove where a change came from; this record does not save the time in the same format
+> everywhere.
+>
+> Worth doing soon: three runs lost time over it, and the report auditors read sorts files by that time, so it would
+> list them in the wrong order.
+>
+> I suggest a task for later: it touches four files in that one area, and nothing else is working there.
 
 ## Phase 0 — Gather
 
@@ -126,26 +144,36 @@ team a backlog nobody drains, or an hour of a person's attention on things that 
    harvested. The same goes for an item that a merged story has already fixed. The person's time goes only to items
    nobody is acting on yet. When the match is partial — the open task covers the area but not this exact problem —
    the item is shown, with "add it to an existing task" as the recommendation (step 7).
-3. **Rate how much it matters** — `high` ("worth doing soon"), `medium` ("worth doing some day"), `low` ("probably
-   never matters") — and write one line of concrete reasoning per item: runs hit, user impact, open stories affected.
-   This line is shown to the person word for word (*How to explain each item*, line 5). Severity in the report is an
-   input, not the answer.
+3. **Rate how much it matters, by fixed tests** — the first that holds:
+   - `high` ("worth doing soon"): a user would see it, or it broke or blocked a run, or three or more runs hit it.
+   - `medium` ("worth doing some day"): it hit once, and an open story or a later user will meet it.
+   - `low` ("probably never matters"): everything else — a one-off, a cosmetic point, something already worked around.
+
+   You may lift an item one level (low to medium, medium to high) when the tests miss something concrete, and the
+   reasoning line says why; never lower one. The report's own severity is a hint only, never the rating: a product
+   problem left for later carries `medium` or `high` (the scale `/dev-next`'s review and its audit report use, which
+   records no lows), and a slow-down or a tip carries none. Write one line of concrete reasoning per item: the test it
+   meets, runs hit, user impact, open stories affected. This line is shown to the person word for word (line 2 of the
+   question in *How to explain each item*).
 4. **Group.** Items that touch the same folder, module, file, rule or skill phase become **one group**. Slow-downs
-   repeated across runs are one group, ranked first. A group is what becomes a ticket, never a single item when a
-   neighbour exists; in wave 3 the human may merge groups into one ticket. A group's rating is its highest item's. A
-   group names how many of each kind it holds.
+   repeated across runs are one group. A group is what becomes a ticket, never a single item when a neighbour exists;
+   in the question on how many tasks in all (Phase 2, step 4) the human may merge groups into one ticket. A group's
+   rating is its highest item's. Within one rating, the group more runs hit comes first. A group names how many of
+   each kind it holds.
 5. **Measure what acting on each group would touch** — counted, not guessed: the files and folders it changes, the
    tests that cover them (and whether a new test is needed), the open stories and in-flight issues that own the same
    folder (`### Seam` in their bodies, and the in-flight file — the list `/dev-next` keeps of stories being worked on
    right now), and whether it touches a repository this team does not own. One line, in plain words, e.g. "2 files in
    the import code, 1 test class, collides with the open search story".
-6. **Write the explanation** in the shape and words of *How to explain each item*, for every item and every group.
-   Without it the human cannot decide, and the harvest turns into a lesson; with it, most groups take one answer.
+6. **Write the question** in the shape and words of *How to explain each item*: the three lines for every group and
+   every low note, and the long explanation kept ready for when the person asks. Without them the human cannot
+   decide, and the harvest turns into a lesson; with them, most groups take one answer.
 7. **Recommend a destination per group:**
    - **Fix now** — small, safe, clear; goes in this harvest's pull request.
    - **Rule change** — a line in the project's `CLAUDE.md`, a skill or a reference file; goes in this harvest's pull
      request. The usual home for a slow-down or a tip.
-   - **Ticket** — real work for later; one GitHub issue per group (or per set of groups merged in wave 3), written to
+   - **Ticket** — real work for later; one GitHub issue per group (or per set of groups merged in the question on how
+     many tasks in all), written to
      `.claude/skills/dev-next/references/new-issue.md` (the body headings, `story` plus exactly one readiness label
      and one tier label (`tier:bug` for a defect, else `tier:harvest`), the labels and the `### External reference`
      heading it prescribes when the work touches a repository this team does not own, native sub-issue of its epic,
@@ -156,45 +184,47 @@ team a backlog nobody drains, or an hour of a person's attention on things that 
      matters"**, with the reason it is not worth keeping said plainly; for any other item it is only offered as the
      alternative. An item is acted on, handed to a task, dropped, or carried to the next harvest.
 
-## Phase 2 — Present and decide in waves (the touchpoint)
+## Phase 2 — Present and decide, most important first (the touchpoint)
 
 Nothing is filed, fixed or dropped automatically: the human decides every group. The aim is that deciding is fast and
-easy — the explanation does the work, the recommendation is ready to accept, and questions are welcome.
+easy — three short lines do the work, the recommendation is ready to accept, and questions are welcome.
 
 1. Open with this, in these words or simpler, every run:
    - **What this does.** While agents build stories they write three kinds of note: a product problem they saw but
      were not allowed to fix, something that slowed their run down, and a tip for the next run. Today we go through the
-     new notes together and decide, for each one: fix it now, make it a task for later, add it to a task that exists,
-     or throw it away.
+     new notes together, most important first, and decide, for each group: fix it now, make it a task for later, add
+     it to a task that exists, throw it away, or leave it for next time.
    - **What I already took off the list.** One line per item that an open task already covers or a merged story
      already fixed, each named in plain words — so the person knows these were seen and where they went — then the
-     counts: items read, items taken off the list, items to decide, by kind.
+     counts: items read, items taken off the list, items to decide, by kind and by rating.
    - **The goal.** As few new tasks as possible. Notes about the same part of the project become one task. Nothing is
      thrown away unless you say so.
-2. Print the overview: every group as one line — kind(s), a plain title, how much it matters, the recommended
-   destination, what it would touch — sorted into the three waves below.
-3. Work the waves in order. Each wave: print its groups — per group and per item the seven lines of *How to explain
-   each item*. Never a bare number (names, not bare numbers). Then ask with clickable options (`AskUserQuestion`, up
-   to four groups per call, one question per group, the recommendation first and marked "(Recommended)", every label
-   in plain words). The tool takes at most four options, so each wave offers only the ones named below; any other
-   destination the human types under "Other". Tell the human what each wave is for in one plain sentence before it
-   starts: wave 1 "quick fixes and rule changes I can do today", wave 2 "notes that are probably not worth keeping",
-   wave 3 "bigger things that need a task for later".
-   - **Wave 1 — fix now.** The small, safe fixes and rule changes proposed for this harvest's pull request. Options:
-     fix now (or rule change), make it a task, throw it away, not this time.
-   - **Wave 2 — throw away or keep.** The groups rated "probably never matters" — unless the fix is small and safe,
-     which puts the group in wave 1: throw it away is the recommendation, with the reason. Options: throw it away,
-     make it a task, add it to an existing task, not this time.
-   - **Wave 3 — tasks.** The bigger groups. Options: make it a task, add it to an existing task, throw it away, not
-     this time. Then one more question: how many tickets in all, with the recommended merge of groups that share an
-     area.
-   "Not this time" means the group is counted again next harvest (step 5).
-4. **Expect questions and discussion.** A question gets a short plain answer — open the code or the run report to back
-   it — and the wave carries on where it stopped; it never restarts. If the human asks "what does that mean?", the
-   explanation was not plain enough: answer, then keep the rest simpler. A decision changed mid-wave replaces the
-   earlier one.
-5. Record every decision before acting on any. A group the human skips is written to `carried` in
-   `docs/harvest-state.json` (Phase 3, step 5), because the branch pointer moves past it.
+2. Print the overview: every high and medium group as one line — kind(s), a plain title, how much it matters, the
+   recommended destination, what it would touch — high first, then medium; then one line with the number of low
+   notes, which come last.
+3. **The high groups, then the medium groups, one question per group.** Before the high ones say "first, the notes
+   worth doing soon"; before the medium ones, "now, the notes worth doing some day". Per group, its three lines (*How
+   to explain each item*), never the long explanation unasked, never a bare number. Then ask with clickable options
+   (`AskUserQuestion`, up to four groups per call, one question per group, every label in plain words). The options
+   are always the same five: **fix it now** (or the rule change), **make it a task**, **add it to an existing task**,
+   **throw it away**, **not this time**. The tool shows at most four, so each question shows the recommendation
+   first, marked "(Recommended)", then the next ones in that order, skipping "add it to an existing task" when no
+   open task covers the area; the one left out the human types under "Other".
+4. **Then how many tasks in all**, right after the medium groups: one question with the recommended merge of the
+   groups made a task that share an area into one ticket. Skipped when no group was made a task.
+5. **Then every low note, in one question.** A low note here is one in a group rated low; a low item inside a high
+   or medium group was decided with that group. One line per note — its kind, the problem in plain words, why it
+   probably never matters — and three options: **throw them all away** (Recommended), **keep them all for later**,
+   **go through them one by one**. Kept for later → each note is carried (step 7), so the next harvest offers it
+   again, and it still counts towards the ten notes that make `/dev-next` say `Harvest due`. One by one → each low
+   note gets its own three-line question with the five options of step 3; a low note made a task there joins the
+   ticket already decided for its area, or becomes its own. Skipped when there are no low notes.
+6. **Expect questions and discussion.** A question gets a short plain answer — open the code or the run report to back
+   it — and the questions carry on where they stopped; they never restart. "Tell me more" gets that group's long
+   explanation. If the human asks "what does that mean?", the explanation was not plain enough: answer, then keep the
+   rest simpler. A decision changed mid-way replaces the earlier one.
+7. Record every decision before acting on any. "Not this time" and every low note kept for later are written to
+   `carried` in `docs/harvest-state.json` (Phase 3, step 5), because the branch pointer moves past them.
 
 ## Phase 3 — Act
 
@@ -205,15 +235,16 @@ rules: worktree root, branch pattern, who merges):
 git -C <main checkout> worktree add <wt root>/harvest-<yyyymmdd> -b feat/harvest-<yyyymmdd> origin/main
 ```
 
-`<wt root>` is `C:\wt` on Windows and `~/wt` elsewhere, unless the project's `CLAUDE.md` names another. A human merges
-the pull request — this skill has no merge autonomy.
+`<wt root>` is `C:\wt` on Windows and `~/wt` elsewhere, unless the project's `CLAUDE.md` names another. Who merges
+the pull request depends on what it touches (*Who merges*, below).
 
 1. **Fix now** → make the change. **Rule change** → edit the rule file. Both in this pull request.
 2. **Ticket** → create the issue exactly as `.claude/skills/dev-next/references/new-issue.md` says — body file,
    labels, native sub-issue, both blocker forms, verified with the read-back calls there — naming the audit runs the
    items came from under `### References`. Once, after the last ticket is created or edited, if the project keeps
    a PRD, ask the PRD question: **"Should we update the PRD with this too?"**, followed by one line per ticket saying
-   what changed and which PRD section it touches.
+   what changed and which PRD section it touches. "Yes" ships the PRD edit in this pull request, which a person then
+   merges (*Who merges*).
    **Add to an existing task** → a comment on that story, headed `Harvest of <date>:`, saying in plain words what the
    item is and which run found it. Never on a `needs-human` issue: under the project's issue rules (the assignee owns
    the issue; a `needs-human` reason is the issue's last comment) its reason must stay the last comment — there, if
@@ -227,21 +258,52 @@ the pull request — this skill has no merge autonomy.
 4. **Already tracked / already done** (Phase 1, steps 1 and 2) → nothing is written; the pull request table names the
    task or the merged story.
 5. Write `docs/harvest-state.json`: for every login read, `harvested_through` = the newest run id seen this run;
-   `carried` = every item the human skipped this run **plus every item carried in step 2** because its task was
-   claimed or owned by someone (previous `carried` entries that were decided drop out);
+   `carried` = every item the human left for next time this run (a group answered "not this time", and every low
+   note kept for later) **plus every item carried in step 2** because its task was claimed or owned by someone
+   (previous `carried` entries that were decided drop out);
    `last_harvest` = today. Audit branches are never written to.
 6. **Run the gate** (the gate commands the project's `CLAUDE.md` lists: build → lint → typecheck → full suite) before
    the pull request opens. A fix that turns it red is undone, and the human is asked what it becomes instead (a task,
    or not this time); a new ticket asks the PRD question of step 2 again. The gate then runs again, and the pull
    request opens only on green.
 7. Add the harvest's own changelog file, `docs/changelog/<YYYY-MM-DD>-<branch>.md` (one line; every pull request carries one), then commit with
-   Conventional Commits (`chore(harvest): …`), **never `git add -A`**, push, open the pull request with the table below,
-   and tell the human it waits for their merge.
+   Conventional Commits (`chore(harvest): …`), **never `git add -A`**, push, and open the pull request with the table
+   below.
+8. **Merge it as *Who merges* says.** One that touches none of the paths a person merges → wait for its checks (the
+   host can take minutes to report them; "no checks reported" counts as red), squash-merge on green, then remove the
+   worktree and delete the branch, locally and on the remote (`.claude/skills/dev-next/references/merge-and-ci.md`:
+   never `--delete-branch` on a worktree). Red or still pending after the wait → say so and stop, naming the pull
+   request first. One a person merges → it is not merged: tell the human, with its link, that it waits for their
+   merge, and why.
 
 ```
 | Group | Kind(s) and items | How much it matters | What it would touch | Decision | Where it went |
 |---|---|---|---|---|---|
 ```
+
+## Who merges
+
+The mandatory rules, *Who merges*, decide the pull request this skill opens:
+
+> An agent merges every pull request it makes in the project on its own — `/dev-next`'s stories (a `/dev-quick` run
+> merges through it), planning, harvest and QA logs, reconciling, documentation, one made by hand — with
+> `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then delete
+> the branch. […] **A person merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`:
+> merging it is the person's approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an
+> agent never lands its own rules), even when the rest is bookkeeping, and the pull request of an `owner-merges`
+> story; the agent merges one of these only on the person's explicit word for that one pull request, once its checks
+> are green. Never merge an `outside-change` pull request: its repository's own reviewer does.
+
+So, for the one pull request a harvest opens:
+
+| Pull request | Touches | Merged by |
+|---|---|---|
+| `chore(harvest): …` — the bookmark, the changelog file, and any fixes and rule edits outside the paths below | none of `docs/PRDs/`, `docs/ADRs/`, `docs/ux/prototypes/` or the project's `CLAUDE.md` | the harvest itself, on green, with `/dev-next`'s bar (Phase 3, step 8) |
+| `chore(harvest): …` — with a "yes" to the PRD question, a rule change in the project's `CLAUDE.md`, or a fix in an ADR or the prototype | any of those paths, beside the bookmark and the changelog file | **a person**; the bookmark waits with it |
+
+A fix that would land in a repository this team does not own is never made here: it becomes a ticket carrying
+`outside-change` and `needs-human` (Phase 1, step 7). The harvest merges a pull request of the second row only on the
+person's explicit word for that one pull request, once its checks are green.
 
 ## Rules
 
@@ -252,8 +314,8 @@ the pull request — this skill has no merge autonomy.
   pull request table.
 - **Fewer tickets.** A single-item ticket needs a reason written in the issue body.
 - **Nothing dropped silently.** Drop is the human's word, recorded in the commit message.
-- **Nothing filed automatically.** Every ticket is the human's word, given in one of the waves or when a red fix is
-  undone.
+- **Nothing filed automatically.** Every ticket is the human's word, given in one of the questions or when a red fix
+  is undone.
 - **Kind and importance with every item.** The first words say which of the three kinds it is; one line says how much
   it matters and why. An item shown without both is not ready to ask.
 - **Assume no context.** Everyday words, short sentences, the product part explained before the problem in it, no

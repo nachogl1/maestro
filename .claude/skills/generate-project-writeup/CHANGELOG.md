@@ -4,6 +4,13 @@ Record notable changes here.
 
 ## Unreleased
 
+- **A one-page Executive Summary before the table of contents.** Right after the cover, the
+  report now gives two or three sentences on what was built and why, one or two on the
+  cost-and-time headline with a pointer to the method, and a three-row table (traditional,
+  actual, saving) with the same rows as Table 1. It uses only the blocks the generator already
+  draws. Step 8 checks the rendered file: the summary sits before the table of contents and
+  its table matches Table 1; the chat report names the first pages in order. Updated Step 6,
+  Step 8 and the frontmatter description.
 - **Added `VERIFY.md`**: read-only checks for git, Python 3.8+, the bundled generator and the Downloads folder.
 - **Renamed to `generate-project-writeup`** (the `-orion` suffix is dropped) and the
   description now starts with `ORION -` so the origin stays visible in skill listings.

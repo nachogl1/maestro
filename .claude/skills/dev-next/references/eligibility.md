@@ -25,9 +25,9 @@ gh issue view N --json title,body,labels,comments
 | **Not** labelled `needs-human` | Somebody has to answer it first. The reason is in the issue's last comment. |
 | **Not** labelled `outside-change` | It touches a repository this team does not own; a human drives it to a pull request for that repository's reviewer. |
 | **Not** carrying any `wayfinder:*` label (`wayfinder:map`, `wayfinder:research`, …) | Planning tickets belong to the planning skill, not to development. |
-| No assignee | The assignee is the claim. Someone owns it. A run that gave up on a story unassigned itself (`SKILL.md`, the release rule at the top); an assignee left behind is a live claim. The `in-progress` label alone never blocks: it is a hint to people, removed on release with the assignee. |
+| No assignee | The assignee is the claim. Someone owns it. A run that stopped a story keeps its assignee on purpose (`SKILL.md`, the stop rule at the top): the story stays its runner's until they resume it with `/dev-next #<N>` or unassign it for a teammate. The `in-progress` label alone never blocks: it is a hint to people, removed when a run stops. |
 | No open pull request with head `feat/N-*` | Work is already in flight. |
-| No remote branch `feat/N-*` | A run may have crashed mid-flight; do not trample it. A released story whose branch stays for a human becomes eligible again once that person deletes the branch or takes it over. |
+| No remote branch `feat/N-*` | A run may have crashed mid-flight; do not trample it. A stopped story's branch stays for its runner, who resumes it by name (`SKILL.md` phase 1, *Resuming*). |
 | Every blocker is **CLOSED** — in the body **and** in GitHub's native relation | Not "nearly done". Closed. Either place blocks. |
 
 Blockers come from two places and the union counts. The body: take every `#N` on the lines under a `### Blocked by`

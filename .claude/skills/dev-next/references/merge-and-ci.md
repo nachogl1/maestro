@@ -7,6 +7,21 @@ enforcement. Follow it exactly.
 **Never push to `main`.** Every change lands through `gh pr merge` on a pull request that exists and has been reviewed.
 Full autonomy means the agent may open, review and merge that pull request — never that it may skip it.
 
+## Owner merges — a story that stops at its pull request
+
+A story labelled `owner-merges` is merged by a person, never by this skill (the baseline's *Who merges* rule). After
+its review approves it:
+
+1. **No slot.** Skip step 0: nothing merges, so the machine's queue is not held.
+2. **Steps 1-3 as written**, so the owner gets a pull request on the current `main` with green checks: merge
+   `origin/main` in and push, poll for the check run (without the slot, the poll skips the `merging` refresh and
+   re-check), and read the gate. A conflict or red goes back to `dev-N` as in those steps; red after two rounds, or no
+   checks reported, stops the story as in step 3.
+3. **Green → stop, never `gh pr merge`.** The issue's last comment: `Pull request #<P> is open with green checks. This
+   story is owner-merges: try the change, then merge it yourself.` Then `gh issue edit <N> --remove-label in-progress`
+   (the assignee stays), and the issue's entry is removed from the in-flight file. Steps 4 and 5 are never reached:
+   the worktree and branch stay for the open pull request, and the issue closes when the owner merges it (`Closes #<N>`).
+
 ## 0 · Take the merge slot
 
 Read the in-flight file (`in-flight.md`). `merging` held with a `since` under 30 minutes → wait, re-read every 60
@@ -60,33 +75,41 @@ on the pull request is the gate**; otherwise every check that ran on the pull re
 shows `SKIPPED` on pull requests (a job that runs only on `main`, such as a publish or deploy job) is not red. Nobody
 runs the suite locally a second time — the suite runs once per gate, never once locally and once in CI. If no CI exists,
 or it does not run the full suite, the orchestrator runs the gate on the merged branch in the worktree before merging,
-and that run is the gate.
+and that run is the gate; it sizes the full suite's test copies right before it runs (`in-flight.md`, *Test copies*).
 
 - **Green** → merge.
 - **Red** → release `merging`, then send the failure back to a fresh `dev-N` round; the branch re-takes the slot when
-  it is ready again. **After two red rounds**: label `needs-human`, leave the branch, and **release the issue** — the
-  failure as the last comment, `gh issue edit <N> --remove-label in-progress --remove-assignee @me`, its entry removed
-  from the in-flight file (step 5 is never reached on this path) — then move on. A story still assigned is never
-  eligible again, even once a person re-marks it `agent-ready`; a leftover `in-progress` only misleads the team.
+  it is ready again. **After two red rounds**: leave the branch and **stop the story, keeping `agent-ready`** (a
+  technical failure, `SKILL.md`, the stop rule at the top) — the failure as the last comment, ending with `Resume with
+  /dev-next #<N>.`, `gh issue edit <N> --remove-label in-progress` with the assignee kept, its entry removed from the
+  in-flight file (step 5 is never reached on this path) — then move on. The kept assignee holds the story for its
+  runner; a leftover `in-progress` would only mislead the team.
 - **Pending** → wait. Never merge on pending.
 - **No checks reported, after the poll window expired** → this is **red**. Do not merge. Something is wrong with the
-  workflow itself; **release `merging`**, label `needs-human` and **release the issue** exactly as for red (comment,
-  `in-progress` removed, unassigned, in-flight entry removed), saying so in the comment.
+  workflow itself; **release `merging`** and **stop the story** exactly as for red (comment, `in-progress` removed,
+  assignee and `agent-ready` kept, in-flight entry removed), saying so in the comment.
 
 ## 4 · Merge and verify
 
 ```
 # first: re-read the in-flight file — merging.run must be yours, else do NOT merge (in-flight.md, The merge slot, step 3)
+# then: the branch must not be behind main — anything but 0 means main moved, so go back to step 1
+git -C <wt root>/<N>-<slug> fetch origin
+git -C <wt root>/<N>-<slug> rev-list --count HEAD..origin/main
 gh pr merge <P> --squash               # no --delete-branch: step 5 deletes the branches
 gh pr view <P> --json state           # must be MERGED; judge by this, not by the exit code
 gh issue view <N> --json title,body,labels,comments,state   # state must be CLOSED
 ```
 
+**Right before `gh pr merge`, check the branch is not behind `origin/main`.** The slot keeps this machine's other
+terminals out, but a person or another machine can still land on `main` while CI runs. A count above 0 → do not
+merge: keep the slot and go back to step 1 (merge `main` in, push, then the gate of steps 2 and 3 on the new head).
+
 Use the merge method the project's `CLAUDE.md` names; squash is the default.
 
 **As soon as `gh pr merge` returns — merged or failed — set `merging` to `null` in the in-flight file.** The slot is
 held for minutes, never across the clean-up below. A **failed** `gh pr merge` is treated exactly as red in step 3: back
-to step 0 once the cause is fixed, and after two failures `needs-human` with the issue released as in step 3.
+to step 0 once the cause is fixed, and after two failures the story is stopped as in step 3, keeping `agent-ready`.
 
 If the issue did not close, the `Closes #N` line was missing or malformed. Close it manually and note it on the pull request.
 
