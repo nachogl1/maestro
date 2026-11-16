@@ -23,7 +23,11 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import { useInjectorTriggers } from "@/hooks/useInjectorTriggers";
-import type { TriggerFiringEntry, TriggerHistoryEntry } from "@/lib/injectorTriggers";
+import {
+  parseSavedTriggers,
+  type TriggerFiringEntry,
+  type TriggerHistoryEntry,
+} from "@/lib/injectorTriggers";
 import { useInjectedMessageStore } from "@/stores/useInjectedMessageStore";
 import { useInjectorStore } from "@/stores/useInjectorStore";
 import { useInjectorTriggerStore, useTriggerHistoryStore } from "@/stores/useInjectorTriggerStore";
@@ -110,7 +114,6 @@ function addTicked(name: string, watchIds: number[], message = "run /compact") {
       watchIds,
       threshold: 80,
       message,
-      target: "reached",
     }),
   );
 }
@@ -135,13 +138,11 @@ describe("InjectorTriggersSection", () => {
   it("adds a named trigger for the ticked terminals and lists it, then deletes it", () => {
     useInjectorStore.setState({ selectedIds: [1, 3] });
     render(<InjectorTriggersSection />);
-    const sendTo = screen.getByRole("combobox", { name: "send the message to" });
-    expect(sendTo).toHaveValue("reached");
+    expect(screen.queryByText(/send the message to/)).toBeNull();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Handoff" } });
     fireEvent.change(screen.getByLabelText("When a terminal reaches"), {
       target: { value: "70" },
     });
-    fireEvent.change(sendTo, { target: { value: "all" } });
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "write a handoff" } });
     fireEvent.click(screen.getByRole("button", { name: /Add trigger/ }));
 
@@ -151,11 +152,11 @@ describe("InjectorTriggersSection", () => {
       watch: "ticked",
       watchIds: [1, 3],
       threshold: 70,
-      target: "all",
       message: "write a handoff",
     });
+    expect(trigger).not.toHaveProperty("target");
     const row = screen.getByRole("listitem", { name: "Handoff" });
-    expect(within(row).getByText("At 70% → every terminal it watches")).toBeTruthy();
+    expect(within(row).getByText("At 70% context")).toBeTruthy();
     expect(within(row).getByText("Not fired yet")).toBeTruthy();
     expect(within(addForm()).getByLabelText("Name")).toHaveValue("");
 
@@ -172,7 +173,7 @@ describe("InjectorTriggersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add trigger/ }));
 
     const row = screen.getByRole("listitem", { name: "Stop and write a…" });
-    expect(within(row).getByText("At 80% → only that terminal")).toBeTruthy();
+    expect(within(row).getByText("At 80% context")).toBeTruthy();
   });
 
   it("lists the watched terminals from the pill: the ticked ones, or every open one", () => {
@@ -184,7 +185,6 @@ describe("InjectorTriggersSection", () => {
         watchIds: [],
         threshold: 80,
         message: "b",
-        target: "reached",
       }),
     );
     render(<InjectorTriggersSection />);
@@ -236,7 +236,7 @@ describe("InjectorTriggersSection", () => {
       expect.objectContaining({ threshold: 65, message: "run /compact now", watchIds: [2] }),
     ]);
     const row = screen.getByRole("listitem", { name: "Compact" });
-    expect(within(row).getByText("At 65% → only that terminal")).toBeTruthy();
+    expect(within(row).getByText("At 65% context")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "1 terminal" })).toBeTruthy();
   });
 
@@ -351,6 +351,36 @@ describe("InjectorTriggersSection", () => {
     expect(useTriggerHistoryStore.getState().entries).toEqual([]);
   });
 
+  it.each([
+    { what: "every send worked", sent: 1, failed: 0, shown: "delivered" },
+    { what: "every send failed", sent: 0, failed: 1, shown: "failed" },
+    { what: "some sends failed", sent: 1, failed: 1, shown: "1 delivered, 1 failed" },
+  ])("says on the last-fired line whether the message arrived when $what", ({
+    sent,
+    failed,
+    shown,
+  }) => {
+    addTicked("Compact", [1]);
+    const [trigger] = useInjectorTriggerStore.getState().triggers;
+    const failures = Array.from({ length: failed }, () => ({
+      sessionId: 2,
+      name: "beta",
+      error: "terminal closed",
+    }));
+    const at = new Date(2026, 10, 16, 14, 32).getTime();
+    act(() =>
+      useInjectorTriggerStore
+        .getState()
+        .setLastFire(trigger.id, { at, reachedNames: ["alpha"], result: { sent, failures } }),
+    );
+    render(<InjectorTriggersSection />);
+
+    const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    expect(screen.getByRole("button", { name: /Last fired/ })).toHaveTextContent(
+      `Last fired ${time} by alpha: ${shown}`,
+    );
+  });
+
   it("marks a ticked trigger with no open terminal as watching nothing", () => {
     addTicked("After restart", []);
     render(<InjectorTriggersSection />);
@@ -362,38 +392,35 @@ describe("InjectorTriggersSection", () => {
 });
 
 describe("useInjectorTriggers", () => {
-  it("broadcasts to every watched terminal once when one reaches the threshold", async () => {
-    useInjectorTriggerStore
-      .getState()
-      .addTrigger({ watchIds: [1, 2], threshold: 50, message: "compact now", target: "all" });
+  it("sends an old saved send-to-all trigger only to the one of three watched terminals that reached it", async () => {
+    const saved = [
+      { id: "old", name: "", watch: "all", threshold: 50, message: "compact now", target: "all" },
+    ];
+    useInjectorTriggerStore.setState({ triggers: parseSavedTriggers(saved) });
     renderHook(() => useInjectorTriggers());
 
     setContext(1, 30);
+    setContext(3, 20);
     expect(injectCalls()).toEqual([]);
 
-    setContext(1, 50);
-    await waitFor(() =>
-      expect(injectCalls()).toEqual([
-        { sessionId: 1, text: "compact now" },
-        { sessionId: 2, text: "compact now" },
-      ]),
-    );
+    setContext(2, 50);
+    await waitFor(() => expect(injectCalls()).toEqual([{ sessionId: 2, text: "compact now" }]));
     await waitFor(() =>
       expect(useInjectorTriggerStore.getState().triggers[0].lastFire).toMatchObject({
-        reachedNames: ["alpha"],
-        result: { sent: 2, failures: [] },
+        reachedNames: ["beta"],
+        result: { sent: 1, failures: [] },
       }),
     );
 
     // Climbing further does not fire again.
-    setContext(1, 70);
-    expect(injectCalls()).toHaveLength(2);
+    setContext(2, 70);
+    expect(injectCalls()).toHaveLength(1);
   });
 
   it("sends only to the terminal that reached it and re-arms after /clear", async () => {
     useInjectorTriggerStore
       .getState()
-      .addTrigger({ watchIds: [1, 2], threshold: 50, message: "hand off", target: "reached" });
+      .addTrigger({ watchIds: [1, 2], threshold: 50, message: "hand off" });
     renderHook(() => useInjectorTriggers());
 
     setContext(2, 55);
@@ -411,7 +438,6 @@ describe("useInjectorTriggers", () => {
       watchIds: [],
       threshold: 50,
       message: "compact now",
-      target: "reached",
     });
     renderHook(() => useInjectorTriggers());
 
@@ -443,17 +469,17 @@ describe("useInjectorTriggers", () => {
       watchIds: [1, 2, 3],
       threshold: 50,
       message: "write a handoff\nnow",
-      target: "all",
     });
     renderHook(() => useInjectorTriggers());
 
     setContext(2, 40);
     setContext(1, 62.4);
+    setContext(3, 75);
     const appended = () =>
       invokeMock.mock.calls
         .filter(([cmd]) => cmd === "append_trigger_history")
         .map(([, args]) => (args as { entry: TriggerHistoryEntry }).entry);
-    await waitFor(() => expect(appended()).toHaveLength(1));
+    await waitFor(() => expect(appended()).toHaveLength(2));
     expect(appended()[0]).toEqual({
       kind: "firing",
       id: expect.any(String),
@@ -464,22 +490,23 @@ describe("useInjectorTriggers", () => {
       project: "maestro",
       percent: 62,
       excerpt: "write a handoff now",
-      recipients: [
-        { name: "alpha", delivered: true },
-        { name: "beta", delivered: true },
-        { name: "gamma", delivered: false, error: "terminal closed" },
-      ],
+      recipients: [{ name: "alpha", delivered: true }],
+    });
+    expect(appended()[1]).toMatchObject({
+      terminal: "gamma",
+      percent: 75,
+      recipients: [{ name: "gamma", delivered: false, error: "terminal closed" }],
     });
     expect(useTriggerHistoryStore.getState().entries).toEqual(appended());
 
     // Only the delivered recipients wait for a follow-up line.
-    expect(useTriggerHistoryStore.getState().pending.map((p) => p.sessionId)).toEqual([1, 2]);
+    expect(useTriggerHistoryStore.getState().pending.map((p) => p.sessionId)).toEqual([1]);
   });
 
   it("writes one follow-up line when a recipient's context drops below the threshold", async () => {
     useInjectorTriggerStore
       .getState()
-      .addTrigger({ watchIds: [2], threshold: 50, message: "hand off", target: "reached" });
+      .addTrigger({ watchIds: [2], threshold: 50, message: "hand off" });
     renderHook(() => useInjectorTriggers());
 
     setContext(2, 55);
@@ -534,7 +561,7 @@ describe("useInjectorTriggers", () => {
     act(() =>
       useInjectorTriggerStore
         .getState()
-        .addTrigger({ watchIds: [3], threshold: 80, message: "stop", target: "all" }),
+        .addTrigger({ watchIds: [3], threshold: 80, message: "stop" }),
     );
     await waitFor(() => expect(injectCalls()).toEqual([{ sessionId: 3, text: "stop" }]));
   });

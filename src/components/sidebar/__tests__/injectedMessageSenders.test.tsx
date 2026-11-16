@@ -75,12 +75,12 @@ const senders: { name: string; sender: string; send: () => void }[] = [
         watchIds: [1, 2],
         threshold: 50,
         message: "commit your work",
-        target: "all",
       });
       renderHook(() => useInjectorTriggers());
+      // Both terminals reach the level, so both are sent the message.
       act(() => {
         useSessionStore.setState((s) => ({
-          sessions: s.sessions.map((x) => (x.id === 1 ? { ...x, contextPercent: 60 } : x)),
+          sessions: s.sessions.map((x) => ({ ...x, contextPercent: 60 })),
         }));
       });
     },
