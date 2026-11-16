@@ -1,9 +1,9 @@
 import { Pencil, Plus, Trash2, Zap } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { sessionsForTab } from "@/hooks/useProjectStatus";
+import type { InjectorRunResult } from "@/lib/injector";
 import {
   type InjectorTrigger,
-  type InjectorTriggerTarget,
   type InjectorTriggerWatch,
   triggerLabel,
   watchedIds,
@@ -22,12 +22,6 @@ import { TriggerHistoryList } from "./TriggerHistoryList";
 
 /** Percent a new trigger starts with. */
 const DEFAULT_TRIGGER_THRESHOLD = "80";
-
-/** Wording of each "send the message to" choice, shared by the form and the rows. */
-const TARGET_LABELS: Record<InjectorTriggerTarget, string> = {
-  reached: "only that terminal",
-  all: "every terminal it watches",
-};
 
 /** Shown on a ticked trigger none of whose terminals is open (always so after a restart). */
 const WATCHES_NOTHING = "watches nothing, edit to pick terminals";
@@ -49,7 +43,6 @@ interface TriggerFormValues {
   name: string;
   watch: InjectorTriggerWatch;
   threshold: string;
-  target: InjectorTriggerTarget;
   message: string;
 }
 
@@ -57,7 +50,6 @@ const EMPTY_FORM: TriggerFormValues = {
   name: "",
   watch: "ticked",
   threshold: DEFAULT_TRIGGER_THRESHOLD,
-  target: "reached",
   message: "",
 };
 
@@ -66,7 +58,6 @@ function formValuesOf(trigger: InjectorTrigger): TriggerFormValues {
     name: trigger.name,
     watch: trigger.watch,
     threshold: String(trigger.threshold),
-    target: trigger.target,
     message: trigger.message,
   };
 }
@@ -74,8 +65,8 @@ function formValuesOf(trigger: InjectorTrigger): TriggerFormValues {
 /**
  * Triggers, under the Injector: watch every terminal or the ones ticked in the
  * Injector above and, when one of them reaches a chosen context percent, send
- * a message automatically (see `useInjectorTriggers`). Triggers are saved
- * across restarts (`useInjectorTriggerStore`).
+ * a message automatically to that terminal only (see `useInjectorTriggers`).
+ * Triggers are saved across restarts (`useInjectorTriggerStore`).
  */
 export function InjectorTriggersSection() {
   const tabs = useWorkspaceStore((s) => s.tabs);
@@ -118,8 +109,9 @@ export function InjectorTriggersSection() {
         }
       />
       <p className="mb-1.5 px-1 text-[10px] text-maestro-muted">
-        When a watched terminal's context reaches the level, the message is sent once. It is sent
-        again only after that terminal's context drops below the level (for example after /clear).
+        When a watched terminal's context reaches the level, the message is sent once, to that
+        terminal only. It is sent again only after that terminal's context drops below the level
+        (for example after /clear).
       </p>
 
       {triggers.length > 0 && (
@@ -199,7 +191,6 @@ function TriggerForm({
       watchIds: tickedIds,
       threshold,
       message: values.message,
-      target: values.target,
     });
     if (mode === "add") update({ name: "", message: "" });
   };
@@ -262,19 +253,7 @@ function TriggerForm({
           onChange={(e) => update({ threshold: e.target.value })}
           className={`${inputClass} w-14`}
         />
-        <span>% context,</span>
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <label htmlFor={`${formId}-target`}>send the message to</label>
-        <select
-          id={`${formId}-target`}
-          value={values.target}
-          onChange={(e) => update({ target: e.target.value as InjectorTriggerTarget })}
-          className={`${inputClass} min-w-0 flex-1`}
-        >
-          <option value="reached">{TARGET_LABELS.reached}</option>
-          <option value="all">{TARGET_LABELS.all}</option>
-        </select>
+        <span>% context, it gets:</span>
       </div>
       <label htmlFor={`${formId}-message`} className="block text-maestro-muted">
         Message
@@ -364,9 +343,7 @@ function TriggerRow({
           <Trash2 size={12} />
         </button>
       </div>
-      <div className="text-maestro-muted">
-        At {trigger.threshold}% → {TARGET_LABELS[trigger.target]}
-      </div>
+      <div className="text-maestro-muted">At {trigger.threshold}% context</div>
       <div className="my-0.5 flex items-center gap-1">
         <span>Watches</span>
         {trigger.watch === "ticked" && watched.length === 0 ? (
@@ -395,14 +372,20 @@ function TriggerRow({
         >
           Last fired{" "}
           {new Date(fire.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} by{" "}
-          {fire.reachedNames.join(", ")}: sent to {fire.result.sent}
-          {fire.result.failures.length > 0 ? `, ${fire.result.failures.length} failed` : ""}
+          {fire.reachedNames.join(", ")}: {deliveryText(fire.result)}
         </button>
       ) : (
         <div className="text-[10px] text-maestro-muted">Not fired yet</div>
       )}
     </li>
   );
+}
+
+/** "delivered", "failed", or both counts when a firing reached several terminals. */
+function deliveryText({ sent, failures }: InjectorRunResult): string {
+  if (failures.length === 0) return "delivered";
+  if (sent === 0) return "failed";
+  return `${sent} delivered, ${failures.length} failed`;
 }
 
 /** "all terminals" or "3 terminals"; a click lists the terminals it watches now. */
