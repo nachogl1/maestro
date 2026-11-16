@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 // The badges poll stores/Tauri on mount; they are not what these tests cover.
-vi.mock("../GitHubWatchdogBadge", () => ({ GitHubWatchdogBadge: () => null }));
+vi.mock("@/components/prs-pill/PrsPill", () => ({ PrsPill: () => null }));
 vi.mock("../WorkJournalSuggestionsBadge", () => ({
   useWorkJournalButtonLabel: () => "Work Journal",
   WorkJournalSuggestionsBadge: () => null,

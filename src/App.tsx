@@ -19,7 +19,7 @@ import { type RepositoryInfo, useWorkspaceStore } from "@/stores/useWorkspaceSto
 import { ConclaveDialog } from "./components/conclave/ConclaveDialog";
 import type { GitPanelTab } from "./components/git/GitPanelTabs";
 import { LeftPanels } from "./components/panels/LeftPanels";
-import { openPanelInWindow, togglePanelInWindow } from "./components/panels/panelLayout";
+import { togglePanelInWindow } from "./components/panels/panelLayout";
 import { CrashRecoveryDialog } from "./components/recovery/CrashRecoveryDialog";
 import { ScratchDeleteOrKeepDialog } from "./components/scratch/ScratchDeleteOrKeepDialog";
 import { BottomBar } from "./components/shared/BottomBar";
@@ -46,11 +46,6 @@ import { useBackgroundPollers } from "./hooks/useBackgroundPollers";
 import { useInjectorTriggers } from "./hooks/useInjectorTriggers";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useGitHubStore } from "./stores/useGitHubStore";
-import {
-  useGitHubWatchdogStore,
-  WATCHDOG_ISSUE_SEARCH,
-  WATCHDOG_PR_SEARCH,
-} from "./stores/useGitHubWatchdogStore";
 import type { PanelId } from "./stores/usePanelStripStore";
 import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
 
@@ -393,46 +388,6 @@ function App() {
     if (togglePanelInWindow(panel) === "opened" && panel === "git") setGitPanelTab("status");
   }, []);
 
-  // GitHub watchdog badge click: land on the git panel's PRs/Issues tab with
-  // the watchdog's search filter, in the project that has matching items
-  // (preferring the active project). Reuses the git-panel store fetches; the
-  // in-flight token guard absorbs the duplicate fetch GitGraphPanel fires.
-  const handleWatchdogNavigate = useCallback(
-    (kind: "prs" | "issues") => {
-      const watchdogProjects = useGitHubWatchdogStore.getState().projects;
-      const wsTabs = useWorkspaceStore.getState().tabs;
-      const pick = kind === "prs" ? "reviewRequests" : "assignedIssues";
-      const withItems = watchdogProjects.filter((p) => p[pick].length > 0);
-      const activeWsTab = wsTabs.find((t) => t.active);
-      const activeRepo = activeWsTab
-        ? (activeWsTab.selectedRepoPath ?? activeWsTab.projectPath)
-        : null;
-      const target = withItems.find((p) => p.repoPath === activeRepo) ?? withItems[0] ?? null;
-
-      if (target) {
-        const targetTab = wsTabs.find(
-          (t) => (t.selectedRepoPath ?? t.projectPath) === target.repoPath,
-        );
-        if (targetTab && !targetTab.active) selectTab(targetTab.id);
-      }
-      // The git panel targets the active tab outside eagle view; leave eagle
-      // view so the selected project is actually the one shown.
-      setEagleView(false);
-
-      const repoPath = target?.repoPath ?? activeRepo;
-      if (repoPath) {
-        if (kind === "prs") {
-          void useGitHubStore.getState().fetchPullRequests(repoPath, "open", WATCHDOG_PR_SEARCH);
-        } else {
-          void useGitHubStore.getState().fetchIssues(repoPath, "open", WATCHDOG_ISSUE_SEARCH);
-        }
-      }
-      setGitPanelTab(kind);
-      openPanelInWindow("git");
-    },
-    [selectTab],
-  );
-
   // Alt+M: the Waypoints button's path, for the project the git panel targets
   // (the active tab, or the eagle view carousel's project).
   const handleOpenIssueMap = useCallback(() => {
@@ -542,7 +497,6 @@ function App() {
               eagleProjects={eagleProjects}
               onAddSessionToProject={handleAddSessionToProject}
               onOpenScratch={handleOpenScratch}
-              onWatchdogNavigate={handleWatchdogNavigate}
             />
           </div>
 
