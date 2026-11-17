@@ -1,5 +1,10 @@
-import { NodeViewContent, type NodeViewProps, NodeViewWrapper } from "@tiptap/react";
-import { GripVertical, X } from "lucide-react";
+import {
+  NodeViewContent,
+  type NodeViewProps,
+  NodeViewWrapper,
+  useEditorState,
+} from "@tiptap/react";
+import { ArrowDown, ArrowUp, GripVertical, X } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { projectColorFor } from "@/lib/projectColor";
@@ -7,6 +12,7 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { normalizeEntryTime } from "@/lib/workJournalEntry";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { canMoveEntry, type EntryMoveDirection } from "./WorkJournalEntryNode";
 import { WorkJournalSourceTag } from "./WorkJournalSourceTag";
 
 /** The attributes an entry card node stores (see `WorkJournalEntryNode`). */
@@ -22,13 +28,34 @@ const CONTROL_BUTTON =
 /**
  * One Work Journal entry card inside the page: a drag handle, the time (bold,
  * click to edit), the project chip and source tag above the card's text box
- * (the editable part, bold up to the first colon), and a delete button. Every
- * change is an editor step, so Ctrl+Z undoes it.
+ * (the editable part, bold up to the first colon), move up and down buttons
+ * and a delete button. Every change is an editor step, so Ctrl+Z undoes it.
  */
-export function WorkJournalEntryCard({ node, updateAttributes, deleteNode }: NodeViewProps) {
+export function WorkJournalEntryCard({
+  node,
+  editor,
+  getPos,
+  updateAttributes,
+  deleteNode,
+}: NodeViewProps) {
   const attrs = node.attrs as WorkJournalEntryAttrs;
   // A restore or undo is replacing the journal: nothing here may change.
   const locked = useWorkJournalStore((s) => s.replacing);
+  // Read from the page on every change, so the buttons follow the card's
+  // place; the lock is `locked`'s job.
+  const movable = useEditorState({
+    editor,
+    selector: ({ editor: current }) => {
+      const pos = getPos();
+      const can = (direction: EntryMoveDirection): boolean =>
+        pos !== undefined && canMoveEntry(current.state.doc, pos, direction);
+      return { up: can("up"), down: can("down") };
+    },
+  });
+  const move = (direction: EntryMoveDirection): void => {
+    const pos = getPos();
+    if (pos !== undefined) editor.commands.moveWorkJournalEntry(direction, pos);
+  };
 
   return (
     <NodeViewWrapper
@@ -60,6 +87,28 @@ export function WorkJournalEntryCard({ node, updateAttributes, deleteNode }: Nod
         </div>
         <NodeViewContent className="work-journal-entry-text min-w-0 break-words" />
       </div>
+      <button
+        type="button"
+        contentEditable={false}
+        onClick={() => move("up")}
+        disabled={locked || !movable.up}
+        aria-label="Move this entry up"
+        title="Move this entry up (Alt+Up)"
+        className={`${CONTROL_BUTTON} hover:bg-maestro-card hover:text-maestro-text`}
+      >
+        <ArrowUp size={12} />
+      </button>
+      <button
+        type="button"
+        contentEditable={false}
+        onClick={() => move("down")}
+        disabled={locked || !movable.down}
+        aria-label="Move this entry down"
+        title="Move this entry down (Alt+Down)"
+        className={`${CONTROL_BUTTON} hover:bg-maestro-card hover:text-maestro-text`}
+      >
+        <ArrowDown size={12} />
+      </button>
       <button
         type="button"
         contentEditable={false}

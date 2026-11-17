@@ -143,6 +143,9 @@ export async function openWorkJournalWindow(): Promise<void> {
     height: 760,
     minWidth: 560,
     minHeight: 400,
+    // The journal takes no file drops; with them on, Windows swallows the
+    // drag of a card's handle. The main window keeps them for terminals.
+    dragDropEnabled: false,
   });
   created.once("tauri://error", (event) => {
     console.error("Failed to open the Work Journal window:", event.payload);

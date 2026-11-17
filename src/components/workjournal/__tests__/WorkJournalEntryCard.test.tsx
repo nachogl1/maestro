@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Editor, JSONContent } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -232,6 +234,146 @@ describe("Work Journal entry cards", () => {
     expect(await lastSavedBody()).toEqual(
       doc(paragraph("First"), card("Moved card"), paragraph("Second"), TRAILING),
     );
+  });
+
+  it("moves a card down and up by its arrow buttons, and one Ctrl+Z undoes each move", async () => {
+    const body = doc(paragraph("Note"), card("First card"), card("Second card"));
+    await renderPage(body);
+
+    fireEvent.click(within(cards()[0]).getByRole("button", { name: "Move this entry down" }));
+    await settle();
+    expect(await lastSavedBody()).toEqual(
+      doc(paragraph("Note"), card("Second card"), card("First card"), TRAILING),
+    );
+
+    fireEvent.click(within(cards()[0]).getByRole("button", { name: "Move this entry up" }));
+    await settle();
+    expect(await lastSavedBody()).toEqual(
+      doc(card("Second card"), paragraph("Note"), card("First card"), TRAILING),
+    );
+
+    fireEvent.keyDown(pageEditor().view.dom, { key: "z", ctrlKey: true });
+    await settle();
+    expect(await lastSavedBody()).toEqual(
+      doc(paragraph("Note"), card("Second card"), card("First card"), TRAILING),
+    );
+  });
+
+  it("Alt+Up and Alt+Down move the card with the cursor in it, and the cursor stays in it", async () => {
+    await renderPage(doc(paragraph("Note"), card("First card"), card("Second card")));
+    // After "Sec" in the second card: past "Note" (0-6) and the first card (6-20).
+    act(() => {
+      pageEditor().commands.setTextSelection(25);
+    });
+
+    fireEvent.keyDown(pageEditor().view.dom, { key: "ArrowUp", altKey: true });
+    fireEvent.keyDown(pageEditor().view.dom, { key: "ArrowUp", altKey: true });
+    act(() => {
+      pageEditor().commands.insertContent("X");
+    });
+    expect(await lastSavedBody()).toEqual(
+      doc(card("SecXond card"), paragraph("Note"), card("First card"), TRAILING),
+    );
+
+    fireEvent.keyDown(pageEditor().view.dom, { key: "ArrowDown", altKey: true });
+    act(() => {
+      pageEditor().commands.insertContent("Y");
+    });
+    expect(await lastSavedBody()).toEqual(
+      doc(paragraph("Note"), card("SecXYond card"), card("First card"), TRAILING),
+    );
+  });
+
+  it("up is off on the first block, down on the last, and both while the journal is replaced", async () => {
+    await renderPage(doc(card("First card"), paragraph("Note"), card("Last card")));
+    const up = (i: number) =>
+      within(cards()[i]).getByRole("button", { name: "Move this entry up" });
+    const down = (i: number) =>
+      within(cards()[i]).getByRole("button", { name: "Move this entry down" });
+
+    expect(up(0)).toBeDisabled();
+    expect(down(0)).toBeEnabled();
+    // The empty line the editor keeps after a last card is not a block to move past.
+    expect(up(1)).toBeEnabled();
+    expect(down(1)).toBeDisabled();
+
+    // The buttons follow the order: the last card moved to the top.
+    fireEvent.click(up(1));
+    await settle();
+    fireEvent.click(up(1));
+    await settle();
+    expect(cards()[0]).toHaveTextContent("Last card");
+    expect(up(0)).toBeDisabled();
+    expect(up(1)).toBeEnabled();
+
+    act(() => {
+      useWorkJournalStore.setState({ replacing: true });
+    });
+    await settle();
+    for (const i of [0, 1]) {
+      expect(up(i)).toBeDisabled();
+      expect(down(i)).toBeDisabled();
+    }
+  });
+
+  it("the arrows follow a restore that reorders the page while it is locked", async () => {
+    const page = { date: DATE, title: "Thu", origin: "auto" as const };
+    const before = doc(paragraph("Note"), card("Card A"), card("Card B"));
+    useWorkJournalStore.setState({ pages: { [DATE]: { ...page, body: before, rev: 1 } } });
+    await renderPage(before);
+    act(() => {
+      useWorkJournalStore.setState({ replacing: true });
+    });
+    await settle();
+
+    // A restore lands the new page and lifts the lock together.
+    act(() => {
+      useWorkJournalStore.setState({
+        pages: {
+          [DATE]: {
+            ...page,
+            body: doc(card("Card B"), paragraph("Note"), card("Card A")),
+            rev: 2,
+          },
+        },
+        replacing: false,
+      });
+    });
+    await settle();
+
+    const [first] = cards();
+    expect(first).toHaveTextContent("Card B");
+    expect(within(first).getByRole("button", { name: "Move this entry down" })).toBeEnabled();
+  });
+
+  it("never moves a card where its list item cannot hold it", async () => {
+    const item: JSONContent = {
+      type: "listItem",
+      content: [paragraph("Item"), card("Nested card")],
+    };
+    const body = doc({ type: "bulletList", content: [item] }, paragraph("After"));
+    await renderPage(body);
+    const [nested] = cards();
+
+    // A list item must start with its own text, so the card cannot go above it.
+    expect(within(nested).getByRole("button", { name: "Move this entry up" })).toBeDisabled();
+    act(() => {
+      pageEditor().commands.setTextSelection(10);
+    });
+    fireEvent.keyDown(pageEditor().view.dom, { key: "ArrowUp", altKey: true });
+    expect(pageEditor().getJSON()).toEqual(body);
+  });
+
+  it("keeps the empty card's hint on one line inside the card, cut with an ellipsis", () => {
+    const css = readFileSync(resolve(__dirname, "../../../styles/globals.css"), "utf8");
+    const rule = css.match(/\.work-journal-entry-text p\.is-empty::before\s*\{([^}]*)\}/)?.[1];
+    expect(rule).toBeDefined();
+    expect(rule).toMatch(/white-space:\s*nowrap/);
+    expect(rule).toMatch(/overflow:\s*hidden/);
+    expect(rule).toMatch(/text-overflow:\s*ellipsis/);
+    // The old zero-height float let a wrapped second line spill below the card.
+    expect(rule).not.toMatch(/height:\s*0/);
+    expect(rule).not.toMatch(/float:/);
   });
 
   it("+ Add entry adds an empty Typed card stamped now, with the cursor in it", async () => {
