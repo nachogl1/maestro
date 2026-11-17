@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261117-164014-c914",
+  "issue": 674,
+  "title": "Work Journal: a new card's hint spills out of the card, and cards cannot be reordered",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 675,
+  "merged_at": "2026-11-17T17:33:00Z",
+  "merge_commit": "9fc74b9",
+  "seam": "src/components/workjournal/",
+  "story": "An empty new entry card used to show its grey hint on a second line that hung below the card; now the hint is one clipped line inside the card. Every card now has up and down arrows next to its delete cross, and Alt+Up and Alt+Down do the same, so cards can be put in a new order after they are made. In the pop-out journal window, dragging a card by its handle now works on Windows; in the main window's side panel, the arrows take its place.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/empty-card-hint",
+      "criterion": "The hint of an empty card stays on one line inside the card and ends in an ellipsis",
+      "steps": "Turn on the Work Journal, open today's page in the side panel, click + Add entry, then make the panel narrow.",
+      "expected": "The grey hint 'What did you do? (bold up to the first colon)' is one line inside the card's border, cut with an ellipsis, and the cursor sits at the start of the line."
+    },
+    {
+      "key": "src/components/workjournal/move-card-buttons",
+      "criterion": "The arrows swap a card with the block above or below it, and one Ctrl+Z undoes one move",
+      "steps": "Type the free note 'Note A', add two entries 'Card one' and 'Card two', click Card one's down arrow, reload the page, then press Ctrl+Z.",
+      "expected": "Card two goes above Card one, the order survives the reload, and Ctrl+Z puts it back."
+    },
+    {
+      "key": "src/components/workjournal/move-card-keys",
+      "criterion": "Alt+Up and Alt+Down move the card that holds the cursor",
+      "steps": "Click inside 'Card two', press Alt+Up twice, then type 'x'.",
+      "expected": "The card goes above 'Note A' and the 'x' appears in Card two."
+    },
+    {
+      "key": "src/components/workjournal/move-card-disabled",
+      "criterion": "The first card's up arrow and the last card's down arrow are off, and all are off during a restore",
+      "steps": "Look at the arrows on the top and bottom cards, then run Restore from backup.",
+      "expected": "Up is greyed out on the first card and down on the last, and all arrows are greyed out while the restore runs."
+    },
+    {
+      "key": "src/components/workjournal/popout-drag",
+      "criterion": "In the pop-out journal window a card can be dragged by its handle",
+      "steps": "On Windows, open the pop-out Work Journal window and drag a card's handle between two free notes.",
+      "expected": "A red line shows where it will land, and the card drops there."
+    }
+  ],
+  "no_qa_reason": null
+}

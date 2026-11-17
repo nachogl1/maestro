@@ -1,0 +1,45 @@
+{
+  "run_id": "maestro-20261117-164014-c914",
+  "issue": 674,
+  "title": "Work Journal: a new card's hint spills out of the card, and cards cannot be reordered",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-17T16:40:14Z",
+  "finished_at": "2026-11-17T17:36:00Z",
+  "outcome": "merged",
+  "pr": 675,
+  "summary": "A new empty Work Journal card's hint no longer spills below the card, and cards can now be reordered with up/down arrows and Alt+Up/Alt+Down (drag also works in the pop-out window); 7 new tests, merged on the green local gate because there are no CI minutes.",
+  "agents": [
+    {
+      "name": "dev-674",
+      "model": "opus",
+      "tokens_total": 174106
+    },
+    {
+      "name": "review-674-r1",
+      "model": "opus",
+      "tokens_total": 153167
+    },
+    {
+      "name": "review-674-r2",
+      "model": "opus",
+      "tokens_total": 146971
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1219,
+    "review_seconds": 1410,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 0
+  },
+  "friction": [
+    "PanelBody.test.tsx's beforeAll warm-up timed out in the reviewer's full suite with 10 copies, skipping 8 tests and turning a local gate red for a file the story never touched; filed as issue #676 (panel-body tests time out in their warm-up under the full parallel suite)"
+  ],
+  "lessons_learned": [
+    "On Windows, Tauri's default file-drop handling swallows HTML5 drag and drop in the webview, so any in-page drag (TipTap drag handles included) needs dragDropEnabled:false on that window or a non-drag alternative"
+  ],
+  "deferred": []
+}
