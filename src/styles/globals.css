@@ -264,10 +264,19 @@
   min-height: 1.45em;
 }
 
+/* One line inside the card, cut with "…" when narrow; absolute, so the cursor
+   still sits at the start of the empty line. */
+.work-journal-editor .work-journal-entry-text p.is-empty {
+  position: relative;
+}
+
 .work-journal-editor .work-journal-entry-text p.is-empty::before {
   content: "What did you do? (bold up to the first colon)";
-  float: left;
-  height: 0;
+  position: absolute;
+  inset: 0 0 auto 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
   color: rgb(var(--maestro-muted));
 }

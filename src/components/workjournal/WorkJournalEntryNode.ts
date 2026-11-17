@@ -1,4 +1,5 @@
-import type { Node as PmNode, Schema } from "@tiptap/pm/model";
+import { closeHistory } from "@tiptap/pm/history";
+import { Fragment, type Node as PmNode, type Schema } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type Selection, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { mergeAttributes, Node, ReactNodeViewRenderer } from "@tiptap/react";
@@ -33,6 +34,12 @@ declare module "@tiptap/core" {
         entry: WorkJournalEntryDraft,
         options?: { focus?: boolean },
       ) => ReturnType;
+      /**
+       * Swaps the card starting at `pos` (the card around the cursor when
+       * left out) with the block right above or below it, as one editor step.
+       * A cursor in the card stays in it.
+       */
+      moveWorkJournalEntry: (direction: EntryMoveDirection, pos?: number) => ReturnType;
     };
   }
 }
@@ -89,6 +96,47 @@ export function entryAppendStart(doc: PmNode): { start: number; fill: boolean } 
   return { start: fill && last ? end - last.nodeSize : end, fill };
 }
 
+/** Which way a card moves: past the block above it or the block below it. */
+export type EntryMoveDirection = "up" | "down";
+
+/** How a card move rewrites the page: the range swapped and where the card then starts. */
+interface EntryMove {
+  from: number;
+  to: number;
+  swapped: Fragment;
+  cardStart: number;
+}
+
+/**
+ * The move of the card starting at `pos` past its neighbouring block, or null
+ * when there is none that way. The empty line the editor keeps after a last
+ * card is not a block to move past: the card is already last.
+ */
+function entryMove(doc: PmNode, pos: number, direction: EntryMoveDirection): EntryMove | null {
+  const card = doc.nodeAt(pos);
+  if (card?.type.name !== WORK_JOURNAL_ENTRY_NODE) return null;
+  const $pos = doc.resolve(pos);
+  const index = $pos.index();
+  const end = pos + card.nodeSize;
+  if (direction === "up") {
+    if (index === 0) return null;
+    const above = $pos.parent.child(index - 1);
+    const from = pos - above.nodeSize;
+    return { from, to: end, swapped: Fragment.from([card, above]), cardStart: from };
+  }
+  if (index + 1 >= $pos.parent.childCount) return null;
+  const below = $pos.parent.child(index + 1);
+  const isTrailingLine =
+    below === doc.lastChild && below.type.name === "paragraph" && below.content.size === 0;
+  if (isTrailingLine) return null;
+  return {
+    from: pos,
+    to: end + below.nodeSize,
+    swapped: Fragment.from([below, card]),
+    cardStart: pos + below.nodeSize,
+  };
+}
+
 /**
  * The doc range of a card's bold lead: its text up to and including the
  * first colon, or all of it when there is no colon. Null for an empty card.
@@ -139,6 +187,12 @@ function cardDepth(selection: Selection): number | null {
     if ($from.node(depth).type.name === WORK_JOURNAL_ENTRY_NODE) return depth;
   }
   return null;
+}
+
+/** Where the card around the selection's start begins, or null outside a card. */
+function cardStart(selection: Selection): number | null {
+  const depth = cardDepth(selection);
+  return depth === null ? null : selection.$from.before(depth);
 }
 
 /**
@@ -207,6 +261,28 @@ export const WorkJournalEntry = Node.create({
           }
           return true;
         },
+      moveWorkJournalEntry:
+        (direction, pos) =>
+        ({ editor, tr, dispatch }) => {
+          if (!editor.isEditable) return false;
+          const start = pos ?? cardStart(tr.selection);
+          if (start === null) return false;
+          const move = entryMove(tr.doc, start, direction);
+          if (!move) return false;
+          if (dispatch) {
+            const { from, to } = tr.selection;
+            const cardEnd = start + (tr.doc.nodeAt(start)?.nodeSize ?? 0);
+            const cursorInCard = from > start && to < cardEnd;
+            tr.replaceWith(move.from, move.to, move.swapped);
+            if (cursorInCard) {
+              const shift = move.cardStart - start;
+              tr.setSelection(TextSelection.create(tr.doc, from + shift, to + shift));
+            }
+            // Its own undo step, even right after another move or typing.
+            closeHistory(tr).scrollIntoView();
+          }
+          return true;
+        },
     };
   },
 
@@ -224,6 +300,8 @@ export const WorkJournalEntry = Node.create({
           .scrollIntoView()
           .run();
       },
+      "Alt-ArrowUp": ({ editor }) => editor.commands.moveWorkJournalEntry("up"),
+      "Alt-ArrowDown": ({ editor }) => editor.commands.moveWorkJournalEntry("down"),
     };
   },
 

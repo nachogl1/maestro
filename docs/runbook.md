@@ -404,7 +404,10 @@ requests** or the project's name) take you back up; Escape or a click outside cl
 ## Work Journal: entry cards
 
 - Each entry on a day's page is a card among your free notes. Left to right: a drag handle, the time in bold, then
-  the project chip and the source tag above the card's text, and a delete cross on the right.
+  the project chip and the source tag above the card's text, and on the right the move-up and move-down arrows and a
+  delete cross.
+- An empty card shows the grey hint "What did you do? (bold up to the first colon)" on one line inside the card; in a
+  narrow panel it is cut short with "…".
 - In the card's text, everything up to and including the first colon shows bold as you type; with no colon all of it
   is bold. The text keeps the page's formatting buttons. Enter in a card starts a free note right below it.
 - Click the time to change it: type `9:05` or `09:05` and press Enter or click away. A blank time means no time; a
@@ -415,7 +418,12 @@ requests** or the project's name) take you back up; Escape or a click outside cl
 - **+ Add entry**, at the right end of the formatting toolbar, adds an empty Typed card at the end of the page with
   the current time, no project, and the cursor in its text.
 - Accept in the Suggestions box adds a card at the end of the page with the suggestion's time, project and source.
-- Drag a card by its handle: a red line shows where it lands, between cards or between free notes.
+- Change the order of cards with the arrows: up swaps the card with the block right above it (a card, a free note or
+  a list), down with the one right below. Alt+Up and Alt+Down do the same while the cursor is in the card's text, and
+  the cursor stays in the card. Up is greyed out on the page's first block, down on its last, and both while the
+  journal is being restored. Ctrl+Z undoes one move at a time. The new order is what is saved.
+- Drag a card by its handle: a red line shows where it lands, between cards or between free notes. On Windows,
+  dragging works only in the pop-out Work Journal window; in the main window's side panel, use the arrows.
 - The cross deletes a card at once, with no question; Ctrl+Z brings it back.
 - Pages written before cards keep their plain `HH:MM - ...` lines exactly as they were.
 

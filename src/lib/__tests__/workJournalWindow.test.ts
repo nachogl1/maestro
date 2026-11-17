@@ -98,6 +98,13 @@ describe("openWorkJournalWindow", () => {
     expect(options).toHaveProperty("additionalBrowserArgs", mainArgs);
   });
 
+  it("turns off file drops in the journal window, so a card's drag handle can drop", async () => {
+    getByLabel.mockResolvedValue(null);
+    await openWorkJournalWindow();
+
+    expect(vi.mocked(WebviewWindow).mock.calls[0][1]).toHaveProperty("dragDropEnabled", false);
+  });
+
   it("brings an already open window forward instead of opening another", async () => {
     const existing = {
       unminimize: vi.fn(() => Promise.resolve()),
