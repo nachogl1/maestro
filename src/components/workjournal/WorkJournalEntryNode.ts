@@ -109,32 +109,40 @@ interface EntryMove {
 
 /**
  * The move of the card starting at `pos` past its neighbouring block, or null
- * when there is none that way. The empty line the editor keeps after a last
- * card is not a block to move past: the card is already last.
+ * when there is none that way or its parent cannot hold the swapped order (a
+ * list item must start with its own text). The empty line the editor keeps
+ * after a last card is not a block to move past: the card is already last.
  */
 function entryMove(doc: PmNode, pos: number, direction: EntryMoveDirection): EntryMove | null {
   const card = doc.nodeAt(pos);
   if (card?.type.name !== WORK_JOURNAL_ENTRY_NODE) return null;
   const $pos = doc.resolve(pos);
+  const { parent } = $pos;
   const index = $pos.index();
   const end = pos + card.nodeSize;
   if (direction === "up") {
     if (index === 0) return null;
-    const above = $pos.parent.child(index - 1);
+    const above = parent.child(index - 1);
+    const swapped = Fragment.from([card, above]);
+    if (!parent.canReplace(index - 1, index + 1, swapped)) return null;
     const from = pos - above.nodeSize;
-    return { from, to: end, swapped: Fragment.from([card, above]), cardStart: from };
+    return { from, to: end, swapped, cardStart: from };
   }
-  if (index + 1 >= $pos.parent.childCount) return null;
-  const below = $pos.parent.child(index + 1);
+  if (index + 1 >= parent.childCount) return null;
+  const below = parent.child(index + 1);
   const isTrailingLine =
     below === doc.lastChild && below.type.name === "paragraph" && below.content.size === 0;
-  if (isTrailingLine) return null;
-  return {
-    from: pos,
-    to: end + below.nodeSize,
-    swapped: Fragment.from([below, card]),
-    cardStart: pos + below.nodeSize,
-  };
+  const swapped = Fragment.from([below, card]);
+  if (isTrailingLine || !parent.canReplace(index, index + 2, swapped)) return null;
+  return { from: pos, to: end + below.nodeSize, swapped, cardStart: pos + below.nodeSize };
+}
+
+/**
+ * Whether the card starting at `pos` can move that way, read from the page
+ * alone: the editor being read-only for a moment does not change it.
+ */
+export function canMoveEntry(doc: PmNode, pos: number, direction: EntryMoveDirection): boolean {
+  return entryMove(doc, pos, direction) !== null;
 }
 
 /**

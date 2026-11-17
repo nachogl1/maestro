@@ -12,7 +12,7 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { normalizeEntryTime } from "@/lib/workJournalEntry";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import type { EntryMoveDirection } from "./WorkJournalEntryNode";
+import { canMoveEntry, type EntryMoveDirection } from "./WorkJournalEntryNode";
 import { WorkJournalSourceTag } from "./WorkJournalSourceTag";
 
 /** The attributes an entry card node stores (see `WorkJournalEntryNode`). */
@@ -41,13 +41,14 @@ export function WorkJournalEntryCard({
   const attrs = node.attrs as WorkJournalEntryAttrs;
   // A restore or undo is replacing the journal: nothing here may change.
   const locked = useWorkJournalStore((s) => s.replacing);
-  // Read again on every change, so the buttons follow the card's place.
+  // Read from the page on every change, so the buttons follow the card's
+  // place; the lock is `locked`'s job.
   const movable = useEditorState({
     editor,
     selector: ({ editor: current }) => {
       const pos = getPos();
       const can = (direction: EntryMoveDirection): boolean =>
-        pos !== undefined && current.can().moveWorkJournalEntry(direction, pos);
+        pos !== undefined && canMoveEntry(current.state.doc, pos, direction);
       return { up: can("up"), down: can("down") };
     },
   });

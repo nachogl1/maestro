@@ -316,6 +316,54 @@ describe("Work Journal entry cards", () => {
     }
   });
 
+  it("the arrows follow a restore that reorders the page while it is locked", async () => {
+    const page = { date: DATE, title: "Thu", origin: "auto" as const };
+    const before = doc(paragraph("Note"), card("Card A"), card("Card B"));
+    useWorkJournalStore.setState({ pages: { [DATE]: { ...page, body: before, rev: 1 } } });
+    await renderPage(before);
+    act(() => {
+      useWorkJournalStore.setState({ replacing: true });
+    });
+    await settle();
+
+    // A restore lands the new page and lifts the lock together.
+    act(() => {
+      useWorkJournalStore.setState({
+        pages: {
+          [DATE]: {
+            ...page,
+            body: doc(card("Card B"), paragraph("Note"), card("Card A")),
+            rev: 2,
+          },
+        },
+        replacing: false,
+      });
+    });
+    await settle();
+
+    const [first] = cards();
+    expect(first).toHaveTextContent("Card B");
+    expect(within(first).getByRole("button", { name: "Move this entry down" })).toBeEnabled();
+  });
+
+  it("never moves a card where its list item cannot hold it", async () => {
+    const item: JSONContent = {
+      type: "listItem",
+      content: [paragraph("Item"), card("Nested card")],
+    };
+    const body = doc({ type: "bulletList", content: [item] }, paragraph("After"));
+    await renderPage(body);
+    const [nested] = cards();
+
+    // A list item must start with its own text, so the card cannot go above it.
+    expect(within(nested).getByRole("button", { name: "Move this entry up" })).toBeDisabled();
+    act(() => {
+      pageEditor().commands.setTextSelection(10);
+    });
+    fireEvent.keyDown(pageEditor().view.dom, { key: "ArrowUp", altKey: true });
+    expect(pageEditor().getJSON()).toEqual(body);
+  });
+
   it("keeps the empty card's hint on one line inside the card, cut with an ellipsis", () => {
     const css = readFileSync(resolve(__dirname, "../../../styles/globals.css"), "utf8");
     const rule = css.match(/\.work-journal-entry-text p\.is-empty::before\s*\{([^}]*)\}/)?.[1];
