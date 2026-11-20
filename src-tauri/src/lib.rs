@@ -133,6 +133,9 @@ pub fn run() {
                 .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .build(),
         )
+        // Every window, the ones the front end opens included, stays on the
+        // app's own pages (see setup::navigation_guard).
+        .plugin(setup::navigation_guard::plugin())
         .plugin(tauri_plugin_cli::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second instance was launched with these args — forward to the

@@ -3,6 +3,7 @@
 //! server → PR review records → GitHub watchdog → CLI path capture.
 
 mod events;
+pub(crate) mod navigation_guard;
 mod terminal;
 
 use std::sync::Arc;
