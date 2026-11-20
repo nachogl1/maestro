@@ -4,33 +4,50 @@ use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{Manager, Runtime};
 use url::Url;
 
-/// The framework's schemes for app content. macOS and Linux load them as
-/// `<scheme>://localhost`; Windows loads them as `http(s)://<scheme>.localhost`.
-const APP_SCHEMES: [&str; 2] = ["tauri", "asset"];
+/// The scheme, and host name, the framework serves the bundled app pages under.
+const APP_PAGES: &str = "tauri";
 
 /// The `about:` pages frames start on: an empty frame and an inline one.
 const FRAME_PAGES: [&str; 2] = ["blank", "srcdoc"];
 
-/// Whether a window may show `url`: true only for the app's own pages.
-/// `dev_url` is the dev server address, passed in development builds only.
-pub(crate) fn is_app_address(url: &Url, dev_url: Option<&Url>) -> bool {
+/// How the framework addresses the bundled app pages on a platform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AppPageForm {
+    /// Windows and Android: `http(s)://tauri.localhost`.
+    LocalhostSubdomain,
+    /// Every other platform: `tauri://localhost`.
+    CustomScheme,
+}
+
+impl AppPageForm {
+    /// The form this build's platform uses.
+    pub(crate) const CURRENT: Self = if cfg!(windows) || cfg!(target_os = "android") {
+        Self::LocalhostSubdomain
+    } else {
+        Self::CustomScheme
+    };
+}
+
+/// Whether a window may show `url`: true only for the app's own pages, in the
+/// `form` the platform serves them. `dev_url` is the dev server address,
+/// passed in development builds only.
+pub(crate) fn is_app_address(url: &Url, form: AppPageForm, dev_url: Option<&Url>) -> bool {
     if url.scheme() == "about" {
         return FRAME_PAGES.contains(&url.path());
     }
     if dev_url.is_some_and(|dev| dev.origin() == url.origin()) {
         return true;
     }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
     if url.port().is_some() {
         return false;
     }
-    match url.scheme() {
-        "http" | "https" => APP_SCHEMES
-            .iter()
-            .any(|scheme| host.strip_suffix(".localhost") == Some(*scheme)),
-        scheme => APP_SCHEMES.contains(&scheme) && host == "localhost",
+    let host = url.host_str();
+    match form {
+        AppPageForm::LocalhostSubdomain => {
+            matches!(url.scheme(), "http" | "https")
+                && host.and_then(|h| h.strip_suffix(".localhost")) == Some(APP_PAGES)
+        }
+        AppPageForm::CustomScheme => url.scheme() == APP_PAGES && host == Some("localhost"),
     }
 }
 
@@ -45,7 +62,7 @@ pub(crate) fn plugin<R: Runtime>() -> TauriPlugin<R> {
             } else {
                 None
             };
-            let allowed = is_app_address(url, dev_url);
+            let allowed = is_app_address(url, AppPageForm::CURRENT, dev_url);
             if !allowed {
                 log::warn!(
                     "Window '{}' stayed on the app's own pages: a navigation elsewhere was refused",
@@ -67,54 +84,67 @@ mod tests {
     fn allows_only_the_app_own_pages() {
         let dev = Url::parse(DEV_SERVER).unwrap();
         let release: Option<&Url> = None;
-        let cases: &[(&str, Option<&Url>, bool)] = &[
-            // The bundled app pages on macOS and Linux, and on Windows.
-            ("tauri://localhost", release, true),
-            ("tauri://localhost/index.html?view=issue-map", release, true),
-            ("http://tauri.localhost/", release, true),
+        // (address, dev server, allowed on Windows, allowed elsewhere)
+        let cases: &[(&str, Option<&Url>, bool, bool)] = &[
+            // The bundled app pages: one form per platform.
+            ("tauri://localhost", release, false, true),
+            (
+                "tauri://localhost/index.html?view=issue-map",
+                release,
+                false,
+                true,
+            ),
+            ("http://tauri.localhost/", release, true, false),
             (
                 "http://tauri.localhost/index.html?view=work-journal",
                 release,
                 true,
+                false,
             ),
-            ("https://tauri.localhost/index.html", release, true),
-            // Local files the framework serves to the app.
-            ("asset://localhost/sample.png", release, true),
-            ("http://asset.localhost/sample.png", release, true),
-            ("https://asset.localhost/sample.png", release, true),
+            ("https://tauri.localhost/index.html", release, true, false),
             // Empty and inline frames.
-            ("about:blank", release, true),
-            ("about:srcdoc", release, true),
+            ("about:blank", release, true, true),
+            ("about:srcdoc", release, true, true),
             // The dev server, in a development build only.
-            ("http://localhost:1420/", Some(&dev), true),
+            ("http://localhost:1420/", Some(&dev), true, true),
             (
                 "http://localhost:1420/index.html?view=issue-map",
                 Some(&dev),
                 true,
+                true,
             ),
-            ("http://localhost:1420/", release, false),
-            ("http://localhost:1421/", Some(&dev), false),
-            ("https://localhost:1420/", Some(&dev), false),
+            ("http://localhost:1420/", release, false, false),
+            ("http://localhost:1421/", Some(&dev), false, false),
+            ("https://localhost:1420/", Some(&dev), false, false),
+            // Local-file addresses: this build does not serve them.
+            ("asset://localhost/sample.png", release, false, false),
+            ("http://asset.localhost/sample.png", release, false, false),
+            ("https://asset.localhost/sample.png", release, false, false),
             // Anything else.
-            ("https://example.com/", release, false),
-            ("http://example.com/", Some(&dev), false),
-            ("http://tauri.localhost.example.com/", release, false),
-            ("http://tauri.localhost:8080/", release, false),
-            ("tauri://example.com/", release, false),
-            ("asset://example.com/sample.png", release, false),
-            ("http://localhost/", release, false),
-            ("file:///C:/sample/page.html", release, false),
-            ("file:///tmp/sample/page.html", Some(&dev), false),
-            ("data:text/html,<p>sample</p>", release, false),
-            ("about:settings", release, false),
+            ("https://example.com/", release, false, false),
+            ("http://example.com/", Some(&dev), false, false),
+            ("http://tauri.localhost.example.com/", release, false, false),
+            ("http://tauri.localhost:8080/", release, false, false),
+            ("tauri://localhost:8080/", release, false, false),
+            ("tauri://example.com/", release, false, false),
+            ("http://localhost/", release, false, false),
+            ("file:///C:/sample/page.html", release, false, false),
+            ("file:///tmp/sample/page.html", Some(&dev), false, false),
+            ("data:text/html,<p>sample</p>", release, false, false),
+            ("about:settings", release, false, false),
         ];
-        for (address, dev_url, expected) in cases {
+        for (address, dev_url, on_windows, elsewhere) in cases {
             let url = Url::parse(address).unwrap();
-            assert_eq!(
-                is_app_address(&url, *dev_url),
-                *expected,
-                "{address} with dev server {dev_url:?}"
-            );
+            for (form, expected) in [
+                (AppPageForm::LocalhostSubdomain, on_windows),
+                (AppPageForm::CustomScheme, elsewhere),
+            ] {
+                assert_eq!(
+                    is_app_address(&url, form, *dev_url),
+                    *expected,
+                    "{address} with {form:?} and dev server {dev_url:?}"
+                );
+            }
         }
     }
 }
