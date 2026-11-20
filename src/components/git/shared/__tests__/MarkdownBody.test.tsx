@@ -42,13 +42,14 @@ describe("MarkdownBody", () => {
     [true, false].flatMap((allowRawHtml) =>
       DROPPED_HTML.map((input) => ({ ...input, allowRawHtml })),
     ),
-  )("leaves out $selector from $html when allowRawHtml is $allowRawHtml", async ({
+  )("leaves out $selector from $html with allowRawHtml $allowRawHtml, as plain text when off", async ({
     html,
     selector,
     allowRawHtml,
   }) => {
     const container = await renderMarkdown(html, allowRawHtml);
     expect(container.querySelector(selector)).toBeNull();
+    expect(container.textContent?.includes(html)).toBe(!allowRawHtml);
   });
 
   it("keeps images, tables, collapsible sections, keys, code blocks and task lists", async () => {

@@ -103,6 +103,29 @@ const COMPONENTS: Components = {
   ),
 };
 
+interface HtmlTreeNode {
+  type: string;
+  children?: HtmlTreeNode[];
+}
+
+/**
+ * Shows raw HTML left in the tree as plain text, as react-markdown does when raw HTML is off,
+ * so the sanitizing step after it keeps that text instead of removing it.
+ */
+function rehypeRawHtmlAsText() {
+  return (tree: HtmlTreeNode): void => {
+    const visit = (node: HtmlTreeNode): void => {
+      if (node.type === "raw") {
+        node.type = "text";
+      }
+      for (const child of node.children ?? []) {
+        visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
+
 // react-markdown plus remark/rehype/micromark is one of the heaviest subtrees
 // in the bundle and nothing renders markdown on first paint, so it loads on
 // demand. Wrapping it here means none of the call sites have to change.
@@ -133,7 +156,9 @@ const MarkdownRenderer = lazy(async () => {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkGemoji]}
           // Sanitizing runs last and on both paths, so only safe formatting is ever rendered.
-          rehypePlugins={allowRawHtml ? [rehypeRaw, rehypeSanitize] : [rehypeSanitize]}
+          rehypePlugins={
+            allowRawHtml ? [rehypeRaw, rehypeSanitize] : [rehypeRawHtmlAsText, rehypeSanitize]
+          }
           components={COMPONENTS}
         >
           {content}
