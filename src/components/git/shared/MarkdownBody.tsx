@@ -110,11 +110,13 @@ const MarkdownRenderer = lazy(async () => {
   const [
     { default: ReactMarkdown },
     { default: rehypeRaw },
+    { default: rehypeSanitize },
     { default: remarkGfm },
     { default: remarkGemoji },
   ] = await Promise.all([
     import("react-markdown"),
     import("rehype-raw"),
+    import("rehype-sanitize"),
     import("remark-gfm"),
     import("remark-gemoji"),
   ]);
@@ -130,7 +132,8 @@ const MarkdownRenderer = lazy(async () => {
       return (
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkGemoji]}
-          rehypePlugins={allowRawHtml ? [rehypeRaw] : []}
+          // Sanitizing runs last and on both paths, so only safe formatting is ever rendered.
+          rehypePlugins={allowRawHtml ? [rehypeRaw, rehypeSanitize] : [rehypeSanitize]}
           components={COMPONENTS}
         >
           {content}

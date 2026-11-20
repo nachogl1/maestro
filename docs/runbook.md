@@ -751,3 +751,10 @@ The Workshop's **Summary** tab now leads with what to improve. A new run's summa
   did. Old runs are never summarised again.
 - **Where it lives:** each run's folder under the app data `workshop/runs/<id>/` holds `report.html` and, for a new
   run, `summary.json` (an older run has `summary.md` instead).
+
+## GitHub text: HTML is limited to safe formatting
+
+Issue, pull request and discussion details, comments, the Markdown editor preview and the context-doc preview show
+HTML written inside GitHub text only as safe formatting: images, tables, collapsible sections (`details` and
+`summary`), keyboard keys (`kbd`), `sub` and `sup`, headings, links, lists, code blocks and task-list checkboxes. Any
+other HTML element, and every event-handler attribute, is left out of the view; the text on GitHub is unchanged.
