@@ -13,7 +13,7 @@ const FRAME_PAGES: [&str; 2] = ["blank", "srcdoc"];
 /// How the framework addresses the bundled app pages on a platform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppPageForm {
-    /// Windows and Android: `http(s)://tauri.localhost`.
+    /// Windows and Android: `http://tauri.localhost`.
     LocalhostSubdomain,
     /// Every other platform: `tauri://localhost`.
     CustomScheme,
@@ -35,6 +35,9 @@ pub(crate) fn is_app_address(url: &Url, form: AppPageForm, dev_url: Option<&Url>
     if url.scheme() == "about" {
         return FRAME_PAGES.contains(&url.path());
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
     if dev_url.is_some_and(|dev| dev.origin() == url.origin()) {
         return true;
     }
@@ -43,8 +46,10 @@ pub(crate) fn is_app_address(url: &Url, form: AppPageForm, dev_url: Option<&Url>
     }
     let host = url.host_str();
     match form {
+        // `http` only: no window turns on the https scheme setting. Turning it
+        // on for a window means updating this guard in the same change.
         AppPageForm::LocalhostSubdomain => {
-            matches!(url.scheme(), "http" | "https")
+            url.scheme() == "http"
                 && host.and_then(|h| h.strip_suffix(".localhost")) == Some(APP_PAGES)
         }
         AppPageForm::CustomScheme => url.scheme() == APP_PAGES && host == Some("localhost"),
@@ -101,7 +106,7 @@ mod tests {
                 true,
                 false,
             ),
-            ("https://tauri.localhost/index.html", release, true, false),
+            ("https://tauri.localhost/index.html", release, false, false),
             // Empty and inline frames.
             ("about:blank", release, true, true),
             ("about:srcdoc", release, true, true),
@@ -132,6 +137,12 @@ mod tests {
             ("file:///tmp/sample/page.html", Some(&dev), false, false),
             ("data:text/html,<p>sample</p>", release, false, false),
             ("about:settings", release, false, false),
+            // An app address that carries a user name or password.
+            ("http://user@tauri.localhost/", release, false, false),
+            ("http://user:secret@tauri.localhost/", release, false, false),
+            ("tauri://user@localhost/", release, false, false),
+            ("tauri://:secret@localhost/", release, false, false),
+            ("http://user@localhost:1420/", Some(&dev), false, false),
         ];
         for (address, dev_url, on_windows, elsewhere) in cases {
             let url = Url::parse(address).unwrap();
