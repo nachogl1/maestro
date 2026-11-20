@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261120-063227-0c8c",
+  "issue": 678,
+  "title": "Harden how GitHub text is displayed: filter the HTML in issues, pull requests, comments and previews",
+  "login": "nachogl1",
+  "pr": 680,
+  "merged_at": "2026-11-20T07:04:56Z",
+  "merge_commit": "bb6216a5fbbd964f25e649fff2087b49f3d7b3e4",
+  "seam": "src/components/git/shared/",
+  "story": "Issues, pull requests, discussions, comments and the Markdown previews used to show any HTML written in GitHub text exactly as written. Now they keep only safe formatting, such as images, tables, collapsible sections, key caps, code blocks and task checkboxes, and leave out everything else. The text on GitHub itself is unchanged.",
+  "checks": [
+    {
+      "key": "src/components/git/shared/safe-html-in-issue-body",
+      "criterion": "HTML other than safe formatting is not shown in GitHub text.",
+      "steps": "In a test repository, open an issue whose body is `<iframe src=\"https://example.com/\"></iframe>` and `<form><button>Send</button></form>`, followed by the line `Sample text`. Open Maestro, go to the Git panel, then Issues, and open that issue.",
+      "expected": "Only \"Sample text\" (and at most the leftover text \"Send\"). No embedded frame and no button."
+    },
+    {
+      "key": "src/components/git/shared/kept-formatting-in-issue-body",
+      "criterion": "The formatting people rely on still renders.",
+      "steps": "In a test repository, open an issue whose body has `<details><summary>More detail</summary>Hidden text</details>`, `<img src=\"https://example.com/sample.png\" width=\"120\">`, a Markdown table, `<kbd>Ctrl</kbd>`, a code block marked `ts` and `- [x] done`. Open it in Maestro.",
+      "expected": "A collapsible \"More detail\" that opens to \"Hidden text\", the image, the table, the key cap, the code block and a ticked, disabled checkbox."
+    }
+  ],
+  "no_qa_reason": null
+}

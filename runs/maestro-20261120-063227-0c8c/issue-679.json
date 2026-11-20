@@ -1,0 +1,27 @@
+{
+  "run_id": "maestro-20261120-063227-0c8c",
+  "issue": 679,
+  "title": "Keep app windows on the app's own pages and tighten the content policy",
+  "login": "nachogl1",
+  "started_at": "2026-11-20T07:06:42Z",
+  "finished_at": "2026-11-20T08:45:20Z",
+  "outcome": "merged",
+  "pr": 681,
+  "summary": "A navigation guard registered once for the whole app keeps every window (main, issue map, Work Journal) on the app's own pages: each platform accepts only the page address it really serves, plus the dev server in development builds. The content policy also forbids forms, base tags and embedded objects. One list test covers both platform forms; a start-up test of a real build passed on Windows.",
+  "agents": [
+    { "name": "dev-679", "model": "opus", "tokens_total": 192178 },
+    { "name": "review-679-r1", "model": "opus", "tokens_total": 171056 },
+    { "name": "review-679-r2", "model": "opus", "tokens_total": 148514 },
+    { "name": "review-679-r3", "model": "opus", "tokens_total": 164923 },
+    { "name": "review-679-r4", "model": "opus", "tokens_total": 152590 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 3508, "review_seconds": 2176, "ci_seconds": 885 },
+  "rounds": { "review": 4, "ci": 4 },
+  "friction": [
+    "The review ran four rounds because each fresh reviewer found one more address form the guard still accepted (the other platforms' form, then the https form on Windows, then a wrapped dev-server address): about 70 minutes. The ticket said 'the app's own addresses' without saying how exact the match must be, and the orchestrator's own added decision listed address forms the app never serves."
+  ],
+  "lessons_learned": [
+    "A ticket for an allowlist (addresses, hosts, commands) must state the matching rule up front: accept only the exact forms this app serves with its current settings on each platform, compare scheme, host and port rather than origins, refuse user names and passwords, and list the look-alikes the test must refuse. Deriving the list from what the framework could serve, instead of what the app does serve, cost two review rounds."
+  ],
+  "deferred": []
+}

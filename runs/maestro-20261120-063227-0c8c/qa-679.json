@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261120-063227-0c8c",
+  "issue": 679,
+  "title": "Keep app windows on the app's own pages and tighten the content policy",
+  "login": "nachogl1",
+  "pr": 681,
+  "merged_at": "2026-11-20T08:45:20Z",
+  "merge_commit": "c4151297e8e801dcd326da1b2a739846a82914a4",
+  "seam": "src-tauri/src/ (app window set-up) and src-tauri/tauri.conf.json (the security block)",
+  "story": "Maestro's windows now refuse to load any page that is not one of the app's own, and the app's content rules forbid a few page features it never uses. Nothing looks or works differently in normal use: the main window, the issue map, the Work Journal and the Workshop report open as before.",
+  "checks": [],
+  "no_qa_reason": "Nothing a user can see in normal use; the guard only acts when a window tries to leave the app's own pages. Unit tests cover the decision and a start-up test of a real build passed before the merge."
+}

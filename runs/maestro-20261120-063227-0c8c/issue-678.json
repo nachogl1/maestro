@@ -1,0 +1,21 @@
+{
+  "run_id": "maestro-20261120-063227-0c8c",
+  "issue": 678,
+  "title": "Harden how GitHub text is displayed: filter the HTML in issues, pull requests, comments and previews",
+  "login": "nachogl1",
+  "started_at": "2026-11-20T06:33:34Z",
+  "finished_at": "2026-11-20T07:04:56Z",
+  "outcome": "merged",
+  "pr": 680,
+  "summary": "GitHub text (issues, pull requests, comments, discussions) and the Markdown previews now show only safe formatting: the shared Markdown renderer runs a cleaning step (rehype-sanitize) whether embedded HTML is switched on or off. 23 new tests; images, tables, collapsible sections, key caps, code blocks and task checkboxes still render.",
+  "agents": [
+    { "name": "dev-678", "model": "opus", "tokens_total": 114796 },
+    { "name": "review-678-r1", "model": "opus", "tokens_total": 101166 },
+    { "name": "review-678-r2", "model": "opus", "tokens_total": 106974 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1261, "review_seconds": 470, "ci_seconds": 255 },
+  "rounds": { "review": 2, "ci": 2 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
