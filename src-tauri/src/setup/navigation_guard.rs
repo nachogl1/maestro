@@ -38,7 +38,11 @@ pub(crate) fn is_app_address(url: &Url, form: AppPageForm, dev_url: Option<&Url>
     if !url.username().is_empty() || url.password().is_some() {
         return false;
     }
-    if dev_url.is_some_and(|dev| dev.origin() == url.origin()) {
+    if dev_url.is_some_and(|dev| {
+        dev.scheme() == url.scheme()
+            && dev.host_str() == url.host_str()
+            && dev.port_or_known_default() == url.port_or_known_default()
+    }) {
         return true;
     }
     if url.port().is_some() {
@@ -121,6 +125,12 @@ mod tests {
             ("http://localhost:1420/", release, false, false),
             ("http://localhost:1421/", Some(&dev), false, false),
             ("https://localhost:1420/", Some(&dev), false, false),
+            (
+                "blob:http://localhost:1420/sample-id",
+                Some(&dev),
+                false,
+                false,
+            ),
             // Local-file addresses: this build does not serve them.
             ("asset://localhost/sample.png", release, false, false),
             ("http://asset.localhost/sample.png", release, false, false),
