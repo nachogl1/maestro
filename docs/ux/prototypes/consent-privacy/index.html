@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consent and privacy prototype</title>
+<style>
+  :root {
+    --bg: #0d0d10; --surface: #121316; --card: #18191c; --border: #26262c;
+    --text: #e8e8ec; --muted: #82828e; --accent: #ff1a3a; --green: #3fb950; --orange: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
+  .wrap { display: flex; gap: 24px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .note { max-width: 360px; color: var(--muted); font-size: 12px; }
+  .note h1 { color: var(--text); font-size: 15px; margin: 0 0 6px; }
+  .note li { margin-bottom: 4px; }
+  .scenes { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+  .scenes button { background: var(--card); border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  .scenes button.on { color: var(--text); border-color: var(--accent); }
+  .app { width: 760px; height: 540px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+  .topbar { height: 30px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 10px; color: var(--muted); font-size: 12px; gap: 10px; }
+  .main { flex: 1; display: flex; min-height: 0; }
+  .sidebar { width: 230px; border-right: 1px solid var(--border); padding: 8px; overflow: hidden; }
+  .stage { flex: 1; padding: 12px; color: var(--muted); }
+  .veil { position: absolute; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
+  .dialog { background: var(--card); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
+  .dialog.sm { width: 440px; }
+  .dialog.lg { width: 640px; height: 440px; }
+  .dialog header { padding: 12px 14px 8px; display: flex; align-items: center; gap: 8px; }
+  .dialog h2 { margin: 0; font-size: 15px; }
+  .dialog .sub { color: var(--muted); font-size: 12px; }
+  .dialog header .x { margin-left: auto; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .dialog .body { padding: 0 14px; display: flex; flex-direction: column; gap: 8px; }
+  .dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; }
+  .dialog p { margin: 0; font-size: 12px; }
+  .dialog p.small, .small { font-size: 11px; color: var(--muted); }
+  .btn { border-radius: 5px; padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: none; color: var(--text); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .feature { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .feature .txt { flex: 1; }
+  .feature b { font-size: 12px; }
+  .feature .what { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .toggle { width: 30px; height: 16px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; flex: none; margin-top: 2px; border: 0; }
+  .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: left .12s; }
+  .toggle.on { background: var(--green); }
+  .toggle.on::after { left: 16px; background: #fff; }
+  .settings { display: flex; flex: 1; min-height: 0; }
+  .settings nav { width: 170px; border-right: 1px solid var(--border); padding: 4px 8px; font-size: 12px; }
+  .settings nav .grp { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; margin: 8px 0 2px; }
+  .settings nav div.item { padding: 3px 6px; border-radius: 4px; color: var(--muted); }
+  .settings nav div.item.on { background: rgba(255,26,58,.12); color: var(--text); }
+  .settings section { flex: 1; padding: 4px 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  .hist-title { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 4px 0 6px; }
+  .hrow { padding: 5px 6px; border-radius: 4px; margin-bottom: 4px; background: rgba(255,255,255,.02); }
+  .hrow .n { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hrow .s { font-size: 10px; color: var(--muted); }
+  .hrow .t { font-size: 10px; color: var(--muted); float: right; font-weight: 400; }
+  .panel { border: 1px solid var(--border); border-radius: 6px; height: 100%; display: flex; flex-direction: column; }
+  .panel .ph { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--text); font-size: 12px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+  .panel .ph .btn { margin-left: auto; padding: 2px 8px; font-size: 11px; }
+  .panel .ph .btn:disabled { opacity: .4; cursor: default; }
+  .off { margin: 16px; border: 1px dashed var(--border); border-radius: 6px; padding: 12px; color: var(--text); font-size: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .veil.hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="note">
+    <h1>Consent and privacy</h1>
+    <p>Mock for issue #684 (ask before conversation text goes to the model). Every name and text in the app frame is made up.</p>
+    <div class="scenes">
+      <button type="button" data-scene="ask" class="on">1 · First-run question</button>
+      <button type="button" data-scene="settings">2 · Settings → Privacy</button>
+      <button type="button" data-scene="workshop">3 · Workshop when off</button>
+      <button type="button" data-scene="history">4 · History when off</button>
+    </div>
+    <ul>
+      <li><b>Question:</b> shown once, after the automatic-updates question and the Work Journal question, never on top of them. New users and people updating from an earlier version both get it.</li>
+      <li>Both switches start <b>off</b>. <b>Save</b> keeps what the switches say. <b>Keep both off</b>, the × and Esc save both as off. Clicking outside does nothing. The answer is saved, so the question never comes back.</li>
+      <li>Until the question is answered, neither feature sends anything.</li>
+      <li><b>Settings → Privacy</b> (in the first group, after Updates): the same two switches with the same words, plus a line pointing to the Work Journal's own switch.</li>
+      <li><b>Workshop off:</b> the panel keeps showing reports already made, (the latest one too, under the box), but <b>Run now</b> is disabled and a box says how to turn it on. No automatic run starts.</li>
+      <li>The scenes share one state: switch a feature on in scene 1 or 2, then open scene 3 or 4 to see it on.</li>
+      <li><b>History off:</b> each row shows its title (or first prompt) and its time, with no summary line and no "Summarising…". Summaries already made are not shown; nothing is deleted.</li>
+    </ul>
+  </div>
+
+  <div class="app">
+    <div class="topbar">Maestro · shop-api</div>
+    <div class="main">
+      <div class="sidebar">
+        <div class="hist-title">History</div>
+        <div id="hist"></div>
+      </div>
+      <div class="stage" id="stage">Terminals</div>
+    </div>
+
+    <div class="veil" id="ask">
+      <div class="dialog sm" role="dialog" aria-label="Let Claude read your conversations?">
+        <header><h2>Let Claude read your conversations?</h2><button class="x" data-keep-off aria-label="Close">×</button></header>
+        <div class="body">
+          <p>Two features send the text of your Claude conversations to Claude, through your own Claude CLI and your Claude allowance. Both stay off unless you switch them on.</p>
+          <div class="feature">
+            <div class="txt"><b>Workshop</b><div class="what">Shortly after start and then once a week, Claude reads the past week's conversations and writes a report on what to improve.</div></div>
+            <button class="toggle" data-feature="workshop" aria-label="Workshop"></button>
+          </div>
+          <div class="feature">
+            <div class="txt"><b>History summaries</b><div class="what">For each conversation shown in History, Claude reads it and writes a name and a two-sentence summary. Again whenever the conversation changes.</div></div>
+            <button class="toggle" data-feature="history" aria-label="History summaries"></button>
+          </div>
+          <p class="small">You can change both at any time in Settings → Privacy.</p>
+        </div>
+        <footer><button class="btn" data-keep-off>Keep both off</button><button class="btn primary" id="save">Save</button></footer>
+      </div>
+    </div>
+
+    <div class="veil hidden" id="settings">
+      <div class="dialog lg" role="dialog" aria-label="Settings">
+        <header><h2>Settings</h2><span class="sub">What Maestro sends to Claude</span><button class="x" data-close aria-label="Close">×</button></header>
+        <div class="settings">
+          <nav>
+            <div class="grp">General</div>
+            <div class="item">Appearance</div><div class="item">Features</div><div class="item">Notifications</div><div class="item">Updates</div>
+            <div class="item on">Privacy</div>
+            <div class="grp">Work</div>
+            <div class="item">Terminal</div><div class="item">Work Journal</div>
+          </nav>
+          <section>
+            <p class="small">These features send the text of your Claude conversations to Claude, through your own Claude CLI and your Claude allowance. Off means nothing is sent.</p>
+            <div class="feature">
+              <div class="txt"><b>Workshop</b><div class="what">Shortly after start and then once a week, Claude reads the past week's conversations and writes a report on what to improve.</div></div>
+              <button class="toggle" data-feature="workshop" aria-label="Workshop"></button>
+            </div>
+            <div class="feature">
+              <div class="txt"><b>History summaries</b><div class="what">For each conversation shown in History, Claude reads it and writes a name and a two-sentence summary. Again whenever the conversation changes.</div></div>
+              <button class="toggle" data-feature="history" aria-label="History summaries"></button>
+            </div>
+            <p class="small">The Work Journal has its own switch in <span class="link">Settings → Work Journal</span>.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const state = { workshop: false, history: false };
+  const CONVERSATIONS = [
+    { title: "Fix the checkout total rounding", time: "10:42", summary: "Found the rounding error in the basket total. Added a test and a fix." },
+    { title: "Review the payments pull request", time: "09:15", summary: "Read the payments change and left three comments on error handling." },
+    { title: "why does the dev server stop after an hour?", time: "Yesterday", summary: "Traced the stop to a file watcher limit. Raised the limit in the config." },
+  ];
+  let scene = "ask";
+  let back = "history";
+  const $ = (id) => document.getElementById(id);
+
+  function renderToggles() {
+    for (const t of document.querySelectorAll(".toggle")) {
+      const on = state[t.dataset.feature];
+      t.classList.toggle("on", on);
+      t.setAttribute("aria-pressed", String(on));
+    }
+  }
+
+  function renderHistory() {
+    $("hist").innerHTML = CONVERSATIONS.map((c) => {
+      const summary = state.history ? `<div class="s">${c.summary}</div>` : "";
+      return `<div class="hrow"><div class="n"><span class="t">${c.time}</span>${c.title}</div>${summary}</div>`;
+    }).join("");
+  }
+
+  function renderStage() {
+    if (scene !== "workshop") { $("stage").textContent = "Terminals"; return; }
+    const off = state.workshop ? "" : `<div class="off"><div>Workshop is off, so no report is made. Claude would read the past week's conversations to write it.</div>
+      <span class="link" id="open-settings">Turn it on in Settings → Privacy</span></div>`;
+    const report = `<div style="padding:12px">Report of 16 Nov: the week's problems, worst first…</div>`;
+    const body = state.workshop ? report : off + report;
+    $("stage").innerHTML = `<div class="panel"><div class="ph">Workshop<button class="btn" ${state.workshop ? "" : "disabled"}>Run now</button></div>
+      ${body}<div style="padding:6px 10px;color:var(--muted);font-size:11px">Earlier reports: 9 Nov, 2 Nov</div></div>`;
+    const link = $("open-settings");
+    if (link) link.onclick = () => { back = "workshop"; show("settings"); };
+  }
+
+  function show(next) {
+    scene = next;
+    for (const b of document.querySelectorAll(".scenes button")) {
+      b.classList.toggle("on", b.dataset.scene === next);
+    }
+    $("ask").classList.toggle("hidden", next !== "ask");
+    $("settings").classList.toggle("hidden", next !== "settings");
+    renderAll();
+  }
+
+  function renderAll() { renderToggles(); renderHistory(); renderStage(); }
+
+  for (const b of document.querySelectorAll(".scenes button")) {
+    b.onclick = () => {
+      if (b.dataset.scene === "settings") back = scene === "ask" ? "history" : scene;
+      show(b.dataset.scene);
+    };
+  }
+  for (const t of document.querySelectorAll(".toggle")) {
+    t.onclick = () => {
+      state[t.dataset.feature] = !state[t.dataset.feature];
+      renderAll();
+    };
+  }
+  for (const b of document.querySelectorAll("[data-keep-off]")) {
+    b.onclick = () => { state.workshop = false; state.history = false; show("history"); };
+  }
+  for (const b of document.querySelectorAll("[data-close]")) {
+    b.onclick = () => show(back);
+  }
+  $("save").onclick = () => show("history");
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (scene === "ask") { state.workshop = false; state.history = false; }
+    if (scene === "ask") show("history");
+    if (scene === "settings") show(back);
+  });
+  renderAll();
+</script>
+</body>
+</html>
