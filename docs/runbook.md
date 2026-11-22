@@ -264,8 +264,8 @@ Nothing in Maestro starts, shows or mentions a Samurai run any more:
 - No **Launch** icon or panel, no **Settings → Samurai** section, no "Samurai launch" switch in **Settings → Features**.
 - No Samurai badge or hand-off banner on a terminal header, no park countdown chip in the Agents list, no parked-runs
   badge in the top bar, no Samurai toasts, and no amber "parked on token allowance" shine on the parked shelf.
-- Parking and unparking by hand, the parked shelf, the context alert, the Injector and its triggers, History resume
-  and PR review launches work as before.
+- Parking and unparking by hand, the parked shelf, the context alert, the Injector and its triggers and History
+  resume work as before.
 - Settings saved by an older version that still carry the Samurai launch switch load as before; the switch is
   ignored.
 - Nothing Samurai runs in the background either: no supervision, hand-offs, parking timers, scheduled resumes or
