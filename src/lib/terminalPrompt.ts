@@ -26,42 +26,17 @@ import { invoke } from "@tauri-apps/api/core";
  * `<briefDir>/.maestro/briefs/<briefStem>.md` and type a one-line pointer at
  * it, which is the only payload size the PTY delivers reliably. Omitting them
  * keeps the inline delivery.
- *
- * `prRun` is optional PR-review metadata (issue #139): supplying it makes the
- * backend write a persistent run record for the review, which is what gives it
- * an identity to group its artifacts under on disk. A failed
- * record write never fails the launch.
  */
 export function terminalArmInitialPrompt(
   sessionId: number,
   prompt: string,
   briefDir?: string | null,
   briefStem?: string | null,
-  prRun?: PrReviewLaunch | null,
 ): Promise<void> {
   return invoke("terminal_arm_initial_prompt", {
     sessionId,
     prompt,
     briefDir: briefDir ?? null,
     briefStem: briefStem ?? null,
-    prRun: prRun ?? null,
   });
-}
-
-/**
- * What a PR-review launch records about itself (issue #139) — mirrors the Rust
- * `PrReviewLaunch`, snake_case on the wire. The
- * session id and the brief path are added backend-side: only the arm hop knows
- * them.
- */
-export interface PrReviewLaunch {
-  pr: number;
-  /** The PR title, for the group's `PR #142 — <title>` label; may be empty. */
-  title: string;
-  /** `owner/repo`; empty when the PR url did not parse into a slug. */
-  repo: string;
-  /** The checkout the review terminal opens in. */
-  project_path: string;
-  /** The ticked workflow step ids, in order. */
-  steps: string[];
 }

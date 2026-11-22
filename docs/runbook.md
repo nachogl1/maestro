@@ -271,8 +271,8 @@ Nothing in Maestro starts, shows or mentions a Samurai run any more:
 - Nothing Samurai runs in the background either: no supervision, hand-offs, parking timers, scheduled resumes or
   audit log. Samurai files already on disk are removed once, where that is safe (see "Samurai's old files: the
   one-time cleanup" below).
-- The brief file a PR review leaves in `.maestro/briefs/` is removed at the next start of Maestro once it is
-  older than 14 days. The 14 days are fixed; there is no setting for them.
+- The brief file a PR review left in `.maestro/briefs/` (earlier versions) is removed at the next start of Maestro
+  once it is older than 14 days. The 14 days are fixed; there is no setting for them.
 
 ## Second Brain and the health checker are gone
 
@@ -282,7 +282,8 @@ Nothing in Maestro starts, shows or mentions a Samurai run any more:
 - No health checker: no orange health count on any icon and no "Health — Second Brain" toast. **Settings →
   Notifications → Show notifications** now covers the GitHub review-request and issue-assigned toasts only.
 - **Settings → Features** has no "Show Second Brain" switch; its saved choice is ignored.
-- PR review launches from the PR action menu work as before and still write their run record and brief file.
+- PR review launches are gone with the PR actions menu (see "PR monitor: no actions menu" below); nothing writes a
+  PR review run record or brief file any more.
 
 ## Samurai's old files: the one-time cleanup
 
@@ -293,7 +294,7 @@ It never asks first, and it only removes what cannot hold anyone's work:
   and latches files, the ops journal and the harvest reports.
 - **In Maestro's settings folder:** the Samurai settings and the Samurai workflow.
 - **In each project a Samurai run worked on:** the `.maestro/handoffs/` folder. `.maestro/briefs/` stays, because
-  PR review uses it.
+  old PR review briefs are swept there after 14 days.
 - **Run worktrees:** one is removed only when everything on it is already on the project's default branch, no PR
   review or terminal saved for reopening uses it, and the only files git does not hold are Samurai's own hand-over
   and brief files (deleted first) or rebuildable build output (`node_modules/`, `target/`, `dist/`). Uncommitted
@@ -307,12 +308,14 @@ When a run worktree is kept, a notice in the bottom-left corner lists each one w
 no notice. Later starts do nothing: a `samurai-cleanup-done` file in Maestro's data folder records that the cleanup
 ran. A kept worktree is yours to look at and remove by hand.
 
-## PR monitor: editing the PR review workflow
+## PR monitor: no actions menu
 
-- Open a PR row's action menu (the **⋮** button) and click **Edit the PR review workflow** at the bottom. The menu
-  closes and the full-screen workflow editor opens on the PR review workflow; Esc or **✕** closes it.
-- Each box is one checkbox in that menu: edit its label and text, add a step, remove one (the last one cannot be
-  removed), rewire the arrows, or **Reset** to the default. The editor has no Samurai mode any more.
+- A PR row has no **⋮** actions menu any more, so nothing in Maestro launches an agent on a pull request. Click the
+  row to open its detail; the list, its filters and the detail panel work as before.
+- The PR review workflow editor is gone with it. Custom steps saved by an earlier version stay where they are and
+  are no longer read.
+- Run records and brief files an earlier version left on disk are not deleted by this change; the existing
+  clean-ups still handle them.
 
 ## Files panel: the focused terminal's folder
 

@@ -1,21 +1,17 @@
-//! Persistent PR-review run records (issue #139; epic #136).
+//! PR-review run records left on disk by earlier versions (issue #139; epic
+//! #136).
 //!
-//! A **PR review** used to leave nothing on disk: the Git tab opened a
-//! terminal, typed a prompt and forgot, so the brief it staged (issue #138)
-//! could never be found again.
-//!
-//! So every PR-review launch writes one small JSON record here — PR number and
-//! title, the repo it belongs to, the checkout it ran in, the ticked steps, the
-//! brief it was delivered as, and the terminal session it opened. That record
-//! IS the review's identity ([`pr_group_id`]), and it is what the startup
-//! sweep ([`PrRunStore::sweep_expired_briefs`]) reads to find old briefs.
+//! Earlier versions launched an agent on a pull request from the Git tab's
+//! actions menu, and every such launch wrote one small JSON record here — PR
+//! number and title, the repo it belongs to, the checkout it ran in, the
+//! ticked steps, the brief it was delivered as, and the terminal session it
+//! opened. That menu is gone (issue #692) and nothing writes a record any
+//! more, but the records and briefs already on a user's disk stay: they are
+//! read by the startup sweep ([`PrRunStore::sweep_expired_briefs`]) to find
+//! old briefs, and by `legacy_cleanup` to clear the records themselves.
 //!
 //! **Layout:** one file per review terminal at
 //! `<app data>/runs/<PR_RUNS_DIR>/<owner>-<repo>-<number>-<session>.json`.
-//!
-//! **Best effort, never blocking:** a launch that cannot write its record logs
-//! and carries on. The review still runs; it simply groups under nothing until
-//! the next launch — the same policy the brief write itself follows.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -24,7 +20,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::brief_files::{StagedBrief, BRIEF_DIR};
+#[cfg(test)]
+use super::brief_files::StagedBrief;
+use super::brief_files::BRIEF_DIR;
 use super::extended_paths::{canonical_stripped, normalize_project, strip_extended_length};
 
 /// Directory name, inside the `runs` root, holding PR-review records.
@@ -67,13 +65,14 @@ pub enum PrRunKind {
     PrReview,
 }
 
-/// What a PR-review launch tells the store about itself. Everything the record
-/// carries EXCEPT the two facts only the delivery path knows — the session the
+/// What a PR-review launch told the store about itself. Everything the record
+/// carries EXCEPT the two facts only the delivery path knew — the session the
 /// terminal opened under and the brief it was actually staged as.
 ///
-/// snake_case on the wire: this crosses the Tauri
-/// boundary as a `terminal_arm_initial_prompt` parameter.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Test-only since issue #692: nothing launches a PR review any more, so the
+/// tests use it to lay down records in the shape earlier versions wrote.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PrReviewLaunch {
     /// The pull request number.
     pub pr: u32,
@@ -109,7 +108,7 @@ pub struct PrReviewRun {
     /// brief was actually written into (the arm call's `brief_dir`, which is
     /// the TAB's project). This is NOT [`Self::project_path`] — in a
     /// multi-repo workspace the tab's project and the PR's own checkout are
-    /// different trees on purpose (`PrActionsMenu`, review finding C10), so
+    /// different trees on purpose (the former PR actions menu, review finding C10), so
     /// resolving the brief against `project_path` looks for it in the wrong
     /// tree and, worse, can name a same-titled file that belongs to the user
     /// (issue #145).
@@ -132,6 +131,7 @@ pub struct PrReviewRun {
     pub created_at: String,
 }
 
+#[cfg(test)]
 impl PrReviewRun {
     /// Builds a record from a launch plus the two delivery facts, stamped with
     /// the current UTC time and this app launch's id.
@@ -157,23 +157,10 @@ impl PrReviewRun {
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
-
-    /// This review's group id (see [`pr_group_id`]).
-    pub fn group_id(&self) -> String {
-        pr_group_id(&self.repo, self.pr)
-    }
-}
-
-/// The group id of a PR review: `pr:<owner/repo>#<number>`
-/// (issue #139). Stable across calls and across launches — two reviews of the
-/// same PR are the same group, which is the point: their briefs and records
-/// belong together.
-pub fn pr_group_id(repo: &str, number: u32) -> String {
-    format!("pr:{repo}#{number}")
 }
 
 /// The on-disk store, rooted at `<app data>/runs/<PR_RUNS_DIR>`. Constructed
-/// once at app setup and managed as `Arc<PrRunStore>`; tests root it at a
+/// at app setup for the startup sweep; tests root it at a
 /// tempdir.
 pub struct PrRunStore {
     base_dir: PathBuf,
@@ -192,6 +179,10 @@ impl PrRunStore {
     /// (see [`record_file_name`]): a relaunch of the same PR in a new terminal
     /// keeps its own record — they share a group, not a file — while a re-arm
     /// of the same terminal rewrites the one record it already has.
+    ///
+    /// Test-only since issue #692: the tests use it to lay down the records
+    /// earlier versions wrote.
+    #[cfg(test)]
     pub fn record(&self, run: &PrReviewRun) -> Result<PathBuf, String> {
         std::fs::create_dir_all(&self.base_dir).map_err(|e| {
             format!(
@@ -260,6 +251,7 @@ impl PrRunStore {
 /// [`launch_id`] exists: session ids restart at 1 each launch, so the session
 /// alone would let today's terminal 3 overwrite last week's review of the same
 /// PR — silently destroying the only record it left.
+#[cfg(test)]
 fn record_file_name(run: &PrReviewRun) -> String {
     let repo = sanitize(&run.repo);
     format!(
@@ -269,7 +261,8 @@ fn record_file_name(run: &PrReviewRun) -> String {
 }
 
 /// Lowercased, with every run of non-`[a-z0-9]` characters collapsed to one
-/// `-` and the ends trimmed (the `prActionBriefStem` rule, in Rust).
+/// `-` and the ends trimmed (the rule earlier versions named briefs with).
+#[cfg(test)]
 fn sanitize(value: &str) -> String {
     let collapsed: String = value
         .to_lowercase()
@@ -359,7 +352,7 @@ impl PrRunStore {
 ///
 /// * The brief resolves against [`PrReviewRun::brief_root`], the directory it
 ///   was actually staged under, NEVER against `project_path`. Those are
-///   different trees in a multi-repo workspace (`PrActionsMenu`, review
+///   different trees in a multi-repo workspace (the former PR actions menu, review
 ///   finding C10), so `project_path` would both miss the real brief and name
 ///   a same-titled file in the PR's checkout that belongs to the user.
 /// * A record with no `brief_root`, or a relative one, is skipped —
@@ -459,16 +452,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// A record whose PROJECT PATH arrives in the Windows verbatim spelling —
-    /// the shape the frontend can hand over when a path went through
-    /// `fs::canonicalize` somewhere upstream.
-    fn verbatim_launch() -> PrReviewLaunch {
-        PrReviewLaunch {
-            project_path: r"\\?\C:\git\maestro".to_string(),
-            ..launch()
-        }
-    }
-
     /// The tab's project: an ABSOLUTE directory in the host's own spelling.
     /// [`staged_brief_path`] requires absoluteness, and a `C:\…` literal is
     /// not absolute on the Linux CI runner.
@@ -535,91 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn test_file_name_is_filesystem_safe_and_one_file_per_review_terminal() {
-        // `owner/repo` carries a slash, which is not legal in a Windows file
-        // name, so the repo segment is sanitized. And a second review of the
-        // same PR in another terminal must not overwrite the first record.
-        let dir = tempdir().unwrap();
-        let store = PrRunStore::new(dir.path().to_path_buf());
-
-        let mut first = PrReviewRun::now(launch(), 7, None);
-        first.created_at = "2026-08-17T12:00:00+00:00".to_string();
-        let mut second = PrReviewRun::now(launch(), 9, None);
-        second.created_at = "2026-08-17T13:30:00+00:00".to_string();
-
-        let a = store.record(&first).unwrap();
-        let b = store.record(&second).unwrap();
-        assert_ne!(a, b);
-        let name = a.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("nachogl1-maestro-142-"), "{name}");
-        assert!(
-            !name.contains('/') && !name.contains(':'),
-            "unsafe file name {name}"
-        );
-        assert_eq!(store.list_with_paths().len(), 2);
-        // Absent brief: `None`, not a fabricated path.
-        assert!(store
-            .list_with_paths()
-            .iter()
-            .all(|(_, r)| r.brief.is_none()));
-    }
-
-    #[test]
-    fn test_relaunching_one_session_replaces_its_record_instead_of_duplicating() {
-        // The arm path is a REPLACE ("one session, one initial prompt"), so a
-        // re-arm must leave one record, not a second row for the same review.
-        // Two launches in the same tick must not collide either — the name is
-        // keyed on the session, never on the timestamp.
-        let dir = tempdir().unwrap();
-        let store = PrRunStore::new(dir.path().to_path_buf());
-
-        let mut first = PrReviewRun::now(launch(), 7, None);
-        first.created_at = "2026-08-17T12:00:00+00:00".to_string();
-        let mut rearmed = PrReviewRun::now(launch(), 7, staged("b.md"));
-        rearmed.created_at = "2026-08-17T12:00:00+00:00".to_string();
-        let mut other_session = PrReviewRun::now(launch(), 8, None);
-        other_session.created_at = "2026-08-17T12:00:00+00:00".to_string();
-
-        assert_eq!(
-            store.record(&first).unwrap(),
-            store.record(&rearmed).unwrap()
-        );
-        store.record(&other_session).unwrap();
-
-        let recorded = store.list_with_paths();
-        assert_eq!(recorded.len(), 2, "one record per session: {recorded:?}");
-        assert!(
-            recorded
-                .iter()
-                .any(|(_, r)| r.brief.as_deref() == Some("b.md")),
-            "the re-arm's record won: {recorded:?}"
-        );
-    }
-
-    #[test]
-    fn test_a_record_is_stamped_and_named_with_the_app_launch() {
-        let dir = tempdir().unwrap();
-        let store = PrRunStore::new(dir.path().to_path_buf());
-
-        let run = PrReviewRun::now(launch(), 3, None);
-        assert_eq!(run.launch_id, launch_id());
-        assert!(!run.launch_id.is_empty());
-
-        // The launch is in the FILE NAME too: without it a session id reused
-        // across app launches would overwrite the older launch's record of
-        // the same PR — the record is the only proof that review happened.
-        let path = store.record(&run).unwrap();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.contains(launch_id()), "{name}");
-        assert!(name.starts_with("nachogl1-maestro-142-"), "{name}");
-
-        let mut older = PrReviewRun::now(launch(), 3, None);
-        older.launch_id = "20200101000000-1".to_string();
-        assert_ne!(store.record(&older).unwrap(), path);
-        assert_eq!(store.list_with_paths().len(), 2);
-    }
-
-    #[test]
     fn test_a_record_from_an_earlier_launch_is_never_live() {
         // PTY session ids restart at 1 every app launch (`process_manager`)
         // while records persist forever, so `session_id` alone cannot mean
@@ -659,15 +557,6 @@ mod tests {
     }
 
     #[test]
-    fn test_group_id_is_stable_and_per_pr() {
-        let run = PrReviewRun::now(launch(), 7, None);
-        assert_eq!(run.group_id(), "pr:nachogl1/maestro#142");
-        assert_eq!(run.group_id(), pr_group_id("nachogl1/maestro", 142));
-        assert_ne!(run.group_id(), pr_group_id("nachogl1/maestro", 143));
-        assert_ne!(run.group_id(), pr_group_id("other/maestro", 142));
-    }
-
-    #[test]
     fn test_unreadable_records_are_skipped_not_fatal() {
         let dir = tempdir().unwrap();
         let store = PrRunStore::new(dir.path().to_path_buf());
@@ -676,51 +565,6 @@ mod tests {
         std::fs::write(dir.path().join(PR_RUNS_DIR).join("notes.txt"), "ignored").unwrap();
 
         assert_eq!(store.list_with_paths().len(), 1);
-    }
-
-    #[test]
-    fn test_the_checkout_is_normalized_on_construction() {
-        // A `\\?\`-prefixed spelling stored raw would never compare equal to
-        // the same checkout spelled plainly.
-        let run = PrReviewRun::now(verbatim_launch(), 7, None);
-        assert_eq!(run.project_path, r"C:\git\maestro");
-        assert_eq!(
-            run.project_path,
-            PrReviewRun::now(launch(), 7, None).project_path
-        );
-        // The staging root normalizes on the same rule — it is a checkout
-        // spelling too, and a verbatim one keys a different tree.
-        let run = PrReviewRun::now(
-            verbatim_launch(),
-            7,
-            Some(StagedBrief {
-                root: PathBuf::from(r"\\?\C:\git\maestro"),
-                relpath: "a.md".to_string(),
-            }),
-        );
-        assert_eq!(run.brief_root.as_deref(), Some(r"C:\git\maestro"));
-    }
-
-    #[test]
-    fn test_normalization_keeps_a_unc_checkout_absolute() {
-        // Issue #161: `\\?\UNC\server\share\…` must strip to
-        // `\\server\share\…`, never to a relative-looking
-        // `UNC\server\share\…` — [`staged_brief_path`] rejects a relative
-        // root, so the #145 sweep silently never ran on a share-hosted
-        // checkout.
-        let run = PrReviewRun::now(
-            PrReviewLaunch {
-                project_path: r"\\?\UNC\server\share\maestro".to_string(),
-                ..launch()
-            },
-            7,
-            Some(StagedBrief {
-                root: PathBuf::from(r"\\?\UNC\server\share\tab"),
-                relpath: "a.md".to_string(),
-            }),
-        );
-        assert_eq!(run.project_path, r"\\server\share\maestro");
-        assert_eq!(run.brief_root.as_deref(), Some(r"\\server\share\tab"));
     }
 
     #[test]
