@@ -53,8 +53,8 @@ export function WorkJournalOptInDialog() {
       <p className="text-xs text-maestro-text">
         It stays off unless you click Enable. Once on, Maestro sends your activity to Claude about
         every hour while it is open: your Claude prompts, commit messages, titles of pull requests
-        and issues you opened, and terminal names. It goes through your own Claude CLI and uses
-        your Claude allowance.
+        and issues you opened, and terminal names. It goes through your own Claude CLI and uses your
+        Claude allowance.
       </p>
       <p className="text-[11px] text-maestro-muted">
         You can turn it on or off at any time in Settings → Work Journal.
