@@ -62,7 +62,7 @@ input:focus-visible {
   background-color: rgba($samurai-red, 0.08);
   color: $body-text-color;
 
-  @include fs-3;
+  @include fs-4;
 
   @include mq(md) {
     margin: $sp-6 $gutter-spacing 0;
