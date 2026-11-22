@@ -1,0 +1,49 @@
+{
+  "run_id": "maestro-20261122-191454-d3e1",
+  "issue": 692,
+  "title": "Remove the actions menu from the pull request list, together with its step editor",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T19:14:54Z",
+  "finished_at": "2026-11-22T20:05:42Z",
+  "outcome": "owner-merges",
+  "pr": 703,
+  "summary": "Removed the per-row actions menu from the Git panel's pull request list, its full-screen step editor, the pull request part of the launch command and the record writer, and the graph library only the editor used; the list, filters and detail are unchanged. The owner must try the change, then merge pull request #703.",
+  "agents": [
+    {
+      "name": "dev-692",
+      "model": "opus",
+      "tokens_total": 242541
+    },
+    {
+      "name": "review-692-r1",
+      "model": "opus",
+      "tokens_total": 146442
+    },
+    {
+      "name": "review-692-r2",
+      "model": "opus",
+      "tokens_total": null
+    },
+    {
+      "name": "review-692-r2",
+      "model": "sonnet",
+      "tokens_total": 91577
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2190,
+    "review_seconds": 470,
+    "ci_seconds": 480
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 2
+  },
+  "friction": [],
+  "lessons_learned": [
+    "A dev build (npm run tauri dev) shares the installed Maestro's app-data folder: it showed the installed app's crash-recovery dialog, where a wrong click would have cleared the user's saved terminal list. Agents taking a dev-build screenshot must dismiss nothing in that dialog, or use an isolated data folder.",
+    "The person asked mid-run for light reviewers (sonnet, low effort); the opus confirming review was stopped unposted and replaced, so review-692-r2 appears twice."
+  ],
+  "deferred": []
+}
