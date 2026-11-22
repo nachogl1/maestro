@@ -505,13 +505,18 @@ requests** or the project's name) take you back up; Escape or a click outside cl
 
 - An (i) icon sits right after the title of the first-run question "Enable the Work Journal?", and right after the
   Work Journal heading in Settings → Work Journal. Both show the same text.
+- The first-run question says it stays off unless you click Enable, and that once on, Maestro sends your activity
+  to Claude about every hour while it is open (your Claude prompts, commit messages, pull request and issue titles,
+  and terminal names), through your own Claude CLI and using your Claude allowance.
 - Hovering the icon, or reaching it with Tab, opens a small box; moving away or tabbing on closes it. Escape closes
   the box and leaves the first-run question open and unanswered.
-- The box says what the Work Journal does (one page per day; Claude suggests short lines from your activity and
-  nothing is added until you accept it), then lists the sources it reads with the setup each needs: Claude
-  conversations and terminal sessions in Maestro, git commits (needs your git name/email set), pull requests and
-  issues (needs gh signed in), and Granola meetings (off until turned on in Settings, and Granola connected to
-  Claude). It ends with "Suggestions are written by the Claude CLI."
+- The box says what the Work Journal does (a diary with one page per day, so you can look back on your work and report
+  it; Claude suggests short lines from your activity and nothing is added until you accept it), that it is off until you
+  turn it on, that once on, about every hour while Maestro is open, that activity goes to Claude and uses your
+  allowance, and that you can turn it off any time in Settings → Work Journal. It then lists the sources it reads with
+  the setup each needs: Claude conversations and terminal sessions in Maestro, git commits (needs your git name/email
+  set), pull requests and issues (needs gh signed in), and Granola meetings (off until turned on in Settings, and
+  Granola connected to Claude). It ends with "Suggestions are written by the Claude CLI."
 - The text is fixed: it does not check whether each source is set up on this computer.
 
 ## Attention cues: sound, glow and blinking tabs

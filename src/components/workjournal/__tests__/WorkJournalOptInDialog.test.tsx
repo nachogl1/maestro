@@ -34,6 +34,18 @@ describe("WorkJournalOptInDialog", () => {
     expect(screen.getByRole("dialog", { name: "Enable the Work Journal?" })).toBeTruthy();
   });
 
+  it("says it stays off until Enable, what goes to Claude, how often and whose allowance", () => {
+    render(<WorkJournalOptInDialog />);
+    expect(
+      screen.getByText(
+        "It stays off unless you click Enable. Once on, Maestro sends your activity to Claude " +
+          "about every hour while it is open: your Claude prompts, commit messages, pull request " +
+          "and issue titles, and terminal names. It goes through your own Claude CLI and uses " +
+          "your Claude allowance.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("stays hidden until the saved choice has been read", () => {
     vi.spyOn(useWorkJournalSettingsStore.persist, "hasHydrated").mockReturnValue(false);
     vi.spyOn(useWorkJournalSettingsStore.persist, "onFinishHydration").mockReturnValue(() => {});

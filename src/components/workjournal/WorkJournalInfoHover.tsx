@@ -9,8 +9,11 @@ import { createPortal } from "react-dom";
 export const WORK_JOURNAL_INFO = {
   whatHeading: "What the Work Journal does",
   what:
-    "It keeps one page per day. Claude reads your activity and suggests short lines; " +
-    "nothing is added until you accept it.",
+    "A diary with one page per day, so you can look back on your work and report it. " +
+    "Claude reads your activity and suggests short lines; nothing is added until you " +
+    "accept it. It is off until you turn it on. Once on, about every hour while Maestro " +
+    "is open, that activity goes to Claude and uses your allowance. Turn it off any time " +
+    "in Settings → Work Journal.",
   sourcesHeading: "Sources it reads",
   sources: [
     "Claude conversations in Maestro",
