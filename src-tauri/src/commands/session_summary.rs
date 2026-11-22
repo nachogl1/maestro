@@ -24,6 +24,7 @@ use crate::commands::claude_sessions::{
     claude_projects_root, extract_prompt_text, is_safe_session_id, is_system_message, message_text,
 };
 use crate::core::atomic_write::atomic_write_async;
+use crate::core::privacy_consent::CONSENT;
 
 /// Characters kept from any one message — enough for its gist.
 const MAX_MESSAGE_CHARS: usize = 400;
@@ -47,6 +48,9 @@ NAME: <a 2-6 word name for the session>\n\
 SUMMARY: <exactly two plain sentences: what the user wanted, then what the agent did or \
 where it ended up>\n\
 No markdown, no emoji, no preamble.";
+
+/// The refusal while the user has not let History write summaries.
+const SUMMARIES_OFF: &str = "History summaries are off (Settings → Privacy)";
 
 static RUN_SLOTS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_RUNS);
 /// Serialises the cache file's read-modify-write across concurrent commands.
@@ -98,13 +102,17 @@ pub fn cached_session_summaries() -> HashMap<String, SessionSummary> {
 
 /// Returns the conversation's name and two-sentence summary, from the cache
 /// when the transcript has not changed since, otherwise from a fresh
-/// headless Haiku run.
+/// headless Haiku run. Refused while the user has not let History write
+/// summaries (issue #684): nothing is read, cached or sent.
 #[tauri::command]
 pub async fn summarize_claude_session(
     session_id: String,
     last_active: String,
     message_count: usize,
 ) -> Result<SessionSummary, String> {
+    if !CONSENT.history_summaries() {
+        return Err(SUMMARIES_OFF.to_string());
+    }
     if !is_safe_session_id(&session_id) {
         return Err(format!("Invalid session id: {session_id}"));
     }
@@ -356,6 +364,13 @@ fn strip_label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn refuses_to_summarise_while_history_summaries_are_off() {
+        // The app's consent starts off and no test switches it on.
+        let refused = summarize_claude_session("0000-made-up".into(), "2026-11-22".into(), 3).await;
+        assert_eq!(refused, Err(SUMMARIES_OFF.to_string()));
+    }
 
     #[test]
     fn parse_reply_reads_name_and_summary() {

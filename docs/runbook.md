@@ -776,3 +776,23 @@ Issue, pull request and discussion details, comments, the Markdown editor previe
 HTML written inside GitHub text only as safe formatting: images, tables, collapsible sections (`details` and
 `summary`), keyboard keys (`kbd`), `sub` and `sup`, headings, links, lists, code blocks and task-list checkboxes. Any
 other HTML element, and every event-handler attribute, is left out of the view; the text on GitHub is unchanged.
+
+## Privacy: Workshop and History summaries ask first
+
+The Workshop and History summaries send the text of your Claude conversations to Claude (through your own Claude
+CLI and allowance), so both are off until you say yes.
+
+- **The question:** "Let Claude read your conversations?" shows once, after the automatic-updates question and the
+  Work Journal question, never on top of them. People updating from an earlier version get it too. Both switches
+  start off. **Save** keeps what the switches say; **Keep both off**, the × and Esc save both as off. Clicking
+  outside does nothing. The answer is saved, so the question never comes back.
+- **Until it is answered**, neither feature sends anything.
+- **Settings → Privacy** (in the General group, after Updates) has the same two switches. A link there opens
+  Settings → Work Journal, which has its own switch.
+- **Workshop off:** **Run now** is greyed out, **Next run** says Off, and a box says the Workshop is off, with a
+  "Turn it on in Settings → Privacy" link that opens Settings at Privacy. Reports already made stay readable. No
+  automatic run starts.
+- **History summaries off:** each row shows its title (or its first prompt) and its time, with no summary line and
+  no "Summarising…". Summaries made earlier are not shown, and no new one is asked for; nothing is deleted.
+- **Backend check:** the app's backend refuses a Workshop run or a History summary on its own while the feature is
+  off, so a front-end mistake cannot send text.

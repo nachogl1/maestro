@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { type ClaudeSessionInfo, summarizeClaudeSession } from "@/lib/terminal";
+import { isPrivacyFeatureAllowed } from "./usePrivacySettingsStore";
 
 /** One conversation's AI label, as far as it has got. */
 export interface SessionSummaryEntry {
@@ -18,6 +19,7 @@ interface SessionSummaryState {
    * Asks the backend for a conversation's label unless one is already loaded
    * or in flight for the same transcript state. A failed entry is retried on
    * the next request (e.g. when the row mounts again), never in a loop.
+   * Asks nothing unless the user let History write summaries (Settings → Privacy).
    */
   request: (conv: ClaudeSessionInfo) => void;
 }
@@ -36,6 +38,7 @@ function summaryKey(conv: SummaryTarget): string {
 export const useSessionSummaryStore = create<SessionSummaryState>((set, get) => ({
   entries: {},
   request: (conv) => {
+    if (!isPrivacyFeatureAllowed("historySummaries")) return;
     const key = summaryKey(conv);
     const existing = get().entries[conv.session_id];
     if (existing && existing.key === key && existing.status !== "error") return;

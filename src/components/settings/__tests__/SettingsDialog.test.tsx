@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+import { usePrivacySettingsStore } from "@/stores/usePrivacySettingsStore";
 import { useTerminalSettingsStore } from "@/stores/useTerminalSettingsStore";
 import { useWorkJournalSettingsStore } from "@/stores/useWorkJournalSettingsStore";
 import { SettingsDialog } from "../SettingsDialog";
@@ -29,6 +30,7 @@ const SECTION_LABELS = [
   "Features",
   "Notifications",
   "Updates",
+  "Privacy",
   "Terminal",
   "AI command lines",
   "Work Journal",
@@ -114,6 +116,28 @@ describe("SettingsDialog", () => {
     openSection("Changelog");
     expect(screen.getAllByText(/^\d{4}-\d{2}-\d{2}$/).length).toBeGreaterThan(0);
     openSection("Work Journal");
+    expect(await screen.findByText("Backup folder")).toBeInTheDocument();
+  });
+
+  it("Privacy switches each feature that sends conversations to Claude, and points to the Work Journal", async () => {
+    usePrivacySettingsStore.setState({ workshop: null, historySummaries: false });
+    render(<SettingsDialog onClose={vi.fn()} initialSection="privacy" />);
+    const workshop = screen.getByRole("switch", { name: "Workshop" });
+    const history = screen.getByRole("switch", { name: "History summaries" });
+    expect(workshop).toHaveAttribute("aria-checked", "false");
+    expect(history).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(workshop);
+
+    expect(usePrivacySettingsStore.getState().workshop).toBe(true);
+    expect(usePrivacySettingsStore.getState().historySummaries).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_privacy_consent", {
+      workshop: true,
+      historySummaries: false,
+    });
+    expect(workshop).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings → Work Journal" }));
     expect(await screen.findByText("Backup folder")).toBeInTheDocument();
   });
 

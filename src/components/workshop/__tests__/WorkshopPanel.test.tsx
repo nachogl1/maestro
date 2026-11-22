@@ -1,8 +1,22 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatWorkshopTime } from "@/lib/workshopReport";
+import { usePrivacySettingsStore } from "@/stores/usePrivacySettingsStore";
 import { useWorkshopStore, type WorkshopStatus } from "@/stores/useWorkshopStore";
 import { WorkshopPanel } from "../WorkshopPanel";
+
+// The privacy setting persists through the Tauri store plugin; happy-dom has
+// no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
 
 const OLDER = { id: "2026-10-11-090000", ran_at: "2026-10-11T09:00:00Z", summary_error: null };
 const NEWER = { id: "2026-10-18-090000", ran_at: "2026-10-18T09:00:00Z", summary_error: null };
@@ -36,11 +50,21 @@ function showStore(state: Partial<ReturnType<typeof useWorkshopStore.getState>>)
   });
 }
 
+/** The user's Workshop answer, as the backend confirmed it. */
+function allowWorkshop(allowed: boolean | null) {
+  usePrivacySettingsStore.setState({
+    workshop: allowed,
+    confirmed: { workshop: allowed === true, historySummaries: false },
+    settingsRequested: false,
+  });
+}
+
 describe("WorkshopPanel", () => {
   beforeEach(() => {
     load.mockClear();
     select.mockClear();
     run.mockClear();
+    allowWorkshop(true);
   });
 
   it("loads the runs when it opens", () => {
@@ -156,5 +180,34 @@ describe("WorkshopPanel", () => {
     render(<WorkshopPanel />);
 
     expect(screen.getByRole("alert")).toHaveTextContent("claude not found");
+  });
+
+  it.each([
+    ["unanswered", null],
+    ["switched off", false],
+  ])("while the Workshop is %s, says how to turn it on and still shows the saved report", (_case, choice) => {
+    allowWorkshop(choice);
+    showStore({});
+    render(<WorkshopPanel />);
+
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Workshop is off, so no report is made. Claude would read the past week's " +
+          "conversations to write it.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "At a glance" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn it on in Settings → Privacy" }));
+    expect(usePrivacySettingsStore.getState().settingsRequested).toBe(true);
+  });
+
+  it("shows no off notice while the Workshop is on", () => {
+    showStore({});
+    render(<WorkshopPanel />);
+
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.queryByText(/Workshop is off/)).toBeNull();
   });
 });

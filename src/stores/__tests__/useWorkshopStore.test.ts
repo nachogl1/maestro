@@ -1,11 +1,25 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { usePrivacySettingsStore } from "../usePrivacySettingsStore";
 import {
   useWorkshopStore,
   type WorkshopRunContent,
   type WorkshopRunOutcome,
   type WorkshopStatus,
 } from "../useWorkshopStore";
+
+// The privacy setting persists through the Tauri store plugin; happy-dom has
+// no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
 
 const invokeMock = vi.mocked(invoke);
 
@@ -45,6 +59,11 @@ describe("useWorkshopStore", () => {
       content: null,
       running: false,
       error: null,
+    });
+    // The user let the Workshop run (the gate has its own tests below).
+    usePrivacySettingsStore.setState({
+      workshop: true,
+      confirmed: { workshop: true, historySummaries: false },
     });
   });
 
@@ -118,6 +137,22 @@ describe("useWorkshopStore", () => {
 
     finish({ status: "busy" });
     await going;
+    expect(useWorkshopStore.getState().running).toBe(false);
+  });
+
+  it.each([
+    ["unanswered", null],
+    ["switched off", false],
+  ])("starts no run while the Workshop is %s", async (_case, choice) => {
+    mockBackend(statusWith([]), { status: "ran", run: NEWER });
+    usePrivacySettingsStore.setState({
+      workshop: choice,
+      confirmed: { workshop: false, historySummaries: false },
+    });
+
+    await useWorkshopStore.getState().run(true);
+
+    expect(invokeMock).not.toHaveBeenCalledWith("workshop_run", expect.anything());
     expect(useWorkshopStore.getState().running).toBe(false);
   });
 });

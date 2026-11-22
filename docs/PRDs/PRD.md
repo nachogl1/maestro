@@ -127,10 +127,18 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
   Tab and Shift+Tab indent only the bullet the cursor is on; markdown the editor cannot represent is protected from
   being overwritten.
 - History (sidebar tab): Claude conversations per project, grouped by checkout and worktree, ordered by latest
-  message, each with an AI name, summary and last message time; search; resume in its own folder.
+  message, each with an AI name and summary (while History summaries are on) and last message time; search; resume
+  in its own folder.
 - Workshop: a read-only weekly Claude Code `/insights` report with its run history and a manual run. Its AI
   summary is drawn as cards that lead with what to improve: a one-line verdict, then the week's problems, worst
   first, each with a fix, then ideas to try, then what went well.
+- Consent: History summaries and the Workshop send the text of Claude conversations to Claude (through the user's
+  own Claude CLI and allowance), so each runs only after the user said yes. One first-run question covers both,
+  shown after the auto-update and Work Journal questions, never on top of them; both switches start off, and
+  closing it keeps both off. People updating from an earlier version are asked once the same way, and nothing is
+  sent until they answer. Each feature has its own switch in Settings → Privacy. Off: History rows show the
+  conversation's title or first prompt, with no summary requested or shown; the Workshop starts no run, automatic
+  or manual, says how to turn it on, and keeps showing the reports already saved. Nothing is deleted.
 
 ### 3.8 Work Journal
 
@@ -155,8 +163,8 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
   badge, and the window controls. Left sidebar tabs: History (Alt+1), Infra (Alt+2), Settings (Alt+3).
 - A usage bar at the bottom of the window shows the Claude account's usage limits, read from Anthropic's usage
   endpoint with the Claude Code sign-in already stored on the computer.
-- Settings dialog: Appearance, Features, Notifications, Updates, Terminal, AI command lines, Samurai, Work Journal,
-  Keyboard shortcuts, Changelog (read at build time from `docs/changelog/`).
+- Settings dialog: Appearance, Features, Notifications, Updates, Privacy, Terminal, AI command lines, Samurai, Work
+  Journal, Keyboard shortcuts, Changelog (read at build time from `docs/changelog/`).
 - Updates: every push to `main` builds a signed Windows `.msi` and macOS `.dmg` as a GitHub Release on
   `nachogl1/maestro`; the app checks, offers "Download and Install" (warning first when terminals are open), and can
   install on launch.

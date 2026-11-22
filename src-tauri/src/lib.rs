@@ -407,6 +407,8 @@ pub fn run() {
             commands::agent_names::list_live_agent_names,
             commands::agent_names::rename_agent,
             commands::session_summary::summarize_claude_session,
+            // Privacy: whether Workshop and History summaries may send text to Claude
+            commands::privacy::set_privacy_consent,
             // Work Journal file (load, pages, settings, backup)
             commands::work_journal::load_work_journal,
             commands::work_journal::create_work_journal_page,

@@ -14,6 +14,7 @@ pub mod marketplace;
 pub mod mcp;
 pub mod permissions;
 pub mod plugin;
+pub mod privacy;
 pub mod processes;
 pub mod scratch;
 pub mod session;

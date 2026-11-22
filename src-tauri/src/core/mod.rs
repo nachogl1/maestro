@@ -21,6 +21,7 @@ pub mod plugin_config_writer;
 pub mod plugin_error;
 pub mod plugin_manager;
 pub mod pr_runs;
+pub mod privacy_consent;
 pub mod process_manager;
 pub mod pty_submit;
 pub mod redirection_guard;
