@@ -388,7 +388,10 @@ fn to_usage_data(api: ApiUsageResponse) -> UsageData {
 /// components or re-renders trigger concurrent requests.
 /// Pass `force_refresh: true` to bypass the cache (e.g. user-initiated refresh).
 #[tauri::command]
-pub async fn get_claude_usage(force_refresh: Option<bool>) -> Result<UsageData, String> {
+pub async fn get_claude_usage(
+    app: tauri::AppHandle,
+    force_refresh: Option<bool>,
+) -> Result<UsageData, String> {
     let force = force_refresh.unwrap_or(false);
     // Return cached response if still fresh (skip when force=true)
     if !force {
@@ -406,7 +409,8 @@ pub async fn get_claude_usage(force_refresh: Option<bool>) -> Result<UsageData, 
         }
     }
 
-    cache_fetch_result(fetch_usage_from_api().await)
+    let version = app.package_info().version.to_string();
+    cache_fetch_result(fetch_usage_from_api(&version).await)
 }
 
 /// Caches a fetched response (and auth errors, since those won't change
@@ -431,9 +435,15 @@ fn rate_limited_usage(retry_after: u64) -> (UsageData, u64) {
     (data, retry_after)
 }
 
+/// The `User-Agent` of the usage request: names Maestro and the app's own
+/// version as the sender, never Claude Code.
+fn usage_user_agent(app_version: &str) -> String {
+    format!("maestro/{}", app_version)
+}
+
 /// Actually fetch usage data from the API (uncached). Returns the data and
 /// how many seconds it may be served from the cache.
-async fn fetch_usage_from_api() -> Result<(UsageData, u64), String> {
+async fn fetch_usage_from_api(app_version: &str) -> Result<(UsageData, u64), String> {
     let token = match get_access_token().await {
         Ok(t) => t,
         Err(e) => {
@@ -454,7 +464,7 @@ async fn fetch_usage_from_api() -> Result<(UsageData, u64), String> {
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {}", token))
         .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", "claude-code/2.0.32")
+        .header("User-Agent", usage_user_agent(app_version))
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
@@ -631,6 +641,13 @@ mod tests {
         "limits": [],
         "spend": {"percent": 0, "severity": "normal"}
     }"#;
+
+    #[test]
+    fn usage_request_names_maestro_and_its_version_as_sender() {
+        let user_agent = usage_user_agent("0.3.42");
+        assert_eq!(user_agent, "maestro/0.3.42");
+        assert!(!user_agent.to_lowercase().contains("claude"));
+    }
 
     /// The only test touching USAGE_CACHE, so it cannot race another test.
     #[test]
