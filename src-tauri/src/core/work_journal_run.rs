@@ -2321,7 +2321,10 @@ mod tests {
                         {"type": "text", "marks": [{"type": "bold"}], "text": "Login fix:"},
                         {"type": "text", "text": " new rules"},
                         {"type": "hardBreak"},
-                        {"type": "text", "text": "and   the PR merged"}
+                        {"type": "text", "text": "and   the PR merged"},
+                        // Pasted lines are held apart by hard breaks too.
+                        {"type": "hardBreak"},
+                        {"type": "text", "marks": [{"type": "italic"}], "text": "Next step"}
                     ]}]),
                 ),
                 card(json!({"time": null, "project": null, "source": "granola"}), text("Planning call")),
@@ -2337,7 +2340,7 @@ mod tests {
             page_text(&body),
             [
                 "08:55 - Standup",
-                "13:10 - Login fix: new rules and the PR merged | pr | demo-shop",
+                "13:10 - Login fix: new rules and the PR merged Next step | pr | demo-shop",
                 "Planning call | granola",
                 "16:07 - Typed it | typed",
                 "Bare card | typed",
