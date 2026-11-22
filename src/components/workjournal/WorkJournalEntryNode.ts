@@ -176,12 +176,15 @@ export function entryText(card: PmNode): string {
 /**
  * How long the first sentence of `text` is: up to the first `.`, `!` or `?`
  * followed by a blank or the end, or up to the first line break, whichever
- * comes first. Null when only blanks follow it: the text is one sentence.
+ * comes first. Blanks and line breaks before the first word are skipped, so
+ * the sentence always has text. Null when only blanks follow it: the text is
+ * one sentence.
  */
 function firstSentenceLength(text: string): number | null {
-  const end = FIRST_SENTENCE_END.exec(text);
+  const start = text.length - text.trimStart().length;
+  const end = FIRST_SENTENCE_END.exec(text.slice(start));
   if (!end) return null;
-  const length = end[0] === LINE_BREAK ? end.index : end.index + 1;
+  const length = start + (end[0] === LINE_BREAK ? end.index : end.index + 1);
   return text.slice(length).trim() === "" ? null : length;
 }
 

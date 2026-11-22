@@ -546,6 +546,8 @@ describe("Work Journal entry cards", () => {
       [[text("Shipped v1.2 today")], "Shipped v1.2 today", false],
       [[text("One sentence only.")], "One sentence only.", false],
       [[text("Done. ")], "Done. ", false],
+      // A leading line break is skipped: the sentence is the first one with text.
+      [[BREAK, text("lead"), BREAK, text("next")], "\nlead", true],
     ] as const;
     // The page opens with its cursor in the first card, but nobody is editing
     // it while the editor has no focus.
