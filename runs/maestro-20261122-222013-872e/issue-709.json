@@ -1,0 +1,22 @@
+{
+  "run_id": "maestro-20261122-222013-872e",
+  "issue": 709,
+  "title": "Usage bar: a switch in Settings → Privacy to stop its request to Anthropic",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T22:20:13Z",
+  "finished_at": "2026-11-22T22:51:33Z",
+  "outcome": "owner-merges",
+  "pr": 712,
+  "summary": "Adds a Usage bar switch, first in Settings → Privacy and on by default; switched off, no usage request is made and the footer shows 'Usage bar off'. Prototype, requirements, runbook and the public Privacy page updated. The owner must try the change, then merge pull request #712.",
+  "agents": [
+    { "name": "dev-709", "model": "opus", "tokens_total": 203316 },
+    { "name": "review-709-r1", "model": "opus", "tokens_total": 131545 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1433, "review_seconds": 357, "ci_seconds": 254 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [
+    "the issue asked for screenshots as evidence, but gh cannot upload images, so the dev's live-test screenshots never reached the pull request and the owner must re-take them"
+  ],
+  "lessons_learned": [],
+  "deferred": []
+}
