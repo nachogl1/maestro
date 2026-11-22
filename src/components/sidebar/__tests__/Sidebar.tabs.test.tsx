@@ -24,6 +24,7 @@ import { LeftPanels } from "@/components/panels/LeftPanels";
 import type { PanelContentProps } from "@/components/panels/PanelBody";
 import { type PanelId, usePanelStripStore } from "@/stores/usePanelStripStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
+import { usePrivacySettingsStore } from "@/stores/usePrivacySettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useSessionSummaryStore } from "@/stores/useSessionSummaryStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
@@ -189,6 +190,11 @@ describe("History, Infra and Settings panels (the former sidebar tabs)", () => {
     useWorkspaceStore.setState({ tabs: [buildTab()] });
     useSessionStore.setState({ sessions: [] });
     useSessionSummaryStore.setState({ entries: {} });
+    // The user let History write summaries.
+    usePrivacySettingsStore.setState({
+      historySummaries: true,
+      confirmed: { workshop: false, historySummaries: true },
+    });
   });
 
   it("shows History, Infra and Settings icons with History open by default", () => {

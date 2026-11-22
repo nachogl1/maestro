@@ -22,6 +22,8 @@ import { LeftPanels } from "./components/panels/LeftPanels";
 import { togglePanelInWindow } from "./components/panels/panelLayout";
 import { CrashRecoveryDialog } from "./components/recovery/CrashRecoveryDialog";
 import { ScratchDeleteOrKeepDialog } from "./components/scratch/ScratchDeleteOrKeepDialog";
+import { PrivacyConsentDialog } from "./components/settings/PrivacyConsentDialog";
+import { PrivacySettingsHost } from "./components/settings/PrivacySettingsHost";
 import { BottomBar } from "./components/shared/BottomBar";
 import { EagleProjectPickerModal } from "./components/shared/EagleProjectPickerModal";
 import { FDADialog } from "./components/shared/FDADialog";
@@ -586,6 +588,8 @@ function App() {
       <WorkJournalSettingsHost theme={theme} onToggleTheme={toggleTheme} />
       <WorkJournalBackgroundWork tabs={tabs} />
       <WorkJournalOptInDialog />
+      <PrivacySettingsHost theme={theme} onToggleTheme={toggleTheme} />
+      <PrivacyConsentDialog />
     </div>
   );
 }

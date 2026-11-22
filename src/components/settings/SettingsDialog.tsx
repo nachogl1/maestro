@@ -9,6 +9,7 @@ import {
   Palette,
   ScrollText,
   Settings,
+  ShieldCheck,
   Zap,
 } from "lucide-react";
 import { type ElementType, type ReactNode, useEffect, useRef, useState } from "react";
@@ -21,6 +22,7 @@ import { TerminalSettingsPanel } from "@/components/terminal/TerminalSettingsPan
 import { AppearanceSettingsPanel, type Theme } from "./AppearanceSettingsPanel";
 import { ChangelogPanel } from "./ChangelogPanel";
 import { FeaturesSettingsPanel } from "./FeaturesSettingsPanel";
+import { PrivacySettingsPanel } from "./PrivacySettingsPanel";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { UpdatesSettingsPanel } from "./UpdatesSettingsPanel";
 import { WorkJournalSettingsGate } from "./WorkJournalSettingsGate";
@@ -30,6 +32,7 @@ export type SettingsSectionId =
   | "features"
   | "notifications"
   | "updates"
+  | "privacy"
   | "terminal"
   | "ai-cli"
   | "scratch"
@@ -85,6 +88,12 @@ const SECTION_GROUPS: SettingsSectionGroup[] = [
         label: "Updates",
         icon: ArrowDownCircle,
         description: "Maestro's version, updates and the maestro terminal command.",
+      },
+      {
+        id: "privacy",
+        label: "Privacy",
+        icon: ShieldCheck,
+        description: "What Maestro sends to Claude.",
       },
     ],
   },
@@ -178,6 +187,8 @@ export function SettingsDialog({
         );
       case "updates":
         return <UpdatesSettingsPanel />;
+      case "privacy":
+        return <PrivacySettingsPanel onOpenWorkJournal={() => setActiveId("work-journal")} />;
       case "terminal":
         return <TerminalSettingsPanel />;
       case "ai-cli":

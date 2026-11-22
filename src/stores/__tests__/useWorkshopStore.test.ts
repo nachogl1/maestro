@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { usePrivacySettingsStore } from "../usePrivacySettingsStore";
 import {
   useWorkshopStore,
   type WorkshopRunContent,
@@ -45,6 +46,11 @@ describe("useWorkshopStore", () => {
       content: null,
       running: false,
       error: null,
+    });
+    // The user let the Workshop run (the gate has its own tests below).
+    usePrivacySettingsStore.setState({
+      workshop: true,
+      confirmed: { workshop: true, historySummaries: false },
     });
   });
 
@@ -118,6 +124,22 @@ describe("useWorkshopStore", () => {
 
     finish({ status: "busy" });
     await going;
+    expect(useWorkshopStore.getState().running).toBe(false);
+  });
+
+  it.each([
+    ["unanswered", null],
+    ["switched off", false],
+  ])("starts no run while the Workshop is %s", async (_case, choice) => {
+    mockBackend(statusWith([]), { status: "ran", run: NEWER });
+    usePrivacySettingsStore.setState({
+      workshop: choice,
+      confirmed: { workshop: false, historySummaries: false },
+    });
+
+    await useWorkshopStore.getState().run(true);
+
+    expect(invokeMock).not.toHaveBeenCalledWith("workshop_run", expect.anything());
     expect(useWorkshopStore.getState().running).toBe(false);
   });
 });

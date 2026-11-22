@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { ClaudeSessionInfo } from "@/lib/terminal";
+import { usePrivacyFeatureAllowed } from "@/stores/usePrivacySettingsStore";
 import { useSessionSummaryStore } from "@/stores/useSessionSummaryStore";
 
 interface HistoryConversationLabelProps {
@@ -17,21 +18,25 @@ interface HistoryConversationLabelProps {
  * name so the row stays recognisable, and the reason sits in the hover.
  * The agent name the session answered to (`--name` / `/rename`) leads the
  * name line, so a row can be matched to the terminal title it had.
+ * While History summaries are off (Settings → Privacy), nothing is asked and
+ * the row shows only its title or first prompt, never a summary made earlier.
  */
 export function HistoryConversationLabel({ conv, compact = false }: HistoryConversationLabelProps) {
-  const entry = useSessionSummaryStore((s) => s.entries[conv.session_id]);
+  const summariesAllowed = usePrivacyFeatureAllowed("historySummaries");
+  const storedEntry = useSessionSummaryStore((s) => s.entries[conv.session_id]);
+  const entry = summariesAllowed ? storedEntry : undefined;
   const request = useSessionSummaryStore((s) => s.request);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-ask only when the transcript changed, not on every new listing object
   useEffect(() => {
-    request(conv);
-  }, [conv.session_id, conv.last_active, conv.message_count, request]);
+    if (summariesAllowed) request(conv);
+  }, [conv.session_id, conv.last_active, conv.message_count, request, summariesAllowed]);
 
   const failed = entry?.status === "error";
   const name =
     conv.title?.trim() ||
     entry?.name?.trim() ||
-    (failed ? conv.first_prompt?.trim() : null) ||
+    (failed || !summariesAllowed ? conv.first_prompt?.trim() : null) ||
     (entry?.status === "loading" ? "Naming session…" : "Untitled session");
 
   const agentName = conv.agent_name?.trim();
@@ -56,7 +61,7 @@ export function HistoryConversationLabel({ conv, compact = false }: HistoryConve
         {agentBadge}
         {name}
       </span>
-      {entry?.status === "ready" ? (
+      {!summariesAllowed ? null : entry?.status === "ready" ? (
         <span className="line-clamp-3 block text-[10px] leading-snug text-maestro-muted">
           {entry.summary}
         </span>

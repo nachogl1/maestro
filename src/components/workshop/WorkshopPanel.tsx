@@ -1,6 +1,10 @@
 import { Loader2, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { formatWorkshopTime, isDue, withSectionsOpen } from "@/lib/workshopReport";
+import {
+  usePrivacyFeatureAllowed,
+  usePrivacySettingsStore,
+} from "@/stores/usePrivacySettingsStore";
 import { useWorkshopStore } from "@/stores/useWorkshopStore";
 import { WorkshopCardSummary } from "./WorkshopCardSummary";
 import { WorkshopSummary } from "./WorkshopSummary";
@@ -16,7 +20,9 @@ const TABS: { id: WorkshopTab; label: string }[] = [
  * Workshop (issue #415): the weekly `/insights` report, read-only. A header
  * with when the shown run ran, when the next run is and every past run, then
  * two tabs: the AI summary (cards, or Markdown for a run from before the cards) and the report
- * exactly as `/insights` wrote it.
+ * exactly as `/insights` wrote it. While the Workshop is off (Settings →
+ * Privacy) no run starts; a notice says how to turn it on and the saved runs
+ * stay readable.
  */
 export function WorkshopPanel() {
   const status = useWorkshopStore((s) => s.status);
@@ -27,6 +33,8 @@ export function WorkshopPanel() {
   const load = useWorkshopStore((s) => s.load);
   const select = useWorkshopStore((s) => s.select);
   const run = useWorkshopStore((s) => s.run);
+  const allowed = usePrivacyFeatureAllowed("workshop");
+  const openPrivacySettings = usePrivacySettingsStore((s) => s.openSettings);
   const [tab, setTab] = useState<WorkshopTab>("summary");
 
   useEffect(() => {
@@ -49,7 +57,7 @@ export function WorkshopPanel() {
           <button
             type="button"
             onClick={() => void run(true)}
-            disabled={running}
+            disabled={running || !allowed}
             className="flex items-center gap-1 rounded border border-maestro-border/60 px-2 py-0.5 text-[11px] font-semibold text-maestro-text transition-colors hover:bg-maestro-card disabled:opacity-60"
           >
             {running ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
@@ -59,9 +67,11 @@ export function WorkshopPanel() {
         <div className="flex items-center gap-2">
           <span className="text-maestro-muted">Next run</span>
           <span className="font-medium text-maestro-text">
-            {nextRunAt === null || isDue(nextRunAt, Date.now())
-              ? "Due now"
-              : formatWorkshopTime(nextRunAt)}
+            {!allowed
+              ? "Off"
+              : nextRunAt === null || isDue(nextRunAt, Date.now())
+                ? "Due now"
+                : formatWorkshopTime(nextRunAt)}
           </span>
         </div>
         {runs.length > 0 && (
@@ -88,6 +98,22 @@ export function WorkshopPanel() {
         )}
       </div>
 
+      {!allowed && (
+        <div className="mx-3 mt-3 flex shrink-0 flex-col items-start gap-2 rounded-md border border-dashed border-maestro-border px-3 py-2.5 text-xs text-maestro-text">
+          <p>
+            Workshop is off, so no report is made. Claude would read the past week's conversations
+            to write it.
+          </p>
+          <button
+            type="button"
+            onClick={openPrivacySettings}
+            className="text-maestro-accent underline hover:opacity-80"
+          >
+            Turn it on in Settings → Privacy
+          </button>
+        </div>
+      )}
+
       <div role="tablist" className="flex shrink-0 border-b border-maestro-border/60 px-2">
         {TABS.map((t) => (
           <button
@@ -109,11 +135,13 @@ export function WorkshopPanel() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!content ? (
-          <p className="px-4 py-6 text-sm leading-6 text-maestro-muted">
-            {running
-              ? "Running /insights… this takes a few minutes."
-              : "No insights yet. The first run starts shortly after Maestro opens, or click Run now."}
-          </p>
+          allowed && (
+            <p className="px-4 py-6 text-sm leading-6 text-maestro-muted">
+              {running
+                ? "Running /insights… this takes a few minutes."
+                : "No insights yet. The first run starts shortly after Maestro opens, or click Run now."}
+            </p>
+          )
         ) : tab === "summary" ? (
           content.summary_cards ? (
             <WorkshopCardSummary summary={content.summary_cards} />

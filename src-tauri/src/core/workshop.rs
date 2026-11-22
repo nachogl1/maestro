@@ -184,7 +184,8 @@ impl SummaryCard for SummaryWin {
     }
 }
 
-/// What [`run`] did, tagged by `status`.
+/// What [`run`] did, tagged by `status`. `Off` is the command's answer while
+/// the user has not let the Workshop run (Settings → Privacy): nothing was sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RunOutcome {
@@ -192,6 +193,7 @@ pub enum RunOutcome {
     NotDue { next_run_at: String },
     Busy,
     Failed { message: String },
+    Off,
 }
 
 /// Where `claude` is reached; tests use fakes.

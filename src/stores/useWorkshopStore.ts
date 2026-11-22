@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { isPrivacyFeatureAllowed } from "./usePrivacySettingsStore";
 
 /** One kept `/insights` run (backend `WorkshopRun`). */
 export interface WorkshopRun {
@@ -68,7 +69,9 @@ export type WorkshopRunOutcome =
   | { status: "ran"; run: WorkshopRun }
   | { status: "not_due"; next_run_at: string }
   | { status: "busy" }
-  | { status: "failed"; message: string };
+  | { status: "failed"; message: string }
+  /** The user has not let the Workshop run; nothing was sent. */
+  | { status: "off" };
 
 export interface WorkshopState {
   status: WorkshopStatus | null;
@@ -84,7 +87,10 @@ export interface WorkshopState {
   load: () => Promise<void>;
   /** Shows run `id`. */
   select: (id: string) => Promise<void>;
-  /** One run: when due, or now with `force`; shows the new run when there is one. */
+  /**
+   * One run: when due, or now with `force`; shows the new run when there is one.
+   * Does nothing unless the user let the Workshop run (Settings → Privacy).
+   */
   run: (force: boolean) => Promise<void>;
 }
 
@@ -127,6 +133,7 @@ export const useWorkshopStore = create<WorkshopState>((set, get) => ({
   },
 
   run: async (force) => {
+    if (!isPrivacyFeatureAllowed("workshop")) return;
     set({ running: true });
     try {
       const outcome = await invoke<WorkshopRunOutcome>("workshop_run", { force });

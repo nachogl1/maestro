@@ -24,6 +24,7 @@ import type { ClaudeSessionInfo, ClaudeSessionListing } from "@/lib/terminal";
 import type { WorktreeInfo } from "@/lib/worktreeManager";
 import { useActivityStore } from "@/stores/useActivityStore";
 import { usePendingLaunchStore } from "@/stores/usePendingLaunchStore";
+import { usePrivacySettingsStore } from "@/stores/usePrivacySettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useSessionSummaryStore } from "@/stores/useSessionSummaryStore";
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/useWorkspaceStore";
@@ -149,6 +150,14 @@ function groupFor(path: string): HTMLElement {
   return root as HTMLElement;
 }
 
+/** The user's History summaries answer, as the backend confirmed it. */
+function allowHistorySummaries(allowed: boolean | null) {
+  usePrivacySettingsStore.setState({
+    historySummaries: allowed,
+    confirmed: { workshop: false, historySummaries: allowed === true },
+  });
+}
+
 const resumeRows = () => screen.queryAllByTitle(/Resume this conversation in/);
 
 describe("HistorySection (issue #78)", () => {
@@ -160,6 +169,7 @@ describe("HistorySection (issue #78)", () => {
     useActivityStore.setState({ sessions: {} });
     usePendingLaunchStore.setState({ pending: [] });
     useSessionSummaryStore.setState({ entries: {} });
+    allowHistorySummaries(true);
   });
 
   it("groups conversations by the checkout or worktree they ran in", async () => {
@@ -465,6 +475,39 @@ describe("HistorySection (issue #78)", () => {
     expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
   });
 
+  it.each([
+    ["unanswered", null],
+    ["switched off", false],
+  ])("while History summaries are %s, a row shows its title or first prompt and asks for no summary", async (_case, choice) => {
+    allowHistorySummaries(choice);
+    useSessionSummaryStore.setState({
+      entries: {
+        "conv-titled": {
+          status: "ready",
+          key: "old",
+          name: "AI name from before",
+          summary: "A summary made earlier.",
+          error: null,
+        },
+      },
+    });
+    mockInvoke({
+      listing: buildListing([
+        conversation({ first_prompt: "Fix the login bug" }),
+        conversation({ session_id: "conv-titled", title: "my-agent", first_prompt: "Other" }),
+      ]),
+    });
+    render(<HistorySection />);
+    await expandProject();
+
+    expect(await screen.findByText("Fix the login bug")).toBeInTheDocument();
+    expect(screen.getByText("my-agent")).toBeInTheDocument();
+    expect(screen.queryByText("A summary made earlier.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Summarising…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Summary unavailable")).not.toBeInTheDocument();
+    expect(callsOf("summarize_claude_session")).toHaveLength(0);
+  });
+
   it("asks for a summary once per conversation, not on every render", async () => {
     mockInvoke({ listing: buildListing([conversation()]) });
     render(<HistorySection />);
@@ -547,6 +590,7 @@ describe("HistorySection — newest first, with the clock time (issue #497)", ()
     useActivityStore.setState({ sessions: {} });
     usePendingLaunchStore.setState({ pending: [] });
     useSessionSummaryStore.setState({ entries: {} });
+    allowHistorySummaries(true);
   });
 
   afterEach(() => {

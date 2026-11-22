@@ -11,6 +11,7 @@ use directories::BaseDirs;
 use tokio::sync::Mutex;
 
 use super::ai_runner;
+use crate::core::privacy_consent::CONSENT;
 use crate::core::work_journal_run::run_process;
 use crate::core::workshop::{
     self, RunOutcome, WorkshopRunContent, WorkshopSources, WorkshopStatus, WorkshopStore,
@@ -76,8 +77,12 @@ pub async fn workshop_status() -> Result<WorkshopStatus, String> {
 }
 
 /// Runs `/insights` and its summary when due, or now when `force` is set.
+/// Never while the user has not let the Workshop run (issue #684).
 #[tauri::command]
 pub async fn workshop_run(force: bool) -> Result<RunOutcome, String> {
+    if !CONSENT.workshop() {
+        return Ok(RunOutcome::Off);
+    }
     Ok(workshop::run(&RUN_LOCK, &store(), &ClaudeSources, Utc::now(), force).await)
 }
 
@@ -85,4 +90,15 @@ pub async fn workshop_run(force: bool) -> Result<RunOutcome, String> {
 #[tauri::command]
 pub async fn workshop_read(id: String) -> Result<WorkshopRunContent, String> {
     store().read_run(&id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn starts_no_run_while_the_workshop_is_off() {
+        // The app's consent starts off and no test switches it on.
+        assert_eq!(workshop_run(true).await, Ok(RunOutcome::Off));
+    }
 }
