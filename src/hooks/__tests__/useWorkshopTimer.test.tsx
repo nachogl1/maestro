@@ -7,6 +7,19 @@ import {
   WORKSHOP_CHECK_EVERY_MS,
 } from "../useWorkshopTimer";
 
+// The privacy setting persists through the Tauri store plugin; happy-dom has
+// no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
+
 const run = vi.fn(async () => {});
 
 describe("useWorkshopTimer", () => {

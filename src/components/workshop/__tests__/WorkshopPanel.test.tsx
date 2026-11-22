@@ -5,6 +5,19 @@ import { usePrivacySettingsStore } from "@/stores/usePrivacySettingsStore";
 import { useWorkshopStore, type WorkshopStatus } from "@/stores/useWorkshopStore";
 import { WorkshopPanel } from "../WorkshopPanel";
 
+// The privacy setting persists through the Tauri store plugin; happy-dom has
+// no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
+
 const OLDER = { id: "2026-10-11-090000", ran_at: "2026-10-11T09:00:00Z", summary_error: null };
 const NEWER = { id: "2026-10-18-090000", ran_at: "2026-10-18T09:00:00Z", summary_error: null };
 

@@ -8,6 +8,19 @@ import {
   type WorkshopStatus,
 } from "../useWorkshopStore";
 
+// The privacy setting persists through the Tauri store plugin; happy-dom has
+// no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
+
 const invokeMock = vi.mocked(invoke);
 
 const OLDER = { id: "2026-10-11-090000", ran_at: "2026-10-11T09:00:00Z", summary_error: null };
