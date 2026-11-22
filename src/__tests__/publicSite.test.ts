@@ -45,13 +45,21 @@ function sitePages(): string[] {
 }
 
 describe("public site (website/)", () => {
-  it("publishes exactly the four pages: Home, Installation, Features and Troubleshooting", () => {
+  it("publishes exactly the five pages: Home, Installation, Features, Troubleshooting, Privacy", () => {
     expect(sitePages()).toEqual([
       "features.md",
       "index.md",
       "installation.md",
+      "privacy.md",
       "troubleshooting.md",
     ]);
+  });
+
+  it("links the Privacy page from every page: the Home page's footer and the docs side menu", () => {
+    const landing = read(join(SITE_DIR, "_layouts", "landing.html"));
+    expect(landing).toContain("{% link privacy.md %}");
+    // Docs pages list every page with a `nav_order` in their side menu.
+    expect(read(join(SITE_DIR, "privacy.md"))).toMatch(/^nav_order: \d+$/m);
   });
 
   it("links only to the fork, apart from the credit to the original project, and no Discord", () => {
