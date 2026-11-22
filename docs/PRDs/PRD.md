@@ -363,6 +363,12 @@ are in `docs/ux/prototypes/` and are the layout to build.
   [#610](https://github.com/nachogl1/maestro/issues/610) to [#616](https://github.com/nachogl1/maestro/issues/616),
   in that order).
 
+### 4.15 Usage bar switch
+
+- Settings → Privacy gains a third switch, "Usage bar", on by default; off, Maestro makes no request to Anthropic's
+  usage endpoint, and the public Privacy page says so
+  ([Usage bar: a switch in Settings → Privacy to stop its request to Anthropic](https://github.com/nachogl1/maestro/issues/709)).
+
 ## 5. Out of scope
 
 - A Linux installer; Linux stays build-it-yourself.
