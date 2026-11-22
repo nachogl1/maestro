@@ -76,6 +76,23 @@
   .sugg .acts button { background: none; border: 0; cursor: pointer; font-size: 13px; padding: 0 2px; border-radius: 3px; }
   .muted { color: var(--muted); }
   .tag { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 10px; }
+  /* Long entries (issue #695): first sentence + See more, whole text while editing, dialog. */
+  .text { white-space: pre-wrap; }
+  .more { background: none; border: 0; padding: 0; color: var(--accent); font-size: 11px; line-height: 15px; cursor: pointer; }
+  .more:hover { text-decoration: underline; }
+  .overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.5); padding: 16px; }
+  .dialog { width: 100%; max-width: 448px; max-height: 85vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 20px 50px rgba(0,0,0,.6); overflow: hidden; }
+  .dialog .dh { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .dialog .dh h2 { margin: 0; font-size: 14px; }
+  .dialog .dh p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+  .dialog .dh .grow { flex: 1; min-width: 0; }
+  .dialog .db { padding: 16px; overflow-y: auto; white-space: pre-wrap; font-size: 12px; }
+  .states { width: 380px; display: flex; flex-direction: column; gap: 10px; }
+  .states h1 { font-size: 15px; margin: 0; }
+  .state { border: 1px dashed var(--border); border-radius: 8px; padding: 8px; }
+  .state .cap { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .state .dialog { max-width: none; box-shadow: none; }
+  .text.editing { background: rgba(38,38,44,.45); }
 </style>
 </head>
 <body>
@@ -116,10 +133,53 @@
       <li><b>+ Add entry</b> (right of the formatting buttons) adds an empty card at the end with the current time.</li>
       <li><b>Accept</b> in Suggestions also adds a card at the end.</li>
       <li>Free notes (the heading and the plain paragraphs) stay editable around the cards.</li>
+      <li><b>Long entries:</b> the 11:30 card was pasted from a conference summary; every paragraph and list item stayed inside the card as its own line. It shows only its <b>first sentence</b> (up to the first <code>.</code>, <code>!</code> or <code>?</code> before a space, or the first line break) and <b>See more</b>.</li>
+      <li><b>See more</b> opens the whole text in a read-only dialog with its time and project; Esc, ✕ or a click outside closes it.</li>
+      <li>Click into the long card's text: the whole text shows for editing. Click elsewhere and it shortens again. The stored text never changes.</li>
     </ul>
   </div>
+
+  <div class="states" aria-label="Long entry states">
+    <h1>Long entry — the three states</h1>
+    <div class="state">
+      <div class="cap">1. Collapsed: first sentence and See more</div>
+      <div class="entry">
+        <span class="grip">⠿</span><input class="time" value="11:30" readonly>
+        <div class="body">
+          <div class="meta"><span class="chip" style="color:#ff1a3a;border-color:#ff1a3a">maestro</span><span class="src typed">Typed</span></div>
+          <div class="text"><b>Conference talk:</b> agents need a supervisor.</div>
+          <button class="more" type="button">See more</button>
+        </div>
+        <button class="del">✕</button>
+      </div>
+    </div>
+    <div class="state">
+      <div class="cap">2. Editing: the cursor is in the card, so the whole text shows</div>
+      <div class="entry">
+        <span class="grip">⠿</span><input class="time" value="11:30" readonly>
+        <div class="body">
+          <div class="meta"><span class="chip" style="color:#ff1a3a;border-color:#ff1a3a">maestro</span><span class="src typed">Typed</span></div>
+          <div class="text editing"><b>Conference talk:</b> agents need a supervisor. Three ideas stood out.
+Small tasks finish more often than big ones
+Every run leaves a short report
+Reviews by a fresh agent catch more bugs</div>
+        </div>
+        <button class="del">✕</button>
+      </div>
+    </div>
+    <div class="state">
+      <div class="cap">3. See more: the whole text in a read-only dialog</div>
+      <div class="dialog" role="dialog" aria-label="Entry at 11:30 (example)">
+        <div class="dh"><div class="grow"><h2>Entry at 11:30</h2><p>maestro</p></div><button class="ib" title="Close">✕</button></div>
+        <div class="db">Conference talk: agents need a supervisor. Three ideas stood out.
+Small tasks finish more often than big ones
+Every run leaves a short report
+Reviews by a fresh agent catch more bugs</div>
+      </div>
+    </div>
+  </div>
 </div>
-<div class="tag">prototype for the Work Journal cards ticket (#528), approved 2026-11-08</div>
+<div class="tag">prototype for the Work Journal cards ticket (#528), approved 2026-11-08; long entries added for issue #695 on 2026-11-22</div>
 
 <script>
 const PROJECTS = { shop: "#3b82f6", site: "#3fb950", maestro: "#ff1a3a" };
@@ -136,6 +196,7 @@ const blocks = [
   { kind: "free", tag: "p", text: "Remember to check the staging database before Friday." },
   { kind: "card", time: "14:20", project: "site", source: "claude", text: "Rewrote the install page for Windows and macOS" },
   { kind: "card", time: "15:05", project: null, source: "granola", text: "Planning call: dropped the Linux installer; the public page keeps the build steps" },
+  { kind: "card", time: "11:30", project: "maestro", source: "typed", text: "Conference talk: agents need a supervisor. Three ideas stood out.\nSmall tasks finish more often than big ones\nEvery run leaves a short report\nReviews by a fresh agent catch more bugs" },
 ];
 
 const suggestions = [
@@ -151,6 +212,32 @@ function boldUpToColon(text) {
   if (i === -1) return "<b>" + esc(text) + "</b>";
   return "<b>" + esc(text.slice(0, i + 1)) + "</b>" + esc(text.slice(i + 1));
 }
+
+// The first sentence: up to the first . ! or ? before a blank or the end, or the
+// first line break. Null when the text is one sentence (nothing else to show).
+function firstSentence(text) {
+  const m = /[.!?](?=\s|$)|\n/.exec(text);
+  if (!m) return null;
+  const end = m[0] === "\n" ? m.index : m.index + 1;
+  return text.slice(end).trim() === "" ? null : text.slice(0, end);
+}
+
+function closeDialog() { document.querySelector(".overlay")?.remove(); }
+
+function openDialog(b) {
+  closeDialog();
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  overlay.innerHTML = `<div class="dialog" role="dialog" aria-modal="true">
+    <div class="dh"><div class="grow"><h2>Entry at ${esc(b.time)}</h2><p>${esc(b.project ?? "no project")}</p></div>
+    <button class="ib" title="Close">✕</button></div>
+    <div class="db">${esc(b.text)}</div></div>`;
+  overlay.addEventListener("mousedown", e => { if (e.target === overlay) closeDialog(); });
+  overlay.querySelector("button").onclick = closeDialog;
+  document.body.appendChild(overlay);
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDialog(); });
 
 function caretOffset(el) {
   const sel = window.getSelection();
@@ -262,14 +349,27 @@ function render(focusIdx) {
     meta.appendChild(src);
     const text = document.createElement("div");
     text.className = "text"; text.contentEditable = "true";
-    text.innerHTML = boldUpToColon(b.text);
+    const more = document.createElement("button");
+    more.className = "more"; more.type = "button"; more.textContent = "See more";
+    more.title = "Show the whole entry";
+    more.onmousedown = e => e.preventDefault();
+    more.onclick = () => openDialog(b);
+    // Collapsed unless the cursor is in the text; the stored text never changes.
+    const show = editing => {
+      const first = editing ? null : firstSentence(b.text);
+      text.innerHTML = boldUpToColon(first ?? b.text);
+      more.style.display = first === null ? "none" : "";
+    };
+    show(false);
+    text.onfocus = () => show(true);
+    text.onblur = () => show(false);
     text.oninput = () => {
       const off = caretOffset(text);
       b.text = text.textContent;
       text.innerHTML = boldUpToColon(b.text);
       setCaret(text, off);
     };
-    body.append(meta, text);
+    body.append(meta, text, more);
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "✕"; del.title = "Delete this entry";
     del.onclick = () => { blocks.splice(idx, 1); render(); };

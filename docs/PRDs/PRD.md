@@ -240,7 +240,13 @@ are in `docs/ux/prototypes/` and are the layout to build.
   entry at the right of the toolbar; Accept adds a card at the end; old plain lines stay plain
   ([Work Journal entries as editable cards](https://github.com/nachogl1/maestro/issues/485),
   [Prototype: Work Journal cards](https://github.com/nachogl1/maestro/issues/528)). Prototype:
-  `docs/ux/prototypes/journal-cards/`.
+  `docs/ux/prototypes/journal-cards/`. Text pasted into a card stays inside it: each pasted paragraph, heading or list
+  item becomes its own line in the card (inline formatting kept, bullets and heading levels dropped). A card longer
+  than its first sentence (up to the first `.`, `!` or `?` before a space or the end, or the first line break) shows
+  only that sentence and **See more**, which opens the whole text, its time and project in a read-only dialog; the
+  cursor in the card shows the whole text for editing, and leaving the card shortens it again (display only, the
+  stored text never changes)
+  ([pasted text stays inside the entry card](https://github.com/nachogl1/maestro/issues/695)).
 - **One summary per project per day:** about 120 characters, outcomes only, from all the project's work except
   meetings; later work comes as an update suggestion (old text struck through above the new); Accept rewrites the
   card; typed cards never get updates
