@@ -1,0 +1,56 @@
+{
+  "run_id": "maestro-20261122-183615-b44a",
+  "issue": 695,
+  "title": "Work Journal: pasted text stays inside the entry card, long entries show the first sentence with See more",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 698,
+  "merged_at": "2026-11-22T19:42:30Z",
+  "merge_commit": "2123a6cbd8c846e4a7462078a73eabf141f80899",
+  "seam": "src/components/workjournal/",
+  "story": "I pasted a conference summary into a journal entry, and every paragraph used to land outside the card as loose notes. Now all of it stays inside the card, each part on its own line, and the daily report reads every word. Long entries show just their first sentence, so the page stays tidy; I click See more to read the rest in a window that keeps my typing away from the page, or click into the card to edit it.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/paste-into-card",
+      "criterion": "A paste with several paragraphs stays inside the card, one line each.",
+      "steps": "Open the Work Journal, click + Add entry and type 'Talk: '. Copy a heading 'Summary', a paragraph 'First point.' and a two-item list ('Item one', 'Item two') from a document, then paste.",
+      "expected": "All four lines inside that one card and no new loose notes under it."
+    },
+    {
+      "key": "src/components/workjournal/paste-outside-card",
+      "criterion": "Pasting outside a card works as before.",
+      "steps": "Click into a free note under any card and paste the same content.",
+      "expected": "A heading, a paragraph and a list as normal page notes."
+    },
+    {
+      "key": "src/components/workjournal/long-entry-collapsed",
+      "criterion": "A long card shows its first sentence and See more; a one-sentence card does not.",
+      "steps": "Add a card 'Login fix: new rules. The PR merged.', then click a free note. Add a second card 'One sentence only.', then click outside the page.",
+      "expected": "The first card shows 'Login fix: new rules.' with a bold 'Login fix:' and See more; the second card shows its full text with no button."
+    },
+    {
+      "key": "src/components/workjournal/see-more-dialog",
+      "criterion": "See more opens the whole text; Esc, Close or a click outside closes it.",
+      "steps": "Click See more on the long card, press Esc. Open it again and click the cross; open it once more and click the dark area outside.",
+      "expected": "A window titled 'Entry at <time>' with the project name and the whole text, which closes all three ways."
+    },
+    {
+      "key": "src/components/workjournal/see-more-keys",
+      "criterion": "While the window is open, keys never reach the page behind it.",
+      "steps": "Open See more, type 'abc', press Space and Page Down, then close the window.",
+      "expected": "The page and the card text unchanged."
+    },
+    {
+      "key": "src/components/workjournal/long-entry-editing",
+      "criterion": "The cursor in the card shows all the text, leaving shortens it again, and nothing is changed.",
+      "steps": "Click into the long card's text, then click a free note. Click into the card again, then click outside the page.",
+      "expected": "The full text while editing, and the first sentence with See more after each way of leaving, with the text unchanged."
+    },
+    {
+      "key": "src/components/workjournal/long-first-card",
+      "criterion": "A long card first on the page is shortened when the page opens.",
+      "steps": "On an empty day, click + Add entry, type 'Planning: moved the launch. Next week we test.', then switch to another day and back.",
+      "expected": "'Planning: moved the launch.' and See more."
+    }
+  ],
+  "no_qa_reason": null
+}

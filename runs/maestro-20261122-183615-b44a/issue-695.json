@@ -1,0 +1,48 @@
+{
+  "run_id": "maestro-20261122-183615-b44a",
+  "issue": 695,
+  "title": "Work Journal: pasted text stays inside the entry card, long entries show the first sentence with See more",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T18:36:17Z",
+  "finished_at": "2026-11-22T19:43:55Z",
+  "outcome": "merged",
+  "pr": 698,
+  "summary": "Pasting several paragraphs into a Work Journal entry used to spill everything after the first paragraph out of the card as loose notes. Now the paste stays inside the card as lines (so reports read it all), and a long card shows its first sentence with a See more dialog; prototype, PRD 4.7 and run-book updated in the same pull request.",
+  "agents": [
+    {
+      "name": "dev-695",
+      "model": "opus",
+      "tokens_total": 233528
+    },
+    {
+      "name": "review-695-r1",
+      "model": "opus",
+      "tokens_total": 176167
+    },
+    {
+      "name": "review-695-r2",
+      "model": "opus",
+      "tokens_total": 205735
+    },
+    {
+      "name": "review-695-r3",
+      "model": "opus",
+      "tokens_total": 138373
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2165,
+    "review_seconds": 1457,
+    "ci_seconds": 150
+  },
+  "rounds": {
+    "review": 3,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [
+    "Work Journal display rules that depend on the editor's selection must also check editor focus: the editor opens with its cursor inside the first block, so tests whose page starts with a free note hide that case (review round 1 found it)."
+  ],
+  "deferred": []
+}
