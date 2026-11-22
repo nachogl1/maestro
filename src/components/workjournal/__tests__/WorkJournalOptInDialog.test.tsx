@@ -39,9 +39,9 @@ describe("WorkJournalOptInDialog", () => {
     expect(
       screen.getByText(
         "It stays off unless you click Enable. Once on, Maestro sends your activity to Claude " +
-          "about every hour while it is open: your Claude prompts, commit messages, pull request " +
-          "and issue titles, and terminal names. It goes through your own Claude CLI and uses " +
-          "your Claude allowance.",
+          "about every hour while it is open: your Claude prompts, commit messages, titles of " +
+          "pull requests and issues you opened, and terminal names. It goes through your own " +
+          "Claude CLI and uses your Claude allowance.",
       ),
     ).toBeTruthy();
   });

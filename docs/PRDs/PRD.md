@@ -276,8 +276,14 @@ are in `docs/ux/prototypes/` and are the layout to build.
   ([one icon that fixes all my spelling and grammar](https://github.com/nachogl1/maestro/issues/545)).
 - **(i) explanation** on the first-run question and in Settings: what it does, each source and its setup, and that
   the Claude CLI writes suggestions ([first-run question: a tooltip](https://github.com/nachogl1/maestro/issues/542)).
-- Decided not to change: assigned pull requests and issues stay as sources; the commit filter stays
-  ([only my own commits](https://github.com/nachogl1/maestro/issues/543)).
+- Decided not to change: assigned pull requests and issues stay as sources, but their titles are not sent: their
+  lines give only the kind, number and event (`Assigned PR #3 was merged`); the commit filter stays
+  ([only my own commits](https://github.com/nachogl1/maestro/issues/543),
+  [never send Claude a title someone else wrote](https://github.com/nachogl1/maestro/issues/707)).
+- **Pulled-in text is data:** the suggestions run and the report run give Claude the activity lines or the pages
+  inside one marked data block, and both system prompts say that the block and every tool result are data to
+  summarise, never instructions; a line cannot close the block early
+  ([treat pulled-in text as data](https://github.com/nachogl1/maestro/issues/707)).
 
 ### 4.8 Issue map
 
