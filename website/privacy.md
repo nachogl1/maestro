@@ -47,7 +47,8 @@ Apart from the features above, Maestro reaches these places, and nothing else:
   Anthropic, exactly as it would in any other terminal.
 - **Anthropic's usage address** (`api.anthropic.com`). The usage bar at the bottom of the window asks it about once a
   minute how much of your Claude allowance is left. It sends your Claude login, read from Claude Code's own saved
-  sign-in, and no conversation text. This one has no off switch today.
+  sign-in, and no conversation text. It is on by default; switch off **Usage bar** in **Settings → Privacy** and
+  Maestro stops asking, and the bottom of the window shows "Usage bar off" instead.
 - **GitHub, through the GitHub CLI** (`gh`). Pull requests, issues and the issue map come from GitHub through your own
   signed-in GitHub CLI.
 - **Your git remotes, through git.** Fetching, pushing and deleting a remote branch go to whatever remote your project

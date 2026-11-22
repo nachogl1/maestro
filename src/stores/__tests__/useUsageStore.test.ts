@@ -4,7 +4,20 @@ import type { UsageData } from "@/lib/usageParser";
 const getClaudeUsage = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/usageParser", () => ({ getClaudeUsage }));
+// The usage bar's privacy switch persists through the Tauri store plugin;
+// happy-dom has no Tauri backend, so stub it out.
+vi.mock("@tauri-apps/plugin-store", () => ({
+  LazyStore: class {
+    async get() {
+      return undefined;
+    }
+    async set() {}
+    async save() {}
+    async delete() {}
+  },
+}));
 
+import { usePrivacySettingsStore } from "../usePrivacySettingsStore";
 import { useUsageStore } from "../useUsageStore";
 
 function usage(overrides: Partial<UsageData> = {}): UsageData {
@@ -37,6 +50,7 @@ describe("useUsageStore", () => {
     // The error counter that drives back-off is module-level; one successful
     // fetch zeroes it so earlier error tests do not leak into polling timing.
     useUsageStore.setState({ isLoading: false });
+    usePrivacySettingsStore.setState({ usageBar: null });
     getClaudeUsage.mockReset().mockResolvedValue(usage());
     await useUsageStore.getState().fetchUsage();
     getClaudeUsage.mockReset();
@@ -91,6 +105,12 @@ describe("useUsageStore", () => {
       const s = useUsageStore.getState();
       expect(s.error).toBe("Error: boom");
       expect(s.isLoading).toBe(false);
+    });
+
+    it("makes no request while the usage bar is switched off", async () => {
+      usePrivacySettingsStore.setState({ usageBar: false });
+      await useUsageStore.getState().fetchUsage(true);
+      expect(getClaudeUsage).not.toHaveBeenCalled();
     });
 
     it("skips the call while a fetch is in flight", async () => {

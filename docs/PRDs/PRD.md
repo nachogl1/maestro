@@ -162,7 +162,9 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
   Brain, Launch, Work Journal, Workshop, Injector, Git; which ones show is chosen in Settings → Features), the GitHub
   badge, and the window controls. Left sidebar tabs: History (Alt+1), Infra (Alt+2), Settings (Alt+3).
 - A usage bar at the bottom of the window shows the Claude account's usage limits, read from Anthropic's usage
-  endpoint with the Claude Code sign-in already stored on the computer.
+  endpoint with the Claude Code sign-in already stored on the computer. It can be switched off in Settings → Privacy
+  (on by default); switched off, it sends nothing and the bottom of the window shows a muted "Usage bar off" that
+  opens Settings at Privacy.
 - Settings dialog: Appearance, Features, Notifications, Updates, Privacy, Terminal, AI command lines, Samurai, Work
   Journal, Keyboard shortcuts, Changelog (read at build time from `docs/changelog/`).
 - Updates: every push to `main` builds a signed Windows `.msi` and macOS `.dmg` as a GitHub Release on

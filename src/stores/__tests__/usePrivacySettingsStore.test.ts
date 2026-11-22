@@ -14,7 +14,11 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { isPrivacyFeatureAllowed, usePrivacySettingsStore } from "../usePrivacySettingsStore";
+import {
+  isPrivacyFeatureAllowed,
+  isUsageBarOn,
+  usePrivacySettingsStore,
+} from "../usePrivacySettingsStore";
 
 const OFF = { workshop: false, historySummaries: false };
 
@@ -25,7 +29,12 @@ describe("usePrivacySettingsStore", () => {
     lazy.save.mockReset().mockResolvedValue(undefined);
     lazy.delete.mockReset().mockResolvedValue(undefined);
     invoke.mockReset().mockResolvedValue(undefined);
-    usePrivacySettingsStore.setState({ workshop: null, historySummaries: null, confirmed: OFF });
+    usePrivacySettingsStore.setState({
+      workshop: null,
+      historySummaries: null,
+      usageBar: null,
+      confirmed: OFF,
+    });
   });
 
   it("starts unanswered with both features off", () => {
@@ -81,18 +90,27 @@ describe("usePrivacySettingsStore", () => {
     await vi.waitFor(() => expect(lazy.save).toHaveBeenCalled());
     const [name, value] = lazy.set.mock.calls.at(-1) as [string, string];
     expect(name).toBe("maestro-privacy-settings");
-    expect(JSON.parse(value).state).toEqual({ workshop: false, historySummaries: true });
+    expect(JSON.parse(value).state).toEqual({
+      workshop: false,
+      historySummaries: true,
+      usageBar: null,
+    });
   });
 
   it("tells the backend a saved choice when it is read back", async () => {
     lazy.get.mockResolvedValue(
-      JSON.stringify({ state: { workshop: true, historySummaries: false }, version: 0 }),
+      JSON.stringify({
+        state: { workshop: true, historySummaries: false, usageBar: false },
+        version: 0,
+      }),
     );
     await usePrivacySettingsStore.persist.rehydrate();
     expect(invoke).toHaveBeenCalledWith("set_privacy_consent", {
       workshop: true,
       historySummaries: false,
     });
+    expect(invoke).toHaveBeenCalledWith("set_usage_bar_allowed", { allowed: false });
+    expect(isUsageBarOn()).toBe(false);
     await vi.waitFor(() => expect(isPrivacyFeatureAllowed("workshop")).toBe(true));
   });
 
@@ -101,5 +119,16 @@ describe("usePrivacySettingsStore", () => {
     expect(usePrivacySettingsStore.getState().workshop).toBeNull();
     expect(usePrivacySettingsStore.getState().historySummaries).toBeNull();
     expect(invoke).toHaveBeenCalledWith("set_privacy_consent", OFF);
+    expect(isUsageBarOn()).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("set_usage_bar_allowed", { allowed: true });
+  });
+
+  it("switches the usage bar off at once and tells the backend", () => {
+    invoke.mockReturnValue(new Promise(() => {}));
+
+    usePrivacySettingsStore.getState().setUsageBar(false);
+
+    expect(isUsageBarOn()).toBe(false);
+    expect(invoke).toHaveBeenCalledWith("set_usage_bar_allowed", { allowed: false });
   });
 });

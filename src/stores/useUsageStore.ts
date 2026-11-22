@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getClaudeUsage, type UsageData } from "@/lib/usageParser";
+import { isUsageBarOn } from "./usePrivacySettingsStore";
 
 const POLL_INTERVAL_MS = 60_000;
 const MAX_POLL_INTERVAL_MS = 300_000;
@@ -10,6 +11,7 @@ interface UsageState {
   error: string | null;
   needsAuth: boolean;
 
+  /** Asks for usage; does nothing while the usage bar is switched off (issue #709). */
   fetchUsage: (force?: boolean) => Promise<void>;
   /** Subscribe to polling. Ref-counted across mounts; returns cleanup. */
   startPolling: () => () => void;
@@ -26,7 +28,7 @@ export const useUsageStore = create<UsageState>()((set, get) => ({
   needsAuth: false,
 
   fetchUsage: async (force = false) => {
-    if (get().isLoading) return;
+    if (get().isLoading || !isUsageBarOn()) return;
     set({ isLoading: true, error: null });
     try {
       const usage = await getClaudeUsage(force);

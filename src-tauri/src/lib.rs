@@ -409,6 +409,7 @@ pub fn run() {
             commands::session_summary::summarize_claude_session,
             // Privacy: whether Workshop and History summaries may send text to Claude
             commands::privacy::set_privacy_consent,
+            commands::privacy::set_usage_bar_allowed,
             // Work Journal file (load, pages, settings, backup)
             commands::work_journal::load_work_journal,
             commands::work_journal::create_work_journal_page,

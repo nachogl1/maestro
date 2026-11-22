@@ -802,3 +802,15 @@ CLI and allowance), so both are off until you say yes.
   no "Summarising…". Summaries made earlier are not shown, and no new one is asked for; nothing is deleted.
 - **Backend check:** the app's backend refuses a Workshop run or a History summary on its own while the feature is
   off, so a front-end mistake cannot send text.
+
+## Privacy: the usage bar can be switched off
+
+The usage bar at the bottom of the window asks Anthropic's usage endpoint about once a minute how much of your Claude
+allowance is left. It sends only your Claude login, no conversation text, so it is on unless you switch it off.
+
+- **Settings → Privacy** lists the **Usage bar** switch first, above Workshop and History summaries, with a line
+  saying what it sends. With no saved choice it reads on. The first-run question does not ask about it.
+- **Switched off:** no usage request is made, and the bottom of the window shows a small muted "Usage bar off" where
+  the bars were, with no refresh button. Clicking it opens Settings at Privacy.
+- **Backend check:** the app's backend refuses the usage request on its own once it is told the switch is off; until
+  then it allows it, as before.

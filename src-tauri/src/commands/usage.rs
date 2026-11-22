@@ -3,7 +3,9 @@
 //! Fetches real rate limit data from Anthropic's OAuth API.
 //! Reads OAuth tokens from platform credential store (primary) or credentials file (fallback).
 
+use crate::core::privacy_consent::{PrivacyConsent, CONSENT};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -383,7 +385,24 @@ fn to_usage_data(api: ApiUsageResponse) -> UsageData {
     }
 }
 
-/// Fetch usage data from Anthropic's OAuth API.
+/// The error while the user has switched the usage bar off (issue #709).
+const USAGE_BAR_OFF: &str = "The usage bar is off in Settings → Privacy";
+
+/// Runs `fetch` only while the usage bar is switched on, so no request reaches
+/// Anthropic once the user switched it off, whatever the frontend asks.
+async fn when_usage_bar_on<F, Fut>(consent: &PrivacyConsent, fetch: F) -> Result<UsageData, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<UsageData, String>>,
+{
+    if !consent.usage_bar() {
+        return Err(USAGE_BAR_OFF.to_string());
+    }
+    fetch().await
+}
+
+/// Fetch usage data from Anthropic's OAuth API, unless the user switched the
+/// usage bar off (issue #709).
 /// Responses are cached for 30 seconds to prevent 429 errors when multiple
 /// components or re-renders trigger concurrent requests.
 /// Pass `force_refresh: true` to bypass the cache (e.g. user-initiated refresh).
@@ -392,7 +411,13 @@ pub async fn get_claude_usage(
     app: tauri::AppHandle,
     force_refresh: Option<bool>,
 ) -> Result<UsageData, String> {
+    let version = app.package_info().version.to_string();
     let force = force_refresh.unwrap_or(false);
+    when_usage_bar_on(&CONSENT, || cached_or_fetched_usage(&version, force)).await
+}
+
+/// The cached response while it is fresh (unless `force`), else a new fetch.
+async fn cached_or_fetched_usage(version: &str, force: bool) -> Result<UsageData, String> {
     // Return cached response if still fresh (skip when force=true)
     if !force {
         if let Ok(guard) = USAGE_CACHE.lock() {
@@ -409,8 +434,7 @@ pub async fn get_claude_usage(
         }
     }
 
-    let version = app.package_info().version.to_string();
-    cache_fetch_result(fetch_usage_from_api(&version).await)
+    cache_fetch_result(fetch_usage_from_api(version).await)
 }
 
 /// Caches a fetched response (and auth errors, since those won't change
@@ -641,6 +665,20 @@ mod tests {
         "limits": [],
         "spend": {"percent": 0, "severity": "normal"}
     }"#;
+
+    #[tokio::test]
+    async fn makes_no_usage_request_while_the_usage_bar_is_off() {
+        let consent = PrivacyConsent::new();
+        consent.set_usage_bar(false);
+        let mut asked = false;
+        let result = when_usage_bar_on(&consent, || {
+            asked = true;
+            async { Ok(UsageData::default()) }
+        })
+        .await;
+        assert!(!asked);
+        assert_eq!(result.unwrap_err(), USAGE_BAR_OFF);
+    }
 
     #[test]
     fn usage_request_names_maestro_and_its_version_as_sender() {

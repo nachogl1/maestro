@@ -141,6 +141,25 @@ describe("SettingsDialog", () => {
     expect(await screen.findByText("Backup folder")).toBeInTheDocument();
   });
 
+  it("Privacy lists the usage bar switch first, on with no stored choice, and switches it off", () => {
+    usePrivacySettingsStore.setState({ usageBar: null });
+    render(<SettingsDialog onClose={vi.fn()} initialSection="privacy" />);
+    const switches = screen.getAllByRole("switch");
+    expect(switches.map((s) => s.getAttribute("aria-label"))).toEqual([
+      "Usage bar",
+      "Workshop",
+      "History summaries",
+    ]);
+    expect(screen.getByText(/sends only your Claude login/)).toBeInTheDocument();
+    expect(switches[0]).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(switches[0]);
+
+    expect(usePrivacySettingsStore.getState().usageBar).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_usage_bar_allowed", { allowed: false });
+    expect(switches[0]).toHaveAttribute("aria-checked", "false");
+  });
+
   it("can open straight at a given section", async () => {
     render(<SettingsDialog onClose={vi.fn()} initialSection="work-journal" />);
     expect(await screen.findByText("Backup folder")).toBeInTheDocument();

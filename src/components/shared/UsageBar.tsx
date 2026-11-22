@@ -1,6 +1,11 @@
 import { RefreshCw } from "lucide-react";
 import { useEffect } from "react";
 import { formatResetTime, getUsageBars, type UsageWindowBar } from "@/lib/usageParser";
+import {
+  usePrivacySettingsLoaded,
+  usePrivacySettingsStore,
+  useUsageBarOn,
+} from "@/stores/usePrivacySettingsStore";
 import { useUsageStore } from "@/stores/useUsageStore";
 
 function barColor(percent: number): string {
@@ -17,12 +22,36 @@ function clampPercent(percent: number): number {
 /**
  * Footer usage display: every window the API reported, laid out inline — one
  * mini bar per window with its percent and reset time always visible, no
- * drop-up to open.
+ * drop-up to open. Switched off in Settings → Privacy (issue #709), it asks
+ * nothing and shows a muted "Usage bar off" that opens that section. It waits
+ * for the saved switch to be read, so a saved "off" never sends a first request.
  */
 export function UsageBar() {
   const { usage, needsAuth, error, isLoading, fetchUsage, startPolling } = useUsageStore();
+  const settingsLoaded = usePrivacySettingsLoaded();
+  const on = useUsageBarOn();
+  const openPrivacySettings = usePrivacySettingsStore((s) => s.openSettings);
+  const active = settingsLoaded && on;
 
-  useEffect(() => startPolling(), [startPolling]);
+  useEffect(() => {
+    if (!active) return;
+    return startPolling();
+  }, [active, startPolling]);
+
+  if (!settingsLoaded) return null;
+
+  if (!on) {
+    return (
+      <button
+        type="button"
+        onClick={openPrivacySettings}
+        title="Switch it on in Settings → Privacy"
+        className="text-[10px] text-maestro-muted/50 transition-colors hover:text-maestro-text"
+      >
+        Usage bar off
+      </button>
+    );
+  }
 
   if (needsAuth) {
     return (

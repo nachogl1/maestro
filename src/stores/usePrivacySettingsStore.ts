@@ -18,6 +18,14 @@ type PrivacySettingsState = {
   /** Whether the user let History write summaries. `null` until they answer; off while unanswered. */
   historySummaries: boolean | null;
   /**
+   * Whether the usage bar may ask Anthropic for the account's usage (issue
+   * #709). `null` until the user switches it; on while unset, since it sends
+   * only the Claude login.
+   */
+  usageBar: boolean | null;
+  /** Switches the usage bar on or off; off stops its requests at once. */
+  setUsageBar: (on: boolean) => void;
+  /**
    * What the backend has confirmed it was told. A feature sends text only once
    * it is on here, so the front end never asks the backend before the backend
    * agrees. A feature switched off drops here at once.
@@ -61,6 +69,16 @@ function sameChoice(a: PrivacyChoice, b: PrivacyChoice): boolean {
   return a.workshop === b.workshop && a.historySummaries === b.historySummaries;
 }
 
+/** Tells the backend whether the usage bar may ask for usage; on until told off. */
+async function syncUsageBar(): Promise<void> {
+  const allowed = usePrivacySettingsStore.getState().usageBar !== false;
+  try {
+    await invoke("set_usage_bar_allowed", { allowed });
+  } catch (err) {
+    console.error("Failed to tell the backend the usage bar setting:", err);
+  }
+}
+
 /**
  * Tells the backend what the user allows, then confirms it here. Anything
  * switched off stops in the front end before the backend is even told; a
@@ -90,10 +108,15 @@ export const usePrivacySettingsStore = create<PrivacySettingsState>()(
     (set) => ({
       workshop: null,
       historySummaries: null,
+      usageBar: null,
       confirmed: ALL_OFF,
       setChoice: (choice) => {
         set(choice);
         void syncBackend();
+      },
+      setUsageBar: (on) => {
+        set({ usageBar: on });
+        void syncUsageBar();
       },
       settingsRequested: false,
       openSettings: () => set({ settingsRequested: true }),
@@ -105,9 +128,11 @@ export const usePrivacySettingsStore = create<PrivacySettingsState>()(
       partialize: (state) => ({
         workshop: state.workshop,
         historySummaries: state.historySummaries,
+        usageBar: state.usageBar,
       }),
       onRehydrateStorage: () => () => {
         void syncBackend();
+        void syncUsageBar();
       },
     },
   ),
@@ -137,4 +162,14 @@ export function isPrivacyFeatureAllowed(feature: PrivacyFeature): boolean {
 /** The same as {@link isPrivacyFeatureAllowed}, as a React hook. */
 export function usePrivacyFeatureAllowed(feature: PrivacyFeature): boolean {
   return usePrivacySettingsStore((s) => s.confirmed[feature]);
+}
+
+/** True unless the user switched the usage bar off; no stored choice reads as on. */
+export function isUsageBarOn(): boolean {
+  return usePrivacySettingsStore.getState().usageBar !== false;
+}
+
+/** The same as {@link isUsageBarOn}, as a React hook. */
+export function useUsageBarOn(): boolean {
+  return usePrivacySettingsStore((s) => s.usageBar !== false);
 }
