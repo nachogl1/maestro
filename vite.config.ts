@@ -56,7 +56,6 @@ export default defineConfig(async () => ({
           if (/\.(css|scss|sass|less|styl)(\?.*)?$/.test(id)) return;
           const pkg = packageOf(id);
           if (!pkg) return;
-          if (pkg.startsWith("@xyflow/")) return "vendor-flow";
           if (
             pkg.startsWith("@tiptap/") ||
             pkg.startsWith("prosemirror-") ||

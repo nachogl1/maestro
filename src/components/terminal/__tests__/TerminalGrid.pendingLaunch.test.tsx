@@ -202,14 +202,6 @@ describe("TerminalGrid pending launch", () => {
       // brief file; the grid passes both halves straight through.
       briefDir: "C:/proj",
       briefStem: "pr-123-check-review",
-      // Issue #139: a PR review launch also records itself, at the same hop.
-      prRun: {
-        pr: 123,
-        title: "fix journal splitting",
-        repo: "nachogl1/maestro",
-        project_path: "C:/proj",
-        steps: ["check", "review"],
-      },
     });
 
     render(<TerminalGrid projectPath="C:/proj" tabId="tab-1" isActive />);
@@ -223,13 +215,6 @@ describe("TerminalGrid pending launch", () => {
       "review the diff\nand summarise it",
       "C:/proj",
       "pr-123-check-review",
-      {
-        pr: 123,
-        title: "fix journal splitting",
-        repo: "nachogl1/maestro",
-        project_path: "C:/proj",
-        steps: ["check", "review"],
-      },
     );
     // …and strictly before the CLI command went to the PTY.
     await waitFor(() => expect(writeStdinMock).toHaveBeenCalled());

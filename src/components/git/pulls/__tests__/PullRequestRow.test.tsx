@@ -72,4 +72,11 @@ describe("PullRequestRow", () => {
     expect(screen.getByText("+25")).toBeInTheDocument();
     expect(screen.getByText("-10")).toBeInTheDocument();
   });
+
+  it("offers no actions menu: the whole row is the one button that opens the detail", () => {
+    render(<PullRequestRow pr={buildPullRequest()} isSelected={false} onClick={() => {}} />);
+
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /actions for pr/i })).not.toBeInTheDocument();
+  });
 });

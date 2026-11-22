@@ -386,7 +386,6 @@ export function useSlotLaunch({
                     slot.initialPrompt,
                     slot.briefDir,
                     slot.briefStem,
-                    slot.prRun,
                   );
                 } catch (err) {
                   console.error("[InitialPrompt] Failed to arm the initial prompt:", err);

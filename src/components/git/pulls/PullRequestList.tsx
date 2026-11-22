@@ -64,7 +64,6 @@ export function PullRequestList({ repoPath, onSelectPR, selectedPRNumber }: Pull
             <PullRequestRow
               key={pr.number}
               pr={pr}
-              repoPath={repoPath}
               isSelected={pr.number === selectedPRNumber}
               onClick={() => onSelectPR(pr.number)}
             />

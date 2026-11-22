@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import type { PrReviewLaunch } from "@/lib/terminalPrompt";
 import type { AiMode } from "@/stores/useSessionStore";
 
 /**
@@ -39,13 +38,6 @@ export interface PendingLaunch {
   briefDir?: string | null;
   briefStem?: string | null;
   /**
-   * PR-review launch metadata (issue #139): passed to the same arm hop, which
-   * writes the review's persistent run record — the identity its brief and
-   * audit rows are grouped under on disk. A review without it still runs; it
-   * simply leaves nothing on disk to group.
-   */
-  prRun?: PrReviewLaunch | null;
-  /**
    * Crash recovery (issue #608): one id per terminal being brought back, so
    * two terminals that look alike (two unnamed shells in one folder) are two
    * launches, not one deduplicated request.
@@ -83,14 +75,10 @@ function sameLaunch(a: PendingLaunch, b: PendingLaunch): boolean {
     (a.customName ?? null) === (b.customName ?? null) &&
     (a.initialPrompt ?? null) === (b.initialPrompt ?? null) &&
     // Issue #136 review (C11): two launches carrying the SAME prompt can
-    // still differ in where that prompt is staged as a brief, or in which PR
-    // review they record — collapsing them silently dropped one of the two.
+    // still differ in where that prompt is staged as a brief — collapsing
+    // them silently dropped one of the two.
     (a.briefDir ?? null) === (b.briefDir ?? null) &&
     (a.briefStem ?? null) === (b.briefStem ?? null) &&
-    (a.prRun?.pr ?? null) === (b.prRun?.pr ?? null) &&
-    (a.prRun?.repo ?? null) === (b.prRun?.repo ?? null) &&
-    (a.prRun?.project_path ?? null) === (b.prRun?.project_path ?? null) &&
-    JSON.stringify(a.prRun?.steps ?? []) === JSON.stringify(b.prRun?.steps ?? []) &&
     (a.restoreKey ?? null) === (b.restoreKey ?? null)
   );
 }

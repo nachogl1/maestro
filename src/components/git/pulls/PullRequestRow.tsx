@@ -1,12 +1,9 @@
 import { CheckCircle2, GitMerge, GitPullRequest, Loader2, XCircle } from "lucide-react";
 import { useMemo } from "react";
 import type { ChecksSummary, PullRequestInfo } from "../../../stores/useGitHubStore";
-import { PrActionsMenu } from "./PrActionsMenu";
 
 interface PullRequestRowProps {
   pr: PullRequestInfo;
-  /** Repository the PR belongs to — the actions menu names it in its prompt. */
-  repoPath: string;
   isSelected: boolean;
   onClick: () => void;
 }
@@ -61,7 +58,7 @@ function ChecksBadge({ checks }: { checks?: ChecksSummary }) {
   }
 }
 
-export function PullRequestRow({ pr, repoPath, isSelected, onClick }: PullRequestRowProps) {
+export function PullRequestRow({ pr, isSelected, onClick }: PullRequestRowProps) {
   // Format relative time
   const relativeTime = useMemo(() => {
     const now = Date.now();
@@ -113,8 +110,6 @@ export function PullRequestRow({ pr, repoPath, isSelected, onClick }: PullReques
   const StateIcon = stateInfo.icon;
   const review = REVIEW_BADGES[(pr.reviewDecision ?? "").toUpperCase()];
 
-  // The row is a container, not a button: the actions menu's trigger is a
-  // button of its own and cannot legally nest inside another one.
   return (
     <div
       className={`flex w-full items-center border-b border-maestro-border/30 transition-colors ${
@@ -124,7 +119,7 @@ export function PullRequestRow({ pr, repoPath, isSelected, onClick }: PullReques
       <button
         type="button"
         onClick={onClick}
-        className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 pr-1 text-left"
+        className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 pr-3 text-left"
       >
         {/* State icon */}
         <div className={`shrink-0 rounded p-1 ${stateInfo.bgColor}`}>
@@ -171,10 +166,6 @@ export function PullRequestRow({ pr, repoPath, isSelected, onClick }: PullReques
           </div>
         </div>
       </button>
-
-      <div className="flex shrink-0 items-center pr-1.5">
-        <PrActionsMenu pr={pr} repoPath={repoPath} />
-      </div>
     </div>
   );
 }
