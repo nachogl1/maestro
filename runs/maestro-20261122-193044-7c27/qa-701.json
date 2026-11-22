@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261122-193044-7c27",
+  "issue": 701,
+  "title": "Public site: list every outside service Maestro contacts and add a privacy page",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 708,
+  "merged_at": "2026-11-22T21:01:15Z",
+  "merge_commit": "df8b9626b9d066aefb90a3b550fa76e0ad4e21a4",
+  "seam": "website/",
+  "story": "The public site used to say Maestro talks only to git, the GitHub CLI and the Claude CLI. The home page now names every outside service the app contacts, and a new Privacy page, linked from every page, says what each feature sends to Claude and where to switch it off.",
+  "checks": [
+    {
+      "key": "website/privacy-page",
+      "criterion": "The Privacy page exists and every page links to it",
+      "steps": "Open https://nachogl1.github.io/maestro/, scroll to the footer, click Privacy; then open Features, Installation and Troubleshooting.",
+      "expected": "The page shows 'What goes to Claude, and when' with a four-row table; each docs page's side menu lists Privacy."
+    },
+    {
+      "key": "website/home-outside-services",
+      "criterion": "The home page names every outside service",
+      "steps": "Open the home page and read the What it does section.",
+      "expected": "It says no Maestro server and no telemetry and names Anthropic, GitHub, your own git remotes and Granola (only if you add it), with a Privacy link."
+    }
+  ],
+  "no_qa_reason": null
+}

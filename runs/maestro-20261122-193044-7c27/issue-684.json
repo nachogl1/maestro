@@ -4,10 +4,10 @@
   "title": "Ask before conversation text goes to the model: consent and off switches for Workshop and History summaries",
   "login": "Ignacio-Gonzalez-Harris",
   "started_at": "2026-11-22T20:08:00Z",
-  "finished_at": "2026-11-22T20:45:37Z",
-  "outcome": "owner-merges",
+  "finished_at": "2026-11-22T20:46:35Z",
+  "outcome": "merged",
   "pr": 705,
-  "summary": "Workshop and History summaries now send conversation text to Claude only after a one-time consent question, with switches in a new Settings \u2192 Privacy section and a backend refusal while off. The owner must try the change, then merge pull request #705.",
+  "summary": "Workshop and History summaries now send conversation text to Claude only after a one-time consent question, with switches in a new Settings \u2192 Privacy section and a backend refusal while off; merged by the agent on the maintainer's explicit word.",
   "agents": [
     {
       "name": "dev-684",

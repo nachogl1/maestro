@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261122-193044-7c27",
+  "issue": 684,
+  "title": "Ask before conversation text goes to the model: consent and off switches for Workshop and History summaries",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 705,
+  "merged_at": "2026-11-22T20:46:35Z",
+  "merge_commit": "b4c8c4600eba739e667454f8798326dd9365e92f",
+  "seam": "src/components/settings/",
+  "story": "Maestro now asks before the Workshop and History summaries send the text of your Claude conversations to Claude. It asks once at first start, or once after updating, and both stay off until you answer. A new Settings \u2192 Privacy section switches each on or off. Before this, both ran without asking.",
+  "checks": [
+    {
+      "key": "src/components/settings/privacy-first-run-question",
+      "criterion": "With no answer recorded, one question asks about both features, both off",
+      "steps": "Start Maestro with fresh app data. Answer the automatic-updates question, then the Work Journal question with Not now.",
+      "expected": "'Let Claude read your conversations?' with Workshop and History summaries switches, both off; outside click does nothing; Esc, \u00d7 or Keep both off saves both off; it never returns after a restart."
+    },
+    {
+      "key": "src/components/settings/privacy-save-choice",
+      "criterion": "Save keeps what the switches say",
+      "steps": "Fresh app data, answer the first two questions, switch History summaries on, click Save, open Settings \u2192 Privacy.",
+      "expected": "Privacy sits after Updates; History summaries on, Workshop off; the Work Journal line opens that section."
+    },
+    {
+      "key": "src/components/workshop/off-state",
+      "criterion": "Workshop off starts no run and says how to turn it on",
+      "steps": "With Workshop off, open the Workshop panel and wait over 30 seconds.",
+      "expected": "Run now greyed out, Next run reads Off, a box explains how to turn it on and its link opens Settings \u2192 Privacy; saved reports stay readable; no run starts."
+    },
+    {
+      "key": "src/components/sidebar/history-summaries-off",
+      "criterion": "History summaries off shows title or first prompt only",
+      "steps": "With History summaries off, open History and expand a project with conversations.",
+      "expected": "Rows show title or first prompt and time, no summary line, no Summarising\u2026; switching it on brings summaries back."
+    },
+    {
+      "key": "src/components/settings/privacy-update-from-earlier",
+      "criterion": "An updating user is asked once and nothing is sent first",
+      "steps": "Install over an earlier version with the update and Work Journal questions answered, then start it.",
+      "expected": "The consent question appears once; both features stay off until it is answered."
+    }
+  ],
+  "no_qa_reason": null
+}

@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261122-193044-7c27",
+  "issue": 701,
+  "title": "Public site: list every outside service Maestro contacts and add a privacy page",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T20:45:00Z",
+  "finished_at": "2026-11-22T21:01:15Z",
+  "outcome": "merged",
+  "pr": 708,
+  "summary": "The public site now names every outside service the app contacts, checked against the code, and a new Privacy page says what each feature sends to Claude, when, and where to switch it off.",
+  "agents": [
+    {
+      "name": "dev-701",
+      "model": "opus",
+      "tokens_total": 151593
+    },
+    {
+      "name": "review-701-r1",
+      "model": "sonnet",
+      "tokens_total": 86677
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 734,
+    "review_seconds": 22,
+    "ci_seconds": null
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/src/commands/usage.rs",
+      "what": "The usage bar asks Anthropic's usage endpoint about once a minute with the user's Claude login and has no off switch, unlike the other outside calls",
+      "why": "Out of scope for the privacy-page story; the site now states it openly",
+      "owner": "unowned \u2014 next harvest"
+    }
+  ]
+}
