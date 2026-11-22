@@ -63,13 +63,20 @@
   .off { margin: 16px; border: 1px dashed var(--border); border-radius: 6px; padding: 12px; color: var(--text); font-size: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
   .link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   .veil.hidden { display: none; }
+  .footer { height: 34px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 12px; font-size: 11px; color: var(--muted); }
+  .footer .ubar { width: 100px; }
+  .footer .ubar .lbl { display: flex; justify-content: space-between; font-size: 10px; }
+  .footer .ubar .track { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 2px; }
+  .footer .ubar .fill { height: 100%; background: var(--green); }
+  .footer .usage-off { background: none; border: 0; padding: 0; font: inherit; font-size: 10px; color: var(--muted); opacity: .7; cursor: pointer; }
+  .footer .usage-off:hover { color: var(--text); opacity: 1; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="note">
     <h1>Consent and privacy</h1>
-    <p>Mock for issue #684 (ask before conversation text goes to the model). Every name and text in the app frame is made up.</p>
+    <p>Mock for issue #684 (ask before conversation text goes to the model), extended for issue #709 (a switch for the usage bar's request to Anthropic). Every name and text in the app frame is made up.</p>
     <div class="scenes">
       <button type="button" data-scene="ask" class="on">1 · First-run question</button>
       <button type="button" data-scene="settings">2 · Settings → Privacy</button>
@@ -80,9 +87,10 @@
       <li><b>Question:</b> shown once, after the automatic-updates question and the Work Journal question, never on top of them. New users and people updating from an earlier version both get it.</li>
       <li>Both switches start <b>off</b>. <b>Save</b> keeps what the switches say. <b>Keep both off</b>, the × and Esc save both as off. Clicking outside does nothing. The answer is saved, so the question never comes back.</li>
       <li>Until the question is answered, neither feature sends anything.</li>
-      <li><b>Settings → Privacy</b> (in the first group, after Updates): the same two switches with the same words, plus a line pointing to the Work Journal's own switch.</li>
+      <li><b>Settings → Privacy</b> (in the first group, after Updates): the <b>Usage bar</b> switch first, on by default, with its own line saying it sends only the Claude login to Anthropic's usage endpoint and no conversation text. Then the same two switches as the question with the same words, plus a line pointing to the Work Journal's own switch.</li>
+      <li><b>Usage bar off:</b> the footer shows a small muted "Usage bar off" where the bars were; clicking it opens Settings at Privacy. No refresh button, and no request to Anthropic. The first-run question does not ask about the usage bar.</li>
       <li><b>Workshop off:</b> the panel keeps showing reports already made, (the latest one too, under the box), but <b>Run now</b> is disabled and a box says how to turn it on. No automatic run starts.</li>
-      <li>The scenes share one state: switch a feature on in scene 1 or 2, then open scene 3 or 4 to see it on.</li>
+      <li>The scenes share one state: switch a feature on in scene 1 or 2, then open scene 3 or 4 to see it on. Switch the usage bar off in scene 2 and close Settings to see the footer's off text.</li>
       <li><b>History off:</b> each row shows its title (or first prompt) and its time, with no summary line and no "Summarising…". Summaries already made are not shown; nothing is deleted.</li>
     </ul>
   </div>
@@ -96,6 +104,7 @@
       </div>
       <div class="stage" id="stage">Terminals</div>
     </div>
+    <div class="footer" id="footer"></div>
 
     <div class="veil" id="ask">
       <div class="dialog sm" role="dialog" aria-label="Let Claude read your conversations?">
@@ -128,6 +137,10 @@
             <div class="item">Terminal</div><div class="item">Work Journal</div>
           </nav>
           <section>
+            <div class="feature">
+              <div class="txt"><b>Usage bar</b><div class="what">About once a minute, sends only your Claude login to Anthropic's usage endpoint to show your usage limits at the bottom of the window. No conversation text.</div></div>
+              <button class="toggle" data-feature="usage" aria-label="Usage bar"></button>
+            </div>
             <p class="small">These features send the text of your Claude conversations to Claude, through your own Claude CLI and your Claude allowance. Off means nothing is sent.</p>
             <div class="feature">
               <div class="txt"><b>Workshop</b><div class="what">Shortly after start and then once a week, Claude reads the past week's conversations and writes a report on what to improve.</div></div>
@@ -146,7 +159,7 @@
 </div>
 
 <script>
-  const state = { workshop: false, history: false };
+  const state = { usage: true, workshop: false, history: false };
   const CONVERSATIONS = [
     { title: "Fix the checkout total rounding", time: "10:42", summary: "Found the rounding error in the basket total. Added a test and a fix." },
     { title: "Review the payments pull request", time: "09:15", summary: "Read the payments change and left three comments on error handling." },
@@ -193,7 +206,17 @@
     renderAll();
   }
 
-  function renderAll() { renderToggles(); renderHistory(); renderStage(); }
+  function renderFooter() {
+    if (!state.usage) {
+      $("footer").innerHTML = `<button class="usage-off" id="usage-off" title="Switch it on in Settings → Privacy">Usage bar off</button>`;
+      $("usage-off").onclick = () => { back = scene === "settings" ? back : scene; show("settings"); };
+      return;
+    }
+    const bar = (label, pct) => `<div class="ubar"><div class="lbl"><span>${label}</span><span>${pct}%</span></div><div class="track"><div class="fill" style="width:${pct}%"></div></div></div>`;
+    $("footer").innerHTML = bar("Session", 42) + bar("Week", 17);
+  }
+
+  function renderAll() { renderToggles(); renderHistory(); renderStage(); renderFooter(); }
 
   for (const b of document.querySelectorAll(".scenes button")) {
     b.onclick = () => {
