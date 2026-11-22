@@ -96,7 +96,7 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
 
 - The Git panel (Mod+2) has Commits (graph and changed files), Branches (search, check out, create, rename, delete,
   fetch with prune, worktrees with an unsaved-work warning), Status (changed files per worktree, side-by-side diff,
-  discard), and — with `gh` signed in — PRs (filters, detail, a configurable PR workflow menu), Issues (filter,
+  discard), and — with `gh` signed in — PRs (filters, detail; no actions menu), Issues (filter,
   search, comment, close, reopen, assignees) and Discussions (read and comment). In eagle view it is a per-project
   carousel. Review requests and assigned issues are polled every 5 minutes and announced as toasts. A top-bar PRs
   pill totals every open pull request across open projects (shown whenever there is one) and opens a dropdown:
@@ -343,8 +343,9 @@ are in `docs/ux/prototypes/` and are the layout to build.
 - Samurai launches go completely: the Launch panel, Settings → Samurai, the supervised-terminal badge, schedules,
   recovery and hand-offs. The Second Brain panel (audit stream, ops journal, harvest, file list) and the health
   checker go with it. Section 3.4 describes them until the removal is built.
-- Parking, the context alert, the Injector and triggers, History resume and PR review stay; PR review keeps its
-  records and brief files, swept after a fixed number of days.
+- Parking, the context alert, the Injector and triggers and History resume stay. PR review stayed too, until the
+  PR actions menu was removed ([#692](https://github.com/nachogl1/maestro/issues/692)); the records and brief files
+  it left on disk are still swept after a fixed number of days.
 - On the first start without Samurai a one-time cleanup deletes Samurai's own data files, the hand-over folders in
   projects, and run worktrees that are merged and clean. A worktree with unmerged or uncommitted work is kept and
   listed in one closeable notice.

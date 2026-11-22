@@ -25,7 +25,7 @@ interface UsePendingLaunchOptions {
 
 /**
  * Consumes this tab's queued launches from `usePendingLaunchStore` (History
- * tab, crash recovery, PR review) and launches each
+ * tab, crash recovery) and launches each
  * configured slot once it has committed to state.
  */
 export function usePendingLaunch({
@@ -44,8 +44,8 @@ export function usePendingLaunch({
   setFocusedSlotId,
   setError,
 }: UsePendingLaunchOptions): void {
-  // ── History-tab / PR-review / crash-recovery launches ────────────
-  // The sidebar History tab (like the PR monitor and crash recovery)
+  // ── History-tab / crash-recovery launches ────────────
+  // The sidebar History tab (like crash recovery)
   // queues a pre-configured launch (resume id and/or worktree dir) in
   // usePendingLaunchStore because this grid may not even be mounted when
   // the request lands. Consume it here: configure a slot, then let the
@@ -78,7 +78,7 @@ export function usePendingLaunch({
     if (!reusable && current.length >= MAX_SESSIONS) {
       // The claim is consumed by now, so the launch is gone: say what did
       // not happen rather than "cannot resume" — this path also carries
-      // PR review launches, whose own panel has already reported success.
+      // crash-recovery launches, not only History-tab resumes.
       setError(
         `Could not open the requested session: maximum of ${MAX_SESSIONS} sessions per project — close one and try again`,
       );
@@ -91,7 +91,7 @@ export function usePendingLaunch({
       branch: launch.branch,
       resumeSessionId: launch.resumeSessionId,
       workingDirOverride: launch.workingDirOverride,
-      // Launches that name their session (PR review, crash recovery) carry it.
+      // Launches that name their session (crash recovery) carry it.
       customName: launch.customName ?? base.customName,
       // Generic initial prompt (any caller): armed right before the CLI
       // launches, typed into the PTY on the session's first SessionStarted.
@@ -99,8 +99,6 @@ export function usePendingLaunch({
       // Where a long initial prompt is staged as a brief file (issue #138).
       briefDir: launch.briefDir ?? null,
       briefStem: launch.briefStem ?? null,
-      // PR-review launches record themselves at the same hop (issue #139).
-      prRun: launch.prRun ?? null,
       // The History tab always names the exact directory to run in. Reusing the
       // pristine slot would otherwise inherit its worktreeMode, and any mode but
       // "project" sends launchSlotInner into prepareSessionWorktree — moving the

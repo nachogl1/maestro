@@ -28,10 +28,10 @@ pub(crate) fn run_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
 
     let event_bus = events::build_event_bus(app);
     terminal::setup_terminal(app, instance_id, event_bus)?;
-    // Issue #139: PR-review run records, inside the app-data `runs` root.
-    let pr_runs = Arc::new(crate::core::pr_runs::PrRunStore::new(
-        commands::ai_runner::artifact_base_dir("runs"),
-    ));
+    // Issue #139: PR-review run records earlier versions wrote, inside the
+    // app-data `runs` root (nothing writes new ones since issue #692).
+    let pr_runs =
+        crate::core::pr_runs::PrRunStore::new(commands::ai_runner::artifact_base_dir("runs"));
     // Issue #145: old PR review briefs are removed once per app start; the
     // window is measured in days, so a periodic tick would be pure noise.
     let swept_briefs = pr_runs.sweep_expired_briefs();
@@ -42,7 +42,6 @@ pub(crate) fn run_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
             crate::core::pr_runs::PR_REVIEW_BRIEF_RETENTION_DAYS
         );
     }
-    app.manage(pr_runs);
 
     // Issue #615: on the first start without Samurai, remove what it left on
     // disk in the background; the front end asks which worktrees were kept.

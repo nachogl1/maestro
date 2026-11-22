@@ -33,7 +33,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tauri::State;
 
 use crate::core::brief_files::{self, StagedBrief};
-use crate::core::pr_runs::{PrReviewLaunch, PrReviewRun, PrRunStore};
 
 /// Delivery of the injected prompt into a session's PTY. `Ok` means the
 /// prompt BODY reached the PTY. Production wires
@@ -117,11 +116,8 @@ impl InitialPromptInjector {
     ///
     /// Returns the brief it staged — BOTH the directory it landed under and
     /// the relative path inside it ([`StagedBrief`]) — or `None` when the
-    /// prompt was typed inline. The PR-review record (issue #139) names the
-    /// brief its review was actually delivered as, and this hop is the only
-    /// place that knows which it was; it must carry the root too, because the
-    /// record's own `project_path` is a DIFFERENT tree in a multi-repo
-    /// workspace (issue #145).
+    /// prompt was typed inline. Its one reader, the PR-review record, went
+    /// with the PR actions menu (issue #692); the command ignores it.
     ///
     /// Does a blocking file write when it stages a brief, which is why the
     /// command below is `#[tauri::command(async)]` — Tauri then runs it off
@@ -203,63 +199,26 @@ impl InitialPromptInjector {
 /// be staged as `<brief_dir>/.maestro/briefs/<brief_stem>.md` and delivered as
 /// a pointer (issue #138). Callers that omit them keep the inline delivery.
 ///
-/// `pr_run` is the PR-review launch metadata (issue #139). Supplying it makes
-/// this call the moment a review gets an identity on disk: the record is
-/// written HERE because this is the one place that knows both facts it needs —
-/// the session the terminal opened under, and the brief the prompt was
-/// actually staged as. A failed record write is logged, never surfaced: the
-/// review is armed and must run.
-///
 /// `(async)` because the body does real blocking I/O — a brief write of
-/// several KB, plus the PR record write — and a plain `#[tauri::command]` on a
+/// several KB — and a plain `#[tauri::command]` on a
 /// sync function runs on the MAIN thread, freezing the UI for the duration.
 /// The frontend still awaits the call, so the arm stays strictly ordered ahead
 /// of the CLI command TerminalGrid types next.
 #[tauri::command(async)]
 pub fn terminal_arm_initial_prompt(
     injector: State<'_, Arc<InitialPromptInjector>>,
-    pr_runs: State<'_, Arc<PrRunStore>>,
     session_id: u32,
     prompt: String,
     brief_dir: Option<String>,
     brief_stem: Option<String>,
-    pr_run: Option<PrReviewLaunch>,
 ) -> Result<(), String> {
-    let brief = injector.arm(session_id, &prompt, brief_target(brief_dir, brief_stem))?;
-    if let Some(launch) = pr_run {
-        record_pr_review(&pr_runs, launch, session_id, brief);
-    }
+    injector.arm(session_id, &prompt, brief_target(brief_dir, brief_stem))?;
     Ok(())
-}
-
-/// Writes the PR-review run record, best effort (issue #139): a review that
-/// cannot record itself still runs, it just groups under nothing in the Second
-/// Brain until the next launch — the same policy the brief write follows.
-fn record_pr_review(
-    store: &PrRunStore,
-    launch: PrReviewLaunch,
-    session_id: u32,
-    brief: Option<StagedBrief>,
-) {
-    let run = PrReviewRun::now(launch, session_id, brief);
-    match store.record(&run) {
-        Ok(path) => log::info!(
-            "pr review: recorded run for PR #{} ({}) at {}",
-            run.pr,
-            run.group_id(),
-            path.display()
-        ),
-        Err(e) => log::warn!(
-            "pr review: could not record the run for PR #{}: {e}",
-            run.pr
-        ),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::pr_runs::staged_brief_path;
     use tempfile::tempdir;
 
     /// Captured `(session_id, prompt)` pairs handed to a stubbed [`DeliverFn`].
@@ -272,17 +231,6 @@ mod tests {
             "You are monitoring one GitHub pull request.\n\n{}\nStep 1: check the status.\n",
             "RULE: read every existing comment on the PR before you write one.\n".repeat(12)
         )
-    }
-
-    /// The PR-review metadata a Git-tab launch passes (issue #139).
-    fn launch() -> PrReviewLaunch {
-        PrReviewLaunch {
-            pr: 142,
-            title: "fix journal splitting".to_string(),
-            repo: "nachogl1/maestro".to_string(),
-            project_path: "C:/git/maestro".to_string(),
-            steps: vec!["check".to_string(), "review".to_string()],
-        }
     }
 
     /// The brief target a PR action launch passes: the project checkout plus
@@ -562,88 +510,6 @@ mod tests {
         let staged = brief_target(Some("C:/proj".into()), Some("pr-138-check".into())).unwrap();
         assert_eq!(staged.dir, PathBuf::from("C:/proj"));
         assert_eq!(staged.stem, "pr-138-check");
-    }
-
-    /// Issue #139: a PR review launch leaves a record naming the session it
-    /// opened and the brief it was actually delivered as — the two facts only
-    /// this hop knows. Without it a review leaves nothing on disk and has no
-    /// identity for the Second Brain to group under.
-    #[test]
-    fn test_a_pr_review_launch_records_its_run_with_the_brief_it_staged() {
-        let dir = tempdir().unwrap();
-        let store = PrRunStore::new(dir.path().join("runs"));
-        let (injector, _) = injector();
-        let prompt = long_prompt();
-
-        let brief = injector
-            .arm(5, &prompt, Some(target(dir.path(), "pr-142-check-review")))
-            .unwrap();
-        let staged = brief.clone().expect("the long prompt is staged as a brief");
-        assert_eq!(staged.relpath, ".maestro/briefs/pr-142-check-review.md");
-        assert_eq!(staged.root, dir.path());
-        record_pr_review(&store, launch(), 5, brief);
-
-        let recorded = store.list_with_paths();
-        assert_eq!(recorded.len(), 1);
-        let run = &recorded[0].1;
-        assert_eq!(run.pr, 142);
-        assert_eq!(run.title, "fix journal splitting");
-        assert_eq!(run.repo, "nachogl1/maestro");
-        assert_eq!(run.steps, vec!["check".to_string(), "review".to_string()]);
-        assert_eq!(run.session_id, 5);
-        assert_eq!(
-            run.brief.as_deref(),
-            Some(".maestro/briefs/pr-142-check-review.md"),
-            "the record points at the brief that was really written"
-        );
-        // Issue #145: and at the tree it was really written INTO — which is
-        // the arm call's `brief_dir`, not the review's `project_path`.
-        assert_eq!(
-            run.brief_root.as_deref(),
-            Some(dir.path().to_string_lossy().as_ref()),
-            "the record names the tree the brief was staged in"
-        );
-        assert_ne!(run.brief_root.as_deref(), Some(run.project_path.as_str()));
-        assert_eq!(
-            staged_brief_path(run).unwrap(),
-            dir.path().join(".maestro/briefs/pr-142-check-review.md")
-        );
-        assert_eq!(run.group_id(), "pr:nachogl1/maestro#142");
-    }
-
-    #[test]
-    fn test_a_short_pr_prompt_records_a_run_with_no_brief() {
-        // A one-step review types its prompt inline. It still gets a record —
-        // the group's identity does not depend on having a brief.
-        let dir = tempdir().unwrap();
-        let store = PrRunStore::new(dir.path().join("runs"));
-        let (injector, _) = injector();
-
-        let brief = injector
-            .arm(
-                5,
-                "check the PR status",
-                Some(target(dir.path(), "pr-142-check")),
-            )
-            .unwrap();
-        assert_eq!(brief, None);
-        record_pr_review(&store, launch(), 5, brief);
-
-        assert_eq!(store.list_with_paths()[0].1.brief, None);
-    }
-
-    #[test]
-    fn test_an_unwritable_record_never_fails_the_launch() {
-        // Best effort: the terminal is open and the prompt armed, so a record
-        // that cannot be written is logged and swallowed.
-        let dir = tempdir().unwrap();
-        // `runs` occupied by a FILE: the store's directory cannot be created.
-        std::fs::write(dir.path().join("runs"), "not a directory").unwrap();
-        let store = PrRunStore::new(dir.path().join("runs"));
-
-        record_pr_review(&store, launch(), 5, None);
-
-        assert!(store.list_with_paths().is_empty());
     }
 
     #[test]

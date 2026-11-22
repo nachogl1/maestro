@@ -30,7 +30,6 @@ import type { McpServerConfig } from "@/lib/mcp";
 import type { PluginConfig, SkillConfig } from "@/lib/plugins";
 import { altLabel, modLabel, titleWithShortcut } from "@/lib/shortcuts";
 import { type ClaudeSessionInfo, deleteClaudeSession, listClaudeSessions } from "@/lib/terminal";
-import type { PrReviewLaunch } from "@/lib/terminalPrompt";
 import type { AiMode } from "@/stores/useSessionStore";
 import type { RepositoryInfo, WorkspaceType } from "@/stores/useWorkspaceStore";
 
@@ -97,12 +96,6 @@ export interface SessionSlot {
    */
   briefDir?: string | null;
   briefStem?: string | null;
-  /**
-   * PR-review launch metadata (issue #139): recorded backend-side so the
-   * review has an identity its artifacts group under. Never set for manually
-   * created slots.
-   */
-  prRun?: PrReviewLaunch | null;
 }
 
 interface PreLaunchCardProps {

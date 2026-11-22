@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MAC_TITLE_BAR_INSET_PX, useMacTitleBarPadding } from "@/hooks/useMacTitleBarPadding";
 import { getDeduplicatedCurrentBranch, invalidateCurrentBranchCache } from "@/lib/git";
 import { openIssueMapFor, syncIssueMapProjects } from "@/lib/issueMapWindow";
@@ -47,16 +47,6 @@ import { useInjectorTriggers } from "./hooks/useInjectorTriggers";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useGitHubStore } from "./stores/useGitHubStore";
 import type { PanelId } from "./stores/usePanelStripStore";
-import { useWorkflowsViewStore } from "./stores/useWorkflowsViewStore";
-
-/**
- * Full-screen workflow editor, loaded on demand: it pulls in React Flow,
- * which would otherwise sit in the entry chunk even though the editor only
- * renders once opened from the PR monitor via `useWorkflowsViewStore`.
- */
-const WorkflowsView = lazy(() =>
-  import("./components/workflows/WorkflowsView").then((m) => ({ default: m.WorkflowsView })),
-);
 
 type Theme = "dark" | "light";
 
@@ -100,11 +90,6 @@ function App() {
   const scratchProjects = useScratchStore((s) => s.projects);
   // Eagle view git carousel: index of the project whose git panel card shows.
   const [eagleGitIndex, setEagleGitIndex] = useState(0);
-  // Full-screen workflow editor (PR action menu → "Edit the PR review workflow"):
-  // opened via a store rather than local state, since the trigger lives deep
-  // inside the git panel rather than a prop App can pass down.
-  const workflowsViewOpen = useWorkflowsViewStore((s) => s.isOpen);
-  const closeWorkflowsView = useWorkflowsViewStore((s) => s.close);
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem("maestro-theme");
     return isValidTheme(stored) ? stored : "dark";
@@ -509,22 +494,6 @@ function App() {
                 onSessionCountChange={handleSessionCountChange}
                 eagleView={eagleView}
               />
-
-              {/* Workflow editor — an overlay, never a replacement: unmounting
-                  MultiProjectView would tear down every live terminal. */}
-              {workflowsViewOpen && (
-                <Suspense
-                  fallback={
-                    /* z-50 like the editor itself: the zoomed eagle pane is
-                       z-40, and the fallback must cover it too. */
-                    <div className="absolute inset-0 z-50 flex items-center justify-center bg-maestro-bg text-xs text-maestro-muted">
-                      Loading…
-                    </div>
-                  }
-                >
-                  <WorkflowsView onClose={closeWorkflowsView} />
-                </Suspense>
-              )}
             </main>
           </div>
 
