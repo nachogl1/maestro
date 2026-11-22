@@ -81,7 +81,8 @@
       <li>Both switches start <b>off</b>. <b>Save</b> keeps what the switches say. <b>Keep both off</b>, the × and Esc save both as off. Clicking outside does nothing. The answer is saved, so the question never comes back.</li>
       <li>Until the question is answered, neither feature sends anything.</li>
       <li><b>Settings → Privacy</b> (in the first group, after Updates): the same two switches with the same words, plus a line pointing to the Work Journal's own switch.</li>
-      <li><b>Workshop off:</b> the panel keeps showing reports already made, but <b>Run now</b> is disabled and a box says how to turn it on. No automatic run starts.</li>
+      <li><b>Workshop off:</b> the panel keeps showing reports already made, (the latest one too, under the box), but <b>Run now</b> is disabled and a box says how to turn it on. No automatic run starts.</li>
+      <li>The scenes share one state: switch a feature on in scene 1 or 2, then open scene 3 or 4 to see it on.</li>
       <li><b>History off:</b> each row shows its title (or first prompt) and its time, with no summary line and no "Summarising…". Summaries already made are not shown; nothing is deleted.</li>
     </ul>
   </div>
@@ -152,6 +153,7 @@
     { title: "why does the dev server stop after an hour?", time: "Yesterday", summary: "Traced the stop to a file watcher limit. Raised the limit in the config." },
   ];
   let scene = "ask";
+  let back = "history";
   const $ = (id) => document.getElementById(id);
 
   function renderToggles() {
@@ -173,11 +175,12 @@
     if (scene !== "workshop") { $("stage").textContent = "Terminals"; return; }
     const off = state.workshop ? "" : `<div class="off"><div>Workshop is off, so no report is made. Claude would read the past week's conversations to write it.</div>
       <span class="link" id="open-settings">Turn it on in Settings → Privacy</span></div>`;
-    const body = state.workshop ? `<div style="padding:12px">Report of 16 Nov: the week's problems, worst first…</div>` : off;
+    const report = `<div style="padding:12px">Report of 16 Nov: the week's problems, worst first…</div>`;
+    const body = state.workshop ? report : off + report;
     $("stage").innerHTML = `<div class="panel"><div class="ph">Workshop<button class="btn" ${state.workshop ? "" : "disabled"}>Run now</button></div>
       ${body}<div style="padding:6px 10px;color:var(--muted);font-size:11px">Earlier reports: 9 Nov, 2 Nov</div></div>`;
     const link = $("open-settings");
-    if (link) link.onclick = () => show("settings");
+    if (link) link.onclick = () => { back = "workshop"; show("settings"); };
   }
 
   function show(next) {
@@ -194,8 +197,7 @@
 
   for (const b of document.querySelectorAll(".scenes button")) {
     b.onclick = () => {
-      if (b.dataset.scene === "workshop") state.workshop = false;
-      if (b.dataset.scene === "history") state.history = false;
+      if (b.dataset.scene === "settings") back = scene === "ask" ? "history" : scene;
       show(b.dataset.scene);
     };
   }
@@ -209,13 +211,14 @@
     b.onclick = () => { state.workshop = false; state.history = false; show("history"); };
   }
   for (const b of document.querySelectorAll("[data-close]")) {
-    b.onclick = () => show("history");
+    b.onclick = () => show(back);
   }
   $("save").onclick = () => show("history");
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (scene === "ask") { state.workshop = false; state.history = false; }
-    if (scene === "ask" || scene === "settings") show("history");
+    if (scene === "ask") show("history");
+    if (scene === "settings") show(back);
   });
   renderAll();
 </script>
