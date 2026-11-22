@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261122-193044-7c27",
+  "issue": 684,
+  "title": "Ask before conversation text goes to the model: consent and off switches for Workshop and History summaries",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T20:08:00Z",
+  "finished_at": "2026-11-22T20:45:37Z",
+  "outcome": "owner-merges",
+  "pr": 705,
+  "summary": "Workshop and History summaries now send conversation text to Claude only after a one-time consent question, with switches in a new Settings \u2192 Privacy section and a backend refusal while off. The owner must try the change, then merge pull request #705.",
+  "agents": [
+    {
+      "name": "dev-684",
+      "model": "opus",
+      "tokens_total": 224772
+    },
+    {
+      "name": "review-684-r1",
+      "model": "sonnet",
+      "tokens_total": 100772
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2076,
+    "review_seconds": 313,
+    "ci_seconds": null
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [
+    "No screenshot of the new screens: the dev server's single port may be held by another session, so screen evidence waits for the owner's try-out"
+  ],
+  "lessons_learned": [
+    "Workshop test files need the Tauri settings-store plugin stubbed once a store reads a settings file; without it the suite shows unhandled errors and goes red"
+  ],
+  "deferred": []
+}
