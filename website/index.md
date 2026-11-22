@@ -65,7 +65,7 @@ permalink: /
     <div class="section-head">
       <p class="kicker">What it does</p>
       <h2 id="features-title">Built for one developer supervising many agents.</h2>
-      <p>Everything runs on your computer. Maestro talks only to the tools you already use: git, the GitHub CLI and the Claude CLI.</p>
+      <p>Everything runs on your computer, with no Maestro server and no telemetry. Maestro contacts only Anthropic (through your Claude CLI, and its usage address for the usage bar), GitHub (through the GitHub CLI, for updates and for the plugin marketplace), your own git remotes, and Granola only if you add it. <a href="{% link privacy.md %}">Privacy</a> says what each one gets.</p>
     </div>
     <ul class="feature-grid">
       <li>
