@@ -50,6 +50,12 @@ export function WorkJournalOptInDialog() {
         The Work Journal is a day-by-day diary of your work in Maestro, with suggested lines written
         by Claude from your activity.
       </p>
+      <p className="text-xs text-maestro-text">
+        It stays off unless you click Enable. Once on, Maestro sends your activity to Claude about
+        every hour while it is open: your Claude prompts, commit messages, pull request and issue
+        titles, and terminal names. It goes through your own Claude CLI and uses your Claude
+        allowance.
+      </p>
       <p className="text-[11px] text-maestro-muted">
         You can turn it on or off at any time in Settings → Work Journal.
       </p>

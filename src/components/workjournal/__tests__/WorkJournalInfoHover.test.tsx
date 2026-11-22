@@ -25,8 +25,11 @@ const invokeMock = vi.mocked(invoke);
 /** The agreed text, line by line, exactly as the person must read it. */
 const EXPECTED_LINES = [
   "What the Work Journal does",
-  "It keeps one page per day. Claude reads your activity and suggests short lines; " +
-    "nothing is added until you accept it.",
+  "A diary with one page per day, so you can look back on your work and report it. " +
+    "Claude reads your activity and suggests short lines; nothing is added until you " +
+    "accept it. It is off until you turn it on. Once on, about every hour while Maestro " +
+    "is open, that activity goes to Claude and uses your allowance. Turn it off any time " +
+    "in Settings → Work Journal.",
   "Sources it reads",
   "Claude conversations in Maestro",
   "Terminal sessions in Maestro",
