@@ -34,7 +34,7 @@
   .dialog .body { padding: 0 14px; display: flex; flex-direction: column; gap: 8px; }
   .dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; }
   .dialog p { margin: 0; font-size: 12px; }
-  .small { font-size: 11px !important; color: var(--muted); }
+  .dialog p.small, .small { font-size: 11px; color: var(--muted); }
   .btn { border-radius: 5px; padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: none; color: var(--text); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   .feature { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
@@ -62,7 +62,7 @@
   .panel .ph .btn:disabled { opacity: .4; cursor: default; }
   .off { margin: 16px; border: 1px dashed var(--border); border-radius: 6px; padding: 12px; color: var(--text); font-size: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
   .link { color: var(--accent); cursor: pointer; text-decoration: underline; }
-  .hidden { display: none !important; }
+  .veil.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -155,11 +155,11 @@
   const $ = (id) => document.getElementById(id);
 
   function renderToggles() {
-    document.querySelectorAll(".toggle").forEach((t) => {
+    for (const t of document.querySelectorAll(".toggle")) {
       const on = state[t.dataset.feature];
       t.classList.toggle("on", on);
       t.setAttribute("aria-pressed", String(on));
-    });
+    }
   }
 
   function renderHistory() {
@@ -182,7 +182,9 @@
 
   function show(next) {
     scene = next;
-    document.querySelectorAll(".scenes button").forEach((b) => b.classList.toggle("on", b.dataset.scene === next));
+    for (const b of document.querySelectorAll(".scenes button")) {
+      b.classList.toggle("on", b.dataset.scene === next);
+    }
     $("ask").classList.toggle("hidden", next !== "ask");
     $("settings").classList.toggle("hidden", next !== "settings");
     renderAll();
@@ -190,19 +192,25 @@
 
   function renderAll() { renderToggles(); renderHistory(); renderStage(); }
 
-  document.querySelectorAll(".scenes button").forEach((b) => (b.onclick = () => {
-    if (b.dataset.scene === "workshop") state.workshop = false;
-    if (b.dataset.scene === "history") state.history = false;
-    show(b.dataset.scene);
-  }));
-  document.querySelectorAll(".toggle").forEach((t) => (t.onclick = () => {
-    state[t.dataset.feature] = !state[t.dataset.feature];
-    renderAll();
-  }));
-  document.querySelectorAll("[data-keep-off]").forEach((b) => (b.onclick = () => {
-    state.workshop = false; state.history = false; show("history");
-  }));
-  document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => show("history")));
+  for (const b of document.querySelectorAll(".scenes button")) {
+    b.onclick = () => {
+      if (b.dataset.scene === "workshop") state.workshop = false;
+      if (b.dataset.scene === "history") state.history = false;
+      show(b.dataset.scene);
+    };
+  }
+  for (const t of document.querySelectorAll(".toggle")) {
+    t.onclick = () => {
+      state[t.dataset.feature] = !state[t.dataset.feature];
+      renderAll();
+    };
+  }
+  for (const b of document.querySelectorAll("[data-keep-off]")) {
+    b.onclick = () => { state.workshop = false; state.history = false; show("history"); };
+  }
+  for (const b of document.querySelectorAll("[data-close]")) {
+    b.onclick = () => show("history");
+  }
   $("save").onclick = () => show("history");
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
