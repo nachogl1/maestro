@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261122-182433-260f",
+  "issue": 694,
+  "title": "Show an experimental-software warning banner in the README and on every page of the public site",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 696,
+  "merged_at": "2026-11-22T18:51:31Z",
+  "merge_commit": "90fc843b8a9ce5995a280aeaa1de799a6fbbcbe8",
+  "seam": "README.md and website/",
+  "story": "The README and every page of the public site now open with a warning that Maestro is experimental software with no warranty, and that users are responsible for what its AI agents do. On the Home page the warning is a strip above the top bar; on Features, Installation and Troubleshooting it is a red-edged box above the page title. Nothing in the app changed.",
+  "checks": [
+    {
+      "key": "website/experimental-banner-landing",
+      "criterion": "The Home page shows the warning above everything else, with no horizontal scroll at phone width.",
+      "steps": "Open https://nachogl1.github.io/maestro/ in a 375px-wide window, then again at desktop width.",
+      "expected": "The warning starting 'Experimental software: use at your own risk.' sits above the Maestro top bar; the 'MIT licence' link opens github.com/nachogl1/maestro/blob/main/legal/LICENSE; no sideways scrolling."
+    },
+    {
+      "key": "website/experimental-banner-docs",
+      "criterion": "Features, Installation and Troubleshooting show the same warning above the page title, readable on a phone.",
+      "steps": "At 375px wide open the Installation and Troubleshooting pages; at desktop width open the Features page.",
+      "expected": "A red-edged box with the same warning text above the page heading, body-sized text, no sideways scrolling."
+    },
+    {
+      "key": "readme/experimental-banner",
+      "criterion": "The README shows the warning directly under the title.",
+      "steps": "Open the repository README on GitHub.",
+      "expected": "A quoted warning paragraph right under 'Maestro' and above 'Orchestrate multiple AI coding assistants in parallel'; its 'MIT licence' link opens legal/LICENSE."
+    }
+  ],
+  "no_qa_reason": null
+}

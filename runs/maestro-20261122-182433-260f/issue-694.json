@@ -1,0 +1,38 @@
+{
+  "run_id": "maestro-20261122-182433-260f",
+  "issue": 694,
+  "title": "Show an experimental-software warning banner in the README and on every page of the public site",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T18:24:34Z",
+  "finished_at": "2026-11-22T18:51:31Z",
+  "outcome": "merged",
+  "pr": 696,
+  "summary": "Added the maintainer-approved warning that Maestro is experimental, has no warranty and leaves responsibility with the user, under the README title and on all four public site pages. Documentation and site only; no app change.",
+  "agents": [
+    {
+      "name": "dev-694",
+      "model": "opus",
+      "tokens_total": 153266
+    },
+    {
+      "name": "review-694-r1",
+      "model": "opus",
+      "tokens_total": 133192
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1181,
+    "review_seconds": 321,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [
+    "The just-the-docs 0.12 header_custom.html hook is hidden on phones, so site-wide banners on docs pages go through an override of components/header.html; refresh that copy on any theme upgrade."
+  ],
+  "deferred": []
+}
