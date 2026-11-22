@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261122-205221-1f65",
+  "issue": 707,
+  "title": "Work Journal: never send Claude a title someone else wrote, and treat pulled-in text as data",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T20:52:22Z",
+  "finished_at": "2026-11-22T21:29:03Z",
+  "outcome": "owner-merges",
+  "pr": 711,
+  "summary": "Work Journal items the user is only assigned to now reach Claude without their title, and both Claude runs (suggestions and supervisor report) get their activity inside a marked data block their prompts say is data, never instructions; the first-run question, PRD 4.7 and the run-book match. The owner must try the change, then merge pull request #711.",
+  "agents": [
+    {
+      "name": "dev-707",
+      "model": "opus",
+      "tokens_total": 179315
+    },
+    {
+      "name": "review-707-r1",
+      "model": "sonnet",
+      "tokens_total": 97415
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1773,
+    "review_seconds": 335,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "website/",
+      "what": "The public privacy page's Work Journal row still says pull request and issue titles are sent, which now claims more than the app sends (only titles of items the user opened).",
+      "why": "Outside this story's seam; the page landed with issue #701 while this ran.",
+      "owner": "unowned \u2014 next harvest"
+    }
+  ]
+}
