@@ -1,0 +1,18 @@
+{%- comment -%}
+  Replaces the theme's components/header.html (just-the-docs 0.12, Gemfile.lock) to show the
+  experimental-software warning on every docs page. The theme's own hook, header_custom.html,
+  sits inside this header row, which is hidden at phone width, so the warning goes right after it.
+  The header markup below is the theme's, unchanged.
+{%- endcomment -%}
+<div id="main-header" class="main-header">
+  {% if site.search_enabled != false %}
+    {% include components/search_header.html %}
+  {% else %}
+    <div></div>
+  {% endif %}
+  {% include header_custom.html %}
+  {% if site.aux_links %}
+    {% include components/aux_nav.html %}
+  {% endif %}
+</div>
+{% include experimental_banner.html %}

@@ -52,6 +52,31 @@ input:focus-visible {
   border-right-color: $border-color;
 }
 
+// The experimental-software warning (_includes/experimental_banner.html), above every page's content.
+.experimental-banner {
+  margin: $sp-4 $gutter-spacing-sm 0;
+  padding: $sp-3 $sp-4;
+  border: $border $border-color;
+  border-left: 4px solid $samurai-red;
+  border-radius: $border-radius;
+  background-color: rgba($samurai-red, 0.08);
+  color: $body-text-color;
+
+  @include fs-3;
+
+  @include mq(md) {
+    margin: $sp-6 $gutter-spacing 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  strong {
+    color: $body-heading-color;
+  }
+}
+
 .site-logo {
   filter: drop-shadow(0 0 10px rgba($samurai-red, 0.35));
 }

@@ -95,6 +95,26 @@ img {
   padding: 0 var(--gutter);
 }
 
+/* Experimental-software warning (_includes/experimental_banner.html), above everything else. */
+.experimental-banner {
+  border-bottom: 1px solid var(--hairline);
+  background: var(--card);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.experimental-banner p {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 12px var(--gutter);
+}
+
+/* The top bar floats over the hero; this keeps it below the warning instead of over it. */
+.landing-top {
+  position: relative;
+}
+
 /* Top bar */
 .topbar {
   position: absolute;
