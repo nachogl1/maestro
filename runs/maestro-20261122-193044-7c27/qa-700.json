@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261122-193044-7c27",
+  "issue": 700,
+  "title": "Usage bar: name Maestro, not Claude Code, as the sender of its usage request",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 704,
+  "merged_at": "2026-11-22T20:02:40Z",
+  "merge_commit": "d2beb7c841331944ac3cf119cf1ef28ff03e0a3c",
+  "seam": "src-tauri/src/commands/usage.rs",
+  "story": "The usage bar used to call itself Claude Code version 2.0.32 when it asked Anthropic for your usage. It now calls itself Maestro, with the app's own version number. Nothing else about the request or the bar changed.",
+  "checks": [
+    {
+      "key": "src-tauri/src/commands/usage.rs/usage-bar-loads",
+      "criterion": "The usage bar still loads real numbers with the new sender name",
+      "steps": "Start a build of main while logged in to Claude. Look at the usage bar in the footer.",
+      "expected": "Real session and weekly percentages, with no 'Session expired' or network error."
+    }
+  ],
+  "no_qa_reason": null
+}

@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261122-193044-7c27",
+  "issue": 700,
+  "title": "Usage bar: name Maestro, not Claude Code, as the sender of its usage request",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T19:30:44Z",
+  "finished_at": "2026-11-22T20:02:40Z",
+  "outcome": "merged",
+  "pr": 704,
+  "summary": "The usage bar's request to Anthropic now names Maestro and the app's own version instead of presenting itself as Claude Code; one new test, and a live request with the new name returned 200.",
+  "agents": [
+    {
+      "name": "dev-700",
+      "model": "opus",
+      "tokens_total": 108030
+    },
+    {
+      "name": "review-700-r1",
+      "model": "opus",
+      "tokens_total": 103758
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1378,
+    "review_seconds": 337,
+    "ci_seconds": null
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [
+    "The main-checkout dependency install in preflight was skipped: other sessions' suites were running against this machine and a reinstall could disturb them"
+  ],
+  "lessons_learned": [
+    "Read the app version from the Tauri app handle, not CARGO_PKG_VERSION: release builds bump only the app version, so the crate version stays 0.3.0"
+  ],
+  "deferred": []
+}
