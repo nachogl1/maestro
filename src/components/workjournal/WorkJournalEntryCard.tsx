@@ -64,8 +64,7 @@ export function WorkJournalEntryCard({
     editor,
     selector: ({ editor: current }) => {
       const pos = getPos();
-      const { doc, selection } = current.state;
-      return pos !== undefined && isEntryCollapsed(doc, pos, selection);
+      return pos !== undefined && isEntryCollapsed(current.state, pos);
     },
   });
   const [showingAll, setShowingAll] = useState(false);

@@ -1,6 +1,13 @@
 import { closeHistory } from "@tiptap/pm/history";
 import { Fragment, type Node as PmNode, type Schema, Slice } from "@tiptap/pm/model";
-import { Plugin, PluginKey, type Selection, TextSelection } from "@tiptap/pm/state";
+import {
+  type EditorState,
+  Plugin,
+  PluginKey,
+  type Selection,
+  TextSelection,
+  type Transaction,
+} from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { mergeAttributes, Node, ReactNodeViewRenderer } from "@tiptap/react";
 import {
@@ -29,6 +36,9 @@ const LINE_BREAK = "\n";
 
 /** Where a first sentence ends: a `.`, `!` or `?` before a blank or the end, or a line break. */
 const FIRST_SENTENCE_END = /[.!?](?=\s|$)|\n/;
+
+/** Whether the editor has keyboard focus, read from the focus and blur steps TipTap sends. */
+const EDITOR_FOCUS = new PluginKey<boolean>("workJournalEntryFocus");
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -175,20 +185,39 @@ function firstSentenceLength(text: string): number | null {
   return text.slice(length).trim() === "" ? null : length;
 }
 
+/** Whether the editor has focus after `tr`: TipTap tags its focus and blur steps. */
+function focusAfter(tr: Transaction, focused: boolean): boolean {
+  if (tr.getMeta("focus")) return true;
+  if (tr.getMeta("blur")) return false;
+  return focused;
+}
+
+/**
+ * Whether the card starting at `pos` is being edited: the editor has focus and
+ * a text cursor or selection is in the card. The cursor a page opens with, or
+ * one left behind when the person clicks outside the editor, is not editing.
+ */
+function isEditingEntry(card: PmNode, pos: number, state: EditorState): boolean {
+  const { selection } = state;
+  return (
+    EDITOR_FOCUS.getState(state) === true &&
+    selection instanceof TextSelection &&
+    selection.from < pos + card.nodeSize &&
+    selection.to > pos
+  );
+}
+
 /**
  * The doc range the card starting at `pos` hides while collapsed: its text
- * after the first sentence. Null when the card is one sentence, or a text
- * cursor or selection is in it, so its whole text shows for editing.
+ * after the first sentence. Null when the card is one sentence or is being
+ * edited, so its whole text shows.
  */
 function collapsedRange(
   card: PmNode,
   pos: number,
-  selection: Selection,
+  state: EditorState,
 ): { from: number; to: number } | null {
-  const editing =
-    selection instanceof TextSelection &&
-    selection.from < pos + card.nodeSize &&
-    selection.to > pos;
+  const editing = isEditingEntry(card, pos, state);
   const length = editing ? null : firstSentenceLength(entryText(card));
   if (length === null || !card.firstChild) return null;
   // Past the card's and its paragraph's opening.
@@ -197,11 +226,9 @@ function collapsedRange(
 }
 
 /** Whether the card starting at `pos` shows only its first sentence. */
-export function isEntryCollapsed(doc: PmNode, pos: number, selection: Selection): boolean {
-  const card = doc.nodeAt(pos);
-  return (
-    card?.type.name === WORK_JOURNAL_ENTRY_NODE && collapsedRange(card, pos, selection) !== null
-  );
+export function isEntryCollapsed(state: EditorState, pos: number): boolean {
+  const card = state.doc.nodeAt(pos);
+  return card?.type.name === WORK_JOURNAL_ENTRY_NODE && collapsedRange(card, pos, state) !== null;
 }
 
 /**
@@ -249,11 +276,11 @@ function leadRange(card: PmNode, cardPos: number): { from: number; to: number } 
  * card, and the `is-empty` class (for the hint) on an empty card's text box;
  * display only, never stored.
  */
-function entryDecorations(doc: PmNode, selection: Selection): DecorationSet {
+function entryDecorations(state: EditorState): DecorationSet {
   const decorations: Decoration[] = [];
-  doc.descendants((node, pos) => {
+  state.doc.descendants((node, pos) => {
     if (node.type.name !== WORK_JOURNAL_ENTRY_NODE) return true;
-    const rest = collapsedRange(node, pos, selection);
+    const rest = collapsedRange(node, pos, state);
     if (rest) decorations.push(Decoration.inline(rest.from, rest.to, { class: ENTRY_REST_CLASS }));
     const range = leadRange(node, pos);
     if (range) {
@@ -266,7 +293,7 @@ function entryDecorations(doc: PmNode, selection: Selection): DecorationSet {
     }
     return false;
   });
-  return DecorationSet.create(doc, decorations);
+  return DecorationSet.create(state.doc, decorations);
 }
 
 /** The depth of the card around the selection's start, or null outside a card. */
@@ -398,7 +425,11 @@ export const WorkJournalEntry = Node.create({
     return [
       new Plugin({
         key: new PluginKey("workJournalEntryLead"),
-        props: { decorations: (state) => entryDecorations(state.doc, state.selection) },
+        props: { decorations: (state) => entryDecorations(state) },
+      }),
+      new Plugin<boolean>({
+        key: EDITOR_FOCUS,
+        state: { init: () => false, apply: focusAfter },
       }),
       new Plugin({
         key: new PluginKey("workJournalEntryPaste"),
@@ -406,9 +437,10 @@ export const WorkJournalEntry = Node.create({
           // A card holds one paragraph: pasted blocks become its lines instead
           // of spilling out of the card. Inline text pastes as it always did.
           handlePaste: (view, _event, slice) => {
-            if (cardDepth(view.state.selection) === null || slice.content.firstChild?.isInline) {
-              return false;
-            }
+            const { content } = slice;
+            // Nothing to paste (an image alone): the selected text stays.
+            if (content.size === 0 || content.firstChild?.isInline) return false;
+            if (cardDepth(view.state.selection) === null) return false;
             const lines = new Slice(cardLines(slice.content, view.state.schema), 0, 0);
             view.dispatch(
               view.state.tr

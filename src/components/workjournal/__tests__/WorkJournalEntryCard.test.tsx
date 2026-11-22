@@ -525,6 +525,17 @@ describe("Work Journal entry cards", () => {
     expect(await lastSavedBody()).toEqual(doc(paragraph("Notes"), cardOf(content), TRAILING));
   });
 
+  it("a paste with nothing to paste (an image alone) leaves a card's selected text alone", async () => {
+    const body = doc(card("Login fix: new rules"), paragraph("Later"));
+    await renderPage(body);
+    act(() => {
+      // "new rules" selected: past the card's and paragraph's openings (+2).
+      pageEditor().commands.setTextSelection({ from: 2 + 11, to: 2 + 20 });
+      pageEditor().view.pasteText("");
+    });
+    expect(pageEditor().getJSON()).toEqual(body);
+  });
+
   it("a card longer than its first sentence shows only that sentence and See more", async () => {
     const shown = [
       [[text("Login fix: new rules. The PR merged.")], "Login fix: new rules.", true],
@@ -536,10 +547,10 @@ describe("Work Journal entry cards", () => {
       [[text("One sentence only.")], "One sentence only.", false],
       [[text("Done. ")], "Done. ", false],
     ] as const;
-    // A free note first, so the cursor the page opens with is in no card.
-    await renderPage(
-      doc(paragraph("Notes"), ...shown.map(([content]) => cardOf([...content] as JSONContent[]))),
-    );
+    // The page opens with its cursor in the first card, but nobody is editing
+    // it while the editor has no focus.
+    await renderPage(doc(...shown.map(([content]) => cardOf([...content] as JSONContent[]))));
+    expect(pageEditor().isFocused).toBe(false);
     expect(cards().map(visibleText)).toEqual(shown.map(([, visible]) => visible));
     expect(cards().map((el) => seeMore(el) !== null)).toEqual(shown.map(([, , more]) => more));
   });
@@ -565,6 +576,12 @@ describe("Work Journal entry cards", () => {
       "Talk: the summary. More\nLast line",
     );
     expect(within(dialog).queryByRole("textbox")).toBeNull();
+    // Keys go to the dialog, never to the page behind it.
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    act(() => {
+      pageEditor().view.dom.focus();
+    });
+    expect(dialog.contains(document.activeElement)).toBe(true);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
 
@@ -587,19 +604,31 @@ describe("Work Journal entry cards", () => {
     expect(visibleText(cards()[0])).toBe("Login fix: new rules.");
     expect(boldLeads()).toEqual(["Login fix:"]);
 
-    act(() => {
-      // Inside the card's text, after "Login".
-      pageEditor().commands.setTextSelection(7 + 2 + "Login".length);
-    });
+    // The cursor inside the card's text, after "Login", with the page focused.
+    const editCard = (): void => {
+      act(() => {
+        pageEditor().commands.setTextSelection(7 + 2 + "Login".length);
+        pageEditor().view.focus();
+      });
+    };
+    editCard();
     expect(visibleText(cards()[0])).toBe("Login fix: new rules. The PR merged.");
     expect(seeMore(cards()[0])).toBeNull();
     expect(boldLeads()).toEqual(["Login fix:"]);
 
-    act(() => {
-      pageEditor().commands.setTextSelection(3);
-    });
-    expect(visibleText(cards()[0])).toBe("Login fix: new rules.");
-    expect(seeMore(cards()[0])).not.toBeNull();
+    // Out of the card into a free note, then out of the editor altogether.
+    for (const leave of [
+      () => pageEditor().commands.setTextSelection(3),
+      () => pageEditor().view.dom.blur(),
+    ]) {
+      editCard();
+      expect(seeMore(cards()[0])).toBeNull();
+      act(() => {
+        leave();
+      });
+      expect(visibleText(cards()[0])).toBe("Login fix: new rules.");
+      expect(seeMore(cards()[0])).not.toBeNull();
+    }
     expect(pageEditor().getJSON()).toEqual(body);
     await act(async () => {
       vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);

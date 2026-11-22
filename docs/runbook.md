@@ -432,8 +432,9 @@ requests** or the project's name) take you back up; Escape or a click outside cl
 - A card longer than its first sentence shows only that sentence (up to the first `.`, `!` or `?` followed by a space
   or the end, or the first line break) and a **See more** link under it. See more opens the whole text with its time
   and project in a read-only dialog; Esc, the cross or a click outside closes it. Click into the card's text (or move
-  the cursor into it with the arrow keys) and the whole text shows for editing; move the cursor out and it shortens
-  again. The shortening is display only: the saved text and the report always have all of it.
+  the cursor into it with the arrow keys) and the whole text shows for editing; move the cursor out, or click outside
+  the page, and it shortens again. While the dialog is open, keys go to the dialog, never to the page behind it. The
+  shortening is display only: the saved text and the report always have all of it.
 - Pages written before cards keep their plain `HH:MM - ...` lines exactly as they were.
 
 ## Work Journal: the spelling fixer
