@@ -40,6 +40,22 @@ function card(
   };
 }
 
+/** A line break inside a card's text, the way a paste into a card stores one. */
+const BREAK: JSONContent = { type: "hardBreak" };
+
+/** A card whose text is `content` (text and hard breaks), with the default attributes. */
+function cardOf(content: JSONContent[], attrs: { project?: string | null } = {}): JSONContent {
+  return {
+    type: "journalEntry",
+    attrs: { time: "13:10", project: null, source: "typed", ...attrs },
+    content: [{ type: "paragraph", content }],
+  };
+}
+
+function text(value: string, marks?: JSONContent["marks"]): JSONContent {
+  return marks ? { type: "text", text: value, marks } : { type: "text", text: value };
+}
+
 function doc(...content: JSONContent[]): JSONContent {
   return { type: "doc", content };
 }
@@ -72,6 +88,25 @@ function boldLeads(): string[] {
       .map((span) => span.textContent ?? "")
       .join(""),
   );
+}
+
+/**
+ * The text a card shows: its text box without the part a collapsed card hides,
+ * each line break still showing read as a line break.
+ */
+function visibleText(cardEl: HTMLElement): string {
+  const box = cardEl.querySelector(".work-journal-entry-text")?.cloneNode(true) as HTMLElement;
+  for (const hidden of Array.from(box.querySelectorAll(".work-journal-entry-rest"))) {
+    hidden.remove();
+  }
+  for (const lineBreak of Array.from(box.querySelectorAll("br:not(.ProseMirror-trailingBreak)"))) {
+    lineBreak.replaceWith("\n");
+  }
+  return box.textContent ?? "";
+}
+
+function seeMore(cardEl: HTMLElement): HTMLElement | null {
+  return within(cardEl).queryByRole("button", { name: /See more/ });
 }
 
 async function lastSavedBody(): Promise<JSONContent> {
@@ -440,6 +475,132 @@ describe("Work Journal entry cards", () => {
 
     expect(pageEditor().getJSON()).toEqual(body);
     expect(cards()).toHaveLength(2);
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
+    });
+    expect(updatePage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "paragraphs, a heading and nested lists",
+      html:
+        "<h2>Summary</h2><p>First <strong>point</strong>.</p><p></p>" +
+        "<ul><li><p>Item one</p><ul><li><p>Nested</p></li></ul></li><li><p>Item two</p></li></ul>" +
+        '<ol><li><p>Step with <a href="https://example.com/">a link</a></p></li></ol>',
+      content: [
+        text("Talk: Summary"),
+        BREAK,
+        text("First "),
+        text("point", [{ type: "bold" }]),
+        text("."),
+        BREAK,
+        text("Item one"),
+        BREAK,
+        text("Nested"),
+        BREAK,
+        text("Item two"),
+        BREAK,
+        text("Step with "),
+        text("a link", [
+          {
+            type: "link",
+            attrs: expect.objectContaining({ href: "https://example.com/" }),
+          },
+        ]),
+      ],
+    },
+    {
+      name: "one paragraph",
+      html: "<p>more <em>notes</em></p>",
+      content: [text("Talk: more "), text("notes", [{ type: "italic" }])],
+    },
+  ])("a paste of $name into a card stays inside it, one line each", async ({ html, content }) => {
+    await renderPage(doc(paragraph("Notes"), card("Talk: ")));
+    act(() => {
+      // Inside the card after the paragraph (+7), into its text (+2), after "Talk: ".
+      pageEditor().commands.setTextSelection(7 + 2 + "Talk: ".length);
+      pageEditor().view.pasteHTML(html);
+    });
+    expect(await lastSavedBody()).toEqual(doc(paragraph("Notes"), cardOf(content), TRAILING));
+  });
+
+  it("a card longer than its first sentence shows only that sentence and See more", async () => {
+    const shown = [
+      [[text("Login fix: new rules. The PR merged.")], "Login fix: new rules.", true],
+      [[text("Is it done? Yes")], "Is it done?", true],
+      [[text("Shipped it! Then lunch")], "Shipped it!", true],
+      [[text("First line"), BREAK, text("second line.")], "First line", true],
+      [[text("Use e.g. this")], "Use e.g.", true],
+      [[text("Shipped v1.2 today")], "Shipped v1.2 today", false],
+      [[text("One sentence only.")], "One sentence only.", false],
+      [[text("Done. ")], "Done. ", false],
+    ] as const;
+    // A free note first, so the cursor the page opens with is in no card.
+    await renderPage(
+      doc(paragraph("Notes"), ...shown.map(([content]) => cardOf([...content] as JSONContent[]))),
+    );
+    expect(cards().map(visibleText)).toEqual(shown.map(([, visible]) => visible));
+    expect(cards().map((el) => seeMore(el) !== null)).toEqual(shown.map(([, , more]) => more));
+  });
+
+  it("See more opens the whole entry in a dialog that Esc, Close and a click outside close", async () => {
+    await renderPage(
+      doc(
+        paragraph("Notes"),
+        cardOf([text("Talk: the summary. More"), BREAK, text("Last line")], {
+          project: "demo-shop",
+        }),
+      ),
+    );
+    const open = (): HTMLElement => {
+      fireEvent.click(seeMore(cards()[0]) as HTMLElement);
+      return screen.getByRole("dialog");
+    };
+
+    const dialog = open();
+    expect(within(dialog).getByText(/13:10/)).toBeInTheDocument();
+    expect(within(dialog).getByText("demo-shop")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("work-journal-entry-full-text").textContent).toBe(
+      "Talk: the summary. More\nLast line",
+    );
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(within(open()).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    open();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the cursor in a collapsed card shows its whole text, and leaving collapses it", async () => {
+    // A free note last, so the editor adds no empty last line of its own.
+    const body = doc(
+      paragraph("Notes"),
+      card("Login fix: new rules. The PR merged."),
+      paragraph("Later"),
+    );
+    await renderPage(body);
+    expect(visibleText(cards()[0])).toBe("Login fix: new rules.");
+    expect(boldLeads()).toEqual(["Login fix:"]);
+
+    act(() => {
+      // Inside the card's text, after "Login".
+      pageEditor().commands.setTextSelection(7 + 2 + "Login".length);
+    });
+    expect(visibleText(cards()[0])).toBe("Login fix: new rules. The PR merged.");
+    expect(seeMore(cards()[0])).toBeNull();
+    expect(boldLeads()).toEqual(["Login fix:"]);
+
+    act(() => {
+      pageEditor().commands.setTextSelection(3);
+    });
+    expect(visibleText(cards()[0])).toBe("Login fix: new rules.");
+    expect(seeMore(cards()[0])).not.toBeNull();
+    expect(pageEditor().getJSON()).toEqual(body);
     await act(async () => {
       vi.advanceTimersByTime(WORK_JOURNAL_SAVE_DEBOUNCE_MS);
     });

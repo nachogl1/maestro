@@ -12,7 +12,13 @@ import { useProjectColors } from "@/lib/useProjectColors";
 import { normalizeEntryTime } from "@/lib/workJournalEntry";
 import { useWorkJournalStore } from "@/stores/useWorkJournalStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { canMoveEntry, type EntryMoveDirection } from "./WorkJournalEntryNode";
+import { WorkJournalEntryDialog } from "./WorkJournalEntryDialog";
+import {
+  canMoveEntry,
+  type EntryMoveDirection,
+  entryText,
+  isEntryCollapsed,
+} from "./WorkJournalEntryNode";
 import { WorkJournalSourceTag } from "./WorkJournalSourceTag";
 
 /** The attributes an entry card node stores (see `WorkJournalEntryNode`). */
@@ -30,6 +36,8 @@ const CONTROL_BUTTON =
  * click to edit), the project chip and source tag above the card's text box
  * (the editable part, bold up to the first colon), move up and down buttons
  * and a delete button. Every change is an editor step, so Ctrl+Z undoes it.
+ * A long card shows only its first sentence and "See more" (its whole text in
+ * a dialog) until the cursor goes into it.
  */
 export function WorkJournalEntryCard({
   node,
@@ -52,6 +60,15 @@ export function WorkJournalEntryCard({
       return { up: can("up"), down: can("down") };
     },
   });
+  const collapsed = useEditorState({
+    editor,
+    selector: ({ editor: current }) => {
+      const pos = getPos();
+      const { doc, selection } = current.state;
+      return pos !== undefined && isEntryCollapsed(doc, pos, selection);
+    },
+  });
+  const [showingAll, setShowingAll] = useState(false);
   const move = (direction: EntryMoveDirection): void => {
     const pos = getPos();
     if (pos !== undefined) editor.commands.moveWorkJournalEntry(direction, pos);
@@ -86,6 +103,27 @@ export function WorkJournalEntryCard({
           <WorkJournalSourceTag source={attrs.source} title="Where this entry came from" />
         </div>
         <NodeViewContent className="work-journal-entry-text min-w-0 break-words" />
+        {collapsed && (
+          <button
+            type="button"
+            contentEditable={false}
+            // Keeps the cursor where it is, so the card stays collapsed.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setShowingAll(true)}
+            title="Show the whole entry"
+            className="text-[11px] leading-[15px] text-maestro-accent hover:underline"
+          >
+            See more
+          </button>
+        )}
+        {showingAll && (
+          <WorkJournalEntryDialog
+            time={attrs.time}
+            project={attrs.project}
+            text={entryText(node)}
+            onClose={() => setShowingAll(false)}
+          />
+        )}
       </div>
       <button
         type="button"
