@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261122-185124-51ea",
+  "issue": 697,
+  "title": "Work Journal: say plainly what goes to Claude and how often, on the first-run question and in its (i) box",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-22T18:51:24Z",
+  "finished_at": "2026-11-22T19:10:30Z",
+  "outcome": "merged",
+  "pr": 699,
+  "summary": "The Work Journal's first-run question and its (i) box now say that it is off by default, what activity goes to Claude, about how often, and that it uses the person's Claude allowance; text only, no behaviour change.",
+  "agents": [
+    {
+      "name": "dev-697",
+      "model": "opus",
+      "tokens_total": 114197
+    },
+    {
+      "name": "review-697-r1",
+      "model": "opus",
+      "tokens_total": 113968
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 722,
+    "review_seconds": 183,
+    "ci_seconds": 110
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

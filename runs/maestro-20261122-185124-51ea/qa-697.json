@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261122-185124-51ea",
+  "issue": 697,
+  "title": "Work Journal: say plainly what goes to Claude and how often, on the first-run question and in its (i) box",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 699,
+  "merged_at": "2026-11-22T19:10:00Z",
+  "merge_commit": "6b12f2c98a10b8f57b4439d3d2658357f4b17d68",
+  "seam": "src/components/workjournal/",
+  "story": "Before turning on the Work Journal, a person now reads plainly that it stays off unless they click Enable, what activity goes to Claude, that it goes about every hour while Maestro is open, and that it runs through their own Claude CLI and allowance. The (i) box on the question and in Settings says the same in short and tells them how to turn it off. Nothing about how the journal behaves changed.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/first-run-question",
+      "criterion": "The first-run question shows the new sentence text exactly as written in the issue.",
+      "steps": "Start Maestro with fresh app data (Work Journal never answered). Answer the automatic-updates question. The \"Enable the Work Journal?\" question appears.",
+      "expected": "Under the description line, the paragraph \"It stays off unless you click Enable. Once on, Maestro sends your activity to Claude about every hour while it is open: your Claude prompts, commit messages, pull request and issue titles, and terminal names. It goes through your own Claude CLI and uses your Claude allowance.\" followed by the existing \"You can turn it on or off at any time in Settings → Work Journal.\" line."
+    },
+    {
+      "key": "src/components/workjournal/info-box",
+      "criterion": "The (i) explanation shows the new text on the first-run question and in Settings → Work Journal.",
+      "steps": "On the first-run question, hover the (i) next to the title. Press Escape and click \"Not now\". Open Settings → Work Journal and hover the (i) next to the heading.",
+      "expected": "In both places, under \"What the Work Journal does\": \"A diary with one page per day, so you can look back on your work and report it. Claude reads your activity and suggests short lines; nothing is added until you accept it. It is off until you turn it on. Once on, about every hour while Maestro is open, that activity goes to Claude and uses your allowance. Turn it off any time in Settings → Work Journal.\" Below it, the same five sources and the closing line as before."
+    },
+    {
+      "key": "src/components/workjournal/opt-in-unchanged",
+      "criterion": "No behaviour change: \"Not now\" and closing the question both leave the journal off.",
+      "steps": "Fresh app data, reach the first-run question. Click \"Not now\" (or close it). Restart Maestro.",
+      "expected": "The question does not come back, and Settings → Work Journal shows the journal off."
+    }
+  ],
+  "no_qa_reason": null
+}
