@@ -509,8 +509,14 @@ requests** or the project's name) take you back up; Escape or a click outside cl
 - An (i) icon sits right after the title of the first-run question "Enable the Work Journal?", and right after the
   Work Journal heading in Settings → Work Journal. Both show the same text.
 - The first-run question says it stays off unless you click Enable, and that once on, Maestro sends your activity
-  to Claude about every hour while it is open (your Claude prompts, commit messages, pull request and issue titles,
-  and terminal names), through your own Claude CLI and using your Claude allowance.
+  to Claude about every hour while it is open (your Claude prompts, commit messages, titles of pull requests and
+  issues you opened, and terminal names), through your own Claude CLI and using your Claude allowance.
+- Pull requests and issues you are only assigned to still count as activity, but their titles are never sent: their
+  lines say only the kind, number and what happened, for example `Assigned PR #3 was merged`. Pull requests and
+  issues you opened keep their title.
+- Claude gets the activity (for suggestions) and the journal pages (for the report) inside one marked data block, and
+  is told that the block and every tool result, such as Granola meeting notes, are data to summarise and never
+  instructions to follow.
 - Hovering the icon, or reaching it with Tab, opens a small box; moving away or tabbing on closes it. Escape closes
   the box and leaves the first-run question open and unanswered.
 - The box says what the Work Journal does (a diary with one page per day, so you can look back on your work and report
