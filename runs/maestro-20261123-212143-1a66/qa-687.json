@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 687,
+  "title": "Update dependencies with known vulnerabilities and switch on alerts for new ones",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 716,
+  "merged_at": "2026-11-23T23:52:18Z",
+  "merge_commit": "26d7358",
+  "seam": "package.json, package-lock.json, Cargo.toml, Cargo.lock, .github/dependabot.yml",
+  "story": "The app ships newer notes-editor packages and newer Rust networking and TLS libraries. Only one copy of the editor's view library is in the app, so the cursor can rest between two Work Journal entry cards without the page breaking. No screen or flow changed on purpose.",
+  "checks": [
+    {
+      "key": "src/components/workjournal/checklist-tick-after-deps",
+      "criterion": "The notes editor still works after its packages changed",
+      "steps": "Start the app from a fresh start and open the Work Journal. Make a page with 'Sample task' as a checklist item and tick it. Colour and highlight 'colour test'. Paste the link javascript:alert(1) with the text 'click'. Close the page and reopen it.",
+      "expected": "The tick, colour and highlight are kept, and 'click' is plain text. Nothing freezes."
+    },
+    {
+      "key": "src/components/workjournal/gap-cursor-between-cards",
+      "criterion": "The page stays usable when the cursor sits between two entry cards",
+      "steps": "Add two entry cards one after the other, 'First card' and 'Second card'. Click at the edge between them or use the arrow keys until a horizontal gap cursor shows. Type 'between'.",
+      "expected": "No error, both cards still show, and the typed text lands between them."
+    }
+  ],
+  "no_qa_reason": null
+}

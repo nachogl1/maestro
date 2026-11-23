@@ -1,0 +1,65 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 687,
+  "title": "Update dependencies with known vulnerabilities and switch on alerts for new ones",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-23T22:32:00Z",
+  "finished_at": "2026-11-23T23:52:18Z",
+  "outcome": "merged",
+  "pr": 716,
+  "summary": "JavaScript and Rust dependencies with published fixes were updated (shipped npm findings 29 to 0, Rust 31 to 6) and a Dependabot file was added; switching on alerts in the repository settings is still the maintainer's step.",
+  "agents": [
+    {
+      "name": "dev-687",
+      "model": "opus",
+      "tokens_total": 190369
+    },
+    {
+      "name": "review-687-r1",
+      "model": "opus",
+      "tokens_total": 177854
+    },
+    {
+      "name": "review-687-r2",
+      "model": "opus",
+      "tokens_total": 129089
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1845,
+    "review_seconds": 1078,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [
+    "An exact-version npm override on a shared library (prosemirror-view) can install nested copies instead of one top-level copy, which breaks instanceof checks across editor plugins; pin it as a direct dependency and override with \"$name\""
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/ (tauri-plugin-updater)",
+      "what": "6 RustSec findings stay in zip 4.6.1 inside the updater plugin; only updater 2.14.1 uses the fixed zip 9",
+      "why": "Needs Tauri 2.12+ with npm @tauri-apps in step and the Rust floor raised to 1.90 in CLAUDE.md, which a person merges",
+      "owner": "unowned \u2014 next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "package.json (vitest)",
+      "what": "2 moderate dev-only @vitest/mocker findings stay until vitest 4",
+      "why": "Vitest 4 needs test mock changes and an npm override workaround",
+      "owner": "unowned \u2014 next harvest"
+    },
+    {
+      "severity": "medium",
+      "area": "package.json (prosemirror-view)",
+      "what": "prosemirror-view is pinned at 1.43.0 because 1.43.1 makes the checklist-tick test overflow the stack, possibly a real editor bug; Dependabot's weekly batch will try to lift the pin",
+      "why": "Needs someone to check a later version before lifting the pin",
+      "owner": "unowned \u2014 next harvest"
+    }
+  ]
+}
