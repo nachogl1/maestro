@@ -1,0 +1,47 @@
+# Dependabot keeps the app's dependencies up to date.
+#
+# Security alerts and automatic security updates are switched on in the
+# repository settings (Settings -> Code security), not in this file. This file
+# adds a weekly pull request per ecosystem for ordinary version updates.
+#
+# Tauri needs the npm `@tauri-apps/*` packages and the Rust `tauri*` crates on
+# the same minor version: the Tauri CLI refuses to build on a mismatch. They
+# live in two ecosystems, so Dependabot opens one pull request for each; merge
+# them together, never one without the other.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      tauri:
+        patterns: ["@tauri-apps/*", "tauri-plugin-*"]
+      tiptap:
+        patterns: ["@tiptap/*", "tiptap-*"]
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      tauri:
+        patterns: ["tauri", "tauri-*"]
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: bundler
+    directory: /website
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
