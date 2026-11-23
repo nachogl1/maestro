@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 683,
+  "title": "Release pipeline: run the tests before publishing and pin every action to a fixed version",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 715,
+  "merged_at": "2026-11-23T23:00:15Z",
+  "merge_commit": "161272f",
+  "seam": ".github/workflows/",
+  "story": "Releases are now built only after the tests pass, and the build steps use fixed versions of outside tools. Nothing in the app changes for a user.",
+  "checks": [],
+  "no_qa_reason": "Build pipeline only; nothing a user can see or click."
+}

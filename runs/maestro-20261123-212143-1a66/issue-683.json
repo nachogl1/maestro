@@ -1,0 +1,40 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 683,
+  "title": "Release pipeline: run the tests before publishing and pin every action to a fixed version",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-23T21:57:00Z",
+  "finished_at": "2026-11-23T23:00:15Z",
+  "outcome": "merged",
+  "pr": 715,
+  "summary": "The release workflow now runs the front-end and Rust suites first and publishes only when they pass; every third-party action is pinned to a commit hash, and a new CI check rejects moving tags. The first release after the merge still has to be confirmed to carry all four files.",
+  "agents": [
+    {
+      "name": "dev-683",
+      "model": "opus",
+      "tokens_total": 142006
+    },
+    {
+      "name": "review-683-r1",
+      "model": "opus",
+      "tokens_total": 124610
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2644,
+    "review_seconds": 222,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [
+    "The macOS release job of v0.3.162 was cancelled for lack of a GitHub runner, so latest.json listed only Windows and Mac copies got an update error; fixed by re-running the failed job, which is the second time this has happened \u2014 an automatic retry would save the next run the diagnosis"
+  ],
+  "lessons_learned": [
+    "A trial release run from a branch shares the release concurrency group, so it queues behind a stuck main release"
+  ],
+  "deferred": []
+}
