@@ -814,3 +814,25 @@ allowance is left. It sends only your Claude login, no conversation text, so it 
   the bars were, with no refresh button. Clicking it opens Settings at Privacy.
 - **Backend check:** the app's backend refuses the usage request on its own once it is told the switch is off; until
   then it allows it, as before.
+
+## MCP servers: secret values stay out of project folders
+
+Starting a Claude terminal no longer copies your MCP servers, or the secret values they hold (keys and tokens in
+their `env`), into the project's `.mcp.json`. Maestro writes only its own status server there, plus, in a
+worktree, the project's own servers that the worktree's file lacks.
+
+- **Maestro custom servers** (Infra → MCP servers, scope **Maestro custom**) are added to your own Claude Code
+  settings, the top-level `mcpServers` of `~/.claude.json` (outside every project), when you save one switched on and
+  again when a Claude terminal starts. So they also show up in Claude Code outside Maestro, in every project.
+- **Editing, switching off or deleting** a custom server changes or removes the entry Maestro added there, but only
+  while that entry still holds exactly what Maestro wrote. An entry of the same name that you wrote or changed
+  yourself is never changed or removed; Maestro leaves it alone and keeps using it.
+- **User and Local servers** (already in `~/.claude.json`) are not copied anywhere: Claude Code loads them from there
+  itself.
+- **Project servers** (the project's own `.mcp.json`) and any entry you wrote into that file by hand stay exactly as
+  they are.
+- **Copies an earlier version left behind:** an earlier Maestro wrote your custom, User and Local servers, with
+  their secret values, into the `.mcp.json` of each project you opened. Maestro does not delete those copies, because
+  it cannot tell them from entries you wrote yourself. Open each project's `.mcp.json`, remove the entries you did not
+  put there on purpose, and replace every key or token they held (make a new one with the service and revoke the old
+  one), above all if the file was ever committed or shared: git history keeps the old value.

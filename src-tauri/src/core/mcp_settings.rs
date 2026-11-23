@@ -113,7 +113,7 @@ pub fn is_internal_server(name: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn claude_json_path() -> McpResult<PathBuf> {
+pub(crate) fn claude_json_path() -> McpResult<PathBuf> {
     BaseDirs::new()
         .map(|d| d.home_dir().join(".claude.json"))
         .ok_or(McpError::NoHomeDir)
@@ -450,6 +450,48 @@ pub fn upsert_server(
         }
         McpScope::Connector => Err(McpError::ConnectorReadOnly("edited")),
     }
+}
+
+/// Updates the user-level `mcpServers` of the `~/.claude.json` at `claude_json`
+/// for servers Maestro keeps there: each `retired` entry is removed only while
+/// it still holds exactly the given config (what Maestro wrote), then each
+/// `wanted` entry is added only when its name is free. An entry the user wrote
+/// or changed by hand is never changed or removed. The file is written only
+/// when something changed, so a session launch does not rewrite it needlessly.
+pub(crate) fn sync_user_servers(
+    claude_json: &Path,
+    retired: &[(String, Value)],
+    wanted: &[(String, Value)],
+) -> McpResult<()> {
+    let _guard = CLAUDE_JSON_LOCK
+        .lock()
+        .map_err(|e| McpError::LockPoisoned(e.to_string()))?;
+    let mut root = read_json_strict(claude_json)?;
+    let servers = ensure_object(&mut root, "mcpServers")?;
+    let before = servers.clone();
+
+    for (name, config) in retired {
+        if servers.get(name) == Some(config) {
+            servers.remove(name);
+        }
+    }
+    for (name, config) in wanted {
+        match servers.get(name) {
+            None => {
+                servers.insert(name.clone(), config.clone());
+            }
+            Some(existing) if existing != config => log::warn!(
+                "MCP: user-level server '{}' was written by hand; leaving it as it is",
+                name
+            ),
+            Some(_) => {}
+        }
+    }
+
+    if *servers == before {
+        return Ok(());
+    }
+    write_json_file(claude_json, &root)
 }
 
 /// Removes a server entry from the file for the given scope, and cleans its

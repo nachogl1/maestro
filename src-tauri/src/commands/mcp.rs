@@ -181,8 +181,10 @@ pub async fn add_mcp_project(project_path: String) -> Result<(), String> {
 ///
 /// The written config includes:
 /// - The `maestro` MCP server with HTTP-based status reporting
-/// - All enabled servers from the project's `.mcp.json`
-/// - All enabled custom servers (user-defined, global)
+/// - Enabled servers from the project's `.mcp.json` this folder's file lacks
+///
+/// Enabled custom servers go to the user's own `~/.claude.json` instead,
+/// never into the project file.
 ///
 /// Existing user-defined servers in the working directory's `.mcp.json` are
 /// preserved (only Maestro-managed servers are replaced).
@@ -251,6 +253,7 @@ pub async fn write_session_mcp_config(
         instance_id,
         &enabled_discovered,
         &enabled_custom,
+        &mcp_settings::claude_json_path().map_err(|e| e.to_string())?,
     )
     .await
     .map_err(|e| e.to_string())
@@ -398,6 +401,17 @@ pub async fn save_custom_mcp_server(app: AppHandle, server: McpCustomServer) -> 
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
+    // The custom server reaches sessions through the user's own Claude Code
+    // config, so a save updates the entry Maestro keeps there first: a broken
+    // ~/.claude.json fails the save instead of leaving the two out of step.
+    let previous = servers.iter().find(|s| s.id == server.id);
+    mcp_config_writer::update_custom_server_in_user_config(
+        &mcp_settings::claude_json_path().map_err(|e| e.to_string())?,
+        previous,
+        Some(&server),
+    )
+    .map_err(|e| e.to_string())?;
+
     // Update or add the server
     if let Some(index) = servers.iter().position(|s| s.id == server.id) {
         servers[index] = server.clone();
@@ -429,6 +443,15 @@ pub async fn delete_custom_mcp_server(app: AppHandle, server_id: String) -> Resu
         .get("servers")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+
+    // Remove the entry Maestro keeps for it in the user's own Claude Code config
+    let previous = servers.iter().find(|s| s.id == server_id);
+    mcp_config_writer::update_custom_server_in_user_config(
+        &mcp_settings::claude_json_path().map_err(|e| e.to_string())?,
+        previous,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
 
     // Remove the server
     let original_len = servers.len();

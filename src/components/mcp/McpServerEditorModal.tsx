@@ -28,7 +28,7 @@ const SCOPE_OPTIONS: Array<{ value: EditorScope; label: string; hint: string }> 
   {
     value: "custom",
     label: "Maestro custom",
-    hint: "Maestro-only store — injected into Maestro sessions, invisible to plain Claude CLI",
+    hint: "Kept by Maestro and added to ~/.claude.json while on — never written to a project",
   },
 ];
 
