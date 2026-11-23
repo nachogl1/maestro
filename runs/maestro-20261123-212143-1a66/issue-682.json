@@ -1,0 +1,48 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 682,
+  "title": "Check every backend command against a permission list: declare the app's own commands and grant them to its windows",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-23T21:21:43Z",
+  "finished_at": "2026-11-23T22:10:18Z",
+  "outcome": "merged",
+  "pr": 713,
+  "summary": "The app now declares its 190 backend commands at build time and grants them to its three windows, so the framework checks every call; a test fails when the declared and registered lists disagree.",
+  "agents": [
+    {
+      "name": "dev-682",
+      "model": "opus",
+      "tokens_total": 189169
+    },
+    {
+      "name": "review-682-r1",
+      "model": "opus",
+      "tokens_total": 137933
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 2220,
+    "review_seconds": 406,
+    "ci_seconds": 300
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [
+    "the run started four stories in parallel; the person asked for one at a time, so three agents were stopped and their claims released \u2014 ask how many to run when the request is ambiguous"
+  ],
+  "lessons_learned": [
+    "Tests that start the real Tauri framework on Windows need the common-controls manifest embedded in test binaries, or they die with STATUS_ENTRYPOINT_NOT_FOUND"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src-tauri/capabilities/work-journal.json",
+      "what": "The Work Journal pop-out window logs `store.load not allowed` and cannot read or save its settings (such as the scratch folder), because its capability file never granted the store plugin",
+      "why": "Already on main before this change; outside the ticket's scope",
+      "owner": "unowned \u2014 next harvest"
+    }
+  ]
+}

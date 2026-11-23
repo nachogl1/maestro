@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 682,
+  "title": "Check every backend command against a permission list: declare the app's own commands and grant them to its windows",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 713,
+  "merged_at": "2026-11-23T22:10:18Z",
+  "merge_commit": "9cb8ab8",
+  "seam": "src-tauri/build.rs, src-tauri/capabilities/, src-tauri/permissions/",
+  "story": "Maestro now checks every call a window makes to its backend against a list of allowed commands; before, calls to the app's own commands were not checked at all. The main, issue-map and Work Journal windows keep every command they had, so nothing should look or behave differently.",
+  "checks": [
+    {
+      "key": "src-tauri/capabilities/main-window-starts",
+      "criterion": "The main window loads and no app command is refused",
+      "steps": "Install the build from main, start Maestro and open a sample project folder.",
+      "expected": "The sidebar, terminals and Settings work as before, with no error toast."
+    },
+    {
+      "key": "src-tauri/capabilities/issue-map-window",
+      "criterion": "The issue-map window still works",
+      "steps": "Open a sample GitHub repository, then open the issue map from the Git panel.",
+      "expected": "The map window opens and loads issues, and its filters work."
+    },
+    {
+      "key": "src-tauri/capabilities/work-journal-window",
+      "criterion": "The Work Journal window still works",
+      "steps": "Turn on Work Journal in Settings, then pop the journal out into its own window.",
+      "expected": "The window opens and shows its pages, and you can add and edit a made-up entry."
+    }
+  ],
+  "no_qa_reason": null
+}
