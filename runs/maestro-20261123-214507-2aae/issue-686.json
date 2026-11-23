@@ -1,0 +1,30 @@
+{
+  "run_id": "maestro-20261123-214507-2aae",
+  "issue": 686,
+  "title": "Stop copying the secret values of custom MCP servers into project files",
+  "login": "nachogl1",
+  "started_at": "2026-11-23T21:45:07Z",
+  "finished_at": "2026-11-23T22:22:09Z",
+  "outcome": "owner-merges",
+  "pr": 714,
+  "summary": "Maestro no longer writes the secret values of the user's own MCP servers (its custom servers and those from the user's Claude Code settings) into a project's .mcp.json; custom servers now go into the user's own Claude Code settings, and hand-written project entries are left untouched. The owner must try the change, then merge pull request #714.",
+  "agents": [
+    { "name": "dev-686", "model": "opus", "tokens_total": 162252 },
+    { "name": "review-686-r1", "model": "opus", "tokens_total": 125027 }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1525, "review_seconds": 336, "ci_seconds": 420 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [
+    "The issue named only Maestro's custom-server store, but the leaked key on the maintainer's machine came through the discovered-servers path from ~/.claude.json; check every write path against the real symptom before building"
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/components/mcp/",
+      "what": "A Maestro custom server that is switched on now also shows in the Infra MCP list's User section, so the user sees it twice",
+      "why": "Not asked for by this issue and it changes the screen",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
