@@ -74,7 +74,7 @@ export default defineConfig(async () => ({
     setupFiles: ["./src/test/setup.ts"],
     // Without an explicit include, vitest also collects the full test suite
     // out of every stale agent worktree under .claude/worktrees.
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    include: ["src/**/*.{test,spec}.{ts,tsx}", ".github/scripts/**/*.test.mjs"],
     exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/**", "**/target/**"],
   },
 }));
