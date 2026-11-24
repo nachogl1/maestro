@@ -1,0 +1,36 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 691,
+  "title": "Repository hygiene: a private way to report security problems, secret scanning, and leftover files",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-24T00:00:00Z",
+  "finished_at": "2026-11-24T00:49:20Z",
+  "outcome": "merged",
+  "pr": 718,
+  "summary": "Deleted two unused images from assets/ (one showed a person's details); nothing referred to them. The security-policy and settings parts of the issue were dropped by the maintainer.",
+  "agents": [
+    {
+      "name": "dev-691",
+      "model": "sonnet",
+      "tokens_total": 92620
+    },
+    {
+      "name": "review-691-r1",
+      "model": "opus",
+      "tokens_total": 98730
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 384,
+    "review_seconds": 200,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

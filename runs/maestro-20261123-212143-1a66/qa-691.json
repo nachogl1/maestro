@@ -1,0 +1,13 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 691,
+  "title": "Repository hygiene: a private way to report security problems, secret scanning, and leftover files",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 718,
+  "merged_at": "2026-11-24T00:49:20Z",
+  "merge_commit": "b3b23b5",
+  "seam": "assets/",
+  "story": "Two unused images were removed from the repository. Nothing in the app or the site used them.",
+  "checks": [],
+  "no_qa_reason": "A file deletion no user can see or do."
+}
