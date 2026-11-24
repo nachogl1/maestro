@@ -1,0 +1,44 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 688,
+  "title": "Ship the licence and third-party notices with the app and the repository",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-23T23:20:00Z",
+  "finished_at": "2026-11-24T00:37:54Z",
+  "outcome": "merged",
+  "pr": 717,
+  "summary": "The licence moved to the repository root (GitHub now reports MIT), a third-party notices file for shipped npm packages, Rust crates and the font is generated at build time and bundled in the installers, Settings links to it, and the manifests carry the chosen name, authors and licence.",
+  "agents": [
+    {
+      "name": "dev-688",
+      "model": "opus",
+      "tokens_total": 216393
+    },
+    {
+      "name": "review-688-r1",
+      "model": "opus",
+      "tokens_total": 163887
+    },
+    {
+      "name": "review-688-r2",
+      "model": "opus",
+      "tokens_total": 141283
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 1779,
+    "review_seconds": 791,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 2,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [
+    "cargo:rerun-if-changed on a gitignored generated file makes every build in a fresh checkout dirty; watch a committed folder instead",
+    "Some dev-only npm packages (tailwindcss preflight, vite preload helper) still put code in the shipped bundle and need notices"
+  ],
+  "deferred": []
+}

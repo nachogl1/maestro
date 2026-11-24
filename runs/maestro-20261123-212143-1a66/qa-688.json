@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261123-212143-1a66",
+  "issue": 688,
+  "title": "Ship the licence and third-party notices with the app and the repository",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 717,
+  "merged_at": "2026-11-24T00:37:54Z",
+  "merge_commit": "cf7dd50",
+  "seam": "LICENSE, legal/, scripts/generate-notices.mjs, manifests",
+  "story": "Settings, then Updates, now has a Licences row under Version whose link opens Maestro's licence and the notices for every bundled npm package, Rust crate and the JetBrains Mono font. The licence moved from legal/ to the repository root, and every installer carries LICENSE and a legal/ folder with the notices and the font licence.",
+  "checks": [
+    {
+      "key": "settings/licence-notices-link",
+      "criterion": "The notices can be opened from the app",
+      "steps": "Install the build from main and start it. Open Settings, then Updates, and click 'Licence and third-party notices' in the Licences row.",
+      "expected": "A text file opens in the default viewer, starting with 'THIRD-PARTY NOTICES FOR MAESTRO' and then the MIT licence; tailwindcss and vite are listed."
+    },
+    {
+      "key": "settings/licence-notices-missing",
+      "criterion": "A missing notices file is explained",
+      "steps": "In a dev build (npm run tauri dev) started without ever running npm run notices, open Settings, then Updates, and click the link.",
+      "expected": "A red line under the row says the notices file is missing from this copy of Maestro."
+    },
+    {
+      "key": "repo/licence-detected",
+      "criterion": "GitHub reports the licence",
+      "steps": "Run gh api repos/nachogl1/maestro/license --jq .license.spdx_id",
+      "expected": "MIT"
+    }
+  ],
+  "no_qa_reason": null
+}
