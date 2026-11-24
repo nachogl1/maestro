@@ -3,7 +3,8 @@ name = "maestro-mcp-server"
 version = "0.2.0"
 edition = "2021"
 description = "MCP server for Claude Maestro status reporting"
-authors = ["lliWcWill"]
+authors = ["Jack", "Ignacio Gonzalez"]
+license = "MIT"
 
 [[bin]]
 name = "maestro-mcp-server"

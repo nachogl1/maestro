@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { GapCursor } from "@tiptap/pm/gapcursor";
 import type { Editor, JSONContent } from "@tiptap/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_PAGE_BODY, useWorkJournalStore } from "@/stores/useWorkJournalStore";
@@ -315,6 +316,38 @@ describe("WorkJournalEditor paste", () => {
       ),
     ).toBe('<span style=" font-style: italic">x</span>');
     expect(stripForeignPastedColors('<span style="color: red">x</span>')).toBe("<span>x</span>");
+  });
+});
+
+describe("WorkJournalEditor gap cursor", () => {
+  /** An entry card holding one line of text. */
+  function entryCard(time: string, text: string): JSONContent {
+    return {
+      type: "journalEntry",
+      attrs: { time, project: null, source: "typed" },
+      content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+    };
+  }
+
+  it("shows a gap cursor between two entry cards and keeps the page editable", () => {
+    const body: JSONContent = {
+      type: "doc",
+      content: [entryCard("09:00", "First card"), entryCard("10:00", "Second card")],
+    };
+    render(<WorkJournalEditor date="2026-10-15" initialBody={body} />);
+    const editor = pageEditor();
+    const betweenCards = editor.state.doc.child(0).nodeSize;
+
+    act(() => {
+      const { state } = editor;
+      editor.view.dispatch(state.tr.setSelection(new GapCursor(state.doc.resolve(betweenCards))));
+    });
+
+    expect(editor.state.selection).toBeInstanceOf(GapCursor);
+    const page = screen.getByLabelText("Work Journal page");
+    expect(page.querySelector(".ProseMirror-gapcursor")).not.toBeNull();
+    expect(page.textContent).toContain("First card");
+    expect(page.textContent).toContain("Second card");
   });
 });
 

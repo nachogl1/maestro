@@ -87,7 +87,7 @@ const SECTION_GROUPS: SettingsSectionGroup[] = [
         id: "updates",
         label: "Updates",
         icon: ArrowDownCircle,
-        description: "Maestro's version, updates and the maestro terminal command.",
+        description: "Maestro's version, licences, updates and the maestro terminal command.",
       },
       {
         id: "privacy",

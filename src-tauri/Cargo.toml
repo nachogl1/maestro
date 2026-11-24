@@ -2,7 +2,8 @@
 name = "maestro"
 version = "0.3.0"
 description = "Maestro — Multi-session AI orchestrator"
-authors = ["lliWcWill"]
+authors = ["Jack", "Ignacio Gonzalez"]
+license = "MIT"
 edition = "2021"
 # Lowest toolchain the locked dependencies build on (notify-rust 4.18 needs 1.89).
 rust-version = "1.89"
@@ -73,6 +74,8 @@ winreg = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+# Tauri's mock runtime, so tests can send calls through the real permission check
+tauri = { version = "2", features = ["test"] }
 
 # Note: This crate is part of the root workspace (see ../Cargo.toml).
 # Release profile is defined at the workspace root.
