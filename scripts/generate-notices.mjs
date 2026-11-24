@@ -37,20 +37,30 @@ const RULE = "=".repeat(78);
 const THIN_RULE = "-".repeat(78);
 
 /**
+ * Build tools the lockfile marks as development dependencies that still put their own code
+ * into the shipped front end: Tailwind's preflight stylesheet lands in the built CSS, and
+ * Vite's module preload helper lands in the built JavaScript.
+ */
+const DEV_PACKAGES_IN_THE_BUNDLE = new Set(["tailwindcss", "vite"]);
+
+/**
  * The npm packages the app ships: every installed package in the lockfile that is not only a
- * development dependency. An optional package missing from `node_modules` (another platform's
- * binary) is left out.
+ * development dependency, plus the build tools in DEV_PACKAGES_IN_THE_BUNDLE. An optional
+ * package missing from `node_modules` (another platform's binary) is left out.
  */
 export function shippedNpmPackages(lockfile, nodeModulesRoot) {
   return Object.entries(lockfile.packages ?? {})
-    .filter(([key, entry]) => key.startsWith(NODE_MODULES) && !entry.dev && !entry.link)
+    .filter(([key, entry]) => key.startsWith(NODE_MODULES) && !entry.link)
     .map(([key, entry]) => ({
       name: entry.name ?? key.slice(key.lastIndexOf(NODE_MODULES) + NODE_MODULES.length),
       version: entry.version ?? "",
       licence: entry.license ?? "UNKNOWN",
       dir: join(nodeModulesRoot, key),
+      dev: entry.dev === true,
     }))
-    .filter((pkg) => existsSync(pkg.dir));
+    .filter((pkg) => !pkg.dev || DEV_PACKAGES_IN_THE_BUNDLE.has(pkg.name))
+    .filter((pkg) => existsSync(pkg.dir))
+    .map(({ dev: _dev, ...pkg }) => pkg);
 }
 
 /**

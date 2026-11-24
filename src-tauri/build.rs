@@ -273,10 +273,14 @@ fn write_all_app_commands_set() {
 /// The third-party notices `npm run notices` writes (gitignored); the installers ship them.
 const THIRD_PARTY_NOTICES: &str = "../legal/THIRD-PARTY-NOTICES.txt";
 
+/// The committed folder that holds the notices. Watching it rather than the notices file keeps
+/// Cargo from rerunning this script on every build where the file was never generated.
+const LEGAL_DIR: &str = "../legal";
+
 /// A release build is the one `tauri build` puts into the installers, so it stops when the
 /// third-party notices those installers must carry are missing or empty.
 fn require_third_party_notices_in_release() {
-    println!("cargo:rerun-if-changed={THIRD_PARTY_NOTICES}");
+    println!("cargo:rerun-if-changed={LEGAL_DIR}");
     if env::var("PROFILE").as_deref() != Ok("release") {
         return;
     }

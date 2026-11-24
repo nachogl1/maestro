@@ -37,12 +37,14 @@ function readJson(path) {
 }
 
 describe("shippedNpmPackages", () => {
-  it("lists the installed packages the app ships, nested ones too, and never dev-only ones", () => {
+  it("lists shipped packages, nested ones and bundled build tools, never other dev ones", () => {
     writeFiles({
       "node_modules/react/package.json": "{}",
       "node_modules/react/node_modules/loose-envify/package.json": "{}",
       "node_modules/@scope/tool/package.json": "{}",
       "node_modules/vitest/package.json": "{}",
+      "node_modules/tailwindcss/package.json": "{}",
+      "node_modules/vite/package.json": "{}",
     });
     const lockfile = {
       packages: {
@@ -51,13 +53,21 @@ describe("shippedNpmPackages", () => {
         "node_modules/react/node_modules/loose-envify": { version: "1.4.0", license: "MIT" },
         "node_modules/@scope/tool": { version: "2.0.0", license: "ISC" },
         "node_modules/vitest": { version: "3.2.7", license: "MIT", dev: true },
+        "node_modules/tailwindcss": { version: "3.4.0", license: "MIT", dev: true },
+        "node_modules/vite": { version: "6.4.6", license: "MIT", dev: true },
         "node_modules/other-platform-binary": { version: "1.0.0", optional: true },
       },
     };
 
     const names = shippedNpmPackages(lockfile, dir).map((pkg) => `${pkg.name}@${pkg.version}`);
 
-    expect(names).toEqual(["react@18.3.1", "loose-envify@1.4.0", "@scope/tool@2.0.0"]);
+    expect(names).toEqual([
+      "react@18.3.1",
+      "loose-envify@1.4.0",
+      "@scope/tool@2.0.0",
+      "tailwindcss@3.4.0",
+      "vite@6.4.6",
+    ]);
   });
 });
 
