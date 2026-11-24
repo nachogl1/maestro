@@ -21,6 +21,7 @@ import {
 import { formatTimeAgo } from "@/lib/format";
 import { isWindows } from "@/lib/platform";
 import { useUpdateStore } from "@/stores/useUpdateStore";
+import { LicenceNoticesRow } from "./LicenceNoticesRow";
 
 /** Hover help for the settings, in plain language. */
 const HINTS = {
@@ -139,6 +140,7 @@ export function UpdatesSettingsPanel() {
             <Check size={12} className="shrink-0 text-maestro-green" />v{appVersion ?? "..."}
           </span>
         </DialogRow>
+        <LicenceNoticesRow />
         <DialogRow label="Last checked">
           {status === "checking" && (
             <span className="flex items-center gap-1.5 text-[11px] text-maestro-muted">

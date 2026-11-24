@@ -814,3 +814,17 @@ allowance is left. It sends only your Claude login, no conversation text, so it 
   the bars were, with no refresh button. Clicking it opens Settings at Privacy.
 - **Backend check:** the app's backend refuses the usage request on its own once it is told the switch is off; until
   then it allows it, as before.
+
+## Licences: the licence and third-party notices
+
+Maestro ships its own MIT licence and a notices file listing every open-source package, crate and font inside it,
+with their licence texts.
+
+- **Settings → Updates**, under **Version**, has a **Licences** row with a **Licence and third-party notices**
+  link. Clicking it opens the notices file in the computer's default text viewer. If the file cannot be opened, a
+  red line under the row says why.
+- **Where the file comes from:** `npm run notices` writes `legal/THIRD-PARTY-NOTICES.txt`, and `npm run tauri build`
+  runs it before bundling, so every installer carries it in a `legal/` folder beside the app, with `LICENSE`.
+  A release build stops with an error when the file is missing or empty.
+- **In a dev build** (`npm run tauri dev`) the link opens the file only when `npm run notices` ran before the app
+  was built; otherwise the red line says the file is missing.

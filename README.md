@@ -2,7 +2,7 @@
 
 # Maestro
 
-> ⚠️ **Experimental software: use at your own risk.** Maestro is an experimental tool, provided "as is" with no warranty of any kind (see the [MIT licence](legal/LICENSE)). It runs AI coding agents that can change your files, run commands and edit your Claude Code settings. You are responsible for what they do: review their changes, keep backups, and watch your AI usage and costs. The authors accept no liability for any loss or damage from using it.
+> ⚠️ **Experimental software: use at your own risk.** Maestro is an experimental tool, provided "as is" with no warranty of any kind (see the [MIT licence](LICENSE)). It runs AI coding agents that can change your files, run commands and edit your Claude Code settings. You are responsible for what they do: review their changes, keep backups, and watch your AI usage and costs. The authors accept no liability for any loss or damage from using it.
 
 **Orchestrate multiple AI coding assistants in parallel**
 
@@ -13,7 +13,7 @@ Maestro is a desktop app for developers who build software with AI coding assist
 Maestro was created by **Jack** ([AngryAnt3201](https://github.com/AngryAnt3201)). The original project is
 [its-maestro-baby/maestro](https://github.com/its-maestro-baby/maestro), and all credit for building Maestro goes to
 Jack and that project's contributors. This version was adapted by **Ignacio "Nacho" Gonzalez**. Licensed under
-[MIT](legal/LICENSE).
+[MIT](LICENSE).
 
 ---
 

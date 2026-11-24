@@ -546,6 +546,8 @@ pub fn run() {
             commands::update::check_for_updates,
             commands::update::download_and_install_update,
             commands::update::get_app_version,
+            // Settings → Updates: the licence and third-party notices (issue #688)
+            commands::legal::open_third_party_notices,
             // Hooks commands
             commands::hooks::write_session_hooks_config,
             commands::hooks::remove_session_hooks_config,

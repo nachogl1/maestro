@@ -1,7 +1,12 @@
 {
-  "name": "maestro-linux",
+  "name": "maestro",
   "private": true,
   "version": "0.3.0",
+  "license": "MIT",
+  "author": "Jack",
+  "contributors": [
+    "Ignacio Gonzalez"
+  ],
   "type": "module",
   "engines": {
     "node": ">=18.0.0"
@@ -13,6 +18,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check .",
+    "notices": "node scripts/generate-notices.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
