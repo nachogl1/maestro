@@ -11,6 +11,9 @@ src-tauri/target/
 src-tauri/binaries/
 maestro-mcp-server/target/
 
+# Third-party notices (rebuilt by npm run notices, which tauri build runs)
+legal/THIRD-PARTY-NOTICES.txt
+
 # Generated schemas (rebuilt by tauri build)
 src-tauri/gen/
 

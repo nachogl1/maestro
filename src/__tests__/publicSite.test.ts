@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const REPO_ROOT = resolve(__dirname, "../..");
 const SITE_DIR = join(REPO_ROOT, "website");
 const SITE_URL = "https://nachogl1.github.io/maestro/";
-const FORK_LICENSE_URL = "https://github.com/nachogl1/maestro/blob/main/legal/LICENSE";
+const FORK_LICENSE_URL = "https://github.com/nachogl1/maestro/blob/main/LICENSE";
 const AUTHOR_CREDIT = 'Adapted by Ignacio "Nacho" Gonzalez';
 const ORIGINAL_AUTHOR_URL = "https://github.com/AngryAnt3201";
 /** The one upstream link the site keeps: the footer credit to the original project. */

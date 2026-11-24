@@ -10,7 +10,8 @@ members = [
 
 [workspace.package]
 edition = "2021"
-authors = ["lliWcWill"]
+authors = ["Jack", "Ignacio Gonzalez"]
+license = "MIT"
 
 [workspace.dependencies]
 # Shared dependencies across workspace members

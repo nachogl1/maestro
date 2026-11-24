@@ -187,6 +187,7 @@ const APP_COMMANDS: &[&str] = &[
     "check_for_updates",
     "download_and_install_update",
     "get_app_version",
+    "open_third_party_notices",
     "write_session_hooks_config",
     "remove_session_hooks_config",
     "terminal_arm_initial_prompt",
@@ -226,6 +227,7 @@ fn main() {
 
     embed_common_controls_manifest_in_tests();
     write_all_app_commands_set();
+    require_third_party_notices_in_release();
 
     // Standard Tauri build (validates externalBin paths), plus the app's own command list so
     // Tauri generates an allow-<command> permission for each one and checks every call.
@@ -266,6 +268,29 @@ fn write_all_app_commands_set() {
     fs::create_dir_all(&dir)
         .and_then(|()| fs::write(&path, set))
         .unwrap_or_else(|e| panic!("cannot write the app permission set {path:?}: {e}"));
+}
+
+/// The third-party notices `npm run notices` writes (gitignored); the installers ship them.
+const THIRD_PARTY_NOTICES: &str = "../legal/THIRD-PARTY-NOTICES.txt";
+
+/// The committed folder that holds the notices. Watching it rather than the notices file keeps
+/// Cargo from rerunning this script on every build where the file was never generated.
+const LEGAL_DIR: &str = "../legal";
+
+/// A release build is the one `tauri build` puts into the installers, so it stops when the
+/// third-party notices those installers must carry are missing or empty.
+fn require_third_party_notices_in_release() {
+    println!("cargo:rerun-if-changed={LEGAL_DIR}");
+    if env::var("PROFILE").as_deref() != Ok("release") {
+        return;
+    }
+    let has_notices = fs::metadata(THIRD_PARTY_NOTICES).is_ok_and(|m| m.len() > 0);
+    if !has_notices {
+        panic!(
+            "{THIRD_PARTY_NOTICES} is missing or empty: run `npm run notices` first \
+             (`npm run tauri build` runs it for you)"
+        );
+    }
 }
 
 /// Windows application manifest asking for version 6 of the common controls, the same one
