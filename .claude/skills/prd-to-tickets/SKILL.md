@@ -22,8 +22,9 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 
 ## Prerequisites
 
-- `.claude/skills/dev-next/references/new-issue.md` is installed (orion ships it; `orion update` restores it). It is
-  the issue shape, the labels and the native links every ticket here follows. Missing → stop and say so.
+- `.claude/skills/dev-next/references/new-issue.md` is installed (orion ships it; `bash .claude/orion/orion.sh repair`
+  restores it). It is the issue shape, the labels and the native links every ticket here follows. Missing → stop and
+  say so.
 - `.claude/skills/dev-next/references/planning-interview.md` is installed beside it (orion ships it too). It is the
   interview of phase 4. Missing → stop and say so.
 - GitHub Issues as the tracker, `gh` signed in to the repository `origin` points at. A `CLAUDE.md` naming another

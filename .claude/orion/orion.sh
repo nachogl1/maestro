@@ -18,6 +18,9 @@
 #                                       # --yes goes on without asking (needed where there is no terminal)
 #   orion.sh update    [--force]        # fetch the latest orion and re-copy the files orion owns
 #   orion.sh update    --skip           # decline the newest orion: the hook stays quiet until a newer one
+#   orion.sh repair    [--force]        # re-copy the files orion owns from the commit already installed, in every
+#                                       # update mode, never changing its version; --force also replaces a project
+#                                       # skill without the orion marker in an orion skill's place (on the person's word)
 #   orion.sh check     [--force]        # session-start hook: pull the branch, look for a newer orion and for
 #                                       # orion files left uncommitted (every session); too many branches or
 #                                       # worktrees? (once a day each)
@@ -128,6 +131,41 @@ config_get() {  # file key default
         v=$(printf '%s' "$v" | sed 's/\\\\/\\/g')   # JSON writes one backslash (a Windows path) as two
     fi
     printf '%s' "${v:-$3}"
+}
+
+# The update mode, read in this one place: check, the personal rules offer, verify and status all use it. One pass
+# over config.json, no subshell, sets UPDATE_MODE to ask, auto or off, ignoring letter case and spaces around the
+# value; a missing config.json or a missing key is ask. A value orion does not understand (false, never, an empty
+# string), or a config.json it cannot read as plain text (one saved as UTF-16 holds NUL bytes), is off, and
+# UPDATE_MODE_PROBLEM then says why in one sentence. UPDATE_MODE_RAW is the value as written (a string's text, or a
+# bare value such as false); UPDATE_MODE_UNREADABLE is 1 for a file that is not plain text.
+UPDATE_MODE="" UPDATE_MODE_RAW="" UPDATE_MODE_PROBLEM="" UPDATE_MODE_UNREADABLE=0
+read_update_mode() {  # file
+    local v
+    UPDATE_MODE=ask UPDATE_MODE_RAW="" UPDATE_MODE_PROBLEM="" UPDATE_MODE_UNREADABLE=0
+    [ -f "$1" ] || return 0
+    if [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" != "$(wc -c < "$1")" ]; then
+        UPDATE_MODE=off UPDATE_MODE_UNREADABLE=1
+        UPDATE_MODE_PROBLEM="orion cannot read .claude/orion/config.json as plain text (it looks saved as UTF-16, as Windows PowerShell 5.1 writes it), so it treats updateMode as off and offers or runs no update until the file is saved again as UTF-8 with updateMode set to ask, auto or off: tell the user so in one line."
+        return 0
+    fi
+    # "=" marks the key as found, so an empty value is told apart from a missing key
+    v="$(sed -n 's/.*"updateMode"[[:space:]]*:[[:space:]]*/=/p' "$1" | head -n1)"
+    [ -n "$v" ] || return 0
+    v="${v#=}"; v="${v%$'\r'}"
+    case "$v" in
+        \"*) v="${v#\"}"; v="${v%%\"*}" ;;
+        *) v="${v%%[,\}]*}" ;;
+    esac
+    UPDATE_MODE_RAW="$v"
+    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    case "$v" in
+        [Aa][Ss][Kk]) UPDATE_MODE=ask ;;
+        [Aa][Uu][Tt][Oo]) UPDATE_MODE=auto ;;
+        [Oo][Ff][Ff]) UPDATE_MODE=off ;;
+        *) UPDATE_MODE=off
+           UPDATE_MODE_PROBLEM="orion does not understand updateMode '$(json_escape "$(printf '%s' "$UPDATE_MODE_RAW" | LC_ALL=C tr -d '\000-\037')")' in .claude/orion/config.json, so it treats it as off and offers or runs no update until it is set to ask, auto or off: tell the user so in one line." ;;
+    esac
 }
 
 # A string made safe to sit between double quotes in JSON: backslashes and double quotes escaped.
@@ -339,9 +377,29 @@ fetch_source() {  # source ref
     if [ "$2" = "$ORION_DEFAULT_REF" ]; then
         SRC_VERSION="$LATEST_NUM"
     else
-        # an annotated tag's commit comes as its peeled line, <tag>^{}
-        SRC_VERSION="$(printf '%s\n' "$LATEST_REFS" | awk -v s="$SRC_SHA" '$1 == s { sub(/\^\{\}$/, "", $2); print $1, $2 }' | highest_release)"
+        SRC_VERSION="$(release_on "$SRC_SHA")"
     fi
+}
+
+# The highest release tag on one commit, from the lines latest_remote kept; nothing when no release tag marks it.
+release_on() {  # sha
+    # an annotated tag's commit comes as its peeled line, <tag>^{}
+    printf '%s\n' "$LATEST_REFS" | awk -v s="$1" '$1 == s { sub(/\^\{\}$/, "", $2); print $1, $2 }' | highest_release
+}
+
+# The release number of an installed commit as the source names it (latest_remote first): the highest release tag on
+# that commit, else, when it is the newest commit of the default branch, the source's highest release, the number an
+# update from there records. Nothing when the source names none.
+installed_release() {  # sha ref
+    local v
+    v="$(release_on "$1")"
+    if [ -z "$v" ] && [ "$1" = "$LATEST_SHA" ] && [ "$2" = "$ORION_DEFAULT_REF" ]; then v="$LATEST_NUM"; fi
+    printf '%s' "$v"
+}
+
+# Write orion's version number on line 5 of a VERSION file, keeping lines 1 to 4 as they are.
+version_line_set() {  # file number
+    awk -v v="$2" 'NR < 5 { print } END { for (i = NR + 1; i < 5; i++) print ""; print v }' "$1" > "$1.new" && mv -f "$1.new" "$1"
 }
 
 # Run a command for at most N seconds, so the session-start hook ends inside its HOOK_TIMEOUT. Git never
@@ -731,7 +789,7 @@ copy_managed() {  # src dst
     find "$2" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 }
 
-apply_skills() {  # mode(init|update) force(0|1)
+apply_skills() {  # mode(init|update|repair) force(0|1)
     local mode="$1" force="$2" skills_dir="$PROJECT/.claude/skills" src_skills="$SRC_DIR/skills"
     local added=0 updated=0 pruned=0 skipped=0 entry name skill dest is_ours resp
     mkdir -p "$skills_dir"
@@ -1618,8 +1676,7 @@ cmd_update() {
         say "orion is already at $(short "$current") - nothing to do (pass --force to re-copy anyway)"
         # installed before its release was tagged: only the version on line 5 is behind
         if [ -n "$SRC_VERSION" ] && [ "$SRC_VERSION" != "$(version_number "$dir/VERSION")" ]; then
-            awk -v v="$SRC_VERSION" 'NR < 5 { print } END { for (i = NR + 1; i < 5; i++) print ""; print v }' "$dir/VERSION" > "$dir/VERSION.new" \
-                && mv -f "$dir/VERSION.new" "$dir/VERSION"
+            version_line_set "$dir/VERSION" "$SRC_VERSION"
             say "  ~    .claude/orion/VERSION records orion $SRC_VERSION, the newest release on that commit"
         fi
         settings_raise_hook_timeout "$PROJECT/.claude/settings.json"
@@ -1647,6 +1704,61 @@ cmd_update() {
     fi
 }
 
+# Under off (read_update_mode, once per session start), nothing newer from orion is offered: no update, no rules
+# check, no status line, no mod, no personal rules.
+updates_off() { [ "${UPDATE_MODE:-}" = off ]; }
+
+# Fetch exactly one commit of orion into a temp dir: SRC_DIR, SRC_SHA and SRC_TIME, as fetch_source sets them.
+# Prints nothing; 1 when that commit cannot be fetched (no network, or the source no longer serves it).
+fetch_commit() {  # source sha
+    case "$2" in ""|*[!0-9a-f]*) return 1 ;; esac
+    have git || return 1
+    TMP_DIR="$(mktemp -d)"
+    { git init -q "$TMP_DIR/orion" && limited 120 git -C "$TMP_DIR/orion" fetch -q --depth 1 "$1" "$2" \
+        && git -C "$TMP_DIR/orion" checkout -q --detach "$2"; } >/dev/null 2>&1 || return 1
+    SRC_DIR="$TMP_DIR/orion"; SRC_SHA="$2"
+    SRC_TIME="$(git -C "$SRC_DIR" log -1 --format=%ct 2>/dev/null || printf '0')"
+}
+
+# The same-version repair: re-copy everything orion owns from the commit already installed (line 1 of VERSION),
+# fetched from the source in config.json, in every update mode. VERSION keeps its commit, time and version number
+# (an empty number is filled when the source names the installed commit's release), and an existing config.json is
+# never touched. A project skill without the orion marker in an orion skill's place is asked about at a terminal and
+# skipped elsewhere, unless --force (given on the person's word) replaces it. When the installed commit cannot be
+# fetched, nothing changes: one line, exit 1.
+cmd_repair() {
+    local force=0 project=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --project) project="$2"; shift 2 ;;
+            --force) force=1; shift ;;
+            -h|--help) usage ;;
+            *) die "unknown option for repair: $1" ;;
+        esac
+    done
+    PROJECT="$(resolve_project "$project")"
+    local dir="$PROJECT/.claude/orion" cfg="$PROJECT/.claude/orion/config.json" source ref sha number
+    [ -f "$dir/VERSION" ] || die "orion is not installed in $PROJECT (run: orion.sh init)"
+    source="$(config_get "$cfg" source "$ORION_DEFAULT_SOURCE")"; ref="$(config_get "$cfg" ref "$ORION_DEFAULT_REF")"
+    sha="$(version_sha "$dir/VERSION" | tr -d '\r')"
+    fetch_commit "$source" "$sha" \
+        || die "could not fetch the installed orion commit $(short "$sha") from $source, so nothing was changed (orion.sh update moves to the newest orion instead)"
+    number="$(version_number "$dir/VERSION")"
+    if [ -z "$number" ]; then latest_remote "$source" "$ref"; number="$(installed_release "$sha" "$ref")"; fi
+    SRC_VERSION="$number"
+    cp "$dir/VERSION" "$TMP_DIR/VERSION.kept"
+    say "orion repair at $(version_label "$sha" "$number") ($(short "$sha")) in $PROJECT"
+    apply_skills repair "$force"
+    apply_core "$source" "$ref"
+    # the install stays as it was: the same commit, install time and version number
+    cp "$TMP_DIR/VERSION.kept" "$dir/VERSION"
+    if [ -n "$number" ] && [ -z "$(version_number "$dir/VERSION")" ]; then version_line_set "$dir/VERSION" "$number"; fi
+    starter_branches
+    apply_claude_md
+    settings_add_hook "$PROJECT/.claude/settings.json"
+    say "done: orion's files are as $(version_label "$sha" "$number") ships them. Review with 'git status' / 'git diff'."
+}
+
 # Session-start hook. Never fails the session: any problem -> silent exit 0.
 cmd_check() {
     local force=0 project=""
@@ -1658,10 +1770,13 @@ cmd_check() {
         esac
     done
     PROJECT="$(resolve_project "$project")" || exit 0
-    local dir="$PROJECT/.claude/orion" now ctx tidy pending pulled global head
+    local dir="$PROJECT/.claude/orion" now ctx tidy pending pulled global head problem
     [ -f "$dir/VERSION" ] || exit 0
     cache_key_set
     pulled="$(check_pull_ctx)"
+    # Read after the pull, so a mode a teammate changed is obeyed in this same session start. A value orion does
+    # not understand behaves as off, and says so at every session start until it is fixed.
+    read_update_mode "$dir/config.json"; problem="$UPDATE_MODE_PROBLEM"
     now=$(date +%s)
     head="$(check_head_ctx "$force" "$now")"
     [ -n "$head" ] && pulled="${pulled:+$pulled After that: }$head"
@@ -1674,12 +1789,13 @@ cmd_check() {
         ctx="orion was just installed in this project and its post-install check has not run yet. Before anything else, run the /orion-verify skill (.claude/skills/orion-verify/SKILL.md) exactly as written: it checks that CLAUDE.md, the imported BASE_CLAUDE.md, the skills under .claude/skills and the settings are consistent after the install, fixes what is mechanical, asks before touching anything the project owns, and reports in a few lines. Then continue with the user's request."
         global="$(check_global_ctx 1 "$(date +%s)")"
         [ -n "$global" ] && ctx="$ctx After /orion-verify: $global"
+        [ -n "$problem" ] && ctx="$ctx After that: $problem"
         [ -n "$pulled" ] && ctx="$ctx After that: $pulled"
         printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$ctx"
         exit 0
     fi
     ctx="$(check_update_ctx "$force")"
-    for tidy in "$(check_uncommitted_ctx)" "$(check_rules_ctx)" "$(check_statusline_ctx)" "$(check_mods_ctx)" "$(check_global_ctx "$force" "$now")" "$(check_branches_ctx "$force" "$now")" "$pulled"; do
+    for tidy in "$problem" "$(check_uncommitted_ctx)" "$(check_rules_ctx)" "$(check_statusline_ctx)" "$(check_mods_ctx)" "$(check_global_ctx "$force" "$now")" "$(check_branches_ctx "$force" "$now")" "$pulled"; do
         [ -n "$tidy" ] || continue
         if [ -n "$ctx" ]; then ctx="$ctx After that: $tidy"; else ctx="$tidy"; fi
     done
@@ -1691,8 +1807,8 @@ cmd_check() {
 check_update_ctx() {  # force
     local cfg="$PROJECT/.claude/orion/config.json" dir="$PROJECT/.claude/orion" mode source ref current latest
     local installed newer=0
-    mode="$(config_get "$cfg" updateMode ask)"
-    [ "$mode" = "off" ] && return 0
+    mode="$UPDATE_MODE"
+    updates_off && return 0
     # An update run by an older orion.sh cannot raise the hook's time limit (bash had already read the old
     # script), so the first check by the new script heals it, silently.
     raise_hook_timeout "$PROJECT/.claude/settings.json" >/dev/null 2>&1 || true
@@ -1700,6 +1816,12 @@ check_update_ctx() {  # force
     current="$(version_sha "$dir/VERSION")"; installed="$(version_number "$dir/VERSION")"
     latest_remote "$source" "$ref"
     [ -n "$LATEST_SHA" ] || return 0
+    # An update by an older orion.sh (one that read its number from a file the source no longer ships) left line 5
+    # empty: fill it with the installed commit's release number when the source names one, silently.
+    if [ -z "$installed" ]; then
+        installed="$(installed_release "$current" "$ref")"
+        [ -z "$installed" ] || version_line_set "$dir/VERSION" "$installed" 2>/dev/null || true
+    fi
     # A release raises the version number, so a merge that changes nothing a project receives is not offered. Release
     # tags mark the default branch only; without a number on both sides any new commit counts, as before numbers.
     if [ -n "$LATEST_NUM" ] && [ -n "$installed" ] && [ "$ref" = "$ORION_DEFAULT_REF" ]; then
@@ -1729,8 +1851,10 @@ check_update_ctx() {  # force
 # brought one), ask for /orion-verify. Runs after the session-start pull, so rules a pull brought are seen in the
 # same session.
 # A repository with no record on this computer (a fresh clone) is asked once too, worded as new, not as changed.
+# Silent under off, and the fingerprint is not recorded then, so the question comes once the mode is ask or auto again.
 check_rules_ctx() {
     local sum f
+    updates_off && return 0
     [ -f "$PROJECT/.claude/skills/orion-verify/SKILL.md" ] || return 0
     sum="$(rules_sum)"; f="$(cache_file rules-checked)"
     if [ ! -f "$f" ]; then
@@ -1785,10 +1909,12 @@ check_uncommitted_ctx() {
     printf '%s' "orion's own files in this folder differ from the last commit ($n changed, added or removed among the orion skills under .claude/skills and the files .claude/orion/.orion-manifest lists): an install or update not committed yet, or someone's own edits. Tell the user in one line, then ask with the AskUserQuestion tool whether to ship them through their own pull request (options: 'Ship them' recommended, 'Not now'). If they say yes, follow the 'Ship an update' steps of the /orion skill (.claude/skills/orion/SKILL.md) for files left uncommitted, exactly as written. Never discard, reset, stash or check out these files to get rid of them: they may hold the user's own edits. If they say no, continue with their request; this is asked again at the next session start while they still differ."
 }
 
-# Every session, local only: a newer status line in the project is offered, never taken on its own, in every
-# update mode. Prints the context or nothing.
+# Every session, local only: a newer status line in the project is offered, never taken on its own, under ask and
+# auto; nothing under off. Prints the context or nothing.
 check_statusline_ctx() {
-    local sync; sync="$(statusline_sync)"
+    local sync
+    updates_off && return 0
+    sync="$(statusline_sync)"
     if [ "$sync" = "new" ]; then
         printf '%s' "orion's status line has changed, and the copy on this computer (~/.claude/statusline) was left as it is: orion never changes it without the user's word. Ask the user with the AskUserQuestion tool whether to take orion's new status line (options: 'Take it' recommended, 'Keep mine as it is'). If yes, run 'bash .claude/orion/orion.sh statusline merge' from the project root: their copy carries no edits of its own, so it simply becomes orion's new one. If no, run 'bash .claude/orion/orion.sh statusline skip' so this version is not offered again."
     elif [ "$sync" = "offer" ]; then
@@ -1796,10 +1922,11 @@ check_statusline_ctx() {
     fi
 }
 
-# Every session, local only: a newer copy of a mod this computer installed is offered, never taken on its own, in
-# every update mode. Prints the context or nothing.
+# Every session, local only: a newer copy of a mod this computer installed is offered, never taken on its own, under
+# ask and auto; nothing under off. Prints the context or nothing.
 check_mods_ctx() {
     local name out=""
+    updates_off && return 0
     for name in $(mod_names); do
         [ "$(mod_sync "$name")" = offer ] || continue
         out="$out${out:+ }orion's mod $name has changed in this project, and the copy installed on this computer (~/.claude/orion-mods/$name) was left as it is: orion never changes it without the user's word. Ask the user with the AskUserQuestion tool whether to install the new version (options: 'Install it' recommended, 'Keep mine as it is'). If yes, run 'bash .claude/orion/orion.sh mod install $name' from the project root: it replaces the computer's copy and reinstalls the plugin at user scope, and Claude Code loads it in its next session. If no, run 'bash .claude/orion/orion.sh mod skip $name' so this version is not offered again."
@@ -1848,7 +1975,7 @@ global_newer() {
 # Prints the context or nothing.
 check_global_ctx() {  # force now
     local n top dir offered ours last
-    [ "$(config_get "$PROJECT/.claude/orion/config.json" updateMode ask)" = "off" ] && return 0
+    updates_off && return 0
     read -r n top <<< "$(global_newer)"
     [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
     dir="${XDG_CACHE_HOME:-$HOME/.cache}/orion"
@@ -1980,7 +2107,8 @@ cmd_status() {
     say "project:    $PROJECT"
     say "version:    $(version_label "$(version_sha "$dir/VERSION")" "$(version_number "$dir/VERSION")"), $(short "$(version_sha "$dir/VERSION")") ($(sed -n '2p' "$dir/VERSION") @ $(sed -n '3p' "$dir/VERSION"))"
     say "source:     $(config_get "$cfg" source "$ORION_DEFAULT_SOURCE")"
-    say "updateMode: $(config_get "$cfg" updateMode ask)   (edit .claude/orion/config.json: ask | auto | off)"
+    read_update_mode "$cfg"
+    say "updateMode: $UPDATE_MODE$( [ -z "$UPDATE_MODE_PROBLEM" ] || printf ' (not understood as written, so treated as off)')   (edit .claude/orion/config.json: ask | auto | off)"
     say "branchLimit: $(config_get "$cfg" branchLimit "$BRANCH_LIMIT_DEFAULT")   (branches now: $(branch_count "$PROJECT"); the hook offers /clear-git-resources at the limit; a number or off)"
     say "worktreeLimit: $(config_get "$cfg" worktreeLimit "$WORKTREE_LIMIT_DEFAULT")   (worktrees now: $(worktree_count "$PROJECT"); the hook offers /clear-git-resources at the limit; a number or off)"
     if [ -n "$(config_get "$cfg" developBranch "")" ] && [ -n "$(config_get "$cfg" releaseBranch "")" ]; then
@@ -2129,10 +2257,15 @@ cmd_verify() {
     n=""
     for f in orion.sh BASE_CLAUDE.md VERSION .orion-manifest config.json global/GLOBAL_CLAUDE.md; do [ -f "$dir/$f" ] || n="$n $f"; done
     if [ -z "$n" ]; then v_ok core-files ".claude/orion/{orion.sh, BASE_CLAUDE.md, VERSION, .orion-manifest, config.json, global/GLOBAL_CLAUDE.md} present"
-    else v_fail core-files "missing in .claude/orion:$n (fix: bash .claude/orion/orion.sh update --force, or init if orion.sh itself is gone)"; fi
-    mode="$(config_get "$cfg" updateMode ask)"
-    case "$mode" in ask|auto|off) v_ok config-update-mode "updateMode is '$mode'" ;;
-        *) v_fail config-update-mode "updateMode is '$mode' in .claude/orion/config.json; must be ask, auto or off" ;; esac
+    else v_fail core-files "missing in .claude/orion:$n (fix: bash .claude/orion/orion.sh repair, or init if orion.sh itself is gone)"; fi
+    read_update_mode "$cfg"
+    if [ "$UPDATE_MODE_UNREADABLE" = 1 ]; then
+        v_fail config-update-mode ".claude/orion/config.json is not plain text (saved as UTF-16?), so updateMode reads as off; save it as UTF-8 with updateMode ask, auto or off"
+    elif [ -n "$UPDATE_MODE_PROBLEM" ]; then
+        v_fail config-update-mode "updateMode is '$UPDATE_MODE_RAW' in .claude/orion/config.json, which reads as off; must be ask, auto or off"
+    else
+        v_ok config-update-mode "updateMode is '$UPDATE_MODE'"
+    fi
     mode="$(config_get "$cfg" branchLimit "$BRANCH_LIMIT_DEFAULT")"
     case "$mode" in
         off) v_ok config-branch-limit "branchLimit is off (the hook never offers /clear-git-resources for branches)" ;;
@@ -2149,7 +2282,7 @@ cmd_verify() {
 
     # 2. CLAUDE.md and the rules it imports
     if [ ! -f "$claude" ]; then
-        v_fail claude-md "CLAUDE.md is missing (fix: bash .claude/orion/orion.sh update --force writes the starter)"
+        v_fail claude-md "CLAUDE.md is missing (fix: bash .claude/orion/orion.sh repair writes the starter)"
     else
         n=$(grep -cxF "$IMPORT_LINE" "$claude" || true)
         case "$n" in
@@ -2177,7 +2310,7 @@ cmd_verify() {
         while IFS= read -r ref; do
             [ -n "$ref" ] || continue
             if [ ! -e "$PROJECT/$ref" ]; then
-                v_fail rules-reference "the rules rely on $ref, which is not installed (a project skill without the orion marker kept its place, or it was deleted; fix: bash .claude/orion/orion.sh init --force --yes)"
+                v_fail rules-reference "the rules rely on $ref, which is not installed (a project skill without the orion marker kept its place, or it was deleted; fix: bash .claude/orion/orion.sh repair --force, on the person's word: the project's copy is theirs)"
                 n=$((n+1))
             fi
         done <<< "$( { grep -oE '\.claude/skills/[A-Za-z0-9_./-]+' "$base" | sed 's/[.]*$//'; grep -oE '`/[a-z][a-z0-9-]*' "$base" | sed 's|^`/|.claude/skills/|'; } 2>/dev/null | sort -u || true)"
@@ -2190,16 +2323,16 @@ cmd_verify() {
         for entry in "$skills"/*/; do
             name=$(basename "$entry"); ours=0; [ -f "${entry%/}/$MARKER" ] && ours=1
             if [ ! -f "${entry%/}/SKILL.md" ]; then
-                if [ "$ours" = "1" ]; then v_fail skill-file "$name (orion-managed) has no SKILL.md (fix: bash .claude/orion/orion.sh update --force)"
+                if [ "$ours" = "1" ]; then v_fail skill-file "$name (orion-managed) has no SKILL.md (fix: bash .claude/orion/orion.sh repair)"
                 else v_warn skill-file "$name (the project's own) has no SKILL.md, so Claude Code ignores it"; fi
                 continue
             fi
             sname=$(skill_name "${entry%/}/SKILL.md")
             if [ -z "$sname" ]; then
-                if [ "$ours" = "1" ]; then v_fail skill-name "$name (orion-managed) has no name: in its front matter (fix: bash .claude/orion/orion.sh update --force)"
+                if [ "$ours" = "1" ]; then v_fail skill-name "$name (orion-managed) has no name: in its front matter (fix: bash .claude/orion/orion.sh repair)"
                 else v_warn skill-name "$name (the project's own) has no name: in its front matter"; fi
             elif [ "$sname" != "$name" ]; then
-                if [ "$ours" = "1" ]; then v_fail skill-name "$name (orion-managed) declares name: $sname (fix: bash .claude/orion/orion.sh update --force)"
+                if [ "$ours" = "1" ]; then v_fail skill-name "$name (orion-managed) declares name: $sname (fix: bash .claude/orion/orion.sh repair)"
                 else v_warn skill-name "$name (the project's own) declares name: $sname; folder and name should match"; fi
             fi
             [ -n "$sname" ] && { case " $names " in *" $sname "*) dups="$dups $sname" ;; esac; names="$names $sname"; }
@@ -2216,19 +2349,19 @@ cmd_verify() {
         if [ -n "$checks" ]; then v_ok skill-checks "skills shipping their own VERIFY.md, run by /orion-verify:$checks"
         else v_ok skill-checks "no skill ships a VERIFY.md of its own"; fi
     else
-        v_fail skills ".claude/skills is missing (fix: bash .claude/orion/orion.sh update --force)"
+        v_fail skills ".claude/skills is missing (fix: bash .claude/orion/orion.sh repair)"
     fi
 
     # 4. settings: the session-start hook
     if [ ! -f "$settings" ]; then
-        v_fail settings-hook ".claude/settings.json is missing, so the update check never runs (fix: bash .claude/orion/orion.sh update --force)"
+        v_fail settings-hook ".claude/settings.json is missing, so the update check never runs (fix: bash .claude/orion/orion.sh repair)"
     elif ! json_valid "$settings"; then
         v_fail settings-json ".claude/settings.json is not valid JSON; Claude Code ignores every setting in it (fix: repair it by hand, then re-run)"
     else
         n=$(hook_count "$settings")
         case "$n" in
             1) v_ok settings-hook ".claude/settings.json has the orion SessionStart hook once" ;;
-            0) v_fail settings-hook ".claude/settings.json has no orion SessionStart hook (fix: bash .claude/orion/orion.sh update --force)" ;;
+            0) v_fail settings-hook ".claude/settings.json has no orion SessionStart hook (fix: bash .claude/orion/orion.sh repair)" ;;
             *) v_warn settings-hook ".claude/settings.json has the orion SessionStart hook $n times (fix: delete the duplicates)" ;;
         esac
     fi
@@ -2278,6 +2411,7 @@ main() {
     case "$cmd" in
         init) cmd_init "$@" ;;
         update) cmd_update "$@" ;;
+        repair) cmd_repair "$@" ;;
         # the hook contract: whatever goes wrong inside, the session start sees exit 0
         check) set +e; ( set -e; cmd_check "$@" ); exit 0 ;;
         verify) cmd_verify "$@" ;;
