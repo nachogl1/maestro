@@ -31,9 +31,9 @@
 #       branch changed after its pull request merged, a deleted remote branch, a lock; or a folder in the worktree
 #       root that is not a worktree (its repository may only have moved).
 # keep: never offered, no command: unmerged commits with no pull request, commits on no branch, uncommitted changes,
-#       the default branch, audit/* and qa/* branches, audit-* and qa-* worktrees and folders, open pull requests,
-#       anything in flight, other repositories' checkouts, worktree-root entries with anything changed in the last
-#       --days days.
+#       the default and release branches, audit/* and qa/* branches, audit-* and qa-* worktrees and folders, open
+#       pull requests, anything in flight, other repositories' checkouts, worktree-root entries with anything changed
+#       in the last --days days.
 #
 # Portable bash: runs under Git Bash, macOS bash and Linux. No GNU-only flags.
 
@@ -84,6 +84,16 @@ if [ "$FETCH" = "1" ] && [ -n "$REMOTE" ]; then
     FETCHED=yes
 fi
 
+# The release branch (the one the project deploys from), read the way the project records it: the releaseBranch key
+# of its .claude/orion/config.json. An install from before that key: main, whenever the default branch is not main
+# and a main branch exists. No other name is guessed, and a file that cannot be read only leaves that fallback.
+# Decided after the fetch, so a main the fetch just brought in is protected too.
+RELEASE=$(sed -n 's/.*"releaseBranch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MAIN/.claude/orion/config.json" 2>/dev/null | head -n1)
+if [ -z "$RELEASE" ] && [ "$DEFAULT" != main ]; then
+    if { [ -n "$REMOTE" ] && g show-ref --verify -q "refs/remotes/$REMOTE/main" 2>/dev/null; } || g show-ref --verify -q refs/heads/main 2>/dev/null; then RELEASE=main; fi
+fi
+[ "$RELEASE" = "$DEFAULT" ] && RELEASE=""   # a one-branch project: the default branch is protected already
+
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t clear-git); trap 'rm -rf "$TMP"' EXIT
 
 # --- pull requests, one call ----------------------------------------------------------------------------
@@ -116,6 +126,7 @@ in_flight() {  # branch or folder name -> 0 when it belongs to an issue in fligh
 HEAD_BRANCH=$(g rev-parse --abbrev-ref HEAD 2>/dev/null)
 protected_branch() {  # branch -> 0 when never offered
     case "$1" in "$DEFAULT"|audit/*|qa/*|HEAD) return 0 ;; esac
+    [ -n "$RELEASE" ] && [ "$1" = "$RELEASE" ] && return 0
     [ "$1" = "$HEAD_BRANCH" ] && return 0
     in_flight "$1"
 }
@@ -184,6 +195,7 @@ flush_wt() {
             case "$wt_branch" in
                 audit/*) item wt-protected "$n" keep "branch $wt_branch is an audit branch: it holds the run reports the dev skill writes (never touched)" "" ;;
                 qa/*) item wt-protected "$n" keep "branch $wt_branch is a QA branch another skill uses (never touched)" "" ;;
+                "$RELEASE") item wt-protected "$n" keep "branch $wt_branch is the release branch (never touched)" "" ;;
                 *) item wt-protected "$n" keep "branch $wt_branch is the default branch (never touched)" "" ;;
             esac
         elif protected_folder "$wt_path"; then
@@ -246,7 +258,8 @@ while IFS=$'\001' read -r b up track date; do
     local_cmd="git -C \"$MAIN\" branch -D \"$b\""
     if protected_branch "$b"; then
         case "$b" in "$DEFAULT"|audit/*|qa/*) continue ;; esac   # never listed, never offered
-        if in_flight "$b"; then item br-protected "$b" keep "belongs to an issue in flight (in-flight.json)" ""
+        if [ "$b" = "$RELEASE" ]; then item br-protected "$b" keep "the release branch, the one the project deploys from (never touched)" ""
+        elif in_flight "$b"; then item br-protected "$b" keep "belongs to an issue in flight (in-flight.json)" ""
         elif [ "$b" = "$HEAD_BRANCH" ]; then item br-protected "$b" keep "checked out in the main checkout" ""; fi
         continue
     fi
@@ -275,6 +288,7 @@ if [ -n "$REMOTE" ]; then
         [ "$rb" = "$REMOTE/HEAD" ] && continue
         b="${rb#$REMOTE/}"
         case "$b" in "$DEFAULT"|audit/*|qa/*) continue ;; esac
+        if [ -n "$RELEASE" ] && [ "$b" = "$RELEASE" ]; then item rb-protected "$rb" keep "the release branch, the one the project deploys from (never touched)" ""; continue; fi
         remote_cmd="git -C \"$MAIN\" push \"$REMOTE\" --delete \"$b\""
         if in_flight "$b"; then item rb-protected "$rb" keep "belongs to an issue in flight (in-flight.json)" ""; continue; fi
         st=$(pr_state "$b"); read -r pst pnum poid <<< "$st"
@@ -368,8 +382,8 @@ emit wt-open-pr   kept  "Worktrees with an open pull request (kept)"
 emit br-open-pr   kept  "Local branches with an open pull request (kept)"
 emit rb-open-pr   kept  "Remote branches with an open pull request (kept)"
 emit wt-protected kept  "Worktrees of audit or QA runs, protected branches or issues in flight (kept)"
-emit br-protected kept  "Local branches checked out or in flight (kept)"
-emit rb-protected kept  "Remote branches of issues in flight (kept)"
+emit br-protected kept  "Local branches that are the release branch, checked out or in flight (kept)"
+emit rb-protected kept  "Remote branches that are the release branch or of issues in flight (kept)"
 emit root-recent  kept  "Recent folders and files in the worktree root (kept)"
 emit root-other   kept  "Other repositories' checkouts and other skills' folders in the worktree root (kept)"
 printf 'SUMMARY\tauto=%s ask=%s keep=%s\n' "$AU" "$AS" "$K"
