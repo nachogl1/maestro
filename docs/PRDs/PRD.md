@@ -115,11 +115,17 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
 ### 3.6 Infra: plugins, skills and MCP servers
 
 - Infra (sidebar tab) manages Claude plugins and skills, a plugin marketplace, context documents (`CLAUDE.md`) and
-  MCP servers per project by scope (Project `.mcp.json`, User and Local `~/.claude.json`, or Maestro-only).
+  MCP servers per project by scope (Project `.mcp.json`, User and Local `~/.claude.json`, or Maestro custom).
 - **Boundary:** edits go to Claude Code's real configuration files; only the addressed entry changes, the first write
   of a run makes a `.maestro-backup` copy, and writes are atomic. What Maestro writes there is never widened without a
-  ticket. At session launch Maestro adds its status server and the enabled servers to a session `.mcp.json` and
-  removes its own entries on close (`opencode.json` likewise for OpenCode).
+  ticket. At session launch Maestro adds its status server to the session folder's `.mcp.json`, plus any of the
+  project's own `.mcp.json` servers a worktree's file lacks, and removes its status server on close; an entry
+  already in that file is never changed.
+- **Secrets stay out of project folders:** Maestro custom servers reach a session through the user's own Claude Code
+  configuration (user scope, `~/.claude.json`, outside every project), never a project file. User and Local servers
+  are not copied: Claude Code loads them from `~/.claude.json` itself. Maestro changes or removes a custom server's
+  user-scope entry only while it still holds exactly what Maestro wrote; copies an earlier version left in project
+  files are not deleted, and the run-book tells users to remove them and replace the secrets they held.
 
 ### 3.7 Notes, History and Workshop
 

@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use super::atomic_write::atomic_write_async;
 use super::config_recovery::read_json_or_recover;
 use super::mcp_error::{McpError, McpResult};
-use super::mcp_manager::{McpServerConfig, McpServerType};
+use super::mcp_manager::{McpServerConfig, McpServerSource, McpServerType};
 use crate::commands::mcp::McpCustomServer;
 
 /// Per-directory lock map to serialize concurrent .mcp.json read-modify-write operations.
@@ -282,9 +282,9 @@ fn merge_with_existing(
 ///
 /// This function:
 /// 1. Creates the Maestro MCP server entry with HTTP-based status reporting
-/// 2. Adds enabled discovered servers from the project's .mcp.json
-/// 3. Adds enabled custom servers (user-defined, global)
-/// 4. Merges with any existing `.mcp.json` (preserving user servers)
+/// 2. Adds enabled custom servers to the user-level `user_config` (never the project file)
+/// 3. Merges with any existing `.mcp.json` (preserving user servers)
+/// 4. Adds enabled project-scope servers this folder's `.mcp.json` lacks
 /// 5. Writes the final config to the working directory
 ///
 /// # Arguments
@@ -295,6 +295,7 @@ fn merge_with_existing(
 /// * `instance_id` - UUID for this Maestro instance (prevents cross-instance pollution)
 /// * `enabled_servers` - List of discovered MCP server configs enabled for this session
 /// * `custom_servers` - List of custom MCP servers that are enabled
+/// * `user_config` - The user's `~/.claude.json`, where custom servers are added
 pub async fn write_session_mcp_config(
     working_dir: &Path,
     session_id: u32,
@@ -302,6 +303,7 @@ pub async fn write_session_mcp_config(
     instance_id: &str,
     enabled_servers: &[McpServerConfig],
     custom_servers: &[McpCustomServer],
+    user_config: &Path,
 ) -> McpResult<()> {
     let mut mcp_servers: HashMap<String, Value> = HashMap::new();
 
@@ -337,14 +339,13 @@ pub async fn write_session_mcp_config(
         );
     }
 
-    // Add enabled discovered servers from project .mcp.json
-    for server in enabled_servers {
-        mcp_servers.insert(server.name.clone(), server_config_to_json(server));
-    }
-
-    // Add enabled custom servers (user-defined, global)
-    for server in custom_servers {
-        mcp_servers.insert(server.name.clone(), custom_server_to_json(server));
+    // Custom servers reach the session through the user's own Claude Code
+    // config (user scope), never this folder's .mcp.json, which is often
+    // committed: their env values are secrets. A broken ~/.claude.json must
+    // not cost the session its status server, so a failure here is logged.
+    let wanted: Vec<_> = custom_servers.iter().filter_map(user_level_entry).collect();
+    if let Err(e) = crate::core::mcp_settings::sync_user_servers(user_config, &[], &wanted) {
+        log::warn!("Could not add custom MCP servers to the user config: {}", e);
     }
 
     // Acquire per-directory lock to serialize concurrent read-modify-write
@@ -353,7 +354,19 @@ pub async fn write_session_mcp_config(
 
     // Merge with existing .mcp.json if present (preserve user servers AND other sessions)
     let mcp_path = working_dir.join(".mcp.json");
-    let final_config = merge_with_existing(&mcp_path, mcp_servers, session_id)?;
+    let mut final_config = merge_with_existing(&mcp_path, mcp_servers, session_id)?;
+
+    // Project-scope servers come from the project's own .mcp.json; a worktree
+    // may lack them, so they are added when missing — never over an entry this
+    // folder already has, which may be hand-written. User and local servers
+    // are never copied: Claude Code loads them from ~/.claude.json itself.
+    if let Some(servers) = final_config["mcpServers"].as_object_mut() {
+        for server in enabled_servers {
+            if server.source == McpServerSource::Project && !servers.contains_key(&server.name) {
+                servers.insert(server.name.clone(), server_config_to_json(server));
+            }
+        }
+    }
 
     // Write the file atomically (temp file + rename)
     let content = serde_json::to_string_pretty(&final_config).map_err(|source| {
@@ -368,6 +381,30 @@ pub async fn write_session_mcp_config(
     log::debug!("Wrote session {} MCP config to {:?}", session_id, mcp_path);
 
     Ok(())
+}
+
+/// The user-level `~/.claude.json` entry Maestro keeps for a custom server:
+/// `None` while it is switched off, or when its name is one of Maestro's own.
+fn user_level_entry(server: &McpCustomServer) -> Option<(String, Value)> {
+    if !server.is_enabled || crate::core::mcp_settings::is_internal_server(&server.name) {
+        return None;
+    }
+    Some((server.name.clone(), custom_server_to_json(server)))
+}
+
+/// Brings the user-level entry of one custom server in `user_config`
+/// (`~/.claude.json`) in line with a save or a delete: the entry Maestro wrote
+/// for `previous` is removed while it is still unchanged, and `current` is
+/// added while it is switched on and its name is free. Entries the user wrote
+/// by hand are never touched (see `mcp_settings::sync_user_servers`).
+pub fn update_custom_server_in_user_config(
+    user_config: &Path,
+    previous: Option<&McpCustomServer>,
+    current: Option<&McpCustomServer>,
+) -> McpResult<()> {
+    let retired: Vec<_> = previous.and_then(user_level_entry).into_iter().collect();
+    let wanted: Vec<_> = current.and_then(user_level_entry).into_iter().collect();
+    crate::core::mcp_settings::sync_user_servers(user_config, &retired, &wanted)
 }
 
 /// Removes Maestro server entries from `.mcp.json`.
@@ -446,9 +483,6 @@ pub async fn remove_session_mcp_config(working_dir: &Path, session_id: u32) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the tests build a full `McpServerConfig`, so the variant they
-    // need is imported here rather than at module scope.
-    use super::super::mcp_manager::McpServerSource;
     use std::collections::HashMap;
     use tempfile::tempdir;
 
@@ -500,11 +534,233 @@ mod tests {
             "test-instance-id",
             &[],
             &[],
+            &dir.path().join(".claude.json"),
         )
         .await;
 
         assert!(result.is_ok());
         assert!(dir.path().join(".mcp.json").exists());
+    }
+
+    /// A made-up custom server holding a fake secret, as Maestro's store keeps it.
+    fn fake_custom_server(name: &str, secret: &str) -> McpCustomServer {
+        McpCustomServer {
+            id: format!("id-{name}"),
+            name: name.to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "fake-mcp".to_string()],
+            env: HashMap::from([("API_KEY".to_string(), secret.to_string())]),
+            working_directory: None,
+            is_enabled: true,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// A made-up stdio server as `mcp_manager` discovers it.
+    fn fake_discovered_server(
+        name: &str,
+        secret: &str,
+        source: McpServerSource,
+    ) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            server_type: McpServerType::Stdio {
+                command: "uvx".to_string(),
+                args: vec![format!("fake-{name}")],
+                env: HashMap::from([("FAKE_KEY".to_string(), secret.to_string())]),
+            },
+            source,
+        }
+    }
+
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_session_start_writes_no_user_server_secrets_into_the_project_file() {
+        let project = tempdir().unwrap();
+        let home = tempdir().unwrap();
+        let mcp_path = project.path().join(".mcp.json");
+        let user_config = home.path().join(".claude.json");
+
+        // An entry the user wrote by hand, with a key Maestro's own format lacks.
+        let hand_written = json!({
+            "command": "node",
+            "args": ["tool.js"],
+            "cwd": "tools",
+            "env": { "TOKEN": "fake-hand-written-token" }
+        });
+        std::fs::write(
+            &mcp_path,
+            json!({ "mcpServers": { "hand-written": hand_written } }).to_string(),
+        )
+        .unwrap();
+        let user_scope_entry = json!({
+            "type": "stdio",
+            "command": "uvx",
+            "args": ["fake-discovered-user"],
+            "env": { "FAKE_KEY": "fake-user-scope-secret" }
+        });
+        std::fs::write(
+            &user_config,
+            json!({ "mcpServers": { "discovered-user": user_scope_entry } }).to_string(),
+        )
+        .unwrap();
+
+        let discovered = [
+            fake_discovered_server(
+                "discovered-user",
+                "fake-user-scope-secret",
+                McpServerSource::User,
+            ),
+            fake_discovered_server(
+                "discovered-local",
+                "fake-local-scope-secret",
+                McpServerSource::Local,
+            ),
+            // Discovered in the main checkout's .mcp.json, absent from this folder.
+            fake_discovered_server(
+                "project-only",
+                "fake-project-value",
+                McpServerSource::Project,
+            ),
+            fake_discovered_server("hand-written", "fake-other-value", McpServerSource::Project),
+        ];
+        let custom = [fake_custom_server("custom-api", "fake-custom-secret")];
+
+        write_session_mcp_config(
+            project.path(),
+            1,
+            "http://127.0.0.1:9900/status",
+            "test-instance-id",
+            &discovered,
+            &custom,
+            &user_config,
+        )
+        .await
+        .unwrap();
+
+        let project_text = std::fs::read_to_string(&mcp_path).unwrap();
+        for secret in [
+            "fake-custom-secret",
+            "fake-user-scope-secret",
+            "fake-local-scope-secret",
+        ] {
+            assert!(
+                !project_text.contains(secret),
+                "the project file must not hold '{secret}'"
+            );
+        }
+        let project_servers = read_json(&mcp_path)["mcpServers"].clone();
+        assert_eq!(
+            project_servers["hand-written"], hand_written,
+            "a hand-written project entry is never changed"
+        );
+        assert!(
+            project_servers.get("project-only").is_some(),
+            "a project server missing from this folder is still added"
+        );
+
+        let user_servers = read_json(&user_config)["mcpServers"].clone();
+        assert_eq!(
+            user_servers["custom-api"]["env"]["API_KEY"], "fake-custom-secret",
+            "the custom server reaches the session through the user's own config"
+        );
+        assert_eq!(user_servers["discovered-user"], user_scope_entry);
+    }
+
+    #[test]
+    fn test_saving_a_custom_server_changes_only_the_user_entry_maestro_wrote() {
+        let written = fake_custom_server("custom-api", "fake-old-secret");
+        let rotated = fake_custom_server("custom-api", "fake-new-secret");
+        let switched_off = McpCustomServer {
+            is_enabled: false,
+            ..written.clone()
+        };
+        let by_hand = json!({ "command": "my-own-tool", "env": { "API_KEY": "fake-by-hand" } });
+
+        // (case, user entry before, previous version, saved version, user entry after)
+        type Case<'a> = (
+            &'a str,
+            Option<Value>,
+            Option<&'a McpCustomServer>,
+            Option<&'a McpCustomServer>,
+            Option<Value>,
+        );
+        let cases: Vec<Case> = vec![
+            (
+                "added",
+                None,
+                None,
+                Some(&written),
+                Some(custom_server_to_json(&written)),
+            ),
+            (
+                "edited",
+                Some(custom_server_to_json(&written)),
+                Some(&written),
+                Some(&rotated),
+                Some(custom_server_to_json(&rotated)),
+            ),
+            (
+                "switched off",
+                Some(custom_server_to_json(&written)),
+                Some(&written),
+                Some(&switched_off),
+                None,
+            ),
+            (
+                "deleted",
+                Some(custom_server_to_json(&written)),
+                Some(&written),
+                None,
+                None,
+            ),
+            (
+                "deleted after the user changed it",
+                Some(by_hand.clone()),
+                Some(&written),
+                None,
+                Some(by_hand.clone()),
+            ),
+            (
+                "added over a hand-written entry",
+                Some(by_hand.clone()),
+                None,
+                Some(&written),
+                Some(by_hand.clone()),
+            ),
+        ];
+
+        for (case, before, previous, current, expected) in cases {
+            let home = tempdir().unwrap();
+            let user_config = home.path().join(".claude.json");
+            let mut servers = serde_json::Map::new();
+            servers.insert("other".to_string(), json!({ "command": "other-tool" }));
+            if let Some(entry) = before {
+                servers.insert("custom-api".to_string(), entry);
+            }
+            std::fs::write(
+                &user_config,
+                json!({ "numStartups": 3, "mcpServers": servers }).to_string(),
+            )
+            .unwrap();
+
+            update_custom_server_in_user_config(&user_config, previous, current).unwrap();
+
+            let after = read_json(&user_config);
+            assert_eq!(
+                after["mcpServers"].get("custom-api").cloned(),
+                expected,
+                "case '{case}'"
+            );
+            assert_eq!(
+                after["mcpServers"]["other"]["command"], "other-tool",
+                "case '{case}'"
+            );
+            assert_eq!(after["numStartups"], 3, "case '{case}'");
+        }
     }
 
     #[test]
