@@ -12,6 +12,8 @@ You are implementing GitHub issue **#N** of this repository (the one `origin` po
 **Your environment — nobody else's:**
 
 - Worktree: `<wt root>/<N>-<slug>` — work **only** here. Never touch the main checkout, never touch another worktree.
+- Default branch: `<default>` — where daily work starts from and merges into; the branch you merge in below and the
+  one your pull request targets.
 - Branch: `feat/<N>-<slug>`, already created and checked out. **Never switch branches and never `git stash`**, here
   or in any other checkout.
 - Runtimes: use the exact interpreter and SDK paths in this brief (`<runtime paths>`), never the plain command on PATH —
@@ -45,8 +47,8 @@ You are implementing GitHub issue **#N** of this repository (the one `origin` po
    before the whole app; a slow whole-app test only for what a fast one cannot reach). **Never delete, skip or weaken
    an existing test. Never widen a timeout.** Tests never reach the network: any external service is mocked behind its
    interface.
-6. `git fetch origin` and `git merge origin/main` **before the gate, not after it**, so the gate runs on the newest
-   `main`, not on a stale base — **never rebase, never stash**. Resolve conflicts in your own files only.
+6. `git fetch origin` and `git merge origin/<default>` **before the gate, not after it**, so the gate runs on the
+   newest default branch, not on a stale base — **never rebase, never stash**. Resolve conflicts in your own files only.
 7. Green the gate the project's `CLAUDE.md` lists (build → lint → typecheck → full suite). Every command in the chain.
    No exceptions. Size the full suite's test copies (parallel test workers) right before it runs, with the recipe in
    `in-flight.md`, *Test copies* (`.claude/skills/dev-next/references/`), and pass them the way the project's
@@ -80,7 +82,7 @@ it does not touch:
 - **A text rule or regular expression over ids** lists its separator cases in tests up front: line breaks, brackets,
   colon, hash, equals.
 - **A change that tightens a blocking check or validation** is run over the project's existing realistic inputs
-  (fixtures, sample sets) on `main` and on the branch; every pass-to-fail flip is listed in the pull request as counts
+  (fixtures, sample sets) on the default branch and on the branch; every pass-to-fail flip is listed in the pull request as counts
   and rule names.
 - **An enum that mirrors another system's enum** gives every member that system's explicit value, and every reader of
   it refuses the same values the other readers refuse.
@@ -98,17 +100,17 @@ person who will use it. This is the only account of that:
 
 Fill it in from what you **actually ran**. Do not write a step you did not perform. A reviewer may re-run any row.
 **Refresh the counts on every push**, review fixes included, and say they are this branch's counts: CI's number on
-the merged result is the one of record, and `main` may gain tests while the branch is open. A stale count has cost a
+the merged result is the one of record, and the default branch may gain tests while the branch is open. A stale count has cost a
 whole review round more than once. A documentation-only story says so in a row: no test applies.
 
 **Editing a document.** A story that edits a section of the requirements document (or any long spec) re-reads the
 **whole** section against its change before opening the pull request — contradictions found one sentence per review
 round cost several rounds. A change to one section that another section defines (record shapes and their field
 definitions, say) re-reads both. Before writing an acceptance criterion into such a document, diff that section against
-current `main`: a harvest may already have written it.
+the current default branch: a harvest may already have written it.
 
 **A shared sequential number is taken last.** A version number, a change-log row, a section number — anything the
-next free value of which parallel stories race for — is picked after your final `git merge origin/main`, before every
+next free value of which parallel stories race for — is picked after your final `git merge origin/<default>`, before every
 push. Two parallel stories that take the same number leave one pull request conflicting, with no CI run.
 
 **Stay inside your issue.** If you find a problem elsewhere: small, safe **and in a file you are already changing** →
@@ -122,18 +124,18 @@ line, not in a bullet; if it is worth a sentence it is a `Fix now:` in a file yo
 
 **If the gate is already red before you change anything** (run it once after step 1, before step 2): stop. Report
 `INHERITED RED` with every failing test named. Do not fix tests outside your issue, do not weaken them, do not open a
-pull request. The orchestrator opens a `bug` issue for `main` and stops your issue, still `agent-ready`; nobody blames the story.
-**Exception:** when your issue *is* the bug that greens the gate on `main`, the red gate is the starting point, not
+pull request. The orchestrator opens a `bug` issue for the default branch and stops your issue, still `agent-ready`; nobody blames the story.
+**Exception:** when your issue *is* the bug that greens the gate on the default branch, the red gate is the starting point, not
 `INHERITED RED` — the issue names which commands are expected red; any other red command still stops you.
 
 **When review findings come back** (the orchestrator sends them to you): fix every must-fix and every `Fix now:` line in
-this branch, merge `origin/main` and re-green the gate (steps 6 and 7, in that order), push, and report again.
+this branch, merge `origin/<default>` and re-green the gate (steps 6 and 7, in that order), push, and report again.
 `Defer:` lines are not yours to act on: the orchestrator records them in the audit report.
 Never argue a must-fix away in code comments — if you think one is wrong, say so in your report and the next fresh
 reviewer decides.
 
 **QA checks — the hand-over to `/harvest-qa`.** Nobody starts the product during the review; a later skill does, on
-`main`, from what you write here. For every acceptance criterion a person could see or do (a screen, a command, a
+the default branch, from what you write here. For every acceptance criterion a person could see or do (a screen, a command, a
 request), one block: a `key` (`<seam>/<short flow name>`, the same key for the same flow every time), the criterion,
 the exact steps a stranger performs from a fresh start (made-up values only, never real data), and what they must see.
 Then a **story** of two to four sentences, in a user's words: what this issue changed, which screens, commands or

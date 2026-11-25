@@ -1,7 +1,7 @@
 # The in-flight file — one per machine, shared by every terminal
 
 Every `/dev-next` terminal on this machine counts its own agents and serialises its own merges. Without this file, none
-of them can see the others, and two terminals can squash-merge to `main` in the same second. This file is the only
+of them can see the others, and two terminals can squash-merge to the default branch in the same second. This file is the only
 thing that makes the merge queue **machine-wide**, and the only place a terminal can see what the others hold. Read it
 before starting an issue, before merging, and write to it at every transition below.
 
@@ -27,7 +27,7 @@ worktrees, outside every checkout, never committed.
   (`"issue": null`) per run that has started but not yet claimed (*Run entries* below). `terminal`, `step` and
   `agents` are optional (*Progress fields* below); the second entry above has no `terminal` because its name could not
   be found.
-- `merging` — the one issue currently between phase 5 step 1 (merge `origin/main` in) and step 4 (squash-merge landed),
+- `merging` — the one issue currently between phase 5 step 1 (merge `origin/<default>` in) and step 4 (squash-merge landed),
   or `null`.
 
 **Every read tolerates a missing, empty or malformed file** — treat it as `{ "issues": [], "merging": null }` and
@@ -36,7 +36,7 @@ your own and other terminals', including fields you do not know: a newer or olde
 not list, and a reader that does not know a field ignores it.
 
 **Several machines, several files.** Each machine has its own file, so the queue below is per machine. Merges from two
-machines in the same minute are ordered by GitHub alone (the second one lands on a `main` its CI did not see). Accepted
+machines in the same minute are ordered by GitHub alone (the second one lands on a default branch its CI did not see). Accepted
 for a small team; the day it bites, move the file to a shared location and record the path in the project's `CLAUDE.md`.
 
 ## Progress fields
@@ -162,7 +162,7 @@ Before `merge-and-ci.md` step 1 for an issue:
    before your write can overwrite you and read back *its* id. So, on **every `since` refresh** during the CI poll
    (`merge-and-ci.md` step 2), and **immediately before `gh pr merge`** in step 4, re-read and confirm `merging.run` is
    yours. Not yours → you lost it: do **not** merge, do not touch the slot, go back to step 1 and re-take it later;
-   `merge-and-ci.md` step 1 then runs again on the new `main`.
+   `merge-and-ci.md` step 1 then runs again on the new default branch.
 4. While waiting for CI, **refresh `merging.since` to now on every poll** (at least every 5 minutes). This is what tells
    the other terminals you are alive. The holder's CI poll itself is capped at 30 minutes; past that the holder releases
    the slot as red (`merge-and-ci.md` step 2).
@@ -171,7 +171,7 @@ Before `merge-and-ci.md` step 1 for an issue:
    when it is ready again.
 
 Holding the slot from `merge-and-ci.md` step 1 through step 4 — and confirming, before the merge command, that you still
-hold it — is what guarantees CI ran on the `main` that the branch actually lands on.
+hold it — is what guarantees CI ran on the default branch that the branch actually lands on.
 
 ## Transitions — who writes when
 
@@ -193,7 +193,6 @@ hold it — is what guarantees CI ran on the `main` that the branch actually lan
 | Phase 5, after step 4 or on red / conflict | Release `merging`. |
 | Phase 5 step 5 clean-up | Remove the issue entry. |
 | Phase 5, two red rounds → stopped | Release `merging` and remove the issue entry — step 5 is never reached on this path. |
-| Phase 5, an `owner-merges` story green → stopped at its pull request | Remove the issue entry; `merging` was never taken. |
 | Any stop (`SKILL.md`, the stop rule at the top), `needs-human` or not | Remove the issue entry, and release `merging` if held. The assignee stays on the issue. |
 
 ## Read-modify-write
@@ -209,5 +208,5 @@ minute ago.
 the second or so between the pre-merge re-check and `gh pr merge` returning, and a whole-file write from a stale
 snapshot (a phase 1 claim, say) that nulls a live `merging`. Neither produces a bad merge — in both cases the terminal
 that lost detects "not mine" on its next re-check, does not merge or has already merged on a CI run of the correct
-`main`, and re-queues — but both can cost one extra wait. That is the accepted residual: a race costs a wait, never a
-merge onto a `main` CI did not see.
+default branch, and re-queues — but both can cost one extra wait. That is the accepted residual: a race costs a wait, never a
+merge onto a default branch CI did not see.

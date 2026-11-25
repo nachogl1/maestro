@@ -37,7 +37,7 @@ as **not** eligible and say so — a typo'd blocker is a real problem, not an ab
 
 ## Rank the eligible ones
 
-**A `bug` that turns the gate on `main` green comes before everything below.** Every story behind a red gate stops at
+**A `bug` that turns the gate on the default branch green comes before everything below.** Every story behind a red gate stops at
 `INHERITED RED`, and a bug filed late carries a high number, so lowest-number ranking alone would put it last. This
 skill files that bug as `story` + `bug` + `tier:bug` + `needs-human` (`new-issue.md`, the mid-run rule), so it passes the filter
 above only once a person has confirmed the failures and flipped it to `agent-ready`; from then on it ranks first.

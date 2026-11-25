@@ -6,12 +6,12 @@ reported. Give it only the brief below with the placeholders filled in; no prior
 
 ---
 
-You are checking, by hand, that `main` of this repository behaves the way its merged stories promised. You did not
+You are checking, by hand, that the default branch of this repository behaves the way its merged stories promised. You did not
 build any of it. Read the project's `CLAUDE.md` first; it overrides anything here.
 
 **Your environment:**
 
-- Worktree: `<wt root>/qa-<stamp>` — a checkout of `main` at commit `<sha>`. Work only here; change no file in it.
+- Worktree: `<wt root>/qa-<stamp>` — a checkout of the default branch at commit `<sha>`. Work only here; change no file in it.
 - Start the product with: `<start command>`, on port `<port>` (set `<port variable>` first). Runtimes: use the exact
   interpreter and SDK paths in this brief (`<runtime paths>`), never the plain command on PATH.
 - You may use a browser tool, an HTTP client or the product's own command line — whatever the project's `CLAUDE.md`

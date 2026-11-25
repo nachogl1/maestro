@@ -61,8 +61,8 @@ project wrote:
 `changelog-missing`, fixed **without asking** since it only adds a file (create `docs/changelog/README.md` holding a
 `# Changelog` heading, a blank line and `One file per pull request, named <YYYY-MM-DD>-<branch>.md (the branch name
 with / turned into -), holding one line: what changed and why it matters. Newest first: sort the names in reverse.`;
-an old single-file changelog stays where it is, as the history before the folder), and these two, which **need a
-yes**:
+an old single-file changelog stays where it is, as the history before the folder), `claude-md-row`, handled with
+the blank commands in step 2, and these two, which **need a yes**:
 
 - `git-ignored` — teammates would not get orion with a clone. Read `.gitignore` (and any nested one the files sit
   under), then propose the exact lines that make every listed file tracked, and show them as a before/after. Git
@@ -86,7 +86,7 @@ Read `CLAUDE.md` and `.claude/orion/BASE_CLAUDE.md` in full (follow any other `@
 Then judge the project's file against the mandatory one:
 
 1. **Contradictions** — a project rule that permits what the mandatory rules forbid or forbids what they require
-   (examples: "commit straight to main", "skip the tests when in a hurry", "ask before every decision", a different
+   (examples: "commit straight to the default branch", "skip the tests when in a hurry", "ask before every decision", a different
    merge style, a tracker other than the one the rules name). Each is **needs a yes**: quote the project line, name the
    mandatory rule it collides with, and propose the rewrite (usually: delete the line, since the mandatory file wins on a
    contradiction anyway and a dead rule misleads readers).
@@ -97,14 +97,21 @@ Then judge the project's file against the mandatory one:
    as present when the file states its facts anywhere, under any heading. A section that is **absent** is **needs a
    yes**: propose adding it with its slots. A section present but incomplete, or still holding `TBD` or
    `<placeholder>` values, is **reported** as still to fill — that is the user's homework, not a breach — except the
-   commands below.
-4. **The blank commands** — every row of the commands table that still reads `TBD` stops the skills that rely on it
-   (`/dev-next` cannot run with one in its gate). For each, work out the real command from the project's own files,
-   in this order: the CI workflow (the gate must run the same chain as CI), then the package or build files
-   (`package.json` scripts, a `Makefile`, `*.csproj` / `*.sln`, `pyproject.toml`, `Cargo.toml`, `go.mod`, …), then
-   the README. Each is **needs a yes**: the row, the proposed command, and the file and line it came from. Fill the
-   ones accepted; leave a row as `TBD` when nothing in the project tells the command, and say so. Never run a
-   proposed command to test it.
+   commands below. Only the commands table is also checked by the script (`claude-md-row`); the sentence sections
+   (stack and layout, worktrees, boundaries, pending questions) are judged by reading alone.
+4. **The blank and missing commands** — every row of the commands table that still reads `TBD`, and every row a
+   `claude-md-row` warning says the table lacks, stops the skills that rely on it (`/dev-next` cannot run with one
+   missing from its gate). For each, work out the real command from the project's own files, in this order: the CI
+   workflow (the gate must run the same chain as CI), then the package or build files (`package.json` scripts, a
+   `Makefile`, `*.csproj` / `*.sln`, `pyproject.toml`, `Cargo.toml`, `go.mod`, …), then the README. Each is **needs
+   a yes**: the row, the proposed command, and the file and line it came from. A missing row is proposed whole, in
+   orion's wording (the label the warning quotes), as a new line of the commands table, and is added only on a yes;
+   when nothing in the project tells its command, propose it as `TBD` and say so. Fill the blank ones accepted;
+   leave a row as `TBD` when nothing in the project tells the command, and say so. Never run a proposed command to
+   test it.
+   **A false warning** — the row is there, under a label that lacks the word the warning names (a test-copies row
+   labelled "Parallel workers", say): never propose a second row. Offer instead, as **needs a yes**, to rename
+   that row's label to orion's wording, keeping the project's command as it is, so the warning stops for good.
 5. **Stale references** — a path, command or file the project's `CLAUDE.md` names that does not exist in the project.
    **Reported**.
 
@@ -116,7 +123,7 @@ Read `~/.claude/CLAUDE.md` if it exists (the person's own rules for every projec
 `@import`s). Judge it against `BASE_CLAUDE.md` and the instructions of every skill under `.claude/skills/`:
 
 - **A clash** — a personal rule that forbids what those require or requires what they forbid (examples: "always
-  rebase", "commit straight to main", "never merge a pull request yourself" against a skill that merges on green).
+  rebase", "commit straight to the default branch", "never merge a pull request yourself" against a skill that merges on green).
   A preference that only adds to the rules (shorter replies, a greeting, a label on every line) is not a clash. Each
   clash is **needs a yes**, asked as `BASE_CLAUDE.md` says: quote both rules and say where each lives, then offer to
   edit the person's own file (with the exact rewrite), to propose the change to orion instead (the exact rewrite of
@@ -126,12 +133,31 @@ Read `~/.claude/CLAUDE.md` if it exists (the person's own rules for every projec
 
 The file is personal: quote it only in the chat, never in the project, a commit, an issue or a report.
 
+### The ADRs' status lines
+
+Read every `docs/ADRs/*.md` in the project, if any (the project's decision records). Right under its title, each must
+carry exactly one of three status lines:
+
+- `**Status: pending**` — not yet folded into the PRD: read beside the PRD as product truth.
+- `**Status: folded into the PRD on <yyyy-mm-dd>**` — already in the PRD: not read again.
+- `**Status: replaced by <newer ADR> on <yyyy-mm-dd>**` — a later ADR (named by its file name) overrides it: every
+  skill skips it and none folds it into the PRD.
+
+Any other line, or none at all (`proposed`, `Status: Accepted`, `approved by the owner on <date>`, …), is
+**unknown**: the planning and checking skills never guess at it, they stop and ask. List every ADR with an unknown
+line (its file and the line it carries now), and make each one **needs a yes**: which of the three it is. The ADR is
+the project's own file, so it changes only on the person's yes: the chosen line replaces the old one right under the
+title (or is added there when there was none), and nothing else in the file changes. Leaving it is fine: the next
+skill that reads it asks the same question. No `docs/ADRs/` folder, or every line known → nothing to report. A
+skill's `VERIFY.md` that checks the same lines (step 3) adds no second line for the same ADR: each is listed once,
+here.
+
 ## Step 3 — the skills
 
 For every folder under `.claude/skills/` (orion-managed ones carry an `.orion-managed` marker; the others are the
 project's own), and for every folder under `~/.claude/skills/` whose name matches a project skill, read `SKILL.md`:
 
-- **A project skill that contradicts the mandatory rules** — it instructs the agent to push to `main`, force-push,
+- **A project skill that contradicts the mandatory rules** — it instructs the agent to push to the default branch, force-push,
   bypass hooks, auto-merge, skip or delete tests, commit secrets, or work outside a worktree where the rules require
   one. **Needs a yes**: quote the instruction, name the rule, propose the rewrite. Never edit a project skill without
   the yes.
@@ -178,8 +204,9 @@ Put every **needs a yes** item into **one** AskUserQuestion call, one question p
 call for the rest), phrased for someone who has never seen these files: what is wrong, what the fix changes, with
 "Apply the fix" as the recommended option and "Leave it" as the other. A clash with the person's own rules file has
 three options instead: edit their file, propose the change to orion, or leave it; recommend editing their file unless
-orion's rule is clearly wrong for every project. Apply exactly what was accepted. No questions
-when nothing needs one.
+orion's rule is clearly wrong for every project. An ADR's unknown status line has four: the three status lines, in
+plain words, and "Leave it"; recommend the line its text suggests (for a replaced one, ask which ADR replaced it).
+Apply exactly what was accepted. No questions when nothing needs one.
 
 ## Step 6 — report
 
