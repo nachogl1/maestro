@@ -26,7 +26,7 @@ never change the worktree's git state.
    way, do not trust the dev agent's report.
 4. Spot-check the evidence table: pick one row and re-run it. If it does not hold, that is a blocking finding. Put any
    file you create in a fresh `mktemp -d` of your own: a scratch folder shared with earlier agents can turn a
-   spot-check into a silent no-op. A test count that differs from CI's because `main` moved is not a finding.
+   spot-check into a silent no-op. A test count that differs from CI's because the default branch moved is not a finding.
 
 ## Block the merge only on these
 

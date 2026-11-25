@@ -18,8 +18,8 @@ the runner's, so the team sees whose it is and no other run takes it, `reference
 from the in-flight file; and the `merging` slot freed if it held it. The readiness label follows the reason:
 
 - **A technical failure keeps `agent-ready`** — the dev reports `FAILED`, three review rounds end without approval, CI
-  is red after two rounds, no checks are reported, `gh pr merge` fails twice, or the gate is red on `main` (`INHERITED
-  RED`). Nothing is left for a person to decide; the runner looks at it and resumes.
+  is red after two rounds, no checks are reported, `gh pr merge` fails twice, or the gate is red on the default branch
+  (`INHERITED RED`). Nothing is left for a person to decide; the runner looks at it and resumes.
 - **A real question for a person switches to `needs-human`** (`gh issue edit N --add-label needs-human --remove-label
   agent-ready` — the two readiness labels never sit together): an "ask someone else" answer in phase 2, or a ready-check
   finding no answer can make agent-ready. The comment says what the person must decide.
@@ -30,11 +30,20 @@ it). A lost claim race (phase 1) is not a stop: it backs off.
 
 Read the project's `CLAUDE.md` first. It is not optional and it overrides this file where they disagree.
 
-**Project files are read from `origin/main`, never from the main checkout's working files** — the main checkout may
-be on another branch (phase 0 step 6). After `git fetch origin main`, read `CLAUDE.md`, the runtime pin files, the CI
-workflow, `docs/harvest-state.json`, `docs/harvest-qa-state.json`, `docs/reconcile-state.json` and the PRDs with
-`git show origin/main:<path>` (`git ls-tree -r --name-only origin/main <folder>` to list a folder); a path missing
-there counts as missing.
+**The default branch, `<default>`, is where daily work starts from and merges into** — the repository's default
+branch on GitHub, looked up and never assumed. Look it up once, before anything else in phase 0, and use that name
+wherever this skill and its references write `<default>` or `origin/<default>`; pass it into every brief:
+
+```
+git -C <main checkout> symbolic-ref --short refs/remotes/origin/HEAD   # prints origin/<default>
+gh repo view --json defaultBranchRef --jq .defaultBranchRef.name      # only when the line above fails
+```
+
+**Project files are read from `origin/<default>`, never from the main checkout's working files** — the main checkout
+may be on another branch (phase 0 step 6). After `git fetch origin <default>`, read `CLAUDE.md`, the runtime pin files,
+the CI workflow, `docs/harvest-state.json`, `docs/harvest-qa-state.json`, `docs/reconcile-state.json` and the PRDs with
+`git show origin/<default>:<path>` (`git ls-tree -r --name-only origin/<default> <folder>` to list a folder); a path
+missing there counts as missing.
 
 ## What this skill reads from the project
 
@@ -44,9 +53,9 @@ repository's files). This skill expects that file to state the items below; the 
 | Item | Default when `CLAUDE.md` is silent |
 |---|---|
 | **Tracker** | GitHub Issues in the repository `origin` points at — the only tracker this skill supports. A `CLAUDE.md` that names another tracker → stop in preflight (phase 0 step 1) and say so. |
-| **Labels** | `epic`, `story`, `agent-ready`, `needs-human`, `in-progress`, `outside-change`, `bug`, `owner-merges`, plus the `wayfinder:*` set the planning skill owns (`wayfinder:map`, `wayfinder:research`, …). Missing ones of the eight are created in preflight (phase 0 step 7); `wayfinder:*` labels are never created here. An issue carrying any `wayfinder:*` label is a planning ticket: never eligible, never asked about, never counted as drift. Every story also carries one `tier:*` label (`references/new-issue.md` step 2): it is for readers only, and never makes an issue more or less eligible or changes the order issues are taken in. |
+| **Labels** | `epic`, `story`, `agent-ready`, `needs-human`, `in-progress`, `outside-change`, `bug`, plus the `wayfinder:*` set the planning skill owns (`wayfinder:map`, `wayfinder:research`, …). Missing ones of the seven are created in preflight (phase 0 step 7); `wayfinder:*` labels are never created here. An issue carrying any `wayfinder:*` label is a planning ticket: never eligible, never asked about, never counted as drift. Every story also carries one `tier:*` label (`references/new-issue.md` step 2): it is for readers only, and never makes an issue more or less eligible or changes the order issues are taken in. |
 | **The gate chain** — build → lint → typecheck → full suite, with the exact commands | Derived from the CI workflow (`.github/workflows/`) and the project files (`package.json`, `pyproject.toml`, `Makefile`, …), and the run says so in the first touchpoint. Nothing derivable → stop (phase 0 step 3). |
-| **Skip-count baseline** | The skip count the suite reports on `main` before the change; any other number fails the gate. |
+| **Skip-count baseline** | The skip count the suite reports on the default branch before the change; any other number fails the gate. |
 | **Worktree root** `<wt root>` | `C:\wt` on Windows, `~/wt` elsewhere. Worktrees live outside the project. |
 | **Branch pattern** | `feat/<N>-<slug>`. |
 | **Merge method** | Squash-merge, branch deleted afterwards. |
@@ -70,8 +79,7 @@ repository's files). This skill expects that file to state the items below; the 
 **Several issues at once → one terminal with `/dev-next N`, never N terminals started together.** Sibling terminals of
 one login rank the same top candidate and lose claim races to each other.
 
-**Every issue, however many, ends the same way: its own pull request, merged into `main` on green CI** — except a
-story labelled `owner-merges`, whose pull request is left open with green checks for its owner (phase 5). The count
+**Every issue, however many, ends the same way: its own pull request, merged into the default branch on green CI**. The count
 changes how many run side by side, never the destination.
 
 ## Roles — spawn these as sub-agents, never do their work yourself
@@ -138,7 +146,7 @@ develops them **side by side**. Speed is the reason; safety is the constraint. E
    merges first. Take the `merging` slot in the in-flight file before phase 5 step 1 — write, re-read, confirm your run
    id, and re-confirm it on every CI poll and right before the merge command — and release it after step 4; a terminal
    that finds the slot live waits, and a holder's CI poll is capped at 30 minutes so the queue always moves. Each
-   remaining branch then merges `origin/main` again, pushes, and waits for a **fresh** CI run on the merged result —
+   remaining branch then merges `origin/<default>` again, pushes, and waits for a **fresh** CI run on the merged result —
    that is `references/merge-and-ci.md` step 1 repeated, not skipped. A conflict goes back to `dev-N`; the
    orchestrator never resolves one.
 7. **One failure never takes down the others.** A story that is stopped is stopped on its own — including its entry
@@ -169,7 +177,7 @@ project's `CLAUDE.md`.
    before the first story, and it still has items that are **not** marked parked or waiting for a named person, put
    them to the human as one batch — each with a recommended answer — then **this session** applies the answers to the
    files the list names in a worktree of its own (`git -C <main checkout> worktree add --no-track
-   <wt root>/questions-<slug> -b feat/<slug> origin/main`, pushed the first time with `git push -u origin feat/<slug>`), adds the pull request's own changelog file,
+   <wt root>/questions-<slug> -b feat/<slug> origin/<default>`, pushed the first time with `git push -u origin feat/<slug>`), adds the pull request's own changelog file,
    `docs/changelog/<YYYY-MM-DD>-<branch>.md` (one line), runs the gate the project's `CLAUDE.md` lists (build → lint → typecheck → full suite) in that
    worktree, opens the pull request with the results in its evidence table, and **stops**; a human merges it. A gate
    command still reading `TBD` (one of the questions may be what settles it) is not run: the evidence table says which
@@ -188,21 +196,25 @@ project's `CLAUDE.md`.
 5. Mint a **run id** in **UTC**: `<repo>-<yyyymmdd-hhmmss>-<4 hex>`, where `<repo>` is
    `gh repo view --json name --jq .name` and the time comes from `date -u +%Y%m%d-%H%M%S`
    (PowerShell: `(Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')`). It names the worktree, the audit entry and
-   every claim comment, and the harvest sorts audit reports by it. Never truncate the hex suffix: two terminals started
-   in the same second differ only there. Never use a local clock: ids from different time zones then sort wrongly.
-6. **Start from the latest `main`, without switching any branch.** `git -C <main checkout> fetch origin main`. Every
-   worktree this run creates branches from `origin/main` (phase 3), never from whatever the main checkout has checked
-   out, so every dev on the team starts from the same point. **Never `git checkout` or `git switch` in the main
-   checkout**: a person may be working there. When it is already on `main` and clean, fast-forward it too
-   (`git -C <main checkout> merge --ff-only origin/main`; `git pull --ff-only origin main` can fail with "Cannot
-   fast-forward to multiple branches"); on another branch, or dirty, leave it exactly as it is — never stash, never
-   reset. On `main` and unable to fast-forward → **stop and print what is in the way**. Then, when the main checkout
-   is on `main` at `origin/main`, run the project's dependency install or restore command there: a failure (a
-   dependency security advisory that the build treats as an error is the usual one) means the gate on `main` is red →
-   **stop before claiming and print it** — every story would end `INHERITED RED`. On any other branch this check is
-   skipped; the dev agent's first gate run reports a red `main` as `INHERITED RED` instead.
+   every claim comment, and the harvest orders audit reports by it. Run ids are ordered by their `yyyymmdd-hhmmss` part,
+   then by the whole id on a tie, never as plain text: `<repo>` may differ between runs (a renamed repository, or
+   `alpha-…` and `Alpha_Project-…` on one branch), and as text that prefix would outrank the time. Never truncate the
+   hex suffix: two terminals started in the same second differ only there. Never use a local clock: ids from different
+   time zones then sort wrongly.
+6. **Start from the latest default branch, without switching any branch.** `git -C <main checkout> fetch origin
+   <default>` (`<default>` as looked up above). Every worktree this run creates branches from `origin/<default>`
+   (phase 3), never from whatever the main checkout has checked out, so every dev on the team starts from the same
+   point. **Never `git checkout` or `git switch` in the main checkout**: a person may be working there. When it is
+   already on `<default>` and clean, fast-forward it too (`git -C <main checkout> merge --ff-only origin/<default>`;
+   `git pull --ff-only origin <default>` can fail with "Cannot fast-forward to multiple branches"); on another branch,
+   or dirty, leave it exactly as it is — never stash, never reset. On `<default>` and unable to fast-forward → **stop
+   and print what is in the way**. Then, when the main checkout is on `<default>` at `origin/<default>`, run the
+   project's dependency install or restore command there: a failure (a dependency security advisory that the build
+   treats as an error is the usual one) means the gate on the default branch is red → **stop before claiming and print
+   it** — every story would end `INHERITED RED`. On any other branch this check is skipped; the dev agent's first gate
+   run reports a red default branch as `INHERITED RED` instead.
    Steps 1, 2, 3 and 6 (the update or the restore) are the only things that stop a run before it starts; step 8 pauses it.
-7. **Labels, then snapshot.** `gh label list --limit 200 --json name --jq '.[].name'`; create every one of the eight
+7. **Labels, then snapshot.** `gh label list --limit 200 --json name --jq '.[].name'`; create every one of the seven
    labels in *What this skill reads from the project* that is missing, with `gh label create <name> --description
    "<one line>"` (a fresh repository carries only GitHub's defaults, so without this step every run would stall in
    step 8). Never rename or delete a label. Then snapshot what everyone else is doing — open issues with assignees,
@@ -224,7 +236,7 @@ project's `CLAUDE.md`.
 
 **Sibling terminals stagger.** Re-read the in-flight file before ranking (phase 0 step 9 already wrote this run's
 issue-less entry). Count *k* = the **other** runs with an entry that started in the last 5 minutes and before this one
-(by `startedAt`, then run id; any login on this machine), **issue-less entries included**; skip the top *k* candidates
+(by `startedAt`, then the run id's `yyyymmdd-hhmmss` part, then the whole run id; any login on this machine), **issue-less entries included**; skip the top *k* candidates
 and start from candidate *k*+1, so siblings started together take distinct offsets. Counting only claimed runs lets
 them rank the same top candidate — learned the hard way. One terminal with `/dev-next N` stays the right way to run
 several.
@@ -278,7 +290,7 @@ has one, the lower comment id wins and the other run backs off as above. Phase 3
 the worktree when it still exists, else `git -C <main checkout> worktree add <wt root>/<N>-<slug> feat/<N>-<slug>` on
 the existing branch (when only the remote one is left, `git -C <main checkout> fetch origin
 feat/<N>-<slug>:feat/<N>-<slug>` first), else, when no branch is left at all (an `INHERITED RED` stop with no
-commit), phase 3's own command (`worktree add --no-track … -b feat/<N>-<slug> origin/main`); an open pull request stays the pull request. Another person's assignee is never resumed.
+commit), phase 3's own command (`worktree add --no-track … -b feat/<N>-<slug> origin/<default>`); an open pull request stays the pull request. Another person's assignee is never resumed.
 
 ## Phase 2 — Q&A (the first touchpoint)
 
@@ -287,7 +299,7 @@ commit), phase 3's own command (`worktree add --no-track … -b feat/<N>-<slug> 
   `READY`, or **every** question it has — no cap on the count, one line each with a recommended answer, no prose. It also checks two things a fresh label hides: **every acceptance
   criterion against the project's standing rules** (its `CLAUDE.md`: no build or run of a repository the team does not
   own, the skip-count baseline, no production, customer or personal data), and **every assumption in the body against
-  current `main`** (a reason or note a later merge has overtaken). Either one failing is a question, or `needs-human`
+  the current default branch** (a reason or note a later merge has overtaken). Either one failing is a question, or `needs-human`
   when no answer can make it agent-ready (a story that needs a system running that agents may not run).
   An unanswered question becomes a guess the dev agent bakes into the code; a long list is cheaper than that.
 - Ask them all **in one batch**, each with a recommended answer the human can accept as-is.
@@ -299,11 +311,11 @@ commit), phase 3's own command (`worktree add --no-track … -b feat/<N>-<slug> 
 ## Phase 3 — Develop
 
 ```
-git -C <main checkout> worktree add --no-track <wt root>/<N>-<slug> -b feat/<N>-<slug> origin/main
+git -C <main checkout> worktree add --no-track <wt root>/<N>-<slug> -b feat/<N>-<slug> origin/<default>
 ```
 
-`--no-track` matters: a branch made from `origin/main` would otherwise track `main`, so a plain `git push` fails or
-lands on `main`, and a merged branch never shows as gone to a clean-up sweep. The first push sets the branch's own
+`--no-track` matters: a branch made from `origin/<default>` would otherwise track `<default>`, so a plain `git push`
+fails or lands on the default branch, and a merged branch never shows as gone to a clean-up sweep. The first push sets the branch's own
 upstream (`git push -u origin feat/<N>-<slug>`, in the dev brief).
 
 `<wt root>` is the worktree root the project's `CLAUDE.md` names (default `C:\wt` on Windows, `~/wt` elsewhere).
@@ -321,8 +333,8 @@ dev agent each, none told anything about the others. Nothing waits for a slot.
 Dev reports FAILED → stop the story, **keeping `agent-ready`** (a technical failure; the failure is the reason
 comment), **leave the branch and worktree for the runner**, and carry on with whatever else the run has.
 
-Dev reports `INHERITED RED` (the gate was already failing on `main` before it changed anything) → the story is not the
-problem, `main` is. Open **one** `bug` issue for the red gate on `main` **per `references/new-issue.md`**: every
+Dev reports `INHERITED RED` (the gate was already failing on the default branch before it changed anything) → the story is
+not the problem, the default branch is. Open **one** `bug` issue for the red gate on the default branch **per `references/new-issue.md`**: every
 heading, each failing test named under `### Acceptance criteria` (green again), `### Seam` the folder the failures sit
 in, labels `story` + `bug` + `tier:bug` + `needs-human` (its rule for an issue filed mid-run: nobody has checked it is ready; the
 reason comment, the issue's last, asks a person to confirm the failures and flip it to `agent-ready`), native sub-issue
@@ -385,20 +397,15 @@ request already changes** → fixed in this pull request. Critical → a GitHub 
 
 ## Phase 5 — Merge
 
-Follow `references/merge-and-ci.md`. In short: take the `merging` slot in the in-flight file → merge `origin/main` into
+Follow `references/merge-and-ci.md`. In short: take the `merging` slot in the in-flight file → merge `origin/<default>` into
 the branch and push so CI runs on what will actually land → poll for the check run id, then watch it → check the
-branch is not behind `origin/main` (behind → back to the merge step) → squash-merge →
+branch is not behind `origin/<default>` (behind → back to the merge step) → squash-merge →
 release the slot → verify the issue closed → delete worktree and branch → remove the issue from the in-flight file.
 
 **Never merge on red or pending. "No checks reported" is red.** Red after two rounds → the story stopped, keeping `agent-ready`.
 
-**A story labelled `owner-merges` is never merged by this skill.** It is built and reviewed as usual; then, without
-taking the `merging` slot, `references/merge-and-ci.md` steps 1-3 bring its pull request to green checks, and the run
-stops there (*Owner merges* in that file): the pull request stays open, the assignee stays, `in-progress` is removed
-and the in-flight entry dropped. The run report says the owner must try the change before merging it.
-
 More than one pull request → **one merge at a time, on the whole machine**. The `merging` slot is the queue: a terminal
-that finds it taken waits. After the first lands, each remaining branch merges `origin/main` again, pushes, and gets a
+that finds it taken waits. After the first lands, each remaining branch merges `origin/<default>` again, pushes, and gets a
 fresh check run before it may merge (*Parallelism* rule 6).
 
 ## Phase 6 — Audit and report
@@ -406,26 +413,28 @@ fresh check run before it may merge (*Parallelism* rule 6).
 Write the per-issue JSON per `references/audit.md` to the `audit/<your login>` branch. It cannot be reconstructed later —
 local transcripts age out — so it happens on every run from the first. It carries the run's `Defer:` lines as the
 `deferred` list (phase 4), and only the `friction` and `lessons_learned` lines that meet the bar in `audit.md`
-(important or critical; a routine wait is not a line). The lists are usually empty.
-
-An `owner-merges` issue's report carries outcome `owner-merges` and the owner's step (`audit.md`); it gets no QA
-record — the owner tries the change before merging, and `/harvest-qa` drives only what is on `main`.
+(important or critical; a routine wait is not a line). The lists are usually empty. Each sub-agent's `tokens_total` is
+the figure the Agent tool reported for it; when the tool reported none (a sub-agent that ran as an agent-team
+teammate), count it from that sub-agent's own transcript with `scripts/agent_tokens.py`, and record where every figure
+came from (`audit.md`, *What the token figures are*).
 
 A `merged` issue also gets its QA record, `runs/<run id>/qa-<N>.json` on the same branch, from the dev agent's
 `QA checks` blocks and story (`audit.md`, *The QA record*): the checks a later `/harvest-qa` run drives against
-`main`, and the story it dedupes them by. Same commit as the run report; nothing else changes.
+the default branch, and the story it dedupes them by. Same commit as the run report; nothing else changes.
 
 Then count the one harvest pile: `deferred` entries + `friction` + `lessons_learned` lines across every developer's
 audit branch — fetch them first with `git fetch origin 'refs/heads/audit/*:refs/remotes/origin/audit/*'`, list reports
 with `git ls-tree -r --name-only origin/audit/<login> runs/`, read with `git show`, never check out — in runs whose run id
-sorts after that login's `harvested_through` entry in `docs/harvest-state.json` (`git show origin/main:docs/harvest-state.json`), plus every entry in that
-file's `carried` list (the file is written only by the `/harvest` skill; no file → everything is unharvested). At
+is newer than that login's `harvested_through` entry in `docs/harvest-state.json` (`git show origin/<default>:docs/harvest-state.json`), plus every entry in that
+file's `carried` list (the file is written only by the `/harvest` skill; no file → everything is unharvested). Newer
+means a later `yyyymmdd-hhmmss` part of the run id, then the larger whole id on a tie, never a plain text comparison:
+the `<repo>` prefix may differ between runs (`alpha-…` and `Alpha_Project-…` on one branch). At
 **10 or more** → the summary ends with the line `Harvest due: run /harvest`. Counting only; this skill never runs the
 harvest.
 
 Then count the QA pile **separately, in records, never added to the harvest count**: `runs/<run id>/qa-<N>.json`
-files across every audit branch in runs newer than that login's `tested_through` entry in `docs/harvest-qa-state.json`
-(`git show origin/main:docs/harvest-qa-state.json`), plus the records that file's `carried` list points at (its entries are single checks: count each distinct
+files across every audit branch in runs newer (by the same time-part rule) than that login's `tested_through` entry in `docs/harvest-qa-state.json`
+(`git show origin/<default>:docs/harvest-qa-state.json`), plus the records that file's `carried` list points at (its entries are single checks: count each distinct
 login, run and issue once, and not again when that record is already counted as newer; the file is written only by
 `/harvest-qa`; no file → every record is untested). At **5 or more records** → the summary ends with the line `QA due:
 run /harvest-qa`, after the `Harvest due` line if both apply. Each pile is judged against its own threshold only.
@@ -435,9 +444,9 @@ Then probe for drift between the issues and the PRD — **mechanical only, from 
 sub-agent and never a judgement. Two signs, either of which is enough: (a) an open non-epic issue in the phase 0 snapshot with no
 `wayfinder:*` label (planning tickets hang under their map, not under an epic) carries both `agent-ready` and `needs-human`, or is in no open epic's sub-issue list
 (`gh api repos/{owner}/{repo}/issues/<epic>/sub_issues --jq 'map(.number)'`, one call per open epic); (b)
-`docs/PRDs/` changed on `main` since the bookmark `docs/reconcile-state.json` records, not counting the reconcile's
-own commits: a commit in `git log --format=%H <reconciled_at>..origin/main -- docs/PRDs/` that is **not** also in
-`git log --format=%H <reconciled_at>..origin/main -- docs/reconcile-state.json` is drift (the reconcile's pull request
+`docs/PRDs/` changed on the default branch since the bookmark `docs/reconcile-state.json` records, not counting the reconcile's
+own commits: a commit in `git log --format=%H <reconciled_at>..origin/<default> -- docs/PRDs/` that is **not** also in
+`git log --format=%H <reconciled_at>..origin/<default> -- docs/reconcile-state.json` is drift (the reconcile's pull request
 edits the PRD and the bookmark in one commit, so without that filter every reconcile would look like drift; no
 bookmark and at least one PRD → counts as changed, once, until a first reconcile writes it). Any sign → the summary ends with the line
 `Drift found: run /reconcile`, after the `Harvest due` and `QA due` lines if they apply. Probing only; this skill never
@@ -445,14 +454,14 @@ reconciles and never edits an issue for it.
 
 Then print **ten lines per issue, no more** (the second touchpoint): issue and title · what shipped · pull request link · suite result ·
 CI result · anything stopped and why (and whether it waits on a person, `needs-human`, or on the runner,
-`agent-ready`) · an `owner-merges` pull request left for its owner · what is on deck next.
+`agent-ready`) · what is on deck next.
 
 The run then ends with a **close-out**, always last, after the `Harvest due`, `QA due` and `Drift found` lines if there are any.
 It tells the human whether anything in this session still waits on them:
 
 - **Something waits on them** → `For you in this session:` followed by a numbered list, one action per line, most
   urgent first — a question left on a `needs-human` issue, a stopped story to look at and resume with
-  `/dev-next #<N>`, an `owner-merges` pull request to try and then merge, a pull request left open, red or pending
+  `/dev-next #<N>`, a pull request left open, red or pending
   CI, a merge slot still held, a failed audit write, `Harvest due`, `QA due`, `Drift found`. Each line names the thing
   in plain words and says what to do.
 - **Nothing waits on them** → exactly: `All good: everything merged, nothing to report, nothing left for you. You can
@@ -465,9 +474,9 @@ The close-out only offers; the human closes the session, never the skill.
 
 ## Rules that are not negotiable
 
-0. **Never push to `main`.** Every change lands as a pull request that is then merged. Full autonomy means you may open,
-   review and merge it yourself — never that you may skip it. This skill merges only its own pull requests, and never
-   one of an `owner-merges` story; who merges any other pull request is the baseline's *Who merges* rule.
+0. **Never push to the default branch or the release branch.** Every change lands as a pull request that is then merged. Full autonomy means you may open,
+   review and merge it yourself — never that you may skip it. This skill merges only its own pull requests; who merges
+   any other pull request is the baseline's *Who merges* rule.
 1. **Never wait for a human after preflight.** The first touchpoint (phase 0 steps 2 and 8, phase 2) is the one place
    questions are asked; from phase 3 on: stop it, explain it, keep the assignee, move on.
 2. **The reviewer is always fresh.** Enforced here, not left to good intentions.
@@ -493,7 +502,8 @@ The close-out only offers; the human closes the session, never the skill.
 | `references/eligibility.md` | phase 1 |
 | `references/dev-agent.md` | phase 3 |
 | `references/review-agent.md` | phase 4 |
-| `references/new-issue.md` | phase 4, whenever a `Critical:` line becomes an issue; phases 3 and 5, whenever a red `main` becomes a `bug` issue |
+| `references/new-issue.md` | phase 4, whenever a `Critical:` line becomes an issue; phases 3 and 5, whenever a red default branch becomes a `bug` issue |
 | `references/merge-and-ci.md` | phase 5 |
 | `references/audit.md` | phase 6 — the run report and the QA record |
+| `scripts/agent_tokens.py` | phase 6, for a sub-agent the Agent tool reported no token figure for |
 | `references/shell-traps.md` | whenever a shell command behaves strangely |

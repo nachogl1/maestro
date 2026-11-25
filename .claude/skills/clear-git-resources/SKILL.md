@@ -1,6 +1,6 @@
 ---
 name: clear-git-resources
-description: ORION - Sweep the stale git resources a project collects — worktrees whose branch already landed, local and remote branches already on main or whose pull request is merged or closed, dead folders and loose files in the worktree root. Deletes the user's own stale items whose work cannot be lost without asking, asks before deleting anyone else's stale items (or the user's own with a closed pull request or a deleted remote branch), and never touches unmerged work, uncommitted changes, main, the audit/* and qa/* branches, the audit-* and qa-* worktrees, an open pull request or anything in flight. Use when the user types /clear-git-resources, says "clean up my branches / worktrees / the worktree folder", or when the session-start hook reports that the project has reached its branch or worktree limit (20 each by default; `branchLimit` / `worktreeLimit` in .claude/orion/config.json).
+description: ORION - Sweep the stale git resources a project collects — worktrees whose branch already landed, local and remote branches already on the default branch or whose pull request is merged or closed, dead folders and loose files in the worktree root. Deletes the user's own stale items whose work cannot be lost without asking, asks before deleting anyone else's stale items (or the user's own with a closed pull request or a deleted remote branch), and never touches unmerged work, uncommitted changes, the default branch, the audit/* and qa/* branches, the audit-* and qa-* worktrees, an open pull request or anything in flight. Use when the user types /clear-git-resources, says "clean up my branches / worktrees / the worktree folder", or when the session-start hook reports that the project has reached its branch or worktree limit (20 each by default; `branchLimit` / `worktreeLimit` in .claude/orion/config.json).
 argument-hint: "(none) | --dry-run"
 ---
 
@@ -22,7 +22,7 @@ the default branch).
 ## Who you are talking to
 
 A developer who wants a tidy machine but has no time to inspect each branch. Everyday words: "a branch whose work is
-already on main", not "an ancestor of origin/main"; "a folder git has forgotten about", not "a prunable worktree
+already on the default branch", not "an ancestor of origin/HEAD"; "a folder git has forgotten about", not "a prunable worktree
 entry". Name the thing (its branch name or folder) because they need it to decide, and say in one line why it is on the
 list and whose it is. Never ask twice about the same thing; never leave out anything that is kept without saying it is
 kept.
@@ -44,7 +44,7 @@ identity set → nothing counts as theirs, every stale item is `ask`, and a `NOT
 | **`keep`** — never offered, no command | `wt-active` `wt-dirty` `br-unmerged` `rb-unmerged` `wt-open-pr` `br-open-pr` `rb-open-pr` `wt-protected` `br-protected` `rb-protected` `root-recent` `root-other` | Commits not on the default branch with no pull request, commits on no branch that no branch holds, uncommitted changes, an open pull request, the default branch, the branch checked out in the main checkout, anything of an issue in `<wt root>/in-flight.json`, worktree-root entries with anything changed in the last `--days` days, other repositories' checkouts, and the resources other skills use (below) |
 
 A group can hold `auto` and `ask` items side by side (`br-merged` holds the person's own and someone else's branches
-already on main); the action on each line decides, never the group.
+already on the default branch); the action on each line decides, never the group.
 
 **Resources other skills use are never touched.** `/dev-next` keeps every run's reports on `audit/<login>`, an orphan
 branch pushed without a pull request, checked out in `<wt root>/audit-<login>` while a run writes to it; `/harvest-qa`

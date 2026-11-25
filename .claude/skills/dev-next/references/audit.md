@@ -6,7 +6,7 @@ are saving time, and the only record the process can be improved from.
 
 ## Where it goes
 
-A branch of your own, never `main`: `audit/<your github login>`. It is the one branch exempt from the pull-request and
+A branch of your own, never the default branch: `audit/<your github login>`. It is the one branch exempt from the pull-request and
 `feat/` rules: pushed directly, never merged. Each run appends one file:
 
 ```
@@ -29,9 +29,9 @@ Your own branch means no two developers ever conflict, and it never touches the 
   "pr": 47,
   "summary": "Parses the settings section of an input file into the internal model; 6 new tests, no change to the output writer.",
   "agents": [
-    { "name": "ready-check-31", "model": "sonnet", "tokens_total": 9100 },
-    { "name": "dev-31",         "model": "opus",   "tokens_total": 163400 },
-    { "name": "review-31-r1",   "model": "opus",   "tokens_total": 41100 }
+    { "name": "ready-check-31", "model": "sonnet", "tokens_total": 9100,   "tokens_source": "tool" },
+    { "name": "dev-31",         "model": "opus",   "tokens_total": 163400, "tokens_source": "tool" },
+    { "name": "review-31-r1",   "model": "opus",   "tokens_total": 41100,  "tokens_source": "transcript" }
   ],
   "phases": { "qa_seconds": 0, "dev_seconds": 2140, "review_seconds": 480, "ci_seconds": 190 },
   "rounds": { "review": 1, "ci": 1 },
@@ -56,10 +56,11 @@ Your own branch means no two developers ever conflict, and it never touches the 
 The numbers in the example (issue, pull request, timestamps) are illustrative only.
 
 - `outcome` is one of `merged`, `needs-human` (stopped on a question for a person), `failed` (stopped on a technical
-  failure, still `agent-ready` and assigned to the runner), `inherited-red` (the gate was already red on `main`; the
-  story was stopped without blame and a `bug` issue opened — `SKILL.md` phase 3), `owner-merges` (the story's pull
-  request is open with green checks and waits for its owner — `merge-and-ci.md`, *Owner merges*). An `owner-merges`
-  report's `summary` ends with the owner's step: `The owner must try the change, then merge pull request #<P>.`
+  failure, still `agent-ready` and assigned to the runner), `inherited-red` (the gate was already red on the default branch; the
+  story was stopped without blame and a `bug` issue opened — `SKILL.md` phase 3).
+- `agents` holds one entry per sub-agent: its name, the model that actually ran, `tokens_total` and where that figure
+  came from, `tokens_source` (`tool`, `transcript` or `none`, with a `tokens_reason` beside `none`; *What the token
+  figures are*, below).
 - `summary` is one or two sentences: what the issue was about and what shipped. Written for someone who never read the issue.
 - `lessons_learned` is what the next run should do differently or know up front — about the code, the domain or the
   process. Empty list if none.
@@ -83,13 +84,13 @@ line that does not change what someone does next is a cost, not a record.
 
 All three lists are the **only** pile `/harvest` reads (the QA record below is `/harvest-qa`'s, and the two never cross); it decides with a person where each item goes — a fix, a
 ticket, a rule, or nowhere. Nothing here is harvested automatically. Which run each branch has been harvested through
-is kept in `docs/harvest-state.json` on `main`, written only by the harvest.
+is kept in `docs/harvest-state.json` on the default branch, written only by the harvest.
 
 ## The QA record — `qa-<N>.json`, beside the run report
 
 A merged story also leaves one QA record on the same branch, `runs/<run id>/qa-<N>.json`, written by the orchestrator
 from the dev agent's `QA checks` blocks and story (`dev-agent.md`). It is the only file `/harvest-qa` reads, and
-`/harvest` never reads it; the two skills keep separate bookmarks on `main` (`docs/harvest-qa-state.json` and
+`/harvest` never reads it; the two skills keep separate bookmarks on the default branch (`docs/harvest-qa-state.json` and
 `docs/harvest-state.json`). Only a `merged` outcome gets one.
 
 ```json
@@ -100,7 +101,7 @@ from the dev agent's `QA checks` blocks and story (`dev-agent.md`). It is the on
   "login": "<login>",
   "pr": 47,
   "merged_at": "2025-01-06T15:04:02Z",
-  "merge_commit": "<sha of main after the merge>",
+  "merge_commit": "<sha of the default branch after the merge>",
   "seam": "src/<Area>/",
   "story": "Before this story the importer ignored the settings section of an input file. It now reads the section into the model and shows its values on the import summary screen; an empty section shows 'no settings' where the screen used to be blank.",
   "checks": [
@@ -125,12 +126,43 @@ from the dev agent's `QA checks` blocks and story (`dev-agent.md`). It is the on
 
 ## What the token figures are — and what they are not
 
-`tokens_total` is the one figure the Agent tool reports per sub-agent (it gives no input/output split), or `null`
-when the tool reported nothing. A resumed agent reports a cumulative figure: record its last one.
+Each sub-agent's `tokens_total` comes from one of two sources, and `tokens_source` says which:
 
-The figure the Agent tool reports for a sub-agent is input + output + cache-write tokens. It **excludes cache reads**,
-which are the bulk of an agent loop, and the orchestrator is not in this file at all. Treat the numbers as relative
-(this run against that run), not as a bill. This file is the cost and timing record.
+- **`tool`** — the figure the Agent tool reports when the sub-agent finishes (in its result, or in the completion
+  notice of a background agent). A resumed agent reports a cumulative figure: record its last one. This is the source
+  on an ordinary run, and its figures are recorded exactly as before.
+- **`transcript`** — the tool reported no figure. That happens when Claude Code's experimental agent teams mode is on
+  (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set to `1` in the environment or in a settings file's `env`): a spawn that
+  passes a `name` then runs as a teammate, and a teammate sends back its message with no token count. Count the figure
+  from the sub-agent's own transcript instead, in phase 6 of the same run:
+
+  ```
+  python .claude/skills/dev-next/scripts/agent_tokens.py --agent <agent id> --name <agent name> --since <started_at>
+  ```
+
+  (`python3` where `python` is not on the path; the agent id is the one its spawn returned, the name the one it was
+  spawned with). It prints one JSON line with `tokens_total` and `tokens_source` (and `tokens_reason`): copy them into
+  the agent's entry as they are.
+- **`none`** — neither source has a figure: `tokens_total` is `null` and `tokens_reason` says why in one line (no
+  transcript found, more than one matched, it holds no usage, Python is missing). The run summary repeats that line
+  once. Never guess a figure.
+
+**Where the transcript is.** Claude Code keeps a sub-agent's transcript beside its lead session's, at
+`~/.claude/projects/<project>/<session>/subagents/agent-<agent id>.jsonl` (under `$CLAUDE_CONFIG_DIR` when that is
+set), next to an `agent-<agent id>.meta.json` whose `description` is the name the spawn gave. Each assistant entry
+carries `message.usage` (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`),
+and one response written as several entries repeats the same `message.id` with the same usage, so each `message.id`
+counts once. Claude Code's documentation names no other place for a teammate's transcript, so the script looks only
+there, by agent id first, then by name among the files changed since the run started; a teammate kept anywhere else
+gets `none` with that reason rather than a guess. Transcripts are deleted after 30 days by default
+(`cleanupPeriodDays`), which is why the count happens in the run itself: an old record with a `null` figure is never
+rebuilt.
+
+**The counting rule.** The `transcript` figure is input + output + cache-write tokens summed over every response of
+the sub-agent, cache reads left out. Checked against transcripts, the `tool` figure is not that sum: it stays close to
+the sub-agent's last request alone, its whole context with cache reads included. So the two sources measure different
+things: compare figures of one source only, this run against that run. Neither is a bill: cache reads are the bulk of
+an agent loop, and the orchestrator is not in this file at all. This file is the cost and timing record.
 
 ## Writing it without breaking anything
 
