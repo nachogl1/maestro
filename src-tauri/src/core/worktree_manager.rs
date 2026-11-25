@@ -270,12 +270,24 @@ impl WorktreeManager {
         let git = Git::new(repo_path);
         let all = git.worktree_list().await?;
 
+        // Compare real on-disk paths: git reports a worktree's actual letter
+        // case, which can differ from the case of the base built here
+        // (Windows). Each side falls back to its raw path. The returned
+        // entries keep the path strings git reported.
         let base = effective_base_dir(base_override);
+        let base = tokio::fs::canonicalize(&base).await.unwrap_or(base);
 
-        Ok(all
-            .into_iter()
-            .filter(|wt| Path::new(&wt.path).starts_with(&base))
-            .collect())
+        let mut managed = Vec::with_capacity(all.len());
+        for wt in all {
+            let wt_path = Path::new(&wt.path);
+            let canonical = tokio::fs::canonicalize(wt_path)
+                .await
+                .unwrap_or_else(|_| wt_path.to_path_buf());
+            if canonical.starts_with(&base) {
+                managed.push(wt);
+            }
+        }
+        Ok(managed)
     }
 
     /// Prunes stale git worktree refs and removes orphaned directories.
@@ -527,6 +539,45 @@ mod tests {
 
         let managed = wm.list_managed(&path).await.unwrap();
         assert!(managed.is_empty());
+    }
+
+    /// On a case-insensitive file system (Windows, macOS) git reports the real
+    /// on-disk letter case of a worktree path, whatever case was asked for.
+    /// The managed list must still find the worktree and return git's path.
+    #[tokio::test]
+    async fn test_list_managed_finds_worktree_when_base_case_differs_on_disk() {
+        let (_dir, path) = create_test_repo().await;
+        let git = Git::new(&path);
+        git.run(&["branch", "case-test"]).await.unwrap();
+
+        let base_parent = tempdir().unwrap();
+        tokio::fs::create_dir(base_parent.path().join("Base"))
+            .await
+            .unwrap();
+        let base_as_asked = base_parent.path().join("base");
+
+        let wm = WorktreeManager::new();
+        let wt_path = wm
+            .create_with_base("case-test", &path, Some(&base_as_asked), false)
+            .await
+            .unwrap();
+
+        let managed = wm
+            .list_managed_with_base(&path, Some(&base_as_asked))
+            .await
+            .unwrap();
+        let reported: Vec<String> = git
+            .worktree_list()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|wt| !wt.is_main_worktree)
+            .map(|wt| wt.path)
+            .collect();
+        let managed_paths: Vec<String> = managed.into_iter().map(|wt| wt.path).collect();
+        assert_eq!(managed_paths, reported);
+
+        let _ = wm.remove(&path, &wt_path).await;
     }
 
     #[tokio::test]
