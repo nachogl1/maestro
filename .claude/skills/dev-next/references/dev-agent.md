@@ -50,9 +50,7 @@ You are implementing GitHub issue **#N** of this repository (the one `origin` po
 6. `git fetch origin` and `git merge origin/<default>` **before the gate, not after it**, so the gate runs on the
    newest default branch, not on a stale base — **never rebase, never stash**. Resolve conflicts in your own files only.
 7. Green the gate the project's `CLAUDE.md` lists (build → lint → typecheck → full suite). Every command in the chain.
-   No exceptions. Size the full suite's test copies (parallel test workers) right before it runs, with the recipe in
-   `in-flight.md`, *Test copies* (`.claude/skills/dev-next/references/`), and pass them the way the project's
-   `CLAUDE.md` *Test copies* row says.
+   No exceptions.
 8. Add this pull request's **own changelog file**, `docs/changelog/<YYYY-MM-DD>-<branch>.md` (today's date, the branch name with `/`
    turned into `-`), holding one line: what changed and why it matters, a few words, never a restatement of the diff.
    Never edit another pull request's file or an old single-file changelog, so parallel pull requests never conflict

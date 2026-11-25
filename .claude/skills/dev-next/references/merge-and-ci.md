@@ -62,7 +62,7 @@ on the pull request is the gate**; otherwise every check that ran on the pull re
 shows `SKIPPED` on pull requests (a job that runs only on the default or release branch, such as a publish or deploy job) is not red. Nobody
 runs the suite locally a second time — the suite runs once per gate, never once locally and once in CI. If no CI exists,
 or it does not run the full suite, the orchestrator runs the gate on the merged branch in the worktree before merging,
-and that run is the gate; it sizes the full suite's test copies right before it runs (`in-flight.md`, *Test copies*).
+and that run is the gate.
 
 - **Green** → merge.
 - **Red** → release `merging`, then send the failure back to a fresh `dev-N` round; the branch re-takes the slot when
