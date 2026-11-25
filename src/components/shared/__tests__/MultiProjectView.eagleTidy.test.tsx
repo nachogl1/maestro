@@ -216,4 +216,42 @@ describe("MultiProjectView eagle view tidy up (issue #493)", () => {
       1: column(3),
     });
   });
+
+  it("gives a not-launched card its own full-height column, kept once it is launched", async () => {
+    const ref = createRef<MultiProjectViewHandle>();
+    render(<MultiProjectView ref={ref} eagleView />);
+    await flushFrames();
+    await launchCard();
+    await addAndLaunch(ref, "tab-1");
+    await act(async () => {
+      ref.current?.addSessionInProject("tab-1");
+    });
+    await flushFrames();
+
+    act(() => {
+      ref.current?.tidyActiveProject();
+    });
+    await flushFrames();
+
+    const card = screen.getByRole("button", { name: "Launch Session" }).closest("[data-slot-id]");
+    expect(placement(screen.getByTestId("terminal-1"))).toEqual(thirdColumn(0));
+    expect(placement(screen.getByTestId("terminal-2"))).toEqual(thirdColumn(1));
+    expect(placement(card)).toEqual(thirdColumn(2));
+
+    await launchCard();
+
+    expect(placement(screen.getByTestId("terminal-3"))).toEqual(thirdColumn(2));
+  });
 });
+
+/** Where a tile sits in the eagle grid, read from its pane's grid style. */
+function placement(inside: Element | null): { column: string; row: string } {
+  const pane = inside?.closest<HTMLElement>("[data-slot-id]");
+  if (!pane) throw new Error("tile pane not found");
+  return { column: pane.style.gridColumn, row: pane.style.gridRow };
+}
+
+/** The grid style of a full-height column of three, 20 cells wide each. */
+function thirdColumn(index: number): { column: string; row: string } {
+  return { column: `${index * 20 + 1} / span 20`, row: "1 / span 60" };
+}

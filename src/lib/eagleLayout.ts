@@ -48,7 +48,17 @@ export interface EagleLayoutInput {
   pendingByTab: readonly (readonly [tabId: string, count: number])[];
   /** The user's placements (empty = automatic layout). */
   stored: Readonly<Record<number, TileRect>>;
+  /** Columns Tidy up kept for the cards, per workspace tab id, in card order. */
+  cardColumns?: Readonly<Record<string, readonly TileRect[]>>;
   units?: number;
+}
+
+/** Tidy up of the whole eagle grid (see tidyEagleLayout). */
+export interface EagleTidy {
+  /** Launched tiles by session id: the placements to store. */
+  tiles: Map<number, TileRect>;
+  /** Pre-launch card columns per workspace tab id, in card order. */
+  cardColumns: Record<string, TileRect[]>;
 }
 
 export function rectsEqual(a: TileRect | undefined, b: TileRect | undefined): boolean {
@@ -130,6 +140,53 @@ export function rowOfColumns(
   return new Map(
     sessionIds.map((id, i) => [id, { x: edge(i), y: 0, w: edge(i + 1) - edge(i), h: units }]),
   );
+}
+
+/**
+ * Tidy up of the eagle grid: every tile on screen, launched terminal or
+ * pre-launch card, becomes one full-height column of rowOfColumns, in reading
+ * order. Null when a column would be narrower than MIN_TILE_UNITS.
+ */
+export function tidyEagleLayout(
+  layout: EagleLayout,
+  units: number = EAGLE_UNITS,
+): EagleTidy | null {
+  const tiles: ({ rect: TileRect; sessionId: number } | { rect: TileRect; tabId: string })[] = [
+    ...[...layout.tiles].map(([sessionId, rect]) => ({ sessionId, rect })),
+    ...[...layout.pending].flatMap(([tabId, rects]) => rects.map((rect) => ({ tabId, rect }))),
+  ];
+  const readingOrder = tiles
+    .map((_, i) => i)
+    .sort((a, b) => compareRowMajor(tiles[a].rect, tiles[b].rect));
+  const columns = rowOfColumns(readingOrder, units);
+  if (!columns) return null;
+  const tidy: EagleTidy = { tiles: new Map(), cardColumns: {} };
+  tiles.forEach((tile, i) => {
+    const column = columns.get(i) as TileRect;
+    if ("sessionId" in tile) tidy.tiles.set(tile.sessionId, column);
+    else tidy.cardColumns[tile.tabId] = [...(tidy.cardColumns[tile.tabId] ?? []), column];
+  });
+  return tidy;
+}
+
+/**
+ * Splits the columns Tidy up kept for each tab's cards between the cards still
+ * waiting (the last columns: a launched card is taken to be the first one) and
+ * the spare columns of launched cards, which their new sessions take whole.
+ */
+function splitCardColumns(
+  pendingByTab: EagleLayoutInput["pendingByTab"],
+  cardColumns: NonNullable<EagleLayoutInput["cardColumns"]>,
+): { kept: Map<string, readonly TileRect[]>; spare: TileRect[] } {
+  const kept = new Map<string, readonly TileRect[]>();
+  const spare: TileRect[] = [];
+  for (const [tabId, count] of pendingByTab) {
+    const columns = cardColumns[tabId] ?? [];
+    const launched = Math.max(0, columns.length - count);
+    spare.push(...columns.slice(0, launched));
+    kept.set(tabId, columns.slice(launched));
+  }
+  return { kept, spare };
 }
 
 /**
@@ -263,7 +320,8 @@ function packed(
  * square-ish grid. Otherwise each session keeps its stored rect when that
  * still fits (inside the grid, clear of the tiles placed before it); every
  * other tile — new sessions, cards, a tile whose old place is taken — goes
- * into the largest hole (see placeNewTile).
+ * into the largest hole (see placeNewTile). A column Tidy up kept for a card
+ * stays that card's, or goes whole to the session the card was launched as.
  */
 export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
   const { sessionIds, pendingByTab, stored } = input;
@@ -271,6 +329,7 @@ export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
   if (Object.keys(stored).length === 0) return packed(sessionIds, pendingByTab, false, units);
 
   const total = sessionIds.length + pendingByTab.reduce((sum, [, n]) => sum + n, 0);
+  const { kept, spare } = splitCardColumns(pendingByTab, input.cardColumns ?? {});
   const placed: PlacedTile[] = [];
   const place = (sessionId: number | null, wanted: TileRect | undefined): boolean => {
     if (
@@ -311,14 +370,22 @@ export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
       unplaced.push(id);
     }
   }
+  const freeSpare = () =>
+    spare.find((r) =>
+      fitsFree(
+        r,
+        placed.map((p) => p.rect),
+        units,
+      ),
+    );
   for (const id of unplaced) {
-    if (!place(id, undefined)) return packed(sessionIds, pendingByTab, true, units);
+    if (!place(id, freeSpare())) return packed(sessionIds, pendingByTab, true, units);
   }
   const pending = new Map<string, TileRect[]>();
   for (const [tabId, count] of pendingByTab) {
     const list: TileRect[] = [];
     for (let k = 0; k < count; k++) {
-      if (!place(null, undefined)) return packed(sessionIds, pendingByTab, true, units);
+      if (!place(null, kept.get(tabId)?.[k])) return packed(sessionIds, pendingByTab, true, units);
       list.push(placed[placed.length - 1].rect);
     }
     pending.set(tabId, list);

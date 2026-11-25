@@ -15,6 +15,7 @@ import {
   resizeTile,
   rowOfColumns,
   type TileRect,
+  tidyEagleLayout,
 } from "../eagleLayout";
 import { STAGE_EDGE_RATIO } from "../paneMoves";
 
@@ -379,5 +380,66 @@ describe("rowOfColumns", () => {
     const others = [...tiles].filter(([id]) => id !== 1).map(([, r]) => r);
     expect(resizeTile(first, "bottom", -30, others)).toEqual({ ...first, h: 30 });
     expect(dropBesideTile(tiles, 1, 4, "bottom")?.get(1)).toEqual({ x: 45, y: 30, w: 15, h: 30 });
+  });
+});
+
+describe("tidyEagleLayout", () => {
+  /** A full-height column of the grid, `w` cells wide. */
+  const column = (x: number, w: number): TileRect => ({ x, y: 0, w, h: U });
+
+  it("puts terminals and cards in one row of equal full-height columns, in reading order", () => {
+    // Terminal 1 fills the left half; the card sits above terminal 2 on the right.
+    const stored: Record<number, TileRect> = {
+      1: { x: 0, y: 0, w: 30, h: U },
+      2: { x: 30, y: 30, w: 30, h: 30 },
+    };
+    const before = layoutEagleTiles({ sessionIds: [1, 2], pendingByTab: [["tab-a", 1]], stored });
+
+    const tidy = tidyEagleLayout(before);
+    if (!tidy) throw new Error("expected a row");
+    expect(tidy.tiles).toEqual(
+      new Map([
+        [1, column(0, 20)],
+        [2, column(40, 20)],
+      ]),
+    );
+    expect(tidy.cardColumns).toEqual({ "tab-a": [column(20, 20)] });
+
+    // The layout keeps every column whole: no terminal is cut to make room for the card.
+    const after = layoutEagleTiles({
+      sessionIds: [1, 2],
+      pendingByTab: [["tab-a", 1]],
+      stored: Object.fromEntries(tidy.tiles),
+      cardColumns: tidy.cardColumns,
+    });
+    expect(after.tiles).toEqual(tidy.tiles);
+    expect(after.pending.get("tab-a")).toEqual([column(20, 20)]);
+  });
+
+  it("gives a card launched after the tidy up its full-height column", () => {
+    // Automatic 2×2: terminal 1 and card 1 on top, card 2 across the bottom.
+    const before = layoutEagleTiles({ sessionIds: [1], pendingByTab: [["tab-a", 2]], stored: {} });
+    const tidy = tidyEagleLayout(before);
+    if (!tidy) throw new Error("expected a row");
+
+    // The first card is launched as session 2; one card is left.
+    const after = layoutEagleTiles({
+      sessionIds: [1, 2],
+      pendingByTab: [["tab-a", 1]],
+      stored: Object.fromEntries(tidy.tiles),
+      cardColumns: tidy.cardColumns,
+    });
+    expect(after.tiles.get(1)).toEqual(column(0, 20));
+    expect(after.tiles.get(2)).toEqual(column(20, 20));
+    expect(after.pending.get("tab-a")).toEqual([column(40, 20)]);
+  });
+
+  it("returns null when the cards leave a column too narrow for the smallest tile", () => {
+    const maxColumns = U / MIN_TILE_UNITS;
+    const sessionIds = Array.from({ length: maxColumns - 1 }, (_, i) => i + 1);
+    const layout = (cards: number) =>
+      layoutEagleTiles({ sessionIds, pendingByTab: [["tab-a", cards]], stored: {} });
+    expect(tidyEagleLayout(layout(1))).not.toBeNull();
+    expect(tidyEagleLayout(layout(2))).toBeNull();
   });
 });

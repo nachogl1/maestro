@@ -32,9 +32,9 @@ import {
   layoutEagleTiles,
   rectsEqual,
   resizeTile,
-  rowOfColumns,
   swapTiles,
   type TileRect,
+  tidyEagleLayout,
 } from "@/lib/eagleLayout";
 import { type MoveDirection, neighbourInDirection, type PaneEdge } from "@/lib/paneMoves";
 import { PIN_STRIP_HEIGHT, PIN_STRIP_LABEL, pinnedStripLayout } from "@/lib/pinnedStrip";
@@ -266,6 +266,9 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
     // automatic square-ish grid in project tab order (see eagleLayout.ts).
     const eagleTileRects = useWorkspaceStore((s) => s.eagleTileRects);
     const setEagleTileRects = useWorkspaceStore((s) => s.setEagleTileRects);
+    // The full-height columns the last Tidy up gave the pre-launch cards (per
+    // tab id): a card has no session id to store a place under.
+    const [eagleCardColumns, setEagleCardColumns] = useState<Record<string, TileRect[]>>({});
     const eagleLayout = useMemo(
       () =>
         eagleView
@@ -273,14 +276,17 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
               sessionIds: eagleSessions.map((sess) => sess.sessionId),
               pendingByTab: tabs.map((tab) => [tab.id, pendingCounts.get(tab.id) ?? 0] as const),
               stored: eagleTileRects,
+              cardColumns: eagleCardColumns,
             })
           : EMPTY_EAGLE_LAYOUT,
-      [eagleView, eagleSessions, tabs, pendingCounts, eagleTileRects],
+      [eagleView, eagleSessions, tabs, pendingCounts, eagleTileRects, eagleCardColumns],
     );
     // The stored placements could not be honoured at all: the view fell back
     // to the automatic layout, so make the store say so too.
     useEffect(() => {
-      if (eagleLayout.reset) setEagleTileRects({});
+      if (!eagleLayout.reset) return;
+      setEagleTileRects({});
+      setEagleCardColumns({});
     }, [eagleLayout.reset, setEagleTileRects]);
 
     // Reading order of the tiles (top to bottom, left to right) — drives the
@@ -300,13 +306,15 @@ export const MultiProjectView = forwardRef<MultiProjectViewHandle, MultiProjectV
       (tiles: ReadonlyMap<number, TileRect>) => setEagleTileRects(Object.fromEntries(tiles)),
       [setEagleTileRects],
     );
-    // Tidy up: every tile in one row of full-height columns, in reading order.
-    // Too many tiles for a column each: back to the automatic layout.
+    // Tidy up: every tile, pre-launch cards included, in one row of
+    // full-height columns, in reading order. Too many tiles for a column
+    // each: back to the automatic layout.
     const tidyEagleTiles = useCallback(() => {
-      const row = rowOfColumns(orderedEagleSessions.map((s) => s.sessionId));
-      if (row) commitEagleRects(row);
+      const tidy = tidyEagleLayout(eagleLayout);
+      setEagleCardColumns(tidy?.cardColumns ?? {});
+      if (tidy) commitEagleRects(tidy.tiles);
       else setEagleTileRects({});
-    }, [orderedEagleSessions, commitEagleRects, setEagleTileRects]);
+    }, [eagleLayout, commitEagleRects, setEagleTileRects]);
     const handleEagleDrop = useCallback(
       (sessionId: number, target: EagleDropTarget) => {
         const tiles = new Map(eagleLayout.tiles);
