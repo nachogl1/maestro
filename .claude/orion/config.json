@@ -3,5 +3,7 @@
   "source": "https://github.com/nachogl1/orion.git",
   "ref": "main",
   "branchLimit": 20,
-  "worktreeLimit": 20
+  "worktreeLimit": 20,
+  "developBranch": "develop",
+  "releaseBranch": "main"
 }
