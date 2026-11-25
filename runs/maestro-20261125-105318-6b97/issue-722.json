@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261125-105318-6b97",
+  "issue": 722,
+  "title": "Bug: on Windows, managed worktrees are not found when the data folder's letter case differs on disk",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-25T10:53:18Z",
+  "finished_at": "2026-11-25T11:19:00Z",
+  "outcome": "merged",
+  "pr": 723,
+  "summary": "On Windows the list of Maestro-managed worktrees compared folder paths with exact letter case, so a data folder stored with different capitals hid every managed worktree and left the Current Worktree launch option disabled. The list now compares real on-disk paths; one regression test added.",
+  "agents": [
+    { "name": "dev-722", "model": "opus", "tokens_total": 116257, "tokens_source": "tool" },
+    { "name": "review-722-r1", "model": "opus", "tokens_total": 127205, "tokens_source": "tool" }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1131, "review_seconds": 173, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}

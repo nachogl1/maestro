@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261125-105318-6b97",
+  "issue": 722,
+  "title": "Bug: on Windows, managed worktrees are not found when the data folder's letter case differs on disk",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 723,
+  "merged_at": "2026-11-25T11:16:50Z",
+  "merge_commit": "b9a0fc17a5427377a9bac01504252cd719291591",
+  "seam": "src-tauri/src/core/worktree_manager.rs",
+  "story": "On Windows, the launch card could not see Maestro's own worktrees when the data folder's letter case on disk did not match what the code builds, so \"Current Worktree\" stayed greyed out. Maestro now compares the real on-disk paths, so the option is enabled again. Nothing else in the launch flow changed.",
+  "checks": [
+    {
+      "key": "src-tauri/core/worktree_manager/current-worktree-option-case",
+      "criterion": "On Windows, the \"Current Worktree\" launch option is enabled when Maestro already manages a worktree for the project, even if the data folder's letter case on disk differs (for example AppData\\Roaming\\Maestro).",
+      "steps": "On Windows, make sure the Maestro data folder exists as AppData\\Roaming\\Maestro with a capital M. Open a throwaway git repository as a project and launch a session in a new managed worktree. Close that session and open the launch card for the same project again.",
+      "expected": "The \"Current Worktree\" option is enabled and reuses the existing worktree."
+    }
+  ],
+  "no_qa_reason": null
+}
