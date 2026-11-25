@@ -16,7 +16,6 @@ A rule written here must not contradict the mandatory rules.
 | Typecheck / static analysis | `npx tsc --noEmit` and `cargo clippy` |
 | Lint | `npm run lint` (Biome) and `cargo fmt --check` run inside `src-tauri` |
 | Dev server (if the review surface needs one) | `npm run tauri dev` (desktop app; `npm run dev` for the web front end alone) |
-| Test copies (how the full suite takes N parallel workers) | `npm test -- --maxWorkers=N` and `cargo test --workspace -- --test-threads=N` |
 
 Other useful commands: `npm run test:watch`, `npx vitest run --changed`, `npx vitest run --reporter=verbose`,
 `cargo build --release -p maestro-mcp-server` (build the MCP server), `npm run tauri build` (production app).
@@ -60,6 +59,8 @@ src-tauri/                    # Tauri Rust backend
   signed installer per push to `main`; the app self-updates from those releases), and GitHub Pages, built from
   `main` (`.github/workflows/pages.yml` publishes the `website/` site at `https://nachogl1.github.io/maestro/`
   when `website/` changes; approved by the maintainer on issue #484, the public page decision).
+- Branches: `develop` is the development branch (GitHub's default; daily work starts from it and merges into
+  it) and `main` is the release branch. Nothing ships until a release pull request merges `develop` into `main`.
 - External read-only repositories: the upstream `its-maestro-baby/maestro` (work-item key format: GitHub issue
   numbers). Never open a pull request or push there; every pull request targets `nachogl1/maestro`.
 - Sensitive data classes that never enter the repository: Claude session transcripts and app data, API keys, tokens
