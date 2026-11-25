@@ -1,6 +1,6 @@
 # The UX prototype — brief for `ux-prototype-<slug>`
 
-Spawned by `/prd-to-tickets` phase 1 when the PRD names screens that the prototype on `main` under
+Spawned by `/prd-to-tickets` phase 1 when the PRD names screens that the prototype on the default branch under
 `docs/ux/prototypes/` does not have: no prototype at all, or one missing some of the PRD's screens. The split stops
 after this pull request opens and runs again once it is merged. The prototype is **the design front-end stories
 implement**: a story that adds or changes a screen builds the prototype's screen, never a layout of its own (the
@@ -34,24 +34,31 @@ not describe (a gap in the PRD is reported back, not filled in), or anything a s
 
 ## How it works
 
-1. Read the PRD in full, its pending ADRs (the `docs/ADRs/*.md` whose status line says `pending`), the project's
-   `CLAUDE.md` (the worktree root, the working language, any named design system) and the existing prototype if
+1. Read the PRD in full, its pending ADRs (the `docs/ADRs/*.md` whose status line reads `**Status: pending**`, and
+   any the brief says the person called pending; never one that reads
+   `**Status: folded into the PRD on <yyyy-mm-dd>**` or `**Status: replaced by <newer ADR> on <yyyy-mm-dd>**`), the
+   project's `CLAUDE.md` (the worktree root, the working language, any named design system) and the existing prototype if
    there is one. List the missing screens and the PRD section of each **before** writing any HTML; that list becomes
    the new `README.md` rows.
 2. Create a worktree outside the project at `<worktree root>/ux-prototype-<slug>` on branch
-   `feat/ux-prototype-<slug>` (or the project's own branch pattern) from `origin/main`. Never work in the main
+   `feat/ux-prototype-<slug>` (or the project's own branch pattern) from `origin/<default>` (`<default>` is the
+   default branch: `git symbolic-ref --short refs/remotes/origin/HEAD` prints `origin/<default>`; when it fails,
+   `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`). Never work in the main
    checkout; never stash; never switch branches.
-3. Write the screens and, when needed, the PRD's one line. Open `index.html` once (a headless browser if one is
+3. Write the screens and, when needed, the PRD's one line, and set each ADR status line the brief says the person
+   fixed (the chosen line replaces the old one right under the ADR's title, or is added there when there was none;
+   nothing else in the ADR changes). Open `index.html` once (a headless browser if one is
    available, else read it back) and check every navigation link lands on a section and every section has the
    fields the README promises.
 4. Add the pull request's own changelog file, `docs/changelog/<YYYY-MM-DD>-<branch>.md` (one line; every pull request
    carries one; create the folder with a `README.md` explaining the format if it does not exist). **Run the gate**
    (the gate commands the project's `CLAUDE.md` lists: build → lint → typecheck → full suite) in the worktree; red →
    report the failing command and stop, no pull request. On green, commit only the prototype files, the PRD (when
-   its line was added) and the changelog file: `docs(ux): add the UX prototype screens for <PRD name>`, with the
-   attribution trailer the session requires. Push the branch.
+   its line was added), the fixed ADR status lines (if any) and the changelog file:
+   `docs(ux): add the UX prototype screens for <PRD name>`, with the attribution trailer the session requires. Push the branch.
 5. Open the pull request: title `docs(ux): UX prototype screens for <PRD name>`, body = the new screens table, the
-   PRD line added (if any), what the PRD left unspecified (one line each), and *"Merged by a person (it touches
-   `docs/ux/prototypes/` and `docs/PRDs/`); run `/prd-to-tickets` again once it is on `main`."* **Never merge it.**
+   PRD line added (if any), the ADR status lines fixed (if any), what the PRD left unspecified (one line each), and
+   *"Merged by a person (it touches `docs/ux/prototypes/` and `docs/PRDs/`, and `docs/ADRs/` when a status line was
+   fixed); run `/prd-to-tickets` again once it is on the default branch."* **Never merge it.**
 6. Return a bounded result: the pull request link, the screen list (id and name, one line each), and every PRD gap
    found, five lines at most. On any failure: report what failed and stop; no recovery attempts.

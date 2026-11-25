@@ -119,7 +119,9 @@ Good (the three-line question):
    pile again this run.
 3. **The pile:** for every `origin/audit/<login>` branch, `git ls-tree -r --name-only origin/audit/<login> runs/`
    lists its reports; keep `runs/<run id>/issue-<N>.json` whose run id is newer than that login's `harvested_through`
-   entry (run ids sort by time: `<repo>-<yyyymmdd-hhmmss>-<hex>`, in UTC). Read each with
+   entry. Run ids are `<repo>-<yyyymmdd-hhmmss>-<hex>`, in UTC; newer means a later `yyyymmdd-hhmmss` part, then the
+   larger whole id on a tie, never a plain text comparison: the `<repo>` prefix may differ between runs (a renamed
+   repository, or `alpha-…` and `Alpha_Project-…` on one branch), and as text that prefix would outrank the time. Read each with
    `git show origin/audit/<login>:runs/<run id>/issue-<N>.json` — **never check the branch out, and never read a
    `qa-<N>.json`**: those are the QA records `/harvest-qa` works through, with its own bookmark. Collect every
    `deferred` entry, every `friction` line and every `lessons_learned` line with its run id, issue number, login and
@@ -232,8 +234,12 @@ All file changes go through **one** pull request on `feat/harvest-<yyyymmdd>` in
 rules: worktree root, branch pattern, who merges):
 
 ```
-git -C <main checkout> worktree add <wt root>/harvest-<yyyymmdd> -b feat/harvest-<yyyymmdd> origin/main
+git -C <main checkout> worktree add <wt root>/harvest-<yyyymmdd> -b feat/harvest-<yyyymmdd> origin/<default>
 ```
+
+`<default>` is the default branch (where daily work starts from and merges into), looked up and never assumed:
+`git symbolic-ref --short refs/remotes/origin/HEAD` prints `origin/<default>`; when it fails,
+`gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`.
 
 `<wt root>` is `C:\wt` on Windows and `~/wt` elsewhere, unless the project's `CLAUDE.md` names another. Who merges
 the pull request depends on what it touches (*Who merges*, below).
@@ -257,7 +263,8 @@ the pull request depends on what it touches (*Who merges*, below).
    <login>'s decision".
 4. **Already tracked / already done** (Phase 1, steps 1 and 2) → nothing is written; the pull request table names the
    task or the merged story.
-5. Write `docs/harvest-state.json`: for every login read, `harvested_through` = the newest run id seen this run;
+5. Write `docs/harvest-state.json`: for every login read, `harvested_through` = the newest run id seen this run,
+   by the time-part rule of Phase 0 step 3 (never the largest as text);
    `carried` = every item the human left for next time this run (a group answered "not this time", and every low
    note kept for later) **plus every item carried in step 2** because its task was claimed or owned by someone
    (previous `carried` entries that were decided drop out);
@@ -290,8 +297,7 @@ The mandatory rules, *Who merges*, decide the pull request this skill opens:
 > `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then delete
 > the branch. […] **A person merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`:
 > merging it is the person's approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an
-> agent never lands its own rules), even when the rest is bookkeeping, and the pull request of an `owner-merges`
-> story; the agent merges one of these only on the person's explicit word for that one pull request, once its checks
+> agent never lands its own rules), even when the rest is bookkeeping; the agent merges one of these only on the person's explicit word for that one pull request, once its checks
 > are green. Never merge an `outside-change` pull request: its repository's own reviewer does.
 
 So, for the one pull request a harvest opens:

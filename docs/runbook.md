@@ -836,3 +836,17 @@ worktree, the project's own servers that the worktree's file lacks.
   it cannot tell them from entries you wrote yourself. Open each project's `.mcp.json`, remove the entries you did not
   put there on purpose, and replace every key or token they held (make a new one with the service and revoke the old
   one), above all if the file was ever committed or shared: git history keeps the old value.
+
+## Licences: the licence and third-party notices
+
+Maestro ships its own MIT licence and a notices file listing every open-source package, crate and font inside it,
+with their licence texts.
+
+- **Settings → Updates**, under **Version**, has a **Licences** row with a **Licence and third-party notices**
+  link. Clicking it opens the notices file in the computer's default text viewer. If the file cannot be opened, a
+  red line under the row says why.
+- **Where the file comes from:** `npm run notices` writes `legal/THIRD-PARTY-NOTICES.txt`, and `npm run tauri build`
+  runs it before bundling, so every installer carries it in a `legal/` folder beside the app, with `LICENSE`.
+  A release build stops with an error when the file is missing or empty.
+- **In a dev build** (`npm run tauri dev`) the link opens the file only when `npm run notices` ran before the app
+  was built; otherwise the red line says the file is missing.

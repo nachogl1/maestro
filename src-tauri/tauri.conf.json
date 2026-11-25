@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run notices",
     "frontendDist": "../dist"
   },
   "app": {
@@ -52,6 +52,10 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/maestro-mcp-server"],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../legal/": "legal/"
+    },
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]

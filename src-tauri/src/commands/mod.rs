@@ -10,6 +10,7 @@ pub mod github;
 pub mod hooks;
 pub mod initial_prompt;
 pub mod injector;
+pub mod legal;
 pub mod marketplace;
 pub mod mcp;
 pub mod permissions;

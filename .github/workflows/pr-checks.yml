@@ -3,23 +3,37 @@ name: PR Checks
 on:
   pull_request:
   workflow_dispatch:
+  # The release workflow calls these same jobs and publishes only when they pass.
+  workflow_call:
 
 # A new push to the same PR cancels the run that is still going for the old
-# commit, so runners only ever test the latest code.
+# commit, so runners only ever test the latest code. A release's run is never
+# cancelled, and its group (named after the calling workflow) is its own.
 concurrency:
-  group: pr-checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-pr-checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  pinned-actions:
+    name: Actions pinned to commit hashes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check that no workflow uses a branch or a moving tag
+        run: node .github/scripts/check-pinned-actions.mjs
+
   changes:
     name: Detect changed areas
+    # Only a pull request can skip the Rust tests; every other run tests everything.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         id: filter
         with:
           filters: |
@@ -34,9 +48,9 @@ jobs:
     name: Frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -58,20 +72,22 @@ jobs:
   rust:
     name: Rust
     needs: changes
-    # Manual runs always test Rust; PRs only when Rust-side files changed.
-    # A skipped job counts as passing for the PR status.
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
+    # PRs test Rust only when Rust-side files changed; manual runs and releases
+    # always do. A skipped job counts as passing for the PR status.
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Pinned: Cargo 1.100's new build-dir layout breaks tauri-build 2.5.6's sidecar copy; undo once tauri-build supports it.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master on 2026-11-15
         with:
           toolchain: 1.99.1
           components: rustfmt
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
 
