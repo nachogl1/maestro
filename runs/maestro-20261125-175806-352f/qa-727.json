@@ -1,0 +1,32 @@
+{
+  "run_id": "maestro-20261125-175806-352f",
+  "issue": 727,
+  "title": "Bug: Tidy up (Alt+T) in eagle view leaves a half-height column when a terminal is not launched yet",
+  "login": "nachogl1",
+  "pr": 728,
+  "merged_at": "2026-11-25T18:14:49Z",
+  "merge_commit": "3655b2f0228daf48009f2e4064b6f2a745fb599e",
+  "seam": "src/lib/eagleLayout.ts and the eagle view Tidy up in src/components/shared/MultiProjectView.tsx",
+  "story": "In eagle view, Tidy up used to arrange only the launched terminals as columns. A card waiting to be launched had nowhere to go, so it was squeezed under one terminal and cut that column in half. Now the card counts as a tile and gets its own full-height column, and it keeps that column once you launch it. With terminals only, Tidy up behaves exactly as before.",
+  "checks": [
+    {
+      "key": "eagle-view/tidy-with-card",
+      "criterion": "Tidy up puts every tile, cards included, in one row of full-height columns of equal width, in reading order, and no terminal is cut.",
+      "steps": "Open a made-up project 'demo-proj' and switch to eagle view. Launch two terminals. Click Add terminal once and leave the new card unlaunched. Press Alt+T. Repeat with the top-bar Tidy up button.",
+      "expected": "Three full-height columns of equal width, the two terminals then the card, left to right. Nothing is stacked or cut in half."
+    },
+    {
+      "key": "eagle-view/tidy-then-launch-card",
+      "criterion": "A card launched after Tidy up keeps its full-height column.",
+      "steps": "Do the setup of eagle-view/tidy-with-card and press Alt+T. Click Launch Session on the card.",
+      "expected": "The new terminal fills the card's right-hand column at full height, and the other two columns do not change."
+    },
+    {
+      "key": "eagle-view/tidy-too-many-with-cards",
+      "criterion": "With too many tiles, cards counted, Tidy up falls back to the automatic grid.",
+      "steps": "In eagle view, launch nine terminals. Add two cards and leave them unlaunched. Press Alt+T.",
+      "expected": "The usual square-ish automatic grid, not a row of columns."
+    }
+  ],
+  "no_qa_reason": null
+}

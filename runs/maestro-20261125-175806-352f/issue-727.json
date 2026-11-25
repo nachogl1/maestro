@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261125-175806-352f",
+  "issue": 727,
+  "title": "Bug: Tidy up (Alt+T) in eagle view leaves a half-height column when a terminal is not launched yet",
+  "login": "nachogl1",
+  "started_at": "2026-11-25T17:58:06Z",
+  "finished_at": "2026-11-25T18:15:09Z",
+  "outcome": "merged",
+  "pr": 728,
+  "summary": "Eagle view Tidy up now counts not-launched terminal cards as tiles, so every tile gets its own full-height column of equal width; 4 new tests, terminals-only behaviour unchanged.",
+  "agents": [
+    { "name": "dev-727", "model": "opus", "tokens_total": 133847, "tokens_source": "tool" },
+    { "name": "review-727-r1", "model": "opus", "tokens_total": 112594, "tokens_source": "tool" }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 660, "review_seconds": 219, "ci_seconds": 90 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [],
+  "deferred": []
+}
