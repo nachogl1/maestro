@@ -16,7 +16,7 @@ with one orion ships or may tell the agent to do what the rules forbid, a line m
 that whole-picture check. It runs **once after install** (the hook asks for it at the next session start, or `init`'s
 own closing message asks for it when it ran inside a session), **again each time orion's rules change on this
 computer** (`BASE_CLAUDE.md` or any `.md` file of an orion skill, after an update or a pull that brought one: the hook
-asks once, and `update` says so when it changed them), **once on a computer where the repository is new** (a fresh
+asks once, unless `updateMode` is `off`, and `update` says so when it changed them), **once on a computer where the repository is new** (a fresh
 clone with no record of a check here; every worktree of one clone shares that record), and whenever the user types `/orion-verify`.
 
 Three kinds of outcome, kept strictly apart:
@@ -50,12 +50,12 @@ project wrote:
 
 | Finding | Fix |
 |---|---|
-| `core-files`, `skills`, `skill-file`, `skill-name` (orion-managed), `settings-hook` missing, `rules-reference` | `bash .claude/orion/orion.sh update --force` (needs network; `init --force --yes` when a project skill without the orion marker sits in an orion skill's place — ask first in that case, the project's copy is theirs) |
+| `core-files`, `skills`, `skill-file`, `skill-name` (orion-managed), `settings-hook` missing, `rules-reference` | `bash .claude/orion/orion.sh repair`: it re-copies orion's files from the commit already installed, in every update mode, and never changes the installed version (needs network; when a project skill without the orion marker sits in an orion skill's place, ask first, since the project's copy is theirs, and only on a yes run `repair --force`, which replaces it). When the repair fails (it changed nothing and printed one line), report that line and ask the user with AskUserQuestion whether to update to the newest orion instead (the *Ship an update* steps of the `/orion` skill); never update on your own |
 | `claude-md-import` 0 times | Add the exact import line the finding prints as the first line of `CLAUDE.md`, followed by a blank line |
 | `claude-md-import` more than once | Keep the first occurrence, delete the others |
 | `claude-md-old-import` | Delete the retired `@.claude/orion/ORION.md` line |
 | `settings-hook` more than once | Remove the duplicate `SessionStart` entries whose command contains `/.claude/orion/orion.sh`, keep one |
-| `settings-json`, `config-json`, `config-update-mode` | Read the file, repair the syntax or the value (`ask`, `auto` or `off`); if the intent is unclear, ask |
+| `settings-json`, `config-json`, `config-update-mode` | Read the file, repair the syntax or the value (`ask`, `auto` or `off`; a `config.json` saved as UTF-16 is saved again as UTF-8); if the intent is unclear, ask |
 
 `WARN` lines are **reported** (slots, a locally edited rules copy, a user-level skill shadowing a project one) except
 `changelog-missing`, fixed **without asking** since it only adds a file (create `docs/changelog/README.md` holding a
@@ -183,10 +183,10 @@ project's own), and for every folder under `~/.claude/skills/` whose name matche
   the yes.
 - **A project skill in an orion skill's place** (same folder name, no marker; `init` printed `skip <name>` for it) —
   the rules may rely on orion's version (`rules-reference` in step 1 says so when they do). **Needs a yes**: rename the
-  project's copy, or replace it with orion's through `init --force --yes`.
+  project's copy, or replace it with orion's through `bash .claude/orion/orion.sh repair --force`.
 - **A user-level skill shadowing a project skill** (`skill-shadow` in step 1) — **reported**; the user removes one.
 - **A skill whose front matter is broken** (no `name`, name differs from the folder, no `description`) — orion-managed:
-  fixed by `update --force` in step 1; the project's own: **reported** with the exact fix.
+  fixed by `repair` in step 1; the project's own: **reported** with the exact fix.
 
 Do not review an orion-managed skill's content against the rules: orion ships both and keeps them in step.
 

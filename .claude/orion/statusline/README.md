@@ -63,7 +63,7 @@ Or configure manually — copy the folder wherever you like and point `statusLin
 
 ## Updates
 
-Every project with orion carries this baseline in `.claude/orion/statusline/`, refreshed by `orion update` and committed with the rest. At each session start the computer's copy is compared with the project's:
+Every project with orion carries this baseline in `.claude/orion/statusline/`, refreshed by `orion update` and committed with the rest. At each session start the computer's copy is compared with the project's, unless the project's `updateMode` is `off` (then nothing is offered, and `orion.sh statusline merge` takes a newer baseline by hand):
 
 Your copy never changes without your word, whatever the project's update mode:
 

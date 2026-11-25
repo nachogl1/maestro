@@ -1,7 +1,7 @@
 ---
 name: orion
 description: ORION - Manage the orion files installed in this repository (the orion-managed skills under .claude/skills, the orion rules file imported by CLAUDE.md, and the session-start update check). Shows what is installed and at which version, checks whether a newer orion exists, ships an update through its own pull request, or uninstalls everything orion owns while leaving the project's own rules and skills alone. Use when the user says "/orion", "update orion", "orion status", "is orion up to date", "check for orion updates", "remove orion", or when a session-start message reports that an orion update is available or that orion's files were left uncommitted.
-argument-hint: status | check | update | branches | uninstall
+argument-hint: status | check | update | repair | branches | uninstall
 ---
 
 # orion
@@ -17,6 +17,7 @@ the outcome in the user's preferred shape. All commands work on Windows too, thr
 | `status` (default) | `bash .claude/orion/orion.sh status` | Report version, update mode and skill count in one line each. |
 | `check` | `bash .claude/orion/orion.sh check --force` | Empty output means up to date — say so. JSON output means a newer orion exists — say so and offer `update`. |
 | `update` | Follow *Ship an update* below: `bash .claude/orion/orion.sh update` runs in a worktree of its own, never in the folder the session opened in. | Report the pull request and whether it merged, in one line. |
+| `repair` | `bash .claude/orion/orion.sh repair` (re-copies orion's files from the commit already installed, in every update mode; never changes the installed version or `config.json`; add `--force` only on the user's yes to replace a project skill without the orion marker that sits in an orion skill's place) | Report what it restored. When it fails (nothing changed, one line printed), report that line and ask whether to update to the newest orion instead (*Ship an update*); never update without that yes. |
 | `branches` | **Ask first** with AskUserQuestion, naming both branches and saying it may change the repository's default branch on GitHub, then `bash .claude/orion/orion.sh branches --dev <development branch> --release <release branch>` | Report the two names, what changed on GitHub and any step it printed for a person to do by hand. |
 | `uninstall` | **Ask first** with AskUserQuestion ("Remove everything orion owns from this repository? Your CLAUDE.md rules and your own skills stay."), then `bash .claude/orion/orion.sh uninstall --yes` | List what was removed. Remind the user to commit. |
 

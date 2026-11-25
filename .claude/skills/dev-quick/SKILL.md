@@ -29,8 +29,8 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 
 ## Prerequisites
 
-- `.claude/skills/dev-next/` is installed in this project (orion ships both; `orion update` restores it). Missing →
-  stop and say so: there is no engine to hand the issue to.
+- `.claude/skills/dev-next/` is installed in this project (orion ships both; `bash .claude/orion/orion.sh repair`
+  restores it). Missing → stop and say so: there is no engine to hand the issue to.
 - Everything `/dev-next` needs: GitHub Issues as the tracker, `gh` logged in, the gate commands known from the
   project's `CLAUDE.md` or derivable from CI. This skill checks the first two in its own preflight; `/dev-next`
   checks the rest when it starts, and stops if they are missing — the issue stays filed, nothing is lost.

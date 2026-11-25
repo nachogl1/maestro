@@ -27,8 +27,8 @@ Read the project's `CLAUDE.md` first. It overrides this file where they disagree
 
 ## Prerequisites
 
-- `.claude/skills/dev-next/references/new-issue.md` is installed (orion ships it; `orion update` restores it). It is
-  the issue shape every check here measures against. Missing → stop and say so.
+- `.claude/skills/dev-next/references/new-issue.md` is installed (orion ships it; `bash .claude/orion/orion.sh repair`
+  restores it). It is the issue shape every check here measures against. Missing → stop and say so.
 - GitHub Issues as the tracker, `gh` signed in to the repository `origin` points at. A `CLAUDE.md` naming another
   tracker → stop and say this skill needs GitHub Issues.
 - At least one PRD under `docs/PRDs/`. None → the product has no written truth to reconcile against: run only the

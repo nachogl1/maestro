@@ -8,4 +8,4 @@ files the issue and then hands it to `/dev-next`, so everything `/dev-next`'s ow
 |---|---|---|
 | `gh` is on the path and signed in to the repository `origin` points at | `gh auth status`; `gh repo view --json nameWithOwner` | Report: the skill searches, files and links issues through `gh` |
 | GitHub Issues are enabled on that repository | `gh repo view --json hasIssuesEnabled` | Report: GitHub Issues are the only tracker this skill supports |
-| `dev-next` is installed beside it | `.claude/skills/dev-next/SKILL.md` and `.claude/skills/dev-next/references/new-issue.md` exist | Report: the issue shape and the engine the issue is handed to live there; `orion update` restores them |
+| `dev-next` is installed beside it | `.claude/skills/dev-next/SKILL.md` and `.claude/skills/dev-next/references/new-issue.md` exist | Report: the issue shape and the engine the issue is handed to live there; `bash .claude/orion/orion.sh repair` restores them |
