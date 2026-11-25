@@ -62,7 +62,20 @@ project wrote:
 `# Changelog` heading, a blank line and `One file per pull request, named <YYYY-MM-DD>-<branch>.md (the branch name
 with / turned into -), holding one line: what changed and why it matters. Newest first: sort the names in reverse.`;
 an old single-file changelog stays where it is, as the history before the folder), `claude-md-row`, handled with
-the blank commands in step 2, and these two, which **need a yes**:
+the blank commands in step 2, `origin-head`, fixed **without asking** since it moves only this clone's own pointer
+(`git fetch origin`, then `git remote set-head origin --auto`, then re-run `verify`; a warning that stays is GitHub's default branch differing,
+handled as `github-default` below), and these, which **need a yes**:
+
+- `branches-undeclared` — `.claude/orion/config.json` does not name the development branch (where daily work starts
+  from and merges into) and the release branch (the one the project deploys from), as on an install from before orion
+  asked for them. This skill asks for the two names, in one question each, with the repository's current default
+  branch as the recommended answer for both (the same name for both means a one-branch project), and says that
+  naming another development branch makes it the repository's default branch on GitHub. It runs
+  `bash .claude/orion/orion.sh branches --dev <development> --release <release>` only on a yes, and reports any
+  step that command printed for a person to do by hand.
+- `github-default` — GitHub's default branch is not the declared development branch, so the skills merge daily work
+  into the wrong branch. Offer the command the finding prints (it makes GitHub match the declared names), run only on
+  a yes; or, when the person says the declared name is the wrong one, the same command with the right names.
 
 - `git-ignored` — teammates would not get orion with a clone. Read `.gitignore` (and any nested one the files sit
   under), then propose the exact lines that make every listed file tracked, and show them as a before/after. Git
@@ -98,7 +111,11 @@ Then judge the project's file against the mandatory one:
    yes**: propose adding it with its slots. A section present but incomplete, or still holding `TBD` or
    `<placeholder>` values, is **reported** as still to fill — that is the user's homework, not a breach — except the
    commands below. Only the commands table is also checked by the script (`claude-md-row`); the sentence sections
-   (stack and layout, worktrees, boundaries, pending questions) are judged by reading alone.
+   (stack and layout, worktrees, boundaries, pending questions) are judged by reading alone. The release branch is
+   written in two places: read `releaseBranch` in `.claude/orion/config.json` against the release branch the
+   Boundaries section names (its deploy line); when they differ, this skill reports the disagreement and offers, as
+   **needs a yes**, to correct the one the person says is wrong (`CLAUDE.md` by the smallest edit, `config.json`
+   through `orion.sh branches`).
 4. **The blank and missing commands** — every row of the commands table that still reads `TBD`, and every row a
    `claude-md-row` warning says the table lacks, stops the skills that rely on it (`/dev-next` cannot run with one
    missing from its gate). For each, work out the real command from the project's own files, in this order: the CI
@@ -109,9 +126,12 @@ Then judge the project's file against the mandatory one:
    when nothing in the project tells its command, propose it as `TBD` and say so. Fill the blank ones accepted;
    leave a row as `TBD` when nothing in the project tells the command, and say so. Never run a proposed command to
    test it.
-   **A false warning** — the row is there, under a label that lacks the word the warning names (a test-copies row
-   labelled "Parallel workers", say): never propose a second row. Offer instead, as **needs a yes**, to rename
+   **A false warning** — the row is there, under a label that lacks the word the warning names (a typecheck row
+   labelled "Static analysis", say): never propose a second row. Offer instead, as **needs a yes**, to rename
    that row's label to orion's wording, keeping the project's command as it is, so the warning stops for good.
+   **A row orion no longer reads** — a "Test copies" row left by an older starter (how the full suite takes a
+   number of parallel workers): never work out or fill its command. Offer once, as **needs a yes**, to delete the
+   row; kept, it changes nothing.
 5. **Stale references** — a path, command or file the project's `CLAUDE.md` names that does not exist in the project.
    **Reported**.
 

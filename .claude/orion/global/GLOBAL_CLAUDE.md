@@ -91,7 +91,7 @@
 
 ## Git & saving code
 
-- **Never save straight onto the default branch** (where daily work starts from and merges into) **or the release branch, if the repo has one.** Put changes on a new branch named for the work, following the repo's branch pattern when it defines one (otherwise `feat/<desc>` or `fix/<desc>`), and open a pull request (a change proposed for review). A branch the repo's own rules say is pushed directly (such as a reports branch) is the exception. <!-- orion:v2.3.0+ -->
+- **Never save straight onto the default branch.** Put changes on a new branch named for the work, following the repo's branch pattern when it defines one (otherwise `feat/<desc>` or `fix/<desc>`), and open a pull request (a change proposed for review). A branch the repo's own rules say is pushed directly (such as a reports branch) is the exception. <!-- orion:v2.8.0+ -->
 - **Never force-overwrite shared history** (no force-push) unless I explicitly ask for that push, and **never skip the safety checks** (no `--no-verify`). <!-- orion:v2 -->
 - **Don't merge on red or pending checks.** If the automatic checks (CI — the tests that run when you propose a change) are failing or still running, tell me — don't work around them. <!-- orion:v2 -->
 - **Commit messages follow Conventional Commits** — `type(scope): summary` (e.g. `fix(login): handle empty password`). <!-- orion:v2 -->

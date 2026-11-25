@@ -11,6 +11,9 @@
 # Usage (run inside the project, or pass --project <dir>):
 #   orion.sh init      [--source <git url|path>] [--ref <branch>] [--update-mode ask|auto|off]
 #                      [--statusline|--no-statusline] [--mods|--no-mods] [--force] [--yes]
+#                      [--dev-branch <name>] [--release-branch <name>]
+#                                       # asks for the development and release branches at a terminal (both default
+#                                       # to the current default branch) and runs `branches` on a first install;
 #                                       # shows what orion's agents do on their own and asks to go on;
 #                                       # --yes goes on without asking (needed where there is no terminal)
 #   orion.sh update    [--force]        # fetch the latest orion and re-copy the files orion owns
@@ -18,6 +21,9 @@
 #   orion.sh check     [--force]        # session-start hook: pull the branch, look for a newer orion and for
 #                                       # orion files left uncommitted (every session); too many branches or
 #                                       # worktrees? (once a day each)
+#   orion.sh branches --dev <name> --release <name>
+#                                       # declare the development and release branches in config.json, create a
+#                                       # missing one on origin and make the development branch GitHub's default
 #   orion.sh verify                     # mechanical post-install checks, one line per finding, no fixes
 #   orion.sh status                     # what is installed, which version, which update mode
 #   orion.sh uninstall [--yes]          # remove everything orion owns, keep everything yours
@@ -48,7 +54,8 @@
 #   .claude/orion/config.json         updateMode: ask | auto | off (chosen during init), source/ref, and
 #                                     branchLimit and worktreeLimit (default 20 each, or off): the branch
 #                                     or worktree count at which the session-start hook offers
-#                                     /clear-git-resources
+#                                     /clear-git-resources; developBranch and releaseBranch, written
+#                                     only by `orion.sh branches`
 #   .claude/settings.json             one SessionStart hook entry is added (removed on uninstall)
 
 set -euo pipefail
@@ -75,6 +82,8 @@ GLOBAL_OFFER_PIN=4102444800
 LAST_DAILY_OFFER_VERSION=17
 BRANCH_LIMIT_DEFAULT=20
 WORKTREE_LIMIT_DEFAULT=20
+# The branches the starter CLAUDE.md names (the release branch in its deploy line): init sets them from the declared names.
+STARTER_DEVELOP="main" STARTER_RELEASE="main"
 
 # --------------------------------------------------------------------------
 # helpers
@@ -131,6 +140,26 @@ config_set() {  # file key value
     v=$(json_escape "$3" | sed 's/[\\&|]/\\&/g')   # then escaped once more for the sed replacement below
     tmp=$(mktemp)
     sed "s|^\([[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\"\).*\(\"[[:space:]]*,\{0,1\}[[:space:]]*\)\$|\1$v\2|" "$1" > "$tmp" && mv "$tmp" "$1"
+}
+
+# Set one `"key": "string"` of config.json, adding the key before the closing brace when the file lacks it
+# (config_set only rewrites a key already there); 1 when the file has no closing brace line to add it before.
+config_put() {  # file key value
+    local tmp
+    config_set "$1" "$2" "$3" && return 0
+    [ -f "$1" ] || return 1
+    tmp=$(mktemp)
+    if KEY="$2" VAL="$(json_escape "$3")" awk '
+        { line[NR] = $0 }
+        /^[[:space:]]*}[[:space:]]*$/ { close_at = NR }
+        END {
+            if (!close_at) exit 1
+            for (i = close_at - 1; i > 0 && line[i] ~ /^[[:space:]]*$/; i--) ;
+            if (i > 0 && line[i] !~ /[{,][[:space:]]*$/) { sub(/[[:space:]]*$/, "", line[i]); line[i] = line[i] "," }
+            for (j = 1; j < close_at; j++) print line[j]
+            printf "  \"%s\": \"%s\"\n", ENVIRON["KEY"], ENVIRON["VAL"]
+            for (j = close_at; j <= NR; j++) print line[j]
+        }' "$1" > "$tmp"; then mv "$tmp" "$1"; else rm -f "$tmp"; return 1; fi
 }
 
 # The branch count the /clear-git-resources hook and scanner share: local branches plus
@@ -786,7 +815,6 @@ has no use for. A rule written here must not contradict the mandatory rules.
 | Lint | \`TBD\` |
 | Deterministic checks on generated output (if any) | \`TBD\` |
 | Dev server (if the review surface needs one) | \`TBD\` |
-| Test copies (how the full suite takes \`<copies>\` parallel workers, e.g. \`-n <copies>\`; \`none\` if it does not split) | \`TBD\` |
 
 ## Stack and layout
 
@@ -800,7 +828,8 @@ has no use for. A rule written here must not contradict the mandatory rules.
 
 ## Boundaries
 
-- Deploys to: <environment>, from \`main\`.
+- Development branch (daily work starts from it and merges into it): \`$STARTER_DEVELOP\`.
+- Deploys to: <environment>, from the release branch \`$STARTER_RELEASE\`.
 - External read-only repositories: <none, or list them with their work-item key format>.
 - Sensitive data classes that never enter the repository: <customer records, partner-owned schemas, …>.
 - Boundaries an agent must not move: <none, or list them>.
@@ -816,21 +845,23 @@ EOF
 
 # The starter's own <placeholder> slots, one per line, for verify to look for. A <...> the project wrote itself (a
 # test filter's <test-name>) is a real command, never a slot. <angle-bracket> only names the slots in the starter's
-# intro, <copies> is the token a filled test-copies command keeps (dev-next puts the number there), and the bare <N>
-# is looked for with its label, as a branch pattern's <N> is no slot.
+# intro, and the bare <N> is looked for with its label, as a branch pattern's <N> is no slot.
 starter_slots() {
     local tmp; tmp=$(mktemp)
     write_claude_md_starter "$tmp"
-    grep -oE '<[^<>]+>' "$tmp" | grep -vxF -e '<angle-bracket>' -e '<copies>' | sed 's/^<N>$/baseline: <N>/' | sort -u
+    grep -oE '<[^<>]+>' "$tmp" | grep -vxF -e '<angle-bracket>' | sed 's/^<N>$/baseline: <N>/' | sort -u
     rm -f "$tmp"
 }
 
 # The commands-table rows the mandatory rules rely on, one key word each, in lower case. A row of the project's table
 # whose label holds the word counts as that row, so a reworded label still does. A note in brackets is left out of a
-# label first, so the test-copies row's "(how the full suite takes ...)" never reads as the full suite. The starter's
+# label first, so a note that names another row ("(run before the full suite)") never reads as that row. The starter's
 # rows marked "(if ...)" are optional and have no key word. The suite checks every key word is in exactly one starter
 # row and every other starter row has one.
-COMMAND_ROW_KEYS=(build suite file "one test" type lint copies)
+COMMAND_ROW_KEYS=(build suite file "one test" type lint)
+# A commands-table row an older starter wrote and nothing reads any more ("Test copies": how the full suite took a
+# number of parallel workers). Still reading TBD, it is no unfilled slot: verify never asks for it.
+RETIRED_ROW_RE='^[[:space:]]*\|[[:space:]]*\**[Tt]est copies'
 
 # One line per row of the commands table in a CLAUDE.md: the label in lower case without bold marks or notes in
 # brackets, a tab, then the label as written without bold marks. The table is the one under the first heading that
@@ -1276,16 +1307,141 @@ autonomy_notice() {
 }
 
 # --------------------------------------------------------------------------
+# the declared branches: the development branch (daily work) and the release branch (deploys)
+# --------------------------------------------------------------------------
+# The repository's default branch as this clone last saw it (origin/HEAD), else the branch checked out, else main.
+# Local only: no network.
+current_default_branch() {
+    local b
+    b="$(git -C "$PROJECT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" && [ -n "$b" ] && { printf '%s' "${b#origin/}"; return; }
+    b="$(git -C "$PROJECT" symbolic-ref -q --short HEAD 2>/dev/null)" && [ -n "$b" ] && { printf '%s' "$b"; return; }
+    printf 'main'
+}
+
+# origin's owner/name when origin's host is github.com (read as written, before any insteadOf rewrite), else nothing.
+# Only <scheme>://[user@]github.com[:port]/<owner>/<name> or [user@]github.com:<owner>/<name> counts: a mirror whose
+# path or user part holds github.com, a host that only starts with it, or a user part holding ? or # (a URL that
+# reaches another host) is no GitHub remote.
+github_repo() {
+    local url host slug
+    url="$(git -C "$PROJECT" config --get remote.origin.url 2>/dev/null)" || return 0
+    case "$url" in
+        *://*)
+            case "${url%%://*}" in ""|*[!a-z+]*) return 0 ;; esac
+            slug="${url#*://}"; host="${slug%%/*}"; [ "$host" != "$slug" ] || return 0
+            case "$host" in *[?#]*|*@*@*) return 0 ;; esac
+            slug="${slug#*/}"; host="${host##*@}"
+            case "$host" in github.com) ;; github.com:*) case "${host#github.com:}" in ""|*[!0-9]*) return 0 ;; esac ;; *) return 0 ;; esac ;;
+        *:*)
+            host="${url%%:*}"; slug="${url#*:}"
+            case "$host" in */*|*[?#]*|*@*@*) return 0 ;; esac
+            [ "${host##*@}" = github.com ] || return 0 ;;
+        *) return 0 ;;
+    esac
+    slug="${slug%/}"; slug="${slug%.git}"
+    case "$slug" in ""|/*|*/|*/*/*|*[!A-Za-z0-9._/-]*) return 0 ;; */*) printf '%s' "$slug" ;; esac
+}
+
+branch_name_ok() { case "$1" in ""|-*) return 1 ;; esac; git check-ref-format --branch "$1" >/dev/null 2>&1; }
+
+# A step orion could not take: the one thing the person does by hand. Never fails the install.
+branches_manual() { say "  !    $1"; }
+
+# The default branch origin/HEAD records, or nothing when this clone has none.
+origin_head_branch() {
+    local b
+    b="$(git -C "$PROJECT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || return 0
+    printf '%s' "${b#origin/}"
+}
+
+# The branch names the starter CLAUDE.md writes: the declared ones, else the current default branch.
+starter_branches() {
+    local cfg="$PROJECT/.claude/orion/config.json" cur
+    cur="$(current_default_branch)"
+    STARTER_DEVELOP="$(config_get "$cfg" developBranch "$cur")" STARTER_RELEASE="$(config_get "$cfg" releaseBranch "$cur")"
+}
+
+# The only writer of developBranch and releaseBranch, and the only code that changes GitHub: stores both names,
+# creates a declared branch the remote lacks (from the current default branch), and makes the development branch
+# GitHub's default, then refreshes origin/HEAD. A name left empty is not named: it is taken from config.json, else
+# the current default branch. With no name at all it only stores them, with no network call. Before any write to
+# GitHub the current default branch is the one the remote names now (origin/HEAD is always refreshed first, so a
+# stale or missing one is never taken for it), never a guess from the branch checked out; when the refresh fails,
+# nothing is pushed or switched.
+apply_branches() {  # dev release
+    local dev="$1" rel="$2" named="$1$2" cfg="$PROJECT/.claude/orion/config.json" cur slug b rc key val dev_missing=0
+    slug="$(github_repo)"
+    if [ -n "$named" ] && [ -n "$slug" ]; then
+        cur=""
+        if limited 15 git -C "$PROJECT" remote set-head origin --auto </dev/null >/dev/null 2>&1; then cur="$(origin_head_branch)"; fi
+    else
+        cur="$(current_default_branch)"
+    fi
+    [ -n "$dev" ] || dev="$(config_get "$cfg" developBranch "$cur")"
+    [ -n "$rel" ] || rel="$(config_get "$cfg" releaseBranch "$cur")"
+    for key in developBranch releaseBranch; do
+        if [ "$key" = developBranch ]; then val="$dev"; else val="$rel"; fi
+        [ -n "$val" ] || continue
+        if config_put "$cfg" "$key" "$val"; then say "  ~    .claude/orion/config.json: $key '$val'"
+        else warn "could not write $key into .claude/orion/config.json; add \"$key\": \"$val\" there by hand"; fi
+    done
+    [ -n "$dev" ] && [ "$dev" = "$rel" ] && say "       (one branch for both: no release pull request)"
+    [ -n "$named" ] || return 0
+    if [ -z "$cur" ]; then
+        branches_manual "could not tell GitHub's default branch (git remote set-head origin --auto could not read it from origin), so nothing was pushed or switched: run git fetch origin, then git remote set-head origin --auto, then bash .claude/orion/orion.sh branches --dev ${dev:-<development branch>} --release ${rel:-<release branch>}"
+        return 0
+    fi
+    [ "$dev" = "$cur" ] && [ "$rel" = "$cur" ] && return 0
+    if [ -z "$slug" ]; then
+        branches_manual "no GitHub remote (origin), so GitHub was not changed: create the branches '$dev' and '$rel' if they are missing and make '$dev' the repository's default branch by hand"
+        return 0
+    fi
+    for b in $( { printf '%s\n' "$dev" "$rel"; } | awk '!seen[$0]++' ); do
+        [ "$b" = "$cur" ] && continue
+        rc=0; limited 15 git -C "$PROJECT" ls-remote --exit-code --heads origin "refs/heads/$b" </dev/null >/dev/null 2>&1 || rc=$?
+        [ "$rc" = 0 ] && continue
+        if [ "$rc" = 2 ] && limited 30 git -C "$PROJECT" fetch --quiet origin "refs/heads/$cur:refs/remotes/origin/$cur" </dev/null >/dev/null 2>&1 \
+            && limited 30 git -C "$PROJECT" push --quiet origin "refs/remotes/origin/$cur:refs/heads/$b" </dev/null >/dev/null 2>&1; then
+            say "  +    branch '$b' created on origin from '$cur'"
+        else
+            branches_manual "could not create the branch '$b' on origin: create it from '$cur' by hand (git push origin origin/$cur:refs/heads/$b)"
+            [ "$b" = "$dev" ] && dev_missing=1
+        fi
+    done
+    [ "$dev" = "$cur" ] && return 0
+    # GitHub's default is never pointed at a branch origin lacks.
+    if [ "$dev_missing" = 1 ]; then
+        branches_manual "GitHub's default branch was not changed: '$dev' must exist on origin first; once it does, run bash .claude/orion/orion.sh branches --dev $dev --release $rel"
+        return 0
+    fi
+    if ! have gh; then
+        branches_manual "gh is not installed, so GitHub's default branch is still '$cur': make '$dev' the default branch in the repository's settings (Settings, General, Default branch), then run git fetch origin, then git remote set-head origin --auto"
+    elif ! GH_PROMPT_DISABLED=1 limited 30 gh repo edit "github.com/$slug" --default-branch "$dev" </dev/null >/dev/null 2>&1; then
+        branches_manual "gh could not make '$dev' the default branch of $slug (only a repository admin can): ask one to change it in the repository's settings, or run gh repo edit github.com/$slug --default-branch $dev, then git fetch origin, then git remote set-head origin --auto"
+    else
+        say "  ~    GitHub's default branch of $slug is now '$dev' (was '$cur')"
+        limited 15 git -C "$PROJECT" remote set-head origin --auto </dev/null >/dev/null 2>&1 \
+            || branches_manual "could not refresh origin/HEAD: run git fetch origin, then git remote set-head origin --auto"
+        say "       orion changed nothing else; three things to know:"
+        say "       - open pull requests keep their base '$cur': move each one with gh pr edit <N> --base $dev"
+        say "       - a workflow that runs only on a push to '$cur' gets no run for a merge into '$dev' until you add that branch to it"
+        say "       - a workflow started by hand or on a schedule now runs on '$dev', and a deploy environment that allows only '$cur' rejects it"
+    fi
+}
+
+# --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
 cmd_init() {
     local source="$ORION_DEFAULT_SOURCE" ref="$ORION_DEFAULT_REF" force=0 statusline="prompt" project="" resp mode="" yes=0
-    local source_given=0 ref_given=0 key val old n mods="prompt"
+    local source_given=0 ref_given=0 key val old n mods="prompt" dev="" rel="" first=0 cur
     while [ $# -gt 0 ]; do
         case "$1" in
             --source) source="$2"; source_given=1; shift 2 ;;
             --ref) ref="$2"; ref_given=1; shift 2 ;;
             --update-mode) mode="$2"; shift 2 ;;
+            --dev-branch) dev="${2:-}"; branch_name_ok "$dev" || die "--dev-branch needs a valid branch name (got: $dev)"; shift 2 ;;
+            --release-branch) rel="${2:-}"; branch_name_ok "$rel" || die "--release-branch needs a valid branch name (got: $rel)"; shift 2 ;;
             --project) project="$2"; shift 2 ;;
             --force) force=1; shift ;;
             --yes|-y) yes=1; shift ;;
@@ -1331,10 +1487,36 @@ cmd_init() {
         ask "Choose [1/2/3] (Enter = ask): "
         case "$resp" in 2|auto) mode=auto ;; 3|off) mode=off ;; *) mode=ask ;; esac
     fi
+    # The two branch names: asked on a first install at a terminal, as the update mode is; both default to the
+    # repository's current default branch, and the same name for both is a one-branch project.
+    [ -f "$cfg" ] || first=1
+    if [ "$first" = 1 ] && [ -z "$dev$rel" ] && is_tty; then
+        # The questions name GitHub's default as the remote gives it now, never a stale origin/HEAD: with origin on
+        # GitHub it is refreshed first (time-limited), and a failed refresh names no branch at all.
+        cur="$(current_default_branch)"
+        if [ -n "$(github_repo)" ]; then
+            cur="GitHub's current default branch"
+            if limited 15 git -C "$PROJECT" remote set-head origin --auto </dev/null >/dev/null 2>&1; then
+                [ -z "$(origin_head_branch)" ] || cur="$(origin_head_branch)"
+            fi
+        fi
+        say "Which branch does daily work start from and merge into (the development branch)?"
+        say "A name other than $cur is created on origin if it is missing and becomes the repository's default branch on GitHub."
+        ask "Development branch (Enter = $cur): " || resp=""
+        dev="$resp"; [ -z "$dev" ] || branch_name_ok "$dev" || die "not a valid branch name: $dev"
+        say "Which branch does the project deploy from (the release branch)? The same name means one branch."
+        ask "Release branch (Enter = $cur): " || resp=""
+        rel="$resp"; [ -z "$rel" ] || branch_name_ok "$rel" || die "not a valid branch name: $rel"
+    fi
+    # orion.sh branches runs on a first install, and on an existing one only when a branch flag asks for it.
+    local run_branches=0
+    { [ "$first" = 1 ] || [ -n "$dev$rel" ]; } && run_branches=1
     fetch_source "$source" "$ref"
     retire_user_level_copies
     apply_skills init "$force"
     apply_core "$source" "$ref" "${mode:-ask}"
+    [ "$run_branches" = 1 ] && apply_branches "$dev" "$rel"
+    starter_branches
     apply_claude_md
     settings_add_hook "$PROJECT/.claude/settings.json"
     if [ "$statusline" = "prompt" ]; then
@@ -1446,6 +1628,7 @@ cmd_update() {
     say "orion update $(short "$current") -> $(short "$SRC_SHA") in $PROJECT"
     apply_skills update 0
     apply_core "$source" "$ref"
+    starter_branches
     apply_claude_md
     settings_add_hook "$PROJECT/.claude/settings.json"
     case "$(statusline_sync)" in
@@ -1475,10 +1658,13 @@ cmd_check() {
         esac
     done
     PROJECT="$(resolve_project "$project")" || exit 0
-    local dir="$PROJECT/.claude/orion" now ctx tidy pending pulled global
+    local dir="$PROJECT/.claude/orion" now ctx tidy pending pulled global head
     [ -f "$dir/VERSION" ] || exit 0
     cache_key_set
     pulled="$(check_pull_ctx)"
+    now=$(date +%s)
+    head="$(check_head_ctx "$force" "$now")"
+    [ -n "$head" ] && pulled="${pulled:+$pulled After that: }$head"
     # A fresh init leaves a one-shot marker: ask for the post-install check instead of an update.
     # Without the /orion-verify skill there is nothing to ask for, so the marker waits for it (or for `verify`).
     pending="$(cache_file verify-pending)"
@@ -1492,7 +1678,6 @@ cmd_check() {
         printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$ctx"
         exit 0
     fi
-    now=$(date +%s)
     ctx="$(check_update_ctx "$force")"
     for tidy in "$(check_uncommitted_ctx)" "$(check_rules_ctx)" "$(check_statusline_ctx)" "$(check_mods_ctx)" "$(check_global_ctx "$force" "$now")" "$(check_branches_ctx "$force" "$now")" "$pulled"; do
         [ -n "$tidy" ] || continue
@@ -1712,6 +1897,29 @@ check_pull_ctx() {
     printf '%s' "At session start, git pull --ff-only on branch $(json_escape "$branch") was refused, so the branch may be behind its remote copy (git said: $(json_escape "$out")). Tell the user in one line; never force, rebase or reset the branch to fix it."
 }
 
+# Keeps this clone's origin/HEAD in step with GitHub's default branch, every session, in a time-limited step of its
+# own: whatever config.json says, and also on no branch or a branch with no remote copy (where the pull does nothing).
+# Only after a successful refresh, when the declared development branch differs from origin/HEAD, it says so, at
+# most once a day. Silent otherwise; an unreachable remote proves nothing and says nothing.
+check_head_ctx() {  # force now
+    local dev head stamp last
+    have git || return 0
+    git -C "$PROJECT" config --get remote.origin.url >/dev/null 2>&1 || return 0
+    limited 8 git -C "$PROJECT" remote set-head origin --auto </dev/null >/dev/null 2>&1 || return 0
+    dev="$(config_get "$PROJECT/.claude/orion/config.json" developBranch "")"
+    [ -n "$dev" ] || return 0
+    head="$(git -C "$PROJECT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || return 0
+    head="${head#origin/}"
+    [ "$head" = "$dev" ] && return 0
+    stamp="$(cache_file declared-branch-check)"
+    if [ "$1" != "1" ] && [ -f "$stamp" ]; then
+        last=$(cat "$stamp" 2>/dev/null || echo 0)
+        [ $(($2 - last)) -lt "$CHECK_INTERVAL_SECONDS" ] && return 0
+    fi
+    mkdir -p "$(dirname "$stamp")" 2>/dev/null && printf '%s' "$2" 2>/dev/null > "$stamp" || true
+    printf '%s' "GitHub's default branch (origin/HEAD) is $(json_escape "$head"), but .claude/orion/config.json declares $(json_escape "$dev") as the development branch, so the skills would merge daily work into $(json_escape "$head"). Tell the user in one line, and say that /orion-verify (.claude/skills/orion-verify/SKILL.md) offers the fix: bash .claude/orion/orion.sh branches, which changes the repository's default branch, run only on their yes. Never change it yourself."
+}
+
 # A limit from config.json: the number, or nothing when it is off (a value that is not a number falls back to the default).
 limit_of() {  # key default
     local v
@@ -1745,6 +1953,24 @@ check_branches_ctx() {  # force now
     printf '%s' "This project $over, set in .claude/orion/config.json. Before anything else, ask the user with the AskUserQuestion tool whether to tidy up now (options: 'Tidy up now' recommended, 'Not now'). If they say yes, run the /clear-git-resources skill (.claude/skills/clear-git-resources/SKILL.md) exactly as written: it deletes the user's own stale worktrees and branches whose work cannot be lost by itself, asks before deleting anyone else's stale ones, and never touches unmerged work or the audit and QA resources. If they say no, continue with their request and do not mention it again this session."
 }
 
+cmd_branches() {
+    local project="" dev="" rel=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev) dev="${2:-}"; branch_name_ok "$dev" || die "--dev needs a valid branch name (got: $dev)"; shift 2 ;;
+            --release) rel="${2:-}"; branch_name_ok "$rel" || die "--release needs a valid branch name (got: $rel)"; shift 2 ;;
+            --project) project="$2"; shift 2 ;;
+            -h|--help) usage ;;
+            *) die "unknown option for branches: $1" ;;
+        esac
+    done
+    [ -n "$dev$rel" ] || die "usage: orion.sh branches --dev <name> --release <name>"
+    PROJECT="$(resolve_project "$project")"
+    [ -f "$PROJECT/.claude/orion/config.json" ] || die "orion is not installed in $PROJECT (no .claude/orion/config.json): run init first"
+    say "orion branches -> $PROJECT"
+    apply_branches "$dev" "$rel"
+}
+
 cmd_status() {
     local project=""
     while [ $# -gt 0 ]; do case "$1" in --project) project="$2"; shift 2 ;; *) shift ;; esac; done
@@ -1757,6 +1983,11 @@ cmd_status() {
     say "updateMode: $(config_get "$cfg" updateMode ask)   (edit .claude/orion/config.json: ask | auto | off)"
     say "branchLimit: $(config_get "$cfg" branchLimit "$BRANCH_LIMIT_DEFAULT")   (branches now: $(branch_count "$PROJECT"); the hook offers /clear-git-resources at the limit; a number or off)"
     say "worktreeLimit: $(config_get "$cfg" worktreeLimit "$WORKTREE_LIMIT_DEFAULT")   (worktrees now: $(worktree_count "$PROJECT"); the hook offers /clear-git-resources at the limit; a number or off)"
+    if [ -n "$(config_get "$cfg" developBranch "")" ] && [ -n "$(config_get "$cfg" releaseBranch "")" ]; then
+        say "branches:   development $(config_get "$cfg" developBranch ""), release $(config_get "$cfg" releaseBranch "")   (change with: orion.sh branches --dev <name> --release <name>)"
+    else
+        say "branches:   not declared (run: orion.sh branches --dev <name> --release <name>)"
+    fi
     shopt -s nullglob
     for entry in "$PROJECT"/.claude/skills/*/; do
         [ -f "${entry%/}/$MARKER" ] && { say "skill:      $(basename "$entry")"; n=$((n+1)); }
@@ -1858,6 +2089,31 @@ v_ok()   { say "  ok    $1: $2"; }
 v_warn() { say "  WARN  $1: $2"; VERIFY_WARN=$((VERIFY_WARN+1)); }
 v_fail() { say "  FAIL  $1: $2"; VERIFY_FAIL=$((VERIFY_FAIL+1)); }
 
+# Three warnings, never a FAIL: the names missing from config.json, GitHub's default branch (skipped when gh cannot
+# read it) and this checkout's origin/HEAD, each against the declared development branch.
+verify_branches() {  # config.json
+    local dev rel slug gh_default head fix
+    dev="$(config_get "$1" developBranch "")"; rel="$(config_get "$1" releaseBranch "")"
+    if [ -z "$dev" ] || [ -z "$rel" ]; then
+        v_warn branches-undeclared ".claude/orion/config.json does not name the development and release branches (developBranch, releaseBranch: an install from before orion asked for them); /orion-verify asks for the two names and runs orion.sh branches only on the person's yes"
+        return 0
+    fi
+    v_ok branches "development branch '$dev', release branch '$rel'"
+    fix="fix, on the person's yes: bash .claude/orion/orion.sh branches --dev $dev --release $rel"
+    slug="$(github_repo)"
+    if [ -n "$slug" ] && have gh; then
+        gh_default="$(GH_PROMPT_DISABLED=1 limited 15 gh repo view "github.com/$slug" --json defaultBranchRef --jq .defaultBranchRef.name </dev/null 2>/dev/null | tr -d '\r' || true)"
+        if [ -z "$gh_default" ]; then v_ok github-default "not compared: gh could not read the default branch of $slug"
+        elif [ "$gh_default" = "$dev" ]; then v_ok github-default "GitHub's default branch is the declared development branch '$dev'"
+        else v_warn github-default "GitHub's default branch of $slug is '$gh_default', not the declared development branch '$dev', so the skills merge daily work into '$gh_default' ($fix)"; fi
+    fi
+    head="$(git -C "$PROJECT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    head="${head#origin/}"
+    if [ -n "$head" ] && [ "$head" != "$dev" ]; then
+        v_warn origin-head "this checkout's origin/HEAD points at '$head', not the declared development branch '$dev' (run git fetch origin, then git remote set-head origin --auto; if it still points there, GitHub's default branch differs: $fix)"
+    fi
+}
+
 cmd_verify() {
     local project=""
     while [ $# -gt 0 ]; do case "$1" in --project) project="$2"; shift 2 ;; -h|--help) usage ;; *) die "unknown option for verify: $1" ;; esac; done
@@ -1902,7 +2158,7 @@ cmd_verify() {
             *) v_fail claude-md-import "CLAUDE.md carries the import line $n times (fix: keep the first, delete the others)" ;;
         esac
         grep -qxF "$OLD_IMPORT_LINE" "$claude" && v_fail claude-md-old-import "CLAUDE.md still imports the retired ORION.md (fix: delete that line; the BASE_CLAUDE.md import replaces it)"
-        slots=$(grep -cF -e '`TBD`' -f <(starter_slots) "$claude" || true)
+        slots=$(grep -vE "$RETIRED_ROW_RE" "$claude" | grep -cF -e '`TBD`' -f <(starter_slots) || true)
         [ "$slots" -gt 0 ] 2>/dev/null && v_warn claude-md-slots "CLAUDE.md has $slots line(s) with an unfilled slot (TBD or a starter <placeholder>); the rules that rely on them cannot run until they are filled"
         verify_command_rows "$claude"
         while IFS= read -r p; do
@@ -2010,6 +2266,9 @@ cmd_verify() {
         v_warn changelog-missing "docs/changelog/ is missing, and every pull request adds its own one-line file there (fix: $f)"
     fi
 
+    # 8. the declared branches: config.json names them, GitHub's default branch and this checkout's origin/HEAD follow
+    verify_branches "$cfg"
+
     say "verify: $VERIFY_FAIL fail, $VERIFY_WARN warn"
     [ "$VERIFY_FAIL" -eq 0 ]
 }
@@ -2022,6 +2281,7 @@ main() {
         # the hook contract: whatever goes wrong inside, the session start sees exit 0
         check) set +e; ( set -e; cmd_check "$@" ); exit 0 ;;
         verify) cmd_verify "$@" ;;
+        branches) cmd_branches "$@" ;;
         status) cmd_status "$@" ;;
         uninstall) cmd_uninstall "$@" ;;
         statusline) cmd_statusline "$@" ;;

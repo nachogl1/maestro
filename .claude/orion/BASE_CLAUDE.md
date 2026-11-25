@@ -254,12 +254,6 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
 - **The gate, before any pull request opens:** build → lint → typecheck → full suite, with exactly the commands the
   project's `CLAUDE.md` lists (the same chain as CI). A command still reading `TBD` means the stack decision has not
   landed and `/dev-next` cannot run.
-- **Test copies are sized fresh before every local test run** (the dev agent's gate, the reviewer's run if it runs
-  the suite, the run on the merged branch), so runs sharing one computer neither wait long nor clash. `cores` is the
-  computer's physical cores, not its logical ones; `runs` is the live entries in the in-flight file's `issues` list,
-  issue-less ones included and stale ones left out, counted from the moment a run starts its story. The copies
-  (parallel test workers) are the smaller of `cores ÷ runs` and `cores ÷ 2`, rounded down and at least 1; with less
-  than 2 GB of memory free, they are 1. They reach the full suite the way the project's `CLAUDE.md` names.
 - **If the project produces generated output, it is gated by evaluation, not by a passing build.** The project's
   `CLAUDE.md` names the deterministic checks, the evaluation harness and its baselined threshold. A run that cannot
   execute the evaluation is **red**, never "not applicable".
@@ -365,13 +359,14 @@ Everything project-specific lives in the project's `CLAUDE.md`, never here. `ori
 when the project has none; otherwise add what is missing. A slot the project has no use for is deleted.
 
 - **Commands**: build, full suite, one file, one test, typecheck, lint, deterministic checks on generated output (if
-  any), dev server (how to start the product; the QA pass needs it), how to pass the copy count to the full suite
-  (or `none`) — one table, every row a real command or `TBD`.
+  any), dev server (how to start the product; the QA pass needs it) — one table, every row a real command or `TBD`.
 - **Stack and layout**: language and version with the file that pins it, test framework, application code path, test
   code path, skip-count baseline, CI runner.
 - **Worktrees**: the worktree root outside the project, the port rule (`<base port> + issue number`) and the env
   variable that carries it.
-- **Boundaries**: deploy target, external read-only repositories and their work-item key format, sensitive data
-  classes that must never enter the repository, any boundary an agent must not move, the working language.
+- **Boundaries**: deploy target, the development branch and the release branch (the names declared in
+  `.claude/orion/config.json`; the same name for both when the project has one branch), external read-only
+  repositories and their work-item key format, sensitive data classes that must never enter the repository, any
+  boundary an agent must not move, the working language.
 - **Pending until PRD v1**: the open questions, one table row each with the file and section they decide and who
   decides, asked as one batch (each with a recommended answer) once `docs/PRDs/PRD.md` exists and deleted as answered.
