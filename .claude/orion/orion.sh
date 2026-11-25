@@ -2,24 +2,28 @@
 # orion - a repo-level utility framework for Claude Code projects.
 #
 # Everything orion ships is copied INTO the project (skills, a rules file, this
-# script, the status line baseline) and committed, so teammates get it with a
-# plain git clone/pull. The only per-computer piece is the optional status line
-# in ~/.claude/statusline: a newer baseline in the project is offered at session
-# start and taken (merged into an edited copy) only on its owner's word.
+# script, the status line baseline, the mods) and committed, so teammates get it
+# with a plain git clone/pull. The per-computer pieces are the optional status
+# line in ~/.claude/statusline and the optional mods in ~/.claude/orion-mods: a
+# newer copy in the project is offered at session start and taken (merged into an
+# edited status line; a mod is replaced whole) only on its owner's word.
 #
 # Usage (run inside the project, or pass --project <dir>):
 #   orion.sh init      [--source <git url|path>] [--ref <branch>] [--update-mode ask|auto|off]
-#                      [--statusline|--no-statusline] [--force] [--yes]
+#                      [--statusline|--no-statusline] [--mods|--no-mods] [--force] [--yes]
 #                                       # shows what orion's agents do on their own and asks to go on;
 #                                       # --yes goes on without asking (needed where there is no terminal)
 #   orion.sh update    [--force]        # fetch the latest orion and re-copy the files orion owns
 #   orion.sh update    --skip           # decline the newest orion: the hook stays quiet until a newer one
-#   orion.sh check     [--force]        # session-start hook: pull the branch and look for a newer orion (every
-#                                       # session); too many branches or worktrees? (once a day each)
+#   orion.sh check     [--force]        # session-start hook: pull the branch, look for a newer orion and for
+#                                       # orion files left uncommitted (every session); too many branches or
+#                                       # worktrees? (once a day each)
 #   orion.sh verify                     # mechanical post-install checks, one line per finding, no fixes
 #   orion.sh status                     # what is installed, which version, which update mode
 #   orion.sh uninstall [--yes]          # remove everything orion owns, keep everything yours
 #   orion.sh statusline merge|skip      # take orion's newer status line (keeping your edits), or decline it
+#   orion.sh mod install|skip <name>    # install orion's mod on this computer (or take its newer copy), or decline it
+#   orion.sh mod remove <name>          # uninstall the mod and delete this computer's copy
 #   orion.sh help
 #
 # First-time bootstrap, no clone needed (run inside the project):
@@ -35,6 +39,7 @@
 #   .claude/orion/BASE_CLAUDE.md      the mandatory rules, imported by CLAUDE.md
 #   .claude/orion/statusline/         the status line baseline each computer's copy follows
 #   .claude/orion/global/             GLOBAL_CLAUDE.md, the personal rules offered for ~/.claude/CLAUDE.md
+#   .claude/orion/mods/<name>.tar     the optional Claude Code mods each computer may install, one archive each
 #   .claude/orion/VERSION             commit the files came from (its commit time, and orion's version number)
 #   .claude/orion/.orion-manifest     the list above
 # What orion creates ONCE and never touches again (yours):
@@ -55,11 +60,14 @@ IMPORT_LINE="Mandatory rules, owned and refreshed by orion (never edit the copy)
 OLD_IMPORT_LINE="@.claude/orion/ORION.md"   # what orion wrote before the rules moved to BASE_CLAUDE.md
 HOOK_NEEDLE="/.claude/orion/orion.sh"
 HOOK_CMD='bash "${CLAUDE_PROJECT_DIR}/.claude/orion/orion.sh" check'
-# The session-start hook's time budget in seconds: 8 s pull fetch + 8 s update check + 10 s fetch + copying the
-# files, which under Git Bash on Windows alone can take over 10 s. Installs that carry a lower value are raised
-# on update.
+# The session-start hook's time budget in seconds: 8 s pull fetch + 8 s update check, with room to spare. It was
+# sized when the hook still ran the update itself and is kept, so no install's limit goes down. Installs that
+# carry a lower value are raised on update.
 HOOK_TIMEOUT=60
 CHECK_INTERVAL_SECONDS=86400
+# How the agent ships orion's files: never in the folder the session opens in, always through a pull request of
+# their own. The steps live in the orion skill; check's messages point there.
+SHIP_STEPS="Ship it through its own pull request, following the 'Ship an update' steps of the /orion skill (.claude/skills/orion/SKILL.md) exactly as written: a worktree at the project's worktree root on feat/orion-update-v<new> from the default branch, 'bash .claude/orion/orion.sh update' there and never in this folder, the project's changelog file and gate, a pull request titled 'chore(orion): update orion from <old> to <new>' merged on green under the project's merge bar ('no checks reported' counts as red), then 'git pull --ff-only' in this folder. A run that cannot finish reports, stops and leaves its worktree for /clear-git-resources."
 # The time this orion.sh pins in global-offered once the personal rules were offered (2100-01-01 UTC): an older
 # orion.sh offers when that time is a day old, so a time in the future keeps it quiet for good.
 GLOBAL_OFFER_PIN=4102444800
@@ -294,15 +302,8 @@ fetch_source() {  # source ref
     TMP_DIR="$(mktemp -d)"
     say "fetching orion ($2) from $1 ..."
     latest_remote "$1" "$2"
-    # ORION_FETCH_SECONDS (set by the session-start hook) time-limits the network fetch only, never the copy
-    # that follows: a copy cut short half-way would leave the project with a half-updated orion.
-    if [ -n "${ORION_FETCH_SECONDS:-}" ]; then
-        limited "$ORION_FETCH_SECONDS" git clone --quiet --depth 1 --branch "$2" "$1" "$TMP_DIR/orion" 2>/dev/null \
-            || die "could not fetch orion from $1 (ref $2) within $ORION_FETCH_SECONDS s"
-    else
-        git clone --quiet --depth 1 --branch "$2" "$1" "$TMP_DIR/orion" 2>/dev/null \
-            || die "could not fetch orion from $1 (ref $2)"
-    fi
+    git clone --quiet --depth 1 --branch "$2" "$1" "$TMP_DIR/orion" 2>/dev/null \
+        || die "could not fetch orion from $1 (ref $2)"
     SRC_DIR="$TMP_DIR/orion"
     SRC_SHA="$(git -C "$SRC_DIR" rev-parse HEAD)"
     SRC_TIME="$(git -C "$SRC_DIR" log -1 --format=%ct 2>/dev/null || printf '0')"
@@ -575,6 +576,119 @@ PY
     say "statusLine configured in $f"
 }
 
+# One key binding in Claude Code's keybindings file ({"bindings": [{"context": ..., "bindings": {key: action}}]}),
+# keys compared without case. bind adds key -> action to the first Global block (a new one when there is none)
+# only when no block binds that key yet; unbind deletes key -> action wherever it sits and drops a block it left
+# empty. The file is rewritten only when something changes. Prints the outcome: bind -> added | present |
+# taken<TAB><the action already there>; unbind -> removed | removed-empty (nothing is left but orion's empty
+# starter) | none; either -> bad when the file is not a keybindings file: not an object, a top-level "bindings"
+# that is neither a list nor null (or missing), or, for bind, a first Global block whose "bindings" is neither an
+# object nor null (or missing). The three editors give the same answer for every shape. Native Windows tools end
+# it with \r.
+keys_edit() { keys_edit_raw "$@" | tr -d '\r'; }
+keys_edit_raw() {  # bind|unbind file key action
+    local op="$1" f="$2" k="$3" a="$4" tool
+    tool=$(json_tool)
+    case "$tool" in
+        jq)
+            local tmp sel state
+            jq -e 'type == "object" and ((.bindings | type) as $t | $t == "array" or $t == "null")' "$f" >/dev/null 2>&1 || { echo bad; return; }
+            sel='.bindings[]? | objects | (.bindings // {}) | objects | to_entries[] | select((.key | ascii_downcase) == $k)'
+            tmp=$(mktemp)
+            if [ "$op" = bind ]; then
+                state=$(jq -r --arg k "$k" --arg a "$a" "[$sel | .value] as \$v | if (\$v | index(\$a)) != null then \"present\" elif (\$v | length) > 0 then \"taken\t\" + (\$v[0] | if type == \"string\" then . else tojson end) elif ([.bindings[]? | objects | select(.context == \"Global\")][0].bindings | type) as \$t | \$t == \"object\" or \$t == \"null\" then \"free\" else \"bad\" end" "$f" 2>/dev/null | tr -d '\r')
+                [ "$state" = free ] || { rm -f "$tmp"; echo "$state"; return; }
+                jq --arg k "$k" --arg a "$a" '((.bindings // []) | map(type == "object" and .context == "Global") | index(true)) as $i
+                    | if $i == null then .bindings = ((.bindings // []) + [{context: "Global", bindings: {($k): $a}}])
+                      else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + {($k): $a}) end' "$f" > "$tmp" && mv "$tmp" "$f" && echo added
+            else
+                state=$(jq -r --arg k "$k" --arg a "$a" "[$sel | select(.value == \$a)] | length" "$f" 2>/dev/null | tr -d '\r')
+                [ "$state" != 0 ] || { rm -f "$tmp"; echo none; return; }
+                jq --arg k "$k" --arg a "$a" '.bindings |= map(
+                        if type == "object" and ((.bindings | type) == "object") and (.bindings | to_entries | any((.key | ascii_downcase) == $k and .value == $a))
+                        then (.bindings |= with_entries(select(((.key | ascii_downcase) == $k and .value == $a) | not))) | select((.bindings | length) > 0)
+                        else . end)' "$f" > "$tmp" && mv "$tmp" "$f" || return
+                jq -r 'if ((keys - ["$schema", "$docs", "bindings"]) | length) == 0 and ((.bindings // []) | length) == 0 then "removed-empty" else "removed" end' "$f"
+            fi ;;
+        python3|python)
+            "$tool" - "$op" "$f" "$k" "$a" 2>/dev/null <<'PY'
+import json, sys
+op, f, k, a = sys.argv[1:5]
+try:
+    d = json.load(open(f, encoding="utf-8-sig"))
+except Exception:
+    d = None
+if not isinstance(d, dict) or not isinstance([] if d.get("bindings") is None else d["bindings"], list):
+    print("bad"); sys.exit()
+if d.get("bindings") is None: d["bindings"] = []
+blocks = d["bindings"]
+owned = [b for b in blocks if isinstance(b, dict) and isinstance(b.get("bindings"), dict)]
+def save():
+    open(f, "w", encoding="utf-8").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+if op == "bind":
+    vals = [v for b in owned for key, v in b["bindings"].items() if key.lower() == k]
+    if a in vals: print("present")
+    elif vals: print("taken\t" + (vals[0] if isinstance(vals[0], str) else json.dumps(vals[0])))
+    else:
+        g = next((b for b in blocks if isinstance(b, dict) and b.get("context") == "Global"), None)
+        if g is None: blocks.append({"context": "Global", "bindings": {k: a}})
+        elif g.get("bindings") is None: g["bindings"] = {k: a}
+        elif isinstance(g["bindings"], dict): g["bindings"][k] = a
+        else: print("bad"); sys.exit()
+        save(); print("added")
+else:
+    hit = [b for b in owned if any(key.lower() == k and v == a for key, v in b["bindings"].items())]
+    if not hit: print("none"); sys.exit()
+    for b in hit:
+        b["bindings"] = {key: v for key, v in b["bindings"].items() if not (key.lower() == k and v == a)}
+    d["bindings"] = [b for b in blocks if not (any(b is h for h in hit) and not b["bindings"])]
+    save()
+    print("removed-empty" if not d["bindings"] and not set(d) - {"$schema", "$docs", "bindings"} else "removed")
+PY
+            ;;
+        powershell)
+            powershell.exe -NoProfile -NonInteractive -Command "
+                \$f = '$(cygpath -w "$f" 2>/dev/null || printf '%s' "$f")'; \$k = '$k'; \$a = '$a'
+                try { \$d = Get-Content -Raw -Encoding UTF8 \$f | ConvertFrom-Json } catch { 'bad'; exit }
+                if (-not (\$d -is [Management.Automation.PSCustomObject])) { 'bad'; exit }
+                \$has = [bool]\$d.PSObject.Properties['bindings']
+                if (\$has -and \$null -ne \$d.bindings -and -not (\$d.bindings -is [array])) { 'bad'; exit }
+                \$blocks = @(); if (\$has -and \$null -ne \$d.bindings) { \$blocks = @(\$d.bindings) }
+                function Get-Own(\$b) { (\$b -is [Management.Automation.PSCustomObject]) -and (\$b.bindings -is [Management.Automation.PSCustomObject]) }
+                function Save-Keys { [IO.File]::WriteAllText(\$f, (\$d | ConvertTo-Json -Depth 10) + [Environment]::NewLine) }
+                if ('$op' -eq 'bind') {
+                    \$vals = @(); foreach (\$b in \$blocks) { if (Get-Own \$b) { foreach (\$p in @(\$b.bindings.PSObject.Properties)) { if (\$p.Name -eq \$k) { \$vals += ,\$p.Value } } } }
+                    if (\$vals -ccontains \$a) { 'present'; exit }
+                    if (\$vals.Count -gt 0) { if (\$null -eq \$vals[0]) { \"taken\`tnull\" } else { \"taken\`t\" + \$vals[0] }; exit }
+                    \$g = \$null; foreach (\$b in \$blocks) { if ((\$b -is [Management.Automation.PSCustomObject]) -and \$b.context -ceq 'Global') { \$g = \$b; break } }
+                    if (\$null -eq \$g) {
+                        \$entry = [PSCustomObject]@{ context = 'Global'; bindings = [PSCustomObject]@{ \$k = \$a } }
+                        if (\$has) { \$d.bindings = @(\$blocks) + @(\$entry) } else { \$d | Add-Member -NotePropertyName bindings -NotePropertyValue @(\$entry) }
+                    } else {
+                        if (\$null -eq \$g.bindings) { \$g | Add-Member -Force -NotePropertyName bindings -NotePropertyValue (New-Object PSObject) }
+                        elseif (-not (\$g.bindings -is [Management.Automation.PSCustomObject])) { 'bad'; exit }
+                        \$g.bindings | Add-Member -NotePropertyName \$k -NotePropertyValue \$a
+                    }
+                    Save-Keys; 'added'
+                } else {
+                    \$n = 0; \$keep = @()
+                    foreach (\$b in \$blocks) {
+                        \$hit = \$false
+                        if (Get-Own \$b) { foreach (\$p in @(\$b.bindings.PSObject.Properties)) { if (\$p.Name -eq \$k -and \$p.Value -is [string] -and \$p.Value -ceq \$a) { \$b.bindings.PSObject.Properties.Remove(\$p.Name); \$hit = \$true; \$n++ } } }
+                        if (\$hit -and @(\$b.bindings.PSObject.Properties).Count -eq 0) { continue }
+                        \$keep += ,\$b
+                    }
+                    if (\$n -eq 0) { 'none'; exit }
+                    \$d.bindings = \$keep
+                    Save-Keys
+                    \$others = @(\$d.PSObject.Properties | Where-Object { @('\$schema', '\$docs', 'bindings') -notcontains \$_.Name })
+                    if (\$keep.Count -eq 0 -and \$others.Count -eq 0) { 'removed-empty' } else { 'removed' }
+                }
+            " 2>/dev/null ;;
+        *) echo none-tool ;;
+    esac
+}
+
 # --------------------------------------------------------------------------
 # apply: copy everything orion owns from SRC_DIR into the project
 # --------------------------------------------------------------------------
@@ -632,17 +746,20 @@ apply_core() {  # source ref update-mode
     rm -rf "$dir/statusline"; cp -R "$SRC_DIR/baselines/statusline" "$dir/statusline"
     # only the offer of orion's personal rules: nothing imports it, the person takes clauses on their word
     rm -rf "$dir/global"; cp -R "$SRC_DIR/baselines/global" "$dir/global"
+    # and orion's mods, which a computer installs only on the person's word
+    apply_mods
     # line 4, the source's commit time, is for information only; line 5, orion's version number, tells the
     # update check whether a release is newer, and the computer's status line whether this project's copy is
     printf '%s\n%s\n%s\n%s\n%s\n' "$SRC_SHA" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SRC_TIME:-0}" "$SRC_VERSION" > "$dir/VERSION"
     { printf '%s\n' "orion.sh" "BASE_CLAUDE.md" "VERSION" ".orion-manifest"
-      ( cd "$SRC_DIR/baselines" && find statusline global -type f | LC_ALL=C sort ); } > "$dir/.orion-manifest"
+      ( cd "$SRC_DIR/baselines" && find statusline global -type f | LC_ALL=C sort )
+      mod_dirs "$SRC_DIR/mods" | sed 's|.*|mods/&.tar|'; } > "$dir/.orion-manifest"
     if [ ! -f "$dir/config.json" ]; then
         printf '{\n  "updateMode": "%s",\n  "source": "%s",\n  "ref": "%s",\n  "branchLimit": %s,\n  "worktreeLimit": %s\n}\n' \
             "$(json_escape "$mode")" "$(json_escape "$1")" "$(json_escape "$2")" "$BRANCH_LIMIT_DEFAULT" "$WORKTREE_LIMIT_DEFAULT" > "$dir/config.json"
         say "  +    .claude/orion/config.json (yours: updateMode $mode, edit to ask | auto | off; branchLimit $BRANCH_LIMIT_DEFAULT and worktreeLimit $WORKTREE_LIMIT_DEFAULT, a number or off)"
     fi
-    say "  ~    .claude/orion/{orion.sh, BASE_CLAUDE.md, VERSION, statusline/, global/} @ $(version_label "$SRC_SHA" "$SRC_VERSION") ($(short "$SRC_SHA"))"
+    say "  ~    .claude/orion/{orion.sh, BASE_CLAUDE.md, VERSION, statusline/, global/, mods/} @ $(version_label "$SRC_SHA" "$SRC_VERSION") ($(short "$SRC_SHA"))"
 }
 
 # The project's own CLAUDE.md: created once with the project-specific slots the
@@ -706,6 +823,56 @@ starter_slots() {
     write_claude_md_starter "$tmp"
     grep -oE '<[^<>]+>' "$tmp" | grep -vxF -e '<angle-bracket>' -e '<copies>' | sed 's/^<N>$/baseline: <N>/' | sort -u
     rm -f "$tmp"
+}
+
+# The commands-table rows the mandatory rules rely on, one key word each, in lower case. A row of the project's table
+# whose label holds the word counts as that row, so a reworded label still does. A note in brackets is left out of a
+# label first, so the test-copies row's "(how the full suite takes ...)" never reads as the full suite. The starter's
+# rows marked "(if ...)" are optional and have no key word. The suite checks every key word is in exactly one starter
+# row and every other starter row has one.
+COMMAND_ROW_KEYS=(build suite file "one test" type lint copies)
+
+# One line per row of the commands table in a CLAUDE.md: the label in lower case without bold marks or notes in
+# brackets, a tab, then the label as written without bold marks. The table is the one under the first heading that
+# names commands (up to the next heading of its level or higher), or every table in the file when no heading does.
+# A header row (the row right above a |---| separator) and lines inside a code block are skipped.
+command_row_labels() {  # file
+    awk '
+        /^[ \t]*(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^#+[ \t]/ {
+            lvl = match($0, /[^#]/) - 1
+            if (in_sec && lvl <= sec_lvl) { in_sec = 0; done = 1 }
+            if (!done && !in_sec && tolower($0) ~ /command/) { in_sec = 1; found = 1; sec_lvl = lvl }
+            next
+        }
+        /^[ \t]*\|/ {
+            split($0, cell, "|"); raw = cell[2]
+            gsub(/\*/, "", raw); gsub(/^[ \t]+|[ \t]+$/, "", raw)
+            # a separator row: the row right above it was the header, not a command row
+            if (raw ~ /^[-: ]+$/) { if (last_nr == NR - 1) { na--; if (last_in_sec) ns-- }; next }
+            if (raw == "") next
+            key = tolower(raw); gsub(/\([^)]*\)/, "", key); gsub(/[ \t]+/, " ", key)
+            all[++na] = key "\t" raw
+            if (in_sec) sec[++ns] = key "\t" raw
+            last_nr = NR; last_in_sec = in_sec
+        }
+        END { if (found) for (i = 1; i <= ns; i++) print sec[i]; else for (i = 1; i <= na; i++) print all[i] }
+    ' "$1"
+}
+
+# One WARN per commands-table row the rules rely on that the project's CLAUDE.md lacks, naming the starter's row.
+verify_command_rows() {  # CLAUDE.md
+    local tmp starter labels key row missing=0
+    tmp=$(mktemp); write_claude_md_starter "$tmp"; starter="$(command_row_labels "$tmp")"; rm -f "$tmp"
+    labels="$(command_row_labels "$1")"
+    for key in "${COMMAND_ROW_KEYS[@]}"; do
+        awk -F'\t' -v k="$key" 'index($1, k) { hit = 1 } END { exit !hit }' <<< "$labels" && continue
+        row="$(awk -F'\t' -v k="$key" '!row && index($1, k) { row = $2 } END { print row }' <<< "$starter")"
+        v_warn claude-md-row "CLAUDE.md's commands table has no row for \"$row\" (no row label holds the word '$key'); /orion-verify works out the command from the project's files and proposes the row"
+        missing=$((missing+1))
+    done
+    [ "$missing" -gt 0 ] || v_ok claude-md-rows "CLAUDE.md's commands table has every row the rules rely on"
 }
 
 apply_claude_md() {
@@ -885,6 +1052,215 @@ install_statusline() {  # force
     fi
 }
 
+# --------------------------------------------------------------------------
+# mods (optional, per computer). Every project carries orion's copy of each mod as one archive,
+# .claude/orion/mods/<name>.tar, so no tool of the project's own (a test runner, a linter, TypeScript) ever collects
+# the mod's sources. A computer gets its own copy, unpacked, only on the person's word, in a folder Claude Code
+# installs it from at user scope (never through the project's settings). A newer copy replaces the computer's whole,
+# with no merge.
+#   ~/.claude/orion-mods/<name>/                          the computer's copy of the mod
+#   ~/.claude/orion-mods/<name>.orion-baseline            orion version number and checksum of the newest copy taken or skipped
+#   ~/.claude/orion-mods/.claude-plugin/marketplace.json  lists every copy, so the folder is a local marketplace
+# --------------------------------------------------------------------------
+MOD_MARKET="orion-mods"
+mod_home() { printf '%s' "$HOME/.claude/$MOD_MARKET"; }
+mod_stamp() { printf '%s' "$(mod_home)/$1$SL_STAMP"; }
+mod_src() { printf '%s' "$PROJECT/.claude/orion/mods/$1.tar"; }
+mod_name_ok() { case "$1" in ""|-*|*[!a-z0-9-]*) return 1 ;; esac; }
+# The mod folders in a folder, one name per line: orion's source (mods/) or this computer's copies (mod_copies).
+mod_dirs() { local d; for d in "$1"/*/; do [ -d "$d" ] && basename "$d"; done; return 0; }
+mod_copies() { mod_dirs "$(mod_home)"; }
+# The mods this project carries, one name per line.
+mod_names() { local f; for f in "$PROJECT"/.claude/orion/mods/*.tar; do [ -f "$f" ] && basename "$f" .tar; done; return 0; }
+mod_unpack() { mkdir -p "$2" && tar -xf "$1" -C "$2"; }  # archive dest
+# The checksum of the files an archive holds (line endings aside), never of the archive's own bytes, which carry
+# the time each file was packed.
+mod_sum() {  # archive
+    local t s=""; t="$(mktemp -d)"
+    if mod_unpack "$1" "$t" 2>/dev/null; then s="$(tree_sum "$t" | cksum)"; fi
+    rm -rf "$t"; printf '%s' "$s"
+}
+
+# Pack every mod orion ships into the project, one archive each. An archive is rewritten only when its files
+# changed, so an update that leaves a mod alone leaves its archive byte for byte as it was; anything else in the
+# folder (a mod orion no longer ships) goes.
+apply_mods() {
+    local dir="$PROJECT/.claude/orion/mods" src="$SRC_DIR/mods" f name
+    [ -d "$src" ] || { rm -rf "$dir"; return 0; }
+    mkdir -p "$dir"
+    for f in "$dir"/* "$dir"/.[!.]*; do
+        [ -e "$f" ] || continue
+        name="$(basename "$f" .tar)"
+        { [ "$f" = "$dir/$name.tar" ] && [ -d "$src/$name" ]; } || rm -rf "$f"
+    done
+    for name in $(mod_dirs "$src"); do
+        f="$dir/.$name.tar.new"
+        # macOS tar would add AppleDouble ._* entries for files with extended attributes; elsewhere a no-op
+        ( cd "$src/$name" && COPYFILE_DISABLE=1 tar -cf - . ) > "$f"
+        if [ -f "$dir/$name.tar" ] && [ "$(mod_sum "$f")" = "$(mod_sum "$dir/$name.tar")" ]; then rm -f "$f"; else mv -f "$f" "$dir/$name.tar"; fi
+    done
+}
+# The orion version number of the newest copy this computer took or skipped.
+mod_taken() { sl_number "$(sed -n '1p' "$(mod_stamp "$1")" 2>/dev/null | tr -d '\r')"; }
+
+# Record the newest copy of a mod this computer has seen (installed or skipped): its orion version number, then its checksum.
+mod_mark() {  # name stamp
+    printf '%s\n%s\n' "$2" "$(mod_sum "$(mod_src "$1")")" > "$(mod_stamp "$1")"
+}
+
+# Prints "offer" when this project's copy of a mod this computer installed comes from a higher orion version and
+# differs from the copy last taken or skipped; a copy that did not change only moves the record forward.
+mod_sync() {  # name
+    local t
+    { [ -f "$(mod_stamp "$1")" ] && [ -f "$(mod_src "$1")" ]; } || return 0
+    t="$(project_stamp)"
+    version_gt "$t" "$(mod_taken "$1")" || return 0
+    if [ "$(mod_sum "$(mod_src "$1")")" = "$(sed -n '2p' "$(mod_stamp "$1")" | tr -d '\r')" ]; then
+        mod_mark "$1" "$t"
+    else
+        printf 'offer'
+    fi
+}
+
+# The shortcut a mod's README names, which installing the mod binds in the person's own keybindings file:
+# key, action and how a person reads the key, tab-separated; nothing for a mod with none.
+mod_shortcut() {  # name
+    case "$1" in
+        control-tower) printf 'ctrl+x p\tcommand:control-tower\tCtrl+X then P' ;;
+    esac
+}
+mod_keys_file() { printf '%s' "$HOME/.claude/keybindings.json"; }
+# A key already bound to something else stays as it is, and the person is told how to bind the mod by hand.
+mod_bind_keys() {  # name
+    local name="$1" sc k a human f state
+    sc="$(mod_shortcut "$name")"; [ -n "$sc" ] || return 0
+    IFS="$(printf '\t')" read -r k a human <<< "$sc"
+    f="$(mod_keys_file)"
+    if [ "$(json_tool)" = none ]; then
+        warn "no jq/python/powershell found - to show and hide mod $name with $human, add \"$k\": \"$a\" to a \"Global\" block of $f by hand"
+        return 0
+    fi
+    if [ ! -f "$f" ]; then
+        mkdir -p "$(dirname "$f")"
+        printf '{\n  "$schema": "https://www.schemastore.org/claude-code-keybindings.json",\n  "$docs": "https://code.claude.com/docs/en/keybindings",\n  "bindings": []\n}\n' > "$f"
+    fi
+    state="$(keys_edit bind "$f" "$k" "$a")"
+    case "$state" in
+        added) say "mod $name: $human now shows and hides it (added to ~/.claude/keybindings.json)" ;;
+        present) say "mod $name: $human already shows and hides it" ;;
+        taken*) warn "mod $name: $human ($k) is already bound to ${state#*$(printf '\t')} in ~/.claude/keybindings.json, so it was left as it is; to bind the pane by hand, add \"<your key>\": \"$a\" to a \"Global\" block there" ;;
+        *) warn "mod $name: ~/.claude/keybindings.json could not be read as a keybindings file, so it was left as it is; to bind the pane by hand, add \"$k\": \"$a\" to a \"Global\" block there" ;;
+    esac
+}
+# Takes the mod's key away only while it still runs the mod's action.
+mod_unbind_keys() {  # name
+    local name="$1" sc k a human f
+    sc="$(mod_shortcut "$name")"; [ -n "$sc" ] || return 0
+    IFS="$(printf '\t')" read -r k a human <<< "$sc"
+    f="$(mod_keys_file)"
+    [ -f "$f" ] || return 0
+    if [ "$(json_tool)" = none ]; then
+        warn "no jq/python/powershell found - remove \"$k\": \"$a\" from $f by hand"
+        return 0
+    fi
+    case "$(keys_edit unbind "$f" "$k" "$a")" in
+        removed) say "mod $name: $human taken out of ~/.claude/keybindings.json" ;;
+        removed-empty) rm -f "$f"; say "mod $name: $human taken out, and ~/.claude/keybindings.json, empty without it, deleted" ;;
+        none) ;;
+        *) warn "mod $name: ~/.claude/keybindings.json could not be read as a keybindings file; if it still binds \"$k\" to \"$a\", remove that by hand" ;;
+    esac
+}
+
+mod_write_market() {
+    local dir name sep=""; dir="$(mod_home)"
+    mkdir -p "$dir/.claude-plugin"
+    { printf '{\n  "name": "%s",\n  "description": "orion mods, copied to this computer on its owner%ss word",\n' "$MOD_MARKET" "'"
+      printf '  "owner": { "name": "orion" },\n  "plugins": ['
+      for name in $(mod_copies); do printf '%s\n    { "name": "%s", "source": "./%s" }' "$sep" "$name" "$name"; sep=","; done
+      printf '\n  ]\n}\n'; } > "$dir/.claude-plugin/marketplace.json"
+}
+
+# Unpack this project's mod on the computer and install it from there at user scope; one already installed is
+# replaced and reinstalled. Never steps back to an older orion version's copy.
+mod_install() {  # name
+    local name="$1" src dir t; src="$(mod_src "$1")"; dir="$(mod_home)"
+    { mod_name_ok "$name" && [ -f "$src" ]; } || { warn "this project carries no orion mod named '$name' (run: orion.sh update)"; return 1; }
+    have claude || { warn "Claude Code's 'claude' command was not found, so mod $name was not installed and nothing changed"; return 1; }
+    t="$(project_stamp)"
+    # a copy deleted by hand counts as not installed, whatever the record says
+    if [ -f "$(mod_stamp "$name")" ] && [ -d "$dir/$name" ] && ! version_gt "$t" "$(mod_taken "$name")"; then
+        say "mod $name: nothing to install - this computer's copy already follows this project's orion version or a newer one"
+        return 0
+    fi
+    mkdir -p "$dir"
+    rm -rf "$dir/.$name.new"
+    mod_unpack "$src" "$dir/.$name.new" || { rm -rf "$dir/.$name.new"; warn "could not unpack mod $name from $src; nothing changed"; return 1; }
+    rm -rf "${dir:?}/$name"; mv "$dir/.$name.new" "$dir/$name"
+    mod_write_market
+    if [ -f "$(mod_stamp "$name")" ]; then
+        # the person may have uninstalled it by hand: a failure here is no reason to stop
+        claude plugin uninstall "$name@$MOD_MARKET" --scope user || true
+        claude plugin marketplace update "$MOD_MARKET" >/dev/null 2>&1 || true
+    fi
+    claude plugin install "$name" --marketplace "$dir" --scope user \
+        || { warn "Claude Code could not install mod $name (its message is above): run 'orion.sh mod install $name' again once that is fixed"; return 1; }
+    mod_mark "$name" "$t"
+    say "mod $name: installed for this computer from ~/.claude/$MOD_MARKET; Claude Code loads it in its next session"
+    mod_bind_keys "$name"
+}
+
+mod_skip() {  # name
+    local name="$1"
+    [ -f "$(mod_stamp "$name")" ] || die "mod $name is not installed on this computer (run: orion.sh mod install $name)"
+    [ "$(mod_sync "$name")" = offer ] || { say "mod $name: nothing to skip - no newer copy waits in this project"; return 0; }
+    mod_mark "$name" "$(project_stamp)"
+    say "mod $name: this computer's copy kept as it is; this orion version will not be offered again"
+}
+
+# Uninstall the mod and delete the computer's copy; the last one removed takes the marketplace folder with it.
+mod_remove() {  # name
+    local name="$1" dir; dir="$(mod_home)"
+    # a record whose copy was deleted by hand still names a plugin to uninstall
+    { mod_name_ok "$name" && { [ -d "$dir/$name" ] || [ -f "$(mod_stamp "$name")" ]; }; } \
+        || { warn "no orion mod named '$name' is installed on this computer"; return 1; }
+    have claude || { warn "Claude Code's 'claude' command was not found, so mod $name was not removed and nothing changed"; return 1; }
+    claude plugin uninstall "$name@$MOD_MARKET" --scope user \
+        || warn "Claude Code could not uninstall mod $name (its message is above); its copy is deleted all the same"
+    rm -rf "${dir:?}/$name"; rm -f "$(mod_stamp "$name")"
+    mod_unbind_keys "$name"
+    if [ -n "$(mod_copies)" ]; then
+        mod_write_market
+    else
+        claude plugin marketplace remove "$MOD_MARKET" || warn "Claude Code could not forget the $MOD_MARKET marketplace (its message is above)"
+        rm -rf "$dir"
+    fi
+    say "mod $name: uninstalled, and its copy deleted from this computer"
+}
+
+mod_description() {  # name
+    local t d=""; t="$(mktemp -d)"
+    if mod_unpack "$(mod_src "$1")" "$t" 2>/dev/null; then d="$(config_get "$t/.claude-plugin/plugin.json" description "")"; fi
+    rm -rf "$t"; printf '%s' "$d"
+}
+
+# init offers every mod the project carries: --mods takes them all, a terminal is asked mod by mod, else none.
+offer_mods() {  # yes|no|prompt
+    local name resp
+    [ "$1" != no ] || return 0
+    for name in $(mod_names); do
+        if [ -f "$(mod_stamp "$name")" ]; then
+            say "  =    mod $name (already on this computer; a newer copy is offered at session start)"; continue
+        fi
+        if [ "$1" = prompt ]; then
+            is_tty || continue
+            say "  mod $name: $(mod_description "$name")"
+            ask "Also install the orion mod $name for this computer (a Claude Code plugin at user scope, optional)? [y/N] "
+            [[ "$resp" =~ ^[Yy]$ ]] || continue
+        fi
+        mod_install "$name" || true
+    done
+}
+
 # What whoever installs orion must know first: it is experimental and the user carries the responsibility, and its agents act on their own (the baseline's Who merges rule).
 autonomy_notice() {
     say ""
@@ -904,7 +1280,7 @@ autonomy_notice() {
 # --------------------------------------------------------------------------
 cmd_init() {
     local source="$ORION_DEFAULT_SOURCE" ref="$ORION_DEFAULT_REF" force=0 statusline="prompt" project="" resp mode="" yes=0
-    local source_given=0 ref_given=0 key val old n
+    local source_given=0 ref_given=0 key val old n mods="prompt"
     while [ $# -gt 0 ]; do
         case "$1" in
             --source) source="$2"; source_given=1; shift 2 ;;
@@ -915,6 +1291,8 @@ cmd_init() {
             --yes|-y) yes=1; shift ;;
             --statusline) statusline=yes; shift ;;
             --no-statusline) statusline=no; shift ;;
+            --mods) mods=yes; shift ;;
+            --no-mods) mods=no; shift ;;
             -h|--help) usage ;;
             *) die "unknown option for init: $1" ;;
         esac
@@ -948,7 +1326,7 @@ cmd_init() {
     if [ -z "$mode" ] && [ ! -f "$cfg" ] && is_tty; then
         say "When a newer orion exists, what should happen at session start?"
         say "  1) ask   - offer the update and let you say yes or no (default)"
-        say "  2) auto  - update by itself and tell you in one line"
+        say "  2) auto  - an agent ships it through its own pull request without asking"
         say "  3) off   - never check"
         ask "Choose [1/2/3] (Enter = ask): "
         case "$resp" in 2|auto) mode=auto ;; 3|off) mode=off ;; *) mode=ask ;; esac
@@ -967,6 +1345,7 @@ cmd_init() {
         fi
     fi
     [ "$statusline" = "yes" ] && install_statusline "$force"
+    offer_mods "$mods"
     # One-shot: the next session start asks Claude Code to run the post-install check.
     pending="$(cache_file verify-pending)"
     mkdir -p "$(dirname "$pending")" 2>/dev/null && printf '%s' "$(date +%s)" > "$pending" || true
@@ -1049,10 +1428,10 @@ cmd_update() {
     fi
     current="$(version_sha "$dir/VERSION")"
     fetch_source "$source" "$ref"
-    # the hint is printed only without --quiet, so an auto-update (capped at 10 s on older hooks) skips the cost
+    # the hint is printed only without --quiet, which then skips its cost
     local rules_before=""; [ "$quiet" = "1" ] || rules_before="$(rules_sum)"
-    # an update run by an older orion.sh left out the status line or the personal rules: redo it once
-    { [ -d "$dir/statusline" ] && [ -d "$dir/global" ]; } || force=1
+    # an update run by an older orion.sh left out the status line, the personal rules or the mods: redo it once
+    { [ -d "$dir/statusline" ] && [ -d "$dir/global" ] && { [ -d "$dir/mods" ] || [ ! -d "$SRC_DIR/mods" ]; }; } || force=1
     if [ "$SRC_SHA" = "$current" ] && [ "$force" != "1" ]; then
         say "orion is already at $(short "$current") - nothing to do (pass --force to re-copy anyway)"
         # installed before its release was tagged: only the version on line 5 is behind
@@ -1073,6 +1452,12 @@ cmd_update() {
         new) say "  !    orion's status line changed and yours was left alone: 'bash .claude/orion/orion.sh statusline merge' takes it ('statusline skip' declines this version)" ;;
         offer) say "  !    your status line has edits of your own, so it was left alone: 'bash .claude/orion/orion.sh statusline merge' takes orion's changes and keeps yours ('statusline skip' declines this version)" ;;
     esac
+    local name
+    for name in $(mod_names); do
+        if [ "$(mod_sync "$name")" = offer ]; then
+            say "  !    orion's mod $name changed and this computer's copy was left alone: 'bash .claude/orion/orion.sh mod install $name' takes it ('mod skip $name' declines this version)"
+        fi
+    done
     if [ "$quiet" != "1" ]; then
         say "done. Review with 'git status' / 'git diff', then commit on a branch so your team gets it."
         [ "$(rules_sum)" = "$rules_before" ] || say "orion's rules or skill instructions changed: run /orion-verify to check they still fit with CLAUDE.md, the project's own skills and your own rules file."
@@ -1109,7 +1494,7 @@ cmd_check() {
     fi
     now=$(date +%s)
     ctx="$(check_update_ctx "$force")"
-    for tidy in "$(check_rules_ctx)" "$(check_statusline_ctx)" "$(check_global_ctx "$force" "$now")" "$(check_branches_ctx "$force" "$now")" "$pulled"; do
+    for tidy in "$(check_uncommitted_ctx)" "$(check_rules_ctx)" "$(check_statusline_ctx)" "$(check_mods_ctx)" "$(check_global_ctx "$force" "$now")" "$(check_branches_ctx "$force" "$now")" "$pulled"; do
         [ -n "$tidy" ] || continue
         if [ -n "$ctx" ]; then ctx="$ctx After that: $tidy"; else ctx="$tidy"; fi
     done
@@ -1119,15 +1504,13 @@ cmd_check() {
 
 # The update check, every session. Prints the context for Claude Code, or nothing when there is nothing to say.
 check_update_ctx() {  # force
-    local cfg="$PROJECT/.claude/orion/config.json" dir="$PROJECT/.claude/orion" mode source ref current latest hook
+    local cfg="$PROJECT/.claude/orion/config.json" dir="$PROJECT/.claude/orion" mode source ref current latest
     local installed newer=0
     mode="$(config_get "$cfg" updateMode ask)"
     [ "$mode" = "off" ] && return 0
     # An update run by an older orion.sh cannot raise the hook's time limit (bash had already read the old
-    # script), so the first check by the new script heals it, silently. Claude Code read the limit when this
-    # session started, so this run still goes by the value from BEFORE the heal: "0 <n>" with n > 0 means
-    # every orion hook already had HOOK_TIMEOUT; anything else (a lower limit, no hook, no JSON tool) does not.
-    hook=$(raise_hook_timeout "$PROJECT/.claude/settings.json" 2>/dev/null | tr -d '\r' || true)
+    # script), so the first check by the new script heals it, silently.
+    raise_hook_timeout "$PROJECT/.claude/settings.json" >/dev/null 2>&1 || true
     source="$(config_get "$cfg" source "$ORION_DEFAULT_SOURCE")"; ref="$(config_get "$cfg" ref "$ORION_DEFAULT_REF")"
     current="$(version_sha "$dir/VERSION")"; installed="$(version_number "$dir/VERSION")"
     latest_remote "$source" "$ref"
@@ -1148,26 +1531,18 @@ check_update_ctx() {  # force
     [ "$newer" = 1 ] || return 0
     # declined with `update --skip`: quiet until a newer orion, unless the person asked for the check (--force)
     [ "$mode" = "auto" ] || [ "$1" = "1" ] || [ "$(cat "$(cache_file update-skipped)" 2>/dev/null)" != "$(latest_key "$installed" "$ref")" ] || return 0
+    # Never updated in the folder the session opens in: the agent ships it through its own pull request
     case "$mode" in
         auto)
-            # A process of its own: a failed fetch ends only that process (this hook still answers and
-            # exits 0), and its own exit trap removes the temporary clone. With the full HOOK_TIMEOUT only the
-            # fetch is time-limited (10 s): the copy always runs to the end, so the project is never left
-            # half-updated, and 8 s check + 10 s fetch + the copy fit in it. While this session's hook still
-            # has a lower limit (an install from before the raise), the whole update stays capped at 10 s as
-            # before, so the session's own kill cannot land in the middle of the copy instead.
-            if run_auto_update "$hook" >/dev/null 2>&1 </dev/null; then
-                printf '%s' "orion (the repo-level utility framework in .claude/orion) was updated automatically from $current to $latest, as the project's updateMode is 'auto'. Tell the user in one line, and remind them to review 'git status' and commit the changed orion files on a branch."
-            else
-                printf '%s' "orion tried to update itself automatically ($current -> $latest) and failed. Tell the user in one line that running 'bash .claude/orion/orion.sh update' by hand will show the error."
-            fi ;;
+            printf '%s' "A newer orion is available for this project ($current -> $latest) and the project's updateMode is 'auto', so do not ask the user. $SHIP_STEPS Tell the user in one line when it has merged, or what stopped it." ;;
         *)
-            printf '%s' "A newer orion is available for this project ($current -> $latest). Before anything else, ask the user with the AskUserQuestion tool whether to update orion now (options: 'Update now' recommended, 'Not now'). If they say yes, run 'bash .claude/orion/orion.sh update' from the project root, summarise the changed files in one line, and remind them to commit on a branch. If they say no, run 'bash .claude/orion/orion.sh update --skip' from the project root, so this version is not offered again on this computer, and continue with their request." ;;
+            printf '%s' "A newer orion is available for this project ($current -> $latest). Before anything else, ask the user with the AskUserQuestion tool whether to update orion now (options: 'Update now' recommended, 'Not now'). If they say yes: $SHIP_STEPS If they say no, run 'bash .claude/orion/orion.sh update --skip' from the project root, so this version is not offered again on this computer, and continue with their request." ;;
     esac
 }
 
 # Every session, local only: once each time orion's rules change on this computer (an update, or a pull that
-# brought one), ask for /orion-verify. Runs after the update check, so an auto-update is seen in the same session.
+# brought one), ask for /orion-verify. Runs after the session-start pull, so rules a pull brought are seen in the
+# same session.
 # A repository with no record on this computer (a fresh clone) is asked once too, worded as new, not as changed.
 check_rules_ctx() {
     local sum f
@@ -1185,11 +1560,44 @@ check_rules_ctx() {
     printf '%s' "orion's rules (.claude/orion/BASE_CLAUDE.md) or the instructions of its skills have changed since they were last checked on this computer, after an update or a pull that brought one. Before anything else, ask the user with the AskUserQuestion tool whether to check now that they still fit with the project's CLAUDE.md, the project's own skills and the user's own rules file (options: 'Check now' recommended, 'Not now'). If they say yes, run the /orion-verify skill (.claude/skills/orion-verify/SKILL.md) exactly as written. If they say no, continue with their request: it is not asked again until the rules change, and /orion-verify runs the check any time."
 }
 
-run_auto_update() {  # hook-timeout-state from raise_hook_timeout
-    case "$1" in
-        "0 "[1-9]*) ORION_FETCH_SECONDS=10 bash "${BASH_SOURCE[0]:-$0}" update --project "$PROJECT" --quiet ;;
-        *) limited 10 bash "${BASH_SOURCE[0]:-$0}" update --project "$PROJECT" --quiet ;;
-    esac
+# 0 when $PROJECT sits in a repository's main checkout, not in a linked worktree (an agent's own copy).
+in_main_checkout() {
+    local g c
+    g="$(git -C "$PROJECT" rev-parse --git-dir 2>/dev/null)" && c="$(git -C "$PROJECT" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    g="$(cd "$PROJECT" && cd "$g" && pwd -P)" && c="$(cd "$PROJECT" && cd "$c" && pwd -P)" || return 1
+    [ "$g" = "$c" ]
+}
+
+# Every path orion owns in the project, one per line: each manifest line under .claude/orion/ and each orion skill's
+# folder, on disk or in git's index (a skill removed from the folder still counts). A manifest line that names no
+# file of its own (blank, only slashes, or a . or .. part) is left out: it could name the whole folder, the
+# project's own config.json included, or climb out of the repository and make git refuse the whole list.
+orion_paths() {
+    local f entry
+    while IFS= read -r f || [ -n "$f" ]; do
+        f="${f%$'\r'}"
+        [ -n "${f//\//}" ] || continue
+        case "/$f/" in */../*|*/./*) continue ;; esac
+        printf '.claude/orion/%s\n' "$f"
+    done < <(cat "$PROJECT/.claude/orion/.orion-manifest" 2>/dev/null || true)
+    for entry in "$PROJECT"/.claude/skills/*/; do
+        [ -f "${entry%/}/$MARKER" ] && printf '.claude/skills/%s/\n' "$(basename "$entry")"
+    done
+    git -C "$PROJECT" ls-files -- ".claude/skills/*/$MARKER" 2>/dev/null | sed 's|[^/]*$||' || true
+}
+
+# Every session, local only (no network): orion's own files in the main checkout that differ from the last commit
+# (an install or update not committed yet, or someone's own edits) are offered for shipping, never discarded.
+# Prints the context or nothing.
+check_uncommitted_ctx() {
+    local f n paths=()
+    have git && in_main_checkout || return 0
+    while IFS= read -r f; do paths+=("$f"); done < <(orion_paths)
+    [ ${#paths[@]} -gt 0 ] || return 0
+    # literal pathspecs: a manifest line with a wildcard or pathspec magic names only itself
+    n="$(git --literal-pathspecs -C "$PROJECT" status --porcelain --untracked-files=all -- "${paths[@]}" 2>/dev/null | wc -l | tr -d ' ')" || return 0
+    [ "${n:-0}" -gt 0 ] || return 0
+    printf '%s' "orion's own files in this folder differ from the last commit ($n changed, added or removed among the orion skills under .claude/skills and the files .claude/orion/.orion-manifest lists): an install or update not committed yet, or someone's own edits. Tell the user in one line, then ask with the AskUserQuestion tool whether to ship them through their own pull request (options: 'Ship them' recommended, 'Not now'). If they say yes, follow the 'Ship an update' steps of the /orion skill (.claude/skills/orion/SKILL.md) for files left uncommitted, exactly as written. Never discard, reset, stash or check out these files to get rid of them: they may hold the user's own edits. If they say no, continue with their request; this is asked again at the next session start while they still differ."
 }
 
 # Every session, local only: a newer status line in the project is offered, never taken on its own, in every
@@ -1201,6 +1609,17 @@ check_statusline_ctx() {
     elif [ "$sync" = "offer" ]; then
         printf '%s' "orion's status line has changed, and the copy on this computer (~/.claude/statusline) carries the user's own edits, so it was not replaced. Ask the user with the AskUserQuestion tool whether to merge orion's new status line changes into theirs (options: 'Merge them in' recommended, 'Keep mine as it is'). If yes, run 'bash .claude/orion/orion.sh statusline merge' from the project root: it keeps their edits (a copy installed before orion could merge is saved to ~/.claude/statusline.bak and replaced), and if it reports lines both changed, resolve the conflict markers in the named files with the user. If no, run 'bash .claude/orion/orion.sh statusline skip' so this version is not offered again."
     fi
+}
+
+# Every session, local only: a newer copy of a mod this computer installed is offered, never taken on its own, in
+# every update mode. Prints the context or nothing.
+check_mods_ctx() {
+    local name out=""
+    for name in $(mod_names); do
+        [ "$(mod_sync "$name")" = offer ] || continue
+        out="$out${out:+ }orion's mod $name has changed in this project, and the copy installed on this computer (~/.claude/orion-mods/$name) was left as it is: orion never changes it without the user's word. Ask the user with the AskUserQuestion tool whether to install the new version (options: 'Install it' recommended, 'Keep mine as it is'). If yes, run 'bash .claude/orion/orion.sh mod install $name' from the project root: it replaces the computer's copy and reinstalls the plugin at user scope, and Claude Code loads it in its next session. If no, run 'bash .claude/orion/orion.sh mod skip $name' so this version is not offered again."
+    done
+    printf '%s' "$out"
 }
 
 # --------------------------------------------------------------------------
@@ -1394,6 +1813,7 @@ cmd_uninstall() {
         [ -z "$LEGACY_KEY" ] || rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/orion/$LEGACY_KEY.$f" 2>/dev/null || true
     done
     say "done. The status line (if installed) is a per-computer copy under ~/.claude/statusline and was left alone,"
+    say "so were the mods installed on this computer (orion.sh mod remove <name> removes one),"
     say "and so was your own ~/.claude/CLAUDE.md: the personal rules you accepted are yours."
 }
 
@@ -1415,6 +1835,19 @@ cmd_statusline() {
         merge) statusline_merge ;;
         skip) sl_mark "$(project_stamp)" "$PROJECT/.claude/orion/statusline"; say "status line: yours kept as it is; this orion version will not be offered again" ;;
     esac
+}
+
+# The answer to the session-start mod offer, and the way to add a mod to this computer or take it away again.
+cmd_mod() {
+    local action="${1:-}" name="${2:-}" project=""
+    shift 2 2>/dev/null || shift $#
+    while [ $# -gt 0 ]; do case "$1" in --project) project="$2"; shift 2 ;; *) die "unknown option for mod: $1" ;; esac; done
+    case "$action" in install|skip|remove) ;; *) die "usage: orion.sh mod install|skip|remove <name>" ;; esac
+    [ -n "$name" ] || die "usage: orion.sh mod install|skip|remove <name>"
+    # removing needs no project: the computer's copy is all there is
+    if [ "$action" = remove ]; then mod_remove "$name" || exit 1; return; fi
+    PROJECT="$(resolve_project "$project")"
+    if [ "$action" = install ]; then mod_install "$name" || exit 1; else mod_skip "$name"; fi
 }
 
 # Mechanical post-install checks: one line per finding, never a fix. Exit 1 when
@@ -1471,6 +1904,7 @@ cmd_verify() {
         grep -qxF "$OLD_IMPORT_LINE" "$claude" && v_fail claude-md-old-import "CLAUDE.md still imports the retired ORION.md (fix: delete that line; the BASE_CLAUDE.md import replaces it)"
         slots=$(grep -cF -e '`TBD`' -f <(starter_slots) "$claude" || true)
         [ "$slots" -gt 0 ] 2>/dev/null && v_warn claude-md-slots "CLAUDE.md has $slots line(s) with an unfilled slot (TBD or a starter <placeholder>); the rules that rely on them cannot run until they are filled"
+        verify_command_rows "$claude"
         while IFS= read -r p; do
             [ -n "$p" ] && [ ! -e "$PROJECT/$p" ] && v_warn claude-md-reference "CLAUDE.md refers to $p, which does not exist"
         done <<< "$(grep -oE '\.claude/skills/[A-Za-z0-9_./-]+' "$claude" 2>/dev/null | sed 's/[.]*$//' | sort -u || true)"
@@ -1591,6 +2025,7 @@ main() {
         status) cmd_status "$@" ;;
         uninstall) cmd_uninstall "$@" ;;
         statusline) cmd_statusline "$@" ;;
+        mod) cmd_mod "$@" ;;
         help|-h|--help) usage ;;
         *) die "unknown command: $cmd (try: orion.sh help)" ;;
     esac

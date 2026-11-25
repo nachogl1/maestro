@@ -4,23 +4,8 @@ Many repositories have no branch protection configured (a private repository und
 nothing on GitHub's side stops a bad merge, or a direct push. Whether or not protection exists, this file is the
 enforcement. Follow it exactly.
 
-**Never push to `main`.** Every change lands through `gh pr merge` on a pull request that exists and has been reviewed.
+**Never push to the default branch or the release branch.** Every change lands through `gh pr merge` on a pull request that exists and has been reviewed.
 Full autonomy means the agent may open, review and merge that pull request — never that it may skip it.
-
-## Owner merges — a story that stops at its pull request
-
-A story labelled `owner-merges` is merged by a person, never by this skill (the baseline's *Who merges* rule). After
-its review approves it:
-
-1. **No slot.** Skip step 0: nothing merges, so the machine's queue is not held.
-2. **Steps 1-3 as written**, so the owner gets a pull request on the current `main` with green checks: merge
-   `origin/main` in and push, poll for the check run (without the slot, the poll skips the `merging` refresh and
-   re-check), and read the gate. A conflict or red goes back to `dev-N` as in those steps; red after two rounds, or no
-   checks reported, stops the story as in step 3.
-3. **Green → stop, never `gh pr merge`.** The issue's last comment: `Pull request #<P> is open with green checks. This
-   story is owner-merges: try the change, then merge it yourself.` Then `gh issue edit <N> --remove-label in-progress`
-   (the assignee stays), and the issue's entry is removed from the in-flight file. Steps 4 and 5 are never reached:
-   the worktree and branch stay for the open pull request, and the issue closes when the owner merges it (`Closes #<N>`).
 
 ## 0 · Take the merge slot
 
@@ -29,14 +14,16 @@ seconds; no elapsed-time limit — a live holder is bounded by its own 30-minute
 30 minutes is a dead holder whose slot is free. Free → write this issue **and your run id** into `merging`, wait 5
 seconds, then **re-read**: any run id but yours means you lost the race — back off and wait again. Only your own run
 id on the read-back means you hold the slot, and you **re-confirm that on every poll in step 2 and again immediately
-before the merge command in step 4**. Hold it through steps 1-4, so the CI run in step 2 is on the `main` this branch
-will actually land on, and no other terminal lands in between.
+before the merge command in step 4**. Hold it through steps 1-4, so the CI run in step 2 is on the default branch this
+branch will actually land on, and no other terminal lands in between.
 
-## 1 · Merge `main` in first, then push
+## 1 · Merge the default branch in first, then push
+
+`<default>` is the default branch looked up at the start of `SKILL.md`, phase 0.
 
 ```
 git -C <wt root>/<N>-<slug> fetch origin
-git -C <wt root>/<N>-<slug> merge origin/main       # never rebase, never stash
+git -C <wt root>/<N>-<slug> merge origin/<default>  # never rebase, never stash
 git -C <wt root>/<N>-<slug> push
 ```
 
@@ -72,7 +59,7 @@ waiting for one only burns the slot.
 CI is the project's own workflow (`.github/workflows/`), running the same gate chain the project's `CLAUDE.md` lists
 (build → lint → typecheck → full suite). If the project's `CLAUDE.md` names the check that gates a merge, **that check
 on the pull request is the gate**; otherwise every check that ran on the pull request must be green. A check that
-shows `SKIPPED` on pull requests (a job that runs only on `main`, such as a publish or deploy job) is not red. Nobody
+shows `SKIPPED` on pull requests (a job that runs only on the default or release branch, such as a publish or deploy job) is not red. Nobody
 runs the suite locally a second time — the suite runs once per gate, never once locally and once in CI. If no CI exists,
 or it does not run the full suite, the orchestrator runs the gate on the merged branch in the worktree before merging,
 and that run is the gate; it sizes the full suite's test copies right before it runs (`in-flight.md`, *Test copies*).
@@ -93,17 +80,17 @@ and that run is the gate; it sizes the full suite's test copies right before it 
 
 ```
 # first: re-read the in-flight file — merging.run must be yours, else do NOT merge (in-flight.md, The merge slot, step 3)
-# then: the branch must not be behind main — anything but 0 means main moved, so go back to step 1
+# then: the branch must not be behind the default branch — anything but 0 means it moved, so go back to step 1
 git -C <wt root>/<N>-<slug> fetch origin
-git -C <wt root>/<N>-<slug> rev-list --count HEAD..origin/main
+git -C <wt root>/<N>-<slug> rev-list --count HEAD..origin/<default>
 gh pr merge <P> --squash               # no --delete-branch: step 5 deletes the branches
 gh pr view <P> --json state           # must be MERGED; judge by this, not by the exit code
 gh issue view <N> --json title,body,labels,comments,state   # state must be CLOSED
 ```
 
-**Right before `gh pr merge`, check the branch is not behind `origin/main`.** The slot keeps this machine's other
-terminals out, but a person or another machine can still land on `main` while CI runs. A count above 0 → do not
-merge: keep the slot and go back to step 1 (merge `main` in, push, then the gate of steps 2 and 3 on the new head).
+**Right before `gh pr merge`, check the branch is not behind `origin/<default>`.** The slot keeps this machine's other
+terminals out, but a person or another machine can still land on the default branch while CI runs. A count above 0 → do not
+merge: keep the slot and go back to step 1 (merge the default branch in, push, then the gate of steps 2 and 3 on the new head).
 
 Use the merge method the project's `CLAUDE.md` names; squash is the default.
 
@@ -138,19 +125,20 @@ terminals see it is done.
 
 ## 6 · After the merge
 
-If the project deploys from `main`, the gate in step 3 is the deployment gate too: a red or pending run never ships.
+If the project deploys from its default branch (it has no release branch), the gate in step 3 is the deployment
+gate too: a red or pending run never ships.
 A bad deployment is corrected by the next pull request, never by rewriting history. Whatever the project's `CLAUDE.md`
 says is never auto-applied (infrastructure, a migration against a shared database) stays that way; a migration that
 has run against a shared database is corrected by a new one, never by rewriting the old one.
 
-If a merge breaks `main` for everyone (the gate goes red on `main` itself), that is a `bug` issue opened immediately,
+If a merge breaks the default branch for everyone (the gate goes red on the default branch itself), that is a `bug` issue opened immediately,
 not a deferred line, **per `new-issue.md`**: every heading, the failing tests under `### Acceptance criteria`, labels
 `story` + `bug` + `tier:bug` + `needs-human` (filed mid-run; the reason comment, its last, asks a person to confirm the failures and
 flip it to `agent-ready`, after which `eligibility.md` ranks it first), native sub-issue of the merged story's epic,
 and linked from that story's pull request. A second report of the same failures — another dev agent's `INHERITED RED` in the same run, or a
 later run — links the existing issue instead of opening another.
 
-**`main` can turn red with no commit.** A newly published dependency security advisory fails an install or audit step
+**The default branch can turn red with no commit.** A newly published dependency security advisory fails an install or audit step
 the build treats as an error, while a local install stays green on cached advisory data. Re-run the package manager's
 vulnerability listing with fresh data to reproduce what CI sees. The fix is a pin with a comment naming the advisory,
-never switching the audit off; the red `main` is a `bug` issue as above.
+never switching the audit off; the red default branch is a `bug` issue as above.

@@ -81,8 +81,8 @@
   issue, and the new issue names that pull request (or the issue, if no pull request is open yet) under
   `### References`.
 - **Read an issue only with `gh issue view <N> --json title,body,labels,comments`.** Shorter forms drop the body.
-- Labels: `epic` `story` `agent-ready` `needs-human` `in-progress` `outside-change` `bug` `owner-merges`, plus the
-  `wayfinder:*` set the planning skill owns and the `tier:*` set. `/dev-next` creates any of the eight that are missing
+- Labels: `epic` `story` `agent-ready` `needs-human` `in-progress` `outside-change` `bug`, plus the
+  `wayfinder:*` set the planning skill owns and the `tier:*` set. `/dev-next` creates any of the seven that are missing
   in its preflight.
   - `tier:*`: what a story is for, so anyone reading the list sees it. Every story carries exactly one; an epic never
     does. A story cut from a PRD takes the tier the PRD gives that work (`tier:mvp`, `tier:stretch`,
@@ -97,14 +97,12 @@
   - `wayfinder:*`: a planning ticket, never a story. `/dev-next` never takes an issue carrying one, and the drift
     checks (`/dev-next`'s probe, `/reconcile`) leave such issues out.
   - `agent-ready`: nothing is left to ask. An agent claims it, builds it, gets a fresh-agent review and merges with no
-    human (unless it also carries `owner-merges`). **An issue with none of `agent-ready`, `needs-human` or
+    human. **An issue with none of `agent-ready`, `needs-human` or
     `outside-change` is not taken automatically**: `/dev-next` stops in preflight and asks the human what it is. A
     label given then earns one ready-check before building.
   - `needs-human`: a person must act or decide first, then flips it to `agent-ready` — or the ticket is human-only
     work for good. The reason is the issue's **last comment**. Labelling `needs-human` removes `agent-ready`; the two
     never sit together.
-  - `owner-merges`: a person merges this story's pull request. It sits beside a readiness label, never in place of
-    one: an agent builds the story as usual, opens the pull request with its evidence and stops without merging.
   - **`outside-change`: the work touches a repository this team does not own. It never runs autonomously and always
     ends at a pull request for that repository's own reviewer.** It always also carries `needs-human`, so one filter
     catches every issue an agent must not take. The issue names the external work item under `### External reference`
@@ -122,11 +120,20 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
   - **A hard-to-reverse decision** (a new mechanism, a format, a dependency, a change of scope: something costly to
     undo, or that a later reader will ask "why?" about) gets an **ADR** (a short decision record: context, decision,
     consequences, alternatives) at `docs/ADRs/adr-<change-name>.md`. The agent proposes it and the person confirms
-    one is needed; the person approves the ADR before any ticket or code for that change exists. Every ADR carries a
-    status line, `pending` or `folded into the PRD on <date>`. **During a PRD split (`/prd-to-tickets`) this rule
-    does not apply**: a hard-to-reverse decision taken there is recorded under the stories it shapes and offered for
-    the PRD's build-decisions section through the PRD pull request the split already asks about, so the backlog and
-    the drift checks see it; an ADR is optional rationale there and never blocks a story.
+    one is needed; the person approves the ADR before any ticket or code for that change exists. Right under its
+    title, every ADR carries exactly one of three status lines: `**Status: pending**` (not yet folded into the PRD:
+    read beside the PRD as product truth), `**Status: folded into the PRD on <yyyy-mm-dd>**` (already in the PRD: not
+    read again) or `**Status: replaced by <newer ADR> on <yyyy-mm-dd>**` (a later ADR, named by its file name,
+    overrides it: every skill skips it and `/reconcile` never folds it; whoever writes the newer ADR sets this line on
+    the older one in the same pull request). Any other line, or none at all (`proposed`, `Status: Accepted`,
+    `approved by the owner on <date>`, …), is **unknown**: it is never read as pending and never skipped silently. A
+    skill that meets one (`/reconcile`, `/prd-to-tickets`, `/wayfinder`) stops at that ADR, asks the person which of
+    the three it is, and fixes the line in the pull request that run already opens, which a person merges because it
+    touches `docs/ADRs/`; `/orion-verify` lists every such ADR and fixes a line only on the person's yes. **During a
+    PRD split (`/prd-to-tickets`) a decision needs no ADR**: a hard-to-reverse decision taken there is recorded under
+    the stories it shapes and offered for the PRD's build-decisions section through the PRD pull request the split
+    already asks about, so the backlog and the drift checks see it; an ADR is optional rationale there and never
+    blocks a story.
   - **A big change or a product update:** the agent only asks whether the person wants a PRD. Creating or updating a
     PRD is the person's process, on their terms — planned with `/wayfinder`, then written or provided by the person.
     **An agent never drafts a PRD on its own.**
@@ -145,7 +152,7 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
   request its own reviewer merges. **One exemption:** the fresh copy (a new clone made only for this) used to draft
   that pull request may run that repository's own gate (its build, lint, typecheck and tests, inside the copy and
   never against a live system) and may be committed to on the pull request's branch. Nowhere else: never the
-  person's own checkout of that repository, never its `main`.
+  person's own checkout of that repository, never its default branch or its release branch.
 - **Never change another project without asking first.** This project, its worktrees and their root are the only
   projects an agent changes on its own: any other repository or project folder, even one on the same computer, is
   edited, committed to or pushed to only after the person says yes to that change, and one listed as external stays
@@ -154,8 +161,8 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
 - **If the project calls an AI model, the model provider sits behind one swappable interface.** Tests never reach
   the network; a test that needs the model mocks the interface. No API key is ever committed or written into an
   issue.
-- **The project deploys only to the place its `CLAUDE.md` names, from `main`.** No other hosting unless the PRD
-  names it.
+- **The project deploys only to the place its `CLAUDE.md` names, from its release branch, if any, otherwise from its default branch.**
+  No other hosting unless the PRD names it.
 - **No meeting recordings, transcripts or notes exports in the repository, ever** — they carry personal data. What a
   meeting decided goes onto the ticket it concerns, as a comment in the participant's own words.
 - **Code, comments, commits, issues and docs in the language the project's `CLAUDE.md` names.**
@@ -164,7 +171,7 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
   a screen the prototype lacks is a UX change first (pull request on `docs/ux/prototypes/`), then a story. **The
   prototype is merged before `/prd-to-tickets` cuts a PRD that names screens:** the user provides it, or the cut,
   finding no prototype or one missing a screen the PRD names, drafts the missing screens, opens that pull request (a
-  person merges it) and stops; the person runs the cut again once it is on `main`. A later PRD update that adds a
+  person merges it) and stops; the person runs the cut again once it is on the default branch. A later PRD update that adds a
   screen takes the same gate.
 - **Take every reversible decision yourself** — simplest option that meets the acceptance criteria, recorded in the
   pull request. Only a genuinely irreversible one becomes `needs-human`. A run that waits costs money doing nothing.
@@ -178,28 +185,32 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
 
 ## Git
 
-- **NEVER push to `main`.** Not a fix, not a typo, not "only a doc". Every change reaches `main` as a merged pull
-  request from a `feat/<desc>` / `fix/<desc>` branch (or the project's own branch pattern). Nothing but you enforces
-  this where branch protection is off.
+- **NEVER push to the default branch** (the repository's default branch on GitHub, where daily work starts from and
+  merges into) **or to the release branch, if any.** Not a fix, not a typo, not "only a doc".
+  Every change reaches the default branch as a merged pull request from a `feat/<desc>` / `fix/<desc>` branch (or the
+  project's own branch pattern). Nothing but you enforces this where branch protection is off.
 - **Who merges.** An agent merges every pull request it makes in the project on its own — `/dev-next`'s stories (a
   `/dev-quick` run merges through it), planning, harvest and QA logs, reconciling, documentation, one made by hand —
   with `/dev-next`'s bar: never on red or pending checks ("no checks reported" counts as red), squash-merge, then
   delete the branch. `/dev-next` merges only once the project's build and test commands are filled in. **A person
   merges** a pull request that touches the PRD (`docs/PRDs/`), an ADR (`docs/ADRs/`: merging it is the person's
   approval), the UX prototype (`docs/ux/prototypes/`) or the project's `CLAUDE.md` (an agent never lands its own
-  rules), even when the rest is bookkeeping, and the pull request of an `owner-merges` story; the agent merges one of
+  rules), even when the rest is bookkeeping; the agent merges one of
   these only on the person's explicit word for that one pull request, once its checks are green. Never merge an
   `outside-change` pull request: its repository's own reviewer does.
 - **Squash-merge only, then delete the branch** (`--delete-branch` breaks on a worktree; see
-  `.claude/skills/dev-next/references/merge-and-ci.md`). One commit on `main` per pull request.
+  `.claude/skills/dev-next/references/merge-and-ci.md`). One commit on the default branch per pull request. The one
+  exception is the release pull request, from the default branch into the release branch, if any (the branch the
+  project deploys from, named in its `CLAUDE.md`): it keeps a merge commit, so the next release merges cleanly.
 - **Work in a worktree on `feat/<slug>` or `fix/<slug>`** (`feat/<issue>-<slug>` when the branch serves one
   issue). A pull request may cover one issue or several related ones. Never work in the main checkout. **One exemption:** the
   per-developer branch `audit/<login>` that `/dev-next` writes run reports to is pushed directly, has no pull request
-  and never merges into `main` (`.claude/skills/dev-next/references/audit.md`).
+  and never merges into the default branch (`.claude/skills/dev-next/references/audit.md`).
 - Worktrees live **outside the project**, at the root the project's `CLAUDE.md` names. The in-flight file
   (`<worktree root>/in-flight.json`, never committed) lives beside them; format in
   `.claude/skills/dev-next/references/in-flight.md`.
-- Update a branch with `git merge origin/main` — **never rebase, never stash**. Never force-push unless the person
+- Update a branch by merging the default branch into it (`git merge origin/<default branch>`) — **never rebase,
+  never stash**. Never force-push unless the person
   explicitly asks for that push, never bypass hooks (`--no-verify`), never `git add -A`, never rebase or stash
   someone else's work, never delete work you did not create.
 - Never merge on red or pending checks; "no checks reported" counts as red — poll for the check run first, the host can
@@ -208,13 +219,13 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
   removed. What slips through (a failed run, a pull request a human merged) is swept by `/clear-git-resources`, which
   the session-start hook offers once a day when the project reaches its branch limit (local plus remote branches) or
   its worktree limit (`branchLimit` / `worktreeLimit` in `.claude/orion/config.json`, 20 each by default, a number or
-  `off`). Each stale item is yours or someone else's: yours when the first commit on its branch that is not on `main`
-  carries your `git config user.email`.
-  - **Deleted without asking:** your items whose work is already safe (on `main`, pull request merged, a clean
+  `off`). Each stale item is yours or someone else's: yours when the first commit on its branch that is not on the
+  default branch carries your `git config user.email`.
+  - **Deleted without asking:** your items whose work is already safe (on the default branch, pull request merged, a clean
     checkout whose commit a branch holds, a dead worktree entry, an old loose file in the worktree root).
   - **Asked first:** anyone else's stale item or one with no commits of its own, yours whose pull request closed
     unmerged or whose remote branch is gone, a locked worktree, and an old leftover folder in the worktree root.
-  - **Never touched:** unmerged commits, commits on no branch, uncommitted changes, `main`, the `audit/*` and `qa/*` branches, the `audit-*`
+  - **Never touched:** unmerged commits, commits on no branch, uncommitted changes, the default and release branches, the `audit/*` and `qa/*` branches, the `audit-*`
     and `qa-*` worktrees, an open pull request, anything in flight, other repositories' checkouts.
 - **Every session starts up to date.** The session-start hook runs `git pull --ff-only` (only moves the branch forward,
   never makes a merge commit) on the branch the session opens in. It is skipped when the branch has no remote copy. A
@@ -271,7 +282,7 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
 
 - **Invoking a skill is the go:** a person who starts a skill authorises everything that skill's own rules let it
   do, end to end, and the go ends with that run. No skill overrides the Git or Definition of done rules: never push
-  to `main`, never merge on red or pending checks, never skip hooks, never force-push without the person's explicit
+  to the default branch, never merge on red or pending checks, never skip hooks, never force-push without the person's explicit
   word for that push.
 - **Smallest change that works:** what was asked and no more. No refactors of untouched code, no speculative
   abstractions. **Stay on the issue you claimed.** A side-fix belongs in the pull request only if it is small, safe
@@ -281,29 +292,30 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
   backlog nobody drains is worse than no backlog. Before filing any issue, search the code and the open issues for
   something that already covers it; never defer to a **closed** issue.
 - **One pile.** Every `/dev-next` story ends with one report file for that run, pushed to `audit/<login>` — a
-  per-developer branch that collects reports and never merges into `main`. Each report has three lists: product
+  per-developer branch that collects reports and never merges into the default branch. Each report has three lists: product
   problems left for later, things that slowed the run down, and tips for the next run. Reports are named by date and
   time, so they sort in order.
-- **Harvesting.** `/harvest` is run by a person, never by another skill. A bookmark file on `main` records, per
-  developer, the newest report already harvested; the harvest reads only newer reports and works through them with
+- **Harvesting.** `/harvest` is run by a person, never by another skill. A bookmark file on the default branch records,
+  per developer, the newest report already harvested; the harvest reads only newer reports and works through them with
   the human by importance: the high groups first, then the medium ones, one short question per group, then every
   low note in one closing question. Then it moves the mark forward and ships it in its own pull request together
   with any tickets or rule edits it made. It groups items touching the same area into one ticket (the fewer the
   better) and drops an item only when the human says so. `/dev-next` only counts: at **10 unharvested items** it
   ends its run with `Harvest due: run /harvest`; low notes the human kept for later still count towards the ten.
-- **QA, later and on `main`.** Nobody drives the product during a story's review. Instead every merged story leaves a
+- **QA, later and on the default branch.** Nobody drives the product during a story's review. Instead every merged story leaves a
   QA record beside its run report on `audit/<login>`: the user-level checks for its acceptance criteria and a short
   story of what it changed. `/harvest-qa` is run by a person, never by another skill: it reads the records newer than
-  its own bookmark on `main`, drops the ones a later story superseded or made obsolete, drives the rest against `main`
+  its own bookmark on the default branch, drops the ones a later story superseded or made obsolete, drives the rest
+  against the default branch
   one agent at a time, shows the person each confirmed failure with its importance and files a `bug` issue only for
   the ones the person chooses, and ships its log in its own pull request. A deduped record counts as tested. `/harvest` and `/harvest-qa` never read each other's files.
   `/dev-next` only counts: at **5 untested records** it ends its run with `QA due: run /harvest-qa`.
 - **Reconciling.** `/reconcile` is run by a person, never by another skill. It reads the PRDs with their pending
-  ADRs, every issue with its native links, and the code on `main`, and lists every way they disagree — a PRD
+  ADRs, every issue with its native links, and the code on the default branch, and lists every way they disagree — a PRD
   section no story covers or one changed after its stories were cut, a story the PRD never asked for or an outcome it
   never absorbed, a broken issue map (no epic, blocker forms that disagree, impossible label pairs, two stories on
   one folder, built out of order), work the code and the issues disagree on — then fixes each with the person's
-  word, under the ownership rules above. A bookmark file on `main` records what was reconciled and what the person
+  word, under the ownership rules above. A bookmark file on the default branch records what was reconciled and what the person
   accepted as fine. `/dev-next` only probes: an impossible label pair or a story without an epic, or a PRD changed
   since the bookmark, and it ends its run with `Drift found: run /reconcile`.
 - **Sub-agents:** name each one after what it does (`review-auth-tests`, never `agent-3`); mechanical work runs on a
@@ -333,13 +345,13 @@ stand in. **Disagreement is a bug**: the PRD wins on product, the rules files wi
   local, never-committed snapshot rebuilt only when a person asks for it. The issues stay the truth.
 - `/harvest` works through the run reports on the audit branches with the person and turns what matters into tickets
   or rule edits.
-- `/harvest-qa` drives the QA checks every merged story left behind against `main`, in sequential rounds until every
+- `/harvest-qa` drives the QA checks every merged story left behind against the default branch, in sequential rounds until every
   record is tested or deduped, then shows the person each failure reproduced twice, with its importance, and files a
   `bug` issue only for the ones the person chooses.
-- `/reconcile` checks the issues, the PRDs and the code on `main` against each other and fixes the drift
+- `/reconcile` checks the issues, the PRDs and the code on the default branch against each other and fixes the drift
   with the person present: issue edits under the ownership rules, PRD edits and its bookmark in one pull request,
-  which a person merges when it touches the PRD (*Who merges*). The PRD wins on what to build; `main` wins on what
-  is done.
+  which a person merges when it touches the PRD (*Who merges*). The PRD wins on what to build; the default
+  branch wins on what is done.
 - `/clear-git-resources` lists stale worktrees, branches and leftover files, deletes your own stale ones whose work is
   safe, and asks before deleting anyone else's.
 - `/handoff` packs the current conversation into a handoff document for the next session or agent.

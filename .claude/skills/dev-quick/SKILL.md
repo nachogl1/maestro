@@ -99,11 +99,14 @@ file, you have taken the dev agent's job.
    boundaries an agent must not move, the standing decisions that are never asked about. Every question in phase 2 is
    checked against this file first — a question the project has already answered is not asked.
 3. Labels: `gh label list --limit 200 --json name --jq '.[].name'`; create any of `epic`, `story`, `agent-ready`,
-   `needs-human`, `in-progress`, `outside-change`, `bug`, `owner-merges` that is missing, with a one-line description. Never rename or
+   `needs-human`, `in-progress`, `outside-change`, `bug` that is missing, with a one-line description. Never rename or
    delete one. (`/dev-next` does the same; whichever runs first creates them.)
-4. **Latest `main`, read only, without switching any branch.** `git fetch origin main`, then read the code as it is
-   on `origin/main` (`git show origin/main:<path>`, `git grep <pattern> origin/main`, `git ls-tree -r --name-only
-   origin/main <folder>`). The main checkout's own files count only when it is on `main` at `origin/main`. **Never
+4. **Latest default branch, read only, without switching any branch.** `<default>` is the default branch (where
+   daily work starts from and merges into), looked up and never assumed: `git symbolic-ref --short
+   refs/remotes/origin/HEAD` prints `origin/<default>`; when it fails, `gh repo view --json defaultBranchRef --jq
+   .defaultBranchRef.name`. `git fetch origin <default>`, then read the code as it is on `origin/<default>` (`git show
+   origin/<default>:<path>`, `git grep <pattern> origin/<default>`, `git ls-tree -r --name-only origin/<default>
+   <folder>`). The main checkout's own files count only when it is on `<default>` at `origin/<default>`. **Never
    `git checkout` or `git switch` in the main checkout**, never stash, never reset: a person may be working there.
    This skill creates no worktree and no branch — `/dev-next` does, in phase 3.
 
@@ -111,7 +114,7 @@ file, you have taken the dev agent's job.
 
 A question grounded in the code is answerable; a question asked blind gets a guess back.
 
-1. **Read what the change touches.** From the description, find the folder or module it lives in, on `origin/main`
+1. **Read what the change touches.** From the description, find the folder or module it lives in, on `origin/<default>`
    (phase 0 step 4; the project's `CLAUDE.md` layout section). Read enough to know: what exists today, what the change would alter, which
    tests cover it, what else depends on it. A change in an unfamiliar area may go to a `scout-quick` sub-agent with a
    bounded brief ("the folder, the entry points, the tests, the dependants — ten bullets, no essay"); a change you can
@@ -134,7 +137,7 @@ A question grounded in the code is answerable; a question asked blind gets a gue
 Full path only; a request on *The fast path* skips this phase.
 
 The point of this phase is that `/dev-next` asks nothing. An unasked question becomes a guess the dev agent bakes into
-the code and the reviewer cannot judge; a long interview is cheaper than one wrong guess shipped to `main`.
+the code and the reviewer cannot judge; a long interview is cheaper than one wrong guess shipped to the default branch.
 
 - **Ask every question you have**, in batches of related ones, through the clickable-options tool
   (`AskUserQuestion`): distinct options per question, your recommended answer **first and marked**, so the person
@@ -228,8 +231,8 @@ prepared → invoke the **`dev-next` skill** with the argument `#<N>` (several f
 Skill tool, or, where it is unavailable, read `.claude/skills/dev-next/SKILL.md` and follow it from its Phase 0 with
 that argument. This session is now `/dev-next`'s orchestrator and follows that file alone:
 
-- Its preflight runs in full (tools, gate commands, latest `main`, labels, unlabelled issues, the in-flight file).
-  A stop there (a `TBD` gate command, a red install on `main`) is reported in one line; the issue stays filed and
+- Its preflight runs in full (tools, gate commands, latest default branch, labels, unlabelled issues, the in-flight
+  file). A stop there (a `TBD` gate command, a red install on the default branch) is reported in one line; the issue stays filed and
   `agent-ready`, and the person runs `/dev-next #<N>` later.
 - Its phase 2 asks nothing: the issue was `agent-ready` before that run started, and its decisions are on the issue.
 - Claim, worktree on `feat/<N>-<slug>`, `dev-<N>`, fresh `review-<N>-r<round>` per round, the merge slot, merge on green CI,
@@ -247,7 +250,7 @@ closed").
 
 ## Rules that are not negotiable
 
-0. **Never push to `main`.** The change lands only as `/dev-next`'s pull request, merged by `/dev-next` on green CI.
+0. **Never push to the default branch or the release branch.** The change lands only as `/dev-next`'s pull request, merged by `/dev-next` on green CI.
 1. **Nothing is filed `agent-ready` with a question left.** If you can think of a question, ask it. The interview has
    no cap; the autonomous run has no questions.
 2. **Nothing is filed without the person's look at the draft** — except on the fast path, where nothing was left to
