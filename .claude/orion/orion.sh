@@ -1000,20 +1000,33 @@ retire_user_level_copies() {
 # computer's copy is offered the newest one it sees and takes it (or merges it in) only on the person's word.
 #   ~/.claude/statusline/.orion-baseline   orion version number and checksum of the newest baseline this computer took or skipped
 #   ~/.claude/statusline/.orion-base/      the baseline the computer's copy was made from (the merge base)
+#   ~/.cache/orion/statusline-seen         this orion's own note of the same: version, checksum, the checksum without
+#                                          the help text, and the copy's as left; an orion from before three-part
+#                                          versions rewrites .orion-baseline but never reads or writes this note
 # --------------------------------------------------------------------------
 SL_STAMP=".orion-baseline"
 SL_BASE=".orion-base"
+# Where an earlier orion nested the new copy when the folder could not be renamed: orion's own when it holds a record.
+SL_LEFTOVER="statusline.new"
 # An orion before version numbers stamped a Unix commit time (ten digits) instead: no version number comes near it.
 SL_OLD_STAMP_MIN=1000000000
 sl_home() { printf '%s' "$HOME/.claude/statusline"; }
+sl_note() { printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/orion/statusline-seen"; }
 
-# One line per file (orion's own bookkeeping left out): its path and the checksum of its text without carriage
-# returns, so a copy checked out with Windows line endings still counts as the same.
-tree_sum() {  # dir
+# One line per file (orion's own bookkeeping and leftover left out): its path and the checksum of its text without
+# carriage returns, so a copy checked out with Windows line endings still counts as the same. "code" leaves the help
+# text (*.md) out too: help text alone never makes a status line new.
+tree_sum() {  # dir [code]
+    local docs="${2:-}" leftover=""
+    [ ! -f "$1/$SL_LEFTOVER/$SL_STAMP" ] || leftover=1
     ( cd "$1" 2>/dev/null && find . -type f ! -path "./$SL_BASE/*" ! -name "$SL_STAMP" ! -name .DS_Store ! -name Thumbs.db \
         | LC_ALL=C sort | while IFS= read -r f; do
+        if [ -n "$leftover" ]; then case "$f" in "./$SL_LEFTOVER/"*) continue ;; esac; fi
+        if [ "$docs" = code ]; then case "$f" in *.md) continue ;; esac; fi
         printf '%s %s\n' "$f" "$(tr -d '\r' < "$f" | cksum)"; done ) || true
 }
+# The copy's files and its merge base, as one line: whether the copy is still as orion last left it.
+sl_copy_sum() { printf '%s %s' "$(tree_sum "$1" | cksum)" "$(tree_sum "$1/$SL_BASE" | cksum)"; }  # dir
 
 # Copy a folder's files without carriage returns: bash cannot run a script with Windows line endings.
 copy_text_tree() {  # src dst
@@ -1032,14 +1045,26 @@ sl_seed() {  # src stamp
     local dest; dest="$(sl_home)"
     rm -rf "$dest.new"; copy_text_tree "$1" "$dest.new"; copy_text_tree "$1" "$dest.new/$SL_BASE"
     sl_mark "$2" "$1" "$dest.new"
-    rm -rf "$dest.old"; [ ! -d "$dest" ] || mv "$dest" "$dest.old"
-    mv "$dest.new" "$dest"; rm -rf "$dest.old"
+    rm -rf "$dest.old"
+    if [ ! -d "$dest" ] || mv "$dest" "$dest.old" 2>/dev/null; then
+        mv "$dest.new" "$dest"
+    else
+        # a folder some process holds open cannot be renamed (Windows): its files are replaced in place instead, and
+        # the new copy is never moved inside it
+        find "$dest" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        cp -R "$dest.new/." "$dest/" || return 1
+    fi
+    rm -rf "$dest.new" "$dest.old"
 }
 sl_restore() { local dest; dest="$(sl_home)"; [ -d "$dest" ] || [ ! -d "$dest.old" ] || mv "$dest.old" "$dest"; }
 
-# Record the newest baseline this computer has seen (taken, merged or skipped): its orion version number, then its checksum.
+# Record the newest baseline this computer has seen (taken, merged or skipped): its orion version number, then its
+# checksum; the note keeps the same two lines, the checksum without the help text and the copy's as left.
 sl_mark() {  # stamp src [statusline-dir]
-    printf '%s\n%s\n' "$1" "$(tree_sum "$2" | cksum)" > "${3:-$(sl_home)}/$SL_STAMP"
+    local dir="${3:-$(sl_home)}" sum note; sum="$(tree_sum "$2" | cksum)"; note="$(sl_note)"
+    printf '%s\n%s\n' "$1" "$sum" > "$dir/$SL_STAMP"
+    { mkdir -p "$(dirname "$note")" \
+        && printf '%s\n%s\n%s\n%s\n' "$1" "$sum" "$(tree_sum "$2" code | cksum)" "$(sl_copy_sum "$dir")" > "$note"; } 2>/dev/null || true
 }
 
 sl_number() { local v; v="$(version_of "$1")"; printf '%s' "${v:-0}"; }
@@ -1053,6 +1078,31 @@ sl_stamp() {
 sl_seen() { sed -n '2p' "$(sl_home)/$SL_STAMP" 2>/dev/null | tr -d '\r'; }
 project_stamp() { sl_number "$(version_number "$PROJECT/.claude/orion/VERSION")"; }
 
+# The newest baseline this computer took or skipped: sets SL_LAST (its version) and SL_LAST_CODE (its checksum without
+# the help text, empty when unknown). The note counts while the record or the copy is still as this orion left it: an
+# orion from before three-part versions reads a record such as 2.11.0 as 0, and its answer about its own older status
+# line rewrites the record with a lower number, but leaves the note alone. Once its answer changed the copy as well,
+# only the record counts, so the newer status line is offered again.
+sl_last() {
+    local v="" sum="" code="" copy=""
+    SL_LAST="$(sl_stamp)" SL_LAST_CODE=""
+    { IFS= read -r v; IFS= read -r sum; IFS= read -r code; IFS= read -r copy; } 2>/dev/null < "$(sl_note)" || true
+    [ -n "$copy" ] || return 0
+    { [ "$v" = "$(sed -n '1p' "$(sl_home)/$SL_STAMP" 2>/dev/null | tr -d '\r')" ] && [ "$sum" = "$(sl_seen)" ]; } \
+        || [ "$copy" = "$(sl_copy_sum "$(sl_home)")" ] || return 0
+    version_gt "$SL_LAST" "$(sl_number "$v")" && return 0
+    SL_LAST="$(sl_number "$v")" SL_LAST_CODE="$code"
+}
+
+# 0 when the baseline in <src> brings nothing new for what the bar does: apart from the help text it equals the
+# computer's copy, the copy's merge base or the baseline last taken or skipped, or it is that baseline as a whole
+# (the one checksum a record from before the note holds). Call sl_last first.
+sl_nothing_new() {  # src
+    local code dest; code="$(tree_sum "$1" code)"; dest="$(sl_home)"
+    [ "$code" = "$(tree_sum "$dest" code)" ] || [ "$code" = "$(tree_sum "$dest/$SL_BASE" code)" ] \
+        || [ "$(tree_sum "$1" code | cksum)" = "$SL_LAST_CODE" ] || [ "$(tree_sum "$1" | cksum)" = "$(sl_seen)" ]
+}
+
 # Compare the computer's status line with this project's copy when that copy is newer. It never changes what
 # the status line shows without the person's word. Prints "new" (an unedited copy: taking orion's waits for
 # their word), "offer" (the person edited theirs: a merge waits for their word) or nothing.
@@ -1060,14 +1110,15 @@ statusline_sync() {
     local dest src t; dest="$(sl_home)"; src="$PROJECT/.claude/orion/statusline"
     sl_restore
     { [ -f "$dest/$SL_STAMP" ] && [ -d "$src" ]; } || return 0
-    t="$(project_stamp)"
+    t="$(project_stamp)"; sl_last
     # never step back: another project on this computer may carry an older orion
-    version_gt "$t" "$(sl_stamp)" || return 0
+    version_gt "$t" "$SL_LAST" || return 0
     if [ "$(tree_sum "$dest")" = "$(tree_sum "$src")" ]; then
         # already the same files: only the bookkeeping moves forward
         sl_seed "$src" "$t"
-    elif [ "$(tree_sum "$src" | cksum)" = "$(sl_seen)" ]; then
-        # a newer orion whose status line did not change since the one last taken or skipped: nothing to offer
+    elif sl_nothing_new "$src"; then
+        # a newer orion whose status line changed at most its help text: nothing to offer; the help text comes in with
+        # the next change taken or merged
         sl_mark "$t" "$src"
     elif [ -d "$dest/$SL_BASE" ] && [ "$(tree_sum "$dest")" = "$(tree_sum "$dest/$SL_BASE")" ]; then
         printf 'new'
@@ -1113,6 +1164,8 @@ statusline_merge() {
             rm -f "$dest/$f"
         fi
     done <<< "$(cd "$dest/$SL_BASE" && find . -type f)"
+    # the copy an earlier failed swap nested inside is orion's own, never the person's edit
+    [ ! -f "$dest/$SL_LEFTOVER/$SL_STAMP" ] || rm -rf "${dest:?}/$SL_LEFTOVER"
     rm -rf "${dest:?}/$SL_BASE"; copy_text_tree "$src" "$dest/$SL_BASE"; sl_mark "$t" "$src"
     if [ -n "$conflicts" ]; then
         say "status line: merged, but your edits and orion's touch the same lines in:$conflicts"
@@ -2186,7 +2239,8 @@ cmd_statusline() {
     [ -d "$PROJECT/.claude/orion/statusline" ] || die "this project carries no orion status line (run: orion.sh update)"
     case "$action" in merge|skip) ;; *) die "usage: orion.sh statusline merge|skip" ;; esac
     # never step back: a project with an older orion has nothing newer to merge or skip
-    if ! version_gt "$(project_stamp)" "$(sl_stamp)"; then
+    sl_last
+    if ! version_gt "$(project_stamp)" "$SL_LAST"; then
         say "status line: nothing to $action - the copy on this computer already follows this project's orion version or a newer one"
         return
     fi
