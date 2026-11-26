@@ -114,6 +114,10 @@ full-height columns**:
 After tidying, terminals still move and resize as usual: drag a divider or a tile edge, or drag a terminal onto
 another one or onto an edge of the screen.
 
+In eagle view, a new terminal (or its not-launched card) takes the whole empty space it lands in: close a tidied
+terminal and open a new one, and the new one fills the free full-height column. Only when no empty space is big
+enough does the biggest tile give up half its room for it.
+
 ## Terminals: the header in narrow columns
 
 Each terminal header follows the width of its own column, not the number of terminals open, so two terminals in

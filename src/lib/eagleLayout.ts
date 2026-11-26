@@ -236,29 +236,19 @@ export function largestEmptyRect(
 }
 
 /**
- * Where a tile new to a custom layout goes: the top-left corner of the
- * largest hole, no bigger than a tile of the automatic layout would be. When
- * no hole is big enough, the biggest tile gives up half its room (split along
+ * Where a tile new to a custom layout goes: the whole largest hole. When no
+ * hole is big enough, the biggest tile gives up half its room (split along
  * its longer side). Null when not even that is possible.
  */
 function placeNewTile(
   placed: PlacedTile[],
-  total: number,
   units: number,
 ): { rect: TileRect; shrunk?: { index: number; rect: TileRect } } | null {
   const hole = largestEmptyRect(
     placed.map((p) => p.rect),
     units,
   );
-  if (hole && hole.w >= MIN_TILE_UNITS && hole.h >= MIN_TILE_UNITS) {
-    const cols = autoColumns(total);
-    const rows = Math.max(1, Math.ceil(total / cols));
-    const maxW = Math.max(MIN_TILE_UNITS, Math.round(units / cols));
-    const maxH = Math.max(MIN_TILE_UNITS, Math.round(units / rows));
-    return {
-      rect: { x: hole.x, y: hole.y, w: Math.min(hole.w, maxW), h: Math.min(hole.h, maxH) },
-    };
-  }
+  if (hole && hole.w >= MIN_TILE_UNITS && hole.h >= MIN_TILE_UNITS) return { rect: hole };
   let bigIndex = -1;
   let bigArea = 0;
   placed.forEach((p, i) => {
@@ -319,8 +309,8 @@ function packed(
  * Lays out every visible tile. With no stored rects it is the automatic
  * square-ish grid. Otherwise each session keeps its stored rect when that
  * still fits (inside the grid, clear of the tiles placed before it); every
- * other tile — new sessions, cards, a tile whose old place is taken — goes
- * into the largest hole (see placeNewTile). A column Tidy up kept for a card
+ * other tile — new sessions, cards, a tile whose old place is taken — takes
+ * the whole largest hole (see placeNewTile). A column Tidy up kept for a card
  * stays that card's, or goes whole to the session the card was launched as.
  */
 export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
@@ -328,7 +318,6 @@ export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
   const units = input.units ?? EAGLE_UNITS;
   if (Object.keys(stored).length === 0) return packed(sessionIds, pendingByTab, false, units);
 
-  const total = sessionIds.length + pendingByTab.reduce((sum, [, n]) => sum + n, 0);
   const { kept, spare } = splitCardColumns(pendingByTab, input.cardColumns ?? {});
   const placed: PlacedTile[] = [];
   const place = (sessionId: number | null, wanted: TileRect | undefined): boolean => {
@@ -343,7 +332,7 @@ export function layoutEagleTiles(input: EagleLayoutInput): EagleLayout {
       placed.push({ sessionId, rect: wanted });
       return true;
     }
-    const spot = placeNewTile(placed, total, units);
+    const spot = placeNewTile(placed, units);
     if (!spot) return false;
     if (spot.shrunk)
       placed[spot.shrunk.index] = { ...placed[spot.shrunk.index], rect: spot.shrunk.rect };
