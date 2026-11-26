@@ -242,6 +242,35 @@ describe("MultiProjectView eagle view tidy up (issue #493)", () => {
 
     expect(placement(screen.getByTestId("terminal-3"))).toEqual(thirdColumn(2));
   });
+
+  it("gives a new card the whole column a closed terminal left, kept once it is launched", async () => {
+    const ref = createRef<MultiProjectViewHandle>();
+    render(<MultiProjectView ref={ref} eagleView />);
+    await flushFrames();
+    await launchCard();
+    await addAndLaunch(ref, "tab-1");
+    await addAndLaunch(ref, "tab-1");
+    act(() => {
+      ref.current?.tidyActiveProject();
+    });
+    await flushFrames();
+
+    await act(async () => {
+      ref.current?.killSessionInProject("tab-1", 1);
+    });
+    await flushFrames();
+    await act(async () => {
+      ref.current?.addSessionInProject("tab-1");
+    });
+    await flushFrames();
+
+    const card = screen.getByRole("button", { name: "Launch Session" }).closest("[data-slot-id]");
+    expect(placement(card)).toEqual(thirdColumn(0));
+
+    await launchCard();
+
+    expect(placement(screen.getByTestId("terminal-4"))).toEqual(thirdColumn(0));
+  });
 });
 
 /** Where a tile sits in the eagle grid, read from its pane's grid style. */

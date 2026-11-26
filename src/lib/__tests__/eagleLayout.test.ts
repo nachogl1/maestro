@@ -5,6 +5,7 @@ import {
   compareRowMajor,
   dropBesideTile,
   EAGLE_UNITS,
+  type EagleLayout,
   fitsFree,
   insertColumnAtEdge,
   largestEmptyRect,
@@ -81,16 +82,27 @@ describe("layoutEagleTiles", () => {
     expect(layout.reset).toBe(false);
   });
 
-  it("keeps stored rects and drops a new tile into the largest hole, default-sized", () => {
+  it.each([
+    {
+      tile: "a new session",
+      input: { sessionIds: [1, 2, 3], pendingByTab: [] as [string, number][] },
+      newRect: (layout: EagleLayout) => layout.tiles.get(3),
+    },
+    {
+      tile: "a pre-launch card",
+      input: { sessionIds: [1, 2], pendingByTab: [["tab-a", 1]] as [string, number][] },
+      newRect: (layout: EagleLayout) => layout.pending.get("tab-a")?.[0],
+    },
+  ])("keeps stored rects and gives $tile the whole largest hole", ({ input, newRect }) => {
+    // Two of three Tidy up columns; the first column (20×60) is free.
     const stored: Record<number, TileRect> = {
-      1: { x: 0, y: 0, w: 30, h: U },
-      2: { x: 30, y: 0, w: 30, h: 30 },
+      1: { x: 20, y: 0, w: 20, h: U },
+      2: { x: 40, y: 0, w: 20, h: U },
     };
-    const layout = layoutEagleTiles({ sessionIds: [1, 2, 3], pendingByTab: [], stored });
+    const layout = layoutEagleTiles({ ...input, stored });
     expect(layout.tiles.get(1)).toEqual(stored[1]);
     expect(layout.tiles.get(2)).toEqual(stored[2]);
-    // The hole is 30×30 at (30,30); a 3-tile automatic layout (2×2) also gives 30×30.
-    expect(layout.tiles.get(3)).toEqual({ x: 30, y: 30, w: 30, h: 30 });
+    expect(newRect(layout)).toEqual({ x: 0, y: 0, w: 20, h: U });
     expect(layout.reset).toBe(false);
   });
 
