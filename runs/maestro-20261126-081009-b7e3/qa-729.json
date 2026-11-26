@@ -1,0 +1,26 @@
+{
+  "run_id": "maestro-20261126-081009-b7e3",
+  "issue": 729,
+  "title": "Eagle view: a new terminal takes the whole empty space it lands in, not half the height",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 730,
+  "merged_at": "2026-11-26T08:23:32Z",
+  "merge_commit": "c65ec04594163262c921027042ace4e607639e8e",
+  "seam": "src/lib/eagleLayout.ts",
+  "story": "In eagle view, a new terminal used to arrive at the size of a tile from the automatic grid, so after Tidy up and closing one terminal, the new one filled only half of the free column. Now a new terminal, or its not-launched card, fills the whole empty space it lands in. Only the eagle view grid changed; Tidy up, resizing, moving and the per-project view work as before.",
+  "checks": [
+    {
+      "key": "src/lib/eagleLayout/new-terminal-fills-free-column",
+      "criterion": "In eagle view, after Tidy up, a new card and the terminal it launches take the whole free full-height column.",
+      "steps": "Start the desktop app and open a made-up project such as demo-alpha. Launch three terminals and switch to eagle view. Press Alt+T. Close the leftmost terminal. Add a new terminal to demo-alpha with the top bar's + button. Launch the new card.",
+      "expected": "The card and then the launched terminal fill the whole left column, top to bottom (before this change they filled only the top half)."
+    },
+    {
+      "key": "src/lib/eagleLayout/split-when-no-room",
+      "criterion": "When no empty space is big enough, the biggest tile still gives up half its room.",
+      "steps": "In eagle view, arrange two terminals so they cover the whole grid, for example by dragging one onto a screen edge. Add a new terminal.",
+      "expected": "The biggest terminal splits in half, and the new one takes the freed half."
+    }
+  ],
+  "no_qa_reason": null
+}

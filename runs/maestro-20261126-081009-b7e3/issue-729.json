@@ -1,0 +1,48 @@
+{
+  "run_id": "maestro-20261126-081009-b7e3",
+  "issue": 729,
+  "title": "Eagle view: a new terminal takes the whole empty space it lands in, not half the height",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-26T08:10:09Z",
+  "finished_at": "2026-11-26T08:24:21Z",
+  "outcome": "merged",
+  "pr": 730,
+  "summary": "In eagle view a new terminal or pre-launch card landing in an empty space of a custom layout was capped at the automatic grid's tile size, so after Tidy up it filled only half of a free full-height column. The cap is gone: a new tile takes the whole largest empty rectangle; 2 tests added, 1 updated, runbook and changelog updated.",
+  "agents": [
+    {
+      "name": "dev-729",
+      "model": "opus",
+      "tokens_total": 129129,
+      "tokens_source": "tool"
+    },
+    {
+      "name": "review-729-r1",
+      "model": "opus",
+      "tokens_total": 138500,
+      "tokens_source": "tool"
+    }
+  ],
+  "phases": {
+    "qa_seconds": 0,
+    "dev_seconds": 375,
+    "review_seconds": 269,
+    "ci_seconds": 0
+  },
+  "rounds": {
+    "review": 1,
+    "ci": 1
+  },
+  "friction": [],
+  "lessons_learned": [
+    "CI's Frontend job (pr-checks.yml) runs typecheck, lint and tests but no `npm run build`, so a merge on green CI does not prove the Vite build; the reviewer ran the build by hand this run. Either add the build step to CI or keep running it in review."
+  ],
+  "deferred": [
+    {
+      "severity": "medium",
+      "area": "src/lib/eagleLayout.ts",
+      "what": "With the size cap gone, the first new tile takes the whole empty space, so a second new tile added to the same layout splits a terminal the user placed instead of sharing that space (two cards added after closing one of three tidied terminals: card 1 gets the free column, card 2 halves a stored terminal, and the next move or resize stores the halved place).",
+      "why": "The issue fixed 'uncapped' and left the split branch unchanged; sharing a hole between several new tiles, or splitting a new tile before a stored one, is a design choice.",
+      "owner": "unowned — next harvest"
+    }
+  ]
+}
