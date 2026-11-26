@@ -1,0 +1,22 @@
+{
+  "run_id": "maestro-20261126-093027-6cf5",
+  "issue": 732,
+  "title": "Remove the unused maestro terminal command and its Settings box",
+  "login": "Ignacio-Gonzalez-Harris",
+  "started_at": "2026-11-26T09:30:27Z",
+  "finished_at": "2026-11-26T09:56:18Z",
+  "outcome": "merged",
+  "pr": 733,
+  "summary": "Removed the Mac/Linux-only `maestro` terminal command: its Settings box, install/uninstall backend commands and shell script. Opening a folder passed at start stays.",
+  "agents": [
+    { "name": "dev-732", "model": "opus", "tokens_total": 136941, "tokens_source": "tool" },
+    { "name": "review-732-r1", "model": "opus", "tokens_total": 116044, "tokens_source": "tool" }
+  ],
+  "phases": { "qa_seconds": 0, "dev_seconds": 1126, "review_seconds": 268, "ci_seconds": 0 },
+  "rounds": { "review": 1, "ci": 1 },
+  "friction": [],
+  "lessons_learned": [
+    "A removal story filed by /dev-quick should grep docs/PRDs/ for the feature before recording 'no PRD section': PRD §3.1 still names the removed maestro terminal command"
+  ],
+  "deferred": []
+}

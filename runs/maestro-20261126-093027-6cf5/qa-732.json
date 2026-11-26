@@ -1,0 +1,20 @@
+{
+  "run_id": "maestro-20261126-093027-6cf5",
+  "issue": 732,
+  "title": "Remove the unused maestro terminal command and its Settings box",
+  "login": "Ignacio-Gonzalez-Harris",
+  "pr": 733,
+  "merged_at": "2026-11-26T09:55:37Z",
+  "merge_commit": "ed5aed3bd2ae677a41e9603eac56f5272dfa9cd3",
+  "seam": "src-tauri/src/commands/cli.rs and the CLI section of src/components/settings/UpdatesSettingsPanel.tsx",
+  "story": "Settings → Updates used to have a 'CLI Command' box that offered to install a `maestro` command for opening folders from a terminal. It never worked on Windows, and nobody used it on Mac or Linux. The box is gone, along with the command behind it. A copy already installed on a Mac still opens folders, because Maestro still accepts a folder when it starts.",
+  "checks": [
+    {
+      "key": "settings/updates-no-cli",
+      "criterion": "Settings → Updates shows no 'CLI Command' section on any platform",
+      "steps": "Start Maestro fresh. Open Settings. Pick the Updates section.",
+      "expected": "Version, Last checked, Auto-check, Install on launch and Advanced are shown; no 'CLI Command' box, no \"Install 'maestro' command in PATH\" button and no 'Not available on Windows.' line."
+    }
+  ],
+  "no_qa_reason": null
+}
