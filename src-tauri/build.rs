@@ -200,9 +200,6 @@ const APP_COMMANDS: &[&str] = &[
     "open_terminals_clear",
     "samurai_cleanup_kept_worktrees",
     "terminal_shell_family",
-    "install_cli",
-    "uninstall_cli",
-    "is_cli_installed",
     "take_pending_cli_path",
 ];
 

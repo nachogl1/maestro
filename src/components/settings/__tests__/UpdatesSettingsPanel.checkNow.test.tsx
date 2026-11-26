@@ -40,7 +40,6 @@ describe("UpdatesSettingsPanel check now", () => {
     });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "is_cli_installed") return false;
       if (cmd === "get_app_version") return "0.3.9";
       if (cmd === "check_for_updates") return UPDATE;
       throw new Error(`unexpected command ${cmd}`);
@@ -63,5 +62,12 @@ describe("UpdatesSettingsPanel check now", () => {
     expect(useUpdateStore.getState().autoInstallOnLaunch).toBe(true);
     fireEvent.click(toggle);
     expect(useUpdateStore.getState().autoInstallOnLaunch).toBe(false);
+  });
+
+  it("shows no maestro terminal command section and no install button", async () => {
+    render(<UpdatesSettingsPanel />);
+    expect(await screen.findByText("v0.3.9")).toBeTruthy();
+    expect(screen.queryByText("CLI Command")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Install 'maestro' command/ })).toBeNull();
   });
 });

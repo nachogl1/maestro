@@ -31,7 +31,6 @@ describe("settings panel tooltips", () => {
     useWorkJournalSettingsStore.setState({ enabled: true });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "is_cli_installed") return false;
       if (cmd === "get_app_version") return "0.3.9";
       if (cmd === "load_work_journal") {
         return { layout_version: 1, pages: {}, deleted_dates: [], settings: {} };
@@ -41,15 +40,11 @@ describe("settings panel tooltips", () => {
     });
   });
 
-  it("explains the update, CLI and advanced settings in hover tooltips", async () => {
+  it("explains the update and advanced settings in hover tooltips", async () => {
     render(<UpdatesSettingsPanel />);
 
     expect(hoverText(screen.getByText("Auto-check"))).toMatch(/newer versions/);
     expect(hoverText(screen.getByText("Interval"))).toMatch(/How often/);
-    expect(hoverText(screen.getByText("CLI Command"))).toMatch(/terminal window/);
-    expect(
-      hoverText(await screen.findByRole("button", { name: /Install 'maestro' command/ })),
-    ).toMatch(/Adds the maestro command/);
     expect(hoverText(screen.getByRole("button", { name: /Advanced/ }))).toMatch(/most people/);
   });
 

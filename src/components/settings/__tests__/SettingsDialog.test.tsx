@@ -57,7 +57,6 @@ describe("SettingsDialog", () => {
     useWorkJournalSettingsStore.setState({ enabled: true });
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "is_cli_installed") return false;
       if (cmd === "get_app_version") return "0.3.9";
       if (cmd === "load_work_journal") {
         return { layout_version: 1, pages: {}, deleted_dates: [], settings: {} };

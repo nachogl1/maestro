@@ -323,6 +323,11 @@ ran. A kept worktree is yours to look at and remove by hand.
 - Run records and brief files an earlier version left on disk are not deleted by this change; the existing
   clean-ups still handle them.
 
+## Settings → Updates: no `maestro` terminal command
+
+- Settings → Updates no longer offers the `maestro` terminal command: the "CLI Command" box and its install button
+  are gone on every platform. A copy already installed on a Mac stays in place and still opens a folder in Maestro.
+
 ## Files panel: the focused terminal's folder
 
 The **Files** icon (second in the strip, after History) opens a panel showing the folder the focused terminal works

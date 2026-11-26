@@ -566,10 +566,7 @@ pub fn run() {
             // One-time Samurai cleanup: the run worktrees it kept (issue #615)
             core::legacy_cleanup::samurai_cleanup_kept_worktrees,
             commands::terminal::terminal_shell_family,
-            // CLI commands
-            commands::cli::install_cli,
-            commands::cli::uninstall_cli,
-            commands::cli::is_cli_installed,
+            // The folder passed to the app at start
             take_pending_cli_path,
         ])
         .run(tauri::generate_context!())
