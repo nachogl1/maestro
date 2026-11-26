@@ -44,7 +44,7 @@ plus one read of the person's Claude usage limits with their existing Claude Cod
 
 ### 3.1 Projects, terminals and views
 
-- Projects open as tabs (the `+` button, or a folder passed to the `maestro` terminal command); Ctrl+Tab and
+- Projects open as tabs (the `+` button); Ctrl+Tab and
   Ctrl+Shift+Tab cycle them; Mod+Shift+Left/Right moves a tab (Mod = Ctrl, or Cmd on macOS). Hidden projects keep
   their terminals running. A multi-repo workspace gets a repository-and-branch picker when a terminal is created.
 - Mod+T adds a terminal card with the cursor in its name box; Enter launches it. Alt+R renames, Alt+W closes (after
